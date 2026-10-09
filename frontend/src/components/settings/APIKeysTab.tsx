@@ -2,7 +2,8 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { useState, useEffect, useCallback, useSyncExternalStore } from 'react';
 import { Copy, CheckCircle, AlertCircle, BookOpen, X, ChevronDown, ChevronRight, Zap } from 'lucide-react';
-import { Button, Input, Label, Modal } from '@/components/ui';
+import { Button, EmptyState, Input, Label, Modal, Section } from '@/components/ui';
+import { FIELD_LABEL, FORM } from './form';
 
 interface ApiKeyRecord {
     id: string;
@@ -29,7 +30,7 @@ const CodeBlock = ({ code }: { code: string }) => {
             </pre>
             <button
                 onClick={copy}
-                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 bg-surface hover:bg-surface-2 text-text-muted hover:text-text text-2xs font-bold border border-border-strong rounded-md"
+                className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity px-2 py-1 bg-surface hover:bg-surface-2 text-text-muted hover:text-text text-2xs font-medium border border-border-strong rounded-md"
             >
                 {copied ? '✓ Copied' : 'Copy'}
             </button>
@@ -50,7 +51,7 @@ const StreamAuthNote = () => (
     </p>
 );
 
-const Section = ({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) => {
+const DocSection = ({ title, children, defaultOpen = false }: { title: string; children: React.ReactNode; defaultOpen?: boolean }) => {
     const [open, setOpen] = useState(defaultOpen);
     return (
         <div className="border border-border">
@@ -59,7 +60,7 @@ const Section = ({ title, children, defaultOpen = false }: { title: string; chil
                 aria-expanded={open}
                 className="w-full flex items-center justify-between px-4 py-3 bg-surface hover:bg-surface-2 transition-colors text-left"
             >
-                <span className="text-xs uppercase font-bold text-text tracking-wider">{title}</span>
+                <span data-doc-section className="text-sm font-medium text-text">{title}</span>
                 {open ? <ChevronDown className="w-3.5 h-3.5 text-text-faint" /> : <ChevronRight className="w-3.5 h-3.5 text-text-faint" />}
             </button>
             {open && <div className="p-4 space-y-4 border-t border-border">{children}</div>}
@@ -71,10 +72,10 @@ const EndpointRow = ({ method, path, desc, badge }: { method: string; path: stri
     const color = method === 'GET' ? 'text-success' : method === 'DELETE' ? 'text-danger' : 'text-accent';
     return (
         <div className="flex items-start gap-3 py-1.5 border-b border-border/50 last:border-b-0">
-            <span className={`text-2xs font-bold uppercase w-9 shrink-0 pt-0.5 ${color}`}>{method}</span>
+            <span className={`text-2xs font-code font-semibold w-9 shrink-0 pt-0.5 ${color}`}>{method}</span>
             <code className="text-xs font-code text-text shrink-0">{path}</code>
             <span className="text-xs text-text-faint flex-1">{desc}</span>
-            {badge && <span className="text-2xs font-bold px-1.5 py-0.5 bg-accent-subtle text-accent border border-accent/40 shrink-0 rounded-md">{badge}</span>}
+            {badge && <span className="text-2xs font-medium px-1.5 py-0.5 bg-accent-subtle text-accent-ink shrink-0 rounded-md">{badge}</span>}
         </div>
     );
 };
@@ -83,22 +84,22 @@ const EndpointRow = ({ method, path, desc, badge }: { method: string; path: stri
 
 const V1Docs = ({ BASE }: { BASE: string }) => (
     <>
-        <Section title="Authentication" defaultOpen>
+        <DocSection title="Authentication" defaultOpen>
             <p className="text-xs text-text-faint">All endpoints require a Bearer token in the Authorization header.</p>
             <CodeBlock code={`Authorization: Bearer sk-syn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Connect Claude Code or Cursor (MCP)">
+        <DocSection title="Connect Claude Code or Cursor (MCP)">
             <p className="text-xs text-text-faint">
                 Synapse is an MCP server at <code className="font-code text-text">{BASE}/mcp</code>. A client
                 with an API key can build agents and workflows, run them, answer their questions and read the
                 results. Every workflow is also a tool of its own, named <code className="font-code text-text">run_&lt;name&gt;</code>.
                 Deleting stays in the app.
             </p>
-            <p className="text-2xs uppercase font-bold text-text-muted tracking-wider">Claude Code</p>
+            <p className="text-xs font-medium text-text-muted">Claude Code</p>
             <CodeBlock code={`claude mcp add --transport http synapse ${BASE}/mcp \\
   --header "Authorization: Bearer sk-syn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"`} />
-            <p className="text-2xs uppercase font-bold text-text-muted tracking-wider">Cursor</p>
+            <p className="text-xs font-medium text-text-muted">Cursor</p>
             <p className="text-xs text-text-faint">
                 In <code className="font-code text-text">~/.cursor/mcp.json</code>, or <code className="font-code text-text">.cursor/mcp.json</code> in a project:
             </p>
@@ -114,9 +115,9 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
                 A client that only starts local (stdio) servers can run <code className="font-code text-text">synapse mcp</code>,
                 which relays to this address. On the machine Synapse is installed on, it uses the CLI&apos;s own key.
             </p>
-        </Section>
+        </DocSection>
 
-        <Section title="All Endpoints" defaultOpen>
+        <DocSection title="All Endpoints" defaultOpen>
             <div>
                 <EndpointRow method="POST" path="/chat" desc="Synchronous chat — returns final response only" />
                 <EndpointRow method="POST" path="/chat/stream" desc="Streaming chat via SSE — all events" />
@@ -132,11 +133,11 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
                 <EndpointRow method="GET"  path="/orchestrations/runs/{run_id}/events" desc="A run's events so far — JSON" />
                 <EndpointRow method="GET"  path="/orchestrations/runs/{run_id}/events/stream" desc="Follow a run — SSE, resumable" />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Chat" defaultOpen>
+        <DocSection title="Chat" defaultOpen>
             <div className="space-y-1">
-                <Label className="block">POST /chat — single message</Label>
+                <Label className={FIELD_LABEL}>POST /chat — single message</Label>
                 <CodeBlock code={`curl -X POST ${BASE}/chat \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -151,7 +152,7 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
 # }`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">POST /chat/stream — SSE</Label>
+                <Label className={FIELD_LABEL}>POST /chat/stream — SSE</Label>
                 <CodeBlock code={`curl -N -X POST ${BASE}/chat/stream \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -163,9 +164,9 @@ const V1Docs = ({ BASE }: { BASE: string }) => (
 # data: {"type": "response", "content": "...", "session_id": "api_abc123"}
 # data: {"type": "done"}`} />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Follow a Run (SSE)">
+        <DocSection title="Follow a Run (SSE)">
             <StreamAuthNote />
             <CodeBlock code={`curl -N "${BASE}/orchestrations/runs/RUN_ID/events/stream?after=0" \\
   -H "Authorization: Bearer YOUR_API_KEY"
@@ -209,26 +210,26 @@ async function followRun(runId: string, onEvent: (e: any) => void) {
     await new Promise((r) => setTimeout(r, 2000));
   }
 }`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Agents & Orchestrations">
+        <DocSection title="Agents & Orchestrations">
             <div className="space-y-1">
-                <Label className="block">GET /agents</Label>
+                <Label className={FIELD_LABEL}>GET /agents</Label>
                 <CodeBlock code={`curl ${BASE}/agents \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
 # [{"id":"agent_123","name":"My Agent","type":"conversational","model":"...","capabilities":[]}]`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">GET /orchestrations</Label>
+                <Label className={FIELD_LABEL}>GET /orchestrations</Label>
                 <CodeBlock code={`curl ${BASE}/orchestrations \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
 # [{"id":"orch_abc","name":"Weekly Report","description":"...","steps":4}]`} />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Example — Multi-Turn Agent Conversation">
+        <DocSection title="Example — Multi-Turn Agent Conversation">
             <p className="text-xs text-text-faint">
                 The <code className="font-code text-text-muted">session_id</code> from each response links messages into the same conversation thread.
             </p>
@@ -250,9 +251,9 @@ r2 = requests.post(f"{BASE}/chat", headers=H,
           "agent": "AGENT_ID",
           "session_id": session_id})  # pass it back
 print(r2.json()["response"])`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Example — Orchestration Run & Human Resume">
+        <DocSection title="Example — Orchestration Run & Human Resume">
             <p className="text-xs text-text-faint">
                 When an orchestration reaches a <strong className="text-text-muted">Human Step</strong>, it pauses and returns <code className="font-code text-text-muted">status: paused</code> with a <code className="font-code text-text-muted">run_id</code>. Submit the human input to resume it.
             </p>
@@ -285,7 +286,7 @@ while data.get("status") == "paused":
     data = r.json()
 
 print(f"\\nCompleted: {data['response']}")`} />
-        </Section>
+        </DocSection>
     </>
 );
 
@@ -301,12 +302,12 @@ const V2Docs = ({ BASE }: { BASE: string }) => (
             </span>
         </div>
 
-        <Section title="Authentication" defaultOpen>
+        <DocSection title="Authentication" defaultOpen>
             <p className="text-xs text-text-faint">All endpoints require a Bearer token in the Authorization header.</p>
             <CodeBlock code={`Authorization: Bearer sk-syn-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`} />
-        </Section>
+        </DocSection>
 
-        <Section title="All V2 Endpoints" defaultOpen>
+        <DocSection title="All V2 Endpoints" defaultOpen>
             <div>
                 <EndpointRow method="POST" path="/orchestrations/{id}/run"              desc="Enqueue orchestration — returns run_id immediately"    badge="202" />
                 <EndpointRow method="GET"  path="/orchestrations/runs/{run_id}/stream"  desc="SSE stream — all step events, supports Last-Event-ID"  />
@@ -326,9 +327,9 @@ const V2Docs = ({ BASE }: { BASE: string }) => (
                 <EndpointRow method="GET"  path="/queue/stats"                          desc="Current queue depth and active job count"               />
                 <EndpointRow method="GET"  path="/metrics"                              desc="Prometheus metrics endpoint"                            />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Enqueue an Orchestration" defaultOpen>
+        <DocSection title="Enqueue an Orchestration" defaultOpen>
             <p className="text-xs text-text-faint">
                 Returns <code className="font-code text-text-muted">202 Accepted</code> immediately. The <code className="font-code text-text-muted">run_id</code> is your handle for streaming events and polling status.
             </p>
@@ -350,7 +351,7 @@ const V2Docs = ({ BASE }: { BASE: string }) => (
 #   "status_url": "/api/v2/orchestrations/runs/run_.../status"
 # }`} />
             <div className="space-y-1">
-                <Label className="block">Request body fields</Label>
+                <Label className={FIELD_LABEL}>Request body fields</Label>
                 <div className="text-xs font-mono space-y-1 text-text-faint">
                     <div><span className="text-text">message</span>       <span className="ml-2 text-text-faint">string — initial prompt sent to the orchestration</span></div>
                     <div><span className="text-text">tenant_id</span>     <span className="ml-2 text-text-faint">string? — used for per-tenant quota and isolation</span></div>
@@ -360,9 +361,9 @@ const V2Docs = ({ BASE }: { BASE: string }) => (
                     <div><span className="text-text">priority</span>      <span className="ml-2 text-text-faint">int? — higher = picked up sooner (default 0)</span></div>
                 </div>
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Stream Run Events (SSE)" defaultOpen>
+        <DocSection title="Stream Run Events (SSE)" defaultOpen>
             <p className="text-xs text-text-faint">
                 Subscribe to real-time step events. The stream stays open until <code className="font-code text-text-muted">{`{"type":"done"}`}</code> (run complete). If the run hits a Human Step it emits <code className="font-code text-text-muted">{`{"type":"paused"}`}</code> — the stream <strong className="text-text-muted">stays open</strong> and resumes automatically after human input is submitted. Pass <code className="font-code text-text-muted">Last-Event-ID</code> to replay missed events on reconnect.
             </p>
@@ -400,7 +401,7 @@ curl -N "${BASE}/orchestrations/runs/RUN_ID/stream" \\
 # id: 1780499775210-0
 # data: {"type": "done"}        ← close the stream here`} />
             <div className="space-y-1">
-                <Label className="block">Sentinel event types</Label>
+                <Label className={FIELD_LABEL}>Sentinel event types</Label>
                 <div className="text-xs font-mono space-y-1 text-text-faint">
                     <div><span className="text-text">{`{"type":"done"}`}</span>            <span className="ml-2 text-text-faint">Run finished — close the connection</span></div>
                     <div><span className="text-text">{`{"type":"paused"}`}</span>          <span className="ml-2 text-text-faint">Human step hit — keep connection open, more events after /resume</span></div>
@@ -408,7 +409,7 @@ curl -N "${BASE}/orchestrations/runs/RUN_ID/stream" \\
                 </div>
             </div>
             <div className="space-y-1">
-                <Label className="block">Reconnect — replay missed events</Label>
+                <Label className={FIELD_LABEL}>Reconnect — replay missed events</Label>
                 <CodeBlock code={`# Pass the last seen id: value to receive only missed events
 curl -N "${BASE}/orchestrations/runs/RUN_ID/stream" \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
@@ -417,14 +418,14 @@ curl -N "${BASE}/orchestrations/runs/RUN_ID/stream" \\
 # All events after 1780499750229-0 are returned, including paused and done.
 # Events are stored in Redis for 1 hour — replay works across disconnects.`} />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Get Event History">
+        <DocSection title="Get Event History">
             <p className="text-xs text-text-faint">
                 Retrieve the complete event log for a run or chat session as JSON. Useful for auditing, late subscribers, or building a replay UI. Events are stored in Redis Streams (1 hr TTL, up to 10 000 events per run).
             </p>
             <div className="space-y-1">
-                <Label className="block">GET /orchestrations/runs/{'{run_id}'}/events — full run history</Label>
+                <Label className={FIELD_LABEL}>GET /orchestrations/runs/{'{run_id}'}/events — full run history</Label>
                 <CodeBlock code={`curl -s "${BASE}/orchestrations/runs/RUN_ID/events" \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
@@ -444,7 +445,7 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
   -H "Authorization: Bearer YOUR_API_KEY"`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">GET /chat/{'{session_id}'}/events — full chat history</Label>
+                <Label className={FIELD_LABEL}>GET /chat/{'{session_id}'}/events — full chat history</Label>
                 <CodeBlock code={`curl -s "${BASE}/chat/sess_b639c740430d4a9a/events" \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
@@ -460,15 +461,15 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
 # }`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">Query params</Label>
+                <Label className={FIELD_LABEL}>Query params</Label>
                 <div className="text-xs font-mono space-y-1 text-text-faint">
                     <div><span className="text-text">start</span> <span className="ml-2 text-text-faint">Redis Stream ID — return events from this ID onwards (default <code className="font-code text-text-faint">-</code> = beginning)</span></div>
                     <div><span className="text-text">end</span>   <span className="ml-2 text-text-faint">Redis Stream ID — return events up to this ID (default <code className="font-code text-text-faint">+</code> = latest)</span></div>
                 </div>
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Poll Run Status">
+        <DocSection title="Poll Run Status">
             <CodeBlock code={`curl -s "${BASE}/orchestrations/runs/RUN_ID/status" \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
@@ -487,9 +488,9 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
 # }
 #
 # Status values: queued → running → completed | cancelled | failed`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Cancel a Run">
+        <DocSection title="Cancel a Run">
             <p className="text-xs text-text-faint">
                 Publishes a cancellation signal to Redis. The executing worker checks it at each step boundary and stops cleanly.
             </p>
@@ -497,9 +498,9 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
   -H "Authorization: Bearer YOUR_API_KEY"
 
 # {"status": "cancellation_requested", "run_id": "run_..."}`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Resume After Human Step">
+        <DocSection title="Resume After Human Step">
             <p className="text-xs text-text-faint">
                 When a run reaches a Human Step it pauses and emits <code className="font-code text-text-muted">{`{"type":"human_input_required"}`}</code> on the stream. Submit the response to resume.
             </p>
@@ -510,14 +511,14 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
 
 # 202 Response:
 # {"run_id": "run_...", "status": "resuming", "stream_url": "..."}`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Agent Chat">
+        <DocSection title="Agent Chat">
             <p className="text-xs text-text-faint">
                 Each chat turn is a queued job. The session history is persisted in Postgres, so any worker can handle any turn — no sticky sessions required.
             </p>
             <div className="space-y-1">
-                <Label className="block">POST /chat — enqueue a turn</Label>
+                <Label className={FIELD_LABEL}>POST /chat — enqueue a turn</Label>
                 <CodeBlock code={`curl -s -X POST ${BASE}/chat \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -536,7 +537,7 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
 # }`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">GET /chat/{'{session_id}'}/stream — SSE events</Label>
+                <Label className={FIELD_LABEL}>GET /chat/{'{session_id}'}/stream — SSE events</Label>
                 <CodeBlock code={`curl -N "${BASE}/chat/sess_b639c740430d4a9a/stream" \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
@@ -547,7 +548,7 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
 # data: {"type": "done"}`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">Follow-up turn — pass session_id back</Label>
+                <Label className={FIELD_LABEL}>Follow-up turn — pass session_id back</Label>
                 <CodeBlock code={`curl -s -X POST ${BASE}/chat \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -557,11 +558,11 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
     "session_id": "sess_b639c740430d4a9a"
   }'`} />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Workers & Queue">
+        <DocSection title="Workers & Queue">
             <div className="space-y-1">
-                <Label className="block">GET /workers — list registered workers</Label>
+                <Label className={FIELD_LABEL}>GET /workers — list registered workers</Label>
                 <CodeBlock code={`curl -s "${BASE}/workers" \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
@@ -579,15 +580,15 @@ curl -s "${BASE}/orchestrations/runs/RUN_ID/events?start=1780499750218-0&end=+" 
 # ]`} />
             </div>
             <div className="space-y-1">
-                <Label className="block">GET /queue/stats — backlog and active count</Label>
+                <Label className={FIELD_LABEL}>GET /queue/stats — backlog and active count</Label>
                 <CodeBlock code={`curl -s "${BASE}/queue/stats" \\
   -H "Authorization: Bearer YOUR_API_KEY"
 
 # {"queue_name": "synapse:orchestrations:default", "queued": 12, "active": 8}`} />
             </div>
-        </Section>
+        </DocSection>
 
-        <Section title="Example — Python Async Client">
+        <DocSection title="Example — Python Async Client">
             <p className="text-xs text-text-faint">
                 Enqueue a run and consume the SSE stream asynchronously.
             </p>
@@ -634,9 +635,9 @@ async def run_and_stream(orch_id: str, message: str):
                     break
 
 asyncio.run(run_and_stream("ORCH_ID", "Analyse our top 10 customers"))`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Example — TypeScript Streaming">
+        <DocSection title="Example — TypeScript Streaming">
             <CodeBlock code={`const BASE = "${BASE}";
 const TOKEN = "YOUR_API_KEY";
 
@@ -679,9 +680,9 @@ for await (const event of streamEvents(runId)) {
   if (event.type === "step_start") console.log("Step:", event.step_name);
   if (event.type === "orchestration_complete") console.log("Done:", event.status);
 }`} />
-        </Section>
+        </DocSection>
 
-        <Section title="Example — React Hook (Live Step Feed)">
+        <DocSection title="Example — React Hook (Live Step Feed)">
             <StreamAuthNote />
             <CodeBlock code={`import { useState, useEffect } from "react";
 
@@ -744,7 +745,7 @@ function useOrchestrationRun(runId: string | null) {
 // In your component:
 // const { events, status } = useOrchestrationRun(runId);
 // events.filter(e => e.type === "step_start").map(e => <StepCard key={e.orch_step_id} {...e} />)`} />
-        </Section>
+        </DocSection>
     </>
 );
 
@@ -781,7 +782,7 @@ const DocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void }) =
                 inert too: nothing in it takes focus or is read out (F179). */}
             <div
                 role="dialog"
-                aria-label="API Reference"
+                aria-label="API reference"
                 inert={!open}
                 className={`fixed top-0 right-0 z-50 h-full w-full md:w-3/4 bg-bg border-l border-border flex flex-col shadow-2xl transition-transform duration-300 ease-in-out ${open ? 'translate-x-0' : 'translate-x-full'}`}
             >
@@ -789,18 +790,18 @@ const DocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void }) =
                 <div className="flex items-center justify-between px-6 py-4 border-b border-border shrink-0">
                     <div className="flex items-center gap-3">
                         <BookOpen className="w-4 h-4 text-text-muted" />
-                        <h2 className="text-sm uppercase font-bold text-text tracking-wider">API Reference</h2>
+                        <h2 className="text-sm font-semibold text-text">API reference</h2>
                         {/* Version toggle */}
-                        <div className="flex items-center border border-border-strong overflow-hidden ml-2">
+                        <div className="flex items-center border border-border-strong overflow-hidden ml-2 rounded-md">
                             <button
                                 onClick={() => setVersion('v1')}
-                                className={`px-3 py-1 text-2xs font-bold uppercase tracking-wider transition-colors ${version === 'v1' ? 'bg-accent text-accent-fg' : 'bg-transparent text-text-faint hover:text-text'}`}
+                                className={`px-3 py-1 text-2xs font-medium transition-colors ${version === 'v1' ? 'bg-accent text-accent-fg' : 'bg-transparent text-text-faint hover:text-text'}`}
                             >
                                 V1
                             </button>
                             <button
                                 onClick={() => setVersion('v2')}
-                                className={`px-3 py-1 text-2xs font-bold uppercase tracking-wider transition-colors flex items-center gap-1 ${version === 'v2' ? 'bg-accent text-accent-fg' : 'bg-transparent text-text-faint hover:text-text'}`}
+                                className={`px-3 py-1 text-2xs font-medium transition-colors flex items-center gap-1 ${version === 'v2' ? 'bg-accent text-accent-fg' : 'bg-transparent text-text-faint hover:text-text'}`}
                             >
                                 <Zap className="w-2.5 h-2.5" />
                                 V2
@@ -890,9 +891,8 @@ export const APIKeysTab = () => {
         <div className="space-y-8">
             {/* Toast */}
             {toast && (
-                <div className={`fixed top-6 right-6 z-50 flex items-center gap-2 px-4 py-3 text-sm font-medium shadow-lg
-                    ${toast.type === 'success' ? 'bg-success-subtle text-success border border-success/30' : 'bg-danger/20 text-danger border border-danger/30'} rounded-md`}>
-                    {toast.type === 'success' ? <CheckCircle className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                <div className="fixed top-6 right-6 z-50 flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-3 text-sm font-medium text-text shadow-lg">
+                    {toast.type === 'success' ? <CheckCircle className="w-4 h-4 text-success" /> : <AlertCircle className="w-4 h-4 text-danger" />}
                     {toast.message}
                 </div>
             )}
@@ -924,74 +924,73 @@ export const APIKeysTab = () => {
             <DocsDrawer open={docsOpen} onClose={() => setDocsOpen(false)} />
 
             {/* Generate New Key */}
-            <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                    <Label size="sm" className="block">Generate API Key</Label>
-                    <button
-                        onClick={() => setDocsOpen(true)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 text-2xs uppercase font-bold tracking-wider text-text-muted hover:text-text bg-surface border border-border hover:border-text-faint transition-colors rounded-md"
-                    >
-                        <BookOpen className="w-3 h-3" />
-                        View Docs
-                    </button>
+            <Section
+                variant="plain"
+                collapsible={false}
+                title="Generate API key"
+                actions={
+                    <Button variant="secondary" size="sm" onClick={() => setDocsOpen(true)}>
+                        <BookOpen className="size-3.5" />
+                        View docs
+                    </Button>
+                }
+            >
+                <div className={`${FORM} space-y-3`}>
+                    <p className="text-sm text-text-muted">
+                        API keys authenticate calls to <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">/api/v1/*</code> (synchronous) and <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">/api/v2/*</code> (distributed, scale mode).
+                    </p>
+                    <div className="flex gap-2">
+                        <Input
+                            type="text"
+                            value={newKeyName}
+                            onChange={e => setNewKeyName(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleGenerate()}
+                            placeholder="Key name (e.g., Slack Bot, Internal Tool)"
+                            aria-label="New API key name"
+                            className="flex-1"
+                        />
+                        <Button onClick={handleGenerate} disabled={generating}>
+                            {generating ? 'Generating…' : 'Generate'}
+                        </Button>
+                    </div>
                 </div>
-                <p className="text-xs text-text-faint">
-                    API keys authenticate calls to <code className="font-code bg-surface border border-border px-1 py-0.5 text-text-muted rounded-md">/api/v1/*</code> (synchronous) and <code className="font-code bg-surface border border-border px-1 py-0.5 text-text-muted rounded-md">/api/v2/*</code> (distributed, scale mode).
-                </p>
-                <div className="flex gap-2">
-                    <Input
-                        type="text"
-                        value={newKeyName}
-                        onChange={e => setNewKeyName(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleGenerate()}
-                        placeholder="Key name (e.g., Slack Bot, Internal Tool)"
-                        aria-label="New API key name"
-                        className="flex-1 font-medium"
-                    />
-                    <button
-                        onClick={handleGenerate}
-                        disabled={generating}
-                        className="px-4 py-2.5 text-xs font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {generating ? 'Generating…' : 'Generate'}
-                    </button>
-                </div>
-            </div>
+            </Section>
 
             {/* Keys List */}
-            <div className="space-y-4">
-                <Label size="sm" className="block">Active Keys</Label>
+            <Section variant="plain" collapsible={false} title="Active keys">
                 {loading ? (
-                    <p className="text-xs text-text-faint py-4">Loading…</p>
+                    <p className="text-sm text-text-faint py-4">Loading…</p>
                 ) : keys.length === 0 ? (
-                    <p className="text-xs text-text-faint py-4">No API keys yet. Generate one above to get started.</p>
+                    <EmptyState title="No API keys yet.">Generate one above to get started.</EmptyState>
                 ) : (
-                    <div className="space-y-1">
+                    <div className="divide-y divide-border rounded-md border border-border">
                         {keys.map(k => (
-                            <div key={k.id} className="flex items-center justify-between bg-surface border border-border px-3 py-2 group rounded-md">
+                            <div key={k.id} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-row-hover">
                                 <div className="flex-1 min-w-0">
                                     <div className="flex items-center gap-3">
                                         <span className="text-sm font-medium text-text">{k.name}</span>
-                                        <code className="text-xs bg-bg border border-border text-text-faint px-1.5 py-0.5 font-code rounded-md">
+                                        <code className="text-xs font-code text-text-faint">
                                             {k.key_prefix}…
                                         </code>
                                     </div>
-                                    <div className="flex items-center gap-4 text-2xs text-text-faint mt-0.5">
+                                    <div className="flex items-center gap-4 text-xs text-text-faint mt-0.5">
                                         <span>Created: {new Date(k.created_at).toLocaleDateString()}</span>
                                         <span>Last used: {k.last_used_at ? new Date(k.last_used_at).toLocaleDateString() : 'Never'}</span>
                                     </div>
                                 </div>
-                                <button
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
                                     onClick={() => handleDelete(k.id)}
-                                    className="text-text-faint hover:text-danger transition-colors text-xs ml-2 flex-shrink-0 opacity-0 group-hover:opacity-100"
+                                    className="shrink-0 text-text-muted hover:text-danger"
                                 >
                                     Remove
-                                </button>
+                                </Button>
                             </div>
                         ))}
                     </div>
                 )}
-            </div>
+            </Section>
         </div>
     );
 };

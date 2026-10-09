@@ -539,6 +539,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                     </LinkButton>
                 ) : undefined}
             >
+                {/* One column for every tab (M2g, Naveen: sections the same length): its rules, heads and
+                    actions line up with the fields under them. The frame is wide; the column is the form's. */}
+                <div className="max-w-[48rem]">
                 {/* IMPORT / EXPORT TAB */}
                 {activeTab === 'import_export' && (
                     <ImportExportTab
@@ -697,6 +700,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
 
                 {/* SUPPORT TAB */}
                 {activeTab === 'support' && <SupportTab />}
+                </div>
             </Screen>
 
             {/* Toast Notification */}

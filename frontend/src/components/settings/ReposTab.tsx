@@ -1,9 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, FolderGit2, RefreshCw, ChevronDown, ChevronUp, Info, Square } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, ChevronDown, ChevronUp, Info, Square } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
+import { FIELD_LABEL, FORM } from './form';
 
-import { Spinner } from '@/components/ui';
+import { Badge, Button, EmptyState, ErrorNote, IconButton, Input, Section, Spinner, Textarea, type BadgeTone } from '@/components/ui';
+
+/** The stop glyph, filled — the kit's `IconButton` takes a component, not an element. */
+const StopIcon = ({ className }: { className?: string }) => <Square className={`${className ?? ''} fill-current`} />;
+
+/** A status word in sentence case ("not indexed" → "Not indexed"); the value itself is unchanged. */
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 // Mirrors backend's BASE_EXCLUDED_PATTERNS — shown read-only in the form.
 const BASE_EXCLUDED = [
     '**/venv/**', '**/.venv/**', '**/env/**', '**/__pycache__/**', '**/site-packages/**',
@@ -203,14 +210,14 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
         }
     };
 
-    const getStatusColor = (status: string) => {
+    // Quiet status (UX1): success is a dot, a failure is red, the rest neutral.
+    const getStatusTone = (status: string): BadgeTone => {
         switch (status) {
-            case 'indexed':  return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-            case 'indexing': return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-            case 'stopping': return 'bg-orange-500/10 text-orange-400 border-orange-500/20';
-            case 'stopped':  return 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20';
-            case 'error':    return 'bg-red-500/10 text-red-400 border-red-500/20';
-            default:         return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+            case 'indexed':  return 'success';
+            case 'indexing': return 'machine';
+            case 'stopping': return 'warning';
+            case 'error':    return 'danger';
+            default:         return 'neutral';
         }
     };
 
@@ -219,59 +226,56 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
     /* ── Form view ─────────────────────────────────────────────────────── */
     if (draftRepo !== null) {
         return (
-            <div className="space-y-8">
+            <Section
+                variant="plain"
+                collapsible={false}
+                title={draftRepo.id ? 'Edit repo' : 'Add new repo'}
+                description="Configure codebase indexing settings."
+            >
                 {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-                {embedCode && !embeddingModel && (
-                    <div className="flex items-start gap-3 p-3 bg-amber-500/5 border border-amber-500/20 text-xs text-amber-400 rounded-md">
-                        <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                        <span>
-                            No embedding model configured. Indexing requires an embedding model.{' '}
-                            <a href="/settings/models" className="underline hover:text-amber-300 transition-colors">
-                                Go to Models settings →
-                            </a>
-                        </span>
-                    </div>
-                )}
-                <div className="mb-4">
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <FolderGit2 className="h-5 w-5" />
-                        {draftRepo.id ? 'Edit Repo' : 'Add New Repo'}
-                    </h3>
-                    <p className="text-text-faint text-sm mt-1">Configure codebase indexing settings.</p>
-                </div>
+                <div className={`${FORM} space-y-4`}>
+                    {embedCode && !embeddingModel && (
+                        <div className="flex items-start gap-2 rounded-md border border-warning/25 bg-warning-subtle px-3 py-2.5 text-xs leading-relaxed text-text">
+                            <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                            <span>
+                                No embedding model configured. Indexing requires an embedding model.{' '}
+                                <a href="/settings/models" className="text-accent-ink underline underline-offset-2">
+                                    Go to Models settings →
+                                </a>
+                            </span>
+                        </div>
+                    )}
 
-                <div className="space-y-4">
-                    <div className="space-y-2">
-                        <label htmlFor="repos-repo-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">Repo Name</label>
-                        <input
+                    <div className="space-y-1.5">
+                        <label htmlFor="repos-repo-name" className={FIELD_LABEL}>Repo name</label>
+                        <Input
                             id="repos-repo-name"
                             type="text"
                             value={draftRepo.name || ''}
                             onChange={e => setDraftRepo({ ...draftRepo, name: e.target.value })}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
                             placeholder="e.g. Frontend App"
                             autoComplete="off"
                         />
                     </div>
-                    <div className="space-y-2">
-                        <label htmlFor="repos-absolute-directory-path" className="text-xs uppercase font-bold text-text-faint tracking-wider">Absolute Directory Path</label>
-                        <input
+                    <div className="space-y-1.5">
+                        <label htmlFor="repos-absolute-directory-path" className={FIELD_LABEL}>Absolute directory path</label>
+                        <Input
                             id="repos-absolute-directory-path"
                             type="text"
                             value={draftRepo.path || ''}
                             onChange={e => setDraftRepo({ ...draftRepo, path: e.target.value })}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
+                            className="font-code"
                             placeholder="/home/user/projects/app"
                             autoComplete="off"
                         />
                     </div>
-                    <div className="space-y-2">
-                        <label htmlFor="repos-interconnection-description" className="text-xs uppercase font-bold text-text-faint tracking-wider">Interconnection Description</label>
-                        <textarea
+                    <div className="space-y-1.5">
+                        <label htmlFor="repos-interconnection-description" className={FIELD_LABEL}>Interconnection description</label>
+                        <Textarea
                             id="repos-interconnection-description"
                             value={draftRepo.description || ''}
                             onChange={e => setDraftRepo({ ...draftRepo, description: e.target.value })}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[80px] rounded-md"
+                            className="min-h-[80px]"
                             placeholder="Help the LLM understand what this repo contains…"
                         />
                     </div>
@@ -281,7 +285,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         <button
                             type="button"
                             onClick={() => setShowAdvanced(p => !p)}
-                            className="flex items-center gap-1.5 text-xs text-text-faint hover:text-zinc-300 transition-colors group"
+                            className="group flex items-center gap-1.5 rounded-sm text-xs text-text-muted transition-colors hover:text-text"
                         >
                             {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                             <span className="underline underline-offset-2 decoration-dotted group-hover:decoration-solid transition-all">
@@ -291,28 +295,28 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                     </div>
 
                     {showAdvanced && (
-                        <div className="space-y-4 pt-1 border-t border-zinc-800/60">
+                        <div className="space-y-4 border-t border-border pt-4">
                             {/* ── Excluded Patterns ───────────────────────────────── */}
                             <div className="space-y-2">
                                 <div className="flex items-center gap-2">
-                                    <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Extra Excluded Patterns</label>
-                                    <span className="text-[10px] px-1.5 py-0.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 font-mono rounded-md">one per line</span>
+                                    <label className={FIELD_LABEL}>Extra excluded patterns</label>
+                                    <Badge size="sm" className="font-code">one per line</Badge>
                                 </div>
 
                                 {/* Pattern-matching explainer */}
-                                <div className="flex gap-2 p-3 bg-amber-500/5 border border-amber-500/15 text-xs text-amber-300 rounded-md">
-                                    <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                                <div className="flex gap-2 rounded-md border border-warning/25 bg-warning-subtle px-3 py-2.5 text-xs leading-relaxed text-text">
+                                    <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden />
                                     <div className="space-y-1">
-                                        <p><span className="font-mono text-white">data</span> → excludes <em>every</em> directory named <span className="font-mono">data</span> (backend/data AND frontend/data)</p>
-                                        <p><span className="font-mono text-white">backend/data</span> → excludes <em>only</em> <span className="font-mono">backend/data</span>, leaving <span className="font-mono">frontend/data</span> indexed</p>
-                                        <p><span className="font-mono text-white">*.json</span> → excludes all JSON files anywhere in the tree</p>
+                                        <p><span className="font-code font-medium">data</span> → excludes <em>every</em> directory named <span className="font-code">data</span> (backend/data AND frontend/data)</p>
+                                        <p><span className="font-code font-medium">backend/data</span> → excludes <em>only</em> <span className="font-code">backend/data</span>, leaving <span className="font-code">frontend/data</span> indexed</p>
+                                        <p><span className="font-code font-medium">*.json</span> → excludes all JSON files anywhere in the tree</p>
                                     </div>
                                 </div>
 
-                                <textarea
+                                <Textarea
                                     value={excludedText}
                                     onChange={e => setExcludedText(e.target.value)}
-                                    className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[80px] rounded-md"
+                                    className="min-h-[80px] font-code"
                                     placeholder={`.*\nbackend/data\nfixtures`}
                                 />
 
@@ -320,15 +324,15 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                 <button
                                     type="button"
                                     onClick={() => setShowBasePatterns(p => !p)}
-                                    className="flex items-center gap-1.5 text-xs text-text-faint hover:text-zinc-300 transition-colors"
+                                    className="flex items-center gap-1.5 rounded-sm text-xs text-text-muted transition-colors hover:text-text"
                                 >
                                     {showBasePatterns ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                                     Always excluded automatically ({BASE_EXCLUDED.length} base patterns)
                                 </button>
                                 {showBasePatterns && (
-                                    <div className="flex flex-wrap gap-1 p-3 bg-zinc-950 border border-zinc-800 rounded-md">
+                                    <div className="flex flex-wrap gap-1 rounded-md bg-surface-2 p-3">
                                         {BASE_EXCLUDED.map(p => (
-                                            <span key={p} className="text-[10px] px-1.5 py-0.5 bg-zinc-800 text-zinc-400 font-mono">{p}</span>
+                                            <span key={p} className="rounded-sm bg-surface px-1.5 py-0.5 font-code text-[0.6875rem] text-text-muted">{p}</span>
                                         ))}
                                     </div>
                                 )}
@@ -336,12 +340,12 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
                             {/* ── Included Patterns ───────────────────────────────── */}
                             <div className="space-y-2">
-                                <label htmlFor="repos-included-file-types" className="text-xs uppercase font-bold text-text-faint tracking-wider">Included File Types</label>
-                                <textarea
+                                <label htmlFor="repos-included-file-types" className={FIELD_LABEL}>Included file types</label>
+                                <Textarea
                                     id="repos-included-file-types"
                                     value={includedText}
                                     onChange={e => setIncludedText(e.target.value)}
-                                    className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[60px] rounded-md"
+                                    className="min-h-[60px] font-code"
                                     placeholder={`*.py\n*.ts\n*.tsx\n*.md`}
                                 />
                                 <p className="text-xs text-text-faint">Only files matching these globs will be indexed. Leave blank to use defaults.</p>
@@ -349,77 +353,61 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                         </div>
                     )}
 
-                    <div className="flex gap-4 justify-end pt-4">
-                        <button
-                            onClick={() => setDraftRepo(null)}
-                            className="px-6 py-2.5 text-sm font-bold text-zinc-400 hover:text-white transition-all"
-                        >
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="ghost" onClick={() => setDraftRepo(null)}>
                             Cancel
-                        </button>
-                        <button
-                            onClick={handleSaveRepo}
-                            disabled={isSaving}
-                            className="flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {isSaving && <Spinner size={16} />}
-                            {isSaving ? 'Saving…' : 'Save Repository'}
-                        </button>
+                        </Button>
+                        <Button onClick={handleSaveRepo} disabled={isSaving} loading={isSaving}>
+                            {isSaving ? 'Saving…' : 'Save repository'}
+                        </Button>
                     </div>
                 </div>
-            </div>
+            </Section>
         );
     }
 
     /* ── List view ─────────────────────────────────────────────────────── */
     return (
-        <div className="space-y-8">
+        <Section
+            variant="plain"
+            collapsible={false}
+            title="Code repositories"
+            description="Manage your agent's codebases for semantic code searching."
+            actions={
+                <Button size="sm" onClick={() => setDraftRepo({})}>
+                    <Plus className="h-4 w-4" /> Add repo
+                </Button>
+            }
+        >
             {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            <div className="mb-4 flex items-center justify-between">
-                <div>
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <FolderGit2 className="h-5 w-5" />
-                        Code Repositories
-                    </h3>
-                    <p className="text-text-faint text-sm mt-1">
-                        Manage your agent's codebases for semantic code searching.
-                    </p>
-                </div>
-                <button
-                    onClick={() => setDraftRepo({})}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
-                >
-                    <Plus className="w-4 h-4" /> Add Repo
-                </button>
-            </div>
 
             {repos.length === 0 ? (
-                <div className="text-center py-12 border border-dashed border-zinc-800 bg-zinc-900/50 rounded-md">
-                    <FolderGit2 className="w-8 h-8 mx-auto text-text-faint mb-3" />
-                    <h3 className="text-sm font-bold text-zinc-100">No repositories indexed</h3>
-                    <p className="text-sm text-text-faint mt-1 mb-6">
-                        Add a local repository path to enable code context.
-                    </p>
-                    <button
-                        onClick={() => setDraftRepo({})}
-                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
-                    >
-                        <Plus className="w-4 h-4" /> Add Repository
-                    </button>
-                </div>
+                <EmptyState
+                    className={FORM}
+                    title="No repositories indexed"
+                    action={
+                        <Button onClick={() => setDraftRepo({})}>
+                            <Plus className="h-4 w-4" /> Add repository
+                        </Button>
+                    }
+                >
+                    Add a local repository path to enable code context.
+                </EmptyState>
             ) : (
-                <div className="grid grid-cols-1 gap-4">
+                <div className={`${FORM} grid grid-cols-1 gap-3`}>
                     {repos.map(repo => {
                         const isIndexing = repo.status === 'indexing' || reindexingIds.has(repo.id);
                         const isStopping = repo.status === 'stopping' || stoppingIds.has(repo.id);
+                        const deleteBlocked = isIndexing && !isStopping;
                         return (
                             <div
                                 key={repo.id}
-                                className="p-4 border border-zinc-800 bg-zinc-900/50 hover:border-zinc-600 transition-colors cursor-pointer group rounded-md"
+                                className="group cursor-pointer rounded-lg border border-border bg-surface p-4 transition-colors hover:border-border-strong"
                                 onClick={() => setDraftRepo(repo)}
                             >
-                                <div className="flex justify-between items-start mb-2">
-                                    <div>
-                                        <h4 className="font-bold text-white text-lg flex items-center gap-2">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <h4 className="flex items-center gap-2 text-sm font-semibold text-text">
                                             {/* The card opens on a click; its name does the same for a keyboard (F236). */}
                                             <button
                                                 type="button"
@@ -428,77 +416,71 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                                             >
                                                 {repo.name}
                                             </button>
-                                            <span className={`text-[10px] font-bold px-2 py-0.5 border uppercase tracking-wide inline-flex items-center gap-1 ${getStatusColor(repo.status)}`}>
-                                                {(isIndexing || isStopping) && <Spinner size={10} />}
-                                                {!embedCode && repo.status === 'pending' ? 'not indexed' : repo.status}
-                                            </span>
+                                            <Badge tone={getStatusTone(repo.status)} size="sm">
+                                                <span className="inline-flex items-center gap-1">
+                                                    {(isIndexing || isStopping) && <Spinner size={10} />}
+                                                    {sentence(!embedCode && repo.status === 'pending' ? 'not indexed' : repo.status)}
+                                                </span>
+                                            </Badge>
                                         </h4>
-                                        <p className="text-xs text-text-faint font-mono truncate max-w-lg mt-1">{repo.path}</p>
+                                        <p className="mt-1 max-w-lg truncate font-code text-xs text-text-faint">{repo.path}</p>
                                     </div>
 
                                     {/* Action buttons — visible on hover, and on focus for a keyboard */}
-                                    <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+                                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
                                         {embedCode && (isIndexing || isStopping ? (
                                             /* Stop / Force-reset button */
-                                            <button
+                                            <IconButton
+                                                size="sm"
+                                                icon={StopIcon}
                                                 onClick={e => handleStop(repo.id, e)}
-                                                aria-label={`${isStopping ? 'Force reset' : 'Stop indexing'} ${repo.name}`}
-                                                title={isStopping ? 'Force reset stuck status' : 'Stop Indexing'}
-                                                className={`p-2 transition-colors rounded-md ${
-                                                    isStopping
-                                                        ? 'text-orange-400 hover:text-orange-300 hover:bg-orange-500/10'
-                                                        : 'text-red-400 hover:text-red-300 hover:bg-red-500/10'
-                                                }`}
-                                            >
-                                                <Square className="w-4 h-4 fill-current" />
-                                            </button>
+                                                label={`${isStopping ? 'Force reset' : 'Stop indexing'} ${repo.name}`}
+                                                title={isStopping ? 'Force reset stuck status' : 'Stop indexing'}
+                                                className={isStopping ? 'text-warning hover:text-warning' : 'text-danger hover:text-danger'}
+                                            />
                                         ) : (
                                             /* Re-index button — when idle */
-                                            <button
+                                            <IconButton
+                                                size="sm"
+                                                icon={RefreshCw}
                                                 onClick={e => handleReindex(repo.id, e)}
-                                                aria-label={`Re-index ${repo.name}`}
-                                                title="Re-Index"
-                                                className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors rounded-md"
-                                            >
-                                                <RefreshCw className="w-4 h-4" />
-                                            </button>
+                                                label={`Re-index ${repo.name}`}
+                                                title="Re-index"
+                                            />
                                         ))}
-                                        <button
+                                        <IconButton
+                                            size="sm"
+                                            icon={Trash2}
                                             onClick={e => { e.stopPropagation(); setConfirmDeleteId(repo.id); }}
-                                            aria-label={`Delete ${repo.name}`}
-                                            disabled={isIndexing && !isStopping}
-                                            title={isIndexing && !isStopping ? 'Cannot delete while indexing' : 'Delete'}
-                                            className={`p-2 transition-colors rounded-md ${
-                                                isIndexing && !isStopping
-                                                    ? 'text-text-faint cursor-not-allowed'
-                                                    : 'text-zinc-400 hover:text-red-500 hover:bg-red-500/10'
-                                            }`}
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
+                                            label={`Delete ${repo.name}`}
+                                            disabled={deleteBlocked}
+                                            title={deleteBlocked ? 'Cannot delete while indexing' : 'Delete'}
+                                            // Disabled, it still shows why on hover and a click stops here, not on the card, as before the kit.
+                                            className="hover:text-danger disabled:pointer-events-auto disabled:cursor-not-allowed"
+                                        />
                                     </div>
                                 </div>
 
                                 {repo.description && (
-                                    <p className="text-sm text-zinc-400 mt-3 line-clamp-2">{repo.description}</p>
+                                    <p className="mt-3 line-clamp-2 text-sm text-text-muted">{repo.description}</p>
                                 )}
 
                                 {repo.status === 'error' && repo.error_message && (
-                                    <div className="mt-3 p-3 bg-red-500/5 border border-red-500/20 rounded-md">
-                                        <p className="text-xs text-red-400 font-mono break-words whitespace-pre-wrap">
+                                    <ErrorNote className="mt-3">
+                                        <span className="block break-words whitespace-pre-wrap font-code text-xs">
                                             {repo.error_message}
-                                        </p>
-                                    </div>
+                                        </span>
+                                    </ErrorNote>
                                 )}
 
                                 {embedCode && (
-                                    <div className="flex gap-4 mt-4 text-xs font-bold text-text-faint uppercase tracking-wider">
+                                    <div className="mt-3 flex gap-1.5 text-xs text-text-faint">
                                         <span>
-                                            {(repo.file_count || 0).toLocaleString()} CHUNKS
-                                            {isIndexing || isStopping ? ' INDEXED SO FAR…' : ' INDEXED'}
+                                            {(repo.file_count || 0).toLocaleString()} chunks
+                                            {isIndexing || isStopping ? ' indexed so far…' : ' indexed'}
                                         </span>
                                         {repo.last_indexed && !isIndexing && !isStopping && (
-                                            <span>• UPDATED {new Date(repo.last_indexed).toLocaleString()}</span>
+                                            <span>· Updated {new Date(repo.last_indexed).toLocaleString()}</span>
                                         )}
                                     </div>
                                 )}
@@ -510,7 +492,7 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
 
             <ConfirmationModal
                 isOpen={!!confirmDeleteId}
-                title="Delete Repository"
+                title="Delete repository"
                 message="Are you sure you want to delete this repository and its index? This action cannot be undone."
                 onConfirm={() => {
                     if (confirmDeleteId) handleDeleteRepo(confirmDeleteId);
@@ -518,6 +500,6 @@ export function ReposTab({ embeddingModel, embedCode }: ReposTabProps) {
                 }}
                 onClose={() => setConfirmDeleteId(null)}
             />
-        </div>
+        </Section>
     );
 }

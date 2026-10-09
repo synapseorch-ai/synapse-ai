@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Database, RefreshCw } from 'lucide-react';
+import { Plus, Trash2, RefreshCw } from 'lucide-react';
 import { ConfirmationModal } from './ConfirmationModal';
 import { ToastNotification } from './ToastNotification';
-import { Select } from '@/components/ui';
+import { FIELD_LABEL, FORM } from './form';
+import { Badge, Button, EmptyState, IconButton, Input, Section, Select, Textarea, type BadgeTone } from '@/components/ui';
+
+/** The refresh glyph while a schema refresh runs — the kit's `IconButton` takes a component, not an element. */
+const SpinningRefresh = ({ className }: { className?: string }) => <RefreshCw className={`${className ?? ''} animate-spin text-text`} />;
+
+/** A status word in sentence case ("untested" → "Untested"); the value itself is unchanged. */
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 export interface DBConfig {
     id: string;
@@ -114,14 +121,13 @@ export function DBsTab() {
         }
     };
 
-    // The status tokens, which hold AA in both themes on their -subtle grounds.
-    // Raw 500s on a tint of themselves read 4.16:1 in light ("untested"), and
-    // emerald and red 500 had no light inversion at all (F239).
-    const getStatusColor = (status: string) => {
+    // The status tokens, which hold AA in both themes (F239): the kit Badge's
+    // success / danger / warning tones, the same tones the chips had.
+    const getStatusTone = (status: string): BadgeTone => {
         switch (status) {
-            case 'connected': return 'bg-success-subtle text-success border-success/30';
-            case 'error': return 'bg-danger-subtle text-danger border-danger/30';
-            default: return 'bg-warning-subtle text-warning border-warning/30';
+            case 'connected': return 'success';
+            case 'error': return 'danger';
+            default: return 'warning';
         }
     };
 
@@ -129,32 +135,28 @@ export function DBsTab() {
 
     if (draftConfig !== null) {
         return (
-            <div className="space-y-8">
+            <Section
+                variant="plain"
+                collapsible={false}
+                title={draftConfig.id ? 'Edit database' : 'Add new database'}
+                description="Configure a database connection for agent context."
+            >
                 {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-                <div className="mb-4">
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <Database className="h-5 w-5" />
-                        {draftConfig.id ? 'Edit Database' : 'Add New Database'}
-                    </h3>
-                    <p className="text-text-faint text-sm mt-1">Configure a database connection for agent context.</p>
-                </div>
-
-                <div className="space-y-4">
+                <div className={`${FORM} space-y-4`}>
                     <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
-                            <label htmlFor="db-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">Name</label>
-                            <input
+                        <div className="space-y-1.5">
+                            <label htmlFor="db-name" className={FIELD_LABEL}>Name</label>
+                            <Input
                                 id="db-name"
                                 type="text"
                                 value={draftConfig.name || ''}
                                 onChange={(e) => setDraftConfig({ ...draftConfig, name: e.target.value })}
-                                className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
                                 placeholder="e.g. Production DB"
                                 autoComplete="off"
                             />
                         </div>
-                        <div className="space-y-2">
-                            <label className="text-xs uppercase font-bold text-text-faint tracking-wider">Database Type</label>
+                        <div className="space-y-1.5">
+                            <label className={FIELD_LABEL}>Database type</label>
                             <Select
                                 value={draftConfig.db_type || 'postgres'}
                                 onChange={(v) => setDraftConfig({ ...draftConfig, db_type: v })}
@@ -163,90 +165,79 @@ export function DBsTab() {
                             />
                         </div>
                     </div>
-                    <div className="space-y-2">
-                        <label htmlFor="db-connection-string" className="text-xs uppercase font-bold text-text-faint tracking-wider">Connection String</label>
-                        <input
+                    <div className="space-y-1.5">
+                        <label htmlFor="db-connection-string" className={FIELD_LABEL}>Connection string</label>
+                        <Input
                             id="db-connection-string"
                             type="text"
                             value={draftConfig.connection_string || ''}
                             onChange={(e) => setDraftConfig({ ...draftConfig, connection_string: e.target.value })}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
+                            className="font-code"
                             placeholder="postgresql://user:password@host:5432/dbname"
                             autoComplete="off"
                         />
-                        <p className="text-[10px] text-text-faint">e.g. postgresql://user:pass@localhost:5432/mydb — stored locally, never sent externally.</p>
+                        <p className="text-xs text-text-faint">e.g. postgresql://user:pass@localhost:5432/mydb — stored locally, never sent externally.</p>
                     </div>
-                    <div className="space-y-2">
-                        <label htmlFor="db-description" className="text-xs uppercase font-bold text-text-faint tracking-wider">Description</label>
-                        <textarea
+                    <div className="space-y-1.5">
+                        <label htmlFor="db-description" className={FIELD_LABEL}>Description</label>
+                        <Textarea
                             id="db-description"
                             value={draftConfig.description || ''}
                             onChange={(e) => setDraftConfig({ ...draftConfig, description: e.target.value })}
-                            className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono min-h-[80px] rounded-md"
+                            className="min-h-[80px]"
                             placeholder="Help the agent understand what this database contains and how it relates to the codebase..."
                         />
                     </div>
-                    <div className="flex gap-4 justify-end pt-4">
-                        <button
-                            onClick={() => setDraftConfig(null)}
-                            className="px-6 py-2.5 text-sm font-bold text-zinc-400 hover:text-white transition-all"
-                        >
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="ghost" onClick={() => setDraftConfig(null)}>
                             Cancel
-                        </button>
-                        <button
-                            onClick={handleSaveConfig}
-                            className="px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
-                        >
-                            Save Database
-                        </button>
+                        </Button>
+                        <Button onClick={handleSaveConfig}>
+                            Save database
+                        </Button>
                     </div>
                 </div>
-            </div>
+            </Section>
         );
     }
 
     return (
-        <div className="space-y-8">
+        <Section
+            variant="plain"
+            collapsible={false}
+            title="Database connections"
+            description="Manage database configurations for agent schema context."
+            actions={
+                <Button size="sm" onClick={() => setDraftConfig({})}>
+                    <Plus className="h-4 w-4" /> Add database
+                </Button>
+            }
+        >
             {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
-            <div className="mb-4 flex items-center justify-between">
-                <div>
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                        <Database className="h-5 w-5" />
-                        Database Connections
-                    </h3>
-                    <p className="text-text-faint text-sm mt-1">Manage database configurations for agent schema context.</p>
-                </div>
-                <button
-                    onClick={() => setDraftConfig({})}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
-                >
-                    <Plus className="w-4 h-4" /> Add Database
-                </button>
-            </div>
 
             {configs.length === 0 ? (
-                <div className="text-center py-12 border border-dashed border-zinc-800 bg-zinc-900/50 rounded-md">
-                    <Database className="w-8 h-8 mx-auto text-text-faint mb-3" />
-                    <h3 className="text-sm font-bold text-zinc-100">No databases configured</h3>
-                    <p className="text-sm text-text-faint mt-1 mb-6">Add a database connection to enable schema context for code agents.</p>
-                    <button
-                        onClick={() => setDraftConfig({})}
-                        className="inline-flex items-center gap-2 px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
-                    >
-                        <Plus className="w-4 h-4" /> Add Database
-                    </button>
-                </div>
+                <EmptyState
+                    className={FORM}
+                    title="No databases configured"
+                    action={
+                        <Button onClick={() => setDraftConfig({})}>
+                            <Plus className="h-4 w-4" /> Add database
+                        </Button>
+                    }
+                >
+                    Add a database connection to enable schema context for code agents.
+                </EmptyState>
             ) : (
-                <div className="grid grid-cols-1 gap-4">
+                <div className={`${FORM} grid grid-cols-1 gap-3`}>
                     {configs.map((config) => (
                         <div
                             key={config.id}
-                            className="p-4 border border-zinc-800 bg-zinc-900/50 hover:border-zinc-600 transition-colors cursor-pointer group rounded-md"
+                            className="group cursor-pointer rounded-lg border border-border bg-surface p-4 transition-colors hover:border-border-strong"
                             onClick={() => setDraftConfig(config)}
                         >
-                            <div className="flex justify-between items-start mb-2">
-                                <div>
-                                    <h4 className="font-bold text-white text-lg flex items-center gap-2">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <h4 className="flex items-center gap-2 text-sm font-semibold text-text">
                                         {/* The card opens on a click; its name does the same for a keyboard (F236). */}
                                         <button
                                             type="button"
@@ -255,53 +246,54 @@ export function DBsTab() {
                                         >
                                             {config.name}
                                         </button>
-                                        <span className={`text-[10px] font-bold px-2 py-0.5 border uppercase tracking-wide ${getStatusColor(config.status)}`}>
-                                            {config.status}
-                                        </span>
-                                        <span className="text-[10px] font-bold px-2 py-0.5 border border-zinc-700 text-text-faint uppercase">
+                                        <Badge tone={getStatusTone(config.status)} size="sm">
+                                            {sentence(config.status)}
+                                        </Badge>
+                                        <Badge size="sm" className="font-code">
                                             {config.db_type}
-                                        </span>
+                                        </Badge>
                                     </h4>
-                                    <p className="text-xs text-text-faint font-mono truncate max-w-lg mt-1">
+                                    <p className="mt-1 max-w-lg truncate font-code text-xs text-text-faint">
                                         {config.connection_string.replace(/:\/\/[^@]+@/, '://***@')}
                                     </p>
                                 </div>
-                                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-                                    <button
+                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+                                    <IconButton
+                                        size="sm"
+                                        icon={isRefreshing ? SpinningRefresh : RefreshCw}
                                         onClick={(e) => handleRefreshSchema(config.id, e)}
-                                        aria-label={`Refresh the schema of ${config.name}`}
-                                        className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
-                                        title="Refresh Schema"
+                                        label={`Refresh the schema of ${config.name}`}
+                                        title="Refresh schema"
                                         disabled={isRefreshing}
-                                    >
-                                        <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-white' : ''}`} />
-                                    </button>
-                                    <button
+                                        // Disabled, a click still stops here rather than falling through to open the card.
+                                        className="disabled:pointer-events-auto"
+                                    />
+                                    <IconButton
+                                        size="sm"
+                                        icon={Trash2}
                                         onClick={(e) => {
                                             e.stopPropagation();
                                             setConfirmDeleteId(config.id);
                                         }}
-                                        className="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
-                                        aria-label={`Delete ${config.name}`}
+                                        label={`Delete ${config.name}`}
                                         title="Delete"
-                                    >
-                                        <Trash2 className="w-4 h-4" />
-                                    </button>
+                                        className="hover:text-danger"
+                                    />
                                 </div>
                             </div>
                             {config.description && (
-                                <p className="text-sm text-zinc-400 mt-3 line-clamp-2">{config.description}</p>
+                                <p className="mt-3 line-clamp-2 text-sm text-text-muted">{config.description}</p>
                             )}
                             {config.error_message && (
-                                <p className="text-xs text-red-400 mt-2 font-mono">{config.error_message}</p>
+                                <p className="mt-2 font-code text-xs text-danger">{config.error_message}</p>
                             )}
-                            <div className="flex gap-4 mt-4 text-xs font-bold text-text-faint uppercase tracking-wider">
+                            <div className="mt-3 flex gap-1.5 text-xs text-text-faint">
                                 {config.schema_info
-                                    ? <span>{config.schema_info.split('\n').length - 1} TABLES CACHED</span>
-                                    : <span>SCHEMA NOT FETCHED — hover and click refresh</span>
+                                    ? <span>{config.schema_info.split('\n').length - 1} tables cached</span>
+                                    : <span>Schema not fetched — hover and click refresh</span>
                                 }
                                 {config.last_tested && (
-                                    <span>• TESTED {new Date(config.last_tested).toLocaleString()}</span>
+                                    <span>· Tested {new Date(config.last_tested).toLocaleString()}</span>
                                 )}
                             </div>
                         </div>
@@ -311,7 +303,7 @@ export function DBsTab() {
 
             <ConfirmationModal
                 isOpen={!!confirmDeleteId}
-                title="Delete Database Config"
+                title="Delete database config"
                 message="Are you sure you want to delete this database connection? This action cannot be undone."
                 onConfirm={() => {
                     if (confirmDeleteId) handleDeleteConfig(confirmDeleteId);
@@ -319,6 +311,6 @@ export function DBsTab() {
                 }}
                 onClose={() => setConfirmDeleteId(null)}
             />
-        </div>
+        </Section>
     );
 }
