@@ -352,12 +352,43 @@ async def save_tools(items: list[dict]) -> None:
         for item in items:
             if not (item.get("id") or item.get("name")):
                 continue
-            await _save(s, ToolDB, tool_values(item, tenant), ["id"], ToolDB.id)
+            values = tool_values(item, tenant)
+            if not item.get("id"):
+                # A tool is called by its name, so one sent without an id is this
+                # tenant's tool of that name, replaced. A new one takes the store's
+                # minted id where an embedder installs one (F435): there `tools`
+                # is one keyspace for every tenant, and its name is another
+                # tenant's id as often as not.
+                from core.store.ids import minter_installed, new_id
+
+                values["id"] = await _tool_id_named(s, tenant, values["name"]) or (
+                    new_id("tool") if minter_installed() else values["name"]
+                )
+            await _save(s, ToolDB, values, ["id"], ToolDB.id)
+
+
+async def _tool_id_named(s, tenant: str, name: str) -> str | None:
+    from core.store.models import ToolDB
+
+    return (
+        await s.execute(
+            select(ToolDB.id).where(ToolDB.tenant_id == tenant, ToolDB.name == name).limit(1)
+        )
+    ).scalar_one_or_none()
 
 
 async def delete_tool(tool_id: str) -> bool:
     from core.store.models import ToolDB
     return await _delete(ToolDB, ToolDB.id, tool_id)
+
+
+async def delete_tool_named(name: str) -> bool:
+    """Delete this tenant's tool called `name`, whatever its id (F435)."""
+    from core.store import session
+
+    async with session() as s:
+        tool_id = await _tool_id_named(s, get_tenant(), name)
+    return await delete_tool(tool_id or name)
 
 
 async def replace_tools(items: list[dict]) -> None:

@@ -2342,9 +2342,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _require_confirm(args, f"delete the tool '{args.get('name')}'")
         if refused:
             return refused
-        from core.store.resources import delete_tool
+        from core.store.resources import delete_tool_named
         name = str(args.get("name") or "")
-        if not await delete_tool(name):
+        if not await delete_tool_named(name):
             return {"error": f"Custom tool '{name}' not found"}
         _emit(events, "tool", "deleted", name, name)
         return {"status": "deleted", "id": name, "name": name}

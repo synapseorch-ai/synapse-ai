@@ -1630,3 +1630,60 @@ class TestTheBuilderMintsIdsTheStoresWay:
         assert orch_id.startswith("orch_") and len(orch_id) == len("orch_") + 7
         # The derived id keeps a deploy idempotent where nothing mints.
         assert deployed["agent_id"] == f"orch_agent_{orch_id}"
+
+class TestAToolIsTheWorkspacesByName:
+    """F435 (C4). The builder saved a tool with its *name* as its id. Cloud
+    keys `tools` on a global `id`, so a second organisation's builder making a
+    tool of the same name met the first's row: "new row violates row-level
+    security policy" — a refusal and an existence oracle. Where the store mints
+    ids, a new tool takes a minted id; a tool of a name the workspace already
+    has replaces it, as a tool is called by its name; deleting one finds it by
+    name."""
+
+    @pytest.fixture
+    def minting(self):
+        from core.store.ids import set_id_minter
+
+        counter = iter(range(1, 100))
+        set_id_minter(lambda prefix: f"{prefix}_m{next(counter)}")
+        yield
+        set_id_minter(None)
+
+    async def _rows(self) -> list[tuple[str, str, str]]:
+        from core.store import session
+        from core.store.models import ToolDB
+        from sqlalchemy import select
+
+        async with session() as s:
+            rows = (await s.execute(select(ToolDB).order_by(ToolDB.name))).scalars()
+            return [(r.id, r.name, (r.definition or {}).get("url")) for r in rows]
+
+    async def test_a_new_tool_takes_a_minted_id_and_its_name_replaces_it(self, server, minting):
+        await call("create_http_tool", {"name": "get_weather", "url": "https://a.invalid/"}, server)
+        await call("create_http_tool", {"name": "get_weather", "url": "https://b.invalid/"}, server)
+        assert await self._rows() == [("tool_m1", "get_weather", "https://b.invalid/")]
+
+    async def test_imported_tools_take_minted_ids_and_ungrouping_keeps_them(self, server, minting):
+        spec = json.dumps({
+            "openapi": "3.0.0", "info": {"title": "Widgets"}, "servers": [{"url": "https://api.example.com"}],
+            "paths": {"/widgets": {"get": {"operationId": "listWidgets"}}},
+        })
+        imported = await call("import_openapi", {"spec_text": spec}, server)
+        before = await self._rows()
+        assert [(i[:5], n) for i, n, _ in before] == [("tool_", "listwidgets")]
+
+        from core.routes.tools import delete_tool_group
+        await delete_tool_group(imported["id"])
+
+        assert [(i, n) for i, n, _ in await self._rows()] == [(i, n) for i, n, _ in before]
+
+    async def test_deleting_a_tool_finds_it_by_name(self, server, minting):
+        await call("create_http_tool", {"name": "get_weather", "url": "https://a.invalid/"}, server)
+        deleted = await call("delete_custom_tool", {"name": "get_weather", "confirm": True}, server)
+        assert deleted["status"] == "deleted", deleted
+        assert await self._rows() == []
+
+    async def test_without_a_minter_a_tools_id_is_its_name(self, server):
+        await call("create_http_tool", {"name": "get_weather", "url": "https://a.invalid/"}, server)
+        assert await self._rows() == [("get_weather", "get_weather", "https://a.invalid/")]
+
