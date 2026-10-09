@@ -35,6 +35,7 @@ export function AppMark({
   seed,
   iconSvg,
   imgSrc,
+  imgClassName,
   size = "md",
   className,
 }: {
@@ -47,6 +48,8 @@ export function AppMark({
   iconSvg?: string | null;
   /** A static asset of ours, e.g. `/providers/google-icon.svg`. */
   imgSrc?: string | null;
+  /** A class for the image itself: a logo that must follow the theme (`theme-adaptive-icon`). */
+  imgClassName?: string;
   size?: keyof typeof BOX;
   className?: string;
 }) {
@@ -59,7 +62,7 @@ export function AppMark({
     return (
       <span aria-hidden className={cn(box, "bg-surface-2")}>
         {/* eslint-disable-next-line @next/next/no-img-element -- a static svg of ours */}
-        <img src={imgSrc} alt="" className={IMG[size]} />
+        <img src={imgSrc} alt="" className={cn(IMG[size], imgClassName)} />
       </span>
     );
   }
