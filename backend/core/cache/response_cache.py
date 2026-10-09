@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import re
+import time
 from collections import OrderedDict
 from typing import Any, Optional
 
@@ -267,6 +268,7 @@ async def _embed(text: str, embedding_model: str, settings: dict) -> list[float]
     if key in _embedded:
         _embedded.move_to_end(key)
         return _embedded[key]
+    started = time.monotonic()
     try:
         answer = await asyncio.wait_for(
             llm.embed_batch_ex([text], embedding_model, settings, input_type="query"), _EMBED_WAIT_S)
@@ -274,11 +276,26 @@ async def _embed(text: str, embedding_model: str, settings: dict) -> list[float]
         raise _NoEmbedding(f"the Embedding Model ({embedding_model}) did not answer in {_EMBED_WAIT_S:.0f} s") from e
     except Exception as e:  # noqa: BLE001 — EmbeddingFailed carries the sentence
         raise _NoEmbedding(str(e) or f"the Embedding Model ({embedding_model}) did not embed") from e
+    await _log_embedding(answer, text, time.monotonic() - started)
     vector = answer.vectors[0]
     _embedded[key] = vector
     while len(_embedded) > _EMBEDDED_KEEP:
         _embedded.popitem(last=False)
     return vector
+
+
+async def _log_embedding(answer, text: str, seconds: float) -> None:
+    """A usage row for the call (F394): Usage counted none, so a paid Embedding Model went unseen."""
+    from core import usage_tracker
+
+    try:
+        await usage_tracker.log_embedding(
+            model=answer.model, provider=answer.provider, source="cache",
+            input_tokens=answer.input_tokens or usage_tracker.estimate_tokens([text]),
+            estimated=not answer.input_tokens, charged_microusd=answer.charged_microusd,
+            latency_seconds=seconds)
+    except Exception as e:  # noqa: BLE001 — a usage row never fails the cache
+        print(f"DEBUG cache: the embedding's usage row was not written ({e})")
 
 
 async def _ready(step_id: str, user_message: str) -> tuple[Any, list[float]] | None:

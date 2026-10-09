@@ -77,6 +77,19 @@ def _resolve_query_embedding_config() -> tuple[str, int, dict]:
     return model, dim, settings
 
 
+async def _log_embedding(model: str, texts: list[str]) -> None:
+    """A usage row for the query's embedding (F394), its tokens counted from the text:
+    `embed_batch` returns vectors only."""
+    from core import usage_tracker
+    from core.providers.registry import provider_for
+
+    try:
+        await usage_tracker.log_embedding(model=model, provider=provider_for(model).id, source="code_search",
+                                          input_tokens=usage_tracker.estimate_tokens(texts), estimated=True)
+    except Exception as e:  # noqa: BLE001 — a usage row never fails a search
+        print(f"[code_search] the query embedding's usage row was not written: {e}")
+
+
 async def _get_query_embedding(query: str) -> tuple[list[float], str, int]:
     """Generate a query embedding using the same model and dimension as indexing."""
     from core.llm_providers import embed_batch
@@ -88,6 +101,7 @@ async def _get_query_embedding(query: str) -> tuple[list[float], str, int]:
     embeddings = await embed_batch([query], model, embed_settings)
     if not embeddings:
         raise RuntimeError("Embedding provider returned no query embedding.")
+    await _log_embedding(model, [query])
 
     query_vector = list(embeddings[0][:dim])
     if len(query_vector) != dim:

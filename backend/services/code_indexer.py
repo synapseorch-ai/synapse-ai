@@ -50,6 +50,13 @@ _stop_events: dict[str, threading.Event] = {}
 # Active index threads so we can check is_alive()
 _active_threads: dict[str, threading.Thread] = {}
 
+#: What this pass embedded, by model: [estimated tokens, texts] (F394). Added up
+#: on CocoIndex's thread and written as one usage row from the owner's loop when
+#: the pass ends — `embed_batch` returns vectors only, so the tokens are counted
+#: from the text.
+_embedded_this_pass: dict[str, list[int]] = {}
+_embedded_lock = threading.Lock()
+
 def _get_db_url() -> str:
     """Always read the database URL from settings.json (never from the environment).
     Sanitizes the URL so that an empty password (e.g. user:@host) is rewritten
@@ -224,6 +231,7 @@ def get_embedding_fn(model: str, dim: int):
                 embeddings = new_loop.run_until_complete(embed_batch(texts, current_model, cfg))
             finally:
                 new_loop.close()
+            _count_embedded(current_model, texts)
         except Exception as e:
             print(f"ERROR: embed call failed: {e}")
             traceback.print_exc()
@@ -437,6 +445,36 @@ async def _write_repo_status(repo_id: str, fields: dict) -> None:
     await collections.save("repos", repos, key_field="path")
 
 
+def _count_embedded(model: str, texts: list[str]) -> None:
+    from core.usage_tracker import estimate_tokens
+
+    with _embedded_lock:
+        tally = _embedded_this_pass.setdefault(model, [0, 0])
+        tally[0] += estimate_tokens(texts)
+        tally[1] += len(texts)
+
+
+def _record_embedded() -> None:
+    """One usage row per model for what the pass embedded (F394), on the owner's loop."""
+    with _embedded_lock:
+        tallies = dict(_embedded_this_pass)
+        _embedded_this_pass.clear()
+    loop = _owner_loop
+    if not tallies or loop is None or loop.is_closed():
+        return
+    from core import usage_tracker
+    from core.providers.registry import provider_for
+
+    for model, (tokens, texts) in tallies.items():
+        future = asyncio.run_coroutine_threadsafe(usage_tracker.log_embedding(
+            model=model, provider=provider_for(model).id, source="code_index",
+            input_tokens=tokens, texts=texts, estimated=True), loop)
+        try:
+            future.result(timeout=10)
+        except Exception as e:
+            print(f"Warning: the indexing pass's usage row was not written: {e}")
+
+
 def _update_repo_status(repo_id: str, **fields):
     """Record indexing progress from the indexer thread.
 
@@ -567,6 +605,8 @@ def run_index_task(repo_id: str, repo_path: str, included_patterns: list[str], e
             traceback.print_exc()
             _update_repo_status(repo_id, status="error", error_message=str(e)[:500])
     finally:
+        # Spent whether the pass finished, stopped or failed.
+        _record_embedded()
         _active_threads.pop(repo_id, None)
         # Close the CocoIndex flow to release its internal DB connections.
         # Without this, each indexed repo holds persistent connections and

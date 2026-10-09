@@ -296,6 +296,63 @@ async def log_compaction_event(
     )
 
 
+#: Providers whose embeddings this install does not pay for here: the platform
+#: gateway's wallet settles them (F330's convention), a local model is free.
+_UNPAID_EMBED_PROVIDERS = frozenset({"model_gateway", "ollama", "local_compatible"})
+
+
+async def log_embedding(
+    *,
+    model: str,
+    provider: str,
+    input_tokens: int,
+    source: str,                       # "cache" | "code_search" | "code_index"
+    texts: int = 1,
+    estimated: bool = False,
+    charged_microusd: int | None = None,
+    session_id: Optional[str] = None,
+    run_id: Optional[str] = None,
+    latency_seconds: float = 0.0,
+):
+    """Append one embedding call (or one pass's calls) outside Knowledge (F394).
+
+    Knowledge writes its own rows (`knowledge/ledger.py`). The semantic cache and
+    code search wrote none, so Usage under-counted a paid embedding model.
+    `estimated` when the provider did not say how many tokens it read and they
+    were counted from the text (four characters a token).
+    """
+    await _ensure_pricing()
+    unpaid = provider in _UNPAID_EMBED_PROVIDERS
+    estimated_cost = 0.0 if unpaid else calculate_cost(model, input_tokens, 0)
+    await usage_store.append({
+        "timestamp": datetime.now(timezone.utc),
+        "event_type": "embedding",
+        "source": source,
+        "session_id": session_id or "unknown",
+        "agent_id": "unknown",
+        "run_id": run_id,
+        "model": model,
+        "provider": provider,
+        "tool_name": f"{source}:embed",
+        "input_tokens": input_tokens,
+        "output_tokens": 0,
+        "total_tokens": input_tokens,
+        "context_chars": 0,
+        "estimated_cost": estimated_cost,
+        "latency_seconds": round(latency_seconds, 2),
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "estimated_savings": 0.0,
+        "response_cache_hit": False,
+        "details": {"texts": texts, "tokens_estimated": estimated, "charged_microusd": charged_microusd},
+    })
+
+
+def estimate_tokens(texts: list[str]) -> int:
+    """Four characters a token, rounded up — for a provider that does not count."""
+    return max(1, -(-sum(len(t or "") for t in texts) // 4))
+
+
 # -------------------------------------------------------------
 # Query helpers
 # -------------------------------------------------------------
