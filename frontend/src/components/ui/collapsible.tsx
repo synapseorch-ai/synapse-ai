@@ -27,6 +27,9 @@ export function Section({
   summary,
   defaultOpen = false,
   variant = "card",
+  collapsible = true,
+  actions,
+  id,
   children,
   className,
 }: {
@@ -41,14 +44,47 @@ export function Section({
    * box, so a page of sections is not boxes inside boxes (UX1, M2e).
    */
   variant?: "card" | "plain";
+  /**
+   * `false` keeps the section open with no chevron: a settings form's group,
+   * whose fields must never sit behind a click (D204, M2g). The head is the same,
+   * so a page of fixed and folding sections reads as one scale.
+   */
+  collapsible?: boolean;
+  /** The head's right-hand side (a fixed section only): one button, a count. */
+  actions?: React.ReactNode;
+  id?: string;
   children: React.ReactNode;
   className?: string;
 }) {
   const [open, setOpen] = React.useState(defaultOpen);
   const plain = variant === "plain";
 
+  if (!collapsible) {
+    return (
+      <section
+        id={id}
+        className={cn(plain ? "mb-0 border-t border-border" : "rounded-lg border border-border bg-surface", className)}
+      >
+        <header
+          className={cn(
+            "flex flex-wrap items-start justify-between gap-x-4 gap-y-2",
+            plain ? "pb-3 pt-5" : "border-b border-border px-5 py-3.5",
+          )}
+        >
+          <div className="min-w-0">
+            <h2 className={cn("text-text", plain ? sectionClass : "text-sm font-semibold")}>{title}</h2>
+            {description && <p className="mt-0.5 text-xs text-text-muted">{description}</p>}
+          </div>
+          {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
+        </header>
+        <div className={plain ? "pb-5" : "px-5 py-4"}>{children}</div>
+      </section>
+    );
+  }
+
   return (
     <RCollapsible.Root
+      id={id}
       open={open}
       onOpenChange={setOpen}
       className={cn(plain ? "mb-0 border-t border-border" : "rounded-lg border border-border bg-surface", className)}

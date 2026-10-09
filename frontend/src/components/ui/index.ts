@@ -57,6 +57,7 @@ export {
 } from "./text";
 export { PageFrame, PageFrameHeader, type PageWidth } from "./page-frame";
 export { StatStrip, type StatCell, type StatDot } from "./stat-strip";
+export { BarList, Meter, type BarRow } from "./bars";
 export { Screen, type ScreenWidth } from "./screen";
 export { PageHeaderSlot, PageHeaderSlotProvider } from "./page-header-slot";
 
