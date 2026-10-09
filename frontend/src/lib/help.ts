@@ -101,9 +101,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Read “Total Cost”, “Total Requests”, “Input Tokens” and “Output Tokens”; costs are estimates from the price table.',
             'Check “Cache Analytics” for what caching saved, by model and by workflow run.',
-            'Under “Session History”, pick a “Filter by” option and click a session for its turn-by-turn cost.',
-            'In “Pricing Reference”, edit a rate or click “Add model”, then “Save Pricing” to match what you pay.',
-            '“Clear Logs” deletes every usage record once you confirm; it cannot be undone.',
+            'Under “Session history”, pick a “Filter by” option and click a session for its turn-by-turn cost.',
+            'In “Pricing reference”, edit a rate or click “Add model”, then “Save pricing” to match what you pay.',
+            '“Clear logs” deletes every usage record once you confirm; it cannot be undone.',
         ],
         media: { id: 'usage/overview', alt: 'Usage: stat cards for cost, requests and tokens, cache analytics, cost by model and the pricing table.' },
         guide: '/guides/start/runs',
@@ -242,7 +242,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Knowledge',
         summary: 'Knowledge makes Vault folders searchable, so agents answer from your documents and cite them. Each knowledge base is one Vault folder.',
         steps: [
-            'If it says Knowledge is off, turn on “Knowledge” in Settings → General and click “Save Changes”.',
+            'If it says Knowledge is off, turn on “Knowledge” in Settings → General and click “Save changes”.',
             'In Settings → Models, choose an embedding model for knowledge; without one, search matches words only.',
             'Click “New knowledge base”, name it, and pick a Vault folder or type a new one.',
             'Choose a “Preset” — “Cheap”, “Balanced” or “High recall” — and click “Create”.',
@@ -270,11 +270,11 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'General',
         summary: 'How the whole workspace behaves: the agent’s name, Knowledge, long outputs and histories, tool policy, database writes, sandboxing and sign-in.',
         steps: [
-            'Set the “Global Agent Name”, and turn on “Knowledge” to make Vault folders searchable.',
+            'Set the “Global agent name”, and turn on “Knowledge” to make Vault folders searchable.',
             'Use “Large Response Handling” and “Auto Context Compaction” to keep long outputs and histories in bounds.',
             'Under “Tool Policy”, choose “Allow”, “Ask first” or “Block” for each kind of tool.',
             'Keep “Database Write Access” off unless agents must write, and list the folders the bash tool may use.',
-            'Click “Save Changes”. To require a password, turn on “Require Login” and click “Save Login Settings”.',
+            'Click “Save changes”. To require a password, turn on “Require login” and click “Save login settings”.',
         ],
         media: { id: 'settings/oss-general', alt: 'Settings → General: the agent name field and the switches for Knowledge, large responses and context compaction.' },
         guide: '/guides/start/setup',
@@ -287,20 +287,20 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'A provider with a model count is ready; “No key configured”, “Not running” or “Not installed” says what it needs.',
             'Choose the “Default Model”, and a “Builder Model” if the AI builder should use another.',
             'Set “Reasoning Effort” and “Max Response Length” for agents that set neither.',
-            'Choose an “Embedding Model” and, with Knowledge on, its models; then click “Save Changes”.',
+            'Choose an “Embedding model” and, with Knowledge on, its models; then click “Save changes”.',
         ],
         media: { id: 'settings/oss-models', alt: 'Settings → Models: provider cards, one open to its API key field, above the default model picker.' },
         guide: '/guides/start/setup',
     },
     personal_details: {
-        title: 'Personal Details',
+        title: 'Personal details',
         summary: 'Your name, contact details and address, kept so an agent can fill in a form or a billing address for you when a task needs it.',
         steps: [
             'Fill in your name, email and phone number, and the address if tasks need one.',
-            'Leave a field empty if you would rather agents did not have it, and click “Save Changes”.',
+            'Leave a field empty if you would rather agents did not have it, and click “Save changes”.',
             'In Agents, tick “Personal Details” under “Capabilities (Tools)” for each agent that should read them.',
         ],
-        media: { id: 'settings/oss-profile', alt: 'Settings → Personal Details: name, email and phone fields above the address.' },
+        media: { id: 'settings/oss-profile', alt: 'Settings → Personal details: name, email and phone fields above the address.' },
         guide: '/guides/start/setup',
     },
     variables: {
@@ -320,12 +320,12 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Memory',
         summary: 'Clear stored data for good: chat history, run history and logs, agent memory, usage records, indexed repositories and saved database connections.',
         steps: [
-            'Under “Data Categories”, tick each kind of data to clear.',
-            'Click “Clear Selected”; it counts what you ticked.',
-            'Check the list and click “Yes, Clear Selected”. This cannot be undone.',
+            'Under “Data categories”, tick each kind of data to clear.',
+            'Click “Clear selected”; it counts what you ticked.',
+            'Check the list and click “Yes, clear selected”. This cannot be undone.',
             'Vault files and knowledge bases are not on the list, so nothing here clears them.',
         ],
-        media: { id: 'settings/oss-memory', alt: 'Settings → Memory: the data categories as cards to tick, and the Clear Selected button below.' },
+        media: { id: 'settings/oss-memory', alt: 'Settings → Memory: the data categories as rows to tick, and the Clear selected button below.' },
         guide: '/guides/start/setup',
     },
     workspace: {
@@ -335,7 +335,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'With no credentials yet, follow the “Quick Setup Guide” to create a Google OAuth client and download its JSON.',
             'Paste the file’s contents into the credentials box; valid JSON saves by itself.',
             'Click “Connect Google Account”, sign in on Google’s page, then come back and refresh the status.',
-            'Under n8n, enter its URL and API key, and click “Save Changes”.',
+            'Under n8n, enter its URL and API key, and click “Save changes”.',
         ],
         media: { id: 'settings/oss-integrations', alt: 'Settings → Integrations: the Google Workspace card with its connection status, above the n8n card.' },
         guide: '/guides/start/tools',
@@ -379,7 +379,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         guide: '/guides/start/tools',
     },
     db_configs: {
-        title: 'DB Configs',
+        title: 'DB configs',
         summary: 'Database connections whose schemas agents get as context: each database’s tables and what it is for.',
         steps: [
             'Click “Add Database”, name it, choose its type and paste the connection string.',
@@ -387,11 +387,11 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Hover the card and refresh its schema to read its tables; saving alone does not test the connection.',
             'Click a card to edit it, or hover it to delete it.',
         ],
-        media: { id: 'settings/oss-databases', alt: 'Settings → DB Configs: database connections as cards, with a status badge, type, masked connection string and cached tables.' },
+        media: { id: 'settings/oss-databases', alt: 'Settings → DB configs: database connections as cards, with a status badge, type, masked connection string and cached tables.' },
         guide: '/guides/start/tools',
     },
     api_keys: {
-        title: 'API Keys',
+        title: 'API keys',
         summary: 'Keys that let your scripts, servers and MCP clients such as Claude Code or Cursor drive Synapse from outside this UI.',
         steps: [
             'Name the key after what will use it, and click “Generate”.',
@@ -400,7 +400,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “View Docs” for the API reference: endpoints, examples, and MCP setup for Claude Code or Cursor.',
             'Removing a key, from its row, is immediate.',
         ],
-        media: { id: 'settings/oss-api-keys', alt: 'Settings → API Keys: a field to name and generate a key, and the active keys with their prefix and last use.' },
+        media: { id: 'settings/oss-api-keys', alt: 'Settings → API keys: a field to name and generate a key, and the active keys with their prefix and last use.' },
         guide: '/guides/developers/public-api',
     },
     import_export: {
@@ -430,7 +430,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         guide: '/guides/start/setup',
     },
     support: {
-        title: 'Help & Docs',
+        title: 'Help & docs',
         summary: 'The documentation, a quick start to your first multi-agent workflow, answers to common questions, and the community.',
         steps: [
             'Click a card under “Documentation” to open that guide on docs.synapseorch.com.',
@@ -438,11 +438,11 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Open a question under “Frequently Asked Questions” for a short answer.',
             'Click “Join Discord Server” to ask the community.',
         ],
-        media: { id: 'settings/oss-support', alt: 'Settings → Help & Docs: documentation links, a quick start guide and frequently asked questions.' },
+        media: { id: 'settings/oss-support', alt: 'Settings → Help & docs: documentation links, a quick start guide and frequently asked questions.' },
         guide: '/guides/start/how-it-fits',
     },
     datalab: {
-        title: 'Data Lab',
+        title: 'Data lab',
         summary: 'Synthetic training data: conversation pairs for a topic and persona, written by any model the workspace can reach, saved as JSONL datasets.',
         steps: [
             'Enter a domain or topic, and how many conversation pairs to make.',

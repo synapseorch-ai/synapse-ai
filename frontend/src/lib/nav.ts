@@ -206,7 +206,7 @@ export const SETTINGS_NAV: NavGroup[] = [
                 blurb: 'Pick a provider and model, and hold their API keys.',
             },
             {
-                id: 'personal_details', label: 'Personal Details', href: '/settings/personal_details', icon: Shield,
+                id: 'personal_details', label: 'Personal details', href: '/settings/personal_details', icon: Shield,
                 blurb: 'Details agents may use when acting on your behalf.',
             },
             {
@@ -232,7 +232,7 @@ export const SETTINGS_NAV: NavGroup[] = [
                 flag: 'coding_agent_enabled',
             },
             {
-                id: 'db_configs', label: 'DB Configs', href: '/settings/db_configs', icon: Database,
+                id: 'db_configs', label: 'DB configs', href: '/settings/db_configs', icon: Database,
                 blurb: 'Database connections your agents are allowed to query.',
                 flag: 'coding_agent_enabled',
             },
@@ -242,7 +242,7 @@ export const SETTINGS_NAV: NavGroup[] = [
         group: 'Access & data',
         items: [
             {
-                id: 'api_keys', label: 'API Keys', href: '/settings/api_keys', icon: Key,
+                id: 'api_keys', label: 'API keys', href: '/settings/api_keys', icon: Key,
                 blurb: 'Issue keys for driving Synapse from outside this UI.',
             },
             {
@@ -259,11 +259,11 @@ export const SETTINGS_NAV: NavGroup[] = [
                 blurb: 'Redis, Postgres and object storage for running across processes.',
             },
             {
-                id: 'support', label: 'Help & Docs', href: '/settings/support', icon: LifeBuoy,
+                id: 'support', label: 'Help & docs', href: '/settings/support', icon: LifeBuoy,
                 blurb: 'Documentation, FAQs, and where to get help.',
             },
             {
-                id: 'datalab', label: 'Data Lab', href: '/settings/datalab', icon: FlaskConical,
+                id: 'datalab', label: 'Data lab', href: '/settings/datalab', icon: FlaskConical,
                 hidden: true,
                 blurb: 'Generate synthetic training datasets from a topic and a system prompt.',
             },

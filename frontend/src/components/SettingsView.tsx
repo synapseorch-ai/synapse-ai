@@ -519,6 +519,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         <SavedSecretsContext.Provider value={{ secrets: secretState, remove: removeSecret }}>
             <Screen
                 eyebrow="Settings"
+                width="wide"
                 title={nav.label}
                 description={nav.blurb}
                 aside={<SettingsNav />}

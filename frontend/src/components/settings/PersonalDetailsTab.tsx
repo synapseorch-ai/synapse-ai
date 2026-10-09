@@ -1,4 +1,6 @@
-import { Shield } from 'lucide-react';
+import { Input, Section } from '@/components/ui';
+import { FORM } from './form';
+import { SaveBar } from './SaveBar';
 
 interface PersonalDetailsTabProps {
     pdFirstName: string; setPdFirstName: (v: string) => void;
@@ -13,6 +15,22 @@ interface PersonalDetailsTabProps {
     onSave: () => void;
 }
 
+/** One text field: the kit's label above its input, the id kept so links and checks still reach it. */
+function TextField({ id, label, value, onChange, placeholder, type = 'text', mono }: {
+    id: string; label: string; value: string; onChange: (v: string) => void; placeholder: string;
+    type?: string; mono?: boolean;
+}) {
+    return (
+        <div className="space-y-1.5">
+            <label htmlFor={id} className="block text-xs font-medium text-text-muted">{label}</label>
+            <Input id={id} type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+                className={mono ? 'font-code' : undefined} />
+        </div>
+    );
+}
+
+// The page's title already says "Personal details"; its sentence leads the form
+// instead of a second heading (M2f's rule), and Address is the one group (M2g).
 export const PersonalDetailsTab = ({
     pdFirstName, setPdFirstName, pdLastName, setPdLastName,
     pdEmail, setPdEmail, pdPhone, setPdPhone,
@@ -20,136 +38,27 @@ export const PersonalDetailsTab = ({
     pdCity, setPdCity, pdState, setPdState,
     pdZipcode, setPdZipcode, onSave
 }: PersonalDetailsTabProps) => (
-    <div className="space-y-8">
-        <div className="mb-4">
-            <h3 className="text-lg font-bold text-white flex items-center gap-2">
-                <Shield className="h-5 w-5" />
-                Personal Details
-            </h3>
-            <p className="text-text-faint text-sm mt-1">
-                Saved details the agent can use when completing workflows.
-            </p>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-2">
-                <label htmlFor="personaldetails-first-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">First Name</label>
-                <input
-                    id="personaldetails-first-name"
-                    type="text"
-                    value={pdFirstName}
-                    onChange={(e) => setPdFirstName(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors rounded-md"
-                    placeholder="First name"
-                />
-            </div>
-            <div className="space-y-2">
-                <label htmlFor="personaldetails-last-name" className="text-xs uppercase font-bold text-text-faint tracking-wider">Last Name</label>
-                <input
-                    id="personaldetails-last-name"
-                    type="text"
-                    value={pdLastName}
-                    onChange={(e) => setPdLastName(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors rounded-md"
-                    placeholder="Last name"
-                />
-            </div>
-            <div className="space-y-2">
-                <label htmlFor="personaldetails-email" className="text-xs uppercase font-bold text-text-faint tracking-wider">Email</label>
-                <input
-                    id="personaldetails-email"
-                    type="email"
-                    value={pdEmail}
-                    onChange={(e) => setPdEmail(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
-                    placeholder="name@company.com"
-                />
-            </div>
-            <div className="space-y-2">
-                <label htmlFor="personaldetails-phone-number" className="text-xs uppercase font-bold text-text-faint tracking-wider">Phone Number</label>
-                <input
-                    id="personaldetails-phone-number"
-                    type="tel"
-                    value={pdPhone}
-                    onChange={(e) => setPdPhone(e.target.value)}
-                    className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
-                    placeholder="+1 555 555 5555"
-                />
+    <div>
+        <div className={`${FORM} space-y-5 pb-6`}>
+            <p className="text-sm text-text-muted">Saved details the agent can use when completing workflows.</p>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <TextField id="personaldetails-first-name" label="First name" value={pdFirstName} onChange={setPdFirstName} placeholder="First name" />
+                <TextField id="personaldetails-last-name" label="Last name" value={pdLastName} onChange={setPdLastName} placeholder="Last name" />
+                <TextField id="personaldetails-email" label="Email" type="email" value={pdEmail} onChange={setPdEmail} placeholder="name@company.com" />
+                <TextField id="personaldetails-phone-number" label="Phone number" type="tel" value={pdPhone} onChange={setPdPhone} placeholder="+1 555 555 5555" />
             </div>
         </div>
 
-        <div className="border border-zinc-800 bg-zinc-900/20 p-6 space-y-6 rounded-md">
-            <div>
-                <div className="text-sm font-bold text-white">Address</div>
-                <div className="text-xs text-text-faint">Used when a workflow needs a billing or mailing address.</div>
+        <Section variant="plain" collapsible={false} title="Address" description="Used when a workflow needs a billing or mailing address.">
+            <div className={`grid ${FORM} grid-cols-1 gap-4 md:grid-cols-2`}>
+                <TextField id="personaldetails-address-1" label="Address 1" value={pdAddress1} onChange={setPdAddress1} placeholder="Street address" />
+                <TextField id="personaldetails-address-2" label="Address 2" value={pdAddress2} onChange={setPdAddress2} placeholder="Apt, suite, unit" />
+                <TextField id="personaldetails-city" label="City" value={pdCity} onChange={setPdCity} placeholder="City" />
+                <TextField id="personaldetails-state" label="State" value={pdState} onChange={setPdState} placeholder="State" />
+                <TextField id="personaldetails-zipcode" label="Zipcode" value={pdZipcode} onChange={setPdZipcode} placeholder="Zipcode" />
             </div>
+        </Section>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                    <label htmlFor="personaldetails-address-1" className="text-xs uppercase font-bold text-text-faint tracking-wider">Address 1</label>
-                    <input
-                        id="personaldetails-address-1"
-                        type="text"
-                        value={pdAddress1}
-                        onChange={(e) => setPdAddress1(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors rounded-md"
-                        placeholder="Street address"
-                    />
-                </div>
-                <div className="space-y-2">
-                    <label htmlFor="personaldetails-address-2" className="text-xs uppercase font-bold text-text-faint tracking-wider">Address 2</label>
-                    <input
-                        id="personaldetails-address-2"
-                        type="text"
-                        value={pdAddress2}
-                        onChange={(e) => setPdAddress2(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors rounded-md"
-                        placeholder="Apt, suite, unit"
-                    />
-                </div>
-                <div className="space-y-2">
-                    <label htmlFor="personaldetails-city" className="text-xs uppercase font-bold text-text-faint tracking-wider">City</label>
-                    <input
-                        id="personaldetails-city"
-                        type="text"
-                        value={pdCity}
-                        onChange={(e) => setPdCity(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors rounded-md"
-                        placeholder="City"
-                    />
-                </div>
-                <div className="space-y-2">
-                    <label htmlFor="personaldetails-state" className="text-xs uppercase font-bold text-text-faint tracking-wider">State</label>
-                    <input
-                        id="personaldetails-state"
-                        type="text"
-                        value={pdState}
-                        onChange={(e) => setPdState(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors rounded-md"
-                        placeholder="State"
-                    />
-                </div>
-                <div className="space-y-2">
-                    <label htmlFor="personaldetails-zipcode" className="text-xs uppercase font-bold text-text-faint tracking-wider">Zipcode</label>
-                    <input
-                        id="personaldetails-zipcode"
-                        type="text"
-                        value={pdZipcode}
-                        onChange={(e) => setPdZipcode(e.target.value)}
-                        className="w-full bg-zinc-900 border border-zinc-800 p-3 text-sm text-white focus:border-white focus:outline-none transition-colors font-mono rounded-md"
-                        placeholder="Zipcode"
-                    />
-                </div>
-            </div>
-        </div>
-
-        <div className="pt-2 flex justify-end">
-            <button
-                onClick={onSave}
-                className="px-6 py-2.5 text-sm font-bold bg-accent text-accent-fg hover:bg-accent-hover transition-all shadow-lg"
-            >
-                Save Changes
-            </button>
-        </div>
+        <SaveBar onSave={onSave} />
     </div>
 );

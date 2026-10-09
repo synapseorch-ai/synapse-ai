@@ -31,29 +31,36 @@ export function SettingsNav() {
                 aria-label="Settings"
                 className={cn('hidden flex-col lg:flex', collapsed ? 'w-10' : 'w-52')}
             >
-                <button
-                    onClick={() => setCollapsed(collapsed ? '0' : '1')}
-                    title={collapsed ? 'Expand settings menu' : 'Collapse settings menu'}
-                    aria-label={collapsed ? 'Expand settings menu' : 'Collapse settings menu'}
-                    aria-expanded={!collapsed}
-                    className={cn(
-                        'mb-2 flex size-8 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-2 hover:text-text',
-                        collapsed ? 'mx-auto' : '-ml-1',
-                    )}
-                >
-                    {collapsed
-                        ? <PanelLeftOpen className="h-4 w-4" />
-                        : <PanelLeftClose className="h-4 w-4" />}
-                </button>
-                {SETTINGS_NAV.map(({ group, items }) => {
+                {SETTINGS_NAV.map(({ group, items }, gi) => {
                     const shown = visibleItems(items, flags);
                     if (shown.length === 0) return null;
+                    // The collapse control sits on the first group's heading line (Naveen, M2g),
+                    // not on a row of its own above it.
+                    const toggle = gi === 0 ? (
+                        <button
+                            onClick={() => setCollapsed(collapsed ? '0' : '1')}
+                            title={collapsed ? 'Expand settings menu' : 'Collapse settings menu'}
+                            aria-label={collapsed ? 'Expand settings menu' : 'Collapse settings menu'}
+                            aria-expanded={!collapsed}
+                            className={cn(
+                                'flex size-7 shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-surface-2 hover:text-text',
+                                collapsed && 'mx-auto mb-2',
+                            )}
+                        >
+                            {collapsed
+                                ? <PanelLeftOpen className="h-4 w-4" />
+                                : <PanelLeftClose className="h-4 w-4" />}
+                        </button>
+                    ) : null;
                     return (
                         <div key={group} className="mb-4 last:mb-0">
                             {collapsed ? (
-                                <div className="mx-1 mb-2 border-t border-border first:hidden" />
+                                toggle ?? <div className="mx-1 mb-2 border-t border-border" />
                             ) : (
-                                <Label className="block px-2.5 pb-1.5 pt-1">{group}</Label>
+                                <div className="flex items-center justify-between gap-2 pb-1 pl-2.5">
+                                    <Label className="block py-1.5">{group}</Label>
+                                    {toggle}
+                                </div>
                             )}
                             <div className="space-y-0.5">
                                 {shown.map(item => {

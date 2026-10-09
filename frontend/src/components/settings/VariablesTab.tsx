@@ -1,8 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Plus, Save, Trash, Variable } from 'lucide-react';
-import { Button, Input, Label } from '@/components/ui';
+import { Plus, Save, Trash } from 'lucide-react';
+import { Button, IconButton, Input, Label, Section } from '@/components/ui';
+import { FIELD_LABEL, FORM } from './form';
 
 /**
  * Global variables — one document, used everywhere a value is typed before it
@@ -58,31 +59,27 @@ export const VariablesTab = () => {
     };
 
     return (
-        <div className="space-y-4">
-            <div>
-                <h3 className="text-sm font-semibold text-text flex items-center gap-2"><Variable className="h-4 w-4 text-accent" /> Global variables</h3>
-                <p className="text-xs text-text-muted mt-1">
-                    Use them anywhere a value is not yet known: <code className="font-mono text-2xs">{'{{ global.api_base }}'}</code> in a tool&apos;s URL, headers or body, in an agent&apos;s system prompt, or in an orchestration step&apos;s prompt.
+        <Section variant="plain" collapsible={false} title="Global variables">
+            <div className={`${FORM} space-y-4`}>
+                <p className="text-sm text-text-muted">
+                    Use them anywhere a value is not yet known: <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">{'{{ global.api_base }}'}</code> in a tool&apos;s URL, headers or body, in an agent&apos;s system prompt, or in an orchestration step&apos;s prompt.
                 </p>
-            </div>
 
             {loading ? (
                 <p className="text-xs text-text-faint">Loading…</p>
             ) : (
                 <div className="space-y-2">
-                    <div className="grid grid-cols-[1fr_2fr_auto] gap-2 text-2xs uppercase tracking-wider text-text-faint px-1">
-                        <Label>Name</Label><Label>Value</Label><span />
+                    <div className="grid grid-cols-[1fr_2fr_2rem] gap-2 px-1 text-xs text-text-faint">
+                        <Label className={FIELD_LABEL}>Name</Label><Label className={FIELD_LABEL}>Value</Label><span />
                     </div>
                     {rows.map((row, idx) => (
-                        <div key={row.id} className="grid grid-cols-[1fr_2fr_auto] gap-2 items-center">
+                        <div key={row.id} className="grid grid-cols-[1fr_2fr_2rem] items-center gap-2">
                             <Input value={row.key} aria-label={`Variable ${idx + 1} name`} placeholder="api_base" spellCheck={false} autoComplete="off"
                                 onChange={(e) => { const next = [...rows]; next[idx] = { ...row, key: e.target.value }; setRows(next); }} />
                             <Input value={row.value} aria-label={`Variable ${idx + 1} value`} placeholder="https://api.acme.com" autoComplete="off"
                                 onChange={(e) => { const next = [...rows]; next[idx] = { ...row, value: e.target.value }; setRows(next); }} />
-                            <button type="button" aria-label={`Remove ${row.key || 'variable'}`} onClick={() => setRows(rows.filter((r) => r.id !== row.id))}
-                                className="p-1.5 text-text-faint hover:text-danger rounded-md">
-                                <Trash className="h-4 w-4" />
-                            </button>
+                            <IconButton size="sm" icon={Trash} label={`Remove ${row.key || 'variable'}`} className="hover:text-danger"
+                                onClick={() => setRows(rows.filter((r) => r.id !== row.id))} />
                         </div>
                     ))}
                     {rows.length === 0 && <p className="text-xs text-text-faint px-1">No variables yet.</p>}
@@ -93,11 +90,12 @@ export const VariablesTab = () => {
                         <Button size="sm" onClick={save} loading={saving}>
                             <Save className="h-4 w-4" /> Save
                         </Button>
-                        {saved && <span className="text-xs text-success">Saved.</span>}
+                        {saved && <span role="status" className="text-xs text-text-muted">Saved.</span>}
                     </div>
                     {error && <p className="text-xs text-danger">{error}</p>}
                 </div>
             )}
-        </div>
+            </div>
+        </Section>
     );
 };

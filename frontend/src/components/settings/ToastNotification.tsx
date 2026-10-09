@@ -8,10 +8,11 @@ interface ToastProps {
     type?: ToastType;
 }
 
-const toastStyles: Record<ToastType, string> = {
-    success: 'bg-green-500/10 border border-green-500/30 text-green-400',
-    warning: 'bg-yellow-500/10 border border-yellow-500/30 text-yellow-300',
-    error:   'bg-red-500/10   border border-red-500/30   text-red-400',
+/** The toast is one surface in the text colour; the meaning is its icon's (UX1: quiet success). */
+const iconStyles: Record<ToastType, string> = {
+    success: 'text-success',
+    warning: 'text-warning',
+    error:   'text-danger',
 };
 
 const ToastIcon: Record<ToastType, React.ElementType> = {
@@ -24,8 +25,8 @@ export const ToastNotification = ({ show, message, type = 'success' }: ToastProp
     if (!show) return null;
     const Icon = ToastIcon[type];
     return (
-        <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-2.5 px-4 py-2.5 rounded-md shadow-2xl text-xs font-medium animate-in fade-in slide-in-from-top-4 duration-300 ${toastStyles[type]}`}>
-            <Icon className="h-4 w-4 shrink-0" />
+        <div role="status" className="fixed left-1/2 top-6 z-[100] flex -translate-x-1/2 items-center gap-2.5 rounded-md border border-border bg-surface px-4 py-2.5 text-xs font-medium text-text shadow-[var(--shadow)] animate-in fade-in slide-in-from-top-4 duration-300">
+            <Icon className={`size-4 shrink-0 ${iconStyles[type]}`} aria-hidden />
             <span>{message}</span>
         </div>
     );

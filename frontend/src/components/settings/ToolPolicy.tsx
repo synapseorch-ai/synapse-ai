@@ -12,7 +12,6 @@
  * same name. They are here so the editor can say what a choice will do before
  * it is saved; the engine remains the only thing that enforces any of it.
  */
-import { Label } from '@/components/ui';
 
 export type ToolPolicy = Record<string, string>;
 
@@ -115,7 +114,7 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                 const selected = chosen ?? (canInherit ? undefined : 'allow');
                 return (
                     <div key={cat.id} className="space-y-1">
-                        <Label className="block">{cat.label}</Label>
+                        <span className="block text-xs font-medium text-text-muted">{cat.label}</span>
                         <div className="flex gap-1">
                             {canInherit && (
                                 <button
@@ -123,7 +122,7 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                                     disabled={disabled}
                                     onClick={() => set(cat.id, null)}
                                     aria-pressed={selected === undefined}
-                                    className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors disabled:opacity-50 ${
+                                    className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
                                         selected === undefined
                                             ? 'border-accent bg-accent/10 text-accent-ink'
                                             : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
@@ -141,7 +140,7 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                                         disabled={disabled}
                                         onClick={() => set(cat.id, choice.value)}
                                         aria-pressed={active}
-                                        className={`flex-1 border p-2 text-2xs uppercase tracking-wide rounded-md transition-colors disabled:opacity-50 ${
+                                        className={`flex-1 rounded-md border px-2 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 ${
                                             active
                                                 ? 'border-accent bg-accent/10 text-accent-ink'
                                                 : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
