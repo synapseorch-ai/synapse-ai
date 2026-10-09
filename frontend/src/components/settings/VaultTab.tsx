@@ -433,8 +433,9 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
 
     // Load file content when a file is opened
     const openPath = openNode?.path ?? null;
-    // A click on a file reads it again, even the open one (its text may have
-    // changed under it, and a keyboard's Enter on it should do something).
+    // A click on a file reads it again, even the open one while it has no
+    // unsaved edits (its text may have changed under it, and a keyboard's Enter
+    // on it should do something).
     const [reads, setReads] = useState(0);
     useEffect(() => {
         if (!openPath) return;
@@ -610,7 +611,8 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                                 selectedPath={openNode?.path ?? null}
                                 onSelect={(n) => {
                                     setSelectedNode(n);
-                                    setReads(r => r + 1);
+                                    // Never over unsaved edits: the open file read again would lose them.
+                                    if (!(n.path === openNode?.path && fileContent !== savedContent)) setReads(r => r + 1);
                                     // Set context folder for "new" actions
                                     if (n.type === 'folder') {
                                         setContextFolder(n.path);
