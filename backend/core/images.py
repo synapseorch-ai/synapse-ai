@@ -139,6 +139,33 @@ def model_can_see_images(model: str) -> bool:
     return bool(name) and provider_for(name).caps.images
 
 
+async def refusal_for(agent: dict | None, workspace_model: str) -> str | None:
+    """Why this agent would not read an attached image, or None when it would.
+
+    The composer's answer (`/api/status`'s `can_see_images`/`attach_problem`),
+    for the doors that are not the composer: chat's routes, v1 and v2 refuse
+    with it rather than hand the images to a provider that drops them (F396),
+    as cloud's `start_turn` does. A workflow agent's steps decide (F313). A
+    builder-typed agent is the builder's to refuse (`reject_unseeable_images`).
+    """
+    if not agent or agent.get("type") == "builder":
+        return None
+    if agent.get("type") == "orchestrator":
+        from core.orchestration.step_models import attach_verdict, walk_agent
+        from core.scale.context import resolve_agent, resolve_orchestration
+
+        walked = await walk_agent(agent, load_agent=resolve_agent, load_orchestration=resolve_orchestration,
+                                  workspace_model=workspace_model)
+        return attach_verdict(walked, {s.model: model_can_see_images(s.model) for s in walked.attaching()})
+    from core.orchestration.step_models import model_or_none
+
+    model = model_or_none(agent.get("model")) or workspace_model
+    if model_can_see_images(model):
+        return None
+    return (f"This agent's model ({model}) cannot read images. Send the message without them, "
+            "or choose a model that can for this agent.")
+
+
 def checked_images(field: str = "images"):
     """A Pydantic validator that runs `validate` and reports its reason.
 

@@ -597,8 +597,9 @@ async def v2_chat(
     # Resolved here, the way v1 resolves it, so an unknown agent is a 404 rather
     # than a queued job that fails — and a name reaches the worker as the id it
     # looks agents up by (F69).
-    from core.routes.api_v1 import _agent_or_error
+    from core.routes.api_v1 import _agent_or_error, refuse_unread_images
     agent = await _agent_or_error(body.agent)
+    await refuse_unread_images(agent, body.images)
 
     session_id = body.session_id or _new_session_id()
 

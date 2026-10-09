@@ -39,6 +39,18 @@ async def _resolve_agent(request: ChatRequest):
         return None
 
 
+async def _refuse_unread_images(request: ChatRequest) -> None:
+    """422 for images this turn's agent would not read (F396), before a turn is claimed."""
+    if not request.images:
+        return
+    from core.config import load_settings
+    from core.images import refusal_for
+
+    said = await refusal_for(await _resolve_agent(request), load_settings().get("model", "mistral"))
+    if said:
+        raise HTTPException(status_code=422, detail=said)
+
+
 def _start(request: ChatRequest, resume_state: dict | None = None, *,
            expand_mentions: bool) -> chat_turns.ChatTurn:
     """Start the turn from the handler. Raises `TurnAlreadyRunning`.
@@ -106,6 +118,7 @@ async def chat(request: ChatRequest):
     import core.server as _server
     if not _server.agent_sessions:
         raise HTTPException(status_code=500, detail="No agents connected")
+    await _refuse_unread_images(request)
     try:
         turn = _start(request, expand_mentions=True)
     except chat_turns.TurnAlreadyRunning:
@@ -118,6 +131,7 @@ async def chat(request: ChatRequest):
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
+    await _refuse_unread_images(request)
     try:
         turn = _start(request, expand_mentions=True)
     except chat_turns.TurnAlreadyRunning:

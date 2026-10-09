@@ -55,7 +55,12 @@ class WorkflowModels:
             self.problems.append(problem)
 
 
-def _set(model: Any) -> str | None:
+def model_or_none(model: Any) -> str | None:
+    """A saved model, or None when it means "the default": unset, blank or the word `default`.
+
+    The engine's precedence reads a model so (`react_engine`, the steps), and
+    anything that asks what an agent or a step runs on must read it the same way.
+    """
     text = str(model or "").strip()
     return None if not text or text.lower() == "default" else text
 
@@ -101,14 +106,14 @@ async def _walk(orch_id: str, walked: WorkflowModels, *, load_agent: Loader, loa
         path = f"{prefix}{_name(step)}"
         takes = passed and kind == "agent" and bool(getattr(step, "pass_images", False))
         if kind != "agent":
-            walked.steps.append(ModelStep(path, _set(step.model) or workspace_model, False))
+            walked.steps.append(ModelStep(path, model_or_none(step.model) or workspace_model, False))
             continue
         agent = await load_agent(step.agent_id) if step.agent_id else None
         if agent is None:
             walked._say(f"Step '{path}' names an agent that no longer exists ({step.agent_id or 'none'}).")
             continue
         if agent.get("type") != "orchestrator":
-            walked.steps.append(ModelStep(path, _set(step.model) or _set(agent.get("model")) or workspace_model,
+            walked.steps.append(ModelStep(path, model_or_none(step.model) or model_or_none(agent.get("model")) or workspace_model,
                                           takes))
             continue
         child = agent.get("orchestration_id")

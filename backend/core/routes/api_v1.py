@@ -168,6 +168,20 @@ async def _waiting_agent(session_id: str, approval_id: str | None) -> dict:
     return agents[waiting[0][0]]
 
 
+async def refuse_unread_images(agent: dict, images: list[str] | None) -> None:
+    """422 for images this agent would not read (F396), as cloud's `start_turn` refuses them.
+
+    Before a turn is claimed or a job queued; v2 calls it too."""
+    if not images:
+        return
+    from core.config import load_settings
+    from core.images import refusal_for
+
+    said = await refusal_for(agent, load_settings().get("model", "mistral"))
+    if said:
+        raise HTTPException(status_code=422, detail=said)
+
+
 def _build_chat_request(body: V1ChatRequest, agent: dict) -> "ChatRequest":
     """Convert V1ChatRequest into the internal ChatRequest model."""
     from core.models import ChatRequest
@@ -414,6 +428,7 @@ async def v1_chat(body: V1ChatRequest, key_record: dict = Depends(require_api_ke
     if not _server.agent_sessions:
         raise HTTPException(status_code=503, detail="No agent sessions available. Server may still be starting.")
 
+    await refuse_unread_images(agent, body.images)
     chat_request, turn = _v1_start(body, agent, _server)
     # Waiting is not owning: this request going away leaves the turn running.
     await turn.wait()
@@ -468,6 +483,7 @@ async def v1_chat_stream(body: V1ChatRequest, key_record: dict = Depends(require
     if not _server.agent_sessions:
         raise HTTPException(status_code=503, detail="No agent sessions available. Server may still be starting.")
 
+    await refuse_unread_images(agent, body.images)
     _chat_request, turn = _v1_start(body, agent, _server)
 
     async def event_generator():
