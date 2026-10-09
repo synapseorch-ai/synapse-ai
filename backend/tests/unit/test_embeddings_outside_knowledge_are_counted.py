@@ -40,7 +40,9 @@ class TestTheSemanticCache:
         await _embed("what is the capital of france", "text-embedding-3-small", {})
         [row] = await _rows("cache")
         assert row["tool_name"] == "cache:embed" and row["model"] == "text-embedding-3-small"
+        assert row["session_id"] == "embeddings:cache", "never 'unknown', which Usage calls the system prompt's"
         assert row["input_tokens"] == 7 and row["provider"] == "openai"
+        assert row["estimated_cost"] == pytest.approx(7 * 0.02 / 1_000_000), "the model's own rate, as Knowledge prices it"
 
     async def test_a_vector_it_already_had_writes_none(self, answer):
         from core.cache.response_cache import _embed

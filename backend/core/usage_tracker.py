@@ -321,14 +321,24 @@ async def log_embedding(
     `estimated` when the provider did not say how many tokens it read and they
     were counted from the text (four characters a token).
     """
-    await _ensure_pricing()
-    unpaid = provider in _UNPAID_EMBED_PROVIDERS
-    estimated_cost = 0.0 if unpaid else calculate_cost(model, input_tokens, 0)
+    estimated_cost = 0.0
+    if provider not in _UNPAID_EMBED_PROVIDERS:
+        # Priced as Knowledge prices an embedding: the operator's rate for the
+        # model, else its profile's (the chat pricing table has no embedders).
+        try:
+            from core.knowledge import embedders, profiles
+
+            rate = await embedders.usd_per_mtok(model, profiles.profile_for(model) or profiles.UNKNOWN)
+        except Exception:  # noqa: BLE001 — a price never fails the row
+            rate = None
+        estimated_cost = round(input_tokens * (rate or 0.0) / 1_000_000, 10)
     await usage_store.append({
         "timestamp": datetime.now(timezone.utc),
         "event_type": "embedding",
         "source": source,
-        "session_id": session_id or "unknown",
+        # Its own line in Usage's sessions: "unknown" is read there as the
+        # system prompt's generation, as Knowledge's rows name their base.
+        "session_id": session_id or f"embeddings:{source}",
         "agent_id": "unknown",
         "run_id": run_id,
         "model": model,
