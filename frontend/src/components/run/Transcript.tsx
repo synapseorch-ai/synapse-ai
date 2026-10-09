@@ -42,7 +42,7 @@ const MARKERS: { test: (line: string) => boolean; tone: string; outline: boolean
     { test: (l) => l.includes('🧠'), tone: 'text-success', outline: false },
     { test: (l) => l.includes('❌') || /\bERROR\b/.test(l), tone: 'text-danger', outline: true },
     { test: (l) => /^\s*(SYSTEM PROMPT|CONTEXT \/ PROMPT SENT|📝 INPUT PROMPT|🗺)/.test(l), tone: 'text-text', outline: true },
-    { test: (l) => /^\s*(══|──|═|─){10,}/.test(l), tone: 'text-border-strong', outline: false },
+    { test: (l) => /^\s*(══|──|═|─){10,}/.test(l), tone: 'text-text-faint', outline: false },
 ];
 
 function classify(line: string): { tone: string; outline: boolean } {
