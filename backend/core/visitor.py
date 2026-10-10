@@ -54,6 +54,12 @@ MAX_TOOLS = 200
 
 SURFACES = ("widget", "channel")
 
+#: What a visitor's call to a `confirm` tool does. `deny`: nobody on a public
+#: surface can press Approve, so it is refused (F280). `park`: a phone call
+#: (VOX1a, V16) parks the call and asks a person in the bell, and the caller is
+#: told someone will follow up.
+APPROVALS = ("deny", "park")
+
 
 @dataclass(frozen=True)
 class VisitorScope:
@@ -61,13 +67,17 @@ class VisitorScope:
 
     surface: str
     tools: frozenset[str] = frozenset()
+    approvals: str = "deny"
 
     def allows(self, tool_name: str) -> bool:
         """Whether a visitor's turn may hold this tool at all."""
         return tool_name in ENGINE_TOOLS or tool_name in self.tools
 
     def to_dict(self) -> dict:
-        return {"surface": self.surface, "tools": sorted(self.tools)}
+        out = {"surface": self.surface, "tools": sorted(self.tools)}
+        if self.approvals != "deny":
+            out["approvals"] = self.approvals
+        return out
 
     @classmethod
     def from_dict(cls, value) -> "VisitorScope | None":
@@ -82,7 +92,8 @@ class VisitorScope:
         if not isinstance(value, dict):
             return cls(surface="widget", tools=frozenset())
         surface = value.get("surface") if value.get("surface") in SURFACES else "widget"
-        return cls(surface=surface, tools=frozenset(clean_tools(value.get("tools"))))
+        approvals = value.get("approvals") if value.get("approvals") in APPROVALS else "deny"
+        return cls(surface=surface, tools=frozenset(clean_tools(value.get("tools"))), approvals=approvals)
 
 
 def clean_tools(value) -> list[str]:

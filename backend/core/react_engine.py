@@ -920,6 +920,7 @@ async def run_agent_step(
     knowledge_turn=None,                  # the root turn's [K#] labels (core.knowledge.citations.KnowledgeTurn); a delegate gets its lead's
     stream_answer: bool = False,          # yield answer_delta / answer_reset while the answer is written (U72)
     save_turn: bool = True,               # False = keep the turn out of the conversation (the OpenAI endpoint's own)
+    extra_tools=None,                     # [(tool, async handler(args) -> str)]: the caller's own tools for this turn (VOX1a)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -928,6 +929,13 @@ async def run_agent_step(
 
     `stream_answer` streams this agent's own model calls (never a delegate's or
     a subtask's): see `run_react_loop` for the events and what they promise.
+
+    `extra_tools` are tools the caller's surface itself grants for this turn — a
+    phone call's `transfer_call` and `end_call` (VOX1a). Each is an MCP-style
+    tool (`name`, `description`, `inputSchema`) with an async handler that
+    takes its arguments and returns the observation. They are offered after a
+    visitor's tools are narrowed, run in the engine as `update_tasks` does (no
+    policy gate: the surface granted them), and are never handed to a subtask.
     """
     if max_turns is None:
         max_turns = MAX_TURNS
@@ -1287,6 +1295,25 @@ async def run_agent_step(
     # visitor's owner ticked for a visitor. Only these reach the handler.
     _knowledge_offered = frozenset(n for n in _kn_names if n in tool_schema_map)
 
+    # ── The caller's own tools (VOX1a): after the visitor narrowing, because the
+    # surface grants them; handled in the dispatch loop beside update_tasks. ──
+    _extra_handlers: dict = {}
+    for _x_tool, _x_handler in (extra_tools or []):
+        if _x_tool.name in tool_schema_map or _x_tool.name in _extra_handlers:
+            continue  # never shadows a tool the agent already holds
+        _extra_handlers[_x_tool.name] = _x_handler
+        all_tools.append(_x_tool)
+        tool_schema_map[_x_tool.name] = _x_tool.inputSchema
+        ollama_tools.append({"type": "function", "function": {
+            "name": _x_tool.name, "description": _x_tool.description, "parameters": _x_tool.inputSchema}})
+    if _extra_handlers:
+        tools_json = str([
+            {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+
 
     async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
                                 images_for_turn=None, tool_name_for_log=None,
@@ -1620,8 +1647,9 @@ async def run_agent_step(
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
 
     _policy = _tool_policy.resolve_policy(active_agent, current_settings)
-    if _visitor is not None:
-        # Nobody on a public surface can answer an approval card (F280).
+    if _visitor is not None and _visitor.approvals != "park":
+        # Nobody on a public surface can answer an approval card (F280). A phone
+        # call parks instead and asks a person in the bell (VOX1a, V16).
         _policy = {c: ("deny" if d == "confirm" else d) for c, d in _policy.items()}
 
     # What a sub-agent may be given: what this agent may use here, a step's
@@ -2199,6 +2227,17 @@ async def run_agent_step(
                     yield {"type": "tasks_updated", "tasks": [dict(t) for t in _tasks], "turn": turn + 1}
                     yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME, "preview": _board[:500]}
                     _log.debug(f"📋 Task list updated — {_summary}")
+                    continue
+
+                # ── The caller's own tools (VOX1a): its handler answers ──────────
+                if tool_name in _extra_handlers:
+                    try:
+                        _x_result = str(await _extra_handlers[tool_name](tool_args))
+                    except Exception as _x_err:  # noqa: BLE001 — told to the model, as any tool error is
+                        _x_result = f"Error: {_x_err}"
+                    current_context_text += f"\n[Turn {turn + 1} — Observation] {tool_name}: {_x_result}\n"
+                    tools_used_summary.append(tool_name)
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _x_result[:500]}
                     continue
 
                 # ── LOAD_SKILL: a skill's body enters the context on demand ───────
@@ -3256,8 +3295,11 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
                          expand_mentions: bool = False, stream_answer: bool = False,
                          history_override: list | None = None, caller_system: str | None = None,
-                         save_turn: bool = True, log_source: str = "chat"):
+                         save_turn: bool = True, log_source: str = "chat", extra_tools=None):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `extra_tools` are the caller's own tools for this turn (a phone call's,
+    VOX1a); see `run_agent_step`. A workflow agent's run does not get them.
 
     `history_override`, `caller_system`, `save_turn` and `log_source` are the
     OpenAI-compatible endpoint's (OAI1): the request carries the conversation,
@@ -3437,6 +3479,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             history_override=history_override,
             system_prompt_extra=_caller_instructions(caller_system),
             save_turn=save_turn,
+            extra_tools=extra_tools,
         ):
             _agent_log.log_event(event)
             yield event
