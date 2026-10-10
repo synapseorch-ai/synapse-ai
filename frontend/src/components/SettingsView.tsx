@@ -16,6 +16,7 @@ import { SettingsNav } from '@/components/app/SettingsNav';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
 import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
+import { HOSTED_KEY_NAMES } from '@/lib/models';
 import { GeneralTab } from './settings/GeneralTab';
 import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
@@ -76,6 +77,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [geminiKey, setGeminiKey] = useState('');
     const [grokKey, setGrokKey] = useState('');
     const [deepseekKey, setDeepseekKey] = useState('');
+    // The hosted providers' keys (PROV1), by setting name; one map, not eleven states.
+    const [hostedKeys, setHostedKeys] = useState<Record<string, string>>({});
+    const setHostedKey = (name: string, v: string) => setHostedKeys(k => ({ ...k, [name]: v }));
     const [bedrockApiKey, setBedrockApiKey] = useState('');
     const [openaiCompatibleKey, setOpenaiCompatibleKey] = useState('');
     const [openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl] = useState('');
@@ -167,6 +171,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         grok_key: setGrokKey, deepseek_key: setDeepseekKey, bedrock_api_key: setBedrockApiKey,
         openai_compatible_key: setOpenaiCompatibleKey, local_compatible_key: setLocalCompatibleKey,
         huggingface_token: setHuggingfaceToken, n8n_api_key: setN8nApiKey,
+        ...Object.fromEntries(HOSTED_KEY_NAMES.map(name => [name, (v: string) => setHostedKey(name, v)])),
         ...Object.fromEntries(KNOWLEDGE_SECRETS.map(name => [
             name, (v: string) => setKnowledgeModels(k => ({ ...k, [name]: v })),
         ])),
@@ -189,6 +194,23 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
+    // A provider card saves its own key (PROV1, cloud's card): a POST of that
+    // one setting, which the route merges into what is stored.
+    const saveSecret = async (name: string, value: string) => {
+        const res = await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [name]: value }),
+        });
+        if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(typeof body?.detail === 'string' ? body.detail : 'Could not save that key.');
+        }
+        setSecretState(pickSecrets(await res.json(), SECRET_NAMES));
+        await refreshModels();
+        showToast('Key saved', 'success');
+    };
+
     const handleSaveSection = async () => {
         setIsSaving(true);
         const payload = {
@@ -205,6 +227,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             gemini_key: geminiKey,
             grok_key: grokKey,
             deepseek_key: deepseekKey,
+            ...Object.fromEntries(HOSTED_KEY_NAMES.map(name => [name, hostedKeys[name] ?? ''])),
             openai_compatible_key: openaiCompatibleKey,
             openai_compatible_base_url: openaiCompatibleBaseUrl,
             openai_compatible_models: openaiCompatibleModels,
@@ -430,6 +453,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setGeminiKey(data.gemini_key || '');
                 setGrokKey(data.grok_key || '');
                 setDeepseekKey(data.deepseek_key || '');
+                setHostedKeys(Object.fromEntries(HOSTED_KEY_NAMES.map(name => [name, data[name] || ''])));
                 setOpenaiCompatibleKey(data.openai_compatible_key || '');
                 setOpenaiCompatibleBaseUrl(data.openai_compatible_base_url || '');
                 setOpenaiCompatibleModels(data.openai_compatible_models || '');
@@ -516,7 +540,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const nav = navEntryFor(activeTab) ?? navEntryFor('general')!;
 
     return (
-        <SavedSecretsContext.Provider value={{ secrets: secretState, remove: removeSecret }}>
+        <SavedSecretsContext.Provider value={{ secrets: secretState, remove: removeSecret, save: saveSecret }}>
             <Screen
                 eyebrow="Settings"
                 width="wide"
@@ -636,24 +660,16 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}
                         loadingModels={loadingModels}
-                        openaiKey={openaiKey} setOpenaiKey={setOpenaiKey}
-                        anthropicKey={anthropicKey} setAnthropicKey={setAnthropicKey}
-                        geminiKey={geminiKey} setGeminiKey={setGeminiKey}
-                        grokKey={grokKey} setGrokKey={setGrokKey}
-                        deepseekKey={deepseekKey} setDeepseekKey={setDeepseekKey}
-                        bedrockApiKey={bedrockApiKey} setBedrockApiKey={setBedrockApiKey}
+                        onRefresh={() => void refreshModels()}
                         awsRegion={awsRegion} setAwsRegion={setAwsRegion}
                         onSave={handleSaveSection}
                         isSaving={isSaving}
-                        openaiCompatibleKey={openaiCompatibleKey} setOpenaiCompatibleKey={setOpenaiCompatibleKey}
                         openaiCompatibleBaseUrl={openaiCompatibleBaseUrl} setOpenaiCompatibleBaseUrl={setOpenaiCompatibleBaseUrl}
                         openaiCompatibleModels={openaiCompatibleModels} setOpenaiCompatibleModels={setOpenaiCompatibleModels}
                         openaiCompatibleEmbedModels={openaiCompatibleEmbedModels} setOpenaiCompatibleEmbedModels={setOpenaiCompatibleEmbedModels}
                         localCompatibleBaseUrl={localCompatibleBaseUrl} setLocalCompatibleBaseUrl={setLocalCompatibleBaseUrl}
-                        localCompatibleKey={localCompatibleKey} setLocalCompatibleKey={setLocalCompatibleKey}
                         localCompatibleModels={localCompatibleModels} setLocalCompatibleModels={setLocalCompatibleModels}
                         localCompatibleEmbedModels={localCompatibleEmbedModels} setLocalCompatibleEmbedModels={setLocalCompatibleEmbedModels}
-                        huggingfaceToken={huggingfaceToken} setHuggingfaceToken={setHuggingfaceToken}
                         huggingfaceModels={huggingfaceModels} setHuggingfaceModels={setHuggingfaceModels}
                         anthropicCliModels={anthropicCliModels} setAnthropicCliModels={setAnthropicCliModels}
                         geminiCliModels={geminiCliModels} setGeminiCliModels={setGeminiCliModels}

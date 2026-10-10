@@ -35,6 +35,7 @@ import {
 import type { RunSummary } from '@/components/runs/summary';
 import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
+import { HOSTED_KEY_NAMES } from '@/lib/models';
 import { plainText } from '@/lib/plainText';
 import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
 import type { Orchestration } from '@/types/orchestration';
@@ -70,6 +71,7 @@ const editorHref = (id: string) => `/workflows?id=${encodeURIComponent(id)}`;
 const MODEL_SETTINGS = [
     'gemini_key', 'anthropic_key', 'openai_key', 'grok_key', 'deepseek_key', 'bedrock_api_key', 'aws_access_key_id',
     'openai_compatible_base_url', 'local_compatible_base_url', 'model_gateway_base_url', 'huggingface_models',
+    ...HOSTED_KEY_NAMES,
 ];
 const isWaiting = (r: RunSummary) => r.status === 'paused' && Boolean(r.waiting_for_human);
 /** A waiting run's record is read again only when its question may have changed. */

@@ -43,6 +43,14 @@ export type Explained = {
 const stripClass = (s: string) => s.replace(/^(RuntimeError|LLMError|EmptyAnswer|EmbeddingFailed): /, '');
 
 const PROVIDERS: [RegExp, string][] = [
+    // The hosted providers (PROV1) are read only in the engine's own words for them ("Groq LLM Error: …",
+    // "Error: Groq returned …", "Empty Groq response"): an Ollama error can name a model called mistral or qwen.
+    ...([['Moonshot (Kimi)', 'Moonshot'], ['Mistral', 'Mistral'], ['NVIDIA', 'NVIDIA'], ['OpenRouter', 'OpenRouter'],
+        ['Qwen', 'Qwen'], ['Z.ai', 'Z.ai'], ['Groq', 'Groq'], ['Cerebras', 'Cerebras'], ['Together AI', 'Together AI'],
+        ['Fireworks', 'Fireworks'], ['MiniMax', 'MiniMax']] as const).map(([label, name]): [RegExp, string] => {
+        const l = label.replace(/[.()]/g, '\\$&');
+        return [new RegExp(`${l} LLM Error|Error: ${l} (?:returned|refused)|Empty ${l} response`), name];
+    }),
     [/\bOpenAI\b/, 'OpenAI'], [/\bClaude\b|Anthropic/, 'Anthropic'], [/\bGrok\b/, 'xAI'],
     [/\bDeepSeek\b/, 'DeepSeek'], [/\bBedrock\b/, 'Amazon Bedrock'], [/\bGemini\b/, 'Google Gemini'],
     [/Ollama/, 'Ollama'], [/Model gateway/, 'The model gateway'],

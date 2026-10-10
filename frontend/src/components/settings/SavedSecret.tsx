@@ -16,7 +16,9 @@ export type SecretState = { set: boolean; hint: string };
 export const SavedSecretsContext = createContext<{
     secrets: Record<string, SecretState>;
     remove: (name: string) => void;
-}>({ secrets: {}, remove: () => {} });
+    /** Saves one secret on its own (a provider card's Save, PROV1); throws with the refusal's words. */
+    save: (name: string, value: string) => Promise<void>;
+}>({ secrets: {}, remove: () => {}, save: async () => {} });
 
 export const useSavedSecrets = () => useContext(SavedSecretsContext);
 

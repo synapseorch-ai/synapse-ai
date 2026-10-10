@@ -17,6 +17,7 @@ import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, type ToolPolicy 
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
 import { cn } from '@/lib/cn';
+import { providerLabel } from '@/lib/models';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
 const AGENT_NAME_MAX = 100;
@@ -679,7 +680,7 @@ export const AgentsTab = ({
                                                                     : info.models.map((m: string) => ({
                                                                         value: m,
                                                                         label: m,
-                                                                        group: providerKey.charAt(0).toUpperCase() + providerKey.slice(1),
+                                                                        group: providerLabel(providerKey),
                                                                     }))),
                                                         ]}
                                                     />

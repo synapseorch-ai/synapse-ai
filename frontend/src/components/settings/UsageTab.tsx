@@ -11,6 +11,9 @@ import {
 import { cn, focusRing } from '@/lib/cn';
 import { usd } from '@/lib/money';
 import { count } from '@/lib/copy';
+import { HOSTED_PROVIDERS, providerLabel } from '@/lib/models';
+
+type HostedProvider = typeof HOSTED_PROVIDERS[number];
 
 // -------------------------------------------------------------
 // Types
@@ -113,7 +116,11 @@ interface PricingEntry {
 // -------------------------------------------------------------
 // Constants
 // -------------------------------------------------------------
-const PROVIDERS = ['openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'bedrock', 'ollama'] as const;
+const PROVIDERS = [
+    'openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'bedrock', 'ollama',
+    // The hosted OpenAI-style providers (PROV1, D245).
+    'mistral', 'moonshot', 'qwen', 'zai', 'minimax', 'openrouter', 'groq', 'cerebras', 'together', 'fireworks', 'nvidia',
+] as const;
 type Provider = typeof PROVIDERS[number];
 
 /**
@@ -129,6 +136,7 @@ const PROVIDER_META: Record<Provider, { label: string }> = {
     deepseek: { label: 'DeepSeek' },
     bedrock: { label: 'AWS Bedrock' },
     ollama: { label: 'Ollama (Local)' },
+    ...Object.fromEntries(HOSTED_PROVIDERS.map(id => [id, { label: providerLabel(id) }])) as Record<HostedProvider, { label: string }>,
 };
 
 /** The rows of a table on this page: the runs list's look (M2b, M2e) — hairlines, no box. */
@@ -1074,7 +1082,8 @@ export function UsageTab() {
             <div className="border-t border-border pt-5 text-xs leading-relaxed text-text-faint">
                 <p className="mb-1 font-medium text-text-muted">About cost estimates</p>
                 <p className="max-w-[72ch]">
-                    Token counts are sourced from API response metadata for OpenAI, Anthropic, Gemini, Grok, and DeepSeek.
+                    Token counts are sourced from API response metadata for OpenAI, Anthropic, Gemini, Grok, DeepSeek,
+                    and the hosted providers (Mistral, Groq, OpenRouter and the rest).
                     Ollama uses its <code className="font-code">eval_count</code> field. AWS Bedrock does not expose token counts directly,
                     so tokens are estimated from character length (chars ÷ 4) — costs for Bedrock calls may be less accurate.
                     Edit prices above and click <strong>Save pricing</strong> to update rates used for future cost calculations.

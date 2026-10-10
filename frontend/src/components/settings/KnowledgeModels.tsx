@@ -7,17 +7,19 @@
  * writes Contextual Retrieval's contexts when a base names none (CR1, D180), the
  * reranker a search uses when a base names none, and the keys rerank providers need
  * (Cohere, Voyage, Jina, or a rerank server of your own: TEI or Infinity).
- * Keys are never served back (F201): a saved one reads "Saved", a blank field
- * keeps it, and Remove clears it. Saved with the rest of the tab.
+ * Keys are never served back (F201). The models save with the rest of the tab;
+ * the rerankers are provider cards that save and remove their own keys, as the
+ * model providers' do (cloud's card, synced; PROV1). Drawn in two parts, so the
+ * page reads in cloud's order: Knowledge, the providers, then the rerankers.
  */
 import { useState } from 'react';
-import { Combobox, Field, Input, Section, type ComboboxOption } from '@/components/ui';
+import { Button, Combobox, Field, Input, Section, type ComboboxOption } from '@/components/ui';
+import { ProviderCard } from '@/components/providers/ProviderCard';
 import { RERANK_SUGGESTIONS, useKnowledgeEnabled } from '@/lib/knowledge';
 import { modelOptions, withUnreachable, type ProviderModels } from '@/lib/models';
 
-import { FIELD_LABEL, FORM } from './form';
-import { ProviderCard } from './ProviderCard';
-import { SavedSecret, secretPlaceholder, useSavedSecrets } from './SavedSecret';
+import { FORM } from './form';
+import { useSavedSecrets } from './SavedSecret';
 
 export type KnowledgeModelSettings = {
     knowledge_embedding_model: string;
@@ -54,8 +56,10 @@ const KEYS: { name: (typeof KNOWLEDGE_SECRETS)[number]; provider: string; label:
 const SERVER = 'Rerank server (TEI or Infinity)';
 
 export function KnowledgeModels({
-    value, onChange, providers, embeddingModel, chatModel,
+    part, value, onChange, providers, embeddingModel, chatModel, onSave, isSaving,
 }: {
+    /** Which half to draw: the models, or the rerankers' cards. */
+    part: 'knowledge' | 'rerankers';
     value: KnowledgeModelSettings;
     onChange: (next: KnowledgeModelSettings) => void;
     providers: Record<string, ProviderModels>;
@@ -63,9 +67,12 @@ export function KnowledgeModels({
     embeddingModel: string;
     /** The workspace's chat model, which writes Contextual Retrieval's contexts when nothing else is named. */
     chatModel: string;
+    /** The page's save, for the rerank server's address (its key saves in its card). */
+    onSave?: () => void;
+    isSaving?: boolean;
 }) {
     const enabled = useKnowledgeEnabled();
-    const { secrets } = useSavedSecrets();
+    const { secrets, save, remove } = useSavedSecrets();
     const [open, setOpen] = useState<string | null>(null);
     if (!enabled) return null;
     const toggle = (k: string) => setOpen(o => (o === k ? null : k));
@@ -80,8 +87,60 @@ export function KnowledgeModels({
         ...withUnreachable(modelOptions(providers), value.knowledge_contextual_model || undefined),
     ];
 
+    if (part === 'rerankers') return (
+        <Section variant="plain" collapsible={false} title="Rerankers"
+            description="Your own keys for reranking a knowledge base's search results, billed by the provider.">
+            <div className={`${FORM} space-y-2`}>
+                {KEYS.map(k => (
+                    <ProviderCard
+                        key={k.name}
+                        meta={{ label: k.provider, description: k.description, keyPlaceholder: k.placeholder }}
+                        live={!!secrets[k.name]?.set}
+                        status={secrets[k.name]?.set ? 'Key saved' : 'No key configured'}
+                        keyState={{ set: !!secrets[k.name]?.set, hint: secrets[k.name]?.hint ? `…${secrets[k.name].hint}` : null }}
+                        keyLabel={k.label}
+                        onSaveKey={(v: string) => save(k.name, v)}
+                        onRemoveKey={async () => { await remove(k.name); }}
+                        removeNote="Searches that rerank with it keep their search order instead, and say so."
+                        open={open === k.name}
+                        onToggle={() => toggle(k.name)}
+                    />
+                ))}
+                <ProviderCard
+                    meta={{ label: SERVER, description: 'Your own TEI or Infinity server, for tei.* models.', keyPlaceholder: 'Leave blank if not required' }}
+                    live={!!value.knowledge_rerank_base_url}
+                    status={value.knowledge_rerank_base_url ? 'Address set' : 'Not set'}
+                    keyState={{ set: !!secrets.knowledge_rerank_key?.set, hint: secrets.knowledge_rerank_key?.hint ? `…${secrets.knowledge_rerank_key.hint}` : null }}
+                    keyLabel="Rerank server key"
+                    onSaveKey={(v: string) => save('knowledge_rerank_key', v)}
+                    onRemoveKey={async () => { await remove('knowledge_rerank_key'); }}
+                    removeNote="Searches that rerank with it keep their search order instead, and say so."
+                    open={open === 'server'}
+                    onToggle={() => toggle('server')}
+                    extras={
+                        <div className="space-y-3">
+                            <Field label="Rerank server address" hint="Your own TEI or Infinity server, for tei.* models.">
+                                <Input
+                                    value={value.knowledge_rerank_base_url}
+                                    onChange={e => set('knowledge_rerank_base_url', e.target.value.trim())}
+                                    placeholder="http://localhost:8080"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                />
+                            </Field>
+                            {onSave && (
+                                <div className="flex justify-end">
+                                    <Button variant="secondary" onClick={onSave} loading={isSaving}>Save</Button>
+                                </div>
+                            )}
+                        </div>
+                    }
+                />
+            </div>
+        </Section>
+    );
+
     return (
-        <>
         <Section variant="plain" collapsible={false} title="Knowledge">
             <div className={`${FORM} space-y-4`}>
                 <p className="text-sm text-text-muted">
@@ -124,56 +183,5 @@ export function KnowledgeModels({
             </div>
             </div>
         </Section>
-
-        <Section variant="plain" collapsible={false} title="Rerankers"
-            description="Your own keys for reranking a knowledge base's search results, billed by the provider.">
-            <div className={`${FORM} space-y-2`}>
-                {KEYS.map(k => (
-                    <ProviderCard key={k.name} name={k.provider} live={!!secrets[k.name]?.set}
-                        status={secrets[k.name]?.set ? 'Key saved' : 'No key configured'}
-                        open={open === k.name} onToggle={() => toggle(k.name)}>
-                        <p className="text-xs text-text-muted">{k.description}</p>
-                        <div className="space-y-1.5">
-                            <label htmlFor={`rerank-${k.name}`} className={FIELD_LABEL}>{k.label}</label>
-                            <Input
-                                id={`rerank-${k.name}`}
-                                type="password"
-                                autoComplete="off"
-                                value={value[k.name]}
-                                onChange={e => set(k.name, e.target.value)}
-                                placeholder={secretPlaceholder(secrets, k.name, k.placeholder)}
-                            />
-                            <SavedSecret name={k.name} label={k.label} typed={value[k.name]} />
-                        </div>
-                    </ProviderCard>
-                ))}
-                <ProviderCard name={SERVER} live={!!value.knowledge_rerank_base_url}
-                    status={value.knowledge_rerank_base_url ? 'Address set' : 'Not set'}
-                    open={open === 'server'} onToggle={() => toggle('server')}>
-                    <Field label="Rerank server address" hint="Your own TEI or Infinity server, for tei.* models.">
-                        <Input
-                            value={value.knowledge_rerank_base_url}
-                            onChange={e => set('knowledge_rerank_base_url', e.target.value.trim())}
-                            placeholder="http://localhost:8080"
-                            autoComplete="off"
-                            spellCheck={false}
-                        />
-                    </Field>
-                    <div className="space-y-1">
-                        <Field label="Rerank server key">
-                            <Input
-                                type="password"
-                                autoComplete="off"
-                                value={value.knowledge_rerank_key}
-                                onChange={e => set('knowledge_rerank_key', e.target.value)}
-                                placeholder={secretPlaceholder(secrets, 'knowledge_rerank_key', 'Leave blank if not required')}
-                            />
-                        </Field>
-                        <SavedSecret name="knowledge_rerank_key" label="rerank server key" typed={value.knowledge_rerank_key} />
-                    </div>
-                </ProviderCard>
-            </div>
-        </Section>
-        </>
     );
 }

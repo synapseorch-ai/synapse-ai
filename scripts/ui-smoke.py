@@ -7329,6 +7329,66 @@ async def check_rerankers(browser) -> str:
     return "four reranker cards; Cohere opens to its key, the server to its address"
 
 
+@check
+async def check_hosted_providers(browser) -> str:
+    """Settings → Models in cloud's order and on cloud's card (PROV1, D245): Defaults, Knowledge, the form's Save
+    on the right, then Providers in three groups. A provider card saves and removes its own key and nothing else:
+    Groq's Save posts only `groq_key`, its Remove asks first and posts only `clear_secrets`. Both POSTs are answered
+    here, so nothing is stored."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    posts: list[dict] = []
+
+    async def _settings(route):
+        if route.request.method != "POST":
+            return await route.fallback()
+        body = json.loads(route.request.post_data or "{}")
+        posts.append(body)
+        saved = "groq_key" in body
+        await route.fulfill(json={"groq_key": "", "groq_key_set": saved, "groq_key_hint": "abcd" if saved else ""})
+
+    await ctx.route("**/api/settings", _settings)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+        groups = page.locator("[data-provider-group]")
+        await groups.first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)   # the page's first loads redraw the cards; type after they land
+        names = [await g.get_attribute("data-provider-group") for g in await groups.all()]
+        if names != ["Model makers", "Hosts", "On your machine or server"]:
+            raise AssertionError(f"the provider groups are {names}")
+        heads = await page.evaluate("() => [...document.querySelectorAll('main h2')].map(h => h.textContent.trim())")
+        if heads[:2] != ["Defaults", "Knowledge"] and heads[:2] != ["Defaults", "Providers"]:
+            raise AssertionError(f"the page does not lead with Defaults: {heads}")
+        save = page.get_by_role("button", name="Save changes", exact=True)
+        providers_head = page.locator("main h2", has_text="Providers")
+        sb, pb = await save.bounding_box(), await providers_head.bounding_box()
+        column = await page.locator("[data-provider-group]").first.bounding_box()
+        if not sb or not pb or sb["y"] > pb["y"]:
+            raise AssertionError("Save changes is not above Providers")
+        if abs((sb["x"] + sb["width"]) - (column["x"] + column["width"])) > 4:
+            raise AssertionError("Save changes is not on the right of the form's column")
+        for name in ("Mistral", "Moonshot (Kimi)", "Qwen", "Z.ai (GLM)", "MiniMax", "OpenRouter", "Groq", "Cerebras",
+                     "Together AI", "Fireworks", "NVIDIA"):
+            card = page.locator(f'[data-provider-card="{name}"]')
+            if await card.count() != 1:
+                raise AssertionError(f"no {name} card")
+            if await card.locator("img").count() != 1:
+                raise AssertionError(f"{name} has no logo")
+        groq = page.locator('[data-provider-card="Groq"]')
+        await groq.locator("button").first.click()
+        await groq.get_by_label("Groq API key").fill("gsk_smoke_not_a_key")
+        await groq.get_by_role("button", name="Save", exact=True).click()
+        await groq.get_by_text("A key is stored").wait_for(timeout=10_000)
+        await groq.get_by_role("button", name="Remove the Groq key").click()
+        await page.get_by_role("dialog").get_by_role("button", name="Remove").click()
+        await asyncio.sleep(1.5)
+    finally:
+        await ctx.close()
+    if [sorted(p) for p in posts] != [["groq_key"], ["clear_secrets"]] or posts[1].get("clear_secrets") != ["groq_key"]:
+        raise AssertionError(f"the card's POSTs were {[sorted(p) for p in posts]}")
+    return "Defaults first, Save on the right above Providers, three groups, eleven hosted cards with logos; Groq saves and removes only its own key"
+
+
 async def _patch_json(route, extra: dict):
     """Answer with the real response, `extra` merged in."""
     res = await route.fetch()

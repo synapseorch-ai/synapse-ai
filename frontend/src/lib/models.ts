@@ -31,7 +31,29 @@ export const PROVIDER_LABELS: Record<string, string> = {
     gemini_cli: "Gemini (CLI)",
     codex_cli: "Codex (CLI)",
     github_copilot_cli: "GitHub Copilot (CLI)",
+    // The hosted OpenAI-style providers (PROV1, D245).
+    moonshot: "Moonshot (Kimi)",
+    mistral: "Mistral",
+    nvidia: "NVIDIA",
+    openrouter: "OpenRouter",
+    qwen: "Qwen",
+    zai: "Z.ai (GLM)",
+    groq: "Groq",
+    cerebras: "Cerebras",
+    together: "Together AI",
+    fireworks: "Fireworks",
+    minimax: "MiniMax",
 };
+
+/**
+ * The hosted OpenAI-style providers (PROV1, D245): each is one key, saved as
+ * `<id>_key`, and one row on Settings → Models. The backend's table
+ * (`core/providers/registry.py`) holds their addresses.
+ */
+export const HOSTED_PROVIDERS = [
+    "moonshot", "mistral", "nvidia", "openrouter", "qwen", "zai", "groq", "cerebras", "together", "fireworks", "minimax",
+] as const;
+export const HOSTED_KEY_NAMES: string[] = HOSTED_PROVIDERS.map((id) => `${id}_key`);
 
 /** Falls back to the raw key, so a provider added to the backend first still reads. */
 export function providerLabel(key: string): string {
