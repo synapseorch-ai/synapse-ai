@@ -131,9 +131,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Press “Add step” in the dock (or ⌘K) and pick a step, or drag one onto the spot you want; drag between handles to connect steps.',
             'Click a step to set it up in the card on the right: its name, its agent or prompt, its output key and the next step. Esc or a click on empty canvas puts the card away.',
-            'Open “Workflow settings” for the description, the run’s input, its schedules, the shared state keys and the turn and time limits.',
+            'Open “Workflow settings” for the description, its schedules, the shared state keys, the turn and time limits, the result and the rubric that scores runs.',
             'Click “Save” or press Ctrl+S; anything to fix shows on the step and under “to check” in the bar.',
-            'Click “Run now” — it runs the last saved version. The run strip says where it is; “Run Log” opens what it did.',
+            'Click “Run now” (its arrow takes an input for the run): it runs the last saved version. The run strip says where it is, and “Run Log” opens what it did.',
         ],
         media: { id: 'workflows/add-step', clip: true, alt: 'Adding an LLM step from Add step; the new step appears on the canvas with its settings open.' },
         guide: '/guides/start/first-workflow',
