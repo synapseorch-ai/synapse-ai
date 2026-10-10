@@ -49,6 +49,7 @@ from core.routes.db_configs import router as db_configs_router
 from core.routes.orchestrations import router as orchestrations_router
 from core.routes.logs import router as logs_router
 from core.routes.messaging import router as messaging_router
+from core.routes.voice import router as voice_router
 from core.routes.sessions import router as sessions_router
 from core.routes.usage import router as usage_router
 from core.routes.profiling import router as profiling_router
@@ -1035,6 +1036,7 @@ app.include_router(repos_router)
 app.include_router(db_configs_router)
 app.include_router(orchestrations_router)
 app.include_router(logs_router)
+app.include_router(voice_router)  # a phone number's calls (VOX1a); before the generic webhook
 app.include_router(messaging_router)
 app.include_router(sessions_router)
 app.include_router(usage_router)

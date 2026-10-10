@@ -27,6 +27,9 @@ PLATFORM_ADAPTER_MAP = {
     "slack": "core.messaging.adapters.slack.SlackAdapter",
     "teams": "core.messaging.adapters.teams.TeamsAdapter",
     "whatsapp": "core.messaging.adapters.whatsapp.WhatsAppAdapter",
+    # A phone number (VOX1a): a channel for the list, status and assignments; its calls go through the
+    # voice routes, not through an adapter's receive / send.
+    "twilio_voice": "core.messaging.voice.adapter.VoiceAdapter",
 }
 
 

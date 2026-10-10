@@ -52,6 +52,13 @@ def _public_channel(ch: dict) -> dict:
     return view
 
 
+async def _disconnect_number(ch: dict | None) -> None:
+    """A phone number goes back to where it pointed before (VOX1a, V5)."""
+    if ch and ch.get("platform") == "twilio_voice":
+        from core.messaging.voice.connect import disconnect
+        await disconnect(ch)
+
+
 # ── CRUD ──────────────────────────────────────────────────────────────────────
 
 @router.get("/api/messaging/channels")
@@ -98,6 +105,7 @@ async def delete_channel(channel_id: str, request: Request):
     """Stop and delete a channel."""
     manager = _get_manager(request)
     await manager.stop_channel(channel_id)
+    await _disconnect_number(await channel_store.get_channel(channel_id))
     deleted = await channel_store.delete_channel(channel_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -207,7 +215,9 @@ async def disable_channel(channel_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Channel not found")
 
     await manager.stop_channel(channel_id)
+    await _disconnect_number(ch)
 
+    ch = await channel_store.get_channel(channel_id) or ch
     ch["enabled"] = False
     await channel_store.save_channel(ch)
     return {"status": "stopped", "channel_id": channel_id}

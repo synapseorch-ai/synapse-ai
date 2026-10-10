@@ -8,20 +8,49 @@ caller is told someone will follow up. Approve or Refuse in the bell resumes
 the turn in the background from its snapshot, with the same conversation the
 request carried. Nobody answering within the hours given expires it unrun.
 
-The conversation is the API's own (`oai_…`), never listed in Chat; its row is
-removed once its question is settled. A voice call parks the same way (V16).
+Two doors park here, each in its own conversations:
+
+* ``openai``: the OpenAI-compatible endpoint's (`oai_…`), never listed in Chat;
+  its row is removed once its question is settled.
+* ``voice``: a phone call's (`voice_…`, VOX1a, V16). The caller is a visitor, so
+  the resumed turn is one too. The conversation is the call's transcript (V27),
+  so it is kept, and the resumed turn is saved into it.
 """
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger("api_approvals")
 
-#: The conversations this module parks in.
+#: The conversations the OpenAI door parks in.
 SESSION_PREFIX = "oai_"
 #: Why an expired one was not run.
 EXPIRED = "nobody answered in time"
+
+
+@dataclass(frozen=True)
+class Door:
+    """Where a parked turn came from, and what that changes."""
+    name: str
+    prefix: str
+    #: Where the bell's Approve / Refuse post (an app route, behind the app's own auth).
+    answer_path: str
+    #: The conversation is the caller's record (a call's transcript), not scratch.
+    keeps_conversation: bool
+    #: The agent log's source for the resumed turn.
+    log_source: str
+
+
+DOORS = {
+    "openai": Door("openai", SESSION_PREFIX, "/api/openai/approvals/{session_id}", False, "openai"),
+    "voice": Door("voice", "voice_", "/api/messaging/twilio_voice/approvals/{session_id}", True, "voice"),
+}
+
+
+def door_for(session_id: str) -> Door | None:
+    return next((d for d in DOORS.values() if session_id.startswith(d.prefix)), None)
 
 
 def _now() -> datetime:
@@ -30,12 +59,17 @@ def _now() -> datetime:
 
 def answer_url(session_id: str) -> str:
     """Where the bell's Approve / Refuse post (an app route, behind the app's own auth)."""
-    return f"/api/openai/approvals/{session_id}"
+    door = door_for(session_id) or DOORS["openai"]
+    return door.answer_path.format(session_id=session_id)
 
 
 async def park(*, session_id: str, agent: dict, event: dict, message: str, progress: dict | None,
-               resume: dict, hours: int) -> str:
-    """Keep the call and the turn's snapshot, ask in the bell; returns the approval id."""
+               resume: dict, hours: int, door: str = "openai", caller: dict | None = None) -> str:
+    """Keep the call and the turn's snapshot, ask in the bell; returns the approval id.
+
+    `caller` (the voice door's) is who asked: ``{"number", "visitor"}``, the
+    visitor scope as `VisitorScope.to_dict()`, so the resumed turn keeps it.
+    """
     from core import tool_policy
     from core.chat_approval import parked_payload
     from core.notifications import hub
@@ -45,19 +79,25 @@ async def park(*, session_id: str, agent: dict, event: dict, message: str, progr
     name = agent.get("name") or agent.get("id") or "An agent"
     expires_at = (_now() + timedelta(hours=hours)).isoformat()
     pending = parked_payload(event, message=message, progress=progress)
-    pending["api_turn"] = {"door": "openai", "agent_name": name, "expires_at": expires_at,
+    pending["api_turn"] = {"door": door, "agent_name": name, "expires_at": expires_at,
                            "history": resume.get("history") or [],
                            "caller_system": resume.get("caller_system")}
+    data = {"approval_id": event.get("approval_id"), "tool_name": event.get("tool_name"),
+            "tool_args": _clip_args(event.get("tool_args") or {}), "category": event.get("category"),
+            "expires_at": expires_at, "session_id": session_id, "agent_id": agent["id"],
+            "answer_url": answer_url(session_id)}
+    if door == "voice":
+        number = (caller or {}).get("number") or "an unknown number"
+        pending["api_turn"]["caller"] = number
+        pending["api_turn"]["visitor"] = (caller or {}).get("visitor")
+        body = (f"A caller on {number} asked {name} for something that needs {event.get('tool_name')} — "
+                f"{tool_policy.explain(event.get('category'))}. They were told someone will follow up.")
+        data.update({"door": "voice", "caller": number})
+    else:
+        body = (f"An app talking to {name} asked something that needs {event.get('tool_name')} — "
+                f"{tool_policy.explain(event.get('category'))}.")
     await _sessions.set_pending_approval(session_id, agent["id"], pending)
-    hub.publish(
-        "tool_approval", f"{name} needs approval",
-        body=(f"An app talking to {name} asked something that needs {event.get('tool_name')} — "
-              f"{tool_policy.explain(event.get('category'))}."),
-        data={"approval_id": event.get("approval_id"), "tool_name": event.get("tool_name"),
-              "tool_args": _clip_args(event.get("tool_args") or {}), "category": event.get("category"),
-              "expires_at": expires_at, "session_id": session_id, "agent_id": agent["id"],
-              "answer_url": answer_url(session_id)},
-    )
+    hub.publish("tool_approval", f"{name} needs approval", body=body, data=data)
     return event.get("approval_id") or ""
 
 
@@ -66,6 +106,9 @@ async def _settle(session_id: str, agent_id: str, pending: dict, how: str) -> No
     from core.store import sessions as _sessions
 
     hub.resolve_approval(pending.get("approval_id"), how)
+    door = door_for(session_id)
+    if door is not None and door.keeps_conversation:
+        return
     try:
         await _sessions.delete_one(session_id, agent_id)
     except Exception as exc:  # noqa: BLE001 — a leftover row is only clutter, never listed
@@ -82,7 +125,7 @@ async def answer(session_id: str, *, approve: bool, reason: str = "", approval_i
     from core import chat_turns
     from core.store import sessions as _sessions
 
-    if not session_id.startswith(SESSION_PREFIX):
+    if door_for(session_id) is None:
         raise LookupError("This is not an API turn's question.")
     waiting = [(a, p) for a, p in await _sessions.pending_approvals(session_id) if p.get("api_turn")]
     if approval_id is not None:
@@ -114,55 +157,71 @@ def _expired(pending: dict) -> bool:
 
 async def _resumed(session_id: str, agent_id: str, pending: dict, *, approve: bool, reason: str):
     """The turn picked up from its snapshot with the person's answer; what it ends with goes to the bell."""
+    import contextlib
+
     import core.server as _server
+    from core import visitor as _visitor
     from core.chat_approval import resume_state_for
     from core.models import ChatRequest
     from core.notifications import hub
     from core.react_engine import run_react_loop
 
     meta = pending.get("api_turn") or {}
+    door = DOORS.get(meta.get("door") or "openai") or DOORS["openai"]
     name = meta.get("agent_name") or agent_id
     await _settle(session_id, agent_id, pending, "allowed" if approve else "refused")
     request = ChatRequest(message=pending.get("message") or "", session_id=session_id, agent_id=agent_id)
     latest_progress: dict | None = None
     answer_text = ""
+    # A caller who was a visitor is still one when the turn carries on (V16).
+    scope = _visitor.VisitorScope.from_dict(meta["visitor"]) if meta.get("visitor") else None
+    done = {"session_id": session_id, "agent_id": agent_id}
+    if door.name == "voice":
+        done.update({"door": "voice", "caller": meta.get("caller")})
     try:
-        async for event in run_react_loop(
-            request, _server, progress_events=True,
-            resume_state=resume_state_for(pending, approve=approve, reason=reason),
-            history_override=meta.get("history") or [], caller_system=meta.get("caller_system"),
-            save_turn=False, log_source="openai",
-        ):
-            kind = event.get("type")
-            if kind == "_step_progress":
-                latest_progress = {k: v for k, v in event.items() if k != "type"}
-                continue
-            if kind == "human_input_required" and event.get("kind") == "tool_approval":
-                # Another call needs a person: asked again, the same way.
-                await park(session_id=session_id, agent={"id": agent_id, "name": name}, event=event,
-                           message=request.message, progress=latest_progress,
-                           resume={"history": meta.get("history"), "caller_system": meta.get("caller_system")},
-                           hours=24)
-                return
-            if kind == "final" and not event.get("orch_step_id"):
-                answer_text = event.get("response", "")
-            yield event
+        with (_visitor.scope(scope) if scope is not None else contextlib.nullcontext()):
+            async for event in run_react_loop(
+                request, _server, progress_events=True,
+                resume_state=resume_state_for(pending, approve=approve, reason=reason),
+                history_override=None if door.keeps_conversation else (meta.get("history") or []),
+                caller_system=meta.get("caller_system"),
+                save_turn=door.keeps_conversation, log_source=door.log_source,
+            ):
+                kind = event.get("type")
+                if kind == "_step_progress":
+                    latest_progress = {k: v for k, v in event.items() if k != "type"}
+                    continue
+                if kind == "human_input_required" and event.get("kind") == "tool_approval":
+                    # Another call needs a person: asked again, the same way.
+                    await park(session_id=session_id, agent={"id": agent_id, "name": name}, event=event,
+                               message=request.message, progress=latest_progress,
+                               resume={"history": meta.get("history"), "caller_system": meta.get("caller_system")},
+                               hours=24, door=door.name,
+                               caller={"number": meta.get("caller"), "visitor": meta.get("visitor")})
+                    return
+                if kind == "final" and not event.get("orch_step_id"):
+                    answer_text = event.get("response", "")
+                yield event
     except Exception as exc:  # noqa: BLE001 — the person who answered is told, the log keeps it
         log.error("resumed API turn %s failed: %s", session_id, exc)
         hub.publish("run_failed", f"{name} could not finish",
                     body="It failed after the approval was answered. Its log has the details.",
-                    data={"session_id": session_id, "agent_id": agent_id})
+                    data=done)
         return
-    hub.publish("run_completed", f"{name} finished after your answer", body=answer_text[:500],
-                data={"session_id": session_id, "agent_id": agent_id})
+    if door.name == "voice":
+        title = f"{name} finished after your answer — call {meta.get('caller') or 'the caller'} back"
+    else:
+        title = f"{name} finished after your answer"
+    hub.publish("run_completed", title, body=answer_text[:500], data=done)
 
 
 async def expire_parked() -> None:
     """Every API turn's call nobody answered in time expires unrun (the scheduler's tick runs this)."""
     from core.store import sessions as _sessions
 
-    for session_id, agent_id, pending in await _sessions.parked_approvals(SESSION_PREFIX):
-        if pending.get("api_turn") and _expired(pending):
-            taken = await _sessions.take_pending_approval(session_id, agent_id)
-            if taken:
-                await _settle(session_id, agent_id, taken, "expired")
+    for door in DOORS.values():
+        for session_id, agent_id, pending in await _sessions.parked_approvals(door.prefix):
+            if pending.get("api_turn") and _expired(pending):
+                taken = await _sessions.take_pending_approval(session_id, agent_id)
+                if taken:
+                    await _settle(session_id, agent_id, taken, "expired")

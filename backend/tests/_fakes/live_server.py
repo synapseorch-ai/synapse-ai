@@ -59,10 +59,11 @@ class LiveServer:
 
 
 @contextlib.asynccontextmanager
-async def serve(app) -> AsyncIterator[LiveServer]:
+async def serve(app, *, ws: str = "none") -> AsyncIterator[LiveServer]:
+    """`ws="websockets"` serves WebSocket routes too (a phone call's socket, VOX1a)."""
     config = uvicorn.Config(
         app, host="127.0.0.1", port=0, lifespan="off",
-        log_config=None, log_level="warning", access_log=False, ws="none",
+        log_config=None, log_level="warning", access_log=False, ws=ws,
         # Without it, shutdown waits for ever on a stream still being tailed.
         timeout_graceful_shutdown=2,
     )

@@ -152,6 +152,46 @@ async def pop_last_turn(session_id: str, agent_id: str,
         return {"user": user.get("content", ""), "assistant": assistant.get("content", "")}
 
 
+def cut_at_heard(answer: str, heard: str) -> str:
+    """`answer` up to the end of the clause the caller last heard (see `cut_last_answer`)."""
+    heard = (heard or "").strip()
+    if not heard:
+        return answer
+    at = answer.find(heard)
+    if at < 0:
+        at = answer.lower().find(heard.lower())
+    return answer if at < 0 else answer[:at + len(heard)]
+
+
+async def cut_last_answer(session_id: str, agent_id: str, heard: str) -> bool:
+    """The last answer as the person actually heard it (a phone call's barge-in, VOX1a V14).
+
+    The caller talked over the agent, so the rest was never said; the next turn
+    must not believe it was. `heard` is what the provider says played last —
+    ConversationRelay's `utteranceUntilInterrupt` is only the clause that was
+    playing (measured, VOX1a P1), so the answer is cut at the end of that clause
+    and everything before it is kept. A clause not found in the answer (the
+    answer was reworded for speech), or none at all, leaves the words as they
+    are; either way the answer is marked interrupted. Only the content changes,
+    the turn's tools and calls stay. False when the tail is not an answer.
+    """
+    from core.store import session
+
+    async with session() as s:
+        row = await _row(s, session_id, agent_id)
+        if row is None:
+            return False
+        messages = list(row.messages or [])
+        if not messages or messages[-1].get("role") != "assistant":
+            return False
+        last = dict(messages[-1])
+        last["content"] = cut_at_heard(str(last.get("content") or ""), heard)
+        last["interrupted"] = True
+        # Reassigned, not mutated (see append_turn).
+        row.messages = messages[:-1] + [last]
+        return True
+
+
 async def set_pending_approval(session_id: str, agent_id: str, pending: dict | None) -> None:
     """Park (or clear) the tool call this conversation is waiting on.
 

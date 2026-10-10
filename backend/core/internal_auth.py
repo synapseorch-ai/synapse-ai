@@ -93,6 +93,12 @@ _SESSIONLESS_PREFIXES = ("/api/auth/", "/api/widget/")
 #: The rest of `/api/messaging/` (channel settings) stays behind the gate.
 _WEBHOOK = re.compile(r"^/api/messaging/[^/]+/webhook(/|$)")
 
+#: A phone number's webhooks (VOX1a). Twilio must reach the backend itself: a call's WebSocket cannot pass the
+#: Next proxy (its `/api` is a route handler, which cannot upgrade), and the socket's webhooks share its public
+#: address. Each route admits by its own credentials — the route token that names the channel, the number's
+#: SharedKey signature when it has one, and the call's one-time socket token — never by the internal token.
+_VOICE_WEBHOOK = re.compile(r"^/api/messaging/twilio_voice/webhook/[^/]+/(incoming|end|dialed|recorded|status)$")
+
 SESSION_HEADER = "X-Synapse-Session"
 SESSION_COOKIE = "synapse_session"
 
@@ -178,6 +184,10 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
         # External versioned API (v1, v2, ...) — uses require_api_key, not the
         # internal token. Match any /api/v<N> prefix so future versions are exempt.
         if re.match(r"^/api/v\d+(/|$)", path):
+            return await call_next(request)
+
+        # A phone number's webhooks: authenticated per channel, not by the frontend's token.
+        if _VOICE_WEBHOOK.match(path):
             return await call_next(request)
 
         # MCP OAuth callback — called by external OAuth providers, not the frontend.

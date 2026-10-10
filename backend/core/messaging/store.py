@@ -134,6 +134,9 @@ async def save_channel(channel: dict) -> dict:
     # Only a real `true` (or no value: a channel saved before the setting) is a
     # member channel; the route saves raw JSON, and `"false"` must not read as on.
     channel["senders_are_members"] = channel.get("senders_are_members", True) is True
+    if channel.get("platform") == "twilio_voice":
+        # A caller is always a visitor: caller ID can be spoofed (VOX1a, V16).
+        channel["senders_are_members"] = False
     channel["visitor_tools"] = _visitor.clean_tools(channel.get("visitor_tools"))
 
     idx = next((i for i, c in enumerate(data) if c["id"] == channel["id"]), None)
@@ -170,9 +173,11 @@ async def save_channel(channel: dict) -> dict:
 #: reason or a log line, and kept when a save leaves them blank.
 SECRET_CREDENTIALS = frozenset({
     "bot_token", "app_token", "app_password", "access_token", "app_secret", "signing_secret",
+    "api_key_secret",  # a Twilio API key's (VOX1a)
 })
-#: Minted by the server (Telegram webhook mode) and never shown, not even as set.
-SERVER_ONLY_CREDENTIALS = frozenset({"webhook_secret"})
+#: Minted by the server (Telegram webhook mode; a phone number's route token,
+#: VOX1a) and never shown, not even as set.
+SERVER_ONLY_CREDENTIALS = frozenset({"webhook_secret", "route_token"})
 
 
 def redact_secrets(text, channel: dict):
