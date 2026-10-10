@@ -393,3 +393,13 @@ async def test_a_provider_out_of_balance_is_asked_once(monkeypatch, no_usage):
         await _ask("moonshot.kimi-k2.6")
     assert len(calls) == 1
     assert caught.value.code == llm.QUOTA_EXHAUSTED and not caught.value.retryable
+
+
+async def test_a_refused_key_is_said_on_its_card(client, monkeypatch):
+    """A 401 is not hidden behind the fallback list: the card says the key was refused (cloud's card does)."""
+    import core.routes.data as data
+
+    monkeypatch.setattr(data, "load_settings", lambda: {"groq_key": "k-bad"})
+    install_httpx(monkeypatch, lambda url, kwargs: FakeResponse({"error": "invalid api key"}, status_code=401))
+    groq = (await client.get("/api/models")).json()["providers"]["groq"]
+    assert groq == {"available": False, "models": [], "embedding_models": [], "error": "Groq refused this key (401)"}

@@ -654,6 +654,10 @@ async def get_models():
     from core.providers.discovery import list_chat_models, routed
     from core.providers.registry import HOSTED
 
+    #: Why a hosted provider's list could not be read, for its card: a refused
+    #: key is said, not hidden behind the fallback list (cloud's card does so).
+    hosted_errors: dict[str, str] = {}
+
     async def fetch_hosted(spec) -> tuple[bool, list[str], list[str]]:
         key = (settings.get(spec.keys[0]) or "").strip()
         fallback = routed(spec, spec.fallback)
@@ -661,6 +665,11 @@ async def get_models():
             return False, fallback, []
         try:
             return True, routed(spec, await list_chat_models(spec, key)) or fallback, []
+        except httpx.HTTPStatusError as e:
+            print(f"Error fetching {spec.label} models: HTTP {e.response.status_code}")
+            if e.response.status_code in (401, 403):
+                hosted_errors[spec.id] = f"{spec.label} refused this key ({e.response.status_code})"
+                return False, [], []
         except Exception as e:
             print(f"Error fetching {spec.label} models: {type(e).__name__}: {e}")
         return True, fallback, []
@@ -744,6 +753,8 @@ async def get_models():
     hosted_chat: list[str] = []
     for spec, (avail, chat, embed) in zip(HOSTED, results[15:]):
         providers[spec.id] = {"available": avail, "models": chat, "embedding_models": embed}
+        if spec.id in hosted_errors:
+            providers[spec.id]["error"] = hosted_errors[spec.id]
         hosted_chat += chat
 
     # --- Flat list of all available models ---
