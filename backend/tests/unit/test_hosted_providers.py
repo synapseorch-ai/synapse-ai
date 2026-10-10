@@ -357,3 +357,39 @@ def test_a_host_that_sets_no_price_of_ours_is_unpriced(model):
     from core.usage_tracker import _resolve_pricing_entry
 
     assert _resolve_pricing_entry(model, DEFAULT_MODEL_PRICING) is None
+
+
+# ── an account out of money (F442) ───────────────────────────────────────────
+
+_MOONSHOT_BROKE = ('{"error":{"message":"Your account org-x <ak-y> is suspended due to insufficient balance, '
+                   'please recharge your account or check your plan and billing details","type":"exceeded_current_quota_error"}}')
+
+
+@pytest.mark.parametrize("status,body", [
+    (429, _MOONSHOT_BROKE),                                                         # Moonshot, measured live
+    (429, '{"error":{"code":"1113","message":"Insufficient balance or no resource package. Please recharge."}}'),
+    (400, '{"code":"Arrearage","message":"Access denied, please make sure your account is in good standing."}'),
+])
+def test_a_balance_refusal_is_a_quota_one(status, body):
+    assert llm.is_quota_refusal(status, body)
+    assert llm.classify_failure(status, body) == llm.QUOTA_EXHAUSTED
+
+
+def test_a_rate_limit_is_still_a_rate_limit():
+    body = '{"error":{"message":"Rate limit reached for requests per minute. Please try again in 2s."}}'
+    assert not llm.is_quota_refusal(429, body)
+    assert llm.classify_failure(429, body) == llm.RATE_LIMITED
+
+
+async def test_a_provider_out_of_balance_is_asked_once(monkeypatch, no_usage):
+    calls = []
+
+    def handler(url, kwargs):
+        calls.append(url)
+        return FakeResponse(status_code=429, text=_MOONSHOT_BROKE)
+
+    install_httpx(monkeypatch, handler)
+    with pytest.raises(llm.LLMError) as caught:
+        await _ask("moonshot.kimi-k2.6")
+    assert len(calls) == 1
+    assert caught.value.code == llm.QUOTA_EXHAUSTED and not caught.value.retryable

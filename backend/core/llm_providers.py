@@ -522,7 +522,11 @@ RETRYABLE = frozenset({RATE_LIMITED, PROVIDER_UNAVAILABLE})
 #: rate limit — it never clears. Not "quota" or "billing" alone: Gemini's
 #: free-tier per-minute 429 says "You exceeded your current quota, please check
 #: your plan and billing details" and clears in a minute, which the retry covers.
-_QUOTA_WORDS = re.compile(r"insufficient_quota|credit|prepay", re.IGNORECASE)
+#: An account out of money, in each provider's words: OpenAI's code, a credit or
+#: prepaid balance, and (F442) Moonshot's "suspended due to insufficient balance,
+#: please recharge" (a 429), Z.ai's "Insufficient balance", Qwen's "Arrearage".
+_QUOTA_WORDS = re.compile(r"insufficient_quota|credit|prepay|insufficient[ _]balance|recharge|arrearage",
+                          re.IGNORECASE)
 _TRANSIENT_WORDS = re.compile(r"timed out|timeout|not reachable|unreachable|connect|overloaded", re.IGNORECASE)
 #: Where each adapter's message states the provider's status: "HTTP 429:" (the
 #: OpenAI-shaped ones), "API error 400:" (Anthropic), "402 RESOURCE_EXHAUSTED"
