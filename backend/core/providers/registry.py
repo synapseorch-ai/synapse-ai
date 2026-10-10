@@ -89,6 +89,17 @@ class ProviderSpec:
     #: adapter words its own (Ollama's says where it looked).
     error: str | None = None
     caps: Capabilities = Capabilities(tools="native", images=True, reasoning=False)
+    #: A hosted OpenAI-style API at a fixed address (PROV1, D245): chat is
+    #: `{base_url}/chat/completions`, its model list `{base_url}/models`. None:
+    #: the address is a setting (`address`) or the adapter knows its own.
+    base_url: str | None = None
+    #: Bare model ids offered when there is no key or its list cannot be read.
+    fallback: tuple[str, ...] = ()
+
+    @property
+    def hosted(self) -> bool:
+        """A hosted OpenAI-style API with its own key (PROV1): one adapter serves them all."""
+        return self.base_url is not None
 
     @property
     def embeddings(self) -> bool:
@@ -202,7 +213,51 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         chat="_chat_huggingface", error="HuggingFace Provider Error",
         caps=Capabilities(tools="prompt", images=False, reasoning=False),
     ),
+    # Hosted OpenAI-style APIs, each with its own key (PROV1, D245). Every one
+    # is named by a dotted prefix, stripped before the call: their own ids
+    # (`mistral-large-latest`, `meta-llama/…`, `deepseek/…`) would otherwise
+    # land on Ollama or on DeepSeek. One adapter serves them all.
+    *(
+        ProviderSpec(
+            id=id, label=label, mode="cloud", prefixes=(f"{id}.",), strip=f"{id}.",
+            keys=(f"{id}_key",), readiness="key", chat="_chat_hosted_v1", error="Cloud API Error",
+            caps=Capabilities(tools="native", images=images, reasoning=True),
+            base_url=base_url, fallback=fallback,
+        )
+        # Fallbacks are each provider's current chat models, from its own
+        # documentation on 2026-10-10. Images: whether its flagship models see;
+        # a model of theirs that does not is refused by the provider, once.
+        for id, label, base_url, images, fallback in (
+            ("moonshot", "Moonshot (Kimi)", "https://api.moonshot.ai/v1", True,
+             ("kimi-k3", "kimi-k2.6", "kimi-k2.7-code")),
+            ("mistral", "Mistral", "https://api.mistral.ai/v1", True,
+             ("mistral-large-latest", "mistral-medium-latest", "mistral-small-latest", "ministral-14b-latest")),
+            ("nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", True,
+             ("moonshotai/kimi-k3", "z-ai/glm-5.3", "nvidia/nemotron-3-super-120b-a12b", "openai/gpt-oss-20b")),
+            ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", True,
+             ("openai/gpt-oss-120b", "moonshotai/kimi-k3", "z-ai/glm-5.3")),
+            ("qwen", "Qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", True,
+             ("qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash")),
+            ("zai", "Z.ai", "https://api.z.ai/api/paas/v4", False,
+             ("glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-4.7-flash")),
+            ("groq", "Groq", "https://api.groq.com/openai/v1", False,
+             ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b", "llama-3.3-70b-versatile")),
+            ("cerebras", "Cerebras", "https://api.cerebras.ai/v1", False,
+             ("gpt-oss-120b", "qwen-3.8-27b")),
+            ("together", "Together AI", "https://api.together.xyz/v1", True,
+             ("openai/gpt-oss-120b", "moonshotai/Kimi-K3", "zai-org/GLM-5.3", "deepseek-ai/DeepSeek-V4.1-Flash")),
+            ("fireworks", "Fireworks", "https://api.fireworks.ai/inference/v1", True,
+             ("accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/kimi-k3",
+              "accounts/fireworks/models/glm-5p3", "accounts/fireworks/models/deepseek-v4p1-flash")),
+            ("minimax", "MiniMax", "https://api.minimax.io/v1", True,
+             ("MiniMax-M3", "MiniMax-M2.7")),
+        )
+    ),
 )
+
+#: The hosted entries, in table order (PROV1): what `/api/models` lists and
+#: cloud's discovery fetches, one loop for them all.
+HOSTED: tuple[ProviderSpec, ...] = tuple(spec for spec in PROVIDERS if spec.hosted)
 
 _BY_ID = {spec.id: spec for spec in PROVIDERS}
 

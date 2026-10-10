@@ -3799,6 +3799,290 @@
   "mode": "bedrock",
   "provider": "bedrock"
  },
+ "cerebras.gpt-oss-120b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.cerebras.ai/v1/chat/completions",
+      "images": null,
+      "label": "Cerebras",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "cerebras"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-cerebras"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.cerebras.ai/v1/chat/completions",
+      "images": null,
+      "label": "Cerebras",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "cerebras"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-cerebras"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.cerebras.ai/v1/chat/completions",
+      "images": null,
+      "label": "Cerebras",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "cerebras"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "cerebras"
+ },
+ "cerebras.qwen-3.8-27b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "qwen-3.8-27b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.cerebras.ai/v1/chat/completions",
+      "images": null,
+      "label": "Cerebras",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "cerebras"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "qwen-3.8-27b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-cerebras"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.cerebras.ai/v1/chat/completions",
+      "images": null,
+      "label": "Cerebras",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "cerebras"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "qwen-3.8-27b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-cerebras"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.cerebras.ai/v1/chat/completions",
+      "images": null,
+      "label": "Cerebras",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "cerebras"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "cerebras"
+ },
  "chatgpt-4o-latest": {
   "chat_bare": {
    "calls": [
@@ -8228,6 +8512,574 @@
   "images": true,
   "mode": "local",
   "provider": "ollama"
+ },
+ "fireworks.accounts/fireworks/models/deepseek-v4p1-flash": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/deepseek-v4p1-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/deepseek-v4p1-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/deepseek-v4p1-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "fireworks"
+ },
+ "fireworks.accounts/fireworks/models/glm-5p3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/glm-5p3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/glm-5p3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/glm-5p3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "fireworks"
+ },
+ "fireworks.accounts/fireworks/models/gpt-oss-120b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "fireworks"
+ },
+ "fireworks.accounts/fireworks/models/kimi-k3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "accounts/fireworks/models/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-fireworks"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "images": null,
+      "label": "Fireworks",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "fireworks"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "fireworks"
  },
  "gem": {
   "chat_bare": {
@@ -14967,6 +15819,770 @@
   "mode": "cloud",
   "provider": "grok"
  },
+ "groq": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "groq",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "groq",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "groq",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "groq",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "groq",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
+ },
+ "groq-llama": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "groq-llama",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "groq-llama",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "groq-llama",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "groq-llama",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "groq-llama",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
+ },
+ "groq.llama-3.3-70b-versatile": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "llama-3.3-70b-versatile",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "llama-3.3-70b-versatile",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "llama-3.3-70b-versatile",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "groq"
+ },
+ "groq.openai/gpt-oss-120b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "groq"
+ },
+ "groq.openai/gpt-oss-20b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-20b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-20b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-20b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "groq"
+ },
+ "groq.qwen/qwen3.8-27b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "qwen/qwen3.8-27b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "qwen/qwen3.8-27b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "qwen/qwen3.8-27b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-groq"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.groq.com/openai/v1/chat/completions",
+      "images": null,
+      "label": "Groq",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "groq"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "groq"
+ },
  "hf": {
   "chat_bare": {
    "calls": [
@@ -15464,6 +17080,116 @@
   "images": false,
   "mode": "hf",
   "provider": "huggingface"
+ },
+ "kimi-k2": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "kimi-k2",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "kimi-k2",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "kimi-k2",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "kimi-k2",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "kimi-k2",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
  },
  "llama3": {
   "chat_bare": {
@@ -16480,6 +18206,382 @@
   "mode": "cloud",
   "provider": "gemini"
  },
+ "minimax-m2": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "minimax-m2",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "minimax-m2",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "minimax-m2",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "minimax-m2",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "minimax-m2",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
+ },
+ "minimax.MiniMax-M2.7": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "MiniMax-M2.7",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.minimax.io/v1/chat/completions",
+      "images": null,
+      "label": "MiniMax",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "minimax"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "MiniMax-M2.7",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-minimax"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.minimax.io/v1/chat/completions",
+      "images": null,
+      "label": "MiniMax",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "minimax"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "MiniMax-M2.7",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-minimax"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.minimax.io/v1/chat/completions",
+      "images": null,
+      "label": "MiniMax",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "minimax"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "minimax"
+ },
+ "minimax.MiniMax-M3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "MiniMax-M3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.minimax.io/v1/chat/completions",
+      "images": null,
+      "label": "MiniMax",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "adaptive"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "minimax"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "MiniMax-M3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-minimax"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.minimax.io/v1/chat/completions",
+      "images": null,
+      "label": "MiniMax",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "adaptive"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "minimax"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "MiniMax-M3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-minimax"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.minimax.io/v1/chat/completions",
+      "images": null,
+      "label": "MiniMax",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "adaptive"
+       }
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "minimax"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "minimax"
+ },
  "mistral": {
   "chat_bare": {
    "calls": [
@@ -16589,6 +18691,754 @@
   "images": true,
   "mode": "local",
   "provider": "ollama"
+ },
+ "mistral-large": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "mistral-large",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "mistral-large",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "mistral-large",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "mistral-large",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "mistral-large",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
+ },
+ "mistral.magistral-medium-latest": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "magistral-medium-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "magistral-medium-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "magistral-medium-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "mistral"
+ },
+ "mistral.ministral-14b-latest": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "ministral-14b-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "ministral-14b-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "ministral-14b-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "mistral"
+ },
+ "mistral.mistral-large-latest": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "mistral-large-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "mistral-large-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "mistral-large-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "mistral"
+ },
+ "mistral.mistral-medium-latest": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "mistral-medium-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "mistral-medium-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "mistral-medium-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "mistral"
+ },
+ "mistral.mistral-small-latest": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "mistral-small-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "mistral-small-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "mistral-small-latest",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-mistral"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.mistral.ai/v1/chat/completions",
+      "images": null,
+      "label": "Mistral",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "mistral"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "mistral"
  },
  "mode=bedrock|bedrock.claude": {
   "calls": [
@@ -16913,6 +19763,532 @@
    }
   ],
   "outcome": "ok"
+ },
+ "moonshot.kimi-k2-thinking": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2-thinking",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2-thinking",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2-thinking",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "moonshot"
+ },
+ "moonshot.kimi-k2.6": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2.6",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2.6",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2.6",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "moonshot"
+ },
+ "moonshot.kimi-k2.7-code": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2.7-code",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2.7-code",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k2.7-code",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "moonshot"
+ },
+ "moonshot.kimi-k3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-moonshot"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.moonshot.ai/v1/chat/completions",
+      "images": null,
+      "label": "Moonshot (Kimi)",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "moonshot"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "moonshot"
  },
  "mxbai-embed-large": {
   "chat_bare": {
@@ -17353,6 +20729,692 @@
   "images": true,
   "mode": "local",
   "provider": "ollama"
+ },
+ "nvidia.moonshotai/kimi-k3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "nvidia"
+ },
+ "nvidia.nvidia/nemotron-3-super-120b-a12b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "nvidia/nemotron-3-super-120b-a12b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "nvidia/nemotron-3-super-120b-a12b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "nvidia/nemotron-3-super-120b-a12b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "nvidia"
+ },
+ "nvidia.openai/gpt-oss-20b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-20b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-20b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-20b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "nvidia"
+ },
+ "nvidia.qwen/qwen3-235b-a22b-instruct-2507": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "qwen/qwen3-235b-a22b-instruct-2507",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "qwen/qwen3-235b-a22b-instruct-2507",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "qwen/qwen3-235b-a22b-instruct-2507",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "nvidia"
+ },
+ "nvidia.z-ai/glm-5.3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "z-ai/glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "z-ai/glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "z-ai/glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-nvidia"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "images": null,
+      "label": "NVIDIA",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "nvidia"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "nvidia"
  },
  "o": {
   "chat_bare": {
@@ -20269,6 +24331,668 @@
   "mode": "local",
   "provider": "ollama"
  },
+ "openrouter.anthropic/claude-sonnet-4.5": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "anthropic/claude-sonnet-4.5",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "anthropic/claude-sonnet-4.5",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "anthropic/claude-sonnet-4.5",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "openrouter"
+ },
+ "openrouter.deepseek/deepseek-r1": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "deepseek/deepseek-r1",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "deepseek/deepseek-r1",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "deepseek/deepseek-r1",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 16384,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "openrouter"
+ },
+ "openrouter.moonshotai/kimi-k3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/kimi-k3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "openrouter"
+ },
+ "openrouter.openai/gpt-oss-120b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "openrouter"
+ },
+ "openrouter.z-ai/glm-5.3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "z-ai/glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "z-ai/glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "z-ai/glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-openrouter"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://openrouter.ai/api/v1/chat/completions",
+      "images": null,
+      "label": "OpenRouter",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "openrouter"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "openrouter"
+ },
  "orca-mini": {
   "chat_bare": {
    "calls": [
@@ -20360,6 +25084,542 @@
        "t"
       ],
       "orca-mini",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
+ },
+ "qwen.qwen3.7-plus": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.7-plus",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.7-plus",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-qwen"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.7-plus",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-qwen"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "qwen"
+ },
+ "qwen.qwen3.8-flash": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.8-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.8-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-qwen"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.8-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-qwen"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "qwen"
+ },
+ "qwen.qwen3.8-max": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.8-max",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.8-max",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-qwen"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "qwen3.8-max",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-qwen"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "images": null,
+      "label": "Qwen",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "enable_thinking": true
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "qwen"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "qwen"
+ },
+ "qwen3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "qwen3",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "qwen3",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "qwen3",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "qwen3",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "qwen3",
       {
        "<settings+>": {
         "__embed_output_dim": 256
@@ -22012,6 +27272,698 @@
   "mode": "cloud",
   "provider": "openai"
  },
+ "together.deepseek-ai/DeepSeek-V4.1-Flash": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning": {
+        "enabled": true
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning": {
+        "enabled": true
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "deepseek-ai/DeepSeek-V4.1-Flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning": {
+        "enabled": true
+       }
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "together"
+ },
+ "together.meta-llama/Llama-3.3-70B-Instruct-Turbo": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 1000,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 8192,
+      "prompt_cache": true,
+      "reasoning": null,
+      "reasoning_body": {},
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "together"
+ },
+ "together.moonshotai/Kimi-K3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/Kimi-K3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/Kimi-K3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "moonshotai/Kimi-K3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "together"
+ },
+ "together.openai/gpt-oss-120b": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "openai/gpt-oss-120b",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "medium"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "together"
+ },
+ "together.zai-org/GLM-5.3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "zai-org/GLM-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "zai-org/GLM-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "zai-org/GLM-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-together"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.together.xyz/v1/chat/completions",
+      "images": null,
+      "label": "Together AI",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "together"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "cloud",
+  "provider": "together"
+ },
  "tts-1": {
   "chat_bare": {
    "calls": [
@@ -22451,5 +28403,695 @@
   "images": true,
   "mode": "local",
   "provider": "ollama"
+ },
+ "zai": {
+  "chat_bare": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://127.0.0.1:11434/api/generate",
+     "model": "zai",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "body_keys": [
+      "model",
+      "options",
+      "prompt",
+      "stream",
+      "system"
+     ],
+     "http": "http://ollama.test:11434/api/generate",
+     "model": "zai",
+     "options": {
+      "num_predict": 1000
+     },
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "body_keys": [
+      "messages",
+      "model",
+      "stream",
+      "tools"
+     ],
+     "http": "http://ollama.test:11434/api/chat",
+     "model": "zai",
+     "options": null,
+     "think": null
+    },
+    {
+     "log_usage": "ollama"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "zai",
+      "<settings>"
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [
+    {
+     "args": [
+      [
+       "t"
+      ],
+      "zai",
+      {
+       "<settings+>": {
+        "__embed_output_dim": 256
+       }
+      }
+     ],
+     "call": "_embed_ollama",
+     "kwargs": {}
+    }
+   ],
+   "outcome": {
+    "dims": 2,
+    "vectors": 1
+   }
+  },
+  "images": true,
+  "mode": "local",
+  "provider": "ollama"
+ },
+ "zai.glm-4.7-flash": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "glm-4.7-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "glm-4.7-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "glm-4.7-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "zai"
+ },
+ "zai.glm-5.2": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.2",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.2",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.2",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "thinking": {
+        "type": "enabled"
+       }
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "zai"
+ },
+ "zai.glm-5.3": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.3",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "zai"
+ },
+ "zai.glm-5.3-flash": {
+  "chat_bare": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.3-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      ""
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_capped": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.3-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": null
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "chat_tools": {
+   "calls": [
+    {
+     "args": [
+      "glm-5.3-flash",
+      [
+       {
+        "content": "hi",
+        "role": "user"
+       }
+      ],
+      "sys",
+      "",
+      "k-zai"
+     ],
+     "call": "call_v1_compatible",
+     "kwargs": {
+      "chat_url": "https://api.z.ai/api/paas/v4/chat/completions",
+      "images": null,
+      "label": "Z.ai",
+      "max_tokens": 10240,
+      "prompt_cache": true,
+      "reasoning": [
+       "medium",
+       6144,
+       "MEDIUM",
+       "medium",
+       10240
+      ],
+      "reasoning_body": {
+       "reasoning_effort": "high"
+      },
+      "tools": "<tools>"
+     }
+    },
+    {
+     "log_usage": "zai"
+    }
+   ],
+   "outcome": "ok"
+  },
+  "embed": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "embed_dims": {
+   "calls": [],
+   "outcome": {
+    "dims": 768,
+    "vectors": 1
+   }
+  },
+  "images": false,
+  "mode": "cloud",
+  "provider": "zai"
  }
 }

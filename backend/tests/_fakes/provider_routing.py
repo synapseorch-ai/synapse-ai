@@ -40,6 +40,9 @@ SETTINGS: dict[str, Any] = {
     "aws_region": "us-west-2",
     "ollama_base_url": "http://ollama.test:11434",
     "huggingface_token": "k-hf",
+    # The hosted OpenAI-style providers (PROV1, D245).
+    **{f"{id}_key": f"k-{id}" for id in ("moonshot", "mistral", "nvidia", "openrouter", "qwen", "zai", "groq",
+                                         "cerebras", "together", "fireworks", "minimax")},
 }
 
 TOOLS = [{"type": "function", "function": {
@@ -128,6 +131,30 @@ _NEAR_MISSES = [
     "deepseek-r1:7b", "hf.", " gpt-4o", "text-embedding-3", "embedding-gecko-001",
 ]
 
+#: The hosted OpenAI-style providers (PROV1, D245), recorded when they were
+#: added: each fallback, ids a host names by path, ids that would land on
+#: Ollama or DeepSeek bare, a model that thinks by a switch and one that always
+#: does, and what a near-miss prefix still means.
+_HOSTED = [
+    "moonshot.kimi-k3", "moonshot.kimi-k2.6", "moonshot.kimi-k2.7-code", "moonshot.kimi-k2-thinking",
+    "mistral.mistral-large-latest", "mistral.mistral-medium-latest", "mistral.mistral-small-latest",
+    "mistral.ministral-14b-latest", "mistral.magistral-medium-latest",
+    "nvidia.moonshotai/kimi-k3", "nvidia.z-ai/glm-5.3", "nvidia.nvidia/nemotron-3-super-120b-a12b",
+    "nvidia.openai/gpt-oss-20b", "nvidia.qwen/qwen3-235b-a22b-instruct-2507",
+    "openrouter.openai/gpt-oss-120b", "openrouter.moonshotai/kimi-k3", "openrouter.z-ai/glm-5.3",
+    "openrouter.deepseek/deepseek-r1", "openrouter.anthropic/claude-sonnet-4.5",
+    "qwen.qwen3.8-max", "qwen.qwen3.7-plus", "qwen.qwen3.8-flash",
+    "zai.glm-5.3", "zai.glm-5.3-flash", "zai.glm-5.2", "zai.glm-4.7-flash",
+    "groq.openai/gpt-oss-120b", "groq.openai/gpt-oss-20b", "groq.qwen/qwen3.8-27b", "groq.llama-3.3-70b-versatile",
+    "cerebras.gpt-oss-120b", "cerebras.qwen-3.8-27b",
+    "together.openai/gpt-oss-120b", "together.moonshotai/Kimi-K3", "together.zai-org/GLM-5.3",
+    "together.deepseek-ai/DeepSeek-V4.1-Flash", "together.meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "fireworks.accounts/fireworks/models/gpt-oss-120b", "fireworks.accounts/fireworks/models/kimi-k3",
+    "fireworks.accounts/fireworks/models/glm-5p3", "fireworks.accounts/fireworks/models/deepseek-v4p1-flash",
+    "minimax.MiniMax-M3", "minimax.MiniMax-M2.7",
+    "groq", "groq-llama", "mistral-large", "qwen3", "kimi-k2", "zai", "minimax-m2",
+]
+
 #: The table routes an id the same whatever its case; the chains did not. The
 #: detectors lower-cased, but the chat dispatch matched case-sensitively (all but
 #: OpenAI), so a cloud id in mixed case got mode "cloud" and then "Unknown cloud
@@ -146,7 +173,7 @@ _MIXED_CASE_AS_BEFORE = ["GPT-4o", "O3-mini", "Ollama.llama3", "HF.model", "CLI.
 
 CORPUS: list[str] = list(dict.fromkeys(
     _OFFERED_CHAT + _OFFERED_EMBEDDING + _GEMINI_CATALOGUE + _OPENAI_ACCOUNT + _PINNED_BY_TESTS
-    + _ONE_PER_PREFIX + _NEAR_MISSES + MIXED_CASE + _MIXED_CASE_AS_BEFORE
+    + _ONE_PER_PREFIX + _NEAR_MISSES + MIXED_CASE + _MIXED_CASE_AS_BEFORE + _HOSTED
 ))
 
 #: `generate_response_ex` is handed a mode, and the mode picks the branch family

@@ -139,6 +139,9 @@ SECRET_SETTINGS = (
     "n8n_api_key", "metrics_token", "s3_secret_access_key",
     # Knowledge's bring-your-own rerankers (B2a, D163; `core/knowledge/rerankers.py`).
     "cohere_key", "voyage_key", "jina_key", "knowledge_rerank_key",
+    # The hosted OpenAI-style providers (PROV1, D245; `core/providers/registry.py`).
+    "moonshot_key", "mistral_key", "nvidia_key", "openrouter_key", "qwen_key", "zai_key",
+    "groq_key", "cerebras_key", "together_key", "fireworks_key", "minimax_key",
 )
 
 
@@ -159,6 +162,17 @@ _DEFAULTS = {
         "gemini_key": "",
         "grok_key": "",
         "deepseek_key": "",
+        "moonshot_key": "",
+        "mistral_key": "",
+        "nvidia_key": "",
+        "openrouter_key": "",
+        "qwen_key": "",
+        "zai_key": "",
+        "groq_key": "",
+        "cerebras_key": "",
+        "together_key": "",
+        "fireworks_key": "",
+        "minimax_key": "",
         "openai_compatible_key": "",
         "openai_compatible_base_url": "",
         "openai_compatible_models": "",

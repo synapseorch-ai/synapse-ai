@@ -30,7 +30,10 @@ preference, and a model that cannot honour it should still run.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, NamedTuple
+
+from core.providers.registry import ProviderSpec, provider_for
 
 #: What a person can choose. `None` on an agent means "inherit the workspace
 #: setting"; the setting itself is always one of these.
@@ -192,6 +195,101 @@ GRADED = "graded"
 SWITCH = "switch"
 _LISTED_KINDS = (GRADED, SWITCH)
 
+#: Hosted APIs (PROV1, D245) serve many families, and each family is asked to
+#: think its own way — sometimes differently at its maker than at a host — so
+#: they are decided on the model's own id: the last part after the routing
+#: prefix, with Fireworks' `p` for a point read as one (`glm-5p3`). Read from
+#: each provider's documentation on 2026-10-10.
+#:
+#: How a request says it (`hosted_fields`):
+#: * "effort": `reasoning_effort`, none / low / medium / high.
+#: * "graded": `reasoning_effort` low / medium / high; it cannot stop (gpt-oss).
+#: * "max": it always thinks, `reasoning_effort` low / high / max (Kimi K3, GLM 5.3).
+#: * "thinking": `thinking: {type: enabled | disabled}` (Moonshot's K2.x, Z.ai's GLM).
+#: * "adaptive": `thinking: {type: adaptive | disabled}` (MiniMax M3).
+#: * "enable_thinking": a bool (Qwen at Alibaba).
+#: * "enabled": `reasoning: {enabled}` (Together's hybrid models).
+#:
+#: (provider, families, wire): the first rule an id meets wins; "*" is any host.
+_HOSTED_RULES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    # First: GLM 5.3 refuses `thinking: disabled`, and Z.ai's `glm-5` would claim it.
+    ("*", ("kimi-k3", "glm-5.3"), "max"),
+    ("moonshot", ("kimi-k2.5", "kimi-k2.6"), "thinking"),
+    ("zai", ("glm-4.5", "glm-4.6", "glm-4.7", "glm-5"), "thinking"),
+    ("qwen", ("qwen3", "qwen-plus", "qwen-flash", "qwen-turbo", "qwen-max"), "enable_thinking"),
+    ("minimax", ("minimax-m3",), "adaptive"),
+    ("together", ("kimi-k", "glm-", "deepseek-v3.1", "deepseek-v3.2", "deepseek-v4", "qwen3"), "enabled"),
+    ("*", ("gpt-oss",), "graded"),
+    ("*", ("qwen3", "qwen-3", "glm-4.5", "glm-4.6", "glm-4.7", "glm-5", "kimi-k2.5", "kimi-k2.6", "deepseek-v3.1",
+           "deepseek-v3.2", "deepseek-v4", "nemotron", "mistral-small", "mistral-medium", "mistral-large-4"),
+     "effort"),
+)
+
+#: Families that always think and take no knob: their thinking is read, never
+#: asked for, so the screens offer them no control.
+_HOSTED_ALWAYS = ("minimax-m2", "kimi-k2.7", "kimi-k2-thinking", "magistral", "deepseek-r1", "qwq")
+
+#: Wires whose least is low: the screens offer them no Off (F65), and Off runs at Low.
+_HOSTED_NO_OFF = ("graded", "max")
+
+#: The most a hosted call's cap is raised to make room for thinking. Thinking
+#: counts against the cap at every one of these providers, and a cap past a
+#: model's own is a 400 at some, so the raise stops where the models they
+#: serve for chat still take it.
+HOSTED_CEILING = 16384
+
+
+def _hosted(name: str) -> tuple[ProviderSpec, str] | None:
+    """(the hosted provider, the model's own family name), or None if not hosted."""
+    spec = provider_for(name)
+    if not spec.hosted:
+        return None
+    inner = spec.bare(name).rsplit("/", 1)[-1]
+    return spec, re.sub(r"(\d)p(\d)", r"\1.\2", inner)
+
+
+def hosted_wire(model: str) -> str | None:
+    """How this hosted model is asked to think (see `_HOSTED_RULES`), or None: not at all."""
+    hosted = _hosted((model or "").strip().lower())
+    if hosted is None:
+        return None
+    spec, inner = hosted
+    if inner.startswith(_HOSTED_ALWAYS) or "thinking" in inner or "instruct" in inner:
+        return None
+    for provider_id, families, wire in _HOSTED_RULES:
+        if provider_id in (spec.id, "*") and inner.startswith(families):
+            return wire
+    return None
+
+
+def hosted_always_thinks(model: str) -> bool:
+    """A hosted model whose thinking cannot be asked for or stopped: its cap must leave room for it."""
+    hosted = _hosted((model or "").strip().lower())
+    return hosted is not None and (hosted[1].startswith(_HOSTED_ALWAYS) or "thinking" in hosted[1])
+
+
+def hosted_fields(model: str, plan: ReasoningPlan | None) -> dict:
+    """The request fields that say `plan` to this hosted model, in its provider's spelling.
+
+    Off is said, never left unsaid (F269): Kimi, GLM, Qwen and MiniMax M3 think
+    unless told not to. No plan, or a model with no knob, sends nothing.
+    """
+    wire = hosted_wire(model)
+    if plan is None or wire is None:
+        return {}
+    on = plan.enabled
+    if wire == "thinking":
+        return {"thinking": {"type": "enabled" if on else "disabled"}}
+    if wire == "adaptive":
+        return {"thinking": {"type": "adaptive" if on else "disabled"}}
+    if wire == "enable_thinking":
+        return {"enable_thinking": on}
+    if wire == "enabled":
+        return {"reasoning": {"enabled": on}}
+    if wire == "max":
+        return {"reasoning_effort": {"low": "low", "medium": "high", "high": "max"}.get(plan.effort, "low")}
+    return {"reasoning_effort": plan.openai_effort}
+
 
 class ReasoningPlan(NamedTuple):
     """What this call should ask the provider for.
@@ -256,7 +354,8 @@ def supports_native(model: str, listed: Any = None) -> bool:
         # Converse shape for adaptive thinking was not documented where F9 was
         # checked. The prompt convention works; a guessed field would 400.
         return listed_kind(name, listed) is not None
-    return bool(name) and (name.startswith(_NATIVE) or listed_kind(name, listed) is not None)
+    return bool(name) and (name.startswith(_NATIVE) or listed_kind(name, listed) is not None
+                           or hosted_wire(name) is not None)
 
 
 def _bedrock_claude(name: str) -> str:
@@ -295,7 +394,7 @@ def reads_native(model: str) -> bool:
     which is what happened until now — loses the one thing the panel exists for.
     """
     name = (model or "").strip().lower()
-    return supports_native(name) or name.startswith(_READ_ONLY_NATIVE)
+    return supports_native(name) or name.startswith(_READ_ONLY_NATIVE) or _hosted(name) is not None
 
 
 def minimum_budget(model: str) -> int:
@@ -327,6 +426,9 @@ def off_runs_as(model: str, listed: Any = None) -> str | None:
         return "low"
     if kind == SWITCH:
         return "off"
+    wire = hosted_wire(name)
+    if wire is not None:
+        return "low" if wire in _HOSTED_NO_OFF else "off"
     if name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name) or _openai_off(name) == "low":
         return "low"
     if minimum_budget(name) or name.startswith("gemini-3") or _openai_off(name) == "minimal":
@@ -358,6 +460,18 @@ def plan_for(
     if kind == GRADED and resolved == "off":
         resolved = "low"
     name = (model or "").strip().lower()
+    wire = hosted_wire(name) if kind is None else None
+    if wire is not None:
+        # A hosted model (PROV1). Off is said, never left unsaid (F269), and a
+        # model whose least is Low runs Off at Low.
+        if resolved == "off" and wire in _HOSTED_NO_OFF:
+            resolved = "low"
+        cap = max_output_tokens
+        if resolved != "off":
+            cap = max(cap, min(_BUDGET[resolved] + _ANSWER_HEADROOM, HOSTED_CEILING))
+        effort_value = "none" if resolved == "off" else _OPENAI_EFFORT[resolved]
+        return ReasoningPlan(effort=resolved, budget=_BUDGET[resolved], level=_LEVEL[resolved],
+                             openai_effort=effort_value, max_output_tokens=cap)
     if resolved == "off" and (name.startswith(_THINKS_BY_DEFAULT) or _gemini_3_pro(name)
                               or _openai_off(name) == "low"):
         resolved = "low"

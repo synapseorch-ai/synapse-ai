@@ -649,6 +649,22 @@ async def get_models():
         prefixed_embed = [f"synapse.{m}" for m in all_embed]
         return True, prefixed, prefixed_embed
 
+    # The hosted OpenAI-style providers (PROV1, D245): one fetcher for them all,
+    # from the table, reading each list as cloud's discovery reads it.
+    from core.providers.discovery import list_chat_models, routed
+    from core.providers.registry import HOSTED
+
+    async def fetch_hosted(spec) -> tuple[bool, list[str], list[str]]:
+        key = (settings.get(spec.keys[0]) or "").strip()
+        fallback = routed(spec, spec.fallback)
+        if not key:
+            return False, fallback, []
+        try:
+            return True, routed(spec, await list_chat_models(spec, key)) or fallback, []
+        except Exception as e:
+            print(f"Error fetching {spec.label} models: {type(e).__name__}: {e}")
+        return True, fallback, []
+
     # Run all fetches concurrently; return_exceptions=True ensures one provider failure
     # doesn't cancel the others.
     _PROVIDER_FALLBACKS = [
@@ -667,8 +683,9 @@ async def get_models():
         (False, [], []),                                                                 # github_copilot_cli
         (False, [], []),                                                                 # huggingface
         (False, [], []),                                                                 # model_gateway
+        *((True, routed(spec, spec.fallback), []) for spec in HOSTED),
     ]
-    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface", "model_gateway"]
+    _PROVIDER_NAMES = ["ollama", "openai", "anthropic", "gemini", "grok", "deepseek", "bedrock", "openai_compatible", "local_compatible", "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "huggingface", "model_gateway", *(spec.id for spec in HOSTED)]
 
     raw = await asyncio.gather(
         fetch_ollama(), fetch_openai(), fetch_anthropic(),
@@ -678,6 +695,7 @@ async def get_models():
         fetch_github_copilot_cli(),
         fetch_huggingface(),
         fetch_model_gateway(),
+        *(fetch_hosted(spec) for spec in HOSTED),
         return_exceptions=True,
     )
 
@@ -723,6 +741,10 @@ async def get_models():
         "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
         "model_gateway": {"available": mg_avail, "models": mg_chat, "embedding_models": mg_embed},
     }
+    hosted_chat: list[str] = []
+    for spec, (avail, chat, embed) in zip(HOSTED, results[15:]):
+        providers[spec.id] = {"available": avail, "models": chat, "embedding_models": embed}
+        hosted_chat += chat
 
     # --- Flat list of all available models ---
     all_available = []
@@ -731,7 +753,7 @@ async def get_models():
             all_available.extend(info["models"])
 
     # --- Backward compat ---
-    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat + mg_chat
+    cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat + mg_chat + hosted_chat
 
     # --- Which of them can be asked to think ---
     # The capability table lives in `core.reasoning` and is served from here

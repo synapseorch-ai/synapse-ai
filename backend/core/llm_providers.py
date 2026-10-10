@@ -273,6 +273,27 @@ def _retry_without_reasoning(payload: dict, resp) -> bool:
     return True
 
 
+def _retry_without_fields(payload: dict, resp, fields: dict | None) -> bool:
+    """`_retry_without_reasoning` for a hosted API's own thinking fields (PROV1).
+
+    The same narrow rule: a 400, fields we actually sent, a body that names
+    reasoning or thinking. The model then runs at its own default.
+    """
+    sent = [key for key in (fields or {}) if key in payload]
+    if not sent:
+        return False
+    try:
+        body = (resp.text or "").lower()
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+    if "reasoning" not in body and "thinking" not in body:
+        return False
+    for key in sent:
+        payload.pop(key, None)
+    _log.debug(f"provider refused {', '.join(sent)} — retrying without")
+    return True
+
+
 # ─── Streaming an OpenAI-shaped call (U72) ──────────────────────────────────
 # Only when the engine streams the answer (`model_wait.streaming_wanted()`);
 # every other call is the POST it always was. A streamed call is put back
@@ -286,6 +307,33 @@ def _refuses_streaming(resp) -> bool:
         return "stream" in (resp.text or "").lower()
     except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
         return False
+
+
+def _content_text(content) -> tuple[str, str]:
+    """A message's `content` as (answer, thinking).
+
+    A string almost everywhere. Mistral, asked to reason, sends a list of chunks
+    instead — `{"type": "thinking", "thinking": [...]}` beside `{"type": "text"}`
+    (PROV1, D245) — and so does its stream, delta by delta.
+    """
+    if isinstance(content, str):
+        return content, ""
+    if not isinstance(content, list):
+        return "", ""
+    answer: list[str] = []
+    thought: list[str] = []
+    for chunk in content:
+        if isinstance(chunk, str):
+            answer.append(chunk)
+        elif isinstance(chunk, dict) and chunk.get("type") == "thinking":
+            inner = chunk.get("thinking")
+            for part in (inner if isinstance(inner, list) else [inner]):
+                text = part.get("text") if isinstance(part, dict) else part
+                if isinstance(text, str):
+                    thought.append(text)
+        elif isinstance(chunk, dict) and isinstance(chunk.get("text"), str):
+            answer.append(chunk["text"])
+    return "".join(answer), "".join(thought)
 
 
 class _StreamedChat:
@@ -331,6 +379,11 @@ class _StreamedChat:
                 delta = choice.get("delta") or {}
                 if isinstance(delta.get("content"), str):
                     content.append(delta["content"])
+                elif isinstance(delta.get("content"), list):
+                    text, inline = _content_text(delta["content"])
+                    content.append(text)
+                    if inline:
+                        reasoning.append(inline)
                 thought = delta.get("reasoning_content") or delta.get("reasoning")
                 if isinstance(thought, str):
                     reasoning.append(thought)
@@ -367,7 +420,7 @@ def _content_of(chunk) -> str:
     try:
         choices = chunk.get("choices") or ()
         piece = (choices[0].get("delta") or {}).get("content") if choices else None
-        return piece if isinstance(piece, str) else ""
+        return _content_text(piece)[0]
     except Exception:  # noqa: BLE001 — a chunk we cannot read shows nothing
         return ""
 
@@ -1330,7 +1383,8 @@ def _openai_compat_extract(msg: dict, provider: str = "The model",
     Narration beside a tool call is still treated as reasoning, as before, and
     appended after the real thinking when a model sends both.
     """
-    reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or "").strip()
+    content, inline = _content_text(msg.get("content"))
+    reasoning = (msg.get("reasoning_content") or msg.get("reasoning") or inline or "").strip()
     tool_calls = msg.get("tool_calls") or []
     refusal = (msg.get("refusal") or "").strip()
     if tool_calls:
@@ -1341,12 +1395,12 @@ def _openai_compat_extract(msg: dict, provider: str = "The model",
             "tool": tc["function"]["name"],
             "arguments": json.loads(tc["function"].get("arguments") or "{}"),
         }) for tc in tool_calls)
-        narration = (msg.get("content") or "").strip()
+        narration = content.strip()
         if narration:
             reasoning = f"{reasoning}\n\n{narration}".strip() if reasoning else narration
         return call_json, reasoning
 
-    answer = msg.get("content", "") or ""
+    answer = content
     if answer.strip():
         return answer, reasoning
     # Nothing usable came back. It used to be returned as the reply (F137).
@@ -2545,7 +2599,8 @@ def _normalize_v1_base_url(base_url: str) -> str:
 
 
 async def call_v1_compatible(model, messages, system, base_url, api_key, tools=None, images=None, prompt_cache: bool = True,
-                             reasoning=None, max_tokens: int | None = None):
+                             reasoning=None, max_tokens: int | None = None, *, chat_url: str | None = None,
+                             label: str = "V1-compatible", reasoning_body: dict | None = None):
     """Call any OpenAI v1-compatible endpoint with 5-attempt exponential backoff.
 
     Used for both cloud OpenAI-compatible providers (OpenRouter, Together, etc.)
@@ -2562,12 +2617,17 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         api_key: API key (may be empty for local servers with no auth)
         tools: Ollama-format tool list (forwarded as OpenAI function definitions)
         images: List of base64 data-URI image strings to attach to the last user message
+        chat_url: The whole chat address, for a hosted API whose base is not `…/v1`
+            (Z.ai's is `…/api/paas/v4`); `base_url` is then not read (PROV1).
+        label: Who is named in retry notices and errors ("Groq answered 429").
+        reasoning_body: Fields that ask a hosted API to think, in its own spelling
+            (`thinking`, `enable_thinking`), sent in place of `reasoning_effort`.
 
     Returns:
         (response_text, input_tokens, output_tokens)
     """
-    if not base_url or not base_url.strip():
-        raise LLMError("V1-compatible provider: base URL is not configured.")
+    if not chat_url and (not base_url or not base_url.strip()):
+        raise LLMError(f"{label} provider: base URL is not configured.")
 
     V1_TIMEOUT = LLM_REQUEST_TIMEOUT
     MAX_RETRIES = 5
@@ -2588,7 +2648,10 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 break
 
     payload: dict = {"model": model, "messages": full_messages}
-    _apply_openai_reasoning(payload, reasoning)
+    if reasoning_body is not None:
+        payload.update(reasoning_body)
+    else:
+        _apply_openai_reasoning(payload, reasoning)
     # Only a cap someone set (F263). A local server checks prompt + max_tokens
     # against its context, so a default this endpoint was never sent would turn
     # a 4k-context model's every call into a 400.
@@ -2598,7 +2661,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         payload["tools"] = tools
         payload["tool_choice"] = "auto"
 
-    endpoint = f"{_normalize_v1_base_url(base_url)}/v1/chat/completions"
+    endpoint = chat_url or f"{_normalize_v1_base_url(base_url)}/v1/chat/completions"
     headers = {}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -2614,14 +2677,15 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 if is_quota_refusal(resp.status_code, resp.text):
                     break   # out of credit or quota: no retry clears it (F275)
-                _retry_notice("V1-compatible", f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
+                _retry_notice(label, f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
                 if attempt < MAX_RETRIES:
                     await asyncio.sleep(backoff)
                     continue
-            if resp.status_code == 400 and _retry_without_reasoning(payload, resp):
+            if resp.status_code == 400 and (_retry_without_reasoning(payload, resp)
+                                            or _retry_without_fields(payload, resp, reasoning_body)):
                 continue
             resp.raise_for_status()
-            _log.debug(f"✅ V1-compatible call complete (attempt {attempt})")
+            _log.debug(f"✅ {label} call complete (attempt {attempt})")
             # Read outside this `try` (F138): anything raised while reading an
             # answer that arrived landed in the catch-all below and sent the
             # call again, up to four more times, paying for each.
@@ -2629,7 +2693,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
-            _retry_notice("V1-compatible", f"did not answer within {V1_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
+            _retry_notice(label, f"did not answer within {V1_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
@@ -2637,20 +2701,20 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             # The body, not str(e): a gateway's refusal carries its reason (and
             # figures) in the response body, and the URL alone explains nothing.
             last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
-            _log.warning(f"❌ V1-compatible HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
+            _log.warning(f"❌ {label} HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
                 continue
             break
         except Exception as e:
             last_error = str(e)
-            _log.warning(f"⚠️ V1-compatible error on attempt {attempt}/{MAX_RETRIES}: {e}")
+            _log.warning(f"⚠️ {label} error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
                 continue
 
     if response is None:
-        error_msg = f"V1-compatible LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
+        error_msg = f"{label} LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
         _log.warning(f"❌ {error_msg}")
         raise LLMError(error_msg)
 
@@ -2673,7 +2737,8 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     msg = choice.get("message", {})
     stop_reason = _normalise_stop_reason(choice.get("finish_reason"))
     try:
-        text, _reasoning = _openai_compat_extract(msg, "The provider", choice.get("finish_reason"))
+        text, _reasoning = _openai_compat_extract(msg, "The provider" if label == "V1-compatible" else label,
+                                                choice.get("finish_reason"))
     except EmptyAnswer as empty:
         # The call was made and billed; only its answer was empty or withheld.
         empty.usage = (input_tokens, output_tokens, cache_read, cache_write)
@@ -3619,6 +3684,37 @@ async def _chat_v1_compatible(call: ChatCall, spec) -> LLMResult:
         prompt_cache=call.prompt_cache,
         reasoning=call.reasoning,
         **call.cap_kwargs(),
+    )
+
+
+async def _chat_hosted_v1(call: ChatCall, spec) -> LLMResult:
+    """A hosted OpenAI-style API with its own key and a fixed address (PROV1, D245).
+
+    `call_v1_compatible`'s client — its retries, U72's streaming, the quota
+    rule (F275), the read outside the retry (F138) — at the table's address,
+    named for the provider, and sent the response cap as Grok and DeepSeek are.
+    How it is asked to think is `core.reasoning`'s to say, in that provider's
+    spelling; a model that always thinks gets room for it under the cap.
+    """
+    from core import reasoning as _policy
+
+    cap = call.max_out
+    if _policy.hosted_always_thinks(call.model):
+        cap = max(cap, _policy.HOSTED_CEILING)
+    return await call_v1_compatible(
+        spec.bare(call.model),
+        call.messages(),
+        call.system,
+        "",
+        call.settings.get(spec.keys[0], ""),
+        tools=call.tools,
+        images=call.images,
+        prompt_cache=call.prompt_cache,
+        reasoning=call.reasoning,
+        max_tokens=cap,
+        chat_url=f"{spec.base_url}/chat/completions",
+        label=spec.label,
+        reasoning_body=_policy.hosted_fields(call.model, call.reasoning),
     )
 
 

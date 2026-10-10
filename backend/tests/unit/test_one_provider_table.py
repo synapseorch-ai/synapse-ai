@@ -24,7 +24,15 @@ IDS = [
     "anthropic_cli", "gemini_cli", "codex_cli", "github_copilot_cli", "cli", "openai", "anthropic", "gemini",
     "bedrock", "grok", "deepseek", "model_gateway", "openai_compatible", "local_compatible", "ollama",
     "huggingface",
+    # The hosted OpenAI-style providers (PROV1, D245), after every id above.
+    "moonshot", "mistral", "nvidia", "openrouter", "qwen", "zai", "groq", "cerebras", "together", "fireworks",
+    "minimax",
 ]
+
+#: The hosted providers whose models do not see an attachment (PROV1): their
+#: flagships are text-only (Groq's and Cerebras's lone vision model aside), so
+#: an image is refused at the door, not sent.
+BLIND_HOSTS = ("zai.", "groq.", "cerebras.")
 
 
 def test_the_ids_are_the_ones_usage_logs_carry():
@@ -39,6 +47,13 @@ def test_the_ids_are_the_ones_usage_logs_carry():
     ("synapse.gpt-oss", "model_gateway"), ("oaic.o3", "openai_compatible"), ("locv1.claude", "local_compatible"),
     ("bedrock.anthropic.claude-3", "bedrock"), ("hf.gpt2", "huggingface"), ("gemma3", "gemini"),
     ("deepseek-r1:7b", "deepseek"), ("mistral", "ollama"),
+    # A hosted provider's own ids would land on Ollama or DeepSeek bare; behind
+    # its prefix they are its own (PROV1). `groq.` is not `grok`.
+    ("mistral.mistral-large-latest", "mistral"), ("groq.openai/gpt-oss-120b", "groq"),
+    ("openrouter.deepseek/deepseek-r1", "openrouter"), ("together.meta-llama/Llama-3.3-70B", "together"),
+    ("fireworks.accounts/fireworks/models/kimi-k2p5", "fireworks"), ("qwen.qwen3-max", "qwen"),
+    ("zai.glm-5", "zai"), ("moonshot.kimi-k2.5", "moonshot"), ("nvidia.nvidia/nemotron", "nvidia"),
+    ("cerebras.gpt-oss-120b", "cerebras"), ("minimax.MiniMax-M3", "minimax"), ("qwen3:8b", "ollama"),
 ])
 def test_an_id_goes_to_the_first_entry_it_matches(model, provider):
     assert provider_for(model).id == provider
@@ -82,7 +97,9 @@ def test_readiness_asks_for_what_it_asked_for_before():
         "gemini": ("gemini_key", "Gemini"),
         "grok": ("grok_key", "Grok"),
         "deepseek": ("deepseek_key", "DeepSeek"),
+        **{p.id: (f"{p.id}_key", p.label) for p in PROVIDERS if p.hosted},
     }
+    assert len(model_readiness._KEYED) == 16
     assert model_readiness._ADDRESSED == {
         "openai_compatible": ("openai_compatible_base_url", "OpenAI-compatible"),
         "local_compatible": ("local_compatible_base_url", "local OpenAI-compatible"),
@@ -96,7 +113,7 @@ def test_the_blind_providers_are_the_ones_they_were(model):
     from core.images import model_can_see_images
 
     name = model.strip().lower()
-    assert model_can_see_images(model) == (bool(name) and not name.startswith(("deepseek", "hf.", "cli.")))
+    assert model_can_see_images(model) == (bool(name) and not name.startswith(("deepseek", "hf.", "cli.", *BLIND_HOSTS)))
 
 
 def test_tools_go_in_the_prompt_for_the_modes_the_agent_loop_prompts():

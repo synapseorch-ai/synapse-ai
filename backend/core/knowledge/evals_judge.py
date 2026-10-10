@@ -73,7 +73,8 @@ TIMEOUT_SECONDS = 60.0
 #: Words in a model's id that name its maker, and the names its models start with.
 _VENDORS = {"anthropic": "anthropic", "openai": "openai", "google": "google", "amazon": "amazon", "meta": "meta",
             "mistralai": "mistral", "cohere": "cohere", "deepseek": "deepseek", "xai": "xai", "qwen": "alibaba",
-            "microsoft": "microsoft"}
+            "microsoft": "microsoft", "moonshotai": "moonshot", "zai-org": "zhipu", "z-ai": "zhipu",
+            "minimaxai": "minimax", "nvidia": "nvidia"}
 _FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("anthropic", ("claude",)),
     ("openai", ("gpt", "chatgpt", "o1", "o3", "o4", "davinci", "codex")),
@@ -86,12 +87,18 @@ _FAMILIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("alibaba", ("qwen", "qwq")),
     ("cohere", ("command", "aya", "c4ai")),
     ("microsoft", ("phi",)),
+    # The makers PROV1's hosts serve (D245), so a host's copy of a model is its maker's.
+    ("moonshot", ("kimi", "moonshot")),
+    ("zhipu", ("glm", "zai-glm")),
+    ("minimax", ("minimax",)),
+    ("nvidia", ("nemotron",)),
 )
 _CLI = {"anthropic_cli": "anthropic", "gemini_cli": "google", "codex_cli": "openai"}
 #: A family as people write its maker's name.
 FAMILY_NAMES = {"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "amazon": "Amazon", "meta": "Meta",
                 "mistral": "Mistral", "deepseek": "DeepSeek", "xai": "xAI", "alibaba": "Qwen", "cohere": "Cohere",
-                "microsoft": "Microsoft"}
+                "microsoft": "Microsoft", "moonshot": "Moonshot", "zhipu": "Z.ai", "minimax": "MiniMax",
+                "nvidia": "NVIDIA"}
 
 
 def family_of(model: str) -> str | None:

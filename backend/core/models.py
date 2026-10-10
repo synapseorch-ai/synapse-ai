@@ -169,6 +169,18 @@ class Settings(BaseModel):
     gemini_key: str = ""
     grok_key: str = ""  # xAI Grok API key (starts with 'xai-')
     deepseek_key: str = ""  # DeepSeek API key
+    # The hosted OpenAI-style providers (PROV1, D245), one key each.
+    moonshot_key: str = ""
+    mistral_key: str = ""
+    nvidia_key: str = ""
+    openrouter_key: str = ""
+    qwen_key: str = ""
+    zai_key: str = ""
+    groq_key: str = ""
+    cerebras_key: str = ""
+    together_key: str = ""
+    fireworks_key: str = ""
+    minimax_key: str = ""
     openai_compatible_key: str = ""  # API key for OpenAI-compatible cloud (OpenRouter, Together, etc.)
     openai_compatible_base_url: str = ""  # Base URL for OpenAI-compatible cloud (e.g. https://openrouter.ai/api)
     openai_compatible_models: str = ""  # Comma-separated model names for OpenAI-compatible cloud
