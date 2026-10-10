@@ -72,6 +72,7 @@ class _DeltaSink:
         self._thread = threading.get_ident()
         self._items: list[str | None] = []   # None: the call started over
         self._dirty = False                  # text pushed since the last restart
+        self.closed = False                  # the waiter is gone: stop reading the stream
         self.wake = asyncio.Event()
 
     def push(self, item: str | None) -> None:
@@ -111,6 +112,17 @@ _deltas: ContextVar[_DeltaSink | None] = ContextVar("model_wait_deltas", default
 def streaming_wanted() -> bool:
     """True inside a model call whose waiter streams the answer (U72)."""
     return _deltas.get() is not None
+
+
+def stream_abandoned() -> bool:
+    """True once nobody waits on this streaming call any more (a stop, a barge-in).
+
+    For a provider that streams in a worker thread, which cancelling the call's
+    task cannot reach: it checks this between chunks and stops reading, so a
+    call nobody hears is not paid for to its end.
+    """
+    sink = _deltas.get()
+    return sink is not None and sink.closed
 
 
 def emit_delta(text: str) -> None:
@@ -216,6 +228,8 @@ class ModelWait:
                 prefix = f"{self._label} — " if self._label else ""
                 yield self._event("thinking", f"{prefix}waiting on the model, {elapsed}s")
         finally:
+            if sink is not None:
+                sink.closed = True
             if wake is not None and not wake.done():
                 wake.cancel()
             if not task.done():

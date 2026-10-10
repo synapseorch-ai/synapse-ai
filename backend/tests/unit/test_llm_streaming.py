@@ -269,3 +269,157 @@ async def test_anthropic_streams_and_reads_as_unstreamed(monkeypatch):
     assert bodies[0].get("stream") is True
     assert result == plain
     assert "".join(deltas) == "Paris is the capital."
+
+
+# ── Bedrock ──────────────────────────────────────────────────────────────────
+
+class _Bedrock:
+    """Converse, and the same answer as ConverseStream events."""
+
+    WHOLE = {"output": {"message": {"role": "assistant", "content": [
+                {"reasoningContent": {"reasoningText": {"text": "Think.", "signature": "sig"}}},
+                {"text": "Paris is the capital."}]}},
+             "stopReason": "end_turn",
+             "usage": {"inputTokens": 5, "outputTokens": 9, "cacheReadInputTokens": 90,
+                       "cacheWriteInputTokens": 0, "totalTokens": 104}}
+
+    def __init__(self):
+        self.streamed = False
+
+    def converse(self, **kwargs):
+        return self.WHOLE
+
+    def converse_stream(self, **kwargs):
+        self.streamed = True
+        return {"stream": iter([
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "Think."}}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"signature": "sig"}}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"text": "Paris is "}}},
+            {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"text": "the capital."}}},
+            {"contentBlockStop": {"contentBlockIndex": 1}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            {"metadata": {"usage": self.WHOLE["usage"], "metrics": {"latencyMs": 10}}},
+        ])}
+
+
+async def _bedrock(monkeypatch, deltas: bool):
+    fake = _Bedrock()
+    monkeypatch.setattr(providers, "_make_aws_client", lambda *a, **k: fake)
+    wait = mw.ModelWait(providers.call_bedrock(
+        "bedrock.amazon.nova-lite-v1:0", [{"role": "user", "content": "q"}], "sys", "us-east-1", {}),
+        deltas=deltas)
+    events = [e async for e in wait.events()]
+    return wait.result, [e["text"] for e in events if e["type"] == "_model_delta"], fake
+
+
+async def test_bedrock_streams_and_reads_as_unstreamed(monkeypatch):
+    plain, none, fake = await _bedrock(monkeypatch, False)
+    assert none == [] and not fake.streamed
+    result, deltas, fake = await _bedrock(monkeypatch, True)
+    assert fake.streamed
+    assert result == plain
+    assert "".join(deltas) == "Paris is the capital."
+
+
+def test_a_streamed_tool_use_is_put_back_together():
+    class _C:
+        def converse_stream(self, **kw):
+            return {"stream": iter([
+                {"contentBlockStart": {"contentBlockIndex": 0,
+                                       "start": {"toolUse": {"toolUseId": "t1", "name": "lookup"}}}},
+                {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '{"q": '}}}},
+                {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": '"x"}'}}}},
+                {"messageStop": {"stopReason": "tool_use"}},
+            ])}
+
+    out = providers._converse_streamed(_C(), modelId="m")
+    assert out["output"]["message"]["content"] == [
+        {"toolUse": {"toolUseId": "t1", "name": "lookup", "input": {"q": "x"}}}]
+    assert out["stopReason"] == "tool_use"
+
+
+# ── Gemini ───────────────────────────────────────────────────────────────────
+
+async def _gemini(monkeypatch, deltas: bool):
+    from google.genai import types
+
+    whole = types.GenerateContentResponse(
+        candidates=[types.Candidate(content=types.Content(role="model", parts=[
+            types.Part(text="They want a city.", thought=True), types.Part(text="Paris is the capital.")]),
+            finish_reason=types.FinishReason.STOP)],
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=20, candidates_token_count=6, thoughts_token_count=4))
+
+    def chunk(part, finish=None, usage=None):
+        return types.GenerateContentResponse(
+            candidates=[types.Candidate(content=types.Content(role="model", parts=[part]), finish_reason=finish)],
+            usage_metadata=usage)
+
+    class _Models:
+        streamed = False
+
+        def generate_content(self, model, contents, config):
+            return whole
+
+        def generate_content_stream(self, model, contents, config):
+            _Models.streamed = True
+            yield chunk(types.Part(text="They want ", thought=True))
+            yield chunk(types.Part(text="a city.", thought=True))
+            yield chunk(types.Part(text="Paris is "))
+            yield chunk(types.Part(text="the capital."), types.FinishReason.STOP, whole.usage_metadata)
+
+    client = type("C", (), {"models": _Models()})()
+    monkeypatch.setattr(providers, "_gemini_client_for", lambda *a, **k: client)
+    wait = mw.ModelWait(providers.call_gemini("gemini-2.5-pro", [{"role": "user", "content": "q"}], "sys", "k"),
+                        deltas=deltas)
+    events = [e async for e in wait.events()]
+    return wait.result, [e["text"] for e in events if e["type"] == "_model_delta"], _Models.streamed
+
+
+async def test_gemini_streams_and_reads_as_unstreamed(monkeypatch):
+    plain, none, streamed = await _gemini(monkeypatch, False)
+    assert none == [] and not streamed
+    result, deltas, streamed = await _gemini(monkeypatch, True)
+    assert streamed
+    assert result == plain
+    assert "".join(deltas) == "Paris is the capital."   # never the thought
+
+
+# ── Ollama ───────────────────────────────────────────────────────────────────
+
+async def _ollama(monkeypatch, deltas: bool, *, tools=None):
+    final = {"model": "llama3", "done": True, "done_reason": "stop", "prompt_eval_count": 11, "eval_count": 4}
+
+    def handler(request):
+        body = json.loads(request.content)
+        if not body.get("stream"):
+            return httpx.Response(200, json={**final, "message": {"role": "assistant",
+                                                                  "content": "Paris is the capital.",
+                                                                  "thinking": "Hmm."}})
+        lines = [{"message": {"role": "assistant", "content": "", "thinking": "Hmm."}, "done": False},
+                 {"message": {"role": "assistant", "content": "Paris is "}, "done": False},
+                 {"message": {"role": "assistant", "content": "the capital."}, "done": False},
+                 {**final, "message": {"role": "assistant", "content": ""}}]
+        return httpx.Response(200, content="".join(json.dumps(x) + "\n" for x in lines).encode())
+
+    monkeypatch.setattr(providers.httpx, "AsyncClient",
+                        lambda **kw: _REAL_CLIENT(transport=httpx.MockTransport(handler), **kw))
+    from core.providers import registry
+    spec = registry.branch_for("ollama", "ollama.llama3")
+    call = providers.ChatCall(model="ollama.llama3", prompt="q", history=None, system="sys", settings={},
+                              tools=tools or [{"type": "function", "function": {"name": "x"}}], images=None,
+                              prompt_cache=False, reasoning=None, max_out=1000, sent_cap=None, agent_cap=None,
+                              prompt_blocks=None, volatile_tail=None, reasoning_effort=None)
+    wait = mw.ModelWait(providers._chat_ollama(call, spec), deltas=deltas)
+    events = [e async for e in wait.events()]
+    return wait.result, [e["text"] for e in events if e["type"] == "_model_delta"]
+
+
+async def test_ollama_streams_and_reads_as_unstreamed(monkeypatch):
+    plain, none = await _ollama(monkeypatch, False)
+    assert none == []
+    result, deltas = await _ollama(monkeypatch, True)
+    assert result == plain
+    assert "".join(deltas) == "Paris is the capital."

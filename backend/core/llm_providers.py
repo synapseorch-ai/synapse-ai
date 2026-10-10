@@ -1977,6 +1977,50 @@ def _malformed_call(response) -> bool:
         return False
 
 
+def _gemini_streamed(client, **kwargs):
+    """`generate_content_stream`, read whole into one response (U72). Runs in a worker thread.
+
+    Each chunk's answer text (never a thought) goes to `emit_delta`. Its parts
+    are put back together — neighbouring text of one kind as one part, since
+    `_extract_gemini_response` joins parts with a newline — and the last
+    finish reason and usage are kept, so the response reads as a whole one.
+    """
+    from google.genai import types
+
+    from core.model_wait import emit_delta, stream_abandoned
+
+    parts: list = []
+    finish = None
+    usage = None
+    for chunk in client.models.generate_content_stream(**kwargs):
+        if stream_abandoned():
+            break
+        if getattr(chunk, "usage_metadata", None) is not None:
+            usage = chunk.usage_metadata
+        for candidate in (getattr(chunk, "candidates", None) or [])[:1]:
+            if getattr(candidate, "finish_reason", None):
+                finish = candidate.finish_reason
+            content = getattr(candidate, "content", None)
+            for part in (getattr(content, "parts", None) or []):
+                text = getattr(part, "text", None)
+                thought = bool(getattr(part, "thought", None))
+                if text and not getattr(part, "function_call", None):
+                    if not thought:
+                        emit_delta(text)
+                    prev = parts[-1] if parts else None
+                    if (prev is not None and getattr(prev, "text", None) is not None
+                            and not getattr(prev, "function_call", None)
+                            and bool(getattr(prev, "thought", None)) == thought):
+                        parts[-1] = types.Part(text=prev.text + text, thought=thought or None)
+                    else:
+                        parts.append(types.Part(text=text, thought=thought or None))
+                else:
+                    parts.append(part)
+    candidate = types.Candidate(content=types.Content(role="model", parts=parts) if parts else None,
+                                finish_reason=finish)
+    return types.GenerateContentResponse(candidates=[candidate], usage_metadata=usage)
+
+
 def _extract_gemini_response(response) -> tuple[str, str]:
     """Split a Gemini response into (text, reasoning).
 
@@ -2169,12 +2213,18 @@ async def call_gemini(model, messages, system, api_key, tools=None, images=None,
 
     async def _call(cfg, attempt_label=""):
         _log.debug(f"🔄 Gemini _call start ({attempt_label})")
-        result = await asyncio.to_thread(
-            client.models.generate_content,
-            model=model,
-            contents=contents,
-            config=cfg,
-        )
+        from core.model_wait import restart_stream, streaming_wanted
+        if streaming_wanted():
+            # Streamed when the answer is (U72), read whole into one response.
+            restart_stream()
+            result = await asyncio.to_thread(_gemini_streamed, client, model=model, contents=contents, config=cfg)
+        else:
+            result = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=contents,
+                config=cfg,
+            )
         _log.debug(f"✅ Gemini _call complete ({attempt_label})")
         return result
 
@@ -2680,6 +2730,79 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
                        provider="gateway", status=e.status, code=e.code) from e
 
 
+def _converse_streamed(client, **kwargs) -> dict:
+    """`converse_stream`, read whole into what `converse` returns (U72). Runs in a worker thread.
+
+    Text deltas go to `model_wait.emit_delta` as they arrive (never reasoning or
+    a tool's input). Tool input, reasoning text and its signature are put back
+    together, so `_extract_bedrock_content` and the usage and cache readers see
+    the same response. A waiter that has gone (`stream_abandoned`) stops the
+    read: a thread cannot be cancelled, and a call nobody hears is not paid to
+    its end.
+    """
+    from core.model_wait import emit_delta, stream_abandoned
+
+    resp = client.converse_stream(**kwargs)
+    stream = resp.get("stream") or ()
+    blocks: dict[int, dict] = {}
+    stop_reason = None
+    usage: dict = {}
+    metrics = None
+    for event in stream:
+        if stream_abandoned():
+            close = getattr(stream, "close", None)
+            if close is not None:
+                close()
+            break
+        if "contentBlockStart" in event:
+            start = event["contentBlockStart"]
+            tool = (start.get("start") or {}).get("toolUse")
+            if tool:
+                blocks[int(start.get("contentBlockIndex") or 0)] = {
+                    "toolUse": {"toolUseId": tool.get("toolUseId"), "name": tool.get("name"), "input": ""}}
+        elif "contentBlockDelta" in event:
+            body = event["contentBlockDelta"]
+            index = int(body.get("contentBlockIndex") or 0)
+            delta = body.get("delta") or {}
+            if "text" in delta:
+                block = blocks.setdefault(index, {"text": ""})
+                block["text"] = block.get("text", "") + delta["text"]
+                emit_delta(delta["text"])
+            elif "toolUse" in delta:
+                block = blocks.setdefault(index, {"toolUse": {"input": ""}})
+                block["toolUse"]["input"] += (delta["toolUse"] or {}).get("input") or ""
+            elif "reasoningContent" in delta:
+                rc = delta["reasoningContent"] or {}
+                block = blocks.setdefault(index, {"reasoningContent": {"reasoningText": {"text": ""}}})
+                text_part = block["reasoningContent"].setdefault("reasoningText", {"text": ""})
+                if "text" in rc:
+                    text_part["text"] = text_part.get("text", "") + rc["text"]
+                if "signature" in rc:
+                    text_part["signature"] = rc["signature"]
+                if "redactedContent" in rc:
+                    block["reasoningContent"]["redactedContent"] = rc["redactedContent"]
+        elif "messageStop" in event:
+            stop_reason = event["messageStop"].get("stopReason")
+        elif "metadata" in event:
+            usage = event["metadata"].get("usage") or {}
+            metrics = event["metadata"].get("metrics")
+    content = []
+    for index in sorted(blocks):
+        block = blocks[index]
+        if "toolUse" in block:
+            raw = block["toolUse"].get("input") or ""
+            try:
+                block["toolUse"]["input"] = json.loads(raw) if raw else {}
+            except ValueError:
+                block["toolUse"]["input"] = {}
+        content.append(block)
+    out = {"output": {"message": {"role": "assistant", "content": content}},
+           "stopReason": stop_reason, "usage": usage}
+    if metrics is not None:
+        out["metrics"] = metrics
+    return out
+
+
 async def _bedrock_converse_direct(
     region: str, api_key: str, model_id: str,
     messages: list, system_blocks: list, max_tokens: int,
@@ -2705,6 +2828,10 @@ async def _bedrock_converse_direct(
             'before-send.bedrock-runtime.Converse',
             _inject_auth,
         )
+        session.events.register(
+            'before-send.bedrock-runtime.ConverseStream',
+            _inject_auth,
+        )
 
         return session.client(
             'bedrock-runtime',
@@ -2714,10 +2841,16 @@ async def _bedrock_converse_direct(
             config=Config(signature_version=_BEDROCK_UNSIGNED),
         )
 
+    from core.model_wait import restart_stream, streaming_wanted
+    streamed = streaming_wanted()
+    if streamed:
+        restart_stream()
+
     def _run():
         client = _make_client()
         try:
-            return client.converse(
+            return (_converse_streamed if streamed else lambda c, **kw: c.converse(**kw))(
+                client,
                 modelId=model_id,
                 messages=messages,
                 system=system_blocks,
@@ -2982,14 +3115,21 @@ async def call_bedrock(model_id, messages, system, region, settings, images=None
         system_blocks = decorate_bedrock_system_blocks(system_blocks, str(system) if system else None)
 
     async def _converse_call():
+        from core.model_wait import restart_stream, streaming_wanted
+        streamed = streaming_wanted()
+        if streamed:
+            restart_stream()
+
         def _run():
-            return bedrock.converse(
+            kwargs = dict(
                 modelId=invocation_model_id,
                 messages=normalized_messages,
                 system=system_blocks,
                 inferenceConfig={"maxTokens": max_tokens},
                 **({"additionalModelRequestFields": _additional} if _additional else {}),
             )
+            # Streamed when the answer is (U72), read whole into converse's shape.
+            return _converse_streamed(bedrock, **kwargs) if streamed else bedrock.converse(**kwargs)
         return await asyncio.to_thread(_run)
 
     async def _invoke_model_call():
@@ -3508,6 +3648,74 @@ async def _chat_huggingface(call: ChatCall, spec) -> LLMResult:
     )
 
 
+class _OllamaStreamed:
+    """A streamed Ollama answer, read whole into the body `stream: false` returns (U72)."""
+
+    status_code = 200
+    text = ""
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    def json(self) -> dict:
+        return self._data
+
+
+async def _ollama_post(client, url: str, body: dict, *, field: str):
+    """POST to Ollama: streamed when the answer is (U72), else the call it always was.
+
+    `field` is where the answer's text is: `message` (/api/chat) or `response`
+    (/api/generate). Streamed, each piece of it goes to `emit_delta`, and the
+    NDJSON lines are put back together — content, thinking, tool calls and the
+    last line's counts and done reason — so everything below reads one body.
+    """
+    from core.model_wait import emit_delta, stream_abandoned, streaming_wanted
+
+    if not streaming_wanted():
+        return await client.post(url, json=body, timeout=180.0)
+    content: list[str] = []
+    thinking: list[str] = []
+    tool_calls: list = []
+    last: dict = {}
+    async with client.stream("POST", url, json={**body, "stream": True}, timeout=180.0) as resp:
+        if resp.status_code != 200:
+            await resp.aread()
+            return resp
+        async for line in resp.aiter_lines():
+            if not line.strip():
+                continue
+            chunk = json.loads(line)
+            if chunk.get("error"):
+                raise LLMError(f"Ollama failed mid-answer: {chunk['error']}")
+            last = chunk
+            if field == "message":
+                msg = chunk.get("message") or {}
+                piece = msg.get("content") or ""
+                thinking.append(msg.get("thinking") or "")
+                tool_calls.extend(msg.get("tool_calls") or [])
+            else:
+                piece = chunk.get("response") or ""
+                thinking.append(chunk.get("thinking") or "")
+            if piece:
+                content.append(piece)
+                emit_delta(piece)
+            if stream_abandoned():
+                break
+    data = {k: v for k, v in last.items() if k not in ("message", "response", "thinking")}
+    if field == "message":
+        message = {"role": "assistant", "content": "".join(content)}
+        if any(thinking):
+            message["thinking"] = "".join(thinking)
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        data["message"] = message
+    else:
+        data["response"] = "".join(content)
+        if any(thinking):
+            data["thinking"] = "".join(thinking)
+    return _OllamaStreamed(data)
+
+
 async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
     from core import usage_tracker
 
@@ -3557,11 +3765,8 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
                     # rather than refusing it, and the `<think>` fallback
                     # below covers that case, so this is safe to send blind.
                     _chat_body["think"] = _reasoning_plan.enabled
-                response = await client.post(
-                    f"{_ollama_base}/api/chat",
-                    json=_chat_body,
-                    timeout=180.0
-                )
+                response = await _ollama_post(client, f"{_ollama_base}/api/chat", _chat_body,
+                                              field="message")
                 if (refused := _ollama_refusal(response, _ollama_base)) is not None:
                     raise refused
                 data = response.json()
@@ -3610,17 +3815,13 @@ async def _chat_ollama(call: ChatCall, spec) -> LLMResult:
                     if prior:
                         prompt_for_generate = f"Conversation so far:\n{prior}\n\nUser: {prompt_msg}".strip()
 
-                response = await client.post(
-                    f"{_ollama_base}/api/generate",
-                    json={
-                        "model": _ollama_model,
-                        "prompt": prompt_for_generate,
-                        "system": augmented_system,
-                        "stream": False,
-                        **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
-                    },
-                    timeout=180.0
-                )
+                response = await _ollama_post(client, f"{_ollama_base}/api/generate", {
+                    "model": _ollama_model,
+                    "prompt": prompt_for_generate,
+                    "system": augmented_system,
+                    "stream": False,
+                    **({"options": {"num_predict": _sent_cap}} if _sent_cap else {}),
+                }, field="response")
                 if (refused := _ollama_refusal(response, _ollama_base)) is not None:
                     raise refused
                 data = response.json()
