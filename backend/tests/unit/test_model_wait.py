@@ -163,3 +163,111 @@ def test_nothing_that_feeds_a_run_awaits_a_model_bare():
     for rel in watched:
         Scan(rel).visit(ast.parse((root / rel).read_text()))
     assert not bare, "model calls awaited without ModelWait:\n" + "\n".join(sorted(set(bare)))
+
+
+# ── Answer deltas (U72) ──────────────────────────────────────────────────────
+
+def _texts(events):
+    return [e for e in events if e["type"] in ("_model_delta", "_model_restart")]
+
+
+async def test_without_deltas_a_call_is_not_asked_to_stream():
+    async def call():
+        return mw.streaming_wanted()
+
+    wait = mw.ModelWait(call())
+    assert await _collect(wait) == []
+    assert wait.result is False
+
+
+async def test_deltas_reach_the_waiter_merged_per_wake():
+    async def call():
+        assert mw.streaming_wanted()
+        mw.emit_delta("Par")
+        mw.emit_delta("is")          # same wake: merged with the first
+        await asyncio.sleep(0.01)
+        mw.emit_delta(".")
+        return "Paris."
+
+    wait = mw.ModelWait(call(), deltas=True)
+    events = _texts(await _collect(wait))
+    assert "".join(e["text"] for e in events) == "Paris."
+    assert events[0] == {"type": "_model_delta", "text": "Paris"}
+    assert wait.result == "Paris."
+
+
+async def test_a_delta_from_a_worker_thread_arrives_in_order():
+    def blocking():
+        for piece in ("one ", "two ", "three"):
+            mw.emit_delta(piece)
+        return "done"
+
+    async def call():
+        return await asyncio.to_thread(blocking)
+
+    wait = mw.ModelWait(call(), deltas=True)
+    events = _texts(await _collect(wait))
+    assert "".join(e["text"] for e in events) == "one two three"
+    assert wait.result == "done"
+
+
+async def test_a_restart_is_kept_in_its_place():
+    async def call():
+        mw.emit_delta("half")
+        mw.restart_stream()
+        mw.emit_delta("whole")
+        return "whole"
+
+    events = _texts(await _collect(mw.ModelWait(call(), deltas=True)))
+    assert events == [{"type": "_model_delta", "text": "half"}, {"type": "_model_restart"},
+                      {"type": "_model_delta", "text": "whole"}]
+
+
+async def test_text_arriving_holds_off_the_heartbeat():
+    async def call():
+        for _ in range(8):
+            mw.emit_delta("x")
+            await asyncio.sleep(0.02)   # well inside the 0.05 s beat
+        return "ok"
+
+    events = await _collect(mw.ModelWait(call(), deltas=True))
+    assert not [e for e in events if e["type"] == "thinking"], events
+
+
+async def test_a_call_nested_in_a_streaming_one_does_not_stream():
+    async def inner():
+        return mw.streaming_wanted()
+
+    async def outer():
+        nested = mw.ModelWait(inner())
+        async for _ in nested.events():
+            pass
+        return nested.result
+
+    wait = mw.ModelWait(outer(), deltas=True)
+    await _collect(wait)
+    assert wait.result is False
+
+
+async def test_emit_outside_a_wait_is_a_no_op():
+    mw.emit_delta("nobody listening")
+    mw.restart_stream()
+    assert mw.streaming_wanted() is False
+
+
+async def test_closing_the_waiter_cancels_a_streaming_call():
+    cancelled = asyncio.Event()
+
+    async def call():
+        try:
+            while True:
+                mw.emit_delta("x")
+                await asyncio.sleep(0.01)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    gen = mw.ModelWait(call(), deltas=True).events()
+    await gen.__anext__()
+    await gen.aclose()
+    assert cancelled.is_set()

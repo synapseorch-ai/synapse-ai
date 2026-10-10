@@ -25,6 +25,7 @@ from core.session import (
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
+from core.answer_filter import AnswerFilter
 from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
@@ -917,11 +918,15 @@ async def run_agent_step(
     persist_turn: bool = True,            # False = not a conversation with a person (a delegated hand-off)
     untrusted_message: bool = False,      # True = `message` carries text nobody typed (an expanded @[file])
     knowledge_turn=None,                  # the root turn's [K#] labels (core.knowledge.citations.KnowledgeTurn); a delegate gets its lead's
+    stream_answer: bool = False,          # yield answer_delta / answer_reset while the answer is written (U72)
 ):
     """Lower-level single-agent ReAct execution.
 
     Used by both run_react_loop (chat) and the orchestration engine (per-step).
     Yields the same structured events as run_react_loop.
+
+    `stream_answer` streams this agent's own model calls (never a delegate's or
+    a subtask's): see `run_react_loop` for the events and what they promise.
     """
     if max_turns is None:
         max_turns = MAX_TURNS
@@ -1632,6 +1637,29 @@ async def run_agent_step(
     def _is_browser_tool(name: str) -> bool:
         return name.startswith(BROWSER_TOOL_PREFIXES)
 
+    # ── Streaming the answer (U72) ───────────────────────────────────────────
+    # Each model call gets a fresh filter; what it shows goes out as
+    # `answer_delta`. A call that turns out not to be the answer (a tool call, a
+    # retry, a cut-off reply) takes back what it showed with `answer_reset`.
+    _answer_filter = None
+    _answer_turn = 0
+
+    def _answer_events(ops) -> list[dict]:
+        out = []
+        for op in ops:
+            if op[0] == "text":
+                out.append({"type": "answer_delta", "text": op[1], "turn": _answer_turn})
+            else:
+                out.append({"type": "answer_reset", "turn": _answer_turn, "reason": op[1]})
+        return out
+
+    def _unstream(reason: str) -> list[dict]:
+        """Take back what this call showed, if it showed anything; it was not the answer."""
+        if _answer_filter is None or not _answer_filter.shown:
+            return []
+        _answer_filter.restart()
+        return [{"type": "answer_reset", "turn": _answer_turn, "reason": reason}]
+
     async with httpx.AsyncClient() as client:
         for turn in range(start_turn, max_turns):
             _log.info(f"\n{'#'*60}\n### TURN {turn + 1}/{max_turns} ###\n{'#'*60}\n")
@@ -1808,6 +1836,7 @@ async def run_agent_step(
                 _approved_calls.add(_approval_id(_replayed["tool"], _replayed["arguments"]))
                 _log.debug(f"▶ replaying approved call '{_replayed['tool']}'")
                 _llm_result = LLMResult(json.dumps(_replayed))
+                _answer_filter = None
                 _llm_duration = 0.0
                 yield {"type": "tool_approval_replay", "tool_name": _replayed["tool"],
                        "turn": turn + 1}
@@ -1829,9 +1858,19 @@ async def run_agent_step(
                         images_for_turn=images,
                         tool_name_for_log=last_tool_logged,
                         prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
-                    ))
+                    ), deltas=stream_answer)
+                    _answer_filter = AnswerFilter() if stream_answer else None
+                    _answer_turn = turn + 1
                     async for _wait_event in _wait.events():
-                        yield _wait_event
+                        _kind = _wait_event.get("type")
+                        if _kind == "_model_delta":
+                            for _e in _answer_events(_answer_filter.feed(_wait_event["text"])):
+                                yield _e
+                        elif _kind == "_model_restart":
+                            for _e in _answer_events(_answer_filter.restart()):
+                                yield _e
+                        else:
+                            yield _wait_event
                     _llm_result = _wait.result
                 except Exception as llm_err:
                     from core.llm_providers import EmptyAnswer, LLMError
@@ -1843,6 +1882,8 @@ async def run_agent_step(
                         _reasoning_retries += 1
                         _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
                         _turn_reasoning.append(llm_err.reasoning)
+                        for _e in _unstream("reasoning_only"):
+                            yield _e
                         yield {"type": "llm_reasoning", "reasoning": llm_err.reasoning, "turn": turn + 1}
                         current_context_text += _REASONING_ONLY_NUDGE
                         yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
@@ -1859,6 +1900,8 @@ async def run_agent_step(
                         # The turn raises instead, and whoever drove it reports
                         # it once. The conversation keeps the question, as a
                         # stopped turn does.
+                        for _e in _unstream("error"):
+                            yield _e
                         await _save_failed_turn()
                         if isinstance(llm_err, LLMError):
                             raise
@@ -1889,6 +1932,8 @@ async def run_agent_step(
                         "finished. Continue from exactly where you stopped. If you were writing a tool "
                         "call, emit the whole call again as valid JSON.\n"
                     )
+                    for _e in _unstream("truncated"):
+                        yield _e
                     yield {"type": "truncated_output", "turn": turn + 1,
                            "retry": _truncation_retries, "chars": len(llm_output)}
                     continue
@@ -1940,6 +1985,11 @@ async def run_agent_step(
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
             tool_calls = parse_all_tool_calls(action_text)
+            if tool_calls:
+                # What streamed before the call was narration: the engine keeps
+                # it as reasoning, so a stream takes it back.
+                for _e in _unstream("tool_call"):
+                    yield _e
 
             if not tool_calls:
                 # ── A tool call that did not parse is not a final answer ─────
@@ -1959,6 +2009,8 @@ async def run_agent_step(
                         '{"tool": "<name>", "arguments": {...}}. If you did not mean to call a '
                         "tool, answer in plain text with no JSON.\n"
                     )
+                    for _e in _unstream("retry"):
+                        yield _e
                     yield {"type": "tool_call_unparsed", "turn": turn + 1, "retry": _parse_retries}
                     continue
 
@@ -1977,6 +2029,8 @@ async def run_agent_step(
                         "cancelled if they no longer apply. Then give your final response.\n"
                     )
                     _log.debug(f"📋 final deferred — {len(_open)} open task(s), nudge {_task_nudges}/2")
+                    for _e in _unstream("not_done"):
+                        yield _e
                     yield {"type": "status",
                            # B4-23: read by people on the run page and in chat, so it
                            # speaks plainly — it was "Final response deferred — 1 open
@@ -2001,14 +2055,23 @@ async def run_agent_step(
                         _reasoning_retries += 1
                         _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
                         current_context_text += _REASONING_ONLY_NUDGE
+                        for _e in _unstream("reasoning_only"):
+                            yield _e
                         yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
                         continue
+                    for _e in _unstream("error"):
+                        yield _e
                     await _save_failed_turn()
                     raise _no_answer("\n\n".join(reasoning_blocks), _llm_result.stop_reason)
 
                 # Final response: strip any leftover reasoning so it never
                 # reaches the user or the session history.
                 final_response = action_text
+                if _answer_filter is not None:
+                    # The call was the answer: what was held while it might
+                    # have been a tool call goes out now.
+                    for _e in _answer_events(_answer_filter.close()):
+                        yield _e
                 break
 
             # Append the LLM's action text (tool-call JSON + any prose) to the
@@ -2968,7 +3031,19 @@ async def run_agent_step(
 
     if _kn_citations is not None:
         yield _kn_citations
-    yield {"type": "final", "response": final_response, "intent": last_intent, "data": last_data, "tool_name": tool_name}
+    final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
+                   "tool_name": tool_name}
+    if stream_answer:
+        # Whether what streamed is the answer, word for word: a caller that
+        # spoke or showed it need not say `response` again. An answer the loop
+        # put in place of the model's (the repeat guard, running out of turns)
+        # never streamed; what did stream is taken back first.
+        _shown = _answer_filter.shown.strip() if _answer_filter is not None else ""
+        final_event["streamed"] = bool(_shown) and _shown == final_response.strip()
+        if _shown and not final_event["streamed"]:
+            for _e in _unstream("replaced"):
+                yield _e
+    yield final_event
 
 
 class RunFailed(RuntimeError):
@@ -3163,8 +3238,31 @@ async def resolve_agent_for_run(agent_id: str | None) -> dict | None:
                          on_event=_spans.chat_turn_events, on_end=_spans.chat_turn_end)
 async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
-                         expand_mentions: bool = False):
+                         expand_mentions: bool = False, stream_answer: bool = False):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `stream_answer` (U72) also yields the answer while the model writes it — the
+    in-process hook every streaming caller uses (chat, the OpenAI-compatible
+    endpoint, a voice call):
+
+        {"type": "answer_delta", "text": str, "turn": int}
+            Visible answer text, in order: never reasoning ([REASONING],
+            <think>) and never a tool call's JSON. Pieces are merged per wake.
+        {"type": "answer_reset", "turn": int, "reason": str}
+            What streamed since the last reset was not the answer, for
+            `reason`: tool_call (narration before a call, which the engine
+            keeps as reasoning), retry (the call was sent again), truncated,
+            not_done, reasoning_only, error, think_close (it was thinking all
+            along), replaced (the loop answered in its own words instead).
+        {"type": "final", ..., "streamed": bool}
+            Still the answer of record. `streamed` is True when the text since
+            the last reset is the answer, word for word (stripped).
+
+    Only the agent's own model calls stream. A delegate, a subtask and a
+    workflow agent's run never do; their `final` carries `streamed: False`, as
+    does a provider that does not stream (CLI, HuggingFace), whose answer
+    arrives whole. Stopping a turn (`should_stop`, or cancelling the task that
+    drives this generator) cancels a call mid-stream.
 
     `expand_mentions` lets `@[path]` in the message read a vault file into the
     prompt (core/vault.py). A caller passes True only for a signed-in member's
@@ -3247,6 +3345,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                 run_id=getattr(request, "_workflow_run_id", None),
             )
         async for event in source:
+            if stream_answer and event.get("type") == "final" and not event.get("orch_step_id"):
+                event = {**event, "streamed": False}
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":
                 failed = True
                 failed_run = event.get("run_id")
@@ -3308,6 +3408,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             progress_events=progress_events,
             resume_state=resume_state,
             untrusted_message=_file_in_message,
+            stream_answer=stream_answer,
         ):
             _agent_log.log_event(event)
             yield event

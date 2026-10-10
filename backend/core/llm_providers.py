@@ -273,6 +273,150 @@ def _retry_without_reasoning(payload: dict, resp) -> bool:
     return True
 
 
+# ─── Streaming an OpenAI-shaped call (U72) ──────────────────────────────────
+# Only when the engine streams the answer (`model_wait.streaming_wanted()`);
+# every other call is the POST it always was. A streamed call is put back
+# together into the body a non-streamed one returns, so the status handling,
+# the retries and every extraction below it read the same response either way.
+
+
+def _refuses_streaming(resp) -> bool:
+    """A 400 whose body names streaming: the endpoint (or this model) takes none."""
+    try:
+        return "stream" in (resp.text or "").lower()
+    except Exception:  # noqa: BLE001 — a body we cannot read is not a verdict
+        return False
+
+
+class _StreamedChat:
+    """A streamed chat completion, read whole: what `client.post` would have returned.
+
+    `json()` rebuilds the non-streamed body, outside the caller's retry `try`
+    as F138 requires: a stream that cannot be put back together fails the call
+    once rather than paying for it four more times.
+    """
+
+    status_code = 200
+
+    def __init__(self, resp, chunks: list):
+        self._resp = resp
+        self._chunks = chunks          # parsed dicts, or the raw line that did not parse
+        self.headers = resp.headers
+        self.request = resp.request
+
+    @property
+    def text(self) -> str:
+        return "\n".join(c if isinstance(c, str) else json.dumps(c) for c in self._chunks)
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        content: list[str] = []
+        reasoning: list[str] = []
+        refusal: list[str] = []
+        calls: dict[int, dict] = {}
+        finish = None
+        usage = None
+        for chunk in self._chunks:
+            if isinstance(chunk, str):
+                raise LLMError(f"The provider streamed a line that is not JSON: {chunk[:200]}")
+            if chunk.get("error"):
+                err = chunk["error"]
+                raise LLMError(f"The provider failed mid-answer: "
+                               f"{(err.get('message') if isinstance(err, dict) else err) or err}")
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            for choice in chunk.get("choices") or ():
+                delta = choice.get("delta") or {}
+                if isinstance(delta.get("content"), str):
+                    content.append(delta["content"])
+                thought = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(thought, str):
+                    reasoning.append(thought)
+                if isinstance(delta.get("refusal"), str):
+                    refusal.append(delta["refusal"])
+                for tc in delta.get("tool_calls") or ():
+                    call = calls.setdefault(int(tc.get("index") or 0),
+                                            {"type": "function", "function": {"name": "", "arguments": ""}})
+                    if tc.get("id"):
+                        call["id"] = tc["id"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        call["function"]["name"] += fn["name"]
+                    args = fn.get("arguments")
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+                    if args:
+                        call["function"]["arguments"] += args
+                if choice.get("finish_reason"):
+                    finish = choice["finish_reason"]
+        message: dict = {"role": "assistant", "content": "".join(content) or None}
+        if reasoning:
+            message["reasoning_content"] = "".join(reasoning)
+        if refusal:
+            message["refusal"] = "".join(refusal)
+        if calls:
+            message["tool_calls"] = [calls[i] for i in sorted(calls)]
+        return {"choices": [{"index": 0, "message": message, "finish_reason": finish}],
+                "usage": usage or {}}
+
+
+def _content_of(chunk) -> str:
+    """The answer text one parsed stream chunk carries, or ""; never raises."""
+    try:
+        choices = chunk.get("choices") or ()
+        piece = (choices[0].get("delta") or {}).get("content") if choices else None
+        return piece if isinstance(piece, str) else ""
+    except Exception:  # noqa: BLE001 — a chunk we cannot read shows nothing
+        return ""
+
+
+async def _post_chat(client, url: str, *, headers: dict, payload: dict):
+    """POST an OpenAI-shaped chat completion: streamed when the answer is (U72).
+
+    Streamed, each piece of `content` goes to `model_wait.emit_delta` as it
+    arrives (never reasoning or a tool call's arguments: the engine filters
+    what is the answer). A refusal (any status but 200) is read whole and
+    returned as itself, so the caller's status checks see what they always
+    saw. A 400 that names streaming is asked once more without it: an endpoint
+    that takes no stream still answers. A transport failure mid-stream raises
+    as a non-streamed one would, into the caller's retry loop; the attempt that
+    follows says the text so far is void (`restart_stream`).
+    """
+    from core.model_wait import emit_delta, restart_stream, streaming_wanted
+
+    if not streaming_wanted():
+        return await client.post(url, headers=headers, json=payload)
+    restart_stream()
+    body = dict(payload, stream=True, stream_options={"include_usage": True})
+    chunks: list = []
+    async with client.stream("POST", url, headers=headers, json=body) as resp:
+        if resp.status_code != 200:
+            await resp.aread()
+            if resp.status_code == 400 and _refuses_streaming(resp):
+                _log.debug("provider refused stream — asking once without it")
+                return await client.post(url, headers=headers, json=payload)
+            return resp
+        async for line in resp.aiter_lines():
+            line = line.strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+            except ValueError:
+                chunks.append(data)
+                continue
+            chunks.append(chunk)
+            piece = _content_of(chunk)
+            if piece:
+                emit_delta(piece)
+    return _StreamedChat(resp, chunks)
+
+
 class LLMResult(NamedTuple):
     """One provider call's outcome.
 
@@ -1071,10 +1215,10 @@ async def call_openai(model, messages, api_key, tools=None, images=None, prompt_
         try:
             _log.debug(f"🔄 OpenAI call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=OPENAI_TIMEOUT) as client:
-                resp = await client.post(
-                    "https://api.openai.com/v1/chat/completions",
+                resp = await _post_chat(
+                    client, "https://api.openai.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
+                    payload=payload,
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -1268,6 +1412,25 @@ def _extract_anthropic_response(response) -> tuple[str, str]:
     raise EmptyAnswer("Error: Anthropic returned no usable content.")
 
 
+async def _anthropic_create(client, kwargs: dict):
+    """`messages.create`, or the same call streamed when the answer is (U72).
+
+    Streamed, each text delta goes to `model_wait.emit_delta` as it arrives
+    (thinking and tool input never do), and the SDK's final message is the very
+    object `create` returns, so everything read from it below is unchanged.
+    """
+    from core.model_wait import emit_delta, restart_stream, streaming_wanted
+
+    if not streaming_wanted():
+        return await client.messages.create(**kwargs)
+    restart_stream()
+    async with client.messages.stream(**kwargs) as stream:
+        async for event in stream:
+            if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                emit_delta(event.delta.text)
+        return await stream.get_final_message()
+
+
 async def call_anthropic(model, messages, system, api_key, tools=None, images=None, prompt_cache: bool = True,
                          prompt_blocks: list[str] | None = None, volatile_tail: str | None = None,
                          max_tokens: int | None = None, reasoning=None):
@@ -1385,7 +1548,7 @@ async def call_anthropic(model, messages, system, api_key, tools=None, images=No
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             _log.debug(f"🔄 Anthropic call start (attempt {attempt}/{MAX_RETRIES})")
-            response = await client.messages.create(**kwargs)
+            response = await _anthropic_create(client, kwargs)
             _log.debug(f"✅ Anthropic call complete (attempt {attempt})")
             # Read outside this `try` (F133): anything raised while reading an
             # answer that arrived landed in the catch-all below and sent the
@@ -2146,10 +2309,10 @@ async def call_grok(model, messages, system, api_key, tools=None, images=None, p
         try:
             _log.debug(f"🔄 Grok call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=GROK_TIMEOUT) as client:
-                resp = await client.post(
-                    "https://api.x.ai/v1/chat/completions",
+                resp = await _post_chat(
+                    client, "https://api.x.ai/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
+                    payload=payload,
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -2254,10 +2417,10 @@ async def call_deepseek(model, messages, system, api_key, tools=None, images=Non
         try:
             _log.debug(f"🔄 DeepSeek call start (attempt {attempt}/{MAX_RETRIES})")
             async with httpx.AsyncClient(timeout=DEEPSEEK_TIMEOUT) as client:
-                resp = await client.post(
-                    "https://api.deepseek.com/v1/chat/completions",
+                resp = await _post_chat(
+                    client, "https://api.deepseek.com/v1/chat/completions",
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
+                    payload=payload,
                 )
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
@@ -2396,7 +2559,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         backoff = BACKOFF_SCHEDULE[attempt - 1]
         try:
             async with httpx.AsyncClient(timeout=V1_TIMEOUT) as client:
-                resp = await client.post(endpoint, headers=headers, json=payload)
+                resp = await _post_chat(client, endpoint, headers=headers, payload=payload)
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
                 if is_quota_refusal(resp.status_code, resp.text):
