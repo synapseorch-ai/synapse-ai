@@ -785,6 +785,9 @@ export default function Home() {
   // First line of the model's latest reasoning/progress message — shown next
   // to the 💭 indicator so "Thinking" is never a blank box.
   const [thinkingPreview, setThinkingPreview] = useState<string | null>(null);
+  // The answer as the model writes it (U72), shown in the working row until
+  // `response` puts the answer of record in its place.
+  const [draftAnswer, setDraftAnswer] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<string | null>(null);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -1520,6 +1523,7 @@ export default function Home() {
       content: approve ? 'You allowed the call.' : `You refused the call${reason ? `: ${reason}` : '.'}`,
     }]);
     setIsLoading(true);
+    setDraftAnswer('');
     setTurnOutcome(null);
     turnAnsweredRef.current = false;
     lastCursorRef.current = null;
@@ -1598,6 +1602,7 @@ export default function Home() {
     lastCursorRef.current = null;
     setTurnOutcome(null);
     setIsLoading(true);
+    setDraftAnswer('');
     setStreamingActivity(null);
     setIsThinking(false);
     setThinkingPreview(null);
@@ -1817,8 +1822,22 @@ export default function Home() {
         setIsThinking(true);
         break;
 
+      case 'answer_delta':
+        // Only the agent's own answer: a delegate's or a workflow step's is not.
+        if (!data.orch_step_id && !data.delegate_from) {
+          setDraftAnswer(prev => prev + String(data.text ?? ''));
+        }
+        break;
+
+      case 'answer_reset':
+        // What streamed was not the answer — narration before a tool call, which
+        // the thinking line now carries, or a call sent again.
+        if (!data.orch_step_id && !data.delegate_from) setDraftAnswer('');
+        break;
+
       case 'response': {
         turnAnsweredRef.current = true;
+        setDraftAnswer('');
         const capturedThoughts = withoutEcho([...pendingThoughtsRef.current], data.content);
         const capturedReasoning = [...pendingReasoningRef.current];
         const refused = refusedRef.current;
@@ -2171,6 +2190,7 @@ export default function Home() {
 
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
+    setDraftAnswer('');
     setStreamingActivity('Resuming orchestration...');
     setIsThinking(false);
     pendingThoughtsRef.current = [];
@@ -2583,14 +2603,21 @@ export default function Home() {
                     and the activity in words beside it. */}
                 {isLoading && (
                   <AgentTurn working>
-                    <div className="flex flex-col gap-1 pt-0.5">
-                      <span className="text-sm text-text-muted">
-                        {streamingActivity || 'Processing'}
-                      </span>
-                      {isThinking && (
-                        <span className="max-w-2xl truncate text-xs text-text-faint">💭 {thinkingPreview || 'Thinking'}</span>
-                      )}
-                    </div>
+                    {draftAnswer ? (
+                      // The answer arriving: words, not a status line about them.
+                      <div data-answer-draft className="min-w-0 max-w-full">
+                        <Markdown className="text-[15px] leading-relaxed">{draftAnswer}</Markdown>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-1 pt-0.5">
+                        <span className="text-sm text-text-muted">
+                          {streamingActivity || 'Processing'}
+                        </span>
+                        {isThinking && (
+                          <span className="max-w-2xl truncate text-xs text-text-faint">💭 {thinkingPreview || 'Thinking'}</span>
+                        )}
+                      </div>
+                    )}
                   </AgentTurn>
                 )}
 

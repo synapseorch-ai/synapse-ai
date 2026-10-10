@@ -47,6 +47,8 @@ class Streamed:
     chunks: list[str]
     returns: str | None = None
     restart_after: int | None = None
+    #: Seconds between chunks; 0 lets the waiter merge them into one wake.
+    delay: float = 0.0
 
     @property
     def text(self) -> str:
@@ -123,7 +125,7 @@ class FakeLLM:
                     if reply.restart_after is not None and i == reply.restart_after:
                         model_wait.restart_stream()
                     model_wait.emit_delta(chunk)
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(reply.delay)
             return reply.text
         return reply
 

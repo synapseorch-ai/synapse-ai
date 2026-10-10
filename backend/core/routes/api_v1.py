@@ -289,7 +289,7 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
     try:
         async for event in run_react_loop(chat_request, _server, should_stop=_stopped,
                                           progress_events=True, resume_state=resume_state,
-                                          expand_mentions=True):
+                                          expand_mentions=True, stream_answer=True):
             etype = event.get("type", "")
 
             if etype == "_step_progress":
@@ -314,6 +314,14 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
 
             elif etype == "llm_thought":
                 yield {"type": "llm_thought", "thought": event["thought"], "turn": event.get("turn", 1)}
+
+            elif etype == "answer_delta":
+                # The answer as it is written (U72); `response` is still the answer of record.
+                yield {"type": "answer_delta", "text": event["text"], "turn": event.get("turn", 1)}
+
+            elif etype == "answer_reset":
+                # What streamed since the last reset was not the answer.
+                yield {"type": "answer_reset", "reason": event.get("reason"), "turn": event.get("turn", 1)}
 
             elif etype in _KNOWLEDGE_FRAMES:
                 frame = _knowledge_frame(event)

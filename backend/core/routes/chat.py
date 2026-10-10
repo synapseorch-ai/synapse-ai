@@ -237,7 +237,7 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         async for event in iter_with_heartbeat(
             run_react_loop(request, _server, should_stop=_stopped,
                            progress_events=True, resume_state=resume_state,
-                           expand_mentions=expand_mentions)
+                           expand_mentions=expand_mentions, stream_answer=True)
         ):
             # Heartbeat comments are yielded as raw SSE strings — pass through.
             if isinstance(event, str):
@@ -287,6 +287,13 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 # Rendered as a dedicated "thinking" panel above the tool call
                 # in the chat UI / orchestration step view.
                 yield f"data: {json.dumps(whose({'type': 'llm_reasoning', 'reasoning': event['reasoning'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}), default=str)}\n\n"
+
+            elif etype in ("answer_delta", "answer_reset"):
+                # The answer as the model writes it (U72): the page grows it in
+                # place until `response` puts the answer of record there, and
+                # drops it on a reset — narration before a tool call, which the
+                # thinking panel carries, or a call sent again.
+                yield f"data: {json.dumps(event)}\n\n"
 
             elif etype == "llm_thought":
                 # Action text (tool-call JSON or final-response prose) with

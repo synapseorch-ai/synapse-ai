@@ -131,17 +131,56 @@ class RunEventPublisher:
 # ---------------------------------------------------------------------------
 
 class ChatEventPublisher:
-    """Publishes SSE events for a chat session to a Redis Stream."""
+    """Publishes SSE events for a chat session to a Redis Stream.
+
+    The answer's text (`answer_delta`, U72) is merged: held for up to
+    `DELTA_WINDOW` seconds and sent as one entry, so a long answer is a few
+    hundred stream entries rather than one per model chunk — the stream is
+    capped at `STREAM_MAXLEN`, and a reader that reattaches replays it. Any
+    other event sends what is held first, so the order is the engine's.
+    """
 
     STREAM_MAXLEN = 5_000
+    DELTA_WINDOW = 0.1
 
     def __init__(self, redis_client, session_id: str, ttl: int = 3600):
         self._redis = redis_client
         self._session_id = session_id
         self._key = f"synapse:chat:{session_id}:events"
         self._ttl = ttl
+        self._held: dict | None = None          # a merged answer_delta not yet sent
+        self._flusher: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
 
     async def publish(self, event: dict) -> None:
+        if event.get("type") == "answer_delta":
+            async with self._lock:
+                held = self._held
+                if held is not None and held.get("turn") == event.get("turn") \
+                        and held.get("delegate_from") == event.get("delegate_from"):
+                    held["text"] += event.get("text") or ""
+                    return
+                if held is not None:
+                    await self._send(held)
+                self._held = dict(event)
+                if self._flusher is None or self._flusher.done():
+                    self._flusher = asyncio.ensure_future(self._flush_later())
+            return
+        async with self._lock:
+            await self._send_held()
+            await self._send(event)
+
+    async def _flush_later(self) -> None:
+        await asyncio.sleep(self.DELTA_WINDOW)
+        async with self._lock:
+            await self._send_held()
+
+    async def _send_held(self) -> None:
+        held, self._held = self._held, None
+        if held is not None:
+            await self._send(held)
+
+    async def _send(self, event: dict) -> None:
         payload = json.dumps(event, default=str)
         await self._redis.xadd(
             self._key,
