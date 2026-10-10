@@ -623,6 +623,7 @@ async def run_agent_chat_job(
     caller_system: str | None = None,
     save_turn: bool = True,
     log_source: str = "chat",
+    report_usage: bool = False,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
@@ -631,7 +632,9 @@ async def run_agent_chat_job(
     few hundred stream entries, not thousands. `history_override`,
     `caller_system`, `save_turn` and `log_source` are the OpenAI-compatible
     endpoint's (OAI1, `run_react_loop`): the request carries the conversation,
-    and with `save_turn=False` the turn writes no Chat row.
+    and with `save_turn=False` the turn writes no Chat row. `report_usage`
+    publishes the turn's tokens, summed over its model calls, as one
+    `turn_usage` event just before `done` (the endpoint answers with `usage`).
 
     No `tenant_id` parameter — see `run_orchestration_job`.
 
@@ -838,7 +841,15 @@ async def run_agent_chat_job(
         # driving the engine rather than asking it to notice — the same
         # `_cancel_guarded` shape `WorkerEngineAdapter` uses for runs, keyed on
         # the session because a chat turn has no run id.
-        cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume)
+        from core import turn_usage
+        meter = turn_usage.start() if report_usage else None
+        try:
+            cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume)
+        finally:
+            if meter is not None:
+                turn_usage.stop(meter)
+        if meter is not None:
+            await publisher.publish({"type": "turn_usage", **meter.totals()})
 
         if cancelled:
             # Say so on the stream before closing it. A client that hangs when
