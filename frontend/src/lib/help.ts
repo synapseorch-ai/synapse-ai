@@ -28,6 +28,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Press Ctrl+K (⌘K on a Mac), or click “Jump to…”, to go to any page or tab by name.',
             'Click “Build with AI” in the menu to build with AI from any page; on a phone, the mark in the top bar. Settings sits at the foot.',
         ],
+        media: { id: 'start/menu-and-jump', alt: 'The menu down the left — Home, Runs, then Build and Connect — with Jump to open over the page, listing every page and tab by name.' },
         guide: '/guides/start/how-it-fits',
     },
 
@@ -42,7 +43,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Read “Total spend”, “Requests”, “Tokens” and “Cache saved” over every recorded model call, and “Spend by model” for which models cost most; “Add one” sets a missing price.',
             'Click a row under “Workspace” to go to your workflows, agents, schedules or apps.',
         ],
-        media: { id: 'home/oss-dashboard', alt: 'The Home page: a greeting, a run waiting for approval under Needs you, the week’s figures and runs, recent runs and what is coming up.' },
+        media: { id: 'home/oss-dashboard', alt: 'The Home page: nothing needs you, Getting started folded to its next step, the week’s figures, recent runs and what is coming up.' },
         guide: '/guides/start/how-it-fits',
     },
     runs: {
@@ -79,7 +80,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Use “Transcript sections” to jump to a model call, a step or a tool call, and “Copy” to take the whole log.',
             'Click “Load more” for older logs, or Refresh for new ones. Deleting a log, from its row, is immediate and cannot be undone.',
         ],
-        media: { id: 'runs/oss-runs-logs', alt: 'Logs: agent, workflow and schedule logs grouped by session on the left, the open log on the right.' },
+        media: { id: 'runs/oss-runs-logs', alt: 'The Logs tab of Runs, showing Workflow logs: the newest run’s log open beside the list, with agent and schedule logs a filter apart.' },
         guide: '/guides/start/runs',
     },
     evals: {
@@ -92,7 +93,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'If it says “Nothing scored yet”, click “Score earlier runs” to judge runs from before the rubric.',
             'Click “New set” under Golden sets, add cases and “Save set”; “Run” tells you the cost before it starts.',
         ],
-        media: { id: 'evals/rubric', alt: 'Evals: rubrics and golden sets on the left; the open rubric’s scores, trend line, criteria and scored runs on the right.' },
+        media: { id: 'evals/rubric', alt: 'The Evals tab of Runs with a rubric open: its latest and average score, how many runs passed, each run as a point, and each criterion’s average.' },
         guide: '/guides/start/evals',
     },
 
@@ -106,7 +107,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'In “Pricing reference”, edit a rate or click “Add model”, then “Save pricing” to match what you pay.',
             '“Clear logs” deletes every usage record once you confirm; it cannot be undone.',
         ],
-        media: { id: 'usage/overview', alt: 'Usage: stat cards for cost, requests and tokens, cache analytics, cost by model and the pricing table.' },
+        media: { id: 'usage/overview', alt: 'The Usage tab of Runs: model spend, calls and tokens, and the cost by model.' },
         guide: '/guides/start/runs',
     },
 
@@ -121,7 +122,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Search by name or description, or sort by name, steps, last run, trigger or when it was updated.',
             'Switch to “Active”, “Recent” or “All runs” for runs; click one to open it on its canvas. “Needs input” means it is waiting for you.',
         ],
-        media: { id: 'workflows/list', alt: 'Workflows: New workflow, Build with AI and Templates above a list of workflows, each row with its trigger, last run and its steps by role.' },
+        media: { id: 'workflows/list', alt: 'The Workflows page: each workflow with what starts it, how its last run went and its steps by role; Schedules and Templates are tabs beside it.' },
         guide: '/guides/start/workflows',
     },
     'orchestrations.editor': {
@@ -134,7 +135,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Save” or press Ctrl+S; anything to fix shows on the step and under “to check” in the bar.',
             'Click “Run now” — it runs the last saved version. The run strip says where it is; “Run Log” opens what it did.',
         ],
-        media: { id: 'workflows/add-step', clip: true, alt: 'A step dragged from the palette onto the canvas, connected to the step before it and set up in the side panel.' },
+        media: { id: 'workflows/add-step', clip: true, alt: 'Adding an LLM step from Add step; the new step appears on the canvas with its settings open.' },
         guide: '/guides/start/first-workflow',
     },
     agents: {
@@ -147,7 +148,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Turn on what it may use under “Tools” (and its Tool Policy), then its skills and, when shown, knowledge bases.',
             'Click “Save” in the bar at the foot. Try it in the test chat on the right, which talks to the saved agent; “Runs”, “Metrics” and “Used by” show what it ran, what it cost and where it is used.',
         ],
-        media: { id: 'agents/oss-editor', alt: 'Agents: the list of agents on the left, an agent’s setup in the middle, and a test chat on the right.' },
+        media: { id: 'agents/oss-editor', alt: 'An agent open: its name and description, its Setup, Messaging Channels, Runs, Metrics and Used by tabs, its model, and a test chat beside it.' },
         guide: '/guides/start/agents',
     },
     skills: {
@@ -157,9 +158,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “New skill”, then give it a lower-case name and a one-line description of when it applies.',
             'Write the instructions in Markdown, check them under “Preview”, and click “Save skill”.',
             'Pick a skill in the list to read it, and click Edit to change it; editing a “Disk” skill makes a “Library” copy that takes its place.',
-            'In Agents, tick the skill under Skills on an agent’s “Configuration”, then click “Save Agent”.',
+            'In Agents, click the skill under “Skills” on an agent’s “Setup”, then click “Save”.',
         ],
-        media: { id: 'skills/list', alt: 'Skills: the list of skills beside the open one, with its Library or Disk badge, the agents that use it and its instructions.' },
+        media: { id: 'skills/list', alt: 'The Skills tab of Agents with a skill open: its instructions for how agents write payment notes.' },
         guide: '/guides/start/agents',
     },
     chat: {
@@ -171,7 +172,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.',
             'Click + for a new chat, or the history button to reopen or delete an earlier one.',
         ],
-        media: { id: 'chat/oss-home', alt: 'Chat: the agent’s name and model in the header, a conversation with a tool call opened, and the message box below.' },
+        media: { id: 'chat/oss-home', alt: 'Chat: a conversation with the Order desk agent, whose name sits at the foot of the message box.' },
         guide: '/guides/start/chat',
     },
     schedules: {
@@ -184,14 +185,14 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Leave it enabled and click “Create schedule”. Each row shows how often it runs, when it runs next and how its last run went; its switch pauses it, and it can be run now, edited or deleted.',
             'Each run’s log is in Runs › Logs, under “Schedule logs”.',
         ],
-        media: { id: 'schedules/list', alt: 'Schedules: each schedule with what it starts, how often, when it runs next and how its last run went.' },
+        media: { id: 'schedules/list', alt: 'The Schedules tab of Workflows: a schedule that runs a workflow every Monday at 07:00 UTC, with its next and last run.' },
         guide: '/guides/recipes/schedules-and-channels',
     },
 
 
     templates: {
         title: 'Templates',
-        summary: 'Ready-made packs of agents, workflows and MCP servers. You see everything a pack holds before anything is imported.',
+        summary: 'Ready-made packs of agents, workflows and apps. You see everything a pack holds before anything is imported.',
         steps: [
             'Each pack shows its workflows step by step, and says when you approve before one finishes. Click “Preview & Import” to see what it brings.',
             'Untick anything you do not want; what the rest needs is kept.',
@@ -210,9 +211,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'For HTTP, choose a method, enter the URL and list its arguments in “Input Schema (JSON)”.',
             'For n8n, connect it in Settings → Integrations first, then pick the workflow under “n8n Workflow”.',
             'For Python, write code that prints its result on the Python tab and try it with “Run”; it needs Docker.',
-            'Click “Save”, then tick the tool under “Capabilities (Tools)” in Agents. “Import OpenAPI” makes tools from an API spec.',
+            'Click “Save”, then tick the tool under “Tools” on an agent’s “Setup”. “Import OpenAPI” makes tools from an API spec.',
         ],
-        media: { id: 'tools/list', alt: 'Tools: custom tools in a list, each with an HTTP, n8n or Python badge, beside the open tool’s editor.' },
+        media: { id: 'tools/list', alt: 'The Tools tab of Apps with a Python tool open, which works out when an invoice is due.' },
         guide: '/guides/start/tools',
     },
     mcp_servers: {
@@ -222,10 +223,10 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Google Workspace is connected in Integrations; the card at the top goes there. For a server, choose “Local (stdio)” or “Remote (URL)”, and click a preset to fill in the form, or fill it in yourself.',
             'Enter a “Display Label” and a “Unique ID”; for a local server, its command, arguments and environment.',
             'For a remote server, enter the “Server URL”; leave the token empty to sign in with OAuth instead.',
-            'Click “Connect Server”, then tick its tools under “Capabilities (Tools)” in Agents.',
+            'Click “Connect Server”, then tick its tools under “Tools” on an agent’s “Setup”.',
             'If this install is reachable over a network, turn local servers off or limit their commands.',
         ],
-        media: { id: 'mcp/browse', alt: 'MCP Servers: connected servers with their type and status, above the form to add one with its presets.' },
+        media: { id: 'mcp/browse', alt: 'The Apps page: the directory of apps an agent can connect to, filtered by category; Tools is a tab beside it.' },
         guide: '/guides/start/tools',
     },
     vault: {
@@ -237,7 +238,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'In an agent’s system prompt or a step’s prompt, type @ and pick a file; it goes in as @[path].',
             'With Knowledge on, a folder that is a knowledge base shows a “Knowledge” badge; make one in Knowledge.',
         ],
-        media: { id: 'vault/browse', alt: 'The Vault: a folder tree on the left and a Markdown file open in the editor on the right.' },
+        media: { id: 'vault/browse', alt: 'The Vault: the compliance guides folder open in the tree, and a saved web page read beside it.' },
         guide: '/guides/start/tools',
     },
     knowledge: {
@@ -250,7 +251,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Choose a “Preset” — “Cheap”, “Balanced” or “High recall” — and click “Create”.',
             'Files already in the folder start indexing. Select the base to add more and follow each file.',
         ],
-        media: { id: 'knowledge/bases', alt: 'Knowledge: the list of knowledge bases on the left and the New knowledge base button.' },
+        media: { id: 'knowledge/bases', alt: 'Knowledge: the knowledge bases on the left, and one open on its numbers, with Upload files, Add web pages, Test search and its documents.' },
         guide: '/guides/knowledge/bases',
     },
     'knowledge.base': {
@@ -263,7 +264,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Under the base’s numbers, ask in “Test search” what an agent would ask, to see the passages it would get.',
             'Click “Settings” for the preset, search and budget; “Costs” shows this month’s spend, and “Evaluate” how often it finds the answer.',
         ],
-        media: { id: 'knowledge/upload', clip: true, alt: 'Files dropped onto a knowledge base, each moving from Queued through Reading and Indexing to Indexed.' },
+        media: { id: 'knowledge/upload', clip: true, alt: 'Uploading a policy document to a knowledge base; it is read and indexed, ready for agents to search.' },
         guide: '/guides/knowledge/sources',
     },
 
@@ -278,7 +279,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Keep “Database write access” off unless agents must write, and list the folders the bash tool may use.',
             'Click “Save changes”. To require a password, turn on “Require login” and click “Save login settings”.',
         ],
-        media: { id: 'settings/oss-general', alt: 'Settings → General: the agent name field and the switches for Knowledge, large responses and context compaction.' },
+        media: { id: 'settings/oss-general', alt: 'Settings → General, with the switch that turns Knowledge on.' },
         guide: '/guides/start/setup',
     },
     models: {
@@ -291,7 +292,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Set “Reasoning effort” and “Max response length” for agents that set neither.',
             'Choose an “Embedding model” and, with Knowledge on, its models; then click “Save changes”.',
         ],
-        media: { id: 'settings/oss-models', alt: 'Settings → Models: provider cards, one open to its API key field, above the default model picker.' },
+        media: { id: 'settings/oss-models', alt: 'Settings → Models: the default model and a key for each provider.' },
         guide: '/guides/start/setup',
     },
     personal_details: {
@@ -300,9 +301,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Fill in your name, email and phone number, and the address if tasks need one.',
             'Leave a field empty if you would rather agents did not have it, and click “Save changes”.',
-            'In Agents, tick “Personal Details” under “Capabilities (Tools)” for each agent that should read them.',
+            'In Agents, tick “Personal Details” under “Tools” on the “Setup” of each agent that should read them.',
         ],
-        media: { id: 'settings/oss-profile', alt: 'Settings → Personal details: name, email and phone fields above the address.' },
+        media: { id: 'settings/oss-profile', alt: 'Settings → Personal details: who you are, for your agents to use.' },
         guide: '/guides/start/setup',
     },
     variables: {
@@ -315,7 +316,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Write {{ global.api_base }} where the value goes; typing {{ in a tool field or a prompt lists them.',
             'Values come back as plain text: keep secrets in a provider’s key field, not here.',
         ],
-        media: { id: 'settings/variables', alt: 'Settings → Variables: name and value rows, with Add variable and Save below.' },
+        media: { id: 'settings/variables', alt: 'Settings → Variables: AP_APPROVAL_LIMIT and SUPPORT_EMAIL, values tools and steps can read.' },
         guide: '/guides/start/setup',
     },
     memory: {
@@ -327,7 +328,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Check the list and click “Yes, clear selected”. This cannot be undone.',
             'Vault files and knowledge bases are not on the list, so nothing here clears them.',
         ],
-        media: { id: 'settings/oss-memory', alt: 'Settings → Memory: the data categories as rows to tick, and the Clear selected button below.' },
+        media: { id: 'settings/oss-memory', alt: 'Settings → Memory: the kinds of stored data, and clearing them.' },
         guide: '/guides/start/setup',
     },
     workspace: {
@@ -339,7 +340,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Connect Google account”, sign in on Google’s page, then come back and refresh the status.',
             'Under n8n, enter its URL and API key, and click “Save changes”.',
         ],
-        media: { id: 'settings/oss-integrations', alt: 'Settings → Integrations: the Google Workspace card with its connection status, above the n8n card.' },
+        media: { id: 'settings/oss-integrations', alt: 'Settings → Integrations: Google and n8n.' },
         guide: '/guides/start/tools',
     },
     messaging: {
@@ -352,7 +353,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Test” to check it, and pick it under “Run notifications” to hear about workflow runs there.',
             'If messaging is off for this install, no channels load and saving fails.',
         ],
-        media: { id: 'settings/oss-messaging', alt: 'Channels: the channels and their status on the left, and the open channel’s platform, agents and credentials on the right.' },
+        media: { id: 'settings/oss-messaging', alt: 'Channels before any channel is set up: Telegram, Discord, Slack, Teams or WhatsApp, with run notifications and the webhook address; Widgets is a tab beside it.' },
         guide: '/guides/recipes/schedules-and-channels',
     },
     widgets: {
@@ -365,7 +366,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Save changes” — nothing but a logo is kept until you do.',
             'Click “Copy snippet” and paste the script tag into the HTML of each allowed site.',
         ],
-        media: { id: 'settings/oss-widgets', alt: 'Widgets: the widgets on the left, and the open one’s script tag, allowed sites, visitor tools and branding beside a live preview.' },
+        media: { id: 'settings/oss-widgets', alt: 'The Widgets tab of Channels before any widget: put an agent on your own site with one script tag.' },
         guide: '/guides/recipes/support-bot-widget',
     },
     repos: {
@@ -377,7 +378,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Save repository”. With “Code repository indexing” on in General, it starts indexing.',
             'Hover a card to index it again, stop indexing or delete it; click it to edit.',
         ],
-        media: { id: 'settings/oss-repos', alt: 'Settings → Repos: repositories as cards, each with its path, an indexing badge and a count of indexed chunks.' },
+        media: { id: 'settings/oss-repos', alt: 'Settings → Repos: code repositories agents can work in.' },
         guide: '/guides/start/tools',
     },
     db_configs: {
@@ -389,7 +390,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Hover the card and refresh its schema to read its tables; saving alone does not test the connection.',
             'Click a card to edit it, or hover it to delete it.',
         ],
-        media: { id: 'settings/oss-databases', alt: 'Settings → DB configs: database connections as cards, with a status badge, type, masked connection string and cached tables.' },
+        media: { id: 'settings/oss-databases', alt: 'Settings → DB configs: databases your agents can query.' },
         guide: '/guides/start/tools',
     },
     api_keys: {
@@ -402,12 +403,12 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “View docs” for the API reference: endpoints, examples, and MCP setup for Claude Code or Cursor.',
             'Removing a key, from its row, is immediate.',
         ],
-        media: { id: 'settings/oss-api-keys', alt: 'Settings → API keys: a field to name and generate a key, and the active keys with their prefix and last use.' },
+        media: { id: 'settings/oss-api-keys', alt: 'Settings → API keys: keys for calling this install from your own code.' },
         guide: '/guides/developers/public-api',
     },
     import_export: {
         title: 'Import / Export',
-        summary: 'Move workflows, agents, MCP servers and tools between Synapse installs as one JSON bundle, or start from a ready-made example.',
+        summary: 'Move workflows, agents, apps and tools between Synapse installs as one JSON bundle, or start from a ready-made example.',
         steps: [
             'On “Export”, click “Load export data” and tick what to take; what those need is added too.',
             'Name the file and click “Export & download”.',
@@ -415,7 +416,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Import Now”, or “Configure Secrets →” when servers or tools need secret values.',
             'On “Examples”, click “Preview & Import” on a pack to review it before importing.',
         ],
-        media: { id: 'settings/oss-import-export', alt: 'Settings → Import / Export: orchestrations, agents, servers and tools as checkboxes to export.' },
+        media: { id: 'settings/oss-import-export', alt: 'Settings → Import / Export: moving workflows, agents, apps and tools in and out as a bundle.' },
         guide: '/guides/start/setup',
     },
     scale: {
@@ -428,7 +429,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Save scale config”, then restart the server and every worker.',
             'Search a run or session ID, and watch the queue, workers and failed jobs at the top.',
         ],
-        media: { id: 'settings/oss-scale', alt: 'Settings → Scale: run analytics, recent runs, the live queue and workers, above the Redis, Postgres and storage sections.' },
+        media: { id: 'settings/oss-scale', alt: 'Settings → Scale: running with workers and a shared database.' },
         guide: '/guides/start/setup',
     },
     support: {
@@ -440,7 +441,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Open a question under “Frequently asked questions” for a short answer.',
             'Click “Join Discord server” to ask the community.',
         ],
-        media: { id: 'settings/oss-support', alt: 'Settings → Help & docs: documentation links, a quick start guide and frequently asked questions.' },
+        media: { id: 'settings/oss-support', alt: 'Settings → Help & docs: where to read the docs and get help.' },
         guide: '/guides/start/how-it-fits',
     },
     datalab: {
