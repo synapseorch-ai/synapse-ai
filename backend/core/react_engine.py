@@ -3241,8 +3241,6 @@ async def resolve_agent_for_run(agent_id: str | None) -> dict | None:
     return resolved if resolved is not None else await _resolve_agent_by_id(agent_id)
 
 
-@_spans.traced_generator("synapse.chat_turn", _spans.chat_turn_attributes,
-                         on_event=_spans.chat_turn_events, on_end=_spans.chat_turn_end)
 def _caller_instructions(text: str | None) -> str | None:
     """A client's system message, after the agent's own prompt and named as the caller's (OAI1)."""
     if not text or not text.strip():
@@ -3252,6 +3250,8 @@ def _caller_instructions(text: str | None) -> str | None:
             + text.strip())
 
 
+@_spans.traced_generator("synapse.chat_turn", _spans.chat_turn_attributes,
+                         on_event=_spans.chat_turn_events, on_end=_spans.chat_turn_end)
 async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
                          expand_mentions: bool = False, stream_answer: bool = False,
