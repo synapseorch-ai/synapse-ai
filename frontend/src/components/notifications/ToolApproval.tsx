@@ -20,7 +20,11 @@ import type { RunNotification } from './NotificationProvider';
 export async function answerToolApproval(n: RunNotification, approve: boolean): Promise<void> {
     let res: Response;
     try {
-        res = await fetch(`/api/schedules/${encodeURIComponent(n.data?.schedule_id)}/approve`, {
+        // A schedule's question goes to its schedule; an API turn's (OAI1) names its own place.
+        const url = typeof n.data?.answer_url === 'string' && n.data.answer_url.startsWith('/api/')
+            ? n.data.answer_url
+            : `/api/schedules/${encodeURIComponent(n.data?.schedule_id)}/approve`;
+        res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ approve, approval_id: n.data?.approval_id }),

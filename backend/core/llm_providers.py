@@ -4026,6 +4026,8 @@ async def generate_response_ex(
                 )
             except Exception as _track_err:
                 _log.warning(f"usage_tracker: log_usage (empty answer) failed: {_track_err}")
+        from core import turn_usage
+        turn_usage.add(*(getattr(empty, "usage", None) or ()))
         raise
     except LLMError:
         # LLM errors must propagate — do NOT swallow them.
@@ -4069,6 +4071,9 @@ async def generate_response_ex(
         )
     except Exception as _track_err:
         _log.warning(f"usage_tracker: log_usage failed (non-fatal): {_track_err}")
+    # The turn's own count, for a caller that reports usage (the OpenAI endpoint).
+    from core import turn_usage
+    turn_usage.add(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
     # ── All of it was thinking (F305) ────────────────────────────────────────
     # Each provider checks its reply for emptiness before the split above, so

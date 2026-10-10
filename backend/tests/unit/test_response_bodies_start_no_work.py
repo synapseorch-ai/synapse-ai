@@ -39,6 +39,7 @@ ENGINE_METHODS = frozenset({"run", "resume", "resume_failed", "resume_paused"})
 #: The generators a chat turn's task drives.
 PRODUCERS = frozenset({
     "_event_stream", "_v1_turn_events", "run_builder_stream", "run_builder_stream_compat",
+    "_oai_turn_events",
 })
 LOOP = frozenset({"run_react_loop", "run_agent_step"})
 

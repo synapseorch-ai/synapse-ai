@@ -919,6 +919,7 @@ async def run_agent_step(
     untrusted_message: bool = False,      # True = `message` carries text nobody typed (an expanded @[file])
     knowledge_turn=None,                  # the root turn's [K#] labels (core.knowledge.citations.KnowledgeTurn); a delegate gets its lead's
     stream_answer: bool = False,          # yield answer_delta / answer_reset while the answer is written (U72)
+    save_turn: bool = True,               # False = keep the turn out of the conversation (the OpenAI endpoint's own)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1600,7 +1601,7 @@ async def run_agent_step(
     async def _save_failed_turn() -> None:
         """A turn the model failed keeps its question (F133), as a stopped
         turn does — never for an orchestrator, a hand-off or a workflow step."""
-        if is_orchestrator or not persist_turn or _workflow_step:
+        if is_orchestrator or not persist_turn or _workflow_step or not save_turn:
             return
         from core.chat_turns import FAILED_ANSWER
         try:
@@ -3010,7 +3011,7 @@ async def run_agent_step(
     # Persist the conversation turn (skip for orchestrator agents, for a
     # delegated hand-off, which is work done for another agent, not a chat, and
     # for a workflow's step, F261)
-    if not is_orchestrator and persist_turn and not _workflow_step:
+    if not is_orchestrator and persist_turn and not _workflow_step and save_turn:
         try:
             await _save_conversation_turn(
                 session_id=session_id,
@@ -3120,6 +3121,7 @@ async def run_orchestrator_agent(
     with_history: bool = False,
     images: list[str] | None = None,
     image_refs: list[str] | None = None,
+    history: list | None = None,
 ):
     """Run an Orchestrator agent's orchestration, yielding the engine's events.
 
@@ -3135,6 +3137,10 @@ async def run_orchestrator_agent(
     v1 and the widget) and a messaging channel — pass it; a schedule and a
     delegation start fresh, as they always have. The session is the caller's,
     so a widget visitor reads only their own conversation.
+
+    `history` is a conversation the caller holds (the OpenAI endpoint's
+    request): the run reads it as `state.history` instead of the session's,
+    and the turn is the caller's to keep, not this run's to save.
 
     `images` are what the person attached (F313). The run holds them beside its
     state, never in it, and only an agent step marked "Sees attachments"
@@ -3172,12 +3178,13 @@ async def run_orchestrator_agent(
         # A key the orchestration declares for itself stays its own. Present
         # from the first message, empty, so a step that reads it never meets a
         # missing key.
-        if with_history and "history" not in (orch.state_schema or {}):
-            history: list = []
-            if session_id:
-                from core.session import get_recent_history_messages
-                history = await get_recent_history_messages(session_id, agent_id=agent.get("id"))
-            initial_state = {"history": history}
+        if (with_history or history is not None) and "history" not in (orch.state_schema or {}):
+            if history is None:
+                history = []
+                if session_id:
+                    from core.session import get_recent_history_messages
+                    history = await get_recent_history_messages(session_id, agent_id=agent.get("id"))
+            initial_state = {"history": list(history)}
         chain = _WORKFLOW_CHAIN.get() + (orch_id,)
 
         async def _in_chain():
@@ -3236,10 +3243,27 @@ async def resolve_agent_for_run(agent_id: str | None) -> dict | None:
 
 @_spans.traced_generator("synapse.chat_turn", _spans.chat_turn_attributes,
                          on_event=_spans.chat_turn_events, on_end=_spans.chat_turn_end)
+def _caller_instructions(text: str | None) -> str | None:
+    """A client's system message, after the agent's own prompt and named as the caller's (OAI1)."""
+    if not text or not text.strip():
+        return None
+    return ("## Instructions from the application calling you\n"
+            "Follow these where they do not conflict with your own instructions above.\n\n"
+            + text.strip())
+
+
 async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
-                         expand_mentions: bool = False, stream_answer: bool = False):
+                         expand_mentions: bool = False, stream_answer: bool = False,
+                         history_override: list | None = None, caller_system: str | None = None,
+                         save_turn: bool = True, log_source: str = "chat"):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `history_override`, `caller_system`, `save_turn` and `log_source` are the
+    OpenAI-compatible endpoint's (OAI1): the request carries the conversation,
+    so it is the history instead of the stored one; a client's system message
+    is added after the agent's own prompt; the turn is not saved as a Chat
+    conversation; and the agent's log names where it came from.
 
     `stream_answer` (U72) also yields the answer while the model writes it — the
     in-process hook every streaming caller uses (chat, the OpenAI-compatible
@@ -3339,7 +3363,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                                           images=getattr(request, "images", None) or None)
         else:
             source = run_orchestrator_agent(
-                active_agent, user_message, server_module, session_id=session_id, with_history=True,
+                active_agent, user_message, server_module, session_id=session_id,
+                with_history=save_turn, history=history_override,
                 images=getattr(request, "images", None) or None,
                 image_refs=getattr(request, "_image_refs", None),
                 run_id=getattr(request, "_workflow_run_id", None),
@@ -3372,7 +3397,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         # A run resumed here (F290) paused before, so its turn is owed and the
         # engine saves it where the run ends (F261) — not twice.
         resumed = bool(resume_state and resume_state.get("run_id"))
-        if (answer is not None or failure is not None) and not resumed:
+        if (answer is not None or failure is not None) and not resumed and save_turn:
             from core.chat_turns import FAILED_RUN_ANSWER
             try:
                 await _save_conversation_turn(
@@ -3391,7 +3416,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         agent_id=active_agent.get("id", "default"),
         agent_name=active_agent.get("name", "Unknown Agent"),
         session_id=session_id,
-        source="chat",
+        source=log_source,
         user_message=user_message,
     )
     _log_status = "completed"
@@ -3409,6 +3434,9 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             resume_state=resume_state,
             untrusted_message=_file_in_message,
             stream_answer=stream_answer,
+            history_override=history_override,
+            system_prompt_extra=_caller_instructions(caller_system),
+            save_turn=save_turn,
         ):
             _agent_log.log_event(event)
             yield event

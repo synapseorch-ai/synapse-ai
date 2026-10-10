@@ -63,6 +63,10 @@ from core.routes.skills import router as skills_router
 from core.routes.widget import router as widget_router, WidgetUpdated, widget_updated_response
 from core.routes.agent_memory import router as agent_memory_router
 from core.routes.api_v1 import router as api_v1_router
+from core.routes.openai_compat import (
+    OpenAIError, approvals_router as openai_approvals_router, handle_openai_error,
+    router as openai_compat_router,
+)
 from core.routes.api_v1_knowledge import router as api_v1_knowledge_router
 from core.routes.api_v2 import router as api_v2_router
 from core.routes.scale import router as scale_router
@@ -1047,6 +1051,11 @@ app.include_router(widget_router)
 app.add_exception_handler(WidgetUpdated, widget_updated_response)
 app.include_router(agent_memory_router)
 app.include_router(api_v1_router, prefix="/api/v1")
+# Every agent behind an OpenAI-compatible endpoint, at /api/v1/openai (OAI1): a
+# key's route like the rest of v1, its errors in OpenAI's shape.
+app.include_router(openai_compat_router, prefix="/api/v1")
+app.add_exception_handler(OpenAIError, handle_openai_error)
+app.include_router(openai_approvals_router)
 app.include_router(api_v1_knowledge_router)  # paths carry /api/v1 (Knowledge, D176)
 app.include_router(api_v2_router, prefix="/api/v2")
 app.include_router(scale_router, prefix="/api")

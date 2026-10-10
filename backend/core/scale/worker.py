@@ -618,8 +618,20 @@ async def run_agent_chat_job(
     expand_mentions: bool = False,
     visitor: dict | None = None,
     workflow_run_id: str | None = None,
+    stream_answer: bool = True,
+    history_override: list | None = None,
+    caller_system: str | None = None,
+    save_turn: bool = True,
+    log_source: str = "chat",
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
+
+    `stream_answer` publishes the answer as it is written (U72): `answer_delta`
+    and `answer_reset` events, merged by the publisher so a long answer is a
+    few hundred stream entries, not thousands. `history_override`,
+    `caller_system`, `save_turn` and `log_source` are the OpenAI-compatible
+    endpoint's (OAI1, `run_react_loop`): the request carries the conversation,
+    and with `save_turn=False` the turn writes no Chat row.
 
     No `tenant_id` parameter — see `run_orchestration_job`.
 
@@ -659,6 +671,12 @@ async def run_agent_chat_job(
     # Set before the `try`, so the `except` can tell "we never got far enough to
     # have a publisher" from "the turn failed with one". See below.
     publisher = None
+
+    async def _save_row(status: str, rows: list) -> None:
+        # A turn that keeps no conversation (the OpenAI endpoint's) writes no Chat row (OAI1).
+        if save_turn:
+            await _upsert_chat_session(session_factory, session_id, agent_id, status, rows)
+
     # Whether this turn's exchange is already in `history`: an error after the
     # answer was recorded (its webhook, say) must not replace it (F133).
     recorded = False
@@ -697,7 +715,7 @@ async def run_agent_chat_job(
             await publisher.publish_done()
             history.append({"role": "user", "content": message})
             history.append({"role": "assistant", "content": INTERRUPTED_TURN})
-            await _upsert_chat_session(session_factory, session_id, agent_id, "failed", history)
+            await _save_row("failed", history)
             _log.info(f"[worker] chat {session_id}: turn handed out again (try {ctx['job_try']}) — not rerun")
             return {"status": "interrupted", "session_id": session_id}
 
@@ -710,7 +728,7 @@ async def run_agent_chat_job(
             if moved:
                 history.extend(moved)
 
-        await _upsert_chat_session(session_factory, session_id, agent_id, "running", history)
+        await _save_row("running", history)
 
         from core.scale.pubsub import ChatEventPublisher
         publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
@@ -764,7 +782,9 @@ async def run_agent_chat_job(
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
-                expand_mentions=expand_mentions,
+                expand_mentions=expand_mentions, stream_answer=stream_answer,
+                history_override=history_override, caller_system=caller_system,
+                save_turn=save_turn, log_source=log_source,
             )):
                 etype = event.get("type")
 
@@ -847,14 +867,14 @@ async def run_agent_chat_job(
                 session_id, agent_id or "default",
                 parked_payload(paused_on, message=message, progress=latest_progress),
             )
-            await _upsert_chat_session(session_factory, session_id, agent_id, "paused", history)
+            await _save_row("paused", history)
             return {"status": "paused", "session_id": session_id}
 
         # A workflow waiting on a person has not answered, and its run saves
         # the turn when it ends (F261). Appended here it was the question and
         # an empty answer, which went back to the model as history (F294).
         if workflow_waiting and not response_text and not cancelled:
-            await _upsert_chat_session(session_factory, session_id, agent_id, "paused", history)
+            await _save_row("paused", history)
             return {"status": "paused", "session_id": session_id}
 
         # Append to message history and persist.
@@ -892,8 +912,7 @@ async def run_agent_chat_job(
             answer_entry.update(citation_fields(turn_citations))
         history.append(answer_entry)
         recorded = True
-        await _upsert_chat_session(session_factory, session_id, agent_id,
-                                   "cancelled" if cancelled else "completed", history)
+        await _save_row("cancelled" if cancelled else "completed", history)
         if cancelled:
             await clear_chat_cancellation(redis, session_id)
             return {"status": "cancelled", "session_id": session_id}
@@ -972,7 +991,7 @@ async def run_agent_chat_job(
                 if thoughts:
                     failed["thoughts"] = thoughts
                 history.append(failed)
-            await _upsert_chat_session(session_factory, session_id, agent_id, "failed", history)
+            await _save_row("failed", history)
         except Exception:
             pass
         if webhook_url and not recorded:

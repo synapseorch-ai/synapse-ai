@@ -167,6 +167,12 @@ class ScheduleManager:
             await self._expire_parked_approvals()
         except Exception as e:  # noqa: BLE001 — a failed sweep is retried next tick
             logger.warning("[Scheduler] approval expiry sweep failed: %s", e)
+        try:
+            # The OpenAI endpoint's parked calls expire on the same tick (OAI1).
+            from core import api_approvals
+            await api_approvals.expire_parked()
+        except Exception as e:  # noqa: BLE001 — a failed sweep is retried next tick
+            logger.warning("[Scheduler] API approval expiry sweep failed: %s", e)
 
     async def _expire_parked_approvals(self) -> None:
         """A scheduled run's tool call nobody answered in `APPROVAL_TTL` expires unrun (F268).

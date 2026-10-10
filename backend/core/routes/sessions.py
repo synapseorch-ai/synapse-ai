@@ -37,6 +37,15 @@ def _the_builders_own(session: dict) -> bool:
             or str(session.get("agent_id") or "").startswith("agent_native_builder"))
 
 
+def _an_api_turns_own(session: dict) -> bool:
+    """A conversation the OpenAI-compatible endpoint holds while a call waits on a person (OAI1).
+
+    The endpoint saves no chat; its turn's row exists only to park the call,
+    and goes once it is answered or expires (`core.api_approvals`).
+    """
+    return str(session.get("session_id") or "").startswith("oai_")
+
+
 def _a_runs_own(session: dict) -> bool:
     """A conversation an orchestration or a sub-agent left, not a person (F261).
 
@@ -53,7 +62,7 @@ def _a_runs_own(session: dict) -> bool:
 async def get_sessions(agent_id: str | None = Query(default=None)):
     """List the person's chat sessions, newest first."""
     return [s for s in await list_chat_sessions(agent_id=agent_id)
-            if not _the_builders_own(s) and not _a_runs_own(s)]
+            if not _the_builders_own(s) and not _a_runs_own(s) and not _an_api_turns_own(s)]
 
 
 @router.get("/api/sessions/{session_id}/history")
