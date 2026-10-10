@@ -189,7 +189,7 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
     },
     openai_compatible: {
         img: '/chatgpt-icon.svg',
-        description: 'Any other OpenAI v1-compatible cloud provider: a base URL, a key and model names.',
+        description: 'Any OpenAI v1-compatible cloud provider (OpenRouter, Together, Fireworks, etc.).',
         keyPlaceholder: 'sk-...',
         keyNote: 'Enter your API key, base URL, and model names below.',
     },

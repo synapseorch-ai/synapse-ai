@@ -222,7 +222,7 @@ def _answer(asker: Asker, choice, found: Found):
         other = asker.select("Which one?", [
             Option("DeepSeek", "deepseek"), Option("xAI Grok", "grok"),
             *(Option(c.label, c.key) for c in CLOUDS.values() if c.prefix),
-            Option("Another OpenAI-compatible API", "oaic"),
+            Option("OpenRouter, or another OpenAI-compatible API", "oaic"),
             Option("A server on this computer or network", "locv1", "vLLM, LM Studio, llama.cpp…"),
             Option("Ollama at another address", "ollama-remote"),
             Option("AWS Bedrock", "bedrock"),
