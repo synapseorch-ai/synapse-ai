@@ -18,6 +18,8 @@ from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
 from .pauses import end_step, progress_key as _progress_key
+from .run_error import set_run_error
+from .run_gate import stop_reason
 from .time_limits import step_time_limit, timed_out
 
 _log = get_logger(__name__)
@@ -1608,6 +1610,15 @@ class ParallelStepExecutor:
                 yield {"type": "step_error", "orch_step_id": sid, "error": message}
                 raise RuntimeError(message)
 
+            # The host's gate (F419), as before a step at the top of the run.
+            # The run's own reason is the gate's sentence: the branch's failure
+            # reaches the engine as this node's error, worded as a branch's.
+            stopped = await stop_reason(run.run_id, sub_step.type.value)
+            if stopped:
+                set_run_error(run, stopped)
+                yield {"type": "step_error", "orch_step_id": step.id, "error": stopped}
+                raise RuntimeError(stopped)
+
             step_start = time.time()
             # A step that runs a workflow waits on that workflow's own budget
             # (F291); this node's own limit holds the rest.
@@ -1994,6 +2005,14 @@ class LoopStepExecutor:
                         loop_iteration=iteration,
                         loop_total=total,
                     )
+
+                    # The host's gate (F419), as before a step at the top of the
+                    # run; the run's own reason is the gate's sentence.
+                    stopped = await stop_reason(run.run_id, sub_step.type.value)
+                    if stopped:
+                        set_run_error(run, stopped)
+                        yield {"type": "step_error", "orch_step_id": step.id, "error": stopped}
+                        raise RuntimeError(stopped)
 
                     step_start = time.time()
                     # A step that runs a workflow waits on that workflow's own budget

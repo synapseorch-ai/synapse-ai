@@ -20,6 +20,7 @@ from .run_error import failure_reason, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
+from .run_gate import stop_reason
 from .time_limits import OWN_BUDGET, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
@@ -403,6 +404,13 @@ class OrchestrationEngine:
             total_turns += 1
             if total_turns > self.orch.max_total_turns:
                 yield fail_run(f"Global turn limit ({self.orch.max_total_turns}) exceeded")
+                break
+
+            # The host's gate (F419): a run whose next step it cannot pay for
+            # stops here, with the host's sentence as its reason.
+            stopped = await stop_reason(run.run_id, step.type.value)
+            if stopped:
+                yield fail_run(stopped)
                 break
 
             step_start_time = time.time()

@@ -194,14 +194,16 @@ def _isolate_knowledge_seams():
 
 @pytest.fixture(autouse=True)
 def _isolate_process_seams():
-    """A worker's vector store (F393) and a host's run images (F395) back to their
-    defaults after each test: building a worker module sets the first."""
+    """A worker's vector store (F393), a host's run images (F395) and its run gate
+    (F419) back to their defaults after each test: building a worker module sets
+    the first."""
     from core.cache import response_cache
-    from core.orchestration import run_images
+    from core.orchestration import run_gate, run_images
 
     yield
     response_cache.set_memory_store(None)
     run_images.set_run_images(None)
+    run_gate.set_run_gate(None)
 
 
 # ── chat turn isolation (autouse) ────────────────────────────────────────────
