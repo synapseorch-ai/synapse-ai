@@ -3244,6 +3244,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                 active_agent, user_message, server_module, session_id=session_id, with_history=True,
                 images=getattr(request, "images", None) or None,
                 image_refs=getattr(request, "_image_refs", None),
+                run_id=getattr(request, "_workflow_run_id", None),
             )
         async for event in source:
             if event.get("type") == "orchestration_complete" and event.get("status") == "failed":

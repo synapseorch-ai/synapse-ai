@@ -27,6 +27,9 @@ class ChatRequest(BaseModel):
     #: worker that resolved them — never by a caller: a private attribute is
     #: not a field, so no request body can set it (F395).
     _image_refs: list[str] | None = PrivateAttr(default=None)
+    #: The id a workflow agent's run takes, set by the worker from its job's
+    #: enqueuer, who admitted that run (cloud, F417) — never by a caller.
+    _workflow_run_id: str | None = PrivateAttr(default=None)
 
     _check_images = checked_images()
 

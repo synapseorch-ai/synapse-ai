@@ -617,6 +617,7 @@ async def run_agent_chat_job(
     image_refs: list | None = None,
     expand_mentions: bool = False,
     visitor: dict | None = None,
+    workflow_run_id: str | None = None,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
@@ -631,6 +632,11 @@ async def run_agent_chat_job(
     — for a stranger on a public surface, whose turn then holds only those
     tools, no memory, and no approval card (`core.visitor`). A widget or a
     channel that enqueues without it runs its visitor as a member.
+
+    `workflow_run_id` is the enqueuer's id for the run a workflow agent's turn
+    starts (F417): cloud admits that run before the turn is queued — its row,
+    its meter and its hold — so the run is charged as a run, not as the turn's
+    minutes. Unset, the run mints its own id, as it always has.
 
     `resume_state` picks a turn up from where a tool-approval pause left it,
     and is the queued twin of what `core/routes/chat.py` does in-process. Until
@@ -738,6 +744,8 @@ async def run_agent_chat_job(
         # The enqueuer's names for the images (F395): a workflow agent's run
         # keeps them, not the images, for after a pause. Never a request field.
         chat_request._image_refs = list(image_refs or []) or None
+        # The run a workflow agent starts, under the enqueuer's id (F417).
+        chat_request._workflow_run_id = workflow_run_id or None
         # The last turn-boundary snapshot, and whether this turn stopped to ask
         # a person something. Both are read after `_consume` returns, which is
         # why they are declared out here.
