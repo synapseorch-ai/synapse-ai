@@ -99,6 +99,18 @@ def list_bearer(url: str) -> Callable[[str], list[str]]:
     return lambda key: _ids(net.get_json(url, {"Authorization": f"Bearer {key}"} if key else {}))
 
 
+#: Words in an id that name a model nobody chats with: a hosted provider's list
+#: holds its embedders, speech and guard models too. The installer cannot import
+#: the backend, so this is a short copy of `core.providers.discovery.NOT_CHAT`.
+_NOT_CHAT = re.compile(r"embed|rerank|whisper|tts|speech|transcribe|audio|guard|moderation|ocr|image", re.I)
+
+
+def list_chat(url: str) -> Callable[[str], list[str]]:
+    """`list_bearer`, cut to chat models (PROV1)."""
+    listed = list_bearer(url)
+    return lambda key: [m for m in listed(key) if not _NOT_CHAT.search(m)]
+
+
 def list_bedrock(key: str, region: str) -> list[str]:
     data = net.get_json(f"https://bedrock.{region}.amazonaws.com/foundation-models",
                         {"Authorization": f"Bearer {key}"}, timeout=30)
@@ -131,6 +143,8 @@ class Cloud:
     key_setting: str
     lister: Callable[[str], list[str]]
     fallback_model: str
+    #: The routing prefix the engine names its models by (`groq.`); "" for the first five.
+    prefix: str = ""
 
 
 CLOUDS = {
@@ -141,6 +155,23 @@ CLOUDS = {
                       list_bearer("https://api.deepseek.com/v1/models"), "deepseek-chat"),
     "grok": Cloud("grok", "xAI Grok", "grok_key",
                   list_bearer("https://api.x.ai/v1/models"), "grok-3"),
+    # The hosted OpenAI-style providers (PROV1, D245): the engine's table
+    # (`core/providers/registry.py`) holds the same addresses and fallbacks.
+    **{id: Cloud(id, label, f"{id}_key", list_chat(f"{base}/models"), fallback, prefix=f"{id}.")
+       for id, label, base, fallback in (
+           ("moonshot", "Moonshot (Kimi)", "https://api.moonshot.ai/v1", "kimi-k3"),
+           ("mistral", "Mistral", "https://api.mistral.ai/v1", "mistral-large-latest"),
+           ("nvidia", "NVIDIA", "https://integrate.api.nvidia.com/v1", "openai/gpt-oss-120b"),
+           ("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-oss-120b"),
+           ("qwen", "Qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "qwen3.8-max"),
+           ("zai", "Z.ai", "https://api.z.ai/api/paas/v4", "glm-5.3"),
+           ("groq", "Groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"),
+           ("cerebras", "Cerebras", "https://api.cerebras.ai/v1", "gpt-oss-120b"),
+           ("together", "Together AI", "https://api.together.xyz/v1", "openai/gpt-oss-120b"),
+           ("fireworks", "Fireworks", "https://api.fireworks.ai/inference/v1",
+            "accounts/fireworks/models/gpt-oss-120b"),
+           ("minimax", "MiniMax", "https://api.minimax.io/v1", "MiniMax-M3"),
+       )},
 }
 
 
@@ -164,7 +195,7 @@ def ask(asker: Asker, found: Found | None = None) -> dict:
             Option("Anthropic (Claude)", "anthropic"),
             Option("OpenAI", "openai"),
             Option("Google Gemini", "gemini"),
-            Option("Other…", "other", "DeepSeek, Grok, OpenRouter, AWS Bedrock, a local server"),
+            Option("Other…", "other", "DeepSeek, Grok, Mistral, Groq, OpenRouter and more, AWS Bedrock, a local server"),
             Option("Skip for now", "skip", "choose one later in Settings"),
         ]
         choice = asker.select("Which AI should Synapse use?", options,
@@ -190,7 +221,8 @@ def _answer(asker: Asker, choice, found: Found):
     if choice == "other":
         other = asker.select("Which one?", [
             Option("DeepSeek", "deepseek"), Option("xAI Grok", "grok"),
-            Option("OpenRouter, or another OpenAI-compatible API", "oaic"),
+            *(Option(c.label, c.key) for c in CLOUDS.values() if c.prefix),
+            Option("Another OpenAI-compatible API", "oaic"),
             Option("A server on this computer or network", "locv1", "vLLM, LM Studio, llama.cpp…"),
             Option("Ollama at another address", "ollama-remote"),
             Option("AWS Bedrock", "bedrock"),
@@ -249,7 +281,7 @@ def _cloud(asker: Asker, cloud: Cloud):
         model = _choose_model(asker, models, cloud.fallback_model, cloud.key)
         if model is BACK:
             continue
-        return {cloud.key_setting: key, "model": model, "mode": "cloud"}
+        return {cloud.key_setting: key, "model": f"{cloud.prefix}{model}", "mode": "cloud"}
 
 
 def _base_url(asker: Asker, question: str, default: str):
