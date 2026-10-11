@@ -10246,7 +10246,8 @@ _PHONE_HISTORY = {
         {"user": "A refund, please.", "assistant": "I've asked someone on the team to approve that.", "tools": ["refund"],
          "calls": [], "timestamp": "2026-10-11T09:00:36Z"},
     ],
-    "pending_approval": {"kind": "tool_approval", "tool_name": "refund", "tool_args": {"order": "48213"}},
+    "pending_approval": {"kind": "tool_approval", "tool_name": "refund", "tool_args": {"order": "48213"},
+                         "approval_id": "ap_smoke_1"},
 }
 
 
@@ -10362,6 +10363,21 @@ async def check_calllog(browser) -> str:
     the filler, the tool and the barge-in cut, the approval still waiting in the person tone, and the strip with
     Twilio's estimate said as one."""
     ctx = await _phone_context(browser)
+    answers: list[dict] = []
+    answered = {"turns": _PHONE_HISTORY["turns"] + [
+        {"user": "A refund, please.", "assistant": "Done: the refund is on its way.", "tools": ["refund"],
+         "calls": [{"tool": "refund", "args": {"order": "48213"}, "result": "refunded"}],
+         "timestamp": "2026-10-11T09:20:00Z"}], "pending_approval": None}
+
+    async def history(route):
+        await route.fulfill(status=200, content_type="application/json",
+                            body=json.dumps(answered if answers else _PHONE_HISTORY))
+
+    async def approve(route):
+        answers.append(json.loads(route.request.post_data or "{}"))
+        await route.fulfill(status=200, content_type="application/json", body='{"status": "allowed"}')
+    await ctx.route("**/api/sessions/*/history*", history)
+    await ctx.route("**/api/messaging/twilio_voice/approvals/*", approve)
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/channels/phone?number=chn_ph1&call={_PHONE_CALL['id']}", wait_until="domcontentloaded")
@@ -10372,13 +10388,19 @@ async def check_calllog(browser) -> str:
                 raise AssertionError(f"the log does not show {what}")
         if not await page.get_by_text("Twilio, estimated").count() or not await page.get_by_text("lookup_order").count():
             raise AssertionError("the strip's estimate or the tool is missing")
+        # Answered from the log itself (Naveen at review): the approval names its question, the result follows.
+        await page.locator("[data-call-pending]").get_by_role("button", name="Approve").click()
+        await page.get_by_text("Done: the refund is on its way.").wait_for(timeout=15_000)
+        if answers != [{"approve": True, "approval_id": "ap_smoke_1"}]:
+            raise AssertionError(f"the answer sent {answers}")
         await page.get_by_role("button", name="Back to Smoke support line").click()
         await page.locator(f'[data-call-row="{_PHONE_CALL["id"]}"]').wait_for(timeout=10_000)
         if "call=" in page.url:
             raise AssertionError("Back left the call in the address")
     finally:
         await ctx.close()
-    return "the deep link opens the call's log with filler, tool, cut, waiting approval and estimate; Back returns"
+    return ("the deep link opens the call's log with filler, tool, cut, waiting approval and estimate; Approve there "
+            "sends its id and the result follows; Back returns")
 
 
 @check

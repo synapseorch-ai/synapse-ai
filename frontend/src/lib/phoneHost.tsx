@@ -128,6 +128,10 @@ export const OSS_PHONE_HOST: PhoneHost = {
             `/api/sessions/${enc(c.sessionId)}/history?agent_id=${enc(c.agentId)}`, undefined, 'The conversation could not be read');
         return { turns: turnsFromHistory(body.turns), pending: pendingFrom(body.pending_approval) };
     },
+    answer: async (c, approve, approvalId) => {
+        await call(`/api/messaging/${PLATFORM}/approvals/${enc(c.sessionId)}`,
+            json('POST', { approve, approval_id: approvalId }), 'That answer did not go through');
+    },
     modelCost: async c => {
         try {
             const body = await call<{ logs?: { estimated_cost?: number }[] }>(

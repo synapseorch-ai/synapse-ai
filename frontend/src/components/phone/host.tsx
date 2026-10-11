@@ -63,6 +63,8 @@ export type PhoneHost = {
     calls: (numberId: string) => Promise<CallRecord[]>;
     /** A call's conversation (its chat session), and the question it parked, if any is still open. */
     transcript: (call: CallRecord) => Promise<Transcript>;
+    /** Approve or refuse the question a call parked (V16): the turn carries on behind, its result kept with the call. */
+    answer: (call: CallRecord, approve: boolean, approvalId: string | null) => Promise<void>;
     /** What the call's model calls cost, in dollars; null when nothing is recorded. Never rejects. */
     modelCost: (call: CallRecord) => Promise<number | null>;
     /** The numbers a key can see (step two). A refused key rejects with Twilio's reason. */
@@ -100,6 +102,7 @@ export const DEFAULT_PHONE_HOST: PhoneHost = {
     agents: async () => [],
     calls: async () => [],
     transcript: async () => ({ turns: [], pending: null }),
+    answer: nothing,
     modelCost: async () => null,
     twilioNumbers: nothing,
     connect: nothing,

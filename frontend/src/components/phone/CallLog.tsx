@@ -10,12 +10,16 @@
  * the call said while a tool ran is kept beside it (VOX1c). Turns saved after
  * the call ended are the approval's answer, said as such. Colour only for
  * meaning: the machine's tools in Cerulean, a person needed in amber.
+ *
+ * A question the call parked is answered here too (Naveen at review), as from
+ * the bell: the turn carries on behind, and the log reads the conversation
+ * again until its result arrives.
  */
 import { ArrowLeft, PhoneIncoming, Wrench } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { RunChip } from '@/components/assistant';
-import { When, money, useClock } from '@/components/run';
+import { TimeOfDay, When, money, useClock, type Clock } from '@/components/run';
 import { Badge, Button, ErrorNote, StatStrip, type StatCell } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
@@ -71,8 +75,9 @@ function ToolDetail({ tool }: { tool: CallTurn['tools'][number] }) {
     );
 }
 
-function Turn({ turn, startedAt, after }: { turn: CallTurn; startedAt: string | null; after: boolean }) {
-    const at = offset(turn.at, startedAt);
+function Turn({ turn, startedAt, after, clock }: { turn: CallTurn; startedAt: string | null; after: boolean; clock: Clock }) {
+    // During the call, minutes into it; an approval's answer came later, so it says when.
+    const at = after ? null : offset(turn.at, startedAt);
     return (
         <li className="grid gap-3" data-call-turn>
             <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
@@ -81,8 +86,9 @@ function Turn({ turn, startedAt, after }: { turn: CallTurn; startedAt: string | 
             </div>
             <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
                 <span className="text-xs font-medium text-accent-ink">
-                    {after ? 'Agent, later' : 'Agent'}
+                    Agent
                     {at && <span className="ml-1.5 font-normal tabular-nums text-text-faint">{at}</span>}
+                    {after && turn.at && <TimeOfDay iso={turn.at} clock={clock} className="block font-normal text-text-faint" />}
                 </span>
                 <div className="grid min-w-0 gap-2">
                     {turn.filler.map((line, i) => (
@@ -125,6 +131,11 @@ export function CallLog({
     const [transcript, setTranscript] = useState<Transcript | null>(null);
     const [error, setError] = useState('');
     const [cost, setCost] = useState<number | null | undefined>(undefined);
+    const [answering, setAnswering] = useState<'allow' | 'refuse' | null>(null);
+    const [answered, setAnswered] = useState<'allowed' | 'refused' | null>(null);
+    const [answerError, setAnswerError] = useState('');
+    const [laterBefore, setLaterBefore] = useState(0);
+    const [reread, setReread] = useState(0);
 
     useEffect(() => {
         let gone = false;
@@ -133,7 +144,36 @@ export function CallLog({
             .catch(e => { if (!gone) setError(errorWords(e, 'The conversation could not be read.')); });
         host.modelCost(call).then(c => { if (!gone) setCost(c); });
         return () => { gone = true; };
-    }, [host, call]);
+    }, [host, call, reread]);
+
+    // Turns saved after the call ended are an approval's answer; the rest is the call.
+    const ended = call.endedAt ? Date.parse(call.endedAt) : NaN;
+    const turns = transcript?.turns ?? [];
+    const during = turns.filter(t => Number.isNaN(ended) || !t.at || Date.parse(t.at) <= ended + 1000);
+    const later = turns.filter(t => !during.includes(t));
+
+    // After an answer the turn carries on behind: read the conversation again until its result is saved (30 s at most).
+    const settled = answered !== null && later.length > laterBefore;
+    useEffect(() => {
+        if (answered === null || settled || reread > 15) return;
+        const t = window.setTimeout(() => setReread(r => r + 1), 2000);
+        return () => window.clearTimeout(t);
+    }, [answered, settled, reread]);
+
+    const answer = async (approve: boolean) => {
+        if (!transcript?.pending) return;
+        setAnswering(approve ? 'allow' : 'refuse'); setAnswerError('');
+        try {
+            await host.answer(call, approve, transcript.pending.approvalId);
+            setLaterBefore(later.length);
+            setAnswered(approve ? 'allowed' : 'refused');
+            setReread(r => r + 1);
+        } catch (e) {
+            setAnswerError(errorWords(e, 'That answer did not go through.'));
+        } finally {
+            setAnswering(null);
+        }
+    };
 
     const live = isLive(call);
     const minutes = startedMinutes(call.seconds);
@@ -149,11 +189,6 @@ export function CallLog({
         { label: 'Model', value: cost === undefined ? '…' : money(cost), sub: cost === null ? 'Nothing recorded' : undefined },
         { label: 'Twilio, estimated', value: money(twilioEstimate(call)), sub: 'At US rates' },
     ];
-    const ended = call.endedAt ? Date.parse(call.endedAt) : NaN;
-    const turns = transcript?.turns ?? [];
-    const during = turns.filter(t => Number.isNaN(ended) || !t.at || Date.parse(t.at) <= ended + 1000);
-    const later = turns.filter(t => !during.includes(t));
-
     return (
         <div className="grid gap-6" data-call-log={call.id}>
             <Button variant="ghost" size="sm" className="w-fit" onClick={onBack} aria-label={`Back to ${numberName}`}>
@@ -188,11 +223,29 @@ export function CallLog({
                     </span>
                     <span className="break-words font-code text-xs text-text-muted">{JSON.stringify(transcript.pending.args)}</span>
                     <span className="text-xs text-text-muted">
-                        The caller was told someone will follow up. Approve or refuse it from the bell; then call them back.
+                        The caller was told someone will follow up. Approve or refuse it here or from the bell, then call them back.
                     </span>
+                    {host.canEdit && (
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                            <Button size="sm" variant="person" onClick={() => void answer(true)} loading={answering === 'allow'} disabled={answering !== null}>
+                                Approve
+                            </Button>
+                            <Button size="sm" variant="secondary" onClick={() => void answer(false)} loading={answering === 'refuse'} disabled={answering !== null}>
+                                Refuse
+                            </Button>
+                        </div>
+                    )}
+                    {answerError && <p role="alert" className="m-0 text-xs text-danger">{answerError}</p>}
                 </div>
             )}
-            {!transcript?.pending && call.approvals.length > 0 && (
+            {answered && !transcript?.pending && (
+                <p role="status" data-call-answered className="m-0 text-sm text-text-muted">
+                    {answered === 'allowed'
+                        ? settled ? 'Allowed. It ran, and its result is below. Call them back.' : 'Allowed. It runs now; its result appears below when it is done.'
+                        : 'Refused, not run. Let the caller know.'}
+                </p>
+            )}
+            {!transcript?.pending && !answered && call.approvals.length > 0 && (
                 <p className="m-0 inline-flex items-center gap-2 text-sm text-person-ink">
                     <span aria-hidden className="size-1.5 rounded-full bg-person" />
                     This call asked for approval; the caller was told someone will follow up.
@@ -209,7 +262,7 @@ export function CallLog({
             )}
             {during.length > 0 && (
                 <ol aria-label="Transcript" className="m-0 grid list-none gap-5 p-0">
-                    {during.map((t, i) => <Turn key={i} turn={t} startedAt={call.startedAt} after={false} />)}
+                    {during.map((t, i) => <Turn key={i} turn={t} startedAt={call.startedAt} after={false} clock={clock} />)}
                 </ol>
             )}
 
@@ -229,9 +282,12 @@ export function CallLog({
             )}
 
             {later.length > 0 && (
-                <ol aria-label="After the call" className="m-0 grid list-none gap-5 border-t border-border p-0 pt-5">
-                    {later.map((t, i) => <Turn key={i} turn={t} startedAt={call.startedAt} after />)}
-                </ol>
+                <div className="grid gap-4 border-t border-border pt-5">
+                    <h3 className="m-0 text-sm font-medium text-text">After the call: the approval&apos;s answer</h3>
+                    <ol aria-label="After the call" className="m-0 grid list-none gap-5 p-0">
+                        {later.map((t, i) => <Turn key={i} turn={t} startedAt={call.startedAt} after clock={clock} />)}
+                    </ol>
+                </div>
             )}
 
             {!live && (

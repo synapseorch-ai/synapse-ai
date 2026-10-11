@@ -97,8 +97,8 @@ export type CallTurn = {
     interrupted: boolean;
 };
 
-/** The question a call parked in the bell and nobody has answered yet (V16). */
-export type PendingAsk = { tool: string; args: Record<string, unknown> };
+/** The question a call parked in the bell and nobody has answered yet (V16); `approvalId` names it in the answer. */
+export type PendingAsk = { tool: string; args: Record<string, unknown>; approvalId: string | null };
 
 export type Transcript = { turns: CallTurn[]; pending: PendingAsk | null };
 
@@ -252,7 +252,7 @@ export function turnsFromMessages(messages: unknown): CallTurn[] {
 export function pendingFrom(raw: unknown): PendingAsk | null {
     const p = obj(raw);
     if (!p || !str(p.tool_name)) return null;
-    return { tool: str(p.tool_name), args: obj(p.tool_args) ?? {} };
+    return { tool: str(p.tool_name), args: obj(p.tool_args) ?? {}, approvalId: strOrNull(p.approval_id) };
 }
 
 // ── Words ────────────────────────────────────────────────────────────────────
