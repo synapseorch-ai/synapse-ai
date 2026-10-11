@@ -376,7 +376,8 @@ export function NumberPane({
                                     options={[
                                         {
                                             value: UNSET,
-                                            label: 'The language’s default',
+                                            // Twilio hears the caller unless the number picks someone (Naveen, VOX1d).
+                                            label: 'Twilio’s default',
                                             hint: language.default_stt ? `${language.default_stt.provider} ${language.default_stt.model}` : undefined,
                                         },
                                         ...Object.keys(language.stt).map(p => ({ value: p, label: p })),
