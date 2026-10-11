@@ -14,7 +14,7 @@
 import {
     Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
     FlaskConical, FolderGit2, FolderOpen, Gauge, Globe, Key, LayoutDashboard, LayoutGrid, LayoutTemplate, LifeBuoy, Library,
-    MessageSquare, MessagesSquare, Radio, ScrollText, Shield, Target, Workflow, Wrench,
+    MessageSquare, MessagesSquare, Phone, Radio, ScrollText, Shield, Target, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
 
@@ -180,6 +180,12 @@ export const HUB_NAV: NavHubGroup[] = [
                     {
                         id: 'messaging', label: 'Channels', href: '/channels', icon: MessageSquare,
                         blurb: 'Reach your agents from Telegram, Discord, Slack, Teams or WhatsApp.',
+                        flag: 'messaging_enabled',
+                    },
+                    {
+                        // V29 (Naveen): numbers get their own tab; the Channels tab lists none (VOX1c).
+                        id: 'phone', label: 'Phone', href: '/channels/phone', icon: Phone,
+                        blurb: 'Let callers talk to an agent on one of your Twilio numbers.',
                         flag: 'messaging_enabled',
                     },
                     {

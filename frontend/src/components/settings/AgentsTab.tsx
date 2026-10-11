@@ -1347,14 +1347,14 @@ export const AgentsTab = ({
                                         ) : (
                                             <div className="space-y-2">
                                                 {agentChannels.map((ch: any) => {
-                                                    const EMOJI: Record<string, string> = { telegram: '✈️', discord: '🎮', slack: '💬', teams: '📘', whatsapp: '📱' };
+                                                    const EMOJI: Record<string, string> = { telegram: '✈️', discord: '🎮', slack: '💬', teams: '📘', whatsapp: '📱', twilio_voice: '📞' };
                                                     return (
                                                         <div key={ch.id} className="flex items-center gap-3 rounded-lg border border-border bg-surface p-3">
                                                             <span className="text-lg">{EMOJI[ch.platform] ?? '🤖'}</span>
                                                             <div className="min-w-0 flex-1">
                                                                 <div className="text-sm font-medium text-text">{ch.name}</div>
                                                                 <div className="text-xs capitalize text-text-faint">
-                                                                    {ch.platform}
+                                                                    {ch.platform === 'twilio_voice' ? `Phone · ${ch.voice?.number ?? ''}` : ch.platform}
                                                                     {ch.agent_ids?.[0] === draftAgent.id ? ' · answers by default' : ''}
                                                                     {(ch.agent_ids?.length ?? 0) > 1 ? ` · ${ch.agent_ids.length} agents` : ''}
                                                                     {ch.multi_agent_mode ? ' · switchable' : ''}

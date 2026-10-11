@@ -698,7 +698,7 @@ CONTRAST_PAGES = (
     "/", "/agents", "/workflows", "/schedules", "/tools", "/vault", "/runs", "/logs",
     "/evals", "/apps", "/skills", "/kitchen-sink", "/templates",
     "/settings/general", "/settings/models", "/settings/scale", "/widgets",
-    "/channels", "/settings/memory", "/settings/api-keys",
+    "/channels", "/channels/phone", "/settings/memory", "/settings/api-keys",
     # The rest of the rail (F101): the uses the inversion layer lacks sit mostly
     # on screens the walk never opened.
     "/dashboard", "/usage", "/settings/personal_details", "/settings/variables",
@@ -8196,7 +8196,7 @@ async def check_help_media(browser) -> str:
 #: three to five steps. Chat is named: it was checked before its header had an `<h1>` of its own.
 HELP_PAGES = (
     "/dashboard", "/runs", "/logs", "/evals", "/usage", "/workflows", "/schedules", "/templates", "/agents",
-    "/skills", "/vault", "/knowledge", "/apps", "/tools", "/channels", "/widgets",
+    "/skills", "/vault", "/knowledge", "/apps", "/tools", "/channels", "/channels/phone", "/widgets",
     "/settings/general", "/settings/models", "/settings/personal_details", "/settings/variables", "/settings/memory",
     "/settings/workspace", "/settings/repos", "/settings/db_configs",
     "/settings/api_keys", "/settings/import_export", "/settings/scale", "/settings/support", "/settings/datalab",
@@ -8276,7 +8276,7 @@ HUB_TABS = {
     "Workflows": [("/workflows", "Workflows"), ("/schedules", "Schedules"), ("/templates", "Templates")],
     "Agents": [("/agents", "Agents"), ("/skills", "Skills")],
     "Apps": [("/apps", "Apps"), ("/tools", "Tools")],
-    "Channels": [("/channels", "Channels"), ("/widgets", "Widgets")],
+    "Channels": [("/channels", "Channels"), ("/channels/phone", "Phone"), ("/widgets", "Widgets")],
 }
 
 
@@ -10207,6 +10207,218 @@ async def check_channelsfirst(browser) -> str:
     finally:
         await ctx.close()
     return "the first channel is open; New channel opens a blank one"
+
+
+# ── the Phone tab (VOX1c) ────────────────────────────────────────────────────
+
+#: A number as the channel list serves it (the Channels tab must not show it), and the Phone tab's reads.
+_PHONE_NUMBERS = [
+    {"id": "chn_ph1", "name": "Smoke support line", "platform": "twilio_voice", "status": "running", "enabled": True,
+     "agent_ids": ["smoke_front"], "visitor_tools": [], "credentials": {}, "multi_agent_mode": False,
+     "voice": {"number": "+14155550142", "number_sid": "PN" + "1" * 32, "language": "en-US",
+               "signing_error": "Twilio refused the key for signing. Calls still work."}},
+    {"id": "chn_ph2", "name": "Smoke after hours", "platform": "twilio_voice", "status": "stopped", "enabled": False,
+     "agent_ids": ["smoke_front"], "visitor_tools": [], "credentials": {}, "multi_agent_mode": False,
+     "voice": {"number": "+16285550199", "number_sid": "PN" + "2" * 32}},
+]
+_PHONE_OPTIONS = {
+    "available": True, "reason": "", "fast_for_voice": ["groq.", "synapse.nova-micro"], "default_language": "en-US",
+    "tts_providers": ["ElevenLabs", "Google", "Amazon"],
+    "languages": [{"code": "en-US", "name": "English (United States)", "tts": ["ElevenLabs", "Google", "Amazon"],
+                   "stt": {"Google": ["long"]}, "default_stt": {"provider": "Google", "model": "long"}},
+                  {"code": "en-IN", "name": "English (India)", "tts": ["ElevenLabs", "Google", "Amazon"],
+                   "stt": {"Google": ["long"]}, "default_stt": {"provider": "Google", "model": "long"}}],
+}
+_PHONE_AGENTS = [{"id": "smoke_front", "name": "Smoke front desk", "model": "anthropic.claude-sonnet", "type": "conversational",
+                  "planning": True, "reasoning_effort": "medium"}]
+_PHONE_CALL = {
+    "id": "CA" + "1" * 32, "channel_id": "chn_ph1", "agent_id": "smoke_front",
+    "session_id": "voice_chn_ph1_CA" + "1" * 32, "caller": "+14155551234", "called": "+14155550142",
+    "started_at": "2026-10-11T09:00:00+00:00", "ended_at": "2026-10-11T09:03:12+00:00", "seconds": 192,
+    "segments": [{"seconds": 192}], "outcome": "caller_hung_up", "approvals": ["ap_1"], "first_words_ms": [900, 1100],
+    "transfer": None, "voicemail": None, "recording_sid": None, "error": None,
+}
+_PHONE_HISTORY = {
+    "turns": [
+        {"user": "My lamp arrived broken. Order four eight two one three.", "assistant": "I found it: the Arden lamp. I can",
+         "tools": ["lookup_order"], "calls": [{"tool": "lookup_order", "args": {"order": "48213"}, "result": "delivered"}],
+         "timestamp": "2026-10-11T09:00:14Z", "interrupted": True, "filler": ["One moment while I check that."]},
+        {"user": "A refund, please.", "assistant": "I've asked someone on the team to approve that.", "tools": ["refund"],
+         "calls": [], "timestamp": "2026-10-11T09:00:36Z"},
+    ],
+    "pending_approval": {"kind": "tool_approval", "tool_name": "refund", "tool_args": {"order": "48213"}},
+}
+
+
+async def _phone_context(browser, *, numbers=None, calls=None, viewport=WIDE):
+    ctx = await browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
+    await ctx.route("**/api/messaging/channels", _answer(numbers if numbers is not None else _PHONE_NUMBERS))
+    await ctx.route("**/api/messaging/twilio_voice/options", _answer(_PHONE_OPTIONS))
+    await ctx.route("**/api/agents", _answer(_PHONE_AGENTS))
+    await ctx.route("**/api/messaging/twilio_voice/channels/*/calls*", _answer({"calls": calls if calls is not None else [_PHONE_CALL]}))
+    await ctx.route("**/api/sessions/*/history*", _answer(_PHONE_HISTORY))
+    await ctx.route("**/api/usage/logs*", _answer({"logs": [{"estimated_cost": 0.0123}], "count": 1}))
+    await ctx.route("**/api/widgets/visitor-tools*", _answer({"tools": [{"name": "lookup_order", "category": "read_only"},
+                                                                         {"name": "refund", "category": "destructive"}]}))
+    return ctx
+
+
+@check
+async def check_channelsnovoice(browser) -> str:
+    """The Channels tab lists no phone numbers (V29): they live on the Phone tab. A number first in the list used to
+    throw as the screen opened it (F447)."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/messaging/channels", _answer([_PHONE_NUMBERS[0], {
+        "id": "ch_a", "name": "Smoke chat", "platform": "slack", "status": "running", "agent_ids": [],
+        "multi_agent_mode": False, "enabled": True, "credentials": {}}]))
+    page = await ctx.new_page()
+    errors: list[str] = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    try:
+        await page.goto(f"{APP}/channels", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke chat").wait_for(timeout=30_000)
+        if await page.locator('[data-channel-row="chn_ph1"]').count():
+            raise AssertionError("a phone number is listed on the Channels tab")
+        if errors:
+            raise AssertionError(f"the page threw: {errors[0][:200]}")
+    finally:
+        await ctx.close()
+    return "Channels opens its first chat channel; the number is not listed and nothing throws"
+
+
+@check
+async def check_phonetab(browser) -> str:
+    """The Phone tab (V29, VOX1c): under Channels' title with its own tab current, the first number open (never an
+    empty pane), its recent calls, V15's quiet notes for a slow agent with thinking and planning on, and the
+    Restricted key's unsigned note."""
+    ctx = await _phone_context(browser)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke support line").wait_for(timeout=30_000)
+        if (await page.locator("main h1").first.inner_text()).strip() != "Channels":
+            raise AssertionError("the page is not under the hub's title")
+        tab = page.get_by_role("link", name="Phone", exact=True).first
+        if await tab.get_attribute("aria-current") != "page":
+            raise AssertionError("the Phone tab is not the current tab")
+        row = page.locator('[data-phone-row="chn_ph1"] button').first
+        if await row.get_attribute("aria-current") != "true":
+            raise AssertionError("the first number is not open")
+        await page.locator(f'[data-call-row="{_PHONE_CALL["id"]}"]').wait_for(timeout=10_000)
+        notes = await page.locator("[data-phone-notes]").inner_text()
+        for words in ("faster model", "Thinking (medium) and planning"):
+            if words not in notes:
+                raise AssertionError(f"the agent's notes miss {words!r}: {notes[:200]}")
+        if not await page.get_by_text("Calls are checked, not signed.").count():
+            raise AssertionError("the unsigned note is missing")
+    finally:
+        await ctx.close()
+    return "under Channels with Phone current; the first number open with its calls, notes and the unsigned note"
+
+
+@check
+async def check_phonepane(browser) -> str:
+    """One Save sends the number's whole voice block (the APIs replace it whole), and turning a number off says what
+    Twilio kept (`left`), never hidden."""
+    ctx = await _phone_context(browser)
+    posted: list[dict] = []
+
+    async def save(route):
+        if route.request.method != "POST":
+            return await route.fallback()
+        posted.append(json.loads(route.request.post_data or "{}"))
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(posted[-1]))
+    await ctx.route("**/api/messaging/channels", save)
+    await ctx.route("**/api/messaging/channels/chn_ph1/disable", _answer(
+        {"status": "stopped", "channel_id": "chn_ph1", "left": ["Twilio would not remove this number's signing key."]},
+        methods=("POST",)))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Smoke support line").wait_for(timeout=30_000)
+        await page.locator("#phone-pane-filler").fill("Bear with me.")
+        await page.locator("[data-phone-savebar]").get_by_role("button", name="Save").click()
+        for _ in range(50):
+            if posted:
+                break
+            await asyncio.sleep(0.1)
+        if not posted:
+            raise AssertionError("Save sent nothing")
+        voice = posted[0].get("voice") or {}
+        missing = [k for k in ("notice", "filler", "filler_late", "transfer_number", "recording", "language", "voice",
+                               "tts_provider", "max_minutes", "number", "number_sid") if k not in voice]
+        if voice.get("filler") != "Bear with me." or missing:
+            raise AssertionError(f"the save's voice block: filler {voice.get('filler')!r}, missing {missing}")
+        await page.get_by_role("button", name="Turn off").click()
+        await page.get_by_text("Twilio would not remove this number's signing key.").wait_for(timeout=10_000)
+    finally:
+        await ctx.close()
+    return "Save sent the whole voice block with the change; Turn off showed what Twilio kept"
+
+
+@check
+async def check_calllog(browser) -> str:
+    """A call's log over the number's pane, opened by its address as the bell links it (VOX1c): the transcript with
+    the filler, the tool and the barge-in cut, the approval still waiting in the person tone, and the strip with
+    Twilio's estimate said as one."""
+    ctx = await _phone_context(browser)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels/phone?number=chn_ph1&call={_PHONE_CALL['id']}", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Call from +14155551234").wait_for(timeout=30_000)
+        for sel, what in (("[data-call-filler]", "the filler"), ("[data-call-cut]", "the barge-in cut"),
+                          ("[data-call-pending]", "the waiting approval")):
+            if not await page.locator(sel).count():
+                raise AssertionError(f"the log does not show {what}")
+        if not await page.get_by_text("Twilio, estimated").count() or not await page.get_by_text("lookup_order").count():
+            raise AssertionError("the strip's estimate or the tool is missing")
+        await page.get_by_role("button", name="Smoke support line").click()
+        await page.locator(f'[data-call-row="{_PHONE_CALL["id"]}"]').wait_for(timeout=10_000)
+        if "call=" in page.url:
+            raise AssertionError("Back left the call in the address")
+    finally:
+        await ctx.close()
+    return "the deep link opens the call's log with filler, tool, cut, waiting approval and estimate; Back returns"
+
+
+@check
+async def check_phoneconnect(browser) -> str:
+    """Add a number (V30): a key checked by listing its numbers, a number picked, an agent chosen; the number opens."""
+    ctx = await _phone_context(browser, numbers=[])
+    made = {"id": "chn_new", "name": "+14155550142", "platform": "twilio_voice", "status": "running", "enabled": True,
+            "agent_ids": ["smoke_front"], "visitor_tools": [], "credentials": {},
+            "voice": {"number": "+14155550142", "number_sid": "PN" + "1" * 32}}
+    listed: list[list] = [[]]
+
+    async def channels(route):
+        if route.request.method == "POST":
+            listed[0] = [made]
+            return await route.fulfill(status=200, content_type="application/json", body=json.dumps(made))
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(listed[0]))
+    await ctx.route("**/api/messaging/channels", channels)
+    await ctx.route("**/api/messaging/twilio_voice/numbers", _answer({"numbers": [
+        {"sid": "PN" + "1" * 32, "number": "+14155550142", "voice_url": "https://demo.twilio.com/welcome/voice/",
+         "voice_application_sid": ""}]}, methods=("POST",)))
+    await ctx.route("**/api/messaging/channels/chn_new/assignments", _answer({"ok": True}, methods=("PUT",)))
+    await ctx.route("**/api/messaging/channels/chn_new/enable", _answer(made, methods=("POST",)))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Let callers talk to your agents").wait_for(timeout=30_000)
+        await page.locator("[data-phone-add]").click()
+        await page.locator("#phone-account-sid").fill("AC" + "a" * 32)
+        await page.locator("#phone-key-sid").fill("SK" + "b" * 32)
+        await page.locator("#phone-key-secret").fill("smoke-secret")
+        await page.get_by_role("button", name="Check and continue").click()
+        await page.locator(f'[data-twilio-number="PN{"1" * 32}"]').wait_for(timeout=10_000)
+        await page.get_by_role("button", name="Continue").click()
+        await page.get_by_role("button", name="Agent", exact=True).click()
+        await page.get_by_role("option", name="Smoke front desk").click()
+        await page.get_by_role("button", name="Connect number").click()
+        await page.get_by_role("heading", name="+14155550142").wait_for(timeout=10_000)
+    finally:
+        await ctx.close()
+    return "three steps against stubbed Twilio; the new number opens"
 
 
 @check

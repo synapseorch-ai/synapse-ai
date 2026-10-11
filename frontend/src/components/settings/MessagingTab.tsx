@@ -279,7 +279,9 @@ export const MessagingTab = () => {
             const res = await fetch('/api/messaging/channels');
             if (res.ok) {
                 const data = await res.json();
-                const list = Array.isArray(data) ? data : [];
+                // Phone numbers live on the Phone tab (V29, VOX1c): this screen knows no `twilio_voice`, and a
+                // number opened here first threw (F447). Nor can one carry run notifications.
+                const list = (Array.isArray(data) ? data : []).filter((c: { platform?: string }) => c.platform !== 'twilio_voice');
                 setChannels(list);
                 return list;
             }

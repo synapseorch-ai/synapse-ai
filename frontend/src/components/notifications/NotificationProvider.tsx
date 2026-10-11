@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
 import { plainText } from '@/lib/plainText';
+import { voiceItemHref } from '@/components/phone/phone';
 import { toastLook, useIsCanvasMode } from '@/components/ui';
 
 export type RunNotification = {
@@ -86,7 +87,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }, [router]);
 
     const openItem = useCallback((item: RunNotification) => {
-        if (!item.run_id && item.data?.schedule_id) router.push('/schedules');
+        // A call's voicemail, hand-off or parked approval has no run: it opens that call's log (VOX1c).
+        const call = voiceItemHref(item.data);
+        if (call) router.push(call);
+        else if (!item.run_id && item.data?.schedule_id) router.push('/schedules');
         else openRun(item.run_id);
     }, [router, openRun]);
 

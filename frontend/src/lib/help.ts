@@ -356,6 +356,18 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         media: { id: 'settings/oss-messaging', alt: 'Channels before any channel is set up: Telegram, Discord, Slack, Teams or WhatsApp, with run notifications and the webhook address; Widgets is a tab beside it.' },
         guide: '/guides/recipes/schedules-and-channels',
     },
+    phone: {
+        title: 'Phone',
+        summary: 'Let people phone one of your Twilio numbers and talk to an agent. Callers are visitors: they use only the tools you tick, and every call is kept with its transcript.',
+        steps: [
+            'Click “Add a number”, paste a Twilio Account SID and an API key (a Restricted key with the permissions listed, or a Standard key), and click “Check and continue”.',
+            'Pick the number; it is pointed here, and put back where it was if you turn it off or delete it.',
+            'Choose the agent that answers, the words callers hear first, a hand-off number and the language, then “Connect number”.',
+            'Open a number’s recent calls to read each call’s transcript, its tools and what it cost.',
+            'Twilio must reach this server’s backend directly: set a public https webhook address on the Channels tab, such as a tunnel to the backend port.',
+        ],
+        guide: '/guides/recipes/phone-calls',
+    },
     widgets: {
         title: 'Widgets',
         summary: 'Put an agent on your own website with one script tag. Only the sites you allow can load it, and visitors can use only the tools you tick.',

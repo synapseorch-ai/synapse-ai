@@ -16,7 +16,7 @@ import { Spinner, StatStrip } from '@/components/ui';
 import { usd } from '@/lib/money';
 import { parseStamp } from '@/components/LocalTime';
 import {
-    ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X, PanelTop,
+    ScrollText, Coins, Workflow, Clock, MessageSquare, Bot, X, PanelTop, Phone,
 } from 'lucide-react';
 
 export type ActivityTab = 'runs' | 'metrics' | 'usedby';
@@ -413,10 +413,17 @@ export function WhereItWorks({ agentId, channels, agents, widgets }: {
     if (refs === null) return <Loading />;
     const places: Place[] = [
         { key: 'chat', icon: MessageSquare, label: 'Chat', detail: 'anyone in this workspace can talk to it', href: '/' },
-        ...channels.map((c: any): Place => ({
-            key: `ch:${c.id}`, icon: MessageSquare, label: c.name || 'Channel', href: '/channels',
-            detail: `${c.platform}${c.agent_ids?.[0] === agentId ? ' · answers by default' : ''}`,
-        })),
+        ...channels.map((c: any): Place => c.platform === 'twilio_voice'
+            // A phone number answers with one agent and lives on the Phone tab (VOX1c).
+            ? {
+                key: `ch:${c.id}`, icon: Phone, label: c.name || 'Phone number',
+                href: `/channels/phone?number=${encodeURIComponent(c.id)}`,
+                detail: `phone${c.voice?.number ? ` · ${c.voice.number}` : ''}${c.agent_ids?.[0] === agentId ? ' · answers its calls' : ''}`,
+            }
+            : {
+                key: `ch:${c.id}`, icon: MessageSquare, label: c.name || 'Channel', href: '/channels',
+                detail: `${c.platform}${c.agent_ids?.[0] === agentId ? ' · answers by default' : ''}`,
+            }),
         ...widgets.filter((w: any) => w.agent_id === agentId).map((w: any): Place => ({
             key: `w:${w.id}`, icon: PanelTop, label: w.name || 'Untitled widget', detail: 'chat widget', href: '/widgets',
         })),
