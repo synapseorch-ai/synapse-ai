@@ -137,6 +137,8 @@ def check(voice: dict | None) -> list[str]:
 
     An empty or missing field is never wrong: it means the default (a number saved before VOX1d has none).
     """
+    if voice is not None and not isinstance(voice, dict):
+        return ["The voice settings are an object."]
     voice = voice or {}
     errors: list[str] = []
     code = str(voice.get("language") or "")
@@ -173,7 +175,7 @@ def stt_for(voice: dict | None) -> tuple[str, str]:
     language's default. A stored choice the list no longer allows (Twilio retired a model, a hand-edited document)
     falls back rather than giving Twilio markup it would refuse. An unknown language gets nothing, and Twilio decides.
     """
-    voice = voice or {}
+    voice = voice if isinstance(voice, dict) else {}
     lang = get(voice.get("language") or DEFAULT_LANGUAGE)
     if lang is None:
         return "", ""

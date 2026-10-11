@@ -133,6 +133,41 @@ class TestABillIsSettledOnceTheCallIsOver:
         assert host.settled == [(65, True)] and "<Hangup/>" in markup
 
 
+class TestWhoHearsTheCaller:
+    """VOX1d: every call says who hears it; the number's own choice if the list allows it, else its language's."""
+
+    def _markup(self, resume=False, **voice):
+        return service._connect(_channel(**voice), TwilioProvider.from_credentials(CREDS), CALL, agent_name="Ada",
+                                resume=resume)
+
+    async def test_a_number_that_chose_nothing_hears_with_its_languages_default(self, host):
+        assert 'language="en-IN" transcriptionProvider="Deepgram" speechModel="nova-3-general"' in self._markup(
+            language="en-IN")
+        assert 'language="en-US" transcriptionProvider="Deepgram" speechModel="nova-3-general"' in self._markup()
+        assert 'language="ml-IN" transcriptionProvider="Google" speechModel="long"' in self._markup(language="ml-IN")
+
+    async def test_its_own_choice_on_a_first_answer_and_a_moved_call(self, host):
+        for resume in (False, True):
+            markup = self._markup(resume=resume, language="en-IN", transcription_provider="Google",
+                                  speech_model="long")
+            assert 'transcriptionProvider="Google" speechModel="long"' in markup, resume
+
+    async def test_what_the_list_no_longer_allows_never_reaches_twilio(self, host, caplog):
+        markup = self._markup(language="en-XX", speech_model="flux")
+        assert 'language="en-US" transcriptionProvider="Deepgram" speechModel="flux"' in markup
+        markup = self._markup(language="de-DE", speech_model="flux")
+        assert 'language="de-DE" transcriptionProvider="Deepgram" speechModel="nova-3-general"' in markup
+        assert "not one calls can use" in caplog.text and "can't hear" in caplog.text
+
+    async def test_say_speaks_its_english_sentences_in_an_english_voice(self, host, monkeypatch):
+        async def admit(channel, caller, call_sid=""):
+            return "All our lines are busy."
+        monkeypatch.setattr(host, "admit", admit)
+        form = {"CallSid": CALL, "From": "+14155550100", "To": NUMBER, "AccountSid": ACCOUNT}
+        assert '<Say language="en-US">All our lines' in await service.incoming(_channel(language="ta-IN"), form)
+        assert '<Say language="en-IN">All our lines' in await service.incoming(_channel(language="en-IN"), form)
+
+
 class TestAdmissionNamesTheCall:
     async def test_admit_is_told_which_call_it_is(self, host, monkeypatch):
         """A host that counts live calls (cloud's org limit, V23) frees a call's place by its CallSid."""

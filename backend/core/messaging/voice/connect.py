@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from core.messaging.voice import PLATFORM, hooks
+from core.messaging.voice import PLATFORM, hooks, languages
 from core.messaging.voice.provider import CallRefused
 from core.messaging.voice.tokens import new_route_token
 
@@ -74,6 +74,8 @@ async def connect(channel: dict) -> dict:
     if match is None:
         raise RuntimeError("That number is not on this Twilio account.")
     voice["number"], voice["number_sid"] = match.number, match.sid
+    # A new number starts in its country's English (VOX1d); one a person chose keeps theirs.
+    voice["language"] = voice.get("language") or languages.default_for_number(match.number)
 
     stored = await channel_store.get_channel(channel["id"]) or channel
     credentials = dict(stored.get("credentials") or {})

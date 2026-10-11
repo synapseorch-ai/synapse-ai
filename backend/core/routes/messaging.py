@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from core.messaging import store as channel_store
+from core.messaging.voice import languages as voice_languages
 from core.messaging.store import (
     SECRET_CREDENTIALS,
     SERVER_ONLY_CREDENTIALS as _SERVER_ONLY_CREDENTIALS,
@@ -87,6 +88,11 @@ async def create_or_update_channel(request: Request):
     body.pop("status", None)
     body.pop("last_error", None)
     body.pop("credentials_set", None)
+    if body.get("platform") == "twilio_voice":
+        # A language or provider Twilio can't serve would end every call (VOX1d); say so at the save.
+        problems = voice_languages.check(body.get("voice"))
+        if problems:
+            raise HTTPException(status_code=422, detail=" ".join(problems))
     # A save is a full replace, and the screen never has the secrets to send
     # back: one it leaves blank keeps what is stored (F207).
     existing = await channel_store.get_channel(body["id"]) if body.get("id") else None

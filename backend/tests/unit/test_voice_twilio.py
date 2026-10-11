@@ -113,6 +113,26 @@ class TestTwiML:
             'dtmfDetection="false" language="en-GB" ttsProvider="Google" voice="v1">'
             '<Parameter name="resume" value="1"/></ConversationRelay></Connect></Response>')
 
+    def test_who_hears_the_caller_is_written_out(self):
+        """VOX1d: Twilio's own default depends on the account's age, so the pair is always ours."""
+        xml = self._p().answer(ws_url="wss://h/ws?t=a", action_url="https://h/end", opts=AnswerOptions(
+            notice="Hi", language="en-IN", transcription_provider="Deepgram", speech_model="nova-3-general"))
+        assert xml == (
+            '<?xml version="1.0" encoding="UTF-8"?><Response><Connect action="https://h/end">'
+            '<ConversationRelay url="wss://h/ws?t=a" welcomeGreeting="Hi" welcomeGreetingInterruptible="none" '
+            'interruptible="any" ignoreBackchannel="true" dtmfDetection="false" language="en-IN" '
+            'transcriptionProvider="Deepgram" speechModel="nova-3-general"></ConversationRelay></Connect></Response>')
+
+    def test_a_moved_call_hears_the_same_way(self):
+        xml = self._p().answer(ws_url="wss://h/ws?t=a", action_url="https://h/end", opts=AnswerOptions(
+            notice="Hi", language="en-IN", tts_provider="Google", transcription_provider="Google", speech_model="long",
+            resume=True))
+        assert xml == (
+            '<?xml version="1.0" encoding="UTF-8"?><Response><Connect action="https://h/end">'
+            '<ConversationRelay url="wss://h/ws?t=a" interruptible="any" ignoreBackchannel="true" '
+            'dtmfDetection="false" language="en-IN" ttsProvider="Google" transcriptionProvider="Google" '
+            'speechModel="long"><Parameter name="resume" value="1"/></ConversationRelay></Connect></Response>')
+
     def test_transfer(self):
         assert self._p().transfer_markup(number="+15550001111", caller_id=NUMBER, action_url="https://h/dialed") == (
             '<?xml version="1.0" encoding="UTF-8"?><Response><Dial callerId="+15551230000" timeout="20" '

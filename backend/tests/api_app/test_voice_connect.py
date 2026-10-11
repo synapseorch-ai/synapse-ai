@@ -207,3 +207,39 @@ async def test_a_restricted_key_connects_unsigned_and_says_so(client, manager, t
     stored = await channel_store.get_channel(ch["id"])
     assert "signing" not in stored["voice"] and "signing_secret" not in stored["credentials"]
     assert "Standard API key turns signing on" in stored["voice"]["signing_error"]
+
+
+async def test_a_numbers_language_and_providers_are_checked_at_the_save(client):
+    """A language or provider Twilio can't serve would end every call (VOX1d): the save says so instead."""
+    r = await client.post("/api/messaging/channels", json={
+        "name": "Front desk", "platform": "twilio_voice", "enabled": False,
+        "credentials": {"account_sid": ACCOUNT, "api_key_sid": "SKx", "api_key_secret": "sekret-value"},
+        "voice": {"number": NUMBER, "language": "kn-IN", "tts_provider": "ElevenLabs"}})
+    assert r.status_code == 422 and "ElevenLabs has no voice for Kannada" in r.json()["detail"]
+    r = await client.post("/api/messaging/channels", json={
+        "name": "Front desk", "platform": "twilio_voice", "enabled": False, "voice": "en-IN"})
+    assert r.status_code == 422
+    await _number(client, language="en-IN", transcription_provider="Google", speech_model="long")
+
+
+async def test_other_channels_are_not_checked(client):
+    r = await client.post("/api/messaging/channels", json={
+        "name": "Bot", "platform": "telegram", "enabled": False, "credentials": {}, "voice": {"language": "xx"}})
+    assert r.status_code == 200, r.text
+
+
+async def test_a_number_saved_before_the_list_still_turns_on_in_its_countrys_english(client, manager, twilio):
+    from core.messaging import store as channel_store
+
+    twilio.numbers = ["+447700900123"]
+    ch = await _number(client, number="+447700900123")  # VOX1a's numbers have no language
+    on = await client.post(f"/api/messaging/channels/{ch['id']}/enable")
+    assert on.status_code == 200 and on.json()["status"] == "running", on.json()
+    assert (await channel_store.get_channel(ch["id"]))["voice"]["language"] == "en-GB"
+
+    # One whose stored language the list doesn't know (edited by hand) still turns off and on: the store never checks.
+    stored = await channel_store.get_channel(ch["id"])
+    stored["voice"]["language"] = "xx-XX"
+    await channel_store.save_channel(stored)
+    assert (await client.post(f"/api/messaging/channels/{ch['id']}/disable")).status_code == 200
+    assert (await client.post(f"/api/messaging/channels/{ch['id']}/enable")).json()["status"] == "running"

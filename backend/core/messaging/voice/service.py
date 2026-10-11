@@ -13,7 +13,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from core.messaging.voice import PLATFORM, hooks, mask_number, session_id as voice_session_id
+from core.messaging.voice import PLATFORM, hooks, languages, mask_number, session_id as voice_session_id
 from core.messaging.voice.connect import provider_for, urls
 from core.messaging.voice.provider import AnswerOptions, CallRefused
 from core.messaging.voice.tokens import BadSocketToken, read_socket_token, route_token_matches, socket_token
@@ -78,7 +78,7 @@ async def incoming(channel: dict, form: dict) -> str:
     host = hooks.current()
     voice = dict(channel.get("voice") or {})
     provider = provider_for(await host.secrets(channel))
-    language = voice.get("language") or "en-US"
+    language = languages.say_language(voice.get("language"))  # for <Say>: its sentences are English
     if not _running(channel):
         log.warning("a call to a voice channel that is %s", channel.get("status") if channel.get("enabled", True)
                     else "turned off")
@@ -110,10 +110,17 @@ def _connect(channel: dict, provider, call_sid: str, *, agent_name: str, resume:
     voice = dict(channel.get("voice") or {})
     to = urls(host.public_base(), (channel.get("credentials") or {}).get("route_token") or "")
     token = socket_token(host.signing_key(), channel_id=channel["id"], call_sid=call_sid, resume=resume)
+    language = voice.get("language") or languages.DEFAULT_LANGUAGE
+    if not languages.is_allowed(language):
+        # A document saved before the list (or edited by hand) must not end every call at Twilio.
+        log.warning("a voice channel's language %r is not one calls can use; answering in %s", language[:20],
+                    languages.DEFAULT_LANGUAGE)
+        language = languages.DEFAULT_LANGUAGE
+    hearing, model = languages.stt_for({**voice, "language": language})
     return provider.answer(ws_url=f"{to['ws']}?t={token}", action_url=to["end"], opts=AnswerOptions(
-        notice=notice_for(voice, agent_name=agent_name, org=host.org_name(channel)),
-        language=voice.get("language") or "en-US",
-        voice=voice.get("voice") or "", tts_provider=voice.get("tts_provider") or "", resume=resume))
+        notice=notice_for(voice, agent_name=agent_name, org=host.org_name(channel)), language=language,
+        voice=voice.get("voice") or "", tts_provider=voice.get("tts_provider") or "",
+        transcription_provider=hearing, speech_model=model, resume=resume))
 
 
 class SocketRefused(Exception):
@@ -225,7 +232,7 @@ async def dialed(channel: dict, form: dict) -> str:
         return provider.hang_up_markup()
     await host.update_call(call_sid, {"transfer": transfer, "outcome": "voicemail"})
     to = urls(host.public_base(), (channel.get("credentials") or {}).get("route_token") or "")
-    return provider.voicemail_markup(action_url=to["recorded"], language=voice.get("language") or "en-US")
+    return provider.voicemail_markup(action_url=to["recorded"], language=languages.say_language(voice.get("language")))
 
 
 async def recorded(channel: dict, form: dict) -> str:
@@ -250,7 +257,7 @@ async def recorded(channel: dict, form: dict) -> str:
                           data={"door": "voice", "channel_id": channel["id"], "call_sid": call_sid,
                                 "caller": record.get("caller"), "voicemail": vm,
                                 "session_id": record.get("session_id")})
-    return provider.say_and_hang_up(GOODBYE_AFTER_VOICEMAIL, language=voice.get("language") or "en-US")
+    return provider.say_and_hang_up(GOODBYE_AFTER_VOICEMAIL, language=languages.say_language(voice.get("language")))
 
 
 async def status(channel: dict, form: dict) -> None:

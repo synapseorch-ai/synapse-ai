@@ -126,6 +126,8 @@ class TwilioProvider(CallProvider):
             "language": opts.language or "en-US",
             "ttsProvider": opts.tts_provider,
             "voice": opts.voice,
+            "transcriptionProvider": opts.transcription_provider,
+            "speechModel": opts.speech_model,
         }
         params = '<Parameter name="resume" value="1"/>' if opts.resume else ""
         return _xml(f"<Connect {_attrs({'action': action_url})}>"

@@ -26,6 +26,9 @@ class AnswerOptions:
     language: str = "en-US"
     voice: str = ""
     tts_provider: str = ""
+    #: Who hears the caller (VOX1d): always written out, as Twilio's own default depends on the account's age.
+    transcription_provider: str = ""
+    speech_model: str = ""
     resume: bool = False
 
 
