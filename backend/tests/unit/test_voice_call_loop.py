@@ -225,6 +225,39 @@ class TestFiller:
         assert call_mod.DEFAULT_FILLER not in socket.words()
         assert socket.words() == "Let me look that up. Sunny."
 
+    async def test_the_pre_tool_line_is_said_once_a_turn(self, saved):
+        """A model that searches twice says "let me check" before each search; the caller
+        heard the same sentence again on VOX1b's first real cloud calls."""
+        reset = {"type": "answer_reset", "turn": 1, "reason": "tool_call"}
+        host = ScriptedHost([_delta("Let me check that for you."), reset,
+                             {"type": "tool_execution", "tool_name": "search"}, {"type": "tool_result"},
+                             _delta("Let me check that for you."), reset,
+                             {"type": "tool_execution", "tool_name": "search"}, {"type": "tool_result"},
+                             _delta("We have two phones."), _final("We have two phones.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("phones?"))
+        assert socket.words() == "Let me check that for you.We have two phones."
+
+    async def test_a_pre_tool_line_already_spoken_as_a_phrase_counts(self, saved):
+        reset = {"type": "answer_reset", "turn": 1, "reason": "tool_call"}
+        host = ScriptedHost([_delta("Sure, let me look. "), reset,
+                             {"type": "tool_execution", "tool_name": "search"}, {"type": "tool_result"},
+                             _delta("One more look"), reset,
+                             {"type": "tool_execution", "tool_name": "search"}, {"type": "tool_result"},
+                             _delta("Found it."), _final("Found it.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("find it"))
+        assert "One more look" not in socket.words() and socket.words().endswith("Found it.")
+
+    async def test_each_turn_may_say_it_again(self, saved):
+        reset = {"type": "answer_reset", "turn": 1, "reason": "tool_call"}
+        turn = [_delta("Let me check."), reset, {"type": "tool_execution", "tool_name": "search"},
+                {"type": "tool_result"}, _delta("Done."), _final("Done.")]
+        host = ScriptedHost(list(turn), list(turn))
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("one"), 0.2, _prompt("two"))
+        assert socket.words().count("Let me check.") == 2
+
     async def test_no_filler_once_the_answer_has_started(self, saved):
         gate = asyncio.Event()
         host = ScriptedHost([_delta("Sure, "), ("wait", gate), _final("Sure, ok")])
@@ -490,6 +523,8 @@ class TestWhatTheModelSaysBeforeATool:
         assert socket.words() == "Thanks for calling, bye!" and socket.ended == [{"ended": "agent"}]
 
     def test_the_voice_prompt_says_so(self):
-        for rule in ("Before you use a tool", "Never read a web address", "card numbers", "anything else",
-                     "a thank-you alone is not goodbye"):
+        # "Before you use a tool" became "Before your first tool call … Say it once" (VOX1b's real calls:
+        # a model that searched twice said it twice).
+        for rule in ("Before your first tool call", "Say it once", "Never read a web address", "card numbers",
+                     "anything else", "a thank-you alone is not goodbye"):
             assert rule in call_mod.VOICE_SUFFIX

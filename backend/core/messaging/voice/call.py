@@ -54,8 +54,9 @@ VOICE_SUFFIX = (
     "- No markdown, lists, headings, links, code, emoji or symbols. Say numbers, dates, times and amounts the "
     "way a person says them.\n"
     "- Do not write out your reasoning, plans or notes: give the caller only your answer.\n"
-    "- Before you use a tool, start your reply with a few words telling the caller what you are checking (for "
-    "example: Let me check that for you.), then make the tool call.\n"
+    "- Before your first tool call in a reply, start with a few words telling the caller what you are checking "
+    "(for example: Let me check that for you.), then make the tool call. Say it once: not again before a second "
+    "tool call in the same reply.\n"
     "- Never read a web address, link or code aloud. If your answer is a link, say what it is and that it is "
     "ready for them.\n"
     "- Never ask for, or repeat, card numbers, bank details, passwords or one-time codes.\n"
@@ -124,6 +125,7 @@ class _Turn:
         self.parked = False
         self.late: asyncio.Task | None = None  # "Still working on it", while a tool runs
         self.progress: dict | None = None  # the latest turn-boundary snapshot, for parking
+        self.narrated = False          # the model's "let me check" was spoken this turn
 
 
 class VoiceCall:
@@ -312,9 +314,17 @@ class VoiceCall:
                     buffer += event.get("text") or ""
                     buffer = await self._flush(turn, buffer, final=False)
                 elif kind == "answer_reset":
-                    if event.get("reason") == "tool_call" and buffer.strip():
-                        # What the model said before its tool is meant for the caller ("Let me check that").
-                        await self._flush(turn, buffer, final=True)
+                    if event.get("reason") == "tool_call":
+                        # What the model said before its tool is meant for the caller ("Let me check that"),
+                        # once a turn: a model searching twice says it before each search, and the caller
+                        # heard the same sentence again (VOX1b's real calls). A line that ended in a space
+                        # went out as a phrase before the reset; it counts as said.
+                        if not turn.narrated:
+                            if buffer.strip():
+                                await self._flush(turn, buffer, final=True)
+                            turn.narrated = bool(turn.since_reset.strip())
+                        elif buffer.strip():
+                            log.info("voice turn: a second pre-tool line was not spoken")
                     buffer = ""  # anything else not yet said was not the answer
                     turn.since_reset = ""
                 elif kind == "tool_execution":
