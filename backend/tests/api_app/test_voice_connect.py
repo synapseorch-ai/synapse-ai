@@ -17,12 +17,15 @@ BASE = "https://calls.example.com"
 @pytest.fixture
 def twilio(monkeypatch):
     state = types.SimpleNamespace(voice_url="https://old.example/voice", app_sid="", writes=[], refuse_write=False,
-                                  refuse_read=False, numbers=[NUMBER], restricted=False, signing=[], unsigned=[])
+                                  refuse_read=False, numbers=[NUMBER], restricted=False, signing=[], unsigned=[],
+                                  refuse_delete=False)
 
     def handler(req: httpx.Request):
         path = req.url.path
         if req.url.host == "webhooks.twilio.com":
             if req.method == "DELETE":
+                if state.refuse_delete:  # a trial account (VOX1a P3)
+                    return httpx.Response(403, json={"code": 20003, "message": "Permission Denied"})
                 state.unsigned.append(path.rsplit("/", 2)[-2])
                 return httpx.Response(204)
             if state.restricted:
@@ -243,3 +246,23 @@ async def test_a_number_saved_before_the_list_still_turns_on_in_its_countrys_eng
     await channel_store.save_channel(stored)
     assert (await client.post(f"/api/messaging/channels/{ch['id']}/disable")).status_code == 200
     assert (await client.post(f"/api/messaging/channels/{ch['id']}/enable")).json()["status"] == "running"
+
+
+async def test_off_and_delete_say_what_twilio_kept(client, manager, twilio):
+    """A trial account cannot delete its SharedKeys (20003): the Phone tab shows why, in cloud's words (VOX1c)."""
+    from core.routes.messaging import LEFT_NUMBER, LEFT_SIGNING
+
+    ch = await _number(client)
+    await client.post(f"/api/messaging/channels/{ch['id']}/enable")
+    off = await client.post(f"/api/messaging/channels/{ch['id']}/disable")
+    assert off.json() == {"status": "stopped", "channel_id": ch["id"]}, "nothing kept, nothing said"
+
+    await client.post(f"/api/messaging/channels/{ch['id']}/enable")
+    twilio.refuse_delete = True
+    off = await client.post(f"/api/messaging/channels/{ch['id']}/disable")
+    assert off.json()["left"] == [LEFT_SIGNING]
+
+    await client.post(f"/api/messaging/channels/{ch['id']}/enable")
+    twilio.refuse_write = True  # the number cannot be put back either
+    gone = await client.delete(f"/api/messaging/channels/{ch['id']}")
+    assert gone.status_code == 200 and gone.json()["left"] == [LEFT_SIGNING, LEFT_NUMBER]

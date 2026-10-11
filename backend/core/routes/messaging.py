@@ -53,11 +53,33 @@ def _public_channel(ch: dict) -> dict:
     return view
 
 
-async def _disconnect_number(ch: dict | None) -> None:
-    """A phone number goes back to where it pointed before (VOX1a, V5)."""
-    if ch and ch.get("platform") == "twilio_voice":
-        from core.messaging.voice.connect import disconnect
-        await disconnect(ch)
+#: What Twilio kept when a number was turned off or deleted, said plainly; cloud's words (VOX1b, D251).
+LEFT_SIGNING = (
+    "Twilio would not remove this number's signing key, setting and rule "
+    "(a trial account can create them but not delete them). They only match this "
+    "number's old address, so they do no harm, but an account holds at most 50 signing keys."
+)
+LEFT_NUMBER = (
+    "The number could not be put back where it pointed before; it still sends calls "
+    "to SynapseOrch, which will not answer them. Change its Voice URL in Twilio's console."
+)
+
+
+async def _disconnect_number(ch: dict | None) -> list[str]:
+    """A phone number goes back to where it pointed before (VOX1a, V5).
+
+    Returns the sentences for what Twilio kept, which the Phone tab shows (VOX1c): never hidden.
+    """
+    if not (ch and ch.get("platform") == "twilio_voice"):
+        return []
+    from core.messaging.voice.connect import disconnect
+    left = await disconnect(ch)
+    said = []
+    if any(item != "number" for item in left):
+        said.append(LEFT_SIGNING)
+    if "number" in left:
+        said.append(LEFT_NUMBER)
+    return said
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -111,11 +133,11 @@ async def delete_channel(channel_id: str, request: Request):
     """Stop and delete a channel."""
     manager = _get_manager(request)
     await manager.stop_channel(channel_id)
-    await _disconnect_number(await channel_store.get_channel(channel_id))
+    left = await _disconnect_number(await channel_store.get_channel(channel_id))
     deleted = await channel_store.delete_channel(channel_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Channel not found")
-    return {"status": "deleted", "channel_id": channel_id}
+    return {"status": "deleted", "channel_id": channel_id, **({"left": left} if left else {})}
 
 
 # ── Assignments — channels are standalone; agents are assigned ────────────────
@@ -221,12 +243,12 @@ async def disable_channel(channel_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Channel not found")
 
     await manager.stop_channel(channel_id)
-    await _disconnect_number(ch)
+    left = await _disconnect_number(ch)
 
     ch = await channel_store.get_channel(channel_id) or ch
     ch["enabled"] = False
     await channel_store.save_channel(ch)
-    return {"status": "stopped", "channel_id": channel_id}
+    return {"status": "stopped", "channel_id": channel_id, **({"left": left} if left else {})}
 
 
 # ── Test ──────────────────────────────────────────────────────────────────────
