@@ -158,7 +158,10 @@ export function BuilderPanel() {
         // Not while closing: scrolling a card that is fading out is motion in
         // two directions at once.
         if (!entered) return;
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+        // `nearest`: the default (`start`) also scrolls every ancestor that can
+        // scroll — the card itself among them, though it clips — so a long
+        // message or a pasted export pushed the panel's header out of sight.
+        bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }, [state.messages, entered]);
 
     // `isOpen` stays true for the length of the exit transition — the provider

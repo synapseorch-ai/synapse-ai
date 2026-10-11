@@ -295,10 +295,13 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     // open it again. Scheduled, so the opening is not a render inside this
     // effect — and the parameter goes in the same callback, so a cancelled
     // first pass (Strict Mode runs effects twice) leaves it for the second.
+    // `null`, not the entry's own state: Next's router only follows a
+    // `replaceState` that does not carry its marker, and one that missed this
+    // put the parameter back on the next navigation it made.
     useEffect(() => {
         if (!asksForAgentBuilderSwitch(window.location.search)) return;
         const timer = window.setTimeout(() => {
-            window.history.replaceState(window.history.state, '', withoutBuildParam(window.location.href));
+            window.history.replaceState(null, '', withoutBuildParam(window.location.href));
             open({ prompt: AGENT_BUILDER_SWITCH.lead });
         }, 0);
         return () => window.clearTimeout(timer);
