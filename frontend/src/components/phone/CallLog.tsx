@@ -199,7 +199,7 @@ export function CallLog({
                     <PhoneIncoming className="mt-1 size-5 shrink-0 text-text-faint" aria-hidden />
                     <div className="min-w-0">
                         <h2 className="m-0 truncate text-lg font-semibold tracking-[-0.01em] text-text tabular-nums">
-                            Call from {callerLabel(call.caller)}
+                            {call.caller.startsWith('client:') ? callerLabel(call.caller) : `Call from ${callerLabel(call.caller)}`}
                         </h2>
                         <p className="m-0 mt-0.5 flex flex-wrap items-center gap-x-2 text-[13px] text-text-muted">
                             <When iso={call.startedAt} clock={clock} />

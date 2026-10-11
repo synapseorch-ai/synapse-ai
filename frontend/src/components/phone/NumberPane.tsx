@@ -208,8 +208,9 @@ export function NumberPane({
                 title={number.name}
                 sub={
                     <span className="inline-flex flex-wrap items-center gap-x-2">
-                        <span className="tabular-nums">{number.voice.number}</span>
-                        <span aria-hidden>·</span>Twilio<span aria-hidden>·</span><Status n={number} />
+                        {/* A number made without one (a trial's browser-call app) has nothing to show here. */}
+                        {number.voice.number && <><span className="tabular-nums">{number.voice.number}</span><span aria-hidden>·</span></>}
+                        Twilio<span aria-hidden>·</span><Status n={number} />
                     </span>
                 }
                 actions={host.canEdit && (
