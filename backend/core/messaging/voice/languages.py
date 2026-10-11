@@ -13,10 +13,9 @@ Where the rows come from (read 2026-10-11, ``MEMORY/drafts/vox1d/sources.md`` in
 * **Who hears it** (``stt``): Deepgram's Nova-3 serves every code but Malayalam; Nova-2 also lacks Kannada,
   Marathi, Tamil and Telugu. Flux is English only. Google's ``long`` serves every code, ``telephony`` the codes
   Twilio's table gives it.
-* **The default hearing is always written out** (Naveen, VOX1d): Twilio's own default depends on the customer's
-  account (Deepgram for accounts that started ConversationRelay after 2025-09-12, Google before), so two customers
-  with the same settings would hear differently. The default is Twilio's current one made explicit, Nova-3 where
-  Deepgram has the language, and Google ``long`` where it does not.
+* **Who hears the caller is Twilio's default unless the number chooses** (Naveen, VOX1d). Twilio's default depends on
+  the customer's account: Deepgram for accounts that started ConversationRelay after 2025-09-12, Google before. A
+  number that wants one way for certain picks a provider (and a model).
 """
 from __future__ import annotations
 
@@ -43,8 +42,6 @@ class Language:
     tts: tuple[str, ...]
     #: The speech-to-text providers that hear it, each with its models.
     stt: dict[str, tuple[str, ...]]
-    #: The (provider, model) a number hears it with unless it chooses.
-    default_stt: tuple[str, str]
 
 
 _ALL_TTS = (ELEVENLABS, GOOGLE, AMAZON)
@@ -58,9 +55,7 @@ _PHONE = ("long", "telephony")
 
 
 def _row(code: str, name: str, tts: tuple[str, ...], deepgram: tuple[str, ...], google: tuple[str, ...]) -> Language:
-    stt = {p: m for p, m in ((DEEPGRAM, deepgram), (GOOGLE, google)) if m}
-    default = (DEEPGRAM, "nova-3-general") if "nova-3-general" in deepgram else (GOOGLE, "long")
-    return Language(code, name, tts, stt, default)
+    return Language(code, name, tts, {p: m for p, m in ((DEEPGRAM, deepgram), (GOOGLE, google)) if m})
 
 
 LANGUAGES: tuple[Language, ...] = (
@@ -171,23 +166,22 @@ def check(voice: dict | None) -> list[str]:
 
 
 def stt_for(voice: dict | None) -> tuple[str, str]:
-    """The (provider, model) a call hears with: the number's own choice if it can serve the language, else the
-    language's default. A stored choice the list no longer allows (Twilio retired a model, a hand-edited document)
-    falls back rather than giving Twilio markup it would refuse. An unknown language gets nothing, and Twilio decides.
+    """The (provider, model) a call hears with: the number's own choice if it can serve the language, else nothing,
+    and Twilio's default hears it. A stored choice the list no longer allows (Twilio retired a model, a hand-edited
+    document) falls back to Twilio's default rather than giving Twilio markup it would refuse.
     """
     voice = voice if isinstance(voice, dict) else {}
-    lang = get(voice.get("language") or DEFAULT_LANGUAGE)
-    if lang is None:
-        return "", ""
     model = str(voice.get("speech_model") or "")
     provider = str(voice.get("transcription_provider") or "") or _provider_of(model)
-    models = lang.stt.get(provider, ())
-    if provider and models and (not model or model in models):
-        return provider, model or (lang.default_stt[1] if lang.default_stt[0] == provider else models[0])
-    if provider or model:
-        log.warning("a number's speech recognition (%s %s) can't hear %s; using %s %s", provider[:20], model[:40],
-                    lang.code, *lang.default_stt)
-    return lang.default_stt
+    if not provider:
+        return "", ""
+    lang = get(voice.get("language") or DEFAULT_LANGUAGE)
+    models = lang.stt.get(provider, ()) if lang else ()
+    if models and (not model or model in models):
+        return provider, model or models[0]
+    log.warning("a number's speech recognition (%s %s) can't hear %s; Twilio's default hears it", provider[:20],
+                model[:40], str(voice.get("language") or DEFAULT_LANGUAGE)[:20])
+    return "", ""
 
 
 def public() -> dict:
@@ -195,7 +189,8 @@ def public() -> dict:
     return {
         "languages": [{"code": lang.code, "name": lang.name, "tts": list(lang.tts),
                        "stt": {p: list(m) for p, m in lang.stt.items()},
-                       "default_stt": {"provider": lang.default_stt[0], "model": lang.default_stt[1]}}
+                       # Twilio's own default hears a number that chooses nothing (it depends on the account).
+                       "default_stt": None}
                       for lang in LANGUAGES],
         "default_language": DEFAULT_LANGUAGE,
         "tts_providers": list(TTS_PROVIDERS),

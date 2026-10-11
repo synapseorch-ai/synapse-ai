@@ -19,16 +19,15 @@ class TestTheList:
         assert not is_allowed("multi")  # auto-detect stays off (V19)
         assert not is_allowed("en") and not is_allowed("") and not is_allowed(None)
 
-    def test_every_default_is_a_pair_its_row_allows(self):
+    def test_every_row_names_known_providers_and_models(self):
         for lang in LANGUAGES:
-            provider, model = lang.default_stt
-            assert model in lang.stt[provider], lang.code
             assert lang.tts and set(lang.tts) <= set(languages.TTS_PROVIDERS), lang.code
+            for provider, models in lang.stt.items():
+                assert set(models) <= set(languages.SPEECH_MODELS[provider]), lang.code
 
     def test_who_hears_and_speaks_the_edges(self):
         # Neither Nova model has Malayalam; ElevenLabs' Flash v2.5 has no Kannada, Malayalam, Marathi, Telugu, Thai.
         assert languages.get("ml-IN").stt == {GOOGLE: ("long",)}
-        assert languages.get("ml-IN").default_stt == (GOOGLE, "long")
         for code in ("kn-IN", "ml-IN", "mr-IN", "te-IN", "th-TH"):
             assert languages.get(code).tts == (GOOGLE,), code
         # Flux is English only.
@@ -46,7 +45,8 @@ class TestTheList:
         out = public()
         en_in = next(row for row in out["languages"] if row["code"] == "en-IN")
         assert en_in["name"] == "English (India)"
-        assert en_in["default_stt"] == {"provider": DEEPGRAM, "model": "nova-3-general"}
+        # Twilio's own default hears a number that chooses nothing (Naveen, VOX1d): the picker names no default.
+        assert all(row["default_stt"] is None for row in out["languages"])
         assert set(en_in["stt"]) == {DEEPGRAM, GOOGLE}
         assert out["default_language"] == "en-US"
         assert out["speech_models"][DEEPGRAM][0] == "nova-3-general"
@@ -82,26 +82,24 @@ class TestCheck:
 
 
 class TestWhatACallHearsWith:
-    def test_the_languages_default_when_the_number_chose_nothing(self):
-        assert stt_for({}) == (DEEPGRAM, "nova-3-general")
-        assert stt_for({"language": "ml-IN"}) == (GOOGLE, "long")
+    def test_twilios_default_when_the_number_chose_nothing(self):
+        assert stt_for({}) == stt_for(None) == stt_for({"language": "ml-IN"}) == ("", "")
 
     def test_the_numbers_own_choice(self):
         assert stt_for({"language": "en-US", "transcription_provider": "Google", "speech_model": "telephony"}) == (
             GOOGLE, "telephony")
-        # A provider alone gets its model for the language: Google's first where Google isn't the default.
+        # A provider alone gets its first model for the language.
         assert stt_for({"language": "en-IN", "transcription_provider": "Google"}) == (GOOGLE, "long")
+        assert stt_for({"language": "en-IN", "transcription_provider": "Deepgram"}) == (DEEPGRAM, "nova-3-general")
         assert stt_for({"language": "en-US", "speech_model": "flux"}) == (DEEPGRAM, "flux")
 
-    def test_a_stored_choice_the_list_no_longer_allows_falls_back(self, caplog):
+    def test_a_stored_choice_the_list_no_longer_allows_falls_back_to_twilios_default(self, caplog):
         # A retired model or a hand-edited document never reaches Twilio as markup it would refuse.
-        assert stt_for({"language": "de-DE", "speech_model": "flux"}) == (DEEPGRAM, "nova-3-general")
-        assert stt_for({"language": "ml-IN", "transcription_provider": "Deepgram"}) == (GOOGLE, "long")
-        assert stt_for({"language": "en-US", "speech_model": "nova-1"}) == (DEEPGRAM, "nova-3-general")
+        assert stt_for({"language": "de-DE", "speech_model": "flux"}) == ("", "")
+        assert stt_for({"language": "ml-IN", "transcription_provider": "Deepgram"}) == ("", "")
+        assert stt_for({"language": "en-US", "speech_model": "nova-1"}) == ("", "")
+        assert stt_for({"language": "xx-XX", "transcription_provider": "Google"}) == ("", "")
         assert "can't hear" in caplog.text
-
-    def test_an_unknown_language_is_left_to_twilio(self):
-        assert stt_for({"language": "xx-XX"}) == ("", "")
 
 
 class TestDefaults:

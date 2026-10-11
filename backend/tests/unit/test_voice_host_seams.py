@@ -134,17 +134,16 @@ class TestABillIsSettledOnceTheCallIsOver:
 
 
 class TestWhoHearsTheCaller:
-    """VOX1d: every call says who hears it; the number's own choice if the list allows it, else its language's."""
+    """VOX1d: the number's own choice if the list allows it; otherwise Twilio's default (Naveen: keep it)."""
 
     def _markup(self, resume=False, **voice):
         return service._connect(_channel(**voice), TwilioProvider.from_credentials(CREDS), CALL, agent_name="Ada",
                                 resume=resume)
 
-    async def test_a_number_that_chose_nothing_hears_with_its_languages_default(self, host):
-        assert 'language="en-IN" transcriptionProvider="Deepgram" speechModel="nova-3-general"' in self._markup(
-            language="en-IN")
-        assert 'language="en-US" transcriptionProvider="Deepgram" speechModel="nova-3-general"' in self._markup()
-        assert 'language="ml-IN" transcriptionProvider="Google" speechModel="long"' in self._markup(language="ml-IN")
+    async def test_a_number_that_chose_nothing_is_heard_by_twilios_default(self, host):
+        for voice in ({"language": "en-IN"}, {}, {"language": "ml-IN"}):
+            markup = self._markup(**voice)
+            assert "transcriptionProvider" not in markup and "speechModel" not in markup, voice
 
     async def test_its_own_choice_on_a_first_answer_and_a_moved_call(self, host):
         for resume in (False, True):
@@ -156,7 +155,7 @@ class TestWhoHearsTheCaller:
         markup = self._markup(language="en-XX", speech_model="flux")
         assert 'language="en-US" transcriptionProvider="Deepgram" speechModel="flux"' in markup
         markup = self._markup(language="de-DE", speech_model="flux")
-        assert 'language="de-DE" transcriptionProvider="Deepgram" speechModel="nova-3-general"' in markup
+        assert 'language="de-DE"' in markup and "transcriptionProvider" not in markup
         assert "not one calls can use" in caplog.text and "can't hear" in caplog.text
 
     async def test_say_speaks_its_english_sentences_in_an_english_voice(self, host, monkeypatch):
