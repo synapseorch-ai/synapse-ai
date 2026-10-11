@@ -113,6 +113,9 @@ class Timing:
     #: Twilio says what was sent before it ends the session (measured, VOX1a P1: the socket closed ~5 s after
     #: `end` while a sentence played), so nothing waits by default; a provider that cut speech would set this.
     longest_wait_for_speech: float = 0.0
+    #: After the agent's goodbye has played, how long the caller may still speak and keep the call (VOX1d: a
+    #: "No… just add it to my cart" lost its second half to a goodbye that ended the call at once).
+    goodbye_grace: float = 1.5
 
 
 #: Where a phrase may end: punctuation and the space after it (kept with the phrase, so a sentence that follows
@@ -173,6 +176,9 @@ class VoiceCall:
         self.visitor = _visitor.VisitorScope(
             "channel", frozenset(_visitor.clean_tools(channel.get("visitor_tools"))), approvals="park")
         self._closing_asked = False  # CLOSING_QUESTION was the last thing said
+        self._closing_at: float | None = None  # the goodbye was said: the session ends then, unless the caller speaks
+        self._closing: dict = {}
+        self._said_until = 0.0
         self.pending_action: tuple[str, dict] | None = None
         self.outcome: str | None = None
         self.parked_approval = False
@@ -228,6 +234,8 @@ class VoiceCall:
             await self._frames.put(Frame("closed"))
 
     def _deadline(self) -> float:
+        if self._closing_at is not None:
+            return self._closing_at
         if self._turn_task is not None and not self._turn_task.done():
             return self._limit_at - (0 if self._wrapped_up else 60)
         silence = max(self._speaking_until, self._last_heard) + self.timing.silence_after
@@ -239,6 +247,9 @@ class VoiceCall:
             self._speaking_until = time.monotonic() + len(self.notice) / self.timing.chars_per_second
         while not self._ended:
             if self._move and not self._turn_busy():
+                if self._closing_at is not None:
+                    await self._end(self._closing, outcome="agent_ended")  # it was ending anyway
+                    return
                 await self._say(MOVE_LINE, last=True)
                 await self._end({"reconnect": True}, outcome="moved")
                 return
@@ -249,6 +260,12 @@ class VoiceCall:
                 await self._on_timer()
                 continue
             if frame.type == "closed":
+                if self._closing_at is not None and not self.outcome:
+                    # The caller hung up on the goodbye: the agent still ended the call.
+                    self.outcome = "agent_ended"
+                    with contextlib.suppress(Exception):
+                        await self.host.update_call(self.call_sid, {"outcome": "agent_ended",
+                                                                    "handoff": self._closing})
                 self.outcome = self.outcome or "caller_hung_up"
                 return
             if isinstance(frame, Setup):
@@ -282,6 +299,10 @@ class VoiceCall:
 
     async def _on_timer(self) -> None:
         now = time.monotonic()
+        if self._closing_at is not None:
+            if now >= self._closing_at:
+                await self._end(self._closing, outcome="agent_ended")
+            return
         if now >= self._limit_at:
             await self._stop_turn(wait_for_tool=True)
             await self._say(LIMIT_GOODBYE, last=True)
@@ -294,8 +315,9 @@ class VoiceCall:
             return
         if self._closing_asked:
             # Asked whether there was anything else, and nothing came: that is the caller's answer.
+            self._closing_asked = False
             await self._say(DEFAULT_GOODBYE, last=True)
-            await self._end({"ended": "agent"}, outcome="agent_ended")
+            self._close_after_goodbye({"ended": "agent"})
             return
         if self._silence_prompts < self.timing.silence_prompts:
             self._silence_prompts += 1
@@ -307,6 +329,7 @@ class VoiceCall:
     # ── A turn ───────────────────────────────────────────────────────────────
 
     async def _on_prompt(self, text: str) -> None:
+        self._keep_the_call()
         # The caller's new words start the next turn at once (V14); a running tool finishes first.
         stopped = self._turn if self._turn_busy() else None
         await self._stop_turn(wait_for_tool=True)
@@ -564,11 +587,24 @@ class VoiceCall:
         if kind == "transfer":
             await self._end({"transfer": data.get("reason") or ""}, outcome="transferred")
         else:
-            await self._end({"ended": "agent"}, outcome="agent_ended")
+            self._close_after_goodbye({"ended": "agent"})
+
+    def _close_after_goodbye(self, handoff: dict) -> None:
+        """The goodbye plays, then a moment in which the caller may still speak (VOX1d). Words in it keep the call;
+        silence ends it (the loop's timer). A hand-off is never held: it ends at once."""
+        self._closing = handoff
+        self._closing_at = max(self._said_until, time.monotonic()) + self.timing.goodbye_grace
+        self._frames.put_nowait(Frame("wake"))
+
+    def _keep_the_call(self) -> None:
+        if self._closing_at is not None:
+            log.info("voice call: the caller spoke after the goodbye; the call goes on")
+            self._closing_at, self._closing = None, {}
 
     # ── Barge-in ─────────────────────────────────────────────────────────────
 
     async def _on_interrupt(self, heard: str) -> None:
+        self._keep_the_call()
         turn = self._turn
         if turn is None:
             return
@@ -623,6 +659,8 @@ class VoiceCall:
             return
         now = time.monotonic()
         self._speaking_until = max(now, self._speaking_until) + len(text) / self.timing.chars_per_second
+        # When these words alone are heard: a goodbye follows the caller's words, so nothing plays before it.
+        self._said_until = now + len(text) / self.timing.chars_per_second
         try:
             await self.transport.say(text, last=last)
         except Exception as exc:  # noqa: BLE001 — the socket went away; the reader sees it close

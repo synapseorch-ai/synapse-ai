@@ -18,7 +18,7 @@ from core.messaging.voice.relay import Frame, Interrupt, Prompt, Setup
 
 CALL = "CA" + "3" * 32
 FAST = Timing(filler_late_after=0.3, silence_after=0.3, chars_per_second=1e9, longest_wait_for_speech=0,
-              close_wait=0.5)
+              close_wait=0.5, goodbye_grace=0.05)
 
 
 class FakeSocket:
@@ -543,6 +543,41 @@ class TestTheVoiceTools:
         assert [t for t, _ in socket.said] == [call_mod.CLOSING_QUESTION, call_mod.DEFAULT_GOODBYE]
         assert call_mod.STILL_THERE not in socket.words()
         assert socket.ended == [{"ended": "agent"}] and host.records[CALL]["outcome"] == "agent_ended"
+
+    async def test_a_caller_who_speaks_during_the_goodbye_keeps_the_call(self, saved):
+        """VOX1d: "No… just add it to my cart" lost its second half to a goodbye that ended the call at once."""
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Goodbye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}]
+        host = ScriptedHost(list(end), [_delta("Added to your cart."), _final("Added to your cart.")])
+        socket = FakeSocket()
+        call = _call(host, socket, timing=Timing(**{**FAST.__dict__, "goodbye_grace": 0.5}))
+        call._closing_asked = True  # the caller has said there is nothing else
+        await _drive(call, socket, _prompt("no"), 0.1, _prompt("just add it to my cart"), settle=0.2)
+        assert [t for t, _ in socket.said] == ["Goodbye!", "Added to your cart."]
+        assert socket.ended == [] and [t["text"] for t in host.turns] == ["no", "just add it to my cart"]
+
+    async def test_silence_after_the_goodbye_ends_it_and_a_hang_up_on_it_is_still_the_agents(self, saved):
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Bye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}]
+        socket = FakeSocket()
+        call = _call(ScriptedHost(list(end)), socket, timing=Timing(**{**FAST.__dict__, "goodbye_grace": 0.3}))
+        call._closing_asked = True
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("no"))
+        await asyncio.sleep(0.1)
+        assert socket.ended == [], "the goodbye is said; the call waits a moment before it ends"
+        await asyncio.sleep(0.4)
+        assert socket.ended == [{"ended": "agent"}]
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+
+        hung_up = FakeSocket()
+        host = ScriptedHost(list(end))
+        call = _call(host, hung_up, timing=Timing(**{**FAST.__dict__, "goodbye_grace": 0.5}))
+        call._closing_asked = True
+        await _drive(call, hung_up, _prompt("no"), 0.1, settle=0.0)  # the caller hangs up on "Bye!"
+        assert hung_up.ended == [] and call.outcome == "agent_ended"
+        assert host.records[CALL]["outcome"] == "agent_ended"
 
     async def test_transfer_is_offered_only_with_a_number(self, saved):
         host = ScriptedHost([{"type": "tool_execution", "tool_name": "transfer_call"},
