@@ -23,6 +23,7 @@ import {
     type BuilderState,
     type SavedResource,
 } from '@/lib/builderEvents';
+import { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from '@/components/assistant';
 import { usePersisted } from '@/components/ui';
 import { isPanelEvent, reattachedState, type OpenConversation } from '@/lib/builderReattach';
 import type { ProviderModels } from '@/lib/models';
@@ -287,6 +288,21 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
             setIsOpen(false);
         }, EXIT_MS);
     }, []);
+
+    // `?build=agent-builder` (SW1): someone leaving OpenAI Agent Builder,
+    // sent from the site. The panel opens with the lead line in the composer
+    // for their export to go under; the parameter goes, so a reload does not
+    // open it again. Scheduled, so the opening is not a render inside this
+    // effect — and the parameter goes in the same callback, so a cancelled
+    // first pass (Strict Mode runs effects twice) leaves it for the second.
+    useEffect(() => {
+        if (!asksForAgentBuilderSwitch(window.location.search)) return;
+        const timer = window.setTimeout(() => {
+            window.history.replaceState(window.history.state, '', withoutBuildParam(window.location.href));
+            open({ prompt: AGENT_BUILDER_SWITCH.lead });
+        }, 0);
+        return () => window.clearTimeout(timer);
+    }, [open]);
 
     useEffect(() => {
         runIdRef.current = state.runId;

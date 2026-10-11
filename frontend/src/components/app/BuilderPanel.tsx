@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import {
+    AGENT_BUILDER_SWITCH,
     AgentTurn,
     Composer,
     composerPillClass,
@@ -413,9 +414,14 @@ export function BuilderPanel() {
                     />
                     {fresh && (
                         <Suggestions
-                            items={BUILDER_EXAMPLES}
+                            items={[...BUILDER_EXAMPLES, AGENT_BUILDER_SWITCH.suggestion]}
                             label="Things to ask for"
-                            onPick={(text) => { setInput(text); textarea.current?.focus(); }}
+                            onPick={(text) => {
+                                // The switch's chip says what it is for; the composer gets
+                                // the lead line its export goes under (SW1).
+                                setInput(text === AGENT_BUILDER_SWITCH.suggestion ? AGENT_BUILDER_SWITCH.lead : text);
+                                textarea.current?.focus();
+                            }}
                             className="pt-1"
                         />
                     )}

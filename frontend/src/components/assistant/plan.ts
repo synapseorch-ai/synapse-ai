@@ -75,6 +75,12 @@ export interface Plan {
     schedule: string | null;
     newAgents: string[];
     openQuestions: string | null;
+    /**
+     * What pasted Agents SDK code held that the plan could not build — a
+     * credential, an MCP server, a function tool — and what to do about each
+     * (SW1). Only a plan drafted from pasted code has the section.
+     */
+    notCarried: string | null;
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -317,7 +323,7 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
         const steps = changeSteps(body);
         if (!steps.length) return null;
         const overview = firstParagraph(preamble.split('\n').filter((l) => !/^\s*(?:[-*•]|\d+[.)])\s/.test(l)).join('\n'));
-        return { kind, body, overview, steps, schedule: null, newAgents: [], openQuestions: null };
+        return { kind, body, overview, steps, schedule: null, newAgents: [], openQuestions: null, notCarried: null };
     }
 
     const stepsSection = find(list, /^steps?\b/) ?? find(list, /\bsteps\b/);
@@ -328,6 +334,7 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
     if (!steps.length) return null;
 
     const open = find(list, /open questions?/)?.text.trim() ?? '';
+    const left = find(list, /^not carried over\b/)?.text.trim() ?? '';
     return {
         kind,
         body,
@@ -336,5 +343,6 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
         schedule: scheduleOf(find(list, /^schedule\b/)?.text),
         newAgents: newAgentsOf(withChildren(list, find(list, /^agents?\b/))),
         openQuestions: open && !isNone(open) ? open : null,
+        notCarried: left && !isNone(left) && !/^[\s\-*_]*nothing\b/i.test(left) ? left : null,
     };
 }

@@ -191,6 +191,12 @@ export function PlanCard({
                             <Markdown className="text-[13px] leading-relaxed">{plan.openQuestions}</Markdown>
                         </div>
                     )}
+                    {plan.notCarried && (
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">Not carried over</span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.notCarried}</Markdown>
+                        </div>
+                    )}
                     {expanded && (
                         <div className="rounded-lg border border-border px-3 py-2.5">
                             <Markdown className="text-[13px] leading-relaxed">{prompt}</Markdown>
