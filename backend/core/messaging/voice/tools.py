@@ -22,10 +22,10 @@ def build(call: Any, *, can_transfer: bool) -> list:
 
     out = [(VirtualTool(
         name=END_CALL,
-        description=("End the phone call. Only once the caller has said goodbye, or has said there is nothing else "
-                     "after you asked whether there was anything else; a thank-you alone is not goodbye, so ask "
-                     "instead. Put your goodbye in `goodbye` (one short sentence); it is spoken, then the call ends. "
-                     "Write nothing else."),
+        description=("End the phone call, when the caller seems done; a thank-you alone is not goodbye. The first "
+                     "time, the call asks the caller whether there is anything else instead of ending; if they say "
+                     "no, call it again. Put your goodbye in `goodbye` (one short sentence); it is spoken, then the "
+                     "call ends. Write nothing else."),
         inputSchema={"type": "object", "properties": {"goodbye": {
             "type": "string", "description": "Your goodbye, one short sentence."}},
             "required": ["goodbye"], "additionalProperties": False},

@@ -511,13 +511,38 @@ class TestApprovals:
 
 
 class TestTheVoiceTools:
-    async def test_end_call_ends_after_the_goodbye(self, saved):
-        host = ScriptedHost([{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Goodbye!"}), {"type": "tool_result", "tool_name": "end_call"}, _delta("never asked for"), _final("never")])
+    async def test_end_call_first_asks_whether_there_is_anything_else_then_ends_after_the_goodbye(self, saved):
+        """VOX1d: the close is the call's. Changed deliberately from VOX1a's one-step end: a "No." to a question
+        about a product ended a live call on a caller who still wanted it added to the cart."""
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Goodbye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}, _delta("never asked for"), _final("never")]
+        host = ScriptedHost(list(end), list(end))
         socket = FakeSocket()
-        await _drive(_call(host, socket), socket, _prompt("bye"), hang_up=False)
-        assert socket.said == [("Goodbye!", True)], "the tool's goodbye, with no second model call"
+        await _drive(_call(host, socket), socket, _prompt("no"), 0.1, _prompt("no, that's all"), hang_up=False)
+        assert socket.said == [(call_mod.CLOSING_QUESTION, True), ("Goodbye!", True)], "no second model call"
         assert socket.ended == [{"ended": "agent"}] and host.records[CALL]["outcome"] == "agent_ended"
+        assert saved["turns"][0] == ("no", call_mod.CLOSING_QUESTION, ["end_call"])
         assert host.turns[0]["tools"] == ["end_call"]
+
+    async def test_a_reply_that_wants_more_carries_on_and_the_next_end_asks_again(self, saved):
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Bye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}]
+        host = ScriptedHost(list(end), [_delta("Added to your cart."), _final("Added to your cart.")], list(end))
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("no"), 0.1, _prompt("just add it to my cart"), 0.1,
+                     _prompt("no"), settle=0.15)
+        assert [t for t, _ in socket.said] == [call_mod.CLOSING_QUESTION, "Added to your cart.",
+                                               call_mod.CLOSING_QUESTION]
+        assert socket.ended == [], "never ended on a caller who wasn't done"
+
+    async def test_silence_after_the_closing_question_is_the_answer(self, saved):
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "end_call"},
+                             ("tool", "end_call", {"goodbye": "Bye!"}), {"type": "tool_result"}])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("that's it"), settle=0.6, hang_up=False)
+        assert [t for t, _ in socket.said] == [call_mod.CLOSING_QUESTION, call_mod.DEFAULT_GOODBYE]
+        assert call_mod.STILL_THERE not in socket.words()
+        assert socket.ended == [{"ended": "agent"}] and host.records[CALL]["outcome"] == "agent_ended"
 
     async def test_transfer_is_offered_only_with_a_number(self, saved):
         host = ScriptedHost([{"type": "tool_execution", "tool_name": "transfer_call"},
@@ -676,7 +701,9 @@ class TestEndingTheSession:
 
         host = ScriptedHost([{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Goodbye!"}), {"type": "tool_result", "tool_name": "end_call"}])
         socket = SlowToClose()
-        task = asyncio.create_task(_call(host, socket).run())
+        call = _call(host, socket)
+        call._closing_asked = True  # VOX1d: the caller already said there was nothing else
+        task = asyncio.create_task(call.run())
         await socket.inbox.put(_prompt("bye"))
         await asyncio.sleep(0.2)
         assert socket.ended == [{"ended": "agent"}] and not task.done(), "still waiting for the provider"
@@ -719,7 +746,9 @@ class TestWhatTheModelSaysBeforeATool:
                              {"type": "tool_execution", "tool_name": "end_call"},
                              ("tool", "end_call", {"goodbye": "Goodbye!"}), {"type": "tool_result"}])
         socket = FakeSocket()
-        await _drive(_call(host, socket), socket, _prompt("bye"), hang_up=False)
+        call = _call(host, socket)
+        call._closing_asked = True  # VOX1d: the caller already said there was nothing else
+        await _drive(call, socket, _prompt("bye"), hang_up=False)
         assert socket.words() == "Thanks for calling, bye!" and socket.ended == [{"ended": "agent"}]
 
     def test_the_voice_prompt_says_so(self):

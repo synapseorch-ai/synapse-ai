@@ -136,7 +136,7 @@ async def test_a_whole_call(phone, twilio, fake_llm):
     url = _socket_url(phone, twiml)
 
     fake_llm.script([Streamed(["It is sunny ", "and 21 degrees, ", "in Paris today."]),
-                     tool_call("end_call", goodbye="Goodbye!")])
+                     tool_call("end_call", goodbye="Goodbye!"), tool_call("end_call", goodbye="Goodbye!")])
     async with websockets.connect(url) as ws:
         relay = Relay(ws)
         await relay.send(type="setup", callSid=sid, **{"from": CALLER, "to": NUMBER})
@@ -145,6 +145,9 @@ async def test_a_whole_call(phone, twilio, fake_llm):
         assert _words(first) == "It is sunny and 21 degrees, in Paris today."
         assert len([f for f in first if f["type"] == "text"]) >= 2, "it went out in phrases"
         await relay.say("Thanks, bye")
+        closing = await relay.hear()
+        assert _words(closing) == "Is there anything else I can help you with?", "the call asks first (VOX1d)"
+        await relay.say("No, that's all")
         second = await relay.hear()
         while second[-1]["type"] != "end":
             second += await relay.hear()

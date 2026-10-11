@@ -48,6 +48,9 @@ FAILED_LINE = "Sorry, something went wrong on my side. Could you say that again?
 STUCK_LINE = "Sorry, I couldn't get that done. Could you put it another way?"
 MOVE_LINE = "One moment."
 DEFAULT_GOODBYE = "Thanks for calling. Goodbye."
+#: The close is the call's, not the model's (VOX1d): the first end_call asks this instead of ending, so a "No."
+#: to some other question ("anything else about this product?") never hangs up on a caller who isn't done.
+CLOSING_QUESTION = "Is there anything else I can help you with?"
 DEFAULT_TRANSFER_LINE = "I'm connecting you to someone on the team now."
 
 #: Added to the agent's prompt on every voice turn (V15), after its own.
@@ -64,8 +67,9 @@ VOICE_SUFFIX = (
     "- Never read a web address, link or code aloud. If your answer is a link, say what it is and that it is "
     "ready for them.\n"
     "- Never ask for, or repeat, card numbers, bank details, passwords or one-time codes.\n"
-    "- When you have finished what the caller asked, ask whether there is anything else you can help with. Use "
-    "end_call (with your goodbye) only once the caller says they are done; a thank-you alone is not goodbye."
+    "- When the caller seems done, use end_call with your goodbye. The call itself asks whether there is "
+    "anything else before it ends, so do not ask that yourself; if they then say no, use end_call again; a "
+    "thank-you alone is not goodbye."
 )
 TRANSFER_SUFFIX = "- If the caller asks for a person, or you cannot help, use transfer_call."
 WRAP_UP_SUFFIX = "- The call ends in about a minute. Wrap up now."
@@ -142,6 +146,7 @@ class _Turn:
         self.progress: dict | None = None  # the latest turn-boundary snapshot, for parking
         self.narrated = False          # the model's "let me check" was spoken this turn
         self.repeat_stopped = False    # the engine's repeat guard ended it
+        self.after_closing = False     # the caller's reply to CLOSING_QUESTION: an end_call now ends the call
 
 
 class VoiceCall:
@@ -167,6 +172,7 @@ class VoiceCall:
         # Callers are always visitors (V16): caller ID can be spoofed. A confirm tool parks.
         self.visitor = _visitor.VisitorScope(
             "channel", frozenset(_visitor.clean_tools(channel.get("visitor_tools"))), approvals="park")
+        self._closing_asked = False  # CLOSING_QUESTION was the last thing said
         self.pending_action: tuple[str, dict] | None = None
         self.outcome: str | None = None
         self.parked_approval = False
@@ -286,6 +292,11 @@ class VoiceCall:
             return
         if self._turn_busy():
             return
+        if self._closing_asked:
+            # Asked whether there was anything else, and nothing came: that is the caller's answer.
+            await self._say(DEFAULT_GOODBYE, last=True)
+            await self._end({"ended": "agent"}, outcome="agent_ended")
+            return
         if self._silence_prompts < self.timing.silence_prompts:
             self._silence_prompts += 1
             await self._say(STILL_THERE, last=True)
@@ -312,6 +323,8 @@ class VoiceCall:
             else:
                 text = f"{stopped.text} {text}"
         turn = _Turn(text)
+        turn.after_closing = self._closing_asked or bool(stopped and stopped.after_closing)
+        self._closing_asked = False
         self._turn = turn
         self._turn_task = asyncio.create_task(self._run_turn(turn))
 
@@ -512,6 +525,9 @@ class VoiceCall:
     async def _last_words(self, turn: _Turn) -> None:
         """The goodbye (the tool's argument) or the hand-off line, said by us; then the action."""
         kind, data = self.pending_action
+        if kind == "end" and not turn.after_closing:
+            await self._ask_before_closing(turn)
+            return
         if kind == "transfer":
             line = str(self.voice.get("transfer_line") or DEFAULT_TRANSFER_LINE)
         else:
@@ -526,6 +542,19 @@ class VoiceCall:
                                           tools=turn.tools)
         await self._note_filler(turn)
         await self._after_turn()
+
+    async def _ask_before_closing(self, turn: _Turn) -> None:
+        """The first end_call asks CLOSING_QUESTION and keeps the call (VOX1d): the caller's reply decides."""
+        self.pending_action = None
+        self._closing_asked = True
+        said = turn.since_reset.strip() if turn.sent_any else ""
+        await self._say(CLOSING_QUESTION, last=True)
+        turn.sent_any = True
+        from core.session import _save_conversation_turn
+        async with self._history:
+            with contextlib.suppress(Exception):
+                await _save_conversation_turn(self.session_id, self.agent_id, turn.text,
+                                              f"{said} {CLOSING_QUESTION}".strip(), tools=turn.tools)
 
     async def _after_turn(self) -> None:
         action, self.pending_action = self.pending_action, None
