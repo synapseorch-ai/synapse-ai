@@ -456,3 +456,9 @@ export function voiceItemHref(data: Record<string, unknown> | null | undefined):
 export const UNSET = '__unset__';
 export const toChoice = (value: string | undefined | null): string => value || UNSET;
 export const fromChoice = (choice: string): string => (choice === UNSET ? '' : choice);
+
+/** An error as a person reads it: a save's 422 carries pydantic's "Value error, " before the sentence (VOX1d's check). */
+export function errorWords(e: unknown, fallback: string): string {
+    const message = e instanceof Error ? e.message : '';
+    return message.replace(/(^|\. )Value error, /g, '$1').trim() || fallback;
+}

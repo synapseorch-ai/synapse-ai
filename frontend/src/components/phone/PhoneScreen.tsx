@@ -22,7 +22,7 @@ import { cn } from '@/lib/cn';
 import { AddNumber } from './AddNumber';
 import { usePhoneHost } from './host';
 import { NumberPane } from './NumberPane';
-import { EMPTY_OPTIONS, type PhoneAgent, type PhoneNumber, type PhoneOptions } from './phone';
+import { EMPTY_OPTIONS, errorWords, type PhoneAgent, type PhoneNumber, type PhoneOptions } from './phone';
 
 export type PhoneInitial = { numbers: PhoneNumber[]; options: PhoneOptions; agents: PhoneAgent[] };
 
@@ -66,7 +66,7 @@ export function PhoneScreen({
         let gone = false;
         Promise.all([host.numbers(), host.options(), host.agents()])
             .then(([n, o, a]) => { if (!gone) { setNumbers(n); setOptions(o); setAgents(a); setLoadError(''); } })
-            .catch(e => { if (!gone) { setNumbers(prev => prev ?? []); setLoadError(e instanceof Error ? e.message : 'The numbers could not be read.'); } });
+            .catch(e => { if (!gone) { setNumbers(prev => prev ?? []); setLoadError(errorWords(e, 'The numbers could not be read.')); } });
         return () => { gone = true; };
     }, [host, reread]);
 

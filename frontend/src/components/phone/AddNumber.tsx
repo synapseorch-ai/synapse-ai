@@ -26,6 +26,7 @@ import { cn } from '@/lib/cn';
 
 import { usePhoneHost } from './host';
 import {
+    errorWords,
     DEFAULT_NOTICE, E164, RESTRICTED_PERMISSIONS, TWILIO_KEYS_URL, UNSET, fromChoice, settingsToSend, toChoice,
     type PhoneAgent, type PhoneNumber, type PhoneOptions, type TwilioNumber, type VoiceSettings,
 } from './phone';
@@ -182,7 +183,7 @@ export function AddNumber({
             setPicked(p => (free.some(n => n.sid === p) ? p : free[0]?.sid ?? ''));
             setStep(1);
         } catch (e) {
-            setError(e instanceof Error ? e.message : 'Twilio did not accept the key.');
+            setError(errorWords(e, 'Twilio did not accept the key.'));
         } finally {
             setBusy(false);
         }
@@ -198,7 +199,7 @@ export function AddNumber({
             close();
             onConnected(made);
         } catch (e) {
-            setError(e instanceof Error ? e.message : 'The number could not be connected.');
+            setError(errorWords(e, 'The number could not be connected.'));
             setBusy(false);
         }
     };

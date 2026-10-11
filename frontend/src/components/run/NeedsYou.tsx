@@ -30,8 +30,12 @@ import { Took, useClock, When } from './When';
 /** A waiting run shown as a row: past the cards, or when its record could not be read. */
 export type WaitingBrief = { id: string; workflowName: string | null; prompt: string | null; since: string | null };
 
-/** A scheduled agent's tool call waiting for approval, with the product's own control. */
-export type ToolCall = { id: string; title: string; body?: string | null; at?: string | null; actions: ReactNode };
+/** A tool call waiting for approval (a scheduled agent's, or a phone call's), with the product's own control. */
+export type ToolCall = {
+    id: string; title: string; body?: string | null; at?: string | null; actions: ReactNode;
+    /** Who asked, in a few words; a scheduled agent's when absent. */
+    source?: string;
+};
 
 /** Which question of a run a card answers: a run can ask again later. */
 const questionOf = (run: RunRecord) =>
@@ -100,7 +104,7 @@ export function NeedsYou({ runs, more = [], tools = [], hrefOf, onChanged }: {
                     <section key={t.id} aria-label="Waiting for an approval" className="grid gap-2 rounded-[14px] border border-person/40 bg-person-subtle px-[22px] py-4">
                         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
                             <Badge tone="person">Needs approval</Badge>
-                            <span>A scheduled agent’s tool call</span>
+                            <span>{t.source ?? 'A scheduled agent’s tool call'}</span>
                             {t.at && <span>· <When iso={t.at} clock={clock} /></span>}
                         </div>
                         <p className="m-0 text-[15px] font-medium text-text">{t.title}</p>

@@ -104,7 +104,8 @@ export function WaitingOnYouDrawer({ open, onClose }: { open: boolean; onClose: 
         title: n.title,
         body: n.body ? plainText(n.body) : null,
         at: new Date(n.ts * 1000).toISOString(),
-        actions: <ToolApprovalActions n={n} />,
+        actions: <ToolApprovalActions n={n} onOpen={onClose} />,
+        source: n.data?.door === 'voice' ? 'A caller on the phone' : undefined,
     }));
 
     return (

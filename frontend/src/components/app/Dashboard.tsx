@@ -193,6 +193,7 @@ export function Dashboard() {
             body: n.body ? plainText(n.body) : null,
             at: new Date(n.ts * 1000).toISOString(),
             actions: <ToolApprovalActions n={n} />,
+            source: n.data?.door === 'voice' ? 'A caller on the phone' : undefined,
         }));
 
     const week = useMemo(() => weekRuns(rows, clock.now), [rows, clock.now]);

@@ -1,10 +1,12 @@
 'use client';
 import { useState } from 'react';
+import Link from 'next/link';
 import * as RPopover from '@radix-ui/react-popover';
 import { Bell, CheckCircle2, AlertCircle, PauseCircle, ShieldAlert } from 'lucide-react';
 import { useNotifications, type RunNotification } from './NotificationProvider';
 import { answerToolApproval } from './ToolApproval';
 import { plainText } from '@/lib/plainText';
+import { voiceItemHref } from '@/components/phone/phone';
 import { Button, Checkbox } from '@/components/ui';
 
 /** How a resolved item ended, as its row says it. */
@@ -18,7 +20,9 @@ const RESOLVED_AS: Record<string, string> = {
  * answer, right here. Nobody is in a chat to see a card, so the bell is where
  * the question is asked; the answer resumes the same schedule run.
  */
-function ApprovalItem({ n }: { n: RunNotification }) {
+function ApprovalItem({ n, onOpen }: { n: RunNotification; onOpen: () => void }) {
+    // A phone call's question (V16): its call opens from here, to read what the caller asked first.
+    const call = voiceItemHref(n.data);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState('');
     const args = n.data?.tool_args;
@@ -52,6 +56,11 @@ function ApprovalItem({ n }: { n: RunNotification }) {
             <div className="mt-2 flex items-center gap-2 pl-6">
                 <Button size="sm" disabled={busy} onClick={() => answer(true)}>Approve</Button>
                 <Button size="sm" variant="secondary" disabled={busy} onClick={() => answer(false)}>Refuse</Button>
+                {call && (
+                    <Link href={call} onClick={onOpen} className="whitespace-nowrap text-xs text-accent-ink underline-offset-2 hover:underline">
+                        Open the call
+                    </Link>
+                )}
                 <span className="text-xs text-text-faint">
                     {new Date(n.ts * 1000).toLocaleTimeString()}
                 </span>
@@ -126,7 +135,7 @@ export function NotificationBell({
                                 No notifications yet.
                             </div>
                         ) : recent.map(n => {
-                            if (n.kind === 'tool_approval' && !n.resolved) return <ApprovalItem key={n.id} n={n} />;
+                            if (n.kind === 'tool_approval' && !n.resolved) return <ApprovalItem key={n.id} n={n} onOpen={() => setOpen(false)} />;
                             const answered = (n.kind === 'human_input' || n.kind === 'tool_approval') && n.resolved;
                             return (
                             <button

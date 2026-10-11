@@ -10,8 +10,10 @@
  * re-sends it on the stream; until then the control says what was sent. The
  * control is cloud's `ApprovalActions`, as OSS draws it.
  */
+import Link from 'next/link';
 import { useState } from 'react';
 
+import { voiceItemHref } from '@/components/phone/phone';
 import { Button } from '@/components/ui';
 
 import type { RunNotification } from './NotificationProvider';
@@ -39,7 +41,9 @@ export async function answerToolApproval(n: RunNotification, approve: boolean): 
 }
 
 /** The call in one line, and Approve / Refuse. */
-export function ToolApprovalActions({ n }: { n: RunNotification }) {
+export function ToolApprovalActions({ n, onOpen }: { n: RunNotification; onOpen?: () => void }) {
+    // A phone call's question (V16): open the call to read what the caller asked; the answer is kept with it.
+    const call = voiceItemHref(n.data);
     const [busy, setBusy] = useState<'allow' | 'refuse' | null>(null);
     const [sent, setSent] = useState<'allowed' | 'refused' | null>(null);
     const [error, setError] = useState('');
@@ -67,7 +71,10 @@ export function ToolApprovalActions({ n }: { n: RunNotification }) {
             )}
             {sent ? (
                 <p role="status" className="m-0 text-sm text-text-muted">
-                    {sent === 'allowed' ? 'Allowed — the schedule’s run carries on.' : 'Refused — not run.'}
+                    {call
+                        ? (sent === 'allowed' ? 'Allowed — it runs now, and its result is kept with the call. Call them back.'
+                            : 'Refused — not run. Let the caller know.')
+                        : (sent === 'allowed' ? 'Allowed — the schedule’s run carries on.' : 'Refused — not run.')}
                 </p>
             ) : (
                 <div className="flex flex-wrap items-center gap-2">
@@ -77,6 +84,11 @@ export function ToolApprovalActions({ n }: { n: RunNotification }) {
                     <Button size="sm" variant="secondary" onClick={() => void answer(false)} loading={busy === 'refuse'} disabled={busy !== null}>
                         Refuse
                     </Button>
+                    {call && (
+                        <Link href={call} onClick={onOpen} className="whitespace-nowrap text-xs text-accent-ink underline-offset-2 hover:underline">
+                            Open the call
+                        </Link>
+                    )}
                 </div>
             )}
             {error && <p role="alert" className="m-0 text-sm text-danger">{error}</p>}

@@ -24,6 +24,7 @@ import { languageOptions } from './AddNumber';
 import { CallLog, OutcomeWord } from './CallLog';
 import { usePhoneHost, type NumberPatch } from './host';
 import {
+    errorWords,
     DEFAULT_FILLER, DEFAULT_FILLER_LATE, DEFAULT_NOTICE, E164, agentNotes, callSeconds, callerLabel, clockLength,
     UNSET, fromChoice, isLive, settingsOf, settingsToSend, toChoice, type CallRecord, type PhoneAgent, type PhoneNumber, type PhoneOptions,
     type VoiceSettings,
@@ -121,7 +122,7 @@ export function NumberPane({
         let gone = false;
         host.calls(number.id)
             .then(list => { if (!gone) { setCalls(list); setCallsError(''); setNow(Date.now()); } })
-            .catch(e => { if (!gone) setCallsError(e instanceof Error ? e.message : 'The calls could not be read.'); });
+            .catch(e => { if (!gone) setCallsError(errorWords(e, 'The calls could not be read.')); });
         return () => { gone = true; };
     }, [host, number.id, reread]);
 
@@ -158,7 +159,7 @@ export function NumberPane({
             setDraft(draftOf(next));
             show('Saved. The next call uses it.');
         } catch (e) {
-            setError(e instanceof Error ? e.message : 'The number could not be saved.');
+            setError(errorWords(e, 'The number could not be saved.'));
         } finally {
             setSaving(false);
         }
@@ -171,7 +172,7 @@ export function NumberPane({
             if (out.number) onChanged(out.number);
             show(number.enabled ? 'Turned off. The number is back where it pointed before.' : 'Turned on.');
         } catch (e) {
-            setError(e instanceof Error ? e.message : 'That did not work.');
+            setError(errorWords(e, 'That did not work.'));
         } finally {
             setBusy(false);
         }
@@ -182,7 +183,7 @@ export function NumberPane({
             const out = await host.remove(number);
             onRemoved(out.left);
         } catch (e) {
-            setError(e instanceof Error ? e.message : 'The number could not be deleted.');
+            setError(errorWords(e, 'The number could not be deleted.'));
             setBusy(false);
         }
     };

@@ -21,6 +21,7 @@ import { cn } from '@/lib/cn';
 
 import { usePhoneHost } from './host';
 import {
+    errorWords,
     callerLabel, clockLength, credits, firstWords, isLive, outcomeOf, outcomeSentence, startedMinutes,
     twilioEstimate, type CallRecord, type CallTurn, type Tone, type Transcript,
 } from './phone';
@@ -129,7 +130,7 @@ export function CallLog({
         let gone = false;
         host.transcript(call)
             .then(t => { if (!gone) { setTranscript(t); setError(''); } })
-            .catch(e => { if (!gone) setError(e instanceof Error ? e.message : 'The conversation could not be read.'); });
+            .catch(e => { if (!gone) setError(errorWords(e, 'The conversation could not be read.')); });
         host.modelCost(call).then(c => { if (!gone) setCost(c); });
         return () => { gone = true; };
     }, [host, call]);
