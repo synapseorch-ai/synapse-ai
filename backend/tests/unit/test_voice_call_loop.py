@@ -316,6 +316,47 @@ class TestBargeIn:
         assert [t["text"] for t in host.turns] == ["weather?", "never mind"]
         assert "never" not in socket.words()
 
+    async def test_a_caller_who_speaks_again_before_any_answer_keeps_the_first_question(self, saved):
+        """VOX1d, on a live call: a question, ten silent seconds (the org's tool servers starting), then "No.".
+        The first turn was stopped before it said a word, and Twilio sends no interrupt when nothing is playing,
+        so the question was lost: the agent heard only "No." and ended the call."""
+        never = asyncio.Event()
+        host = ScriptedHost([("wait", never), _final("never")], [_delta("We have two."), _final("We have two.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("Is there any phones available?"), 0.05, _prompt("No."),
+                     settle=0.2)
+        assert [t["text"] for t in host.turns] == ["Is there any phones available?",
+                                                   "Is there any phones available? No."]
+        assert "We have two." in socket.words() and saved["turns"] == []
+
+    async def test_a_turn_that_already_acted_keeps_its_question_and_tools_instead(self, saved):
+        """A tool ran, then the model was still wording the answer: joining the words could make it act twice."""
+        never = asyncio.Event()
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "book"},
+                             {"type": "tool_result", "tool_name": "book"}, ("wait", never), _final("never")],
+                            [_delta("Done."), _final("Done.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("book it"), 0.05, _prompt("hello?"), settle=0.2)
+        assert saved["turns"] == [("book it", "", ["book"])]
+        assert [t["text"] for t in host.turns] == ["book it", "hello?"]
+
+    async def test_bookkeeping_alone_is_not_acting(self, saved):
+        never = asyncio.Event()
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "update_tasks"},
+                             {"type": "tool_result", "tool_name": "update_tasks"}, ("wait", never), _final("never")],
+                            [_delta("Two."), _final("Two.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("phones?"), 0.05, _prompt("hello?"), settle=0.2)
+        assert [t["text"] for t in host.turns] == ["phones?", "phones? hello?"] and saved["turns"] == []
+
+    async def test_words_after_an_answer_began_are_a_turn_of_their_own(self, saved):
+        never = asyncio.Event()
+        host = ScriptedHost([_delta("It is sunny, "), ("wait", never), _final("never")],
+                            [_delta("Okay."), _final("Okay.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("weather?"), 0.1, _prompt("never mind"), settle=0.2)
+        assert [t["text"] for t in host.turns] == ["weather?", "never mind"]
+
     async def test_a_running_tool_finishes_but_its_answer_is_not_spoken(self, saved):
         tool_done = asyncio.Event()
         host = ScriptedHost([{"type": "tool_execution", "tool_name": "book"}, ("wait", tool_done),

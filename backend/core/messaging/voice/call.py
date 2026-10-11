@@ -293,9 +293,20 @@ class VoiceCall:
 
     async def _on_prompt(self, text: str) -> None:
         # The caller's new words start the next turn at once (V14); a running tool finishes first.
+        stopped = self._turn if self._turn_busy() else None
         await self._stop_turn(wait_for_tool=True)
         if self._ended:
             return
+        if stopped is not None and not (stopped.sent_any or stopped.saved or stopped.parked
+                                        or stopped.stop_after_tool):
+            # Nothing was answered, so nothing was cut and Twilio sent no interrupt: the caller is still asking,
+            # and their first words must not be lost (VOX1d: a question, a silence, "No.", and the call ended).
+            if any(name not in _NO_FILLER for name in stopped.tools):
+                # It already acted (a tool ran): the question and its tools are kept, as a barge-in keeps them,
+                # so the next turn knows what was done and does not do it twice.
+                await self._save_cut(stopped, heard="")
+            else:
+                text = f"{stopped.text} {text}"
         turn = _Turn(text)
         self._turn = turn
         self._turn_task = asyncio.create_task(self._run_turn(turn))
