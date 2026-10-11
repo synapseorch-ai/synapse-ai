@@ -187,8 +187,8 @@ Use a `transform` step only if nothing else can, and never with code copied from
 - User approval (`approval_request(...)` / `approvalRequest(...)`, usually a stub that returns true) → a `human` step: \
 its message is the `human_prompt`, one field `{"name": "approved", "type": "boolean", "label": "Approve?"}`, then an \
 `if_else` on `state.<key>.approved == True`.
-- Guardrails (`guardrails_config`, `run_guardrails`, `input_guardrails=`, a tripwire) → an `evaluator` step before \
-what they guard, with routes `pass` and `blocked`; `blocked` goes to a `print` step (`print_content`: the export's \
+- Guardrails (`guardrails_config`, `run_guardrails`, `input_guardrails=`, a tripwire) are KEPT: an `evaluator` step \
+before what they guard, whose prompt asks the checks the code names, with routes `pass` and `blocked`; `blocked` goes to a `print` step (`print_content`: the export's \
 failure output, as text), then `end`. Name the checks (Moderation, Jailbreak, PII, …) in its prompt.
 - File search → a `retrieve` step only when Knowledge steps are offered and `list_knowledge_bases` shows a base that \
 fits; otherwise Not carried over.
@@ -218,12 +218,12 @@ OpenAI key in Settings → Models.
 syntax cannot say.
 - ChatKit or any UI around the workflow, and its evals.
 
-## The shape, in one example (not these names)
-Code: guardrails → `triage` (output_type {category}) → if category == "billing": `billing` (tools: file_search, \
-crm_mcp) else: `general` (no tools).
-Plan: 1. Check the message (evaluator: pass → 2, blocked → 5) · 2. Sort the request (evaluator, instructions from the \
-export's "triage": billing → 3, other → 4) · 3. Billing (agent, NEW, instructions from the export's "billing", tools: \
-[] because file_search and crm_mcp are not here) → 6 · 4. General (llm, instructions from the export's "general") → \
-6 · 5. Blocked reply (print) → 6 · 6. End. Not carried over: crm_mcp (its URL), file_search (its vector store), the \
-models, each ‹credential removed›.
+## The shape (placeholders in <angle brackets>: use the code's own names)
+Code: guardrails → <classifier> (output_type with one category field) → if category == "<a>": <agent A> (its tools \
+are not here) else: <agent B> (no tools).
+Plan: 1. <the guardrail's name> (evaluator: pass → 2, blocked → 5) · 2. <classifier> (evaluator, the classifier's \
+instructions: <a> → 3, other → 4) · 3. <agent A> (agent, NEW, its instructions, tools: [] because its tools are not \
+here) → 6 · 4. <agent B> (llm, its instructions) → 6 · 5. a blocked reply (print, the code's failure output) → 6 · \
+6. End. New agents: <agent A> only. Not carried over: <agent A>'s tools (their URL or id), the models, each \
+‹credential removed›.
 """
