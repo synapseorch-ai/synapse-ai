@@ -225,6 +225,24 @@ class TestFiller:
         assert call_mod.DEFAULT_FILLER not in socket.words()
         assert socket.words() == "Let me look that up. Sunny."
 
+    @pytest.mark.parametrize("bookkeeping", ["update_tasks", "load_skill"])
+    async def test_no_filler_for_the_engines_bookkeeping(self, saved, bookkeeping):
+        """A planning agent calls update_tasks before its real tool; "one moment" played for it on
+        VOX1b's first real cloud call, with nothing for the caller to wait for."""
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": bookkeeping}, {"type": "tool_result"},
+                             _delta("Sure."), _final("Sure.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("hi"))
+        assert call_mod.DEFAULT_FILLER not in socket.words() and socket.words() == "Sure."
+
+    async def test_the_real_tool_after_bookkeeping_still_gets_its_filler(self, saved):
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "update_tasks"}, {"type": "tool_result"},
+                             {"type": "tool_execution", "tool_name": "search"}, {"type": "tool_result"},
+                             _delta("Found."), _final("Found.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("find"))
+        assert socket.words() == call_mod.DEFAULT_FILLER + "Found."
+
     async def test_the_pre_tool_line_is_said_once_a_turn(self, saved):
         """A model that searches twice says "let me check" before each search; the caller
         heard the same sentence again on VOX1b's first real cloud calls."""

@@ -66,6 +66,16 @@ VOICE_SUFFIX = (
 TRANSFER_SUFFIX = "- If the caller asks for a person, or you cannot help, use transfer_call."
 WRAP_UP_SUFFIX = "- The call ends in about a minute. Wrap up now."
 
+#: Tools that start no wait the caller should hear about: the goodbye and the hand-off (our own line is
+#: spoken), and the engine's bookkeeping (`update_tasks`, `load_skill`), which a planning agent calls before
+#: its real tool — "one moment" played for it on VOX1b's first real cloud call.
+def _no_filler() -> frozenset[str]:
+    from core.visitor import ENGINE_TOOLS
+    return frozenset({voice_tools.END_CALL, voice_tools.TRANSFER_CALL, *ENGINE_TOOLS})
+
+
+_NO_FILLER = _no_filler()
+
 #: Live calls in this process, by CallSid: what `move_all` walks.
 _LIVE: dict[str, "VoiceCall"] = {}
 
@@ -331,8 +341,8 @@ class VoiceCall:
                     turn.in_tool = True
                     name = str(event.get("tool_name") or "")
                     turn.tools.append(name)
-                    if name not in (voice_tools.END_CALL, voice_tools.TRANSFER_CALL):
-                        await self._filler(turn)  # a goodbye or a hand-off needs no "one moment"
+                    if name not in _NO_FILLER:
+                        await self._filler(turn)  # a goodbye, a hand-off or bookkeeping needs no "one moment"
                 elif kind == "tool_result":
                     turn.in_tool = False
                     if turn.late is not None:
