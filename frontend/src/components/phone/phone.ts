@@ -451,3 +451,8 @@ export function voiceItemHref(data: Record<string, unknown> | null | undefined):
     const callSid = (typeof data.call_sid === 'string' && data.call_sid) || parsed?.callSid;
     return callHref(channel, callSid || undefined);
 }
+
+/** A select's "nothing chosen" (the language's default, Twilio's voice): the kit's Select can't hold an empty value. */
+export const UNSET = '__unset__';
+export const toChoice = (value: string | undefined | null): string => value || UNSET;
+export const fromChoice = (choice: string): string => (choice === UNSET ? '' : choice);

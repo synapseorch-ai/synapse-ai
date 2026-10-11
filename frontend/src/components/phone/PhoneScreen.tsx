@@ -189,7 +189,14 @@ export function PhoneScreen({
                 </div>
             </div>
 
-            <AddNumber open={adding} onClose={() => setAdding(false)} agents={agents} options={options} onConnected={added} />
+            <AddNumber
+                open={adding}
+                onClose={() => setAdding(false)}
+                agents={agents}
+                options={options}
+                taken={Object.fromEntries((numbers ?? []).filter(n => n.voice.number_sid).map(n => [String(n.voice.number_sid), n.name]))}
+                onConnected={added}
+            />
         </host.Frame>
     );
 }

@@ -19,7 +19,7 @@ import { cn } from '@/lib/cn';
 
 import { usePhoneHost } from './host';
 import {
-    DEFAULT_NOTICE, E164, RESTRICTED_PERMISSIONS, TWILIO_KEYS_URL, settingsToSend,
+    DEFAULT_NOTICE, E164, RESTRICTED_PERMISSIONS, TWILIO_KEYS_URL, UNSET, fromChoice, settingsToSend, toChoice,
     type PhoneAgent, type PhoneNumber, type PhoneOptions, type TwilioNumber, type VoiceSettings,
 } from './phone';
 
@@ -30,8 +30,13 @@ const BLANK_VOICE: VoiceSettings = {
     tts_provider: '', max_minutes: null,
 };
 
+/** A number pointed at a SynapseOrch server: its address holds a secret route token, never shown. */
+const OURS = '/api/messaging/twilio_voice/webhook/';
+
 /** Where a number sends its calls now, in words. */
-function pointsTo(n: TwilioNumber): string {
+function pointsTo(n: TwilioNumber, takenBy: string | undefined): string {
+    if (takenBy) return `Already answered here, as “${takenBy}”.`;
+    if (n.voice_url.includes(OURS)) return 'Answered by SynapseOrch elsewhere (another workspace or install). Connecting it here takes its calls.';
     if (n.voice_url) return `Calls go to ${n.voice_url}. Connecting sends them to your agent instead; disconnecting puts this back.`;
     if (n.voice_application_sid) return `Calls go to a TwiML App (${n.voice_application_sid}). Connecting sends them to your agent instead.`;
     return 'Points nowhere yet.';
@@ -39,18 +44,20 @@ function pointsTo(n: TwilioNumber): string {
 
 export function languageOptions(options: PhoneOptions) {
     return [
-        { value: '', label: "The number's own", hint: `English for its country code, else ${options.default_language}` },
+        { value: UNSET, label: "The number's own", hint: `English for its country code, else ${options.default_language}` },
         ...options.languages.map(l => ({ value: l.code, label: l.name, hint: l.code })),
     ];
 }
 
 export function AddNumber({
-    open, onClose, agents, options, onConnected,
+    open, onClose, agents, options, taken, onConnected,
 }: {
     open: boolean;
     onClose: () => void;
     agents: PhoneAgent[];
     options: PhoneOptions;
+    /** The numbers this workspace already answers, by Twilio's sid: shown, never offered again. */
+    taken: Record<string, string>;
     onConnected: (number: PhoneNumber) => void;
 }) {
     const host = usePhoneHost();
@@ -81,7 +88,8 @@ export function AddNumber({
         try {
             const found = await host.twilioNumbers(key);
             setNumbers(found);
-            setPicked(p => (found.some(n => n.sid === p) ? p : found[0]?.sid ?? ''));
+            const free = found.filter(n => !taken[n.sid]);
+            setPicked(p => (free.some(n => n.sid === p) ? p : free[0]?.sid ?? ''));
             setStep(1);
         } catch (e) {
             setError(e instanceof Error ? e.message : 'Twilio did not accept the key.');
@@ -194,15 +202,18 @@ export function AddNumber({
                                             key={n.sid}
                                             data-twilio-number={n.sid}
                                             className={cn(
-                                                'flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5',
-                                                picked === n.sid ? 'border-accent bg-accent-subtle' : 'border-border hover:bg-row-hover',
+                                                'flex items-start gap-3 rounded-md border px-3 py-2.5',
+                                                taken[n.sid] ? 'cursor-default border-border opacity-70'
+                                                    : picked === n.sid ? 'cursor-pointer border-accent bg-accent-subtle'
+                                                        : 'cursor-pointer border-border hover:bg-row-hover',
                                             )}
                                         >
                                             <input type="radio" name="phone-number" value={n.sid} checked={picked === n.sid}
+                                                disabled={!!taken[n.sid]}
                                                 onChange={() => setPicked(n.sid)} className="mt-1 accent-[var(--color-accent)]" />
                                             <span className="min-w-0">
                                                 <span className="block text-sm font-medium tabular-nums text-text">{n.number}</span>
-                                                <span className="block break-words text-xs text-text-faint">{pointsTo(n)}</span>
+                                                <span className="block break-words text-xs text-text-faint">{pointsTo(n, taken[n.sid])}</span>
                                             </span>
                                         </label>
                                     ))}
@@ -255,8 +266,8 @@ export function AddNumber({
                         </Field>
                         <Field composite label="Language" hint="The language callers speak. Pick your callers' English (English (India) for Indian callers) and the agent hears them better.">
                             <Select
-                                value={voice.language}
-                                onChange={v => setVoice({ ...voice, language: v, voice: '', tts_provider: '' })}
+                                value={toChoice(voice.language)}
+                                onChange={v => setVoice({ ...voice, language: fromChoice(v), voice: '', tts_provider: '' })}
                                 options={languageOptions(options)}
                                 aria-label="Language"
                             />

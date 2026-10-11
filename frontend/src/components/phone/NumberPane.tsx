@@ -25,7 +25,7 @@ import { CallLog, OutcomeWord } from './CallLog';
 import { usePhoneHost, type NumberPatch } from './host';
 import {
     DEFAULT_FILLER, DEFAULT_FILLER_LATE, DEFAULT_NOTICE, E164, agentNotes, callSeconds, callerLabel, clockLength,
-    isLive, settingsOf, settingsToSend, type CallRecord, type PhoneAgent, type PhoneNumber, type PhoneOptions,
+    UNSET, fromChoice, isLive, settingsOf, settingsToSend, toChoice, type CallRecord, type PhoneAgent, type PhoneNumber, type PhoneOptions,
     type VoiceSettings,
 } from './phone';
 
@@ -334,8 +334,9 @@ export function NumberPane({
                     <div className="grid gap-5 sm:grid-cols-2">
                         <Field composite label="Language" hint="Match your callers: English (India) hears an Indian accent better than English (United States).">
                             <Select
-                                value={v.language}
-                                onChange={language => {
+                                value={toChoice(v.language)}
+                                onChange={choice => {
+                                    const language = fromChoice(choice);
                                     const next = options.languages.find(l => l.code === (language || options.default_language));
                                     const keep = !!next?.tts.includes(v.tts_provider);
                                     setVoice({ language, ...(keep ? {} : { tts_provider: '', voice: '' }) });
@@ -346,10 +347,13 @@ export function NumberPane({
                         </Field>
                         <Field composite label="Voice">
                             <Select
-                                value={v.tts_provider}
-                                onChange={tts_provider => setVoice({ tts_provider, voice: tts_provider ? v.voice : '' })}
+                                value={toChoice(v.tts_provider)}
+                                onChange={choice => {
+                                    const tts_provider = fromChoice(choice);
+                                    setVoice({ tts_provider, voice: tts_provider ? v.voice : '' });
+                                }}
                                 options={[
-                                    { value: '', label: "Twilio's default voice" },
+                                    { value: UNSET, label: "Twilio's default voice" },
                                     ...(language?.tts ?? options.tts_providers).map(p => ({ value: p, label: p })),
                                 ]}
                                 aria-label="Voice"
@@ -366,11 +370,11 @@ export function NumberPane({
                         <div className="grid gap-5 sm:grid-cols-2" data-phone-transcription>
                             <Field composite label="Transcription" hint="Who hears the caller.">
                                 <Select
-                                    value={v.transcription_provider ?? ''}
-                                    onChange={transcription_provider => setVoice({ transcription_provider, speech_model: '' })}
+                                    value={toChoice(v.transcription_provider)}
+                                    onChange={choice => setVoice({ transcription_provider: fromChoice(choice), speech_model: '' })}
                                     options={[
                                         {
-                                            value: '',
+                                            value: UNSET,
                                             label: 'The language’s default',
                                             hint: language.default_stt ? `${language.default_stt.provider} ${language.default_stt.model}` : undefined,
                                         },
@@ -382,10 +386,10 @@ export function NumberPane({
                             {v.transcription_provider && (
                                 <Field composite label="Speech model">
                                     <Select
-                                        value={v.speech_model ?? ''}
-                                        onChange={speech_model => setVoice({ speech_model })}
+                                        value={toChoice(v.speech_model)}
+                                        onChange={choice => setVoice({ speech_model: fromChoice(choice) })}
                                         options={[
-                                            { value: '', label: 'The provider’s default' },
+                                            { value: UNSET, label: 'The provider’s default' },
                                             ...(language.stt[v.transcription_provider] ?? []).map(m => ({ value: m, label: m })),
                                         ]}
                                         aria-label="Speech model"

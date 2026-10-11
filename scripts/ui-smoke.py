@@ -10372,7 +10372,7 @@ async def check_calllog(browser) -> str:
                 raise AssertionError(f"the log does not show {what}")
         if not await page.get_by_text("Twilio, estimated").count() or not await page.get_by_text("lookup_order").count():
             raise AssertionError("the strip's estimate or the tool is missing")
-        await page.get_by_role("button", name="Smoke support line").click()
+        await page.get_by_role("button", name="Back to Smoke support line").click()
         await page.locator(f'[data-call-row="{_PHONE_CALL["id"]}"]').wait_for(timeout=10_000)
         if "call=" in page.url:
             raise AssertionError("Back left the call in the address")
@@ -10404,7 +10404,7 @@ async def check_phoneconnect(browser) -> str:
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
-        await page.get_by_role("heading", name="Let callers talk to your agents").wait_for(timeout=30_000)
+        await page.get_by_text("Let callers talk to your agents").wait_for(timeout=30_000)
         await page.locator("[data-phone-add]").click()
         await page.locator("#phone-account-sid").fill("AC" + "a" * 32)
         await page.locator("#phone-key-sid").fill("SK" + "b" * 32)

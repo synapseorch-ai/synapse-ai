@@ -94,6 +94,7 @@ function Turn({ turn, startedAt, after }: { turn: CallTurn; startedAt: string | 
                             label={<span className="font-code">{tool.name}</span>}
                             detail={tool.args || tool.result || tool.refused ? <ToolDetail tool={tool} /> : undefined}
                             tone={tool.refused ? 'danger' : 'default'}
+                            className="w-fit max-w-full"
                         />
                     ))}
                     {turn.answer && (
@@ -145,7 +146,7 @@ export function CallLog({
             sub: charged === null ? (live ? 'Charged when it ends' : 'Not settled yet') : `${minutes} started min`,
         }] : []),
         { label: 'Model', value: cost === undefined ? '…' : money(cost), sub: cost === null ? 'Nothing recorded' : undefined },
-        { label: 'Twilio, estimated', value: money(twilioEstimate(call)), sub: 'At US rates, on your Twilio bill' },
+        { label: 'Twilio, estimated', value: money(twilioEstimate(call)), sub: 'At US rates' },
     ];
     const ended = call.endedAt ? Date.parse(call.endedAt) : NaN;
     const turns = transcript?.turns ?? [];
@@ -154,7 +155,7 @@ export function CallLog({
 
     return (
         <div className="grid gap-6" data-call-log={call.id}>
-            <Button variant="ghost" size="sm" className="w-fit" onClick={onBack}>
+            <Button variant="ghost" size="sm" className="w-fit" onClick={onBack} aria-label={`Back to ${numberName}`}>
                 <ArrowLeft className="size-4" aria-hidden /> {numberName}
             </Button>
             <div className="flex flex-wrap items-start justify-between gap-3">
