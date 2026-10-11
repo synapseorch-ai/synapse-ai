@@ -9,7 +9,7 @@ shape on purpose: the login gate and the frontend proxy already let it through (
   and it binds its own settings.
 
 The app's (behind its login, like any route): the bell's answer to a call's parked approval, the numbers a key
-can see (the connect flow's step two), and a number's recent calls.
+can see (the connect flow's step two), a number's recent calls, and what the Phone tab's pickers offer (VOX1c).
 """
 from __future__ import annotations
 
@@ -180,6 +180,24 @@ async def list_numbers(body: NumbersRequest):
         raise HTTPException(status_code=400, detail=exc.reason)
     return {"numbers": [{"sid": n.sid, "number": n.number, "voice_url": n.voice_url,
                          "voice_application_sid": n.voice_application_sid} for n in numbers]}
+
+
+#: Why the Phone tab can't add a number yet. Self-hosted: the address must reach the backend itself, because the
+#: app's proxy can't carry a call's WebSocket (VOX1a).
+NOT_AVAILABLE = ("Phone calls need a public https address that reaches this server's backend directly. Set the "
+                 "webhook address on the Channels tab, for example a cloudflared tunnel to the backend port.")
+
+
+@router.get("/api/messaging/" + PLATFORM + "/options", include_in_schema=False)
+async def voice_options():
+    """What the Phone tab offers (VOX1c): the languages and voices (VOX1d's list), the models fast enough for a
+    call (V15's quiet note), and whether Twilio can reach this server at all."""
+    from core.messaging.voice import hooks, languages
+    from core.providers.voice_speed import FAST_FOR_VOICE
+
+    available = hooks.current().public_base().startswith("https://")
+    return {**languages.public(), "fast_for_voice": list(FAST_FOR_VOICE), "available": available,
+            "reason": "" if available else NOT_AVAILABLE}
 
 
 @router.get("/api/messaging/" + PLATFORM + "/channels/{channel_id}/calls", include_in_schema=False)
