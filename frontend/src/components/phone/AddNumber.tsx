@@ -6,14 +6,21 @@
  * now), and who answers. Then the number opens.
  *
  * The key is a Restricted or Standard API key, never the account's auth token
- * (V4). A Restricted key connects unsigned and the number says so; a key that
- * cannot change numbers connects with the address to paste into Twilio (V7).
+ * (V4). Both paste into the same fields; step one asks which kind, because that
+ * is the trade-off a person makes (Naveen, VOX1c): a Restricted key holds only
+ * what calls need but Twilio won't sign its requests, a Standard key signs them
+ * but can do almost anything. The choice only changes the instructions; the API
+ * finds out what the key may do. A key that cannot change numbers connects with
+ * the address to paste into Twilio (V7).
+ *
+ * The steps read as a path (Naveen, VOX1c): a stepper over the body, done steps
+ * ticked and one click back, and step one's instructions numbered.
  */
-import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Check, ExternalLink } from 'lucide-react';
 import { useState } from 'react';
 
 import {
-    Button, Combobox, ErrorNote, Field, Input, Modal, Segmented, Select, Textarea,
+    Badge, Button, Combobox, ErrorNote, Field, Input, Modal, Segmented, Select, Textarea,
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
@@ -23,7 +30,89 @@ import {
     type PhoneAgent, type PhoneNumber, type PhoneOptions, type TwilioNumber, type VoiceSettings,
 } from './phone';
 
-const STEPS = ['Your Twilio account', 'The number', 'Who answers'] as const;
+const STEPS = ['Twilio key', 'The number', 'Who answers'] as const;
+
+type KeyKind = 'restricted' | 'standard';
+
+/** The three steps as a path: done ones ticked (and a click back), the current one in the action colour. */
+function Stepper({ step, onBack }: { step: number; onBack: (to: number) => void }) {
+    return (
+        <ol aria-label="Steps" data-phone-step={step + 1} className="m-0 grid list-none grid-cols-3 gap-3 p-0">
+            {STEPS.map((label, i) => {
+                const done = i < step;
+                const here = i === step;
+                return (
+                    <li key={label} className="min-w-0">
+                        <button
+                            type="button"
+                            disabled={!done}
+                            onClick={() => onBack(i)}
+                            aria-current={here ? 'step' : undefined}
+                            className="grid w-full min-w-0 gap-2 text-left disabled:cursor-default"
+                        >
+                            <span aria-hidden className={cn('h-1 rounded-full', done || here ? 'bg-accent' : 'bg-border')} />
+                            <span className={cn(
+                                'flex min-w-0 items-center gap-1.5 text-xs font-medium',
+                                here ? 'text-accent-ink' : done ? 'text-text' : 'text-text-faint',
+                            )}>
+                                <span aria-hidden className={cn(
+                                    'grid size-4 shrink-0 place-items-center rounded-full text-[10px] tabular-nums',
+                                    done ? 'bg-accent text-accent-fg' : here ? 'border border-accent' : 'border border-border',
+                                )}>
+                                    {done ? <Check className="size-3" /> : i + 1}
+                                </span>
+                                <span className="truncate">{label}</span>
+                                {done && <span className="sr-only">, done</span>}
+                            </span>
+                        </button>
+                    </li>
+                );
+            })}
+        </ol>
+    );
+}
+
+/** One numbered instruction of step one. */
+function Instruction({ n, title, children }: { n: number; title: React.ReactNode; children?: React.ReactNode }) {
+    return (
+        <li className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-x-3 gap-y-2">
+            <span aria-hidden className="grid size-5 place-items-center rounded-full bg-surface-2 text-xs font-medium tabular-nums text-text-muted">{n}</span>
+            <span className="text-sm font-medium text-text">{title}</span>
+            {children && <div className="col-start-2 grid min-w-0 gap-3">{children}</div>}
+        </li>
+    );
+}
+
+/** A kind of key, as a radio card: what it can do, and what that means for the calls. */
+function KeyCard({ kind, picked, onPick, title, summary, recommended, children }: {
+    kind: KeyKind;
+    picked: boolean;
+    onPick: (kind: KeyKind) => void;
+    title: string;
+    summary: string;
+    recommended?: boolean;
+    children: React.ReactNode;
+}) {
+    return (
+        <label
+            data-key-kind={kind}
+            className={cn(
+                'grid min-w-0 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 gap-y-1 rounded-md border px-3 py-2.5',
+                picked ? 'border-accent bg-accent-subtle' : 'border-border hover:bg-row-hover',
+            )}
+        >
+            <input type="radio" name="phone-key-kind" value={kind} checked={picked} onChange={() => onPick(kind)}
+                className="mt-1 accent-[var(--color-accent)]" />
+            <span className="grid min-w-0 gap-0.5">
+                <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-text">
+                    {title}{recommended && <Badge>Recommended</Badge>}
+                </span>
+                <span className="text-[13px] text-text-muted">{summary}</span>
+            </span>
+            {picked && <div className="col-start-2 grid min-w-0 gap-1.5 text-[13px] text-text-muted">{children}</div>}
+        </label>
+    );
+}
 
 const BLANK_VOICE: VoiceSettings = {
     notice: '', filler: '', filler_late: '', transfer_number: '', recording: false, language: '', voice: '',
@@ -62,6 +151,7 @@ export function AddNumber({
 }) {
     const host = usePhoneHost();
     const [step, setStep] = useState(0);
+    const [kind, setKind] = useState<KeyKind>('restricted');
     const [accountSid, setAccountSid] = useState('');
     const [keySid, setKeySid] = useState('');
     const [keySecret, setKeySecret] = useState('');
@@ -138,45 +228,69 @@ export function AddNumber({
             onClose={close}
             size="lg"
             title="Add a number"
-            description={<span data-phone-step={step + 1}>Step {step + 1} of 3 · {STEPS[step]}</span>}
             footer={footer}
         >
-            <div className="grid gap-4">
+            <div className="grid gap-5">
+                <Stepper step={step} onBack={to => { setError(''); setStep(to); }} />
                 {step === 0 && (
-                    <>
-                        <p className="m-0 text-sm text-text-muted">
-                            Make an API key in Twilio for this. We never ask for your account&apos;s auth token.
-                        </p>
-                        <div className="grid gap-2 rounded-md border border-border bg-surface-2 px-3 py-2.5 text-[13px] text-text-muted">
-                            <p className="m-0">
-                                In Twilio&apos;s console, under API keys, create a <b className="font-medium text-text">Restricted</b> key
-                                with these permissions (the recordings one only if you will record calls):
-                            </p>
-                            <ul className="m-0 grid gap-0.5 pl-4 font-code text-xs text-text">
-                                {RESTRICTED_PERMISSIONS.map(p => <li key={p}>{p}</li>)}
-                            </ul>
-                            <p className="m-0">
-                                A <b className="font-medium text-text">Standard</b> key works too, and also signs every
-                                request Twilio sends us. A Restricted key can&apos;t, so its calls are checked by the
-                                secret tokens in their addresses only.
-                            </p>
-                            <a href={TWILIO_KEYS_URL} target="_blank" rel="noreferrer" className="inline-flex w-fit items-center gap-1 text-accent-ink underline-offset-2 hover:underline">
-                                Open API keys in Twilio <ExternalLink className="size-3.5" aria-hidden />
+                    <ol className="m-0 grid list-none gap-5 p-0">
+                        <Instruction n={1} title={
+                            <a href={TWILIO_KEYS_URL} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-accent-ink underline-offset-2 hover:underline">
+                                Open API keys in Twilio&apos;s console <ExternalLink className="size-3.5" aria-hidden />
                             </a>
-                        </div>
-                        <Field label="Account SID">
-                            <Input id="phone-account-sid" value={accountSid} onChange={e => setAccountSid(e.target.value)}
-                                placeholder="AC…" className="font-code" autoComplete="off" spellCheck={false} />
-                        </Field>
-                        <Field label="API key SID">
-                            <Input id="phone-key-sid" value={keySid} onChange={e => setKeySid(e.target.value)}
-                                placeholder="SK…" className="font-code" autoComplete="off" spellCheck={false} />
-                        </Field>
-                        <Field label="API key secret" hint="Checked with Twilio straight away. Stored encrypted and never shown again.">
-                            <Input id="phone-key-secret" type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)}
-                                className="font-code" autoComplete="new-password" />
-                        </Field>
-                    </>
+                        } />
+                        <Instruction n={2} title="Create a key. Which kind?">
+                            <div role="radiogroup" aria-label="Kind of key" className="grid min-w-0 gap-2">
+                                <KeyCard
+                                    kind="restricted"
+                                    picked={kind === 'restricted'}
+                                    onPick={setKind}
+                                    title="Restricted"
+                                    recommended
+                                    summary="Can do only what calls need: read and answer calls, point a number."
+                                >
+                                    <span>Tick these permissions (the recordings one only if you will record calls):</span>
+                                    <ul className="m-0 grid min-w-0 gap-0.5 pl-4 font-code text-xs text-text [overflow-wrap:anywhere]">
+                                        {RESTRICTED_PERMISSIONS.map(p => <li key={p}>{p}</li>)}
+                                    </ul>
+                                    <span>
+                                        Twilio can&apos;t sign its requests to us with a Restricted key, so each call is
+                                        checked by the secret tokens in its address instead.
+                                    </span>
+                                </KeyCard>
+                                <KeyCard
+                                    kind="standard"
+                                    picked={kind === 'standard'}
+                                    onPick={setKind}
+                                    title="Standard"
+                                    summary="Can do almost anything in your Twilio account."
+                                >
+                                    <span>
+                                        Nothing to tick. With it, Twilio also signs every request it sends us, a check
+                                        on top of the tokens. Pick it if that matters more to you than limiting what the
+                                        key can do.
+                                    </span>
+                                </KeyCard>
+                            </div>
+                        </Instruction>
+                        <Instruction n={3} title="Paste its SID and secret">
+                            <p className="m-0 text-[13px] text-text-muted">
+                                Either kind gives you a key SID and a secret. We never ask for your account&apos;s auth token.
+                            </p>
+                            <Field label="Account SID" hint="On your Twilio console's home page; it starts with AC.">
+                                <Input id="phone-account-sid" value={accountSid} onChange={e => setAccountSid(e.target.value)}
+                                    placeholder="AC…" className="font-code" autoComplete="off" spellCheck={false} />
+                            </Field>
+                            <Field label="API key SID" hint="The key's SID; it starts with SK.">
+                                <Input id="phone-key-sid" value={keySid} onChange={e => setKeySid(e.target.value)}
+                                    placeholder="SK…" className="font-code" autoComplete="off" spellCheck={false} />
+                            </Field>
+                            <Field label="API key secret" hint="Twilio shows it once, when you create the key. Checked with Twilio straight away, stored encrypted, never shown again.">
+                                <Input id="phone-key-secret" type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)}
+                                    className="font-code" autoComplete="new-password" />
+                            </Field>
+                        </Instruction>
+                    </ol>
                 )}
 
                 {step === 1 && numbers && (
