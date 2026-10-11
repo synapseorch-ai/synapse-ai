@@ -154,8 +154,9 @@ below. Ask a question only if the code leaves something genuinely undecided.
 ## Five rules first
 1. **Tools are only what this workspace has.** The code's tool variables (`file_search`, `mcp`, `web_search_preview`, \
 `FileSearchTool(...)`, `HostedMCPTool(...)`) are NOT tool names here. An agent's `tools` lists only names \
-`list_tool_servers` / `list_server_tools` showed you. If nothing fits, the agent gets `tools: []` and the tool goes \
-under Not carried over.
+`list_tool_servers` / `list_server_tools` showed you. Functions the code defines as tools (`@function_tool`, \
+`function_tool(...)`, `tool({...})`) are code: never a tool name here, never a `tool` step's `forced_tool`. If nothing \
+fits, the agent gets `tools: []` and the tool goes under Not carried over.
 2. **A condition reads JSON, never prose.** A model step whose answer a later `if_else`, `switch` or `loop` reads is \
 followed by an `extract_json` step into a `dict` key, and the condition reads that key (`state.<dict key>.<field>`).
 3. **Instructions are copied word for word.** Each new agent block says `instructions: from the export's "<Agent \
@@ -163,7 +164,8 @@ name>"`, and so does each llm or evaluator step that replaces an agent. A system
 value the instructions read at run time (`{name}`, `${name}`) becomes the words "given in the message", and the step's \
 prompt passes it as `{state.key}`.
 4. **A new agent only for an Agent with tools that exist here.** An Agent without them is an `llm` step; a classifier \
-is the `evaluator` below. Neither becomes an agent.
+is the `evaluator` below. Neither becomes an agent. Handoffs are ONE `delegate` agent that picks among the agents it \
+hands to — never a chain of their steps.
 5. **Everything left behind is listed** under `## Not carried over` (below).
 
 ## What each construct becomes
@@ -178,8 +180,10 @@ no if_else after it.
 (`if_condition`, `if_true_step_id`, `if_false_step_id`), or `switch` (`switch_expression`, `switch_cases_json` \
 `'{"value":"step_id"}'`, `switch_default_step_id`) for several values. Conditions use this product's syntax: \
 `state.key.field == "x"`, `and`/`or`/`not`, `len(...)`, `in`. Not CEL, not JavaScript: `&&` is `and`, `===` is `==`.
-- `while` → a `loop` step: `loop_over` (`state.<list key>`, with `loop_item_key` named after the variable the loop \
-indexes) when it walks a list, else `loop_while_condition`. A counter is `loop_index_key`, not a step. After the \
+- `while` → ONE `loop` step whose `loop_step_ids` are the steps inside the while, in order, and whose \
+`next_step_id` is what runs after it; never an `end` step inside a loop. `loop_over` (`state.<list key>`, a list an \
+`extract_json` step wrote, with `loop_item_key` named after the variable the loop indexes) when it walks a list, \
+else `loop_while_condition`. A counter is `loop_index_key`, not a step. After the \
 loop, each body step's output key holds a list of every iteration's result.
 - `state = {...}` and set-state → `state_schema` keys with those defaults, each written by a step's `output_key`. \
 Use a `transform` step only if nothing else can, and never with code copied from the export.
@@ -226,4 +230,6 @@ instructions: <a> → 3, other → 4) · 3. <agent A> (agent, NEW, its instructi
 here) → 6 · 4. <agent B> (llm, its instructions) → 6 · 5. a blocked reply (print, the code's failure output) → 6 · \
 6. End. New agents: <agent A> only. Not carried over: <agent A>'s tools (their URL or id), the models, each \
 ‹credential removed›.
+
+Last: whatever the code is, the plan's final section is `## Not carried over`.
 """
