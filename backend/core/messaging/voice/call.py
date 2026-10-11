@@ -42,6 +42,10 @@ STILL_THERE = "Are you still there?"
 SILENCE_GOODBYE = "I haven't heard anything for a while, so I'll end the call here. Goodbye."
 LIMIT_GOODBYE = "We've reached the time limit for this call. Thank you for calling. Goodbye."
 FAILED_LINE = "Sorry, something went wrong on my side. Could you say that again?"
+#: The engine stopped a turn that kept calling one tool the same way (its repeat guard). Its own words are
+#: for a chat ("I stopped here because I was repeating myself…"); the caller heard them on VOX1b's first
+#: real cloud call.
+STUCK_LINE = "Sorry, I couldn't get that done. Could you put it another way?"
 MOVE_LINE = "One moment."
 DEFAULT_GOODBYE = "Thanks for calling. Goodbye."
 DEFAULT_TRANSFER_LINE = "I'm connecting you to someone on the team now."
@@ -136,6 +140,7 @@ class _Turn:
         self.late: asyncio.Task | None = None  # "Still working on it", while a tool runs
         self.progress: dict | None = None  # the latest turn-boundary snapshot, for parking
         self.narrated = False          # the model's "let me check" was spoken this turn
+        self.repeat_stopped = False    # the engine's repeat guard ended it
 
 
 class VoiceCall:
@@ -352,6 +357,8 @@ class VoiceCall:
                         break
                     if self.pending_action is not None:
                         break  # a goodbye or a hand-off ends the turn here: no model call to word it
+                elif kind == "repeat_stopped":
+                    turn.repeat_stopped = True
                 elif kind == "human_input_required":
                     await self._ask_a_person(turn, event)
                 elif kind == "final" and not event.get("orch_step_id"):
@@ -366,7 +373,10 @@ class VoiceCall:
             if self.pending_action is not None:
                 await self._last_words(turn)
                 return
-            if turn.final is not None:
+            if turn.final is not None and turn.repeat_stopped:
+                await self._say(STUCK_LINE, last=True)
+                turn.sent_any = True
+            elif turn.final is not None:
                 if turn.streamed and (turn.since_reset + buffer).strip():
                     await self._flush(turn, buffer, final=True)
                 else:

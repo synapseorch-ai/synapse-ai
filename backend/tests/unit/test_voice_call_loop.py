@@ -243,6 +243,19 @@ class TestFiller:
         await _drive(_call(host, socket), socket, _prompt("find"))
         assert socket.words() == call_mod.DEFAULT_FILLER + "Found."
 
+    async def test_the_engines_repeat_guard_is_not_read_to_the_caller(self, saved):
+        """VOX1b's first real cloud call: the caller heard "I stopped here because I was repeating
+        myself: I called update_tasks…", the engine's sentence for a chat."""
+        engine_words = ("I stopped here because I was repeating myself: I called search with the same "
+                        "arguments 3 times in a row and got the same result each time.")
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "search"}, {"type": "tool_result"},
+                             {"type": "repeat_stopped", "tool_name": "search", "count": 3, "turn": 3},
+                             _final(engine_words, streamed=False)])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("find it"))
+        assert "repeating myself" not in socket.words()
+        assert socket.words().endswith(call_mod.STUCK_LINE)
+
     async def test_the_pre_tool_line_is_said_once_a_turn(self, saved):
         """A model that searches twice says "let me check" before each search; the caller
         heard the same sentence again on VOX1b's first real cloud calls."""
