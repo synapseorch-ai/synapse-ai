@@ -192,6 +192,31 @@ async def cut_last_answer(session_id: str, agent_id: str, heard: str) -> bool:
         return True
 
 
+async def mark_last_answer(session_id: str, agent_id: str, *, question: str, **fields) -> bool:
+    """Note `fields` on the last answer, when it answers `question` (a phone call's filler, VOX1c).
+
+    The words are not touched. `question` is the guard, as `pop_last_turn`'s
+    `expect_user` is: a turn that failed saved nothing, so the last answer then
+    belongs to an earlier question, which must not be marked. False when the
+    tail is not that question's answer.
+    """
+    from core.store import session
+
+    async with session() as s:
+        row = await _row(s, session_id, agent_id)
+        if row is None:
+            return False
+        messages = list(row.messages or [])
+        if len(messages) < 2:
+            return False
+        user, last = messages[-2], messages[-1]
+        if user.get("role") != "user" or last.get("role") != "assistant" or user.get("content", "") != question:
+            return False
+        # Reassigned, not mutated (see append_turn).
+        row.messages = messages[:-1] + [{**last, **fields}]
+        return True
+
+
 async def set_pending_approval(session_id: str, agent_id: str, pending: dict | None) -> None:
     """Park (or clear) the tool call this conversation is waiting on.
 

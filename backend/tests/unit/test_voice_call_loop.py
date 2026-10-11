@@ -84,7 +84,7 @@ class ScriptedHost(VoiceHost):
 @pytest.fixture
 def saved(monkeypatch):
     """The conversation writes `VoiceCall` makes itself (a stopped turn, a parked one)."""
-    out = {"turns": [], "cuts": []}
+    out = {"turns": [], "cuts": [], "marks": []}
 
     async def save_turn(session_id, agent_id, user, assistant, tools=None, **kw):
         out["turns"].append((user, assistant, list(tools or [])))
@@ -93,10 +93,15 @@ def saved(monkeypatch):
         out["cuts"].append(heard)
         return True
 
+    async def mark(session_id, agent_id, *, question, **fields):
+        out["marks"].append((question, fields))
+        return True
+
     import core.session as session_mod
     from core.store import sessions as sessions_mod
     monkeypatch.setattr(session_mod, "_save_conversation_turn", save_turn)
     monkeypatch.setattr(sessions_mod, "cut_last_answer", cut)
+    monkeypatch.setattr(sessions_mod, "mark_last_answer", mark)
     return out
 
 
@@ -303,6 +308,61 @@ class TestFiller:
         assert call_mod.DEFAULT_FILLER not in [t for t, _ in socket.said]
 
 
+class TestTheFillerIsKept:
+    """The call's log shows what the caller heard while a tool ran (VOX1c): the saved answer carries it."""
+
+    async def test_the_filler_said_is_noted_on_the_saved_answer(self, saved):
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "lookup"}, {"type": "tool_result"},
+                             _delta("Done."), _final("Done.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket, voice={"filler": "Hold on."}), socket, _prompt("q"))
+        assert saved["marks"] == [("q", {"filler": ["Hold on."]})]
+
+    async def test_both_phrases_of_a_long_tool_are_noted(self, saved):
+        done = asyncio.Event()
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "search"}, ("wait", done),
+                             {"type": "tool_result", "tool_name": "search"}, _delta("Found."), _final("Found.")])
+        socket = FakeSocket()
+        task = asyncio.create_task(_call(host, socket).run())
+        await socket.inbox.put(_prompt("q"))
+        await asyncio.sleep(0.5)
+        done.set()
+        await asyncio.sleep(0.1)
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert saved["marks"] == [("q", {"filler": [call_mod.DEFAULT_FILLER, call_mod.DEFAULT_FILLER_LATE]})]
+
+    async def test_a_turn_without_filler_notes_nothing(self, saved):
+        host = ScriptedHost([_delta("Hi."), _final("Hi.")])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("q"))
+        assert saved["marks"] == []
+
+    async def test_a_turn_that_failed_notes_nothing(self, saved):
+        """It saved nothing, so the last answer is an earlier question's."""
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "lookup"}, {"type": "tool_result"}])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("q"))
+        assert call_mod.FAILED_LINE in socket.words() and saved["marks"] == []
+
+    async def test_a_turn_cut_while_its_tool_ran_notes_it_after_its_save(self, saved):
+        tool_done = asyncio.Event()
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "book"}, ("wait", tool_done),
+                             {"type": "tool_result", "tool_name": "book"}, _final("Booked.")])
+        socket = FakeSocket()
+        task = asyncio.create_task(_call(host, socket).run())
+        await socket.inbox.put(_prompt("book it"))
+        await asyncio.sleep(0.05)
+        await socket.inbox.put(Interrupt("interrupt", heard=""))
+        await asyncio.sleep(0.05)
+        tool_done.set()
+        await asyncio.sleep(0.1)
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert saved["turns"] == [("book it", "", ["book"])]
+        assert saved["marks"] == [("book it", {"filler": [call_mod.DEFAULT_FILLER]})]
+
+
 class TestBargeIn:
     async def test_talking_over_the_answer_stops_it_and_history_keeps_what_was_heard(self, saved):
         never = asyncio.Event()
@@ -404,6 +464,50 @@ class TestApprovals:
         assert p["caller"]["visitor"]["approvals"] == "park" and p["progress"] == {"turn": 1}
         assert host.records[CALL]["approvals"] == ["ap_1"]
         assert saved["turns"][0] == ("refund me", call_mod.APPROVAL_LINE, [])
+
+    @pytest.fixture
+    def parks(self, monkeypatch):
+        async def park(**kw):
+            return "ap_1"
+        from core import api_approvals
+        monkeypatch.setattr(api_approvals, "park", park)
+
+    def _parked_in_its_tool(self, gate):
+        ask = {"type": "human_input_required", "kind": "tool_approval", "tool_name": "refund"}
+        return ScriptedHost([{"type": "tool_execution", "tool_name": "refund"}, ask, ("wait", gate),
+                             {"type": "tool_result", "tool_name": "refund"}])
+
+    async def test_a_parked_turn_is_saved_once_when_the_call_ends_behind_it(self, saved, parks):
+        """It saved its own line; stopping it as the call ends must not save a second, empty copy (VOX1c,
+        found when noting the filler slowed the parked turn's tail)."""
+        gate = asyncio.Event()
+        host = self._parked_in_its_tool(gate)
+        socket = FakeSocket()
+        task = asyncio.create_task(_call(host, socket).run())
+        await socket.inbox.put(_prompt("refund me"))
+        await asyncio.sleep(0.1)
+        await socket.inbox.put(None)  # the caller hangs up while the paused tool is still "running"
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.wait_for(task, 5)
+        assert saved["turns"] == [("refund me", call_mod.APPROVAL_LINE, ["refund"])]
+        assert saved["marks"] == [("refund me", {"filler": [call_mod.DEFAULT_FILLER]})]
+
+    async def test_talking_over_a_parked_turn_cuts_its_line(self, saved, parks):
+        gate = asyncio.Event()
+        host = self._parked_in_its_tool(gate)
+        socket = FakeSocket()
+        task = asyncio.create_task(_call(host, socket).run())
+        await socket.inbox.put(_prompt("refund me"))
+        await asyncio.sleep(0.1)
+        await socket.inbox.put(Interrupt("interrupt", heard="I've asked someone"))
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.sleep(0.1)
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert saved["turns"] == [("refund me", call_mod.APPROVAL_LINE, ["refund"])]
+        assert saved["cuts"] == ["I've asked someone"]
 
 
 class TestTheVoiceTools:
@@ -536,6 +640,30 @@ class TestWhatTheCallerHeard:
         assert await sessions.cut_last_answer("voice_c_CA1", "a1", "a fox ran")
         last = (await sessions.get("voice_c_CA1", "a1"))["messages"][-1]
         assert last["content"] == "Once upon a time, a fox ran" and last["interrupted"] is True
+
+
+class TestTheCallsLogReadsTheMarks:
+    async def test_the_filler_is_noted_only_on_its_own_questions_answer(self):
+        from core.session import _save_conversation_turn
+        from core.store import sessions
+        await _save_conversation_turn("voice_c_CA2", "a1", "first?", "One.")
+        assert not await sessions.mark_last_answer("voice_c_CA2", "a1", question="second?", filler=["Hold on."])
+        assert await sessions.mark_last_answer("voice_c_CA2", "a1", question="first?", filler=["Hold on."])
+        last = (await sessions.get("voice_c_CA2", "a1"))["messages"][-1]
+        assert last["content"] == "One." and last["filler"] == ["Hold on."]
+        assert not await sessions.mark_last_answer("voice_c_none", "a1", question="first?", filler=["x"])
+
+    async def test_the_history_carries_the_cut_and_the_filler(self):
+        from core.session import _get_conversation_history, _save_conversation_turn
+        from core.store import sessions
+        await _save_conversation_turn("voice_c_CA3", "a1", "plain?", "Plain.")
+        await _save_conversation_turn("voice_c_CA3", "a1", "story?", "Once upon a time, a fox ran, and slept.")
+        await sessions.cut_last_answer("voice_c_CA3", "a1", "a fox ran")
+        await sessions.mark_last_answer("voice_c_CA3", "a1", question="story?", filler=["One moment."])
+        plain, story = await _get_conversation_history("voice_c_CA3", agent_id="a1")
+        assert "interrupted" not in plain and "filler" not in plain, "a chat's turns are unchanged"
+        assert story["interrupted"] is True and story["filler"] == ["One moment."]
+        assert story["assistant"] == "Once upon a time, a fox ran"
 
 
 class TestEndingTheSession:

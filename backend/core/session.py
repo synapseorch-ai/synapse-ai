@@ -77,6 +77,12 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("approval"):
             # A question nobody answered: the card, marked why (F247).
             turn["approval"] = assistant["approval"]
+        if assistant.get("interrupted"):
+            # A phone call's barge-in: the answer is what the caller heard (VOX1a V14).
+            turn["interrupted"] = True
+        if assistant.get("filler"):
+            # What a call said while a tool ran (V13), for the call's log (VOX1c).
+            turn["filler"] = list(assistant["filler"])
         if assistant.get("citations") or assistant.get("unresolved_citations"):
             # The answer's Sources: its [K#] labels resolved (Knowledge, B1b).
             turn["citations"] = assistant.get("citations") or []

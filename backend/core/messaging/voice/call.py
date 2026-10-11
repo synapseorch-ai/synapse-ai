@@ -130,6 +130,7 @@ class _Turn:
         self.since_reset = ""          # answer text sent since the last reset
         self.cycle_open = False        # sent with last=false and not yet closed
         self.filler = 0                # filler phrases said
+        self.filler_said: list[str] = []  # their words, noted on the saved answer (the call's log, VOX1c)
         self.in_tool = False
         self.stop_after_tool = False
         self.tools: list[str] = []
@@ -180,6 +181,9 @@ class VoiceCall:
         self._wrapped_up = False
         self._limit_at = (started_at or time.monotonic()) + 60 * host.max_minutes(channel)
         self.first_text_ms: list[int] = []
+        # The call's own writes to the saved conversation (a barge-in's cut, the filler's note) read, change
+        # and write the same message list; one at a time, so neither is lost.
+        self._history = asyncio.Lock()
 
     # ── Outside controls ─────────────────────────────────────────────────────
 
@@ -379,7 +383,8 @@ class VoiceCall:
                 elif kind == "error":
                     log.warning("a voice turn failed: %s", str(event.get("message") or "")[:300])
             if turn.stop_after_tool:
-                await self._save_cut(turn, heard="")
+                if not turn.parked:  # a parked turn saved itself (_ask_a_person); never a second, empty copy
+                    await self._save_cut(turn, heard="")
                 return
             if self.pending_action is not None:
                 await self._last_words(turn)
@@ -399,6 +404,8 @@ class VoiceCall:
                 await self._say(FAILED_LINE, last=True)
             if turn.cycle_open:
                 await self._say("", last=True)
+            if turn.saved:
+                await self._note_filler(turn)
             await self._after_turn()
         except asyncio.CancelledError:
             # Barge-in, or the call ending: the caller hears nothing more from this turn.
@@ -455,7 +462,7 @@ class VoiceCall:
             return
         if not turn.filler:
             turn.filler = 1
-            await self._say(str(self.voice.get("filler") or DEFAULT_FILLER), last=True)
+            await self._say_filler(turn, str(self.voice.get("filler") or DEFAULT_FILLER))
         if turn.filler == 1 and turn.late is None:
             turn.late = asyncio.create_task(self._late_filler(turn))
 
@@ -463,7 +470,21 @@ class VoiceCall:
         await asyncio.sleep(self.timing.filler_late_after)
         if turn.in_tool and not turn.sent_any and not turn.parked and turn.filler == 1:
             turn.filler = 2
-            await self._say(str(self.voice.get("filler_late") or DEFAULT_FILLER_LATE), last=True)
+            await self._say_filler(turn, str(self.voice.get("filler_late") or DEFAULT_FILLER_LATE))
+
+    async def _say_filler(self, turn: _Turn, line: str) -> None:
+        turn.filler_said.append(line)
+        await self._say(line, last=True)
+
+    async def _note_filler(self, turn: _Turn) -> None:
+        """The filler this turn said, on its saved answer: the call's log shows it (VOX1c). Never fails a turn."""
+        if not turn.filler_said:
+            return
+        from core.store import sessions as _sessions
+        async with self._history:
+            with contextlib.suppress(Exception):
+                await _sessions.mark_last_answer(self.session_id, self.agent_id, question=turn.text,
+                                                 filler=list(turn.filler_said))
 
     async def _ask_a_person(self, turn: _Turn, event: dict) -> None:
         """V16: a confirm tool parks in the bell; the call carries on without it."""
@@ -486,6 +507,7 @@ class VoiceCall:
         from core.session import _save_conversation_turn
         with contextlib.suppress(Exception):
             await _save_conversation_turn(self.session_id, self.agent_id, turn.text, line, tools=turn.tools)
+        await self._note_filler(turn)
 
     async def _last_words(self, turn: _Turn) -> None:
         """The goodbye (the tool's argument) or the hand-off line, said by us; then the action."""
@@ -502,6 +524,7 @@ class VoiceCall:
             await _save_conversation_turn(self.session_id, self.agent_id, turn.text,
                                           line if not turn.sent_any else turn.since_reset.strip() or line,
                                           tools=turn.tools)
+        await self._note_filler(turn)
         await self._after_turn()
 
     async def _after_turn(self) -> None:
@@ -522,15 +545,19 @@ class VoiceCall:
             return
         if self._turn_busy() and not turn.saved:
             await self._stop_turn(wait_for_tool=True)
-            if not turn.stop_after_tool:
+            if not (turn.stop_after_tool or turn.parked):
                 await self._save_cut(turn, heard=heard)
-            return
+                return
+            if not turn.parked:
+                return
+            # A parked turn saved its line itself; cut that, as below.
         if not (turn.saved or turn.parked):
             return  # nothing of this turn's is the last answer
         # The engine saved the whole answer; the caller heard only part of it (V14).
         from core.store import sessions as _sessions
-        with contextlib.suppress(Exception):
-            await _sessions.cut_last_answer(self.session_id, self.agent_id, heard)
+        async with self._history:
+            with contextlib.suppress(Exception):
+                await _sessions.cut_last_answer(self.session_id, self.agent_id, heard)
 
     async def _stop_turn(self, *, wait_for_tool: bool) -> None:
         task, turn = self._turn_task, self._turn
@@ -553,9 +580,12 @@ class VoiceCall:
         from core.session import _save_conversation_turn
         from core.store import sessions as _sessions
         said = _sessions.cut_at_heard(turn.since_reset, heard) if heard.strip() else ""
-        with contextlib.suppress(Exception):
-            await _save_conversation_turn(self.session_id, self.agent_id, turn.text, said.strip(), tools=turn.tools)
-            await _sessions.cut_last_answer(self.session_id, self.agent_id, "")
+        async with self._history:
+            with contextlib.suppress(Exception):
+                await _save_conversation_turn(self.session_id, self.agent_id, turn.text, said.strip(),
+                                              tools=turn.tools)
+                await _sessions.cut_last_answer(self.session_id, self.agent_id, "")
+        await self._note_filler(turn)
 
     # ── Speaking and ending ──────────────────────────────────────────────────
 
