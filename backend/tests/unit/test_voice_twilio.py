@@ -56,7 +56,7 @@ class TestTokens:
     def test_route_token(self):
         t = tokens.new_route_token()
         assert len(t) >= 30 and tokens.route_token_matches(t, t)
-        assert not tokens.route_token_matches(t, t[:-1] + "x")
+        assert not tokens.route_token_matches(t, t[:-1] + ("y" if t.endswith("x") else "x"))
         assert not tokens.route_token_matches("", "") and not tokens.route_token_matches(t, None)
 
     def test_a_socket_token_names_its_call_and_channel(self):
