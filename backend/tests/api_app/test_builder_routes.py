@@ -803,3 +803,58 @@ class TestTheRunIsDrivenByThePump:
                 reader.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await reader
+
+
+class TestAPastedExport:
+    """Agent Builder's export, pasted into the panel (SW1, D253). The run gets
+    the guide and the code; the credential the code held reaches nothing."""
+
+    JWT = "eyJ" + "hbGciOiJIUzI1NiJ9" + ".eyJ" + "zdWIiOiJ0ZXN0LXVzZXIifQ" + "." + "c2lnbmF0dXJlLWZvci10ZXN0cw"
+    EXPORT = (
+        "Rebuild this OpenAI Agent Builder workflow here:\n\n"
+        "from agents import Agent, HostedMCPTool, Runner, RunConfig, trace\n"
+        'crm = HostedMCPTool(tool_config={"server_url": "https://crm.invalid/mcp", "authorization": "%s"})\n'
+        'support = Agent(name="Support", instructions="Answer the customer.", tools=[crm])\n'
+        "async def run_workflow(workflow_input):\n"
+        '  with trace("Weekly Report"):\n'
+        "    await Runner.run(support, input=[], run_config=RunConfig(trace_metadata={\n"
+        '      "__trace_source__": "agent-builder", "workflow_id": "wf_0123456789abcdef"}))\n'
+    )
+
+    @staticmethod
+    async def _final_state(client, fake_llm, body: dict) -> dict:
+        fake_llm.script([route("answer"), "It has one agent."])
+        events = await stream(client, "/api/builder/chat", body)
+        return next(e for e in events if e["type"] == "orchestration_complete")["final_state"]
+
+    async def test_the_run_reads_the_guide_and_the_code_without_its_credential(
+        self, client, builder, fake_llm
+    ):
+        from core.native_builder import AGENTS_SDK_GUIDE, CREDENTIAL_MARK
+
+        state = await self._final_state(client, fake_llm, {"message": self.EXPORT % self.JWT})
+        assert state["export_guide"] == AGENTS_SDK_GUIDE
+        assert CREDENTIAL_MARK in state["user_message"] and CREDENTIAL_MARK in state["export_source"]
+        assert self.JWT not in json.dumps(state)
+        # Nor in anything a model was sent.
+        assert fake_llm.calls and not any(self.JWT in json.dumps(c, default=str) for c in fake_llm.calls)
+
+    async def test_an_ordinary_message_starts_with_both_empty(self, client, builder, fake_llm):
+        state = await self._final_state(client, fake_llm, {"message": "what agents do I have?"})
+        assert state["export_guide"] == "" and state["export_source"] == ""
+        assert state["user_message"] == "what agents do I have?"
+
+    async def test_a_name_inside_the_code_picks_no_workflow(self, client, builder, fake_llm):
+        await TestTheBuilderKnowsWhatYouMean._orchestration("orch_weekly", "Weekly Report")
+        state = await self._final_state(client, fake_llm, {"message": self.EXPORT % self.JWT})
+        assert state["current_orchestration_id"] == ""
+
+    async def test_the_paste_in_history_comes_back_without_its_credential(
+        self, client, builder, fake_llm
+    ):
+        state = await self._final_state(client, fake_llm, {
+            "message": "now add a schedule",
+            "history": [{"role": "user", "content": self.EXPORT % self.JWT},
+                        {"role": "assistant", "content": "Built it."}],
+        })
+        assert "HostedMCPTool" in state["chat_history"] and self.JWT not in state["chat_history"]

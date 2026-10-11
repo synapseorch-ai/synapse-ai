@@ -29,6 +29,8 @@ from core.native_builder import (
     BUILDER_RUN_PREFIX,
     NATIVE_BUILDER_ORCH_ID,
     bundled_definitions,
+    export_state,
+    read_export,
 )
 from core.orchestration.engine import OrchestrationEngine
 from core.orchestration.runner import (
@@ -81,10 +83,19 @@ class BuilderResumeRequest(BaseModel):
     _check_images = checked_images()
 
 
+def _as_kept(message: str) -> str:
+    """The message as a run or a conversation may keep it: pasted Agents SDK
+    code loses its credentials first, anything else is unchanged (SW1)."""
+    read = read_export(message)
+    return read.text if read else message
+
+
 def _format_history(history: list[dict]) -> str:
     if not history:
         return ""
-    return "\n".join(f"{m.get('role', 'user')}: {m.get('content', '')}" for m in history)
+    # The panel sends every earlier message back, the paste with the
+    # credentials its own turn took out among them.
+    return "\n".join(f"{m.get('role', 'user')}: {_as_kept(str(m.get('content', '')))}" for m in history)
 
 
 async def _previous_matches(session_id: str) -> str:
@@ -241,8 +252,14 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # and so is everything downstream that has to recognise a builder run.
     run_id = f"{BUILDER_RUN_PREFIX}{uuid.uuid4().hex[:12]}"
 
+    # Pasted Agents SDK code (an Agent Builder export, SW1): the guide to what
+    # it becomes and the code itself, credentials taken out before the run,
+    # its checkpoints or any model sees the message. Both empty otherwise.
+    export = export_state(request.message)
+    message = export["user_message"]
+
     initial_state = {
-        "user_message": request.message,
+        "user_message": message,
         "chat_history": _format_history(request.history),
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
@@ -250,8 +267,12 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # is on; empty while off, so no workspace is offered steps that would
         # fail its runs (R1).
         "knowledge_steps": _knowledge_steps(),
+        "export_guide": export["export_guide"],
+        "export_source": export["export_source"],
         **await _target_state(
-            request.message,
+            # A name in pasted code is the code's, not a workflow being named:
+            # only the one on screen counts.
+            "" if export["export_source"] else message,
             request.current_orchestration_id,
             await _previous_matches(session_id),
         ),
@@ -265,7 +286,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     }
 
     return run_id, engine.run(
-        initial_input=request.message,
+        initial_input=message,
         run_id=run_id,
         session_id=session_id,
         initial_state=initial_state,
@@ -557,7 +578,7 @@ async def _save_chat_turn(request, answer: str) -> None:
     try:
         await _save_conversation_turn(
             session_id=getattr(request, "session_id", None) or "default",
-            agent_id=getattr(request, "agent_id", None), user=request.message or "",
+            agent_id=getattr(request, "agent_id", None), user=_as_kept(request.message or ""),
             assistant=answer,
         )
     except Exception as exc:  # noqa: BLE001 — the answer is still shown
