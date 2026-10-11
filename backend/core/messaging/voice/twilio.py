@@ -223,16 +223,24 @@ class TwilioProvider(CallProvider):
     def verify_webhook(self, made: dict, *, url: str, params: dict, headers) -> bool:
         return bool((made or {}).get("secret")) and verify_signature(made["secret"], url, params, headers)
 
-    async def stop_signing(self, made: dict) -> None:
-        """Remove what `start_signing` made, rule first (a referenced key cannot be deleted). Never raises."""
+    async def stop_signing(self, made: dict) -> list[str]:
+        """Remove what `start_signing` made, rule first (a referenced key cannot be deleted). Never raises.
+
+        Returns the keys of `made` Twilio would not remove: a trial account may create these but not delete them
+        (20003), and an account holds at most 50 SharedKeys, so the person is told rather than left guessing.
+        """
+        left: list[str] = []
         for path, key in (("/Rules/", "rule_id"), ("/Settings/", "setting_id"), ("/SharedKeys/", "shared_key_id")):
             if (made or {}).get(key):
                 try:
                     code, body = await self._webhooks("DELETE", path + made[key])
                     if code >= 300 and code != 404:
                         log.warning("could not remove a webhook %s (%s): %s", key, code, body.get("message"))
+                        left.append(key)
                 except Exception as exc:  # noqa: BLE001 — cleanup is best-effort; the log says what is left
                     log.warning("could not remove a webhook %s: %s", key, exc)
+                    left.append(key)
+        return left
 
     # ── Numbers ──────────────────────────────────────────────────────────────
 

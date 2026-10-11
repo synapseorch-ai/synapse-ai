@@ -91,7 +91,7 @@ async def incoming(channel: dict, form: dict) -> str:
     agent = await _agent_for(channel["id"])
     if agent is None:
         return provider.say_and_hang_up(NO_AGENT, language=language)
-    refusal = await host.admit(channel, info.caller)
+    refusal = await host.admit(channel, info.caller, call_sid=info.call_sid)
     if refusal:
         await host.notify("run_failed", "A call could not be answered", body=refusal,
                           data={"door": "voice", "channel_id": channel["id"], "caller": info.caller})
@@ -111,7 +111,8 @@ def _connect(channel: dict, provider, call_sid: str, *, agent_name: str, resume:
     to = urls(host.public_base(), (channel.get("credentials") or {}).get("route_token") or "")
     token = socket_token(host.signing_key(), channel_id=channel["id"], call_sid=call_sid, resume=resume)
     return provider.answer(ws_url=f"{to['ws']}?t={token}", action_url=to["end"], opts=AnswerOptions(
-        notice=notice_for(voice, agent_name=agent_name), language=voice.get("language") or "en-US",
+        notice=notice_for(voice, agent_name=agent_name, org=host.org_name(channel)),
+        language=voice.get("language") or "en-US",
         voice=voice.get("voice") or "", tts_provider=voice.get("tts_provider") or "", resume=resume))
 
 
@@ -147,7 +148,8 @@ async def socket_call(channel: dict, token: str, transport):
         channel={**channel, "voice": voice}, agent=agent, call_sid=claims["call_sid"],
         caller=record.get("caller") or "", called=record.get("called") or "",
         session_id=record.get("session_id") or voice_session_id(channel["id"], claims["call_sid"]),
-        resume=claims["resume"], notice=notice_for(voice, agent_name=agent.get("name") or ""),
+        resume=claims["resume"], notice=notice_for(voice, agent_name=agent.get("name") or "",
+                                                   org=host.org_name(channel)),
         started_at=time.monotonic() - max(0.0, time.time() - started))
 
 
@@ -170,15 +172,23 @@ async def end(channel: dict, form: dict) -> str:
     if done.error_code:
         changes["error"] = f"{done.error_code} {done.error_message}".strip()
     record = await host.update_call(done.call_sid, changes) or record
-    await host.settle(record)
+
+    number = str(voice.get("transfer_number") or "").strip()
+    transferring = done.handoff.get("transfer") is not None and bool(number)
+    moved = bool(done.handoff.get("reconnect"))
+    dropped = done.status == "failed" and not done.handoff
+    resumes = int(record.get("resumes") or 0)
+    resuming = (not done.caller_hung_up and not transferring and (moved or dropped) and _running(channel)
+                and resumes < MAX_RESUMES)
+    # Our part of the call is over unless it picks up again on a fresh socket (a hand-off's leg is not ours).
+    await host.settle(record, final=not resuming)
 
     if done.caller_hung_up:
         await host.update_call(done.call_sid, {"ended_at": _now_iso(),
                                                "outcome": record.get("outcome") or "caller_hung_up"})
         return provider.hang_up_markup()
 
-    number = str(voice.get("transfer_number") or "").strip()
-    if done.handoff.get("transfer") is not None and number:
+    if transferring:
         await host.update_call(done.call_sid, {"transfer": {"reason": done.handoff.get("transfer"), "status": "dialing"}})
         await host.notify("human_input", f"A caller is being put through to {number}",
                           body=f"Reason: {done.handoff.get('transfer') or 'not given'}. The call's log has the transcript.",
@@ -187,10 +197,7 @@ async def end(channel: dict, form: dict) -> str:
         to = urls(host.public_base(), (channel.get("credentials") or {}).get("route_token") or "")
         return provider.transfer_markup(number=number, caller_id=voice.get("number") or "", action_url=to["dialed"])
 
-    moved = bool(done.handoff.get("reconnect"))
-    dropped = done.status == "failed" and not done.handoff
-    resumes = int(record.get("resumes") or 0)
-    if (moved or dropped) and _running(channel) and resumes < MAX_RESUMES:
+    if resuming:
         # V10: a fresh socket on whichever process answers, the same conversation, no greeting.
         await host.update_call(done.call_sid, {"resumes": resumes + 1, "handoff": None, "outcome": None})
         agent = await _agent_for(channel["id"]) or {}

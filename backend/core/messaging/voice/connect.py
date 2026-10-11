@@ -109,8 +109,12 @@ async def connect(channel: dict) -> dict:
     return await channel_store.save_channel(saved)
 
 
-async def disconnect(channel: dict) -> None:
-    """Put the number back where it pointed before us (V5). Never raises: a disconnect always completes."""
+async def disconnect(channel: dict) -> list[str]:
+    """Put the number back where it pointed before us (V5). Never raises: a disconnect always completes.
+
+    Returns what was left behind: the signing ids Twilio would not remove (a trial account cannot delete them),
+    and ``"number"`` when the number could not be put back.
+    """
     from core.messaging import store as channel_store
 
     voice = dict(channel.get("voice") or {})
@@ -118,8 +122,9 @@ async def disconnect(channel: dict) -> None:
     creds = await hooks.current().secrets(channel)
     provider = provider_for(creds)
     cleared = []
+    left: list[str] = []
     if voice.get("signing"):
-        await provider.stop_signing(voice["signing"])
+        left += await provider.stop_signing(voice["signing"])
         cleared.append("signing")
     if voice.get("number_sid") and previous is not None:
         try:
@@ -127,8 +132,9 @@ async def disconnect(channel: dict) -> None:
             cleared.append("previous")
         except Exception as exc:  # noqa: BLE001 — the person is told in the channel's error; the number keeps our URL
             log.warning("could not restore a number on disconnect: %s", exc)
+            left.append("number")
     if not cleared:
-        return
+        return left
     stored = await channel_store.get_channel(channel["id"])
     if stored is not None:
         voice = dict(stored.get("voice") or {})
@@ -139,3 +145,4 @@ async def disconnect(channel: dict) -> None:
             stored["credentials"] = {k: v for k, v in (stored.get("credentials") or {}).items()
                                      if k != "signing_secret"}
         await channel_store.save_channel(stored)
+    return left

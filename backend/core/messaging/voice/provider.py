@@ -120,8 +120,9 @@ class CallProvider(ABC):
         `stop_signing` need, or None when this vendor does not sign. Raises `CallRefused` when not allowed."""
         return None
 
-    async def stop_signing(self, made: dict) -> None:
-        """Undo `start_signing`. Never raises."""
+    async def stop_signing(self, made: dict) -> list[str]:
+        """Undo `start_signing`. Never raises; returns the ids the vendor would not remove."""
+        return []
 
     def verify_webhook(self, made: dict, *, url: str, params: dict, headers) -> bool:
         """Whether this webhook carries the signature `start_signing` set up."""

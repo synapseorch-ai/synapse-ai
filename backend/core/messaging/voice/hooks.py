@@ -1,8 +1,9 @@
 """`VoiceHost`: what differs between a self-hosted install and cloud (V2's host hooks).
 
 The self-hosted defaults are here. Cloud's `voice` service (VOX1b) installs its own subclass with `install()`:
-admission against credits and the org's concurrent-call limit, billing per call, the bell through its own
-notifications, secrets from `org_secrets`, socket claims shared in Redis, and the SIGTERM move (V10).
+admission against credits and the org's concurrent-call limit, billing once per call, the bell and parked
+approvals through its own notifications, secrets from `org_secrets`, socket claims shared in Redis, and the move
+when a task drains (V10).
 """
 from __future__ import annotations
 
@@ -45,6 +46,11 @@ class VoiceHost:
         self._claimed[nonce] = now
         return True
 
+    def org_name(self, channel: dict) -> str:
+        """Who the opening notice says the agent answers for (V25: "…an AI assistant for {org}"). Self-hosted
+        names no one; cloud names the workspace."""
+        return ""
+
     def public_base(self) -> str:
         """Where Twilio reaches us: `messaging_webhook_base_url`, as Telegram's webhook mode (V11)."""
         from core.config import load_settings
@@ -56,8 +62,11 @@ class VoiceHost:
 
     # ── Admission and limits ─────────────────────────────────────────────────
 
-    async def admit(self, channel: dict, caller: str) -> str | None:
-        """None to answer the call, or the one sentence a refused caller hears before the hang-up (V22)."""
+    async def admit(self, channel: dict, caller: str, call_sid: str = "") -> str | None:
+        """None to answer the call, or the one sentence a refused caller hears before the hang-up (V22).
+
+        `call_sid` names the call, so a host that counts live calls (cloud's org limit, V23) can free its
+        place when the call is settled."""
         return None
 
     async def before_turn(self, call: Any) -> str | None:
@@ -89,10 +98,24 @@ class VoiceHost:
             ):
                 yield event
 
+    async def park(self, call: Any, *, event: dict, message: str, progress: dict | None,
+                   caller_system: str) -> str:
+        """A caller's `confirm` tool waits for a person (V16): keep the turn's snapshot and ask the bell in the
+        person tone. Returns the approval id; raises when it could not be asked. Self-hosted parks through
+        `api_approvals`; cloud keeps the same conversation row and asks through its own bell."""
+        from core import api_approvals
+        return await api_approvals.park(
+            session_id=call.session_id, agent={"id": call.agent_id, "name": call.agent_name},
+            event=event, message=message, progress=progress,
+            resume={"caller_system": caller_system}, hours=24, door="voice",
+            caller={"number": call.caller, "visitor": call.visitor.to_dict()})
+
     # ── After ────────────────────────────────────────────────────────────────
 
-    async def settle(self, record: dict) -> None:
-        """A call ended (each segment, V10). Cloud charges it here (V21); self-hosted has nothing to bill."""
+    async def settle(self, record: dict, *, final: bool) -> None:
+        """A session of the call ended, with the record's segments summed (V10). `final` is False while the call
+        is being moved or picked up again, so a host bills once, when the call is over (cloud, V21);
+        self-hosted has nothing to bill."""
 
     async def notify(self, kind: str, title: str, *, body: str = "", data: dict | None = None) -> None:
         """The bell (V16's approvals are asked by `api_approvals`; this is voicemail and refusals)."""

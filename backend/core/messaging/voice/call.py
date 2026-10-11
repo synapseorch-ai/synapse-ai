@@ -428,13 +428,9 @@ class VoiceCall:
         """V16: a confirm tool parks in the bell; the call carries on without it."""
         turn.parked = True
         if event.get("kind") == "tool_approval" and not self.parked_approval:
-            from core import api_approvals
             try:
-                approval_id = await api_approvals.park(
-                    session_id=self.session_id, agent={"id": self.agent_id, "name": self.agent_name},
-                    event=event, message=turn.text, progress=turn.progress,
-                    resume={"caller_system": self._system()}, hours=24, door="voice",
-                    caller={"number": self.caller, "visitor": self.visitor.to_dict()})
+                approval_id = await self.host.park(self, event=event, message=turn.text, progress=turn.progress,
+                                                   caller_system=self._system())
                 self.parked_approval = True
                 await self.host.update_call(self.call_sid, {"approvals": [approval_id]})
                 line = APPROVAL_LINE
