@@ -131,9 +131,10 @@ _SOURCE_HEADING = """\
 
 
 # The pasted Agents SDK code this build translates
-Copy text from it, never code. Where the plan says a role's instructions come from the export, that agent's \
-`instructions` (or the string its instructions function returns) are copied word for word — into the new agent's \
-system prompt, or into an llm or evaluator step's prompt. A system prompt is never filled in: there a value the \
+Copy text from it, never code. Every new agent, llm step or evaluator step that stands for an `Agent` here (the \
+same name, or the plan says so) gets that Agent's `instructions` (or the string its instructions function returns) \
+word for word — as the new agent's system prompt, or as the step's prompt — however long, and whatever the plan's \
+purpose line says. Create such agents one `create_agent` call each, so every prompt is copied whole. A system prompt is never filled in: there a value the \
 instructions read at run time (`{name}` in a Python f-string, `${name}` in TypeScript) becomes the words "given in \
 the message", and the step's prompt passes it as the plan's `{state.key}`. The tool names in the code (`file_search`, \
 `mcp`, …) are its own variables, never tools here: give an agent only the tools the plan names. Never copy code from \
@@ -171,7 +172,8 @@ reasoning settings: this workspace's model runs every step.
 - An Agent WITHOUT tools → an `llm` step; its instructions are the step's prompt.
 - A classifier (an Agent whose `output_type` has one category field) followed by if/elif/else on that category → ONE \
 `evaluator` step: the categories are its route labels, its `evaluator_prompt` is the classifier's instructions, and \
-each route goes to the step that branch ran. No classifier agent, no llm step, no if_else.
+each route goes to the step that branch ran. The routes ARE the branches: no classifier agent, no llm step and \
+no if_else after it.
 - if/else on anything else (a counter, a flag, a person's answer, a field of an earlier JSON result) → `if_else` \
 (`if_condition`, `if_true_step_id`, `if_false_step_id`), or `switch` (`switch_expression`, `switch_cases_json` \
 `'{"value":"step_id"}'`, `switch_default_step_id`) for several values. Conditions use this product's syntax: \
@@ -199,8 +201,9 @@ hands to.
 - `return {...}` / the last agent's output → `end`, after a `print` step (`print_content`) if it returns fixed text.
 
 ## Not carried over — always the plan's last section
-After Open questions, a section `## Not carried over`: one bullet per item, what it was and what the person does \
-about it. "Nothing" only when nothing was left. Check each of these:
+After Open questions, a section `## Not carried over`: one bullet per item this code really has — named as the \
+code names it (the agent, the tool, its URL or id) — and what the person does about it. Leave out what the code does \
+not have; "Nothing" only when nothing was left. Check each of these:
 - Each `‹credential removed›`: a credential the export held, taken out before anything read it. "Add it as a Vault \
 variable, and rotate it where it came from: it was written into the code."
 - Each tool the code named that is not here: a hosted MCP server (with its `server_url`: "add it in Settings → MCP \

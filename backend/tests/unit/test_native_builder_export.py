@@ -250,6 +250,7 @@ class TestTheBuildersPromptsReadIt:
         creator = next(a for a in bundled_definitions()["agents"]
                        if a["id"] == "agent_native_builder_agent_creator")
         assert "Instructions from pasted code are copied, not written." in creator["system_prompt"]
+        assert "one `create_agent` call each" in creator["system_prompt"]
 
 
 class TestTheGuide:
