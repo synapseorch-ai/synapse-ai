@@ -47,7 +47,7 @@ interface StepConfigPanelProps {
     showVaultHints?: boolean;
     /**
      * Whether this workspace may run customer code. Cloud passes
-     * `plans.features.code_execution` (Team and Business); self-hosted leaves it
+     * `plans.features.code_execution` (Team, Growth and Business); self-hosted leaves it
      * at true, where the runtime is the local Docker sandbox and there is no
      * plan to ask.
      *
@@ -253,7 +253,7 @@ export function StepConfigPanel({
                                 value: t,
                                 label: STEP_TYPE_META[t].label,
                                 hint: t === 'transform' && !canRunCode
-                                    ? 'Runs Python — available on Team and Business.'
+                                    ? 'Runs Python — available on Team, Growth and Business.'
                                     : STEP_TYPE_META[t].blurb,
                                 // Never disable the type this step already is: a
                                 // workflow that arrived with a transform must stay
