@@ -38,6 +38,8 @@ export type RunEstimate = {
     basis: 'steps' | 'runs';
     /** Cloud: what the model wallet holds now, in USD. */
     wallet_usd?: number | null;
+    /** A step whose time is its own (an agent's turns, a tool's call): where minutes are charged too, it can cost more. */
+    slow_steps?: boolean;
 };
 
 export type EstimateLoader = (
@@ -101,6 +103,8 @@ export function estimateWords(estimate: RunEstimate, opts: { ceiling?: boolean }
     if (estimate.open.includes('per_item')) notes.push('A loop over a list costs this for each item.');
     if (estimate.open.includes('repeat')) notes.push('A step that sends the run back costs more each time round.');
     if (estimate.open.includes('nested')) notes.push('The workflows it runs cost extra.');
+    // Credits are the greater of a run's steps and its minutes: a slow agent can pass its steps (Naveen, CE1).
+    if (estimate.credits && estimate.slow_steps) notes.push('A step that works for minutes is charged a credit a minute.');
     if (estimate.models.unpriced.length) {
         notes.push(`No price is known for ${estimate.models.unpriced.join(', ')}: its calls are not in the figure.`);
     }

@@ -36,11 +36,21 @@ from inside a Loop or a Parallel is priced through its container, never twice.
 
 ## The model half is a prior until the workflow has runs
 
-`TOKEN_PRIOR` is measured, not assumed: per step type, the 25th and 75th
-percentile of input and output tokens over the twelve templates' runs on the dev
-stack (D261, `drafts/ce1/prior.md` in the cloud repo). The low end prices the
-cheapest path at the 25th, the high end the dearest at the 75th. Once a workflow
-has finished runs since its last edit, the caller shows those instead.
+`TOKEN_PRIOR` is measured, not assumed: per step type, a low and a high count
+of input and output tokens over the twelve templates' runs on the dev stack
+(D261, `drafts/ce1/prior.md` in the cloud repo). The low end prices the cheapest
+path at the low counts, the high end the dearest at the high ones. Once a
+workflow has finished runs since its last edit, the caller shows those instead.
+
+The counts are an `llm` step's 25th and 75th percentile, and an `agent` step's
+10th and 90th (Naveen, after the out-of-sample check): an agent either finishes
+in a call or two or uses every turn it has, so the middle half of its runs left
+half of the templates' fresh runs outside the range (6 of 12 inside, up to 2.4x
+out); the wider one held 11 of 12, all within 2x.
+
+`slow_steps` says whether a step's time is its own (an agent's turns, a tool's
+call): where a product charges by the minute too, a slow one can cost more than
+its steps say.
 
 Pure: no store, no request. Each product brings its own rates (cloud's platform
 models and markup, the rate card for one's own keys) through `price_model`.
@@ -65,7 +75,7 @@ NESTED = "nested"
 
 @dataclass(frozen=True)
 class Tokens:
-    """A step type's input and output tokens per run: (25th, 75th percentile)."""
+    """A step type's input and output tokens per run: (low, high)."""
 
     input: tuple[int, int]
     output: tuple[int, int]
@@ -73,13 +83,13 @@ class Tokens:
 
 #: Measured on the dev stack on 2026-10-12 (D261): the twelve templates on Nova
 #: Pro, once approved and three of them once revised, 12 agent and 27 llm step
-#: runs. An agent step either finished in a few turns (17k-42k input tokens) or
-#: used all twelve of its turns (118k-295k), so its range is wide by nature; an
-#: llm step is one call over a short prompt. An `evaluator` or a `tool` step is
-#: one model call over a prompt, the shape of an `llm` step; no template has one,
-#: so they take its figures.
+#: runs. An agent step either finished in a call or two (1k-42k input tokens) or
+#: used all twelve of its turns (118k-295k): its 10th and 90th percentile. An llm
+#: step is one call over a short prompt: its 25th and 75th. An `evaluator` or a
+#: `tool` step is one model call over a prompt, the shape of an `llm` step; no
+#: template has one, so they take its figures.
 TOKEN_PRIOR: dict[str, Tokens] = {
-    "agent": Tokens(input=(21_000, 120_000), output=(600, 1_250)),
+    "agent": Tokens(input=(4_400, 214_000), output=(590, 1_600)),
     "llm": Tokens(input=(270, 900), output=(130, 400)),
 }
 TOKEN_PRIOR["evaluator"] = TOKEN_PRIOR["llm"]
@@ -330,6 +340,18 @@ def models(
 
         out.sides[side] = span(definition, price, agents=agents)
     return out
+
+
+#: Steps whose time is their own: an agent's turns, a tool's call.
+TIMED_STEP_TYPES = frozenset({"agent", "tool"})
+
+
+def slow_steps(definition: Mapping[str, Any] | None) -> bool:
+    """Whether a run of this definition can spend minutes in one step."""
+    return any(
+        isinstance(s, Mapping) and _kind(s) in TIMED_STEP_TYPES
+        for s in (definition or {}).get("steps") or []
+    )
 
 
 def runs_span(figures: Iterable[float | int | None]) -> Span | None:

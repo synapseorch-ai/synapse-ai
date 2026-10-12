@@ -204,7 +204,7 @@ class TestTheModelHalf:
     def test_a_step_that_calls_no_model_has_none(self, kind):
         assert step_model(_step("s", kind), AGENTS, "synapse.nova-pro") is None
 
-    def test_the_prior_prices_low_at_the_25th_and_high_at_the_75th(self):
+    def test_the_prior_prices_the_low_end_at_its_low_counts_and_the_high_at_its_high(self):
         rate = ModelRate(WALLET, 1.0, 4.0)
         t = TOKEN_PRIOR["agent"]
         assert model_cost("agent", rate) == pytest.approx(
@@ -234,6 +234,15 @@ class TestTheModelHalf:
         got = models(_orch([_step("a", "llm")]), agents={}, workspace_model="ollama.qwen3", price_model=priced)
         assert got.sides == {LOCAL: Span(0.0, 0.0)}
         assert got.unpriced == []
+
+
+def test_an_agent_or_a_tool_step_can_take_minutes():
+    from core.orchestration.estimate import slow_steps
+
+    assert slow_steps(weekly_report())
+    assert slow_steps(_orch([_step("t", "tool")]))
+    assert not slow_steps(_orch([_step("a", "llm"), _step("h", "human")]))
+    assert not slow_steps(None)
 
 
 def test_runs_span_is_the_lowest_and_highest_finished_run():
