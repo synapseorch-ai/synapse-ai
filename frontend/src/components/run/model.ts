@@ -72,14 +72,17 @@ export type StepExecution = {
 };
 
 /**
- * What a step spent (cloud's `step_usage`, by `step_id`). Absent in OSS, whose
- * run record has no per-step spend; the timeline then has no cost column.
+ * What a step spent, by `step_id` (`step_usage`; each of its passes summed), or
+ * what one history entry spent (`entry_usage`). Both products sweep a run's
+ * calls into its steps by time (CE1, `core/orchestration/step_usage.py`).
  */
 export type StepUsage = {
     turns: number;
     models: string[];
     tools: string[];
     tokens: number;
+    input_tokens?: number;
+    output_tokens?: number;
     /** `null` when the step called a model nobody prices. */
     cost_usd: number | null;
     context_peak_chars: number;
@@ -128,8 +131,19 @@ export type RunRecord = {
     humanContextKey?: string | null;
     /** Why a failed or cancelled run stopped (the engine's `failure_reason`). */
     error: string | null;
-    /** Per-step spend, by step id (cloud). */
+    /** Per-step spend, by step id, its passes summed. */
     stepUsage?: Record<string, StepUsage>;
+    /** Each history entry's own spend, aligned with `history`; `null` for one that called no model. */
+    entryUsage?: (StepUsage | null)[];
+    /**
+     * Cloud: each step's credits by step id (its passes summed), and each entry's.
+     * A step's price, not the run's charge: a run is charged the greater of its
+     * steps and its minutes, and at least a credit (`creditsCharged`).
+     */
+    stepCredits?: Record<string, number>;
+    entryCredits?: (number | null)[];
+    /** Cloud: what the run was charged, in credits; `null` while it runs. */
+    creditsCharged?: number | null;
     /**
      * The workflow as the run started it — the steps it carries on with after a
      * pause, whatever was saved since (F443); after a Replay, what the Replay
@@ -515,8 +529,10 @@ export type StepTime = {
     seconds: number | null;
     /** How many times it ran, past one. */
     times?: number;
-    /** What it spent, where the product prices steps (cloud's `stepUsage`); absent in OSS. */
+    /** What its model calls cost, its passes summed; absent when the record has no breakdown. */
     costUsd?: number | null;
+    /** Cloud: its credits, its passes summed. */
+    credits?: number;
 };
 
 /**
@@ -529,7 +545,7 @@ export type StepTime = {
  * has no entry: nothing is known about it.
  */
 export function stepTimes(
-    run: Pick<RunRecord, 'status' | 'waitingForHuman' | 'currentStepId' | 'history' | 'stepUsage'>,
+    run: Pick<RunRecord, 'status' | 'waitingForHuman' | 'currentStepId' | 'history' | 'stepUsage' | 'stepCredits'>,
     workflow: Orchestration | null | undefined,
 ): Record<string, StepTime> {
     const seconds = new Map<string, number>();
@@ -544,11 +560,13 @@ export function stepTimes(
     const out: Record<string, StepTime> = {};
     for (const row of stepperRows(run, workflow)) {
         const usage = run.stepUsage?.[row.stepId];
+        const credits = run.stepCredits?.[row.stepId];
         out[row.stepId] = {
             state: row.state,
             seconds: seconds.get(row.stepId) ?? null,
             ...(row.times ? { times: row.times } : null),
             ...(usage ? { costUsd: usage.cost_usd } : null),
+            ...(credits ? { credits } : null),
         };
     }
     return out;
@@ -702,6 +720,27 @@ export function money(usd: number | null | undefined): string {
     const fixed = usd.toFixed(4).replace(/0+$/, '');
     const [whole, frac = ''] = fixed.split('.');
     return `$${whole}.${frac.padEnd(2, '0')}`;
+}
+
+/**
+ * One history entry's spend: its own figure where the record has one per entry,
+ * else its step's (a record from before `entry_usage`).
+ */
+export function entrySpend(
+    run: Pick<RunRecord, 'history' | 'stepUsage' | 'entryUsage' | 'entryCredits' | 'stepCredits'>,
+    index: number,
+): { usage: StepUsage | undefined; credits: number | undefined } {
+    const entry = run.history[index];
+    if (!entry) return { usage: undefined, credits: undefined };
+    const usage = run.entryUsage ? run.entryUsage[index] ?? undefined : run.stepUsage?.[entry.step_id];
+    const credits = run.entryCredits ? run.entryCredits[index] ?? undefined : run.stepCredits?.[entry.step_id];
+    return { usage, credits };
+}
+
+/** "1 credit", "0.1 credits", "3.2 credits". */
+export function creditsText(credits: number): string {
+    const n = Math.round(credits * 10) / 10;
+    return `${Number.isInteger(n) ? n.toLocaleString() : n.toFixed(1)} credit${n === 1 ? '' : 's'}`;
 }
 
 /** "9 s", "1 min 30 s", "2 h 5 min", "1 day". */

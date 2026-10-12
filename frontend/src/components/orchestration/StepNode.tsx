@@ -9,7 +9,7 @@ import { cn } from '@/lib/cn';
 import { reasonHeadline } from '@/lib/runErrors';
 import { Spinner } from '@/components/ui';
 import { StepIcon } from '../run/StepIcon';
-import { duration, money } from '../run/model';
+import { creditsText, duration, money } from '../run/model';
 import { roleOf } from './roles';
 
 /**
@@ -321,6 +321,7 @@ function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
     const parts = [
         time.times ? `${time.times}×` : null,
         took,
+        time.credits ? creditsText(time.credits) : null,
         time.costUsd !== undefined && time.costUsd !== null ? money(time.costUsd) : null,
     ].filter(Boolean).join(' · ');
     const lead = time.state === 'done'

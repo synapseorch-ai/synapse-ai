@@ -30,6 +30,7 @@ import {
     Suggestions,
     UserBubble,
 } from '@/components/assistant';
+import { loadRunEstimate } from '@/lib/estimate';
 import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
 import {
@@ -323,6 +324,7 @@ export function BuilderPanel() {
                                             onAnswer={(text) => void send(text, [])}
                                             onRevise={() => textarea.current?.focus()}
                                             onStop={onStop}
+                                            estimate={loadRunEstimate}
                                         />
                                     ) : (
                                         <QuestionCard content={message.content} open={open} onStop={onStop} />

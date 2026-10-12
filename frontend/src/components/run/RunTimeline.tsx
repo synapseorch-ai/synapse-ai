@@ -20,7 +20,7 @@ import type { Orchestration } from '@/types/orchestration';
 
 import { useRunHost } from './host';
 import {
-    duration, isLive, money, ordinal, ROLE_LABEL, ticks, timelineRows,
+    creditsText, entrySpend, duration, isLive, money, ordinal, ROLE_LABEL, ticks, timelineRows,
     type NestedRun, type RunRecord, type StepRole, type TimelineRow,
 } from './model';
 import { StepDetail, hasDetail } from './StepDetail';
@@ -92,7 +92,7 @@ export function RunTimeline({ run, workflow, nested }: {
                 </div>
                 {rows.map((row) => {
                     const entry = row.index !== undefined ? run.history[row.index] : undefined;
-                    const usage = entry ? run.stepUsage?.[entry.step_id] : undefined;
+                    const { usage, credits } = row.index !== undefined ? entrySpend(run, row.index) : { usage: undefined, credits: undefined };
                     const expandable = Boolean(entry && hasDetail(entry, run.sharedState, usage));
                     const isOpen = open.has(row.key);
                     const width = row.duration === null ? Math.max(0, span - row.start) : row.duration;
@@ -121,6 +121,7 @@ export function RunTimeline({ run, workflow, nested }: {
                                 {withCost && (
                                     <span role="cell" className="text-right text-[13px] tabular-nums text-text-muted">
                                         {row.nested ? money(row.nested.total_cost_usd ?? null) : usage && usage.cost_usd !== null ? money(usage.cost_usd) : '—'}
+                                        {!row.nested && credits ? <span className="block text-[11px] text-text-faint">{creditsText(credits)}</span> : null}
                                     </span>
                                 )}
                             </div>

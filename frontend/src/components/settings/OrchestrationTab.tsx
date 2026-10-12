@@ -15,6 +15,8 @@ import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
 import { CanvasWorkbench } from '../orchestration/CanvasWorkbench';
+import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
+import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
@@ -1404,6 +1406,25 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     // records it — or, with none, the workflow's newest run, read once when the
     // toggle is pressed (the read the run page and Recent Runs make).
     const runOnCanvas = runStatus !== 'idle' && !!runId;
+    // Each step's spend as the run goes (CE1): the stream carries times, not money,
+    // so the record is read again a moment after the steps move — a call's row is
+    // written as its step closes — and once more when the run ends.
+    const [liveSpend, setLiveSpend] = useState<{ runId: string; stepUsage: RunRecord['stepUsage'] } | null>(null);
+    useEffect(() => {
+        if (!runOnCanvas || !runId || runHistory.length === 0) return;
+        let live = true;
+        const timer = window.setTimeout(async () => {
+            try {
+                const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}`);
+                if (!res.ok) return;
+                const data = await res.json();
+                if (live && data.step_usage && typeof data.step_usage === 'object') {
+                    setLiveSpend({ runId, stepUsage: data.step_usage });
+                }
+            } catch { /* the times still show; the spend comes with the next read */ }
+        }, 2500);
+        return () => { live = false; window.clearTimeout(timer); };
+    }, [runOnCanvas, runId, runHistory, runStatus]);
     const lastSteps = useMemo(() => {
         if (!draft) return null;
         if (runOnCanvas) {
@@ -1412,10 +1433,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                 waitingForHuman: runStatus === 'paused' && !!humanPrompt,
                 currentStepId: runStatus === 'paused' ? waitingStep : null,
                 history: runHistory,
+                stepUsage: liveSpend && liveSpend.runId === runId ? liveSpend.stepUsage : undefined,
             }, draft);
         }
         return newestRun ? stepTimes(newestRun, draft) : null;
-    }, [draft, runOnCanvas, runStatus, humanPrompt, waitingStep, runHistory, newestRun]);
+    }, [draft, runOnCanvas, runStatus, humanPrompt, waitingStep, runHistory, newestRun, liveSpend, runId]);
     const showLastRun = async (on: boolean) => {
         setLastRunShown(on);
         if (!on || runOnCanvas || !draft) return;
@@ -1537,6 +1559,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     const realOrchId = selectedOrchId && orchestrations.some(o => o.id === selectedOrchId)
         ? selectedOrchId
         : null;
+    // What a run will cost (CE1), following the draft as it is edited; past runs once it is saved.
+    const { estimate, busy: estimating, error: estimateError } = useRunEstimate(loadRunEstimate, draft, realOrchId);
     useEffect(() => {
         setCurrentOrchestration(realOrchId);
         return () => setCurrentOrchestration(null);
@@ -1850,6 +1874,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                         schema={draft.state_schema}
                                         onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
                                     />
+                                    <SettingsSection title="Cost per run">
+                                        <EstimateLine estimate={estimate} busy={estimating} error={estimateError} />
+                                    </SettingsSection>
                                     <SettingsSection title="Guardrails">
                                         <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
                                     </SettingsSection>
@@ -1889,7 +1916,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                 stepErrors: runStepErrors,
                                 onRun: startRun,
                                 onStop: cancelRun,
-                                input: { value: runInput, onChange: setRunInput },
+                                input: {
+                                    value: runInput,
+                                    onChange: setRunInput,
+                                    estimate: <EstimateLine estimate={estimate} busy={estimating} error={estimateError} compact />,
+                                },
                                 runKey,
                                 trail,
                                 replaying,

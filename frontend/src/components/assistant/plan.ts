@@ -311,6 +311,26 @@ function newAgentsOf(text: string | null): string[] {
 // ── The plan ─────────────────────────────────────────────────────────────────
 
 /**
+ * A build plan's steps as a workflow to price (CE1): each step it names a type
+ * for, once, one after another, on the workspace's default model. A plan names
+ * no branch and no model, so this is every step it lists: the most a run of it
+ * costs, unless it loops. `null` for a change plan (its lines are actions) or a
+ * plan with no typed step.
+ */
+export function planDefinition(plan: Plan): { entry_step_id: string; steps: Record<string, unknown>[] } | null {
+    if (plan.kind !== 'build') return null;
+    const typed = plan.steps.filter((s) => s.type !== null && s.type !== 'end');
+    if (!typed.length) return null;
+    const steps = typed.map((s, i) => ({
+        id: `plan_${i + 1}`,
+        name: s.name,
+        type: s.type,
+        next_step_id: i + 1 < typed.length ? `plan_${i + 2}` : null,
+    }));
+    return { entry_step_id: steps[0].id, steps };
+}
+
+/**
  * Read a plan question. `null` when no step can be read, and the card then
  * shows the words as they were asked.
  */

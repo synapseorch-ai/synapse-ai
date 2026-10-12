@@ -16,10 +16,26 @@
 import { AlertTriangle, Check, ChevronDown, ChevronUp } from 'lucide-react';
 import * as React from 'react';
 
+import { EstimateLine, useRunEstimate, type EstimateLoader } from '@/components/orchestration/estimate';
 import { Button, Markdown } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
-import { readPlan, splitQuestion, type Plan, type PlanStep } from './plan';
+import { planDefinition, readPlan, splitQuestion, type Plan, type PlanStep } from './plan';
+
+/**
+ * What a run of the plan would cost (CE1). The plan names every step once and
+ * no branch or model, so its figure is a most, on the workspace's default model;
+ * a plan with a loop says "or more".
+ */
+function PlanEstimate({ plan, load }: { plan: Plan; load: EstimateLoader }) {
+    const definition = React.useMemo(() => planDefinition(plan), [plan]);
+    const { estimate, busy, error } = useRunEstimate(load, definition);
+    const loops = plan.steps.some((s) => s.type === 'loop');
+    if (!definition || error) return null;
+    const shown = estimate && loops && !estimate.open.includes('per_item')
+        ? { ...estimate, open: [...estimate.open, 'per_item'] } : estimate;
+    return <EstimateLine estimate={shown} busy={busy} compact ceiling />;
+}
 
 /** Past this many characters a question folds behind "Show all of it". */
 export const QUESTION_FOLD = 600;
@@ -149,7 +165,7 @@ function Steps({ plan }: { plan: Plan }) {
  * and pressing Send does. `onRevise` takes the person to the composer.
  */
 export function PlanCard({
-    prompt, kind, open, onAnswer, onRevise, onStop,
+    prompt, kind, open, onAnswer, onRevise, onStop, estimate,
 }: {
     prompt: string;
     kind: 'build' | 'change';
@@ -157,6 +173,8 @@ export function PlanCard({
     onAnswer: (text: string) => void;
     onRevise: () => void;
     onStop?: () => void;
+    /** The product's estimate route (CE1): a build plan says what a run of it would cost. */
+    estimate?: EstimateLoader;
 }) {
     const plan = React.useMemo(() => readPlan(prompt, kind), [prompt, kind]);
     const [expanded, setExpanded] = React.useState(false);
@@ -185,6 +203,7 @@ export function PlanCard({
                             {facts.map((f, i) => <React.Fragment key={f}>{i > 0 && ' · '}{i === 0 ? f.charAt(0).toUpperCase() + f.slice(1) : f}</React.Fragment>)}
                         </p>
                     )}
+                    {estimate && <PlanEstimate plan={plan} load={estimate} />}
                     {plan.openQuestions && (
                         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
                             <span className="text-xs font-medium text-text">Open questions</span>

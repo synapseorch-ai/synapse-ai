@@ -34,7 +34,7 @@ import { ApprovalCard } from './ApprovalCard';
 import { FailureCard } from './FailureCard';
 import { useRunHost } from './host';
 import {
-    bucketOf, followedLine, money, pathOrder, when, type Followed, type NestedRun, type RunRecord,
+    bucketOf, creditsText, followedLine, money, pathOrder, when, type Followed, type NestedRun, type RunRecord,
 } from './model';
 import { NestedRuns } from './NestedRuns';
 import { RawEventLog } from './RawEventLog';
@@ -158,6 +158,11 @@ export function RunDetail({
                     <span><b className="font-semibold tabular-nums text-text"><Took start={run.startedAt} end={run.endedAt} /></b> wall clock</span>
                     <span>{stepsLine}</span>
                     <span><b className="font-semibold tabular-nums text-text">{run.tokens == null ? '—' : run.tokens.toLocaleString()}</b> tokens</span>
+                    {run.creditsCharged != null && (
+                        <span title="What the run was charged: the greater of its steps and its minutes, and at least a credit">
+                            <b className="font-semibold tabular-nums text-text">{creditsText(run.creditsCharged)}</b> charged
+                        </span>
+                    )}
                     <span title={run.costHint}><b className="font-semibold tabular-nums text-text">{money(run.costUsd)}</b> model cost</span>
                 </div>
 

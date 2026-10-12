@@ -13,7 +13,7 @@ import { useState } from 'react';
 import { cn } from '@/lib/cn';
 import type { Orchestration } from '@/types/orchestration';
 
-import { duration, stepperRows, type RunRecord, type StepState } from './model';
+import { creditsText, duration, money, stepperRows, type RunRecord, type StepState } from './model';
 import { StepDetail, hasDetail } from './StepDetail';
 import { StepIcon, typeLabel } from './StepIcon';
 
@@ -44,10 +44,13 @@ export function RunStepper({ run, workflow }: { run: RunRecord; workflow: Orches
                 const isOpen = open.has(row.stepId);
                 const state = STATE[row.state];
                 const took = entry?.duration_seconds;
+                const credits = run.stepCredits?.[row.stepId];
                 const note = [
                     typeLabel(row.type),
                     row.times ? `ran ${row.times} times` : null,
                     row.state === 'done' && typeof took === 'number' ? duration(took) : null,
+                    credits ? creditsText(credits) : null,
+                    usage && usage.cost_usd !== null && usage.turns > 0 ? money(usage.cost_usd) : null,
                 ].filter(Boolean).join(' · ');
                 const name = <span className={cn('truncate font-medium', row.state === 'not-reached' ? 'text-text-muted' : 'text-text')}>{row.name}</span>;
                 return (

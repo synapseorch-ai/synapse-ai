@@ -213,5 +213,8 @@ export function ossRunRecord(data: any, workflow: Orchestration | null, schedule
         humanFields: Array.isArray(data.human_fields) ? data.human_fields : null,
         humanContext: data.human_context ?? null,
         error: data.error ?? null,
+        // Each step's spend, swept from the run's calls (CE1).
+        ...(data.step_usage && typeof data.step_usage === 'object' ? { stepUsage: data.step_usage } : null),
+        ...(Array.isArray(data.entry_usage) ? { entryUsage: data.entry_usage } : null),
     };
 }
