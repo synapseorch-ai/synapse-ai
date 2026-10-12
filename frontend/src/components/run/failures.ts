@@ -10,8 +10,10 @@
  * The kinds, in the order they are tried, come from a read of every writer of a
  * step's or run's error in the OSS engine (M2b's plan, "Failure sentences"):
  * the step executors, the engine's limits and routes, the model providers'
- * adapters, cancel, the restart sweep. Anything unmatched falls to the last two
- * rows: "<step> stopped this run with an error it didn't expect", with the
+ * adapters, cancel, the restart sweep. Two reasons come from a host instead of
+ * the engine: cloud's model wallet and its credit gate (F419, F444), which stops
+ * a run through the engine's `run_gate` seam. Anything unmatched falls to the last
+ * two rows: "<step> stopped this run with an error it didn't expect", with the
  * reason's headline (`lib/runErrors.ts`'s `reasonHeadline`, F195's rule, which
  * both products keep word for word), or "stopped without recording why".
  */
@@ -21,7 +23,7 @@ import { duration, type NestedRun, type StepExecution } from './model';
 
 /** What a failure card can offer; the page shows the ones its product can link. */
 export type FixKind =
-    | 'editor' | 'replay' | 'models' | 'agents' | 'knowledge' | 'billing'
+    | 'editor' | 'replay' | 'models' | 'agents' | 'knowledge' | 'billing' | 'credits'
     | 'nested' | 'parent' | 'log';
 
 export type Explained = {
@@ -67,6 +69,19 @@ function lastError(reason: string): string {
 }
 
 const MODEL_FAILURE = /^(LLMError|EmptyAnswer|EmbeddingFailed): |LLM Error: |^RuntimeError: (LLM|Tool) step '.+' (LLM call )?failed: |Cloud API Error|CLI Provider Error|CLI provider '.+' failed|HuggingFace Provider Error|Bedrock refused|Model gateway refused|model wallet has|Unknown cloud model selected|Local Agent Error: /;
+
+/**
+ * Cloud's credit gate (`worker/credit_gate.py`, F419), in its own words. Unanchored: the gate stops a run between
+ * steps (the run's reason), in a Loop body ("RuntimeError: Stopped: …" on the Loop), in a Parallel branch ("Branch 2
+ * failed: …") and in a workflow a step runs ("Sub-orchestration 'X' failed: …"). The numbers are optional: a reason
+ * wrapped that deep can lose its tail to the engine's 300-character cap.
+ */
+const CREDIT_STOP = /Stopped: this workspace is out of execution credits\.(?: This run needed about ([\d,]+) credits and ([\d,]+) were left for it\.)?/;
+
+/** Whether the credit gate stopped this run: the run list says so in place of "Failed" (F444). */
+export function isCreditStop(reason: string | null | undefined): boolean {
+    return !!reason && CREDIT_STOP.test(reason);
+}
 
 /** The parts of a run a sentence can name. */
 export type FailureInput = {
@@ -116,6 +131,15 @@ export function explainFailure(input: FailureInput): Explained {
                 : 'Someone cancelled this run.',
             detail: raw ? reasonHeadline(raw) : undefined,
             fixes: ['replay'],
+        };
+    }
+    // Before the containers: the workspace ran out, not the branch, the loop or the nested workflow (F444).
+    if ((m = CREDIT_STOP.exec(raw))) {
+        return {
+            kind: 'credits',
+            sentence: 'This workspace is out of execution credits.',
+            detail: m[1] ? `This run needed about ${m[1]} credits and ${m[2]} were left for it.` : undefined,
+            fixes: ['credits', 'replay'],
         };
     }
     if (/Server restarted while the run was in progress/.test(raw)) {

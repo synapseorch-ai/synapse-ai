@@ -64,6 +64,8 @@ export function FailureCard({ run, nested, onReplay, busy }: {
                 return host.links.knowledge ? <LinkButton key={kind} href={host.links.knowledge} variant={variant} size="sm">Knowledge</LinkButton> : null;
             case 'billing':
                 return host.links.billing ? <LinkButton key={kind} href={host.links.billing} variant={variant} size="sm">Add balance</LinkButton> : null;
+            case 'credits':
+                return host.links.billing ? <LinkButton key={kind} href={host.links.billing} variant={variant} size="sm">Add credits</LinkButton> : null;
             case 'nested':
                 return said.nestedRunId ? <LinkButton key={kind} href={host.links.run(said.nestedRunId)} variant={variant} size="sm">Open the nested run</LinkButton> : null;
             case 'parent':
