@@ -32,7 +32,7 @@ import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { useBuilder } from './BuilderProvider';
 import { useNavFlags } from './NavFlags';
 import { useNavGuard } from './NavGuard';
-import { useWaitingOnYou, WaitingOnYouDrawer } from './WaitingOnYou';
+import { useWaitingOnYou } from './WaitingOnYou';
 import { cn } from '@/lib/utils';
 import type { ThemeMode } from '@/lib/theme';
 
@@ -136,7 +136,7 @@ export function AppRail({
     const waiting = state.pending !== null;
     // Runs and tool calls waiting on the person, from the bell's stream (M2c).
     const waitingOnYou = useWaitingOnYou();
-    const [waitingOpen, setWaitingOpen] = useState(false);
+    const { openWaiting } = useNotifications();
     const showWaiting = () => {
         // On Home the list is already the page's first section.
         const section = pathname === '/dashboard' ? document.getElementById('home-needs-you') : null;
@@ -144,7 +144,7 @@ export function AppRail({
             section.scrollIntoView({ behavior: 'smooth', block: 'start' });
             return;
         }
-        setWaitingOpen(true);
+        openWaiting();
     };
 
     // Sign out is offered only where there is a password to sign back in with
@@ -317,7 +317,6 @@ export function AppRail({
                     </button>
                 )}
             </div>
-            <WaitingOnYouDrawer open={waitingOpen} onClose={() => setWaitingOpen(false)} />
 
             {/* `pt-1`: a scroller clips at its own edge, and the current row's
                 hairline and shadow sit just outside the row — on Home, the first

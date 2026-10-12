@@ -27,6 +27,7 @@ import { NavFlagsProvider } from '@/components/app/NavFlags';
 import { PhoneBar, useIsPhone } from '@/components/app/PhoneBar';
 import { NavGuardProvider } from '@/components/app/NavGuard';
 import { NotificationProvider } from '@/components/notifications/NotificationProvider';
+import { WaitingOnYouHost } from '@/components/app/WaitingOnYou';
 import { ossHelpHost } from '@/lib/helpHost';
 import { parseThemeMode, resolveTheme, switchTheme, THEME_KEY, type ThemeMode } from '@/lib/theme';
 import { cn } from '@/lib/utils';
@@ -145,6 +146,9 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
             </div>
             {/* Inside the builder's provider, for Build with AI. */}
             <AppCommands open={jumping} onOpenChange={setJumping} mode={mode} onModeChange={changeMode} />
+            {/* The one Waiting on you drawer (F457): the rail's row, the phone bar's, and an
+                unanswered question in the bell all open it. */}
+            <WaitingOnYouHost />
             </NavFlagsProvider>
             </HelpProvider>
             <BuilderPanel />

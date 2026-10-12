@@ -19,7 +19,8 @@ import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { hubForPath } from '@/lib/nav';
 import { AppRail, type ThemeMode } from './AppRail';
 import { useBuilder } from './BuilderProvider';
-import { useWaitingOnYou, WaitingOnYouDrawer } from './WaitingOnYou';
+import { useNotifications } from '@/components/notifications/NotificationProvider';
+import { useWaitingOnYou } from './WaitingOnYou';
 
 const PHONE = '(max-width: 767px)';
 
@@ -61,7 +62,7 @@ export function PhoneBar({
     // The mark opens the AI builder: one tap, as the retired corner launcher was (M2c).
     const { open: openBuilder, streaming, state } = useBuilder();
     const builderWaiting = state.pending !== null;
-    const [waitingOpen, setWaitingOpen] = useState(false);
+    const { openWaiting } = useNotifications();
 
     const here = hubForPath(pathname)?.hub.label
         ?? (pathname.startsWith('/settings') ? 'Settings' : 'SynapseOrch');
@@ -115,7 +116,7 @@ export function PhoneBar({
                     {waiting.count > 0 && (
                         <button
                             type="button"
-                            onClick={() => setWaitingOpen(true)}
+                            onClick={() => openWaiting()}
                             aria-label={`Waiting on you · ${waiting.count}`}
                             className="inline-flex h-8 items-center gap-1.5 rounded-full bg-person-subtle px-2.5 text-xs font-semibold text-person-ink"
                         >
@@ -126,7 +127,6 @@ export function PhoneBar({
                     <NotificationBell />
                 </div>
             )}
-            {isPhone && <WaitingOnYouDrawer open={waitingOpen} onClose={() => setWaitingOpen(false)} />}
         </div>
     );
 }

@@ -33,9 +33,22 @@ type NotificationContextValue = {
     browserNotificationsEnabled: boolean;
     setBrowserNotificationsEnabled: (enabled: boolean) => Promise<void>;
     openRun: (runId: string | null) => void;
-    /** Where an item leads: its run, or for a schedule's item the Schedules screen. */
+    /** Where an item leads: its run, or for a schedule's item the Schedules screen;
+     *  an unanswered question about a run opens the Waiting on you drawer (F457). */
     openItem: (item: RunNotification) => void;
+    /** The one Waiting on you drawer (F457): open or not, and the run it was opened for,
+     *  whose card it shows first. The rail's and the phone bar's rows open it, and so
+     *  does an unanswered question in the bell (or an OS notification for one). */
+    waiting: { open: boolean; focus: string | null };
+    openWaiting: (focus?: string | null) => void;
+    closeWaiting: () => void;
 };
+
+/** An unanswered question about a run, answered in the drawer on the screen the person is
+ *  on, not by leaving it (F457, Naveen). An answered one, or a call's item, keeps its link. */
+export function opensWaitingDrawer(item: Pick<RunNotification, 'kind' | 'run_id' | 'resolved' | 'data'>): boolean {
+    return item.kind === 'human_input' && !item.resolved && !!item.run_id && !voiceItemHref(item.data);
+}
 
 const NotificationContext = createContext<NotificationContextValue | null>(null);
 
@@ -86,13 +99,21 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         else router.push('/workflows');
     }, [router]);
 
+    const [waiting, setWaiting] = useState<{ open: boolean; focus: string | null }>({ open: false, focus: null });
+    const openWaiting = useCallback((focus?: string | null) => setWaiting({ open: true, focus: focus ?? null }), []);
+    const closeWaiting = useCallback(() => setWaiting(w => ({ ...w, open: false })), []);
+
     const openItem = useCallback((item: RunNotification) => {
+        if (opensWaitingDrawer(item)) {
+            openWaiting(item.run_id);
+            return;
+        }
         // A call's voicemail, hand-off or parked approval has no run: it opens that call's log (VOX1c).
         const call = voiceItemHref(item.data);
         if (call) router.push(call);
         else if (!item.run_id && item.data?.schedule_id) router.push('/schedules');
         else openRun(item.run_id);
-    }, [router, openRun]);
+    }, [router, openRun, openWaiting]);
 
     const handleNotification = useCallback((item: RunNotification, live: boolean) => {
         setNotifications(prev => {
@@ -231,6 +252,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             notifications, unseenCount, markAllSeen, toast,
             browserNotificationsEnabled: browserEnabled,
             setBrowserNotificationsEnabled, openRun, openItem,
+            waiting, openWaiting, closeWaiting,
         }}>
             {children}
             {/* Toast host — app-wide, stacked bottom-right, high enough to clear

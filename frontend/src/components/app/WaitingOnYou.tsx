@@ -44,8 +44,27 @@ export function useWaitingOnYou(): { runs: RunNotification[]; tools: RunNotifica
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- the run's JSON, as `ossRunRecord` takes it
 type Record_ = { key: string; data: any | null };
 
-export function WaitingOnYouDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
-    const { runs, tools } = useWaitingOnYou();
+/** The run the drawer was opened for first; the rest in the order they came (F457). */
+export function focusFirst<T extends { run_id?: string | null }>(runs: T[], focus: string | null | undefined): T[] {
+    const at = focus ? runs.findIndex(r => r.run_id === focus) : -1;
+    return at <= 0 ? runs : [runs[at], ...runs.slice(0, at), ...runs.slice(at + 1)];
+}
+
+/** The one drawer (F457), mounted once by the app layout; whoever opens it says which run comes first. */
+export function WaitingOnYouHost() {
+    const { waiting, closeWaiting } = useNotifications();
+    return <WaitingOnYouDrawer open={waiting.open} focus={waiting.focus} onClose={closeWaiting} />;
+}
+
+export function WaitingOnYouDrawer({ open, onClose, focus = null }: {
+    open: boolean;
+    onClose: () => void;
+    /** The run it was opened for (a question in the bell): its card first (F457). */
+    focus?: string | null;
+}) {
+    const waiting = useWaitingOnYou();
+    const tools = waiting.tools;
+    const runs = useMemo(() => focusFirst(waiting.runs, focus), [waiting.runs, focus]);
     const [records, setRecords] = useState<Record<string, Record_>>({});
     const [names, setNames] = useState<Map<string, Orchestration>>(new Map());
     const reading = useRef(new Set<string>());
