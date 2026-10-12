@@ -4,8 +4,8 @@
  * workflow editor's bottom panel and the log viewer.
  *
  * The page is the shared `RunDetail` (components/run), fed from this API: the
- * run's record, its workflow as saved today, the runs its steps started, and
- * the schedules (to name what started it). While the run is live its record is
+ * run's record, its own copy of its workflow (F443) and the workflow as saved
+ * today, the runs its steps started, and the schedules (to name what started it). While the run is live its record is
  * read again — every 3 s running, every 10 s waiting on a person — so the facts
  * and the path move with it, and an answer given elsewhere shows; the log follows
  * the journal on its own stream. The editor's live view stays where it was, and
@@ -35,13 +35,24 @@ export function RunPage({ runId }: { runId: string }) {
     const schedulesRef = useRef<{ id: string; name: string }[] | null>(null);
     const workflowRef = useRef<{ id: string; value: Orchestration | null } | null>(null);
     const statusRef = useRef<string | null>(null);
+    // The run's own copy of its workflow (F443): a whole definition, so read with
+    // the record once, and again on the read after its status moved — a Replay
+    // takes the workflow as saved and makes that the copy. Polls go without it.
+    const copyRef = useRef<{ status: string | null; value: Orchestration | null } | null>(null);
+    const lastStatusRef = useRef<string | null>(null);
 
     const read = useCallback(async () => {
         try {
-            const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}`);
+            const withCopy = copyRef.current === null || copyRef.current.status !== lastStatusRef.current;
+            const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}${withCopy ? '?definition=1' : ''}`);
             if (res.status === 404) { setLoaded({ state: 'missing' }); return; }
             if (!res.ok) throw new Error(`The run could not be read (HTTP ${res.status}).`);
             const data = await res.json();
+            lastStatusRef.current = data.status ?? null;
+            if (withCopy) {
+                const copy = data.definition && Array.isArray(data.definition.steps) ? (data.definition as Orchestration) : null;
+                copyRef.current = { status: lastStatusRef.current, value: copy };
+            }
             if (schedulesRef.current === null) {
                 schedulesRef.current = await fetch('/api/schedules')
                     .then((r) => (r.ok ? r.json() : []))
@@ -55,7 +66,7 @@ export function RunPage({ runId }: { runId: string }) {
                     : null;
                 workflowRef.current = { id: orchId, value: wf && wf.id ? (wf as Orchestration) : null };
             }
-            const run = ossRunRecord(data, workflowRef.current.value, schedulesRef.current ?? []);
+            const run = { ...ossRunRecord(data, workflowRef.current.value, schedulesRef.current ?? []), definition: copyRef.current?.value ?? null };
             // The runs its steps started: read again whenever the run moves on.
             if (statusRef.current !== `${run.status}:${run.history.length}`) {
                 statusRef.current = `${run.status}:${run.history.length}`;

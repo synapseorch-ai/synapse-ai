@@ -130,6 +130,12 @@ export type RunRecord = {
     error: string | null;
     /** Per-step spend, by step id (cloud). */
     stepUsage?: Record<string, StepUsage>;
+    /**
+     * The workflow as the run started it — the steps it carries on with after a
+     * pause, whatever was saved since (F443); after a Replay, what the Replay
+     * ran. `null` for a run from before the copy was kept, drawn on today's.
+     */
+    definition?: Orchestration | null;
 };
 
 /** A run a step of this one started (`/runs/{id}/children`). */
@@ -558,16 +564,23 @@ export type Followed = {
 };
 
 /**
- * What the run did against the workflow as it is saved today (no API keeps a
- * snapshot of it as it ran, so an edit after the run is said, not hidden).
- * `null` when there is no workflow to compare with.
+ * What the run did against `workflow`, the steps it is drawn on. `null` when
+ * there is none to compare with.
+ *
+ * Given `saved` — the workflow as saved today — `workflow` is the run's own
+ * copy (F443): what it ran and, if it waits, what it carries on with. An edit
+ * since is said, and what it means for this run. Without it, `workflow` is
+ * today's (a run from before the copy was kept), and an edit after the run is
+ * said, not hidden.
  */
 export function followedLine(
     run: Pick<RunRecord, 'status' | 'waitingForHuman' | 'currentStepId' | 'history' | 'startedAt'>,
     workflow: Orchestration | null | undefined,
     formatWhen: (iso: string) => string,
+    saved?: Orchestration | null,
 ): Followed | null {
     if (!workflow) return null;
+    const ownCopy = saved !== undefined;
     const steps = new Map(workflow.steps.map((s) => [s.id, s]));
     const path = pathOrder(workflow).filter((id) => steps.get(id)?.type !== 'end');
     const total = path.length;
@@ -578,10 +591,13 @@ export function followedLine(
     const notes: string[] = [];
 
     const edited = (() => {
-        const updated = toMs(workflow.updated_at);
+        const savedAt = ownCopy ? saved?.updated_at : workflow.updated_at;
+        const updated = toMs(savedAt);
         const started = toMs(run.startedAt);
-        return updated !== null && started !== null && updated > started + 1000 ? workflow.updated_at! : null;
+        return updated !== null && started !== null && updated > started + 1000 ? savedAt! : null;
     })();
+    // Drawn on its own copy, with an edit since: "the saved workflow" is not what it ran.
+    const which = ownCopy && edited ? 'the workflow as it started' : 'the saved workflow';
 
     if (gone.length) notes.push(`${listNames(gone.map(nameOf))} ${gone.length === 1 ? 'is' : 'are'} no longer in the workflow.`);
     const repeats = [...new Set(run.history.map((h) => h.step_id))]
@@ -590,6 +606,16 @@ export function followedLine(
     for (const [id, n] of repeats.slice(0, 3)) notes.push(`${nameOf(id)} ran ${n} times.`);
 
     const bucket = bucketOf(run.status, run.waitingForHuman);
+    const editedNote = (stopped: boolean) => {
+        if (!edited) return null;
+        if (!ownCopy) return `The workflow was edited after this run (${formatWhen(edited)}).`;
+        const said = `The workflow was edited after this run started (${formatWhen(edited)}).`;
+        if (bucket === 'needs' || bucket === 'running' || bucket === 'queued') {
+            return `${said} This run carries on with the steps it started with; new runs use the edit.`;
+        }
+        return stopped ? `${said} Shown as this run ran it; Replay carries on with the saved workflow.`
+            : `${said} Shown as this run ran it.`;
+    };
     const at = (id: string | null | undefined) => {
         const i = id ? path.indexOf(id) : -1;
         return i >= 0 ? `step ${i + 1} of ${total}` : null;
@@ -605,7 +631,7 @@ export function followedLine(
         text = id
             ? `Stopped at ${where ?? 'a step'}${where ? ': ' : ' '}${nameOf(id)}.`
             : 'Stopped before its first step.';
-        notes.push(edited ? `The workflow was edited after this run (${formatWhen(edited)}).` : 'The saved workflow hasn’t changed since.');
+        notes.push(editedNote(true) ?? 'The saved workflow hasn’t changed since.');
         return { tone, text, notes };
     }
     if (bucket === 'needs') {
@@ -639,13 +665,14 @@ export function followedLine(
         const inOrder = firsts.every((v, i) => i === 0 || v >= firsts[i - 1] || depthBefore(workflow, path, firsts[i - 1], v));
         if (!missed.length && !gone.length) {
             tone = 'success';
-            text = `Followed the saved workflow: ${total} of ${total} steps${inOrder ? ', in order' : ''}.`;
+            text = `Followed ${which}: ${total} of ${total} steps${inOrder ? ', in order' : ''}.`;
         } else {
-            text = `Ran ${reached.length} of ${total} steps of the saved workflow.`;
+            text = `Ran ${reached.length} of ${total} steps of ${which}.`;
             if (missed.length) notes.unshift(`Not reached: ${listNames(missed.map(nameOf), 4)}.`);
         }
     }
-    if (edited) notes.push(`The workflow was edited after this run (${formatWhen(edited)}).`);
+    const note = editedNote(bucket === 'cancelled');
+    if (note) notes.push(note);
     return { tone, text, notes };
 }
 

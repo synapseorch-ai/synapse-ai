@@ -11,7 +11,9 @@
  *   on, answered in place
  * - "Followed the saved workflow", or what differed
  * - the path: a waterfall of real starts and durations for a run that ran; the
- *   workflow's steps, as far as it got, for one that waits or stopped
+ *   workflow's steps, as far as it got, for one that waits or stopped — drawn
+ *   on the run's own copy of the workflow when it has one (F443), which is what
+ *   it ran and carries on with, whatever was saved since
  * - what it produced, its plan, its activity and nested runs, its shared state,
  *   the raw events, and the product's own last sections (cloud's transcript,
  *   OSS's log)
@@ -64,7 +66,11 @@ export function RunDetail({
     run, workflow, nested, onChanged, notices, extra, activityNote,
 }: {
     run: RunRecord;
-    /** The workflow as it is saved today; `null` when it was deleted. */
+    /**
+     * The workflow as it is saved today; `null` when it was deleted. The run is
+     * drawn on its own copy (`run.definition`) when it has one, and this says
+     * whether it was edited since.
+     */
     workflow: Orchestration | null;
     /** The runs its steps started. */
     nested: NestedRun[];
@@ -99,11 +105,14 @@ export function RunDetail({
     const cancel = () => act(() => host.cancel(run.id));
     const replay = () => act(() => host.replay(run.id));
 
-    const path = workflow ? pathOrder(workflow).filter((id) => workflow.steps.find((s) => s.id === id)?.type !== 'end') : [];
+    // What the run is drawn on: the steps it ran and carries on with (F443), or
+    // today's for a run from before the copy was kept.
+    const drawn = run.definition ?? workflow;
+    const path = drawn ? pathOrder(drawn).filter((id) => drawn.steps.find((s) => s.id === id)?.type !== 'end') : [];
     const stepsLine = (bucket === 'completed' || !path.length)
         ? <><b className="font-semibold tabular-nums text-text">{run.history.length}</b> {run.history.length === 1 ? 'step' : 'steps'}</>
         : <><b className="font-semibold tabular-nums text-text">{new Set(run.history.filter((h) => h.status === 'completed').map((h) => h.step_id)).size}</b> of {path.length} steps done</>;
-    const followed = followedLine(run, workflow, (iso) => when(iso, clock));
+    const followed = followedLine(run, drawn, (iso) => when(iso, clock), run.definition ? workflow : undefined);
     const asking = bucket === 'needs' && run.status === 'paused' && Boolean(run.humanPrompt);
     const stopped = run.status === 'failed' || run.status === 'cancelled';
     const asStepper = bucket === 'needs' || bucket === 'failed' || bucket === 'cancelled' || bucket === 'queued';
@@ -170,14 +179,14 @@ export function RunDetail({
                         aside={run.trigger ? <>Started by: {run.trigger}</> : undefined}
                     />
                     {asStepper
-                        ? <RunStepper run={run} workflow={workflow} />
-                        : <RunTimeline run={run} workflow={workflow} nested={nested} />}
+                        ? <RunStepper run={run} workflow={drawn} />
+                        : <RunTimeline run={run} workflow={drawn} nested={nested} />}
                 </section>
 
                 {bucket !== 'queued' && (
                     <section className="grid gap-2.5">
                         <SectionHead title="What it produced" />
-                        <RunOutputs run={run} workflow={workflow} />
+                        <RunOutputs run={run} workflow={drawn} />
                     </section>
                 )}
 
