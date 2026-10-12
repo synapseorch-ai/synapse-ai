@@ -1516,6 +1516,20 @@ def _emit(
     })
 
 
+#: The builder tools that read the whole session set (`agent_sessions`, or
+#: `aggregate_all_tools` over it) rather than one agent's tools. A fleet turn
+#: that may call one of them is given every MCP server, because what they list
+#: is whatever the module holds (VOX-MCP, `core/scale/mcp_needs.py`). A new
+#: tool below that reads the sessions belongs here;
+#: `test_mcp_needs.py` checks this list against `_dispatch`.
+READS_EVERY_SESSION: frozenset[str] = frozenset({
+    "list_all_tools",
+    "get_tools_detail",
+    "list_tool_servers",
+    "list_server_tools",
+})
+
+
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
     from core.routes.agents import load_user_agents
     from core.routes.orchestrations import load_orchestrations

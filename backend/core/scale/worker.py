@@ -745,7 +745,14 @@ async def run_agent_chat_job(
         # process-wide native servers with the tenant's own, so what the engine
         # sees is the shape `ctx["server_module"]` used to be — except that it
         # is this tenant's, not whoever's was current at worker startup.
-        server_module = await mcp_pool.acquire()
+        #
+        # Only the tenant's servers this turn can call are connected for it
+        # (VOX-MCP, D262): a phone call waited 12.9 s for three servers its
+        # agent never used. `for_turn` never raises; in doubt, every server.
+        from core.scale import mcp_needs
+        needs = await mcp_needs.for_turn(agent_id, visitor)
+        with mcp_pool.needing(needs):
+            server_module = await mcp_pool.acquire()
         leased = True
 
         # No local materialisation: core/session.py reads the same rows this

@@ -35,6 +35,15 @@ signals ready, waits, and closes in its own context.
 `core/server.py`'s ``_filesystem_mcp_manager`` is the same pattern and carries
 the scar that produced it: closing an MCP stack from an HTTP handler propagated a
 CancelledError into the lifespan and tore down *every* session in the process.
+
+Why an entry is ready before its servers are
+--------------------------------------------
+An entry is built with the native servers only. Each ``acquire()`` then connects
+the tenant's own servers its turn can use (``needing``,
+``WorkerServerModule.ensure``) and waits for those alone. A phone call's first
+answer waited 12.9 s, ten of them for three servers its agent never uses, and
+a warm-up or an ``["all"]`` turn connecting everything must not hold up a turn
+that needs less (VOX-MCP, D262). Unsaid, a caller gets every server, as before.
 """
 from __future__ import annotations
 
@@ -42,6 +51,9 @@ import asyncio
 import os
 import time
 from collections import OrderedDict
+from contextlib import contextmanager
+from contextvars import ContextVar
+from typing import Iterable, Iterator
 
 from core.tenancy import get_tenant
 
@@ -55,9 +67,10 @@ _DEFAULT_IDLE_TTL = 900.0
 #:
 #: Deliberately generous, because it is a **ceiling on the pathological case**
 #: rather than a service-level target. A legitimate build is already bounded per
-#: server by `REMOTE_MCP_CONNECT_TIMEOUT` (30s by default), and the tenant's
-#: servers are connected in sequence — so an org with eight unreachable servers
-#: legitimately spends four minutes here and must not be failed for it.
+#: server by `REMOTE_MCP_CONNECT_TIMEOUT` (30s by default), twice for a server
+#: whose token is refreshed. The tenant's servers connect at once now (VOX-MCP),
+#: so this bounds the natives' build and, separately, the wait for a turn's own
+#: servers; it was sized when they connected in sequence and stays as it was.
 #:
 #: What this catches is the class the per-server bound cannot: a vault hydration
 #: that never returns, a resolver query that hangs, anything a future step adds
@@ -117,6 +130,30 @@ _lock: asyncio.Lock | None = None
 _shared = None
 
 
+#: What the current caller's turn may call (`needing`). Unset is every server.
+_needs: ContextVar["frozenset[str] | None"] = ContextVar("synapse_mcp_needs", default=None)
+
+
+@contextmanager
+def needing(tools: "Iterable[str] | None") -> Iterator[None]:
+    """Acquire for a turn that may call only `tools` (`None`: every server).
+
+    A context, as the tenant and the visitor are, rather than an argument:
+    every caller and every stand-in keeps calling `acquire()` as it always
+    has. `core/scale/mcp_needs.py` works the names out.
+    """
+    token = _needs.set(None if tools is None else frozenset(tools))
+    try:
+        yield
+    finally:
+        _needs.reset(token)
+
+
+def needed() -> "frozenset[str] | None":
+    """What `needing` says for this caller. For the pool, and for tests."""
+    return _needs.get()
+
+
 def _get_lock() -> asyncio.Lock:
     # Created lazily: a Lock binds to the running loop, and this module is
     # imported long before the worker's loop exists.
@@ -141,10 +178,12 @@ async def _build(tenant: str):
     from core import tenancy
     from core.scale.worker_server_module import WorkerServerModule
 
+    # Without the tenant's own servers: each acquire connects what its turn
+    # needs (`acquire`, VOX-MCP).
     if tenancy.is_multi_tenant() and tenancy.get_tenant() != tenant:
         with tenancy.tenant_scope(tenant):
-            return await WorkerServerModule.build_for_tenant(_shared)
-    return await WorkerServerModule.build_for_tenant(_shared)
+            return await WorkerServerModule.build_for_tenant(_shared, connect_user=False)
+    return await WorkerServerModule.build_for_tenant(_shared, connect_user=False)
 
 
 async def _own(entry: _Entry) -> None:
@@ -284,8 +323,39 @@ async def acquire(tenant: str | None = None):
             entry.closing.set()
         return await acquire(tenant)
 
+    # The tenant's own servers this caller's turn can use, and only those.
+    # A stand-in module without `ensure` is a whole one.
+    module = entry.module
+    ensure = getattr(module, "ensure", None)
+    if ensure is not None:
+        try:
+            await ensure(_needs.get(), timeout=_build_timeout())
+        except TimeoutError as exc:
+            await _drop_ref(entry)
+            raise TimeoutError(f"{exc}, for tenant '{tenant}'") from None
+        except BaseException:
+            await _drop_ref(entry)
+            raise
+        if getattr(module, "closed", False):
+            # Invalidated while this caller waited (an MCP edit's epoch): that
+            # module is going, so start again on the tenant's next one.
+            await _drop_ref(entry)
+            return await acquire(tenant)
+
     await _reap()
-    return entry.module
+    return module
+
+
+async def _drop_ref(entry: _Entry) -> None:
+    """Give back a reference `acquire()` took and will not hand out.
+
+    By the entry, not the tenant: the tenant's slot may already hold a newer
+    entry, whose count is not this caller's to change.
+    """
+    async with _get_lock():
+        entry.refs = max(0, entry.refs - 1)
+        if entry.refs == 0:
+            entry.idle_since = time.monotonic()
 
 
 def _is_stale(entry: _Entry) -> bool:

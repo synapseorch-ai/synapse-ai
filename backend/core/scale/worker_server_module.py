@@ -25,6 +25,7 @@ import asyncio
 import os
 import platform
 import sys
+import time
 from pathlib import Path
 
 from core.tool_router import ToolRouter
@@ -74,6 +75,15 @@ class WorkerServerModule:
         # deliberately absent: `close()` closes what this module opened, never
         # what it referenced.
         self._servers: list = []
+        # This tenant's own servers, read once (`_resolve_user_mcp`) and
+        # connected as turns ask for them (`ensure`, VOX-MCP): name ->
+        # (config, params, server_type) in the listed order, the order itself,
+        # the connects under way, and the servers already tried.
+        self._user_configs: dict | None = None
+        self._rank: dict[str, int] = {}
+        self._pending: dict[str, asyncio.Task] = {}
+        self._settled: set[str] = set()
+        self._closed = False
 
     @classmethod
     async def build_shared(
@@ -99,12 +109,18 @@ class WorkerServerModule:
         cls,
         shared: "WorkerServerModule | None" = None,
         disabled_mcp_names: list[str] | None = None,
+        *,
+        connect_user: bool = True,
     ) -> "WorkerServerModule":
         """The current tenant's MCP: the native servers it may use, and its own.
 
         `shared` is folded into the returned module's sessions and router so
         callers see one set. Its sessions are *referenced*, never owned — this
         module's `close()` only closes what this module opened.
+
+        `connect_user=False` reads the tenant's servers without connecting any:
+        the pool builds that way and each job then connects what its turn can
+        use (`ensure`, VOX-MCP). The default connects them all, as before.
         """
         instance = cls()
         disabled = set(disabled_mcp_names or [])
@@ -145,7 +161,10 @@ class WorkerServerModule:
                 _get_native_mcp_servers(_TOOLS_DIR, _BACKEND_ROOT, scope="tenant"),
                 disabled,
             )
-            await instance._connect_user_mcp(disabled)
+            if connect_user:
+                await instance._connect_user_mcp(disabled)
+            else:
+                await instance._resolve_user_mcp(disabled)
         except BaseException:
             try:
                 await instance.close()
@@ -217,28 +236,36 @@ class WorkerServerModule:
                 instance.tool_router.register(server_name, tool.name)
 
     async def _connect_user_mcp(self, disabled: set) -> None:
-        """This tenant's own MCP servers.
+        """This tenant's own MCP servers, every one of them, connected at once.
 
         In scale mode `stdio_mcp_allowed()` is force-disabled, so in practice
         these are remote (SSE) sessions — no subprocess, which is what makes a
         per-tenant set affordable at fleet scale.
+
+        The pool no longer comes through here: it builds without them and a job
+        asks for what its turn can use (`ensure`, VOX-MCP). This is "all of
+        them", for a caller that wants the whole set.
         """
-        from mcp import ClientSession
-        from mcp.client.stdio import stdio_client
-        from datetime import timedelta
-        from core.config import MCP_SESSION_READ_TIMEOUT
+        await self._resolve_user_mcp(disabled)
+        await self.ensure(None)
 
-        instance = self
-
-        _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
+    async def _resolve_user_mcp(self, disabled: set) -> None:
+        """Read this tenant's servers once, and set aside the ones that can never
+        connect here, so `ensure` has a list to choose from."""
+        if self._user_configs is not None:
+            return
 
         # Browser Automation (playwright) requires a local browser install — skip in workers.
         _BROWSER_MCP_NAMES = {"Browser Automation", "browser", "playwright"}
         _BROWSER_MCP_PKGS = {"@playwright/mcp", "playwright-mcp"}
 
-        from core.mcp_oauth import can_refresh, refresh_and_persist
-        from core.scale.context import report_mcp_status, resolve_mcp_servers
+        from core.scale.context import resolve_mcp_servers
         user_mcp_configs = await resolve_mcp_servers()
+        if self._user_configs is not None:
+            return  # another caller read them while this one waited
+
+        configs: dict = {}
+        never: list[str] = []
         for cfg in user_mcp_configs:
             server_name = cfg.get("name", "")
             if not server_name or server_name in disabled:
@@ -246,15 +273,15 @@ class WorkerServerModule:
             if not cfg.get("enabled", True):
                 continue
             # Skip native servers already connected above
-            if server_name in instance.agent_sessions:
+            if server_name in self.agent_sessions:
                 continue
             # Skip browser/playwright MCP — requires a local browser install
             if server_name in _BROWSER_MCP_NAMES:
-                instance.mcp_disabled.append(server_name)
+                never.append(server_name)
                 continue
             args_str = " ".join(str(a) for a in cfg.get("args", []))
             if any(pkg in args_str for pkg in _BROWSER_MCP_PKGS):
-                instance.mcp_disabled.append(server_name)
+                never.append(server_name)
                 continue
             server_type = cfg.get("server_type", "stdio")
             params = (
@@ -263,9 +290,89 @@ class WorkerServerModule:
                 else _build_stdio_mcp_params(cfg)
             )
             if params is None:
-                instance.mcp_disabled.append(server_name)
+                never.append(server_name)
                 continue
+            configs[server_name] = (cfg, params, server_type)
 
+        self._rank = {
+            name: i for i, name in enumerate(
+                cfg.get("name", "") for cfg in user_mcp_configs
+            ) if name
+        }
+        self._user_configs = configs
+        for server_name in never:
+            self._note(self.mcp_disabled, server_name)
+
+    async def ensure(self, tools=None, *, timeout: float | None = None) -> None:
+        """Connect the servers `tools` can name that this module has not tried.
+
+        `tools` is what a turn may call (`core/scale/mcp_needs.py`); `None` is
+        every server. Each server connects in its own task, all at once, so a
+        turn that needs three servers waits for the slowest rather than the sum
+        — acme's three took ~12 s one after another (VOX-MCP, D262).
+
+        A server is tried once per module, as it was when the module was built
+        whole: one that failed stays failed until the pool builds the tenant
+        again. Two turns that need the same server share its one connect.
+
+        The tasks belong to the module, not to the caller: a turn that gives up
+        waiting leaves the connect running for the next one, and `close()`
+        stops them. `timeout` bounds the wait; what has not connected by then is
+        stopped, so the next caller does not inherit the same wait, and this
+        caller is told.
+        """
+        if self._closed:
+            return
+        if self._user_configs is None:
+            await self._resolve_user_mcp(set())
+
+        from core.scale.mcp_needs import servers_for
+        from core.telemetry import detached_context
+
+        tasks = []
+        for server_name in servers_for(tools, self._user_configs):
+            if server_name in self._settled:
+                continue
+            task = self._pending.get(server_name)
+            if task is None:
+                # Detached from the caller's trace, as the pool's own owner task
+                # is: the connection outlives the job that asked for it.
+                task = asyncio.create_task(
+                    self._connect_one(server_name),
+                    name=f"mcp-connect[{server_name}]",
+                    context=detached_context(),
+                )
+                self._pending[server_name] = task
+            tasks.append((server_name, task))
+        if not tasks:
+            return
+
+        _done, late = await asyncio.wait([task for _, task in tasks], timeout=timeout)
+        if late:
+            for task in late:
+                task.cancel()
+            names = [name for name, task in tasks if task in late]
+            raise TimeoutError(
+                f"MCP server(s) {', '.join(names)} did not connect within {timeout:.0f}s"
+            )
+
+    async def _connect_one(self, server_name: str) -> None:
+        """One of this tenant's servers: open it, refresh once if it can, list
+        its tools and register them. Run as its own task by `ensure`."""
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+        from datetime import timedelta
+        from core.config import MCP_SESSION_READ_TIMEOUT
+        from core.mcp_oauth import can_refresh, refresh_and_persist
+        from core.scale.context import report_mcp_status
+
+        _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
+
+        cfg, params, server_type = self._user_configs[server_name]
+        started = time.monotonic()
+        handle = None
+        kept = False
+        try:
             async def connect(stack, params=params, server_type=server_type):
                 if server_type == "remote":
                     read, write = await _open_remote(
@@ -332,11 +439,11 @@ class WorkerServerModule:
                     f"{_reason(handle.error)}"
                     + ("  (re-authorisation needed)" if needs_auth else ""),
                 )
-                instance.mcp_disabled.append(server_name)
+                self._note(self.mcp_disabled, server_name)
                 if needs_auth:
-                    instance.mcp_reauth_needed.append(server_name)
+                    self._note(self.mcp_reauth_needed, server_name)
                     await report_mcp_status(server_name, "reauth_needed")
-                continue
+                return
 
             # `ext_mcp_` is how the rest of the engine spells "this session
             # belongs to a user-configured MCP server" — core/server.py:563,
@@ -355,24 +462,70 @@ class WorkerServerModule:
                     f"[worker_server_module] Skipping user MCP '{server_name}': "
                     f"connected but would not list tools ({e})",
                 )
-                handle.closing.set()
-                instance.mcp_disabled.append(server_name)
-                continue
+                self._note(self.mcp_disabled, server_name)
+                return
 
-            instance._servers.append(handle)
-            instance.agent_sessions[agent_key] = handle.session
-            instance._session_tools[agent_key] = tools_result.tools
-            for tool in tools_result.tools:
-                # alias=False: a tenant's own MCP server must not be able to take
-                # over a native tool's bare name for that tenant's runs.
-                instance.tool_router.register(
-                    server_name, tool.name, session_key=agent_key, alias=False
-                )
+            if self._closed:
+                # The module was closed while this connected (an MCP edit's
+                # epoch, a drain): nobody will close this session but us.
+                return
+            self._keep(server_name, agent_key, handle, tools_result.tools)
+            kept = True
             # And say so when it works, or a server flagged once stays flagged
             # after the person has already fixed it. `report_mcp_status` skips
             # a write when nothing moved, so the common case costs a read.
             await report_mcp_status(server_name, "connected")
-            _log.debug(f"[worker_server_module] Connected user MCP '{server_name}'")
+            _log.debug(
+                f"[worker_server_module] Connected user MCP '{server_name}' "
+                f"in {time.monotonic() - started:.1f}s"
+            )
+        finally:
+            if handle is not None and not kept:
+                handle.closing.set()
+            self._settled.add(server_name)
+            self._pending.pop(server_name, None)
+
+    def _keep(self, server_name: str, agent_key: str, handle, tools: list) -> None:
+        """Register a connected server. No await in here, so no turn sees half of it.
+
+        The session map and the tool cache are replaced, not changed in place:
+        `aggregate_all_tools` iterates `agent_sessions` with an await inside, and
+        a server added by another turn's connect would otherwise change the map
+        under it. The sessions stay in the listed order, natives first, so the
+        tools a model is shown do not depend on which server answered first.
+        """
+        self._servers.append(handle)
+        sessions = {**self.agent_sessions, agent_key: handle.session}
+        prefix = "ext_mcp_"
+
+        def rank(key: str):
+            return self._rank.get(key[len(prefix):]) if key.startswith(prefix) else None
+
+        natives = {k: v for k, v in sessions.items() if rank(k) is None}
+        ours = sorted(((k, v) for k, v in sessions.items() if rank(k) is not None),
+                      key=lambda kv: rank(kv[0]))
+        self.agent_sessions = {**natives, **dict(ours)}
+        self._session_tools = {**self._session_tools, agent_key: tools}
+        for tool in tools:
+            # alias=False: a tenant's own MCP server must not be able to take
+            # over a native tool's bare name for that tenant's runs.
+            self.tool_router.register(
+                server_name, tool.name, session_key=agent_key, alias=False
+            )
+
+    def _note(self, names: list, server_name: str) -> None:
+        """Add a server to `mcp_disabled` or `mcp_reauth_needed` in the listed
+        order, whichever finished first."""
+        rank = self._rank
+        i = len(names)
+        while i > 0 and names[i - 1] in rank and server_name in rank and rank[names[i - 1]] > rank[server_name]:
+            i -= 1
+        names.insert(i, server_name)
+
+    @property
+    def closed(self) -> bool:
+        """Whether `close()` has run. The pool checks it after a wait."""
+        return self._closed
 
     def _attach_memory_store(self) -> None:
         """Long-term memory, when this deployment can hold one safely.
@@ -436,7 +589,17 @@ class WorkerServerModule:
         scar that produced that warning.
 
         Safe from any task now, and safe to call twice.
+
+        Connects still under way (`ensure`) are stopped first: one that finishes
+        after this would hold a session nobody closes.
         """
+        self._closed = True
+        pending = list(self._pending.values())
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
         servers, self._servers = self._servers, []
         for handle in servers:
             handle.closing.set()
@@ -713,6 +876,11 @@ async def _start_server(name: str, connect) -> "_ServerHandle":
             f"no response within {REMOTE_MCP_CONNECT_TIMEOUT:.0f}s"
         )
         handle.closing.set()
+    except asyncio.CancelledError:
+        # Whoever waited is gone (a module closed mid-connect, VOX-MCP). The
+        # server still opening closes once it has, or nobody ever closes it.
+        handle.closing.set()
+        raise
     return handle
 
 
