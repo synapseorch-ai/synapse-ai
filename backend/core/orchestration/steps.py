@@ -18,6 +18,7 @@ from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
 from .pauses import end_step, progress_key as _progress_key
+from .step_usage import exact_window
 from .run_error import set_run_error
 from .run_gate import stop_reason
 from .time_limits import step_time_limit, timed_out
@@ -1668,7 +1669,7 @@ class ParallelStepExecutor:
                     "step_id": sub_step.id, "step_name": sub_step.name,
                     "step_type": sub_step.type.value, "status": "failed",
                     "error": f"Timed out {sub_after}",
-                    "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                    "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
                     "duration_seconds": duration,
                 })
                 yield {"type": "step_error", "orch_step_id": sub_step.id,
@@ -1699,7 +1700,7 @@ class ParallelStepExecutor:
             end_step(run.step_history, {
                 "step_id": sub_step.id, "step_name": sub_step.name,
                 "step_type": sub_step.type.value, "status": "failed" if failed else "completed",
-                "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
                 "duration_seconds": duration, "output_key": sub_step.output_key,
             })
             yield {"type": "step_complete", "orch_step_id": sub_step.id,
@@ -2068,7 +2069,7 @@ class LoopStepExecutor:
                             "step_id": sub_step.id, "step_name": sub_step.name,
                             "step_type": sub_step.type.value, "status": "failed",
                             "error": f"Timed out {sub_after}",
-                            "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                            "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
                             "duration_seconds": round(time.time() - step_start, 2),
                         })
                         yield {"type": "step_error", "orch_step_id": sub_step.id,
@@ -2120,7 +2121,7 @@ class LoopStepExecutor:
                         "step_id": sub_step.id, "step_name": sub_step.name,
                         "step_type": sub_step.type.value,
                         "status": "failed" if failed else "completed",
-                        "started_at": _iso(step_start), "ended_at": _iso(time.time()),
+                        "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
                         "duration_seconds": duration, "output_key": sub_step.output_key,
                     })
                     if not failed:

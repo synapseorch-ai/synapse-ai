@@ -327,6 +327,102 @@ async def estimate_orchestration_cost(orch_id: str, sample_size: int = 5):
     }
 
 
+#: Local models cost nothing to run here; the rate card has no rows for them.
+_LOCAL_PROVIDERS = frozenset({"ollama", "local_compatible"})
+
+
+def _parse_utc(value):
+    from core.orchestration.step_usage import parse_utc
+
+    return parse_utc(value)
+
+
+def _since(started, edited) -> bool:
+    """A run counts once it started after the last edit; with no edit time, every run does."""
+    return started is not None and (edited is None or started >= edited)
+
+
+def _unpriced(card: dict):
+    """Whether a model's calls have no price: unknown is not free (F63), and a local one is free."""
+    from core.providers.registry import provider_for
+    from core.usage_tracker import _resolve_pricing_entry
+
+    def unpriced(model: str) -> bool:
+        if provider_for(model).id in _LOCAL_PROVIDERS:
+            return False
+        return model.startswith("synapse.") or _resolve_pricing_entry(model, card) is None
+
+    return unpriced
+
+#: How many finished runs an estimate is read from once a workflow has some.
+_ESTIMATE_RUNS = 10
+
+
+@router.post("/api/orchestrations/estimate")
+async def estimate_run(request: Request):
+    """What a run will cost in models, before it starts (CE1, D261).
+
+    Body: `{definition, orchestration_id?}`. The definition is the one on the
+    screen, saved or not, so the editor's figure follows each edit. OSS has no
+    credits: this is the model half only, priced from the rate card for the
+    workspace's own keys (`core.orchestration.estimate`). A local model costs
+    nothing; a model the rate card does not price is named, never shown as $0.
+
+    With `orchestration_id`, finished runs since the workflow's last edit are
+    read too: the lowest and highest of the last ten replace the prior, unless a
+    step runs on a model the rate card cannot price (their cost would read 0).
+    """
+    from core.config import load_settings
+    from core.orchestration import estimate as est
+    from core.orchestration.state import SharedState
+    from core.providers.registry import provider_for
+    from core.store.resources import get_orchestration as _get, load_agents
+    from core.usage_tracker import _ensure_pricing, _resolve_pricing_entry
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=422, detail="Send {definition, orchestration_id?} as JSON.")
+    definition = body.get("definition") if isinstance(body, dict) else None
+    if not isinstance(definition, dict):
+        raise HTTPException(status_code=422, detail="`definition` must be a workflow definition.")
+
+    card = await _ensure_pricing()
+
+    def price_model(model: str) -> est.ModelRate | None:
+        if provider_for(model).id in _LOCAL_PROVIDERS:
+            return est.ModelRate(est.LOCAL, 0.0, 0.0)
+        entry = None if model.startswith("synapse.") else _resolve_pricing_entry(model, card)
+        if not entry:
+            return None
+        return est.ModelRate(est.OWN_KEYS, float(entry.get("input_per_1m") or 0.0),
+                             float(entry.get("output_per_1m") or 0.0))
+
+    agents = {a["id"]: a for a in await load_agents() if a.get("id")}
+    workspace_model = str(load_settings().get("model") or "")
+    priced = est.models(definition, agents=agents, workspace_model=workspace_model, price_model=price_model)
+    shape = est.span(definition, lambda step: (0.0, 0.0), agents=agents)
+
+    runs: dict | None = None
+    orch_id = body.get("orchestration_id")
+    if orch_id and not priced.unpriced:
+        saved = await _get(str(orch_id))
+        edited = _parse_utc((saved or {}).get("updated_at"))
+        recent = await SharedState.list_runs(limit=50, orchestration_ids={str(orch_id)})
+        finished = [r for r in recent if r.get("status") == "completed"
+                    and _since(_parse_utc(r.get("started_at")), edited)][:_ESTIMATE_RUNS]
+        spread = est.runs_span(r.get("total_cost_usd") for r in finished)
+        if spread is not None:
+            runs = {"count": len(finished), **spread.as_dict()}
+
+    return {
+        "models": priced.as_dict(),
+        "open": sorted(shape.open),
+        "runs": runs,
+        "basis": "runs" if runs else "steps",
+    }
+
+
 @router.post("/api/orchestrations")
 async def create_or_update_orchestration(orch: Orchestration):
     # A single upsert rather than read-list / mutate / write-list, which loses
@@ -427,6 +523,24 @@ def _public_run_view(run) -> dict:
     return doc
 
 
+async def _step_usage(run) -> tuple[dict, list]:
+    """What each step spent, from the run's calls (CE1; `core.orchestration.step_usage`).
+
+    Best-effort, like the scores: a run page that failed to load because its
+    usage rows could not be read would lose the run to save a breakdown of it.
+    """
+    from core.orchestration.step_usage import calls_from_rows, sweep
+    from core.usage_tracker import _ensure_pricing, get_usage_logs
+
+    try:
+        rows = await get_usage_logs(run_id=run.run_id, limit=100_000)
+        if not rows:
+            return {}, []
+        return sweep(run.step_history or [], calls_from_rows(rows), unpriced=_unpriced(await _ensure_pricing()))
+    except Exception:
+        return {}, []
+
+
 @router.get("/api/orchestrations/runs/{run_id}")
 async def get_run_status(run_id: str, definition: bool = False):
     """Get the current state of a run from its checkpoint.
@@ -441,6 +555,7 @@ async def get_run_status(run_id: str, definition: bool = False):
         body = _public_run_view(restored.run)
         if definition:
             body["definition"] = restored.run.definition
+        body["step_usage"], body["entry_usage"] = await _step_usage(restored.run)
         return body
     except FileNotFoundError:
         # Checkpoints are only written at step boundaries, so a run still inside

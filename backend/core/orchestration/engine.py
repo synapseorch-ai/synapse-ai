@@ -18,6 +18,7 @@ from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
 from .run_error import failure_reason, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
+from .step_usage import exact_window
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_gate import stop_reason
@@ -605,6 +606,7 @@ class OrchestrationEngine:
                         "error": f"Timed out {timeout_text}",
                         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
                         "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        **exact_window(step_start_time),
                         "duration_seconds": round(time.time() - step_start_time, 2),
                     })
                     run.status = "failed"
@@ -648,6 +650,7 @@ class OrchestrationEngine:
                     "status": "completed",
                     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
                     "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    **exact_window(step_start_time),
                     "duration_seconds": step_duration,
                     "output_key": step.output_key,
                 })
@@ -732,6 +735,7 @@ class OrchestrationEngine:
                     "error": real_error,
                     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
                     "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    **exact_window(step_start_time),
                     "duration_seconds": round(time.time() - step_start_time, 2),
                 })
                 run.status = "failed"
@@ -1886,6 +1890,7 @@ class OrchestrationEngine:
                 "step_type": step.type.value,
                 "status": "paused",
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
+                "started_ms": int(step_start_time * 1000),
                 "output_key": step.output_key,
             }
         chain = pause_chain(self.step_map, run.shared_state, step.id)
@@ -1896,6 +1901,7 @@ class OrchestrationEngine:
             "status": "paused",
             # The pause, not the container's start: this is the wait.
             "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "started_ms": int(time.time() * 1000),
             "output_key": asker.output_key,
             "within": innermost_container(step.id, chain) if chain else step.id,
         }

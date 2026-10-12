@@ -341,6 +341,7 @@ class WorkerEngineAdapter:
         from sqlalchemy import select, update
 
         from core.orchestration.pauses import end_step
+        from core.orchestration.step_usage import exact_window
         from core.scale.models_db import OrchestrationRunDB
 
         try:
@@ -377,6 +378,7 @@ class WorkerEngineAdapter:
                     "cut": True,
                     "started_at": stamp(started),
                     "ended_at": stamp(now),
+                    **exact_window(started, now),
                     "duration_seconds": round(max(0.0, now - started), 2),
                 })
                 await session.execute(

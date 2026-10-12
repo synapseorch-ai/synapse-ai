@@ -102,14 +102,18 @@ def end_step(step_history: list, entry: dict) -> None:
     the pause's, reopened `running` by the resume. Its end closes that entry
     instead of adding a second, so a step that ran once has one entry: that is
     what a run's timeline shows and what cloud prices (F109). The entry keeps
-    its start; its duration is this execution's, never the person's wait.
+    its start, whole-second and exact; its duration is this execution's, never
+    the person's wait.
     """
     for existing in reversed(step_history):
         if (isinstance(existing, dict) and existing.get("step_id") == entry.get("step_id")
                 and existing.get("status") == "running"):
-            started_at = existing.get("started_at")
+            kept = {key: existing[key] for key in ("started_at", "started_ms") if existing.get(key)}
             existing.update(entry)
-            if started_at:
-                existing["started_at"] = started_at
+            existing.update(kept)
+            if "started_ms" not in kept:
+                # Opened before the exact stamps: its window stays the whole-second one.
+                existing.pop("started_ms", None)
+                existing.pop("ended_ms", None)
             return
     step_history.append(entry)
