@@ -24,6 +24,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from core.orchestration.human_fields import BadAnswer, check_answer  # noqa: F401 — BadAnswer for the doors
+
 
 class RunNotWaiting(Exception):
     """The run is not paused on a question. `status` is None when there is no such run."""
@@ -107,6 +109,7 @@ async def worker_run_row(app_state: Any, run_id: str):
                 OrchestrationRunDB.current_step_id,
                 OrchestrationRunDB.waiting_for_human,
                 OrchestrationRunDB.step_history,
+                OrchestrationRunDB.human_fields,
             ).where(
                 OrchestrationRunDB.run_id == run_id,
                 OrchestrationRunDB.tenant_id == get_tenant(),
@@ -131,8 +134,10 @@ _answering: set[str] = set()
 async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answered:
     """Resume `run_id` with `response`, on the fleet or in this process.
 
-    Raises `RunNotWaiting` for a run that is not paused on a question and
-    `RunAlreadyActive` when this process is already running it.
+    Raises `RunNotWaiting` for a run that is not paused on a question,
+    `RunAlreadyActive` when this process is already running it, and
+    `human_fields.BadAnswer` for an answer to an email, date, phone or dropdown
+    field that is not one (F455), before anything is queued or resumed.
     """
     try:
         row = await worker_run_row(app_state, run_id)
@@ -142,6 +147,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
     if row is not None:
         if not _waiting(row.status, row.waiting_for_human):
             raise RunNotWaiting(run_id, row.status)
+        response = check_answer(row.human_fields, response)
         from core.orchestration.pauses import pause_ordinal
         from core.scale.config import QUEUE_NAME
 
@@ -179,6 +185,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
             raise RunNotWaiting(run_id, None)
         if not _waiting(run.status, run.waiting_for_human):
             raise RunNotWaiting(run_id, run.status)
+        response = check_answer(run.human_fields, response)
 
         from core.orchestration.engine import OrchestrationEngine
 

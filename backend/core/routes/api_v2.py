@@ -484,6 +484,7 @@ async def v2_resume_run(
                 OrchestrationRunDB.status,
                 OrchestrationRunDB.waiting_for_human,
                 OrchestrationRunDB.step_history,
+                OrchestrationRunDB.human_fields,
             )
             .where(OrchestrationRunDB.run_id == run_id)
         )
@@ -502,8 +503,14 @@ async def v2_resume_run(
     # run, because the run's state is in the store rather than on the disk of
     # whichever process happened to start it.
     queue_name = QUEUE_NAME
+    # An email, date, phone or dropdown answer that is not one (F455), refused
+    # before anything is queued, as `answer_paused_run` refuses it for v1.
+    from core.orchestration.human_fields import BadAnswer, check_answer
+    try:
+        resp = check_answer(run_row.human_fields, body.response)
+    except BadAnswer as exc:
+        raise HTTPException(422, detail=str(exc))
     # The answer travels as the resume job's argument.
-    resp = body.response
     if isinstance(resp, str):
         resp = {"response": resp}
 

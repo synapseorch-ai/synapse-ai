@@ -873,7 +873,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "human_prompt": {"type": "string", "description": "Prompt shown to user (human steps)"},
                     "human_fields_json": {
                         "type": "string",
-                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{state.review.feedback}`. Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"}]'",
+                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{state.review.feedback}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
                     "forced_tool": {"type": "string", "description": "Tool name for tool steps"},
                     "merge_strategy": {
@@ -3000,6 +3000,14 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
         if not names:
             continue
         hid, key = s.get("id", "?"), s.get("output_key") or "human_response"
+        # A dropdown with nothing to choose from cannot be answered (F455).
+        from core.orchestration.human_fields import field_options, field_type
+        for f in fields or []:
+            if isinstance(f, dict) and field_type(f.get("type")) == "choice" and not field_options(f):
+                issues.append(
+                    f"Human step '{hid}' field '{f.get('name')}' is a dropdown (type choice) with no "
+                    f'options: give it "options": ["…", "…"], one of which the person picks.'
+                )
         fielded[key] = (hid, names[0])
         entry = schema.get(key)
         declared = normalize_state_type(entry.get("type")) if isinstance(entry, dict) else None

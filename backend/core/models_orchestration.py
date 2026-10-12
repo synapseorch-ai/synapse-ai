@@ -97,7 +97,8 @@ class StepConfig(BaseModel):
 
     # HUMAN -- pause for human input
     human_prompt: str | None = None
-    human_fields: list[dict[str, str]] = []  # [{name, type, label}]
+    # [{name, type, label}], and a dropdown's `options: [str]` (F455): `core/orchestration/human_fields.py`.
+    human_fields: list[dict[str, Any]] = []
     human_channel_id: str | None = None      # messaging channel to notify (optional)
     human_timeout_seconds: int = int(ORCH_HUMAN_TIMEOUT)  # how long to wait for messaging response
 
@@ -262,7 +263,7 @@ class OrchestrationRun(BaseModel):
     # Human-in-the-loop
     waiting_for_human: bool = False
     human_prompt: str | None = None
-    human_fields: list[dict[str, str]] = []
+    human_fields: list[dict[str, Any]] = []
     # Nested-orchestration human-in-the-loop tracking
     nested_run_id: str | None = None   # sub-run paused waiting for human input
     nested_orch_id: str | None = None  # sub-orchestration definition ID

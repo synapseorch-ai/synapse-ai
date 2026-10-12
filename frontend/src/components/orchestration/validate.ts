@@ -12,6 +12,7 @@
 import type { Orchestration, StepConfig, StepIssue } from '@/types/orchestration';
 import { BUILTIN_STATE_KEYS } from './graph';
 import { normalizeStateType } from './stateTypes';
+import { humanFieldOptions, humanFieldType } from './humanFields';
 
 export interface ValidationResult {
     byStep: Record<string, StepIssue[]>;
@@ -267,6 +268,12 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
     const fielded = new Map<string, { stepName: string; field: string }>();
     for (const s of orch.steps) {
         if (s.type !== 'human') continue;
+        // A dropdown with nothing to choose from cannot be answered (F455); the builder says the same.
+        for (const f of s.human_fields || []) {
+            if (f && humanFieldType(f.type) === 'choice' && humanFieldOptions(f).length === 0) {
+                add(s.id, error(`Field “${f.name}” is a dropdown with no options`));
+            }
+        }
         const names = (s.human_fields || []).map((f) => f?.name).filter((n): n is string => !!n);
         if (!names.length) continue;
         const key = s.output_key?.trim() || 'human_response';

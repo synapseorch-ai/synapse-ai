@@ -627,7 +627,7 @@ async def _refuse_builder_run(run_id: str) -> None:
 async def _answer(request: Request, run_id: str, human_response):
     """Resume a paused run once — the helper the app and a channel reply use."""
     from core.orchestration.answers import (
-        EmptyAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run, refuse_empty,
+        BadAnswer, EmptyAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run, refuse_empty,
     )
     try:
         refuse_empty(human_response)
@@ -636,6 +636,9 @@ async def _answer(request: Request, run_id: str, human_response):
     await _refuse_builder_run(run_id)
     try:
         return await answer_paused_run(request.app.state, run_id, human_response)
+    except BadAnswer as exc:
+        # An email, date, phone or dropdown answer that is not one (F455).
+        raise HTTPException(status_code=422, detail=str(exc))
     except RunAlreadyActive:
         raise HTTPException(status_code=409, detail="Run is already active")
     except RunNotWaiting as exc:

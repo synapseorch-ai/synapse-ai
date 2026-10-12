@@ -88,7 +88,7 @@ export interface StepConfig {
 
     // HUMAN
     human_prompt?: string;
-    human_fields?: { name: string; type: string; label: string }[];
+    human_fields?: { name: string; type: string; label: string; options?: string[] }[];
     // Optional messaging-channel notification for the pause (first response wins).
     human_channel_id?: string;
     human_timeout_seconds?: number;
@@ -184,7 +184,7 @@ export interface OrchestrationRun {
     current_step_id?: string;
     waiting_for_human: boolean;
     human_prompt?: string;
-    human_fields?: { name: string; type: string; label: string }[];
+    human_fields?: { name: string; type: string; label: string; options?: string[] }[];
     total_tokens_used: number;
     total_cost_usd: number;
     cache_read_tokens_total?: number;

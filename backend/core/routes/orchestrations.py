@@ -681,10 +681,13 @@ async def submit_human_input(run_id: str, request: Request):
     human_response = body.get("response", {})
 
     from core.orchestration.answers import (
-        RunAlreadyActive, RunNotWaiting, answer_paused_run,
+        BadAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run,
     )
     try:
         answered = await answer_paused_run(request.app.state, run_id, human_response)
+    except BadAnswer as exc:
+        # An email, date, phone or dropdown answer that is not one (F455).
+        raise HTTPException(status_code=422, detail=str(exc))
     except RunAlreadyActive:
         raise HTTPException(status_code=409, detail="Run is already active")
     except RunNotWaiting as exc:

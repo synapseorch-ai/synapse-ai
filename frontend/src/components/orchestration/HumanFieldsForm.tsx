@@ -10,8 +10,11 @@
  * name (F75).
  */
 
-import { Checkbox, Field, Input, Textarea } from '@/components/ui';
-import { humanFieldLabel, humanFieldType, type HumanField, type HumanValues } from './humanFields';
+import { Checkbox, Field, Input, Select, Textarea } from '@/components/ui';
+import { humanFieldLabel, humanFieldOptions, humanFieldType, type HumanField, type HumanValues } from './humanFields';
+
+/** The browser's input for a typed field: its own keyboard and checks (F455). */
+const INPUT_TYPE: Record<string, string> = { number: 'number', email: 'email', date: 'date', phone: 'tel' };
 
 export function HumanFieldsForm({
     fields,
@@ -47,9 +50,18 @@ export function HumanFieldsForm({
                     <Field key={idx} label={label}>
                         {type === 'textarea' ? (
                             <Textarea rows={3} value={text} onChange={(e) => set(field.name, e.target.value)} />
+                        ) : type === 'choice' ? (
+                            // One option is picked (Naveen, F455): a dropdown, not a list of checkboxes.
+                            <Select
+                                aria-label={label}
+                                value={text || undefined}
+                                onChange={(choice) => set(field.name, choice)}
+                                placeholder="Choose…"
+                                options={humanFieldOptions(field).map((o) => ({ value: o, label: o }))}
+                            />
                         ) : (
                             <Input
-                                type={type === 'number' ? 'number' : 'text'}
+                                type={INPUT_TYPE[type ?? ''] ?? 'text'}
                                 value={text}
                                 onChange={(e) => set(field.name, e.target.value)}
                             />

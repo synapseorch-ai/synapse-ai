@@ -351,10 +351,15 @@ class InProcessRuns:
 
     async def answer(self, run_id: str, response: Any) -> asyncio.Queue | None:
         import core.server as _server
-        from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
+        from core.orchestration.answers import (
+            BadAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run,
+        )
 
         try:
             answered = await answer_paused_run(_server.app.state, run_id, response)
+        except BadAnswer as exc:
+            # An email, date, phone or dropdown answer that is not one (F455).
+            raise ToolRefusal(str(exc))
         except RunAlreadyActive:
             raise ToolRefusal("The run is already being answered or resumed.")
         except RunNotWaiting as exc:

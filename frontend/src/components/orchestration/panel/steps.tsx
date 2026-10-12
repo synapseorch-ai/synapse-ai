@@ -18,7 +18,7 @@ import {
     type KnowledgeBaseOption, type StepSectionProps,
 } from './shared';
 import { PythonEditor } from './PythonEditor';
-import { HUMAN_FIELD_TYPES, humanFieldType } from '../humanFields';
+import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
 
 /* ── shared toggles ─────────────────────────────────────────────────────── */
 
@@ -688,6 +688,19 @@ function HumanSection({ step, update }: StepSectionProps) {
                                 update({ human_fields: next });
                             }}
                         />
+                        {humanFieldType(field.type) === 'choice' && (
+                            // A dropdown's options, comma-separated; the person picks one (F455).
+                            <LocalInput
+                                value={humanFieldOptions(field).join(', ')}
+                                aria-label={`Field ${idx + 1} options`}
+                                placeholder="Options, comma-separated: Approve, Later"
+                                onCommit={(text) => {
+                                    const next = [...fields];
+                                    next[idx] = { ...field, options: text.split(',').map((o) => o.trim()).filter(Boolean) };
+                                    update({ human_fields: next });
+                                }}
+                            />
+                        )}
                     </div>
                 ))}
                 <Button

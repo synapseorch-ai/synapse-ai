@@ -71,7 +71,7 @@ JSON-string fields (the saver's tool schemas accept these as JSON-encoded string
 - `route_map_json` → object mapping decision label → target step_id. Empty string ends that branch. Example: `'{"approved":"step_abc1234","denied":""}'`
 - `route_descriptions_json` → object mapping label → short classifier hint. Example: `'{"approved":"User accepts the draft"}'`
 - `parallel_branches_json` → array of arrays of step ids. Example: `'[["step_a","step_b"],["step_c"]]'`
-- `human_fields_json` → array of `{name, type, label}` objects. Example: `'[{"name":"approved","type":"boolean","label":"Approve?"}]'`
+- `human_fields_json` → array of `{name, type, label}` objects; `type` is one of string, textarea, number, boolean, email, date, phone, choice (a dropdown: add `options`, a list of strings, one of which is picked). Example: `'[{"name":"approved","type":"boolean","label":"Approve?"},{"name":"when","type":"date","label":"Start date"}]'`
 - `state_schema_json` (orchestration-level) → object mapping key → `{type, default, description}`. Allowed types: str, int, float, bool, list, dict. Example: `'{"user_input":{"type":"str","default":"","description":"Initial message"}}'`
 
 Wiring rules that apply to every step:

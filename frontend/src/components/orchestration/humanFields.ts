@@ -15,9 +15,10 @@
  * replaced by a guess — and answered as text.
  */
 
-export type HumanFieldType = 'string' | 'textarea' | 'number' | 'boolean';
+export type HumanFieldType = 'string' | 'textarea' | 'number' | 'boolean' | 'email' | 'date' | 'phone' | 'choice';
 
-export type HumanField = { name: string; type?: string; label?: string };
+/** `options` is a dropdown's (`choice`): one of them is picked (F455). */
+export type HumanField = { name: string; type?: string; label?: string; options?: string[] };
 
 /** What the step editor offers, in order. */
 export const HUMAN_FIELD_TYPES: { value: HumanFieldType; label: string }[] = [
@@ -25,6 +26,11 @@ export const HUMAN_FIELD_TYPES: { value: HumanFieldType; label: string }[] = [
     { value: 'textarea', label: 'Long text' },
     { value: 'number', label: 'Number' },
     { value: 'boolean', label: 'Yes / No' },
+    // F455: the server checks these four (`core/orchestration/human_fields.py`); the four above it never did.
+    { value: 'email', label: 'Email' },
+    { value: 'date', label: 'Date' },
+    { value: 'phone', label: 'Phone' },
+    { value: 'choice', label: 'Dropdown' },
 ];
 
 /** Spellings written before this table, by hand or by a model — read, never rewritten. */
@@ -36,6 +42,11 @@ const ALIASES: Record<string, HumanFieldType> = {
     int: 'number',
     integer: 'number',
     float: 'number',
+    select: 'choice',
+    dropdown: 'choice',
+    options: 'choice',
+    enum: 'choice',
+    tel: 'phone',
 };
 
 /** The type a field is, or `null` for one this table does not know. No type is text. */
@@ -44,6 +55,11 @@ export function humanFieldType(type: string | null | undefined): HumanFieldType 
     if (!key) return 'string';
     if (HUMAN_FIELD_TYPES.some((t) => t.value === key)) return key as HumanFieldType;
     return ALIASES[key] ?? null;
+}
+
+/** A dropdown's options, as the step wrote them, blanks left out. */
+export function humanFieldOptions(field: HumanField): string[] {
+    return (Array.isArray(field.options) ? field.options : []).map((o) => String(o).trim()).filter(Boolean);
 }
 
 /** What a person is shown: the label, else the name. */
