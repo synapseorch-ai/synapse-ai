@@ -416,7 +416,7 @@ def _public_run_view(run) -> dict:
     """
     from core.orchestration.run_error import failure_reason
 
-    doc = run.model_dump()
+    doc = run.model_dump(exclude={"definition"})
     # Why a failed run stopped, read before its engine bookkeeping goes (F257).
     doc["error"] = failure_reason(run.status, run.step_history, run.step_progress)
     doc.pop("step_progress", None)
@@ -428,12 +428,20 @@ def _public_run_view(run) -> dict:
 
 
 @router.get("/api/orchestrations/runs/{run_id}")
-async def get_run_status(run_id: str):
-    """Get the current state of a run from its checkpoint."""
+async def get_run_status(run_id: str, definition: bool = False):
+    """Get the current state of a run from its checkpoint.
+
+    `definition` adds the workflow as the run started it (F443), for the run
+    page to draw the run on — asked for once, not on every poll: it is a whole
+    definition, and the run never changes it. `null` on a run from before it.
+    """
     from core.orchestration.state import SharedState
     try:
         restored = await SharedState.restore(run_id)
-        return _public_run_view(restored.run)
+        body = _public_run_view(restored.run)
+        if definition:
+            body["definition"] = restored.run.definition
+        return body
     except FileNotFoundError:
         # Checkpoints are only written at step boundaries, so a run still inside
         # its first long-running step has no checkpoint yet. If it's a live

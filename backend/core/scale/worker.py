@@ -207,8 +207,9 @@ async def run_orchestration_job(
             )
             await session.commit()
 
-        # Load orchestration definition from Postgres
-        orch = await _load_orchestration(session_factory, orch_id)
+        # Load orchestration definition from Postgres. A run the first try
+        # started carries on with its own copy of it (F443).
+        orch = await _load_orchestration(session_factory, orch_id, prior if redelivery == "resume" else None)
 
         # Publish worker_picked_up event so SSE clients know execution started
         from core.scale.pubsub import RunEventPublisher
@@ -348,7 +349,9 @@ async def resume_orchestration_job(
             )
             return {"status": row.status, "run_id": run_id, "applied": False}
 
-        orch = await _load_orchestration(session_factory, orch_id)
+        # The workflow as the run started it, not as it is saved now (F443): an
+        # edit made while the run waited on this answer is for the runs after it.
+        orch = await _load_orchestration(session_factory, orch_id, row)
         _log.debug(f"[resume] 📦 orchestration loaded from Postgres: id={orch.id} name={orch.name} steps={len(orch.steps)}")
 
         from core.scale.pubsub import RunEventPublisher
@@ -492,7 +495,9 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
             if row.status in ("completed", "paused"):
                 return {"status": row.status, "run_id": run_id}
 
-        orch = await _load_orchestration(session_factory, orch_id)
+        # A person's Replay runs the workflow as saved now; a try handed out
+        # again carries on with the run's copy — the engine's own rule (F443).
+        orch = await _load_orchestration(session_factory, orch_id, row if interrupted else None)
 
         from core.scale.pubsub import RunEventPublisher
         publisher = RunEventPublisher(redis, run_id, ttl=cfg.pubsub_event_ttl)
@@ -1238,11 +1243,24 @@ class WorkerSettings:
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _load_orchestration(session_factory, orch_id: str):
-    """Load orchestration definition from Postgres."""
+async def _load_orchestration(session_factory, orch_id: str, run=None):
+    """The definition a job runs: a run's own copy (F443), else the one stored now.
+
+    `run` is the run's row, given where a job carries a run on — an answer, a
+    try handed out again — so it goes on with the workflow it started with, not
+    an edit made while it waited; `engine.definition_of` decides, as it does
+    for the in-process resume. Without a row (a fresh run, a person's Replay),
+    or for a run from before the copy was kept, the orchestration as stored.
+    """
     from sqlalchemy import select
     from core.scale.models_db import OrchestrationDB
     from core.models_orchestration import Orchestration
+
+    if run is not None and getattr(run, "definition", None):
+        from core.orchestration.engine import definition_of
+        data = await definition_of(run)
+        if data:
+            return Orchestration.model_validate(data)
 
     async with session_factory() as session:
         result = await session.execute(

@@ -90,6 +90,39 @@ def apply_model_override(orchestration: "Orchestration", model: str | None) -> N
             step.model = model
 
 
+async def definition_of(run) -> dict | None:
+    """The workflow a run carries on with: the copy it kept when it started (F443).
+
+    Every resume reads it — an answer, a tool approval, a nested sub-run, a job
+    handed out again — so an edit made while the run waits is for the runs
+    after it; IDEA1 measured a run answered after an edit printing the edit.
+    A person's Replay is the one exception, and `resume_failed` makes it.
+
+    `run` is a run or its stored row: anything with `definition` and
+    `orchestration_id`. A run started before the copy was kept has none, and a
+    copy an upgraded engine no longer accepts cannot be run; either goes on
+    with the workflow as it is now, which is the only definition there is.
+    """
+    copy = getattr(run, "definition", None)
+    if copy:
+        try:
+            Orchestration.model_validate(copy)
+            return copy
+        except Exception as exc:  # noqa: BLE001 — told, then the saved workflow
+            _log.warning(f"run {getattr(run, 'run_id', '?')}: its copy of the workflow does not load "
+                         f"({str(exc).splitlines()[0]}); carrying on with the workflow as saved now")
+    else:
+        _log.debug(f"run {getattr(run, 'run_id', '?')}: no copy of its workflow (started before F443); "
+                   f"carrying on with the workflow as saved now")
+    from core.scale.context import resolve_orchestration
+    return await resolve_orchestration(run.orchestration_id)
+
+
+def kept_definition(orchestration: Orchestration) -> dict:
+    """The copy a run keeps of `orchestration`, before a per-run model is applied."""
+    return orchestration.model_dump(mode="json")
+
+
 #: A Parallel branch running beside others keeps its own view of where it is
 #: (F301): the transition every step's prompt reads, and the loop depth. Two
 #: loops in two branches set both for each body step, and one engine-wide pair
@@ -255,6 +288,9 @@ class OrchestrationEngine:
         shared_state = self._init_state(initial_input)
         if initial_state:
             shared_state.update(initial_state)
+        # The workflow as this run starts it, which its resumes carry on with
+        # (F443) — taken before a per-run model, which a resume re-applies.
+        definition = kept_definition(self.orch)
         apply_model_override(self.orch, shared_state.get(self.MODEL_OVERRIDE_KEY))
 
         run = OrchestrationRun(
@@ -265,6 +301,7 @@ class OrchestrationEngine:
             current_step_id=self.orch.entry_step_id,
             started_at=now,
         )
+        run.keep_definition(definition)
         if self.conversation_turn and self.depth == 0:
             # Beside the run's time and failure reason — never a state key,
             # which every run view and prompt would carry (F261).
@@ -848,13 +885,22 @@ class OrchestrationEngine:
             yield {"type": "orchestration_error", "error": f"Run is not recoverable (status={run.status})"}
             return
 
-        from core.scale.context import resolve_orchestration
-        orch_data = await resolve_orchestration(run.orchestration_id)
+        # A job handed out again carries on with the run's copy, like an answer
+        # (F443): nobody chose to change what it runs. A person's Replay takes
+        # the workflow as saved now — the failure card's "edit, then Replay" —
+        # and that becomes the run's copy, for its later answers and its page.
+        if interrupted:
+            orch_data = await definition_of(run)
+        else:
+            from core.scale.context import resolve_orchestration
+            orch_data = await resolve_orchestration(run.orchestration_id)
         if not orch_data:
             yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
             return
 
         orch = Orchestration.model_validate(orch_data)
+        if not interrupted:
+            run.keep_definition(kept_definition(orch))
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
         engine = cls(orch, server_module)
         kept_refs = (run.step_progress.get(ACTIVE_TIME_KEY) or {}).get(run_images.REFS_KEY)
@@ -929,9 +975,8 @@ class OrchestrationEngine:
         run = restored.run
         _log.debug(f"[engine.resume] 📋 restored run: orch_id={run.orchestration_id} status={run.status} current_step_id={run.current_step_id} waiting_for_human={run.waiting_for_human} step_history_len={len(run.step_history)}")
 
-        # Load the orchestration definition
-        from core.scale.context import resolve_orchestration
-        orch_data = await resolve_orchestration(run.orchestration_id)
+        # The workflow as the run started it, not as it is saved now (F443).
+        orch_data = await definition_of(run)
         if not orch_data:
             _log.debug(f"[engine.resume] ❌ orchestration '{run.orchestration_id}' NOT FOUND in the store")
             yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
@@ -1273,9 +1318,8 @@ class OrchestrationEngine:
         # A sub-run that did not complete fails the step waiting on it, with its
         # reason — as it does when it fails without a pause (F253). Its final
         # text used to be taken as the result whatever its status.
-        from core.scale.context import resolve_orchestration
         from .results import nested_result
-        sub_orch_data = await resolve_orchestration(nested_orch_id) if nested_orch_id else None
+        sub_orch_data = await self._sub_run_definition(nested_run_id, nested_orch_id)
         sub_name = (sub_orch_data or {}).get("name") or nested_orch_id or "sub-orchestration"
         failure = None
         if resume_error:
@@ -1351,6 +1395,23 @@ class OrchestrationEngine:
         run.waiting_for_human = False
         run.status = "running"
         outcome["status"] = "done"
+
+    @staticmethod
+    async def _sub_run_definition(sub_run_id: str | None, sub_orch_id: str | None) -> dict | None:
+        """The workflow a resumed sub-run ran on — its own copy (F443) — for its result key.
+
+        Read back from its record, which its resume has just written; a record
+        that cannot be read gives the sub-orchestration as it is now.
+        """
+        if sub_run_id:
+            try:
+                return await definition_of((await SharedState.restore(sub_run_id)).run)
+            except FileNotFoundError:
+                pass
+        if not sub_orch_id:
+            return None
+        from core.scale.context import resolve_orchestration
+        return await resolve_orchestration(sub_orch_id)
 
     def caller_for(self, run: OrchestrationRun, step: StepConfig | None) -> dict:
         """What a child run started by `step` is told about who called it (F252)."""

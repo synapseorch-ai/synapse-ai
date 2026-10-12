@@ -557,11 +557,14 @@ async def list_scale_runs(request: Request, limit: int = 20, session_id: str = N
 
     try:
         from sqlalchemy import select
+        from sqlalchemy.orm import defer
         from core.scale.models_db import OrchestrationRunDB
 
         async with session_factory() as session:
             q = (
                 select(OrchestrationRunDB)
+                # A list never reads the run's copy of its workflow (F443).
+                .options(defer(OrchestrationRunDB.definition))
                 .order_by(OrchestrationRunDB.created_at.desc())
                 .limit(min(limit, 100))
             )

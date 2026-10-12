@@ -435,6 +435,7 @@ async def _open_conversation() -> dict | None:
     following it would wait for ever.
     """
     from sqlalchemy import select
+    from sqlalchemy.orm import defer
 
     from core.orchestration.pauses import asking_step_id
     from core.store import session
@@ -445,6 +446,8 @@ async def _open_conversation() -> dict | None:
     async with session() as s:
         candidates = (await s.execute(
             select(OrchestrationRunDB)
+            # Not the run's copy of the builder's workflow (F443): ~60 KB each.
+            .options(defer(OrchestrationRunDB.definition))
             .where(
                 OrchestrationRunDB.tenant_id == get_tenant(),
                 OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,

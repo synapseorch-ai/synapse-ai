@@ -139,6 +139,17 @@ async def _run(run_id):
     return (await SharedState.restore(run_id)).run
 
 
+async def _forget_kept_definition(run_id):
+    """Make `run_id` a run from before F443, which kept no copy of its workflow."""
+    from sqlalchemy import update
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    async with session() as s:
+        await s.execute(update(OrchestrationRunDB)
+                        .where(OrchestrationRunDB.run_id == run_id).values(definition=None))
+        await s.commit()
+
+
 def _entries(run, step_id):
     return [h for h in run.step_history if h.get("step_id") == step_id]
 
@@ -447,6 +458,10 @@ class TestANestedResume:
         assert await driver.start(parent, "run_nfail") == "paused"
 
         await S.seed_orchestrations([parent])  # saving replaces the set: the child is gone
+        # And the sub-run kept no copy of it — one paused before F443: since then a
+        # sub-run carries on with its own copy, so the deletion alone no longer
+        # stops it. This is the sub-run that still cannot finish.
+        await _forget_kept_definition((await _run("run_nfail")).nested_run_id)
         assert await driver.answer("run_nfail", "yes") == "failed"
 
         run = await _run("run_nfail")

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from sqlalchemy import select
+from sqlalchemy.orm import defer
 
 from core.models_orchestration import OrchestrationRun
 from core.tenancy import get_tenant
@@ -187,13 +188,20 @@ class StoreStateBackend:
 
         # mode="json" so arbitrary objects inside shared_state / step_history
         # are already primitives by the time the JSON column serialises them.
-        document = run.model_dump(mode="json")
+        # Without the run's copy of its workflow, which is not rewritten here.
+        document = run.model_dump(mode="json", exclude={"definition"})
         values = {"run_id": run.run_id, "tenant_id": get_tenant()}
         for column in _MIRRORED:
             if column in document:
                 values[column] = document[column]
         for column in _TIMESTAMPS:
             values[column] = _to_datetime(document.get(column))
+        # The copy goes in once (F443): with the first full save after it was
+        # kept — the run's start, or a person's Replay — and not with every
+        # step boundary's. It is a whole definition; the run does not change it.
+        storing_definition = run._definition_unsaved and run.definition is not None
+        if storing_definition:
+            values["definition"] = run.definition
 
         async with session() as s:
             await upsert(
@@ -206,6 +214,8 @@ class StoreStateBackend:
                 # mis-scoped resume into silent cross-tenant data movement.
                 update=[c for c in values if c not in ("run_id", "tenant_id")],
             )
+        if storing_definition:
+            run._definition_unsaved = False
 
     async def load(self, run_id: str) -> OrchestrationRun | None:
         from core.store import session
@@ -238,6 +248,8 @@ class StoreStateBackend:
         # page of twenty grew with every loop iteration.
         stmt = (
             select(OrchestrationRunDB)
+            # A list never reads the run's copy of its workflow (F443).
+            .options(defer(OrchestrationRunDB.definition))
             .where(OrchestrationRunDB.tenant_id == get_tenant())
             .where(~OrchestrationRunDB.run_id.contains("__", autoescape=True))
             .where(~OrchestrationRunDB.run_id.startswith("builder_", autoescape=True))
@@ -297,6 +309,7 @@ def _to_document(row) -> dict:
         "total_cost_usd": row.total_cost_usd or 0.0,
         "started_at": _iso_utc(row.started_at),
         "ended_at": _iso_utc(row.ended_at),
+        "definition": row.definition,
     }
 
 
@@ -336,6 +349,7 @@ async def list_children(run_id: str) -> list[dict]:
     async with session() as s:
         rows = (await s.execute(
             select(OrchestrationRunDB)
+            .options(defer(OrchestrationRunDB.definition))
             .where(OrchestrationRunDB.tenant_id == get_tenant())
             .where(OrchestrationRunDB.run_id.startswith(prefix, autoescape=True))
             .order_by(OrchestrationRunDB.created_at)

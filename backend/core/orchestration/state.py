@@ -44,7 +44,12 @@ _cancelled_run_ids: set[str] = set()
 
 
 class StateBackend(Protocol):
-    """Where run state is durably kept."""
+    """Where run state is durably kept.
+
+    `load` must give back the run's `definition` — the workflow as it started
+    (F443), which every resume carries on with. The store backend writes it
+    once; a backend that saves the whole document stores it with each save.
+    """
 
     async def save(self, run: OrchestrationRun) -> None: ...
 

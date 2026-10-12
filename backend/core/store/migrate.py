@@ -56,6 +56,9 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     # from (core/routes/chat.py). The orchestration equivalent is
     # `step_progress` above; a chat turn has no run row to keep it on.
     ("chat_sessions", "pending_approval", "JSON", None),
+    # The workflow a run started with (F443), so a resume does not follow an
+    # edit made while it waited. NULL on older runs, which resume as before.
+    ("orchestration_runs", "definition", "JSON", None),
 )
 
 

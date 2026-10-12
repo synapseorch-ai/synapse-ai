@@ -499,7 +499,7 @@ async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
 
     from core.config import ORCH_HUMAN_TIMEOUT
     from core.orchestration.pauses import asking_step_id
-    from core.scale.context import resolve_orchestration
+    from core.orchestration.engine import definition_of
     from core.store import session
     from core.store.models import OrchestrationRunDB
     from core.tenancy import get_tenant
@@ -534,7 +534,9 @@ async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:
     if paused_at is None:
         return False
 
-    orch = await resolve_orchestration(row.orchestration_id) or {}
+    # The step as the run has it (F443): an edit made while it waits does not
+    # move the window the question was asked with.
+    orch = await definition_of(row) or {}
     step = next((st for st in orch.get("steps") or [] if st.get("id") == asked_by), None)
     if step is None:
         return False

@@ -52,11 +52,13 @@ async def read_run(run_id: str) -> dict | None:
 async def _result_key(run) -> str:
     """The orchestration's `result_key`, so a read names what the run made (F249).
 
-    A run of an orchestration deleted since reads by the default rule.
+    From the workflow the run ran on — its own copy (F443) — so an edit since
+    does not rename what it made. A run of an orchestration deleted since, with
+    no copy, reads by the default rule.
     """
-    from core.scale.context import resolve_orchestration
+    from core.orchestration.engine import definition_of
     try:
-        return ((await resolve_orchestration(run.orchestration_id)) or {}).get("result_key") or ""
+        return ((await definition_of(run)) or {}).get("result_key") or ""
     except Exception:  # noqa: BLE001 — a lookup for a label; the default rule still answers
         return ""
 

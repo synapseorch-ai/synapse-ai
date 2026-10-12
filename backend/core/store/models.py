@@ -200,6 +200,11 @@ class OrchestrationRunDB(Base):
     human_fields = Column(JSONType, default=list)
     nested_run_id = Column(String(255))
     nested_orch_id = Column(String(255))
+    # The workflow as the run started it (F443), which every resume carries on
+    # with. Written once, not at every checkpoint; up to a definition's size, so
+    # the listings leave it out. Nullable: migration-added, and NULL on a run
+    # started before it — such a run resumes on the workflow as it is now.
+    definition = Column(JSONType)
 
     # Cost & token tracking
     total_tokens_used = Column(Integer, default=0)

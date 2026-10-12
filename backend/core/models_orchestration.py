@@ -4,7 +4,7 @@ Defines orchestrations (workflow graphs), steps (nodes), and run state.
 """
 from typing import Any
 from enum import Enum
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, PrivateAttr, field_validator, model_validator
 
 from core.config import ORCH_GLOBAL_TIMEOUT_MIN, ORCH_HUMAN_TIMEOUT, ORCH_STEP_TIMEOUT
 from core.state_types import normalize_state_type
@@ -279,3 +279,18 @@ class OrchestrationRun(BaseModel):
 
     started_at: str | None = None
     ended_at: str | None = None
+
+    #: The workflow as the run started it (F443): what every answer, tool
+    #: approval, nested sub-run and job handed out again carries on with, so an
+    #: edit made while the run waits is for the runs after it. A person's
+    #: Replay takes the workflow as it is saved then, and this becomes that.
+    #: `None` on a run started before the copy was kept. Written once, by the
+    #: first full checkpoint after it is set, never by the ones after.
+    definition: dict[str, Any] | None = None
+    #: Set with `definition` until a checkpoint has stored it.
+    _definition_unsaved: bool = PrivateAttr(default=False)
+
+    def keep_definition(self, definition: dict[str, Any]) -> None:
+        """Make `definition` the run's copy, for the next full checkpoint to store."""
+        self.definition = definition
+        self._definition_unsaved = True
