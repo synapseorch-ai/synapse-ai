@@ -19,6 +19,10 @@ Editing pass's "Line edit" (1.4 s) showed no call and "Structure" showed two
 that old rule, so an old run reads as it always has. An exact window allows
 0.5 s, for a wallet's settle written a moment after the call returns.
 
+A human step's entry claims no call: a person's wait calls no model, and its
+window (the whole wait) holds the calls of whatever runs beside it or after the
+answer.
+
 ## Every pass counts (F454)
 
 Steps are swept in history order and each entry claims the calls inside its
@@ -115,11 +119,17 @@ def _from_ms(value: Any) -> datetime | None:
 
 
 def window(entry: Mapping[str, Any]) -> tuple[datetime | None, datetime | None]:
-    """An entry's start and the last moment a call can be its own; None for an open end."""
+    """An entry's start and the last moment a call can be its own; None for an open end.
+
+    Exact only when its end is exact too, or it has not ended: an entry some
+    other writer closed with a whole-second `ended_at` alone (a human step's
+    answer, a nested run's end, a cancel) reads by the old rule throughout, never
+    as an exact start with no end, which would claim every call after it.
+    """
     started = _from_ms(entry.get("started_ms"))
-    if started is not None:
-        ended = _from_ms(entry.get("ended_ms"))
-        return started, None if ended is None else ended + EXACT_SLACK
+    ended_exact = _from_ms(entry.get("ended_ms"))
+    if started is not None and (ended_exact is not None or not entry.get("ended_at")):
+        return started, None if ended_exact is None else ended_exact + EXACT_SLACK
     started = parse_utc(entry.get("started_at"))
     ended = parse_utc(entry.get("ended_at"))
     return started, None if ended is None else ended + LEGACY_SLACK
@@ -165,6 +175,10 @@ def sweep(
 
     for entry in history:
         step_id = str(entry.get("step_id") or "") if isinstance(entry, Mapping) else ""
+        # A person's wait calls no model, so it claims nothing: its window can hold
+        # the calls of a step running beside it, or of the step after the answer.
+        if step_id and entry.get("step_type") == "human":
+            step_id = ""
         started, limit = window(entry) if step_id else (None, None)
         if started is None:
             per_entry.append(None)

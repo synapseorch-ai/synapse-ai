@@ -66,7 +66,8 @@ function range(span: CostSpan, say: (n: number) => string, most: boolean): strin
 }
 
 /**
- * The estimate as words: a headline and the lines under it.
+ * The estimate as words: a sentence ("Each run costs about 2.1–3.1 credits and
+ * $0.02–$0.13 from your model wallet.") and the lines under it.
  *
  * `ceiling` is for a plan (the builder's card), which lists every step once and
  * no branch: its one figure is a most, said "up to about".
@@ -85,12 +86,16 @@ export function estimateWords(estimate: RunEstimate, opts: { ceiling?: boolean }
         parts.push(`${range(span, aboutUsd, ceiling)} ${SIDE_WORDS[side] ?? 'of models'}`);
     }
     const local = 'local' in estimate.models.sides;
-    if (!parts.length && local) parts.push('no model charges: its models run on this machine');
     // A most is only a most when nothing is open: a plan with a loop is "about …, or more".
     const most = ceiling && !estimate.open.length;
-    let headline = parts.length ? (most ? 'Up to about ' : 'About ') + parts.join(' · ') : '';
-    if (headline && estimate.open.length) headline += ', or more';
-    if (headline) headline += ' a run';
+    const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+    let headline = '';
+    if (list) {
+        headline = (most ? 'A run of this plan costs up to about ' : ceiling ? 'A run of this plan costs about ' : 'Each run costs about ') + list;
+        headline += estimate.open.length ? ', or more.' : '.';
+    } else if (local) {
+        headline = 'Its models run on this machine: no model charges.';
+    }
 
     const notes: string[] = [];
     if (estimate.open.includes('per_item')) notes.push('A loop over a list costs this for each item.');
@@ -137,7 +142,7 @@ export function EstimateLine({ estimate, busy, error, compact, ceiling, topUp, c
     const short = walletShort(estimate);
     return (
         <div className={cn('text-xs leading-relaxed text-text-muted', className)} aria-live="polite">
-            <p><span className="text-text">{headline}</span>{compact && notes.length ? '.' : ''}</p>
+            <p className="text-text">{headline}</p>
             {!compact && notes.map((note) => <p key={note}>{note}</p>)}
             {short && (
                 <p className="text-text">

@@ -68,6 +68,24 @@ class TestAFastStepKeepsItsOwnCall:
         assert by_step["b"]["cost_usd"] == 0.005
 
 
+class TestAWaitClaimsNothing:
+    def test_a_human_step_answered_claims_none_of_the_calls_after_it(self):
+        # The engine closes a human entry with a whole-second ended_at and no ended_ms: it must not
+        # read as an exact start with no end, which claimed the next agent step's call (CE1, measured).
+        history = [entry("write", 0, 0.4),
+                   {"step_id": "review", "step_type": "human", "status": "completed", "started_at": iso(0.42),
+                    "started_ms": int(at(0.42).timestamp() * 1000), "ended_at": iso(37)},
+                   entry("file", 37.1, 44, step_type="agent")]
+        by_step, per_entry = sweep(history, [call(0.3), call(40)])
+        assert set(by_step) == {"write", "file"}
+        assert per_entry[1] is None
+
+    def test_an_entry_closed_without_an_exact_end_reads_by_the_old_rule(self):
+        e = {"step_id": "nested", "step_type": "agent", "started_at": iso(0),
+             "started_ms": int(at(0).timestamp() * 1000), "ended_at": iso(5)}
+        assert window(e) == (at(0).replace(microsecond=0), at(5).replace(microsecond=0) + LEGACY_SLACK)
+
+
 class TestEveryPassCounts:
     def test_a_step_that_ran_three_times_sums_its_passes(self):
         history = [entry("work", 0, 2), entry("work", 2.5, 4), entry("work", 4.5, 6)]

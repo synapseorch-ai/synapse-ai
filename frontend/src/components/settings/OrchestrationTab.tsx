@@ -1875,7 +1875,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                         onChange={(schema) => setDraft({ ...draft, state_schema: schema })}
                                     />
                                     <SettingsSection title="Cost per run">
-                                        <EstimateLine estimate={estimate} busy={estimating} error={estimateError} />
+                                        <EstimateLine estimate={estimate} busy={estimating} error={estimateError} className="text-sm" />
                                     </SettingsSection>
                                     <SettingsSection title="Guardrails">
                                         <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
