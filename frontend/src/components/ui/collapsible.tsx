@@ -93,9 +93,13 @@ export function Section({
       <RCollapsible.Trigger
         className={cn(
           "flex w-full items-center gap-3 text-left transition-colors",
-          // Inset on keyboard focus: the global outline is drawn 2px outside, and a plain
-          // header runs edge to edge between a hairline and its content, so it crossed both.
-          plain ? "group rounded-md pb-3 pt-5 focus-visible:-outline-offset-2" : "px-5 py-3.5 hover:bg-surface-2/50",
+          // A plain header's room above and below is margin, not padding, so the keyboard
+          // outline (inset here; the global one is drawn 2px outside) hugs the row instead of
+          // crossing the hairline above and touching the first line below. -mx-2 with a
+          // matching width keeps the title where it was; the top stays 20px, the bottom 14px.
+          plain
+            ? "group -mx-2 mb-2 mt-3.5 w-[calc(100%+1rem)] rounded-md px-2 py-1.5 focus-visible:-outline-offset-2"
+            : "px-5 py-3.5 hover:bg-surface-2/50",
           focusRing,
           !plain && (open ? "rounded-t-lg" : "rounded-lg"),
         )}
