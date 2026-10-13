@@ -14,6 +14,15 @@ The engine's ORM also stays portable: SQLite has no regconfig type.
 `tsv_expression_sql()` is the single source of that expression. Cloud's
 migration and OSS-on-Postgres's raw DDL both use it, and a cloud test holds the
 migration's text equal to it.
+
+**Why ASCII punctuation is read as spaces (CCR-15, F421).** The keyword query
+is its words (`index_sql.query_terms`, `[^\\W_]+`), and SQLite's `unicode61`
+splits text the same way. Postgres's parser does not: "QX-4471" becomes `qx`
+and the signed integer `-4471`, in every configuration, so "4471" found
+nothing; a host, an email, a version or a path is one lexeme no query sends.
+Replacing ASCII punctuation with spaces first makes the index's words the
+query's words. The ranges are ASCII only, so no letter of any script is
+touched, whatever the database's locale.
 """
 from __future__ import annotations
 
@@ -25,6 +34,10 @@ TS_LANGUAGES: tuple[str, ...] = (
     "portuguese", "romanian", "russian", "spanish", "swedish", "tamil", "turkish",
 )
 DEFAULT_LANGUAGE = "simple"
+
+#: Every ASCII punctuation character, as a Postgres regular expression (no backslash, so the text reads the
+#: same with or without `standard_conforming_strings`): `!`–`/`, `:`–`@`, `[`–`` ` ``, `{`–`~`.
+PUNCTUATION_PATTERN = "[!-/:-@[-`{-~]+"
 
 
 def normalize_language(value: str | None) -> str:
@@ -45,4 +58,5 @@ def tsv_expression_sql(lang_column: str = "lang", context_column: str = "context
                        content_column: str = "content") -> str:
     """The Postgres expression for a chunk's tsvector: its context prefix and its content."""
     return (f"to_tsvector({regconfig_case_sql(lang_column)}, "
-            f"coalesce({context_column}, '') || ' ' || coalesce({content_column}, ''))")
+            f"regexp_replace(coalesce({context_column}, '') || ' ' || coalesce({content_column}, ''), "
+            f"'{PUNCTUATION_PATTERN}', ' ', 'g'))")

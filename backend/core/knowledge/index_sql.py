@@ -103,7 +103,10 @@ _COLS = FilterColumns.for_table(_T)
 
 FTS_EN = "knowledge_chunks_fts_en"
 FTS_OTHER = "knowledge_chunks_fts"
-PG_TSV_INDEX = "ix_knowledge_chunks_tsv"
+#: The GIN over `tsv_expression_sql()`. Renamed with the expression (CCR-15), since `CREATE INDEX IF NOT EXISTS`
+#: would keep an index over the old one; `_PG_TSV_INDEXES_GONE` are dropped.
+PG_TSV_INDEX = "ix_knowledge_chunks_tsv_v2"
+_PG_TSV_INDEXES_GONE = ("ix_knowledge_chunks_tsv",)
 
 
 def query_terms(text: str) -> list[str]:
@@ -305,6 +308,8 @@ class SqlKnowledgeIndex:
                     await s.execute(sql_text(f"INSERT INTO {name}({name}) VALUES ('rebuild')"))
                 await s.commit()
         elif dialect == "postgresql":
+            for gone in _PG_TSV_INDEXES_GONE:
+                await s.execute(sql_text(f"DROP INDEX IF EXISTS {gone}"))
             await s.execute(sql_text(
                 f"CREATE INDEX IF NOT EXISTS {PG_TSV_INDEX} ON knowledge_chunks USING GIN "
                 f"(({tsv_expression_sql()}))"))
