@@ -356,7 +356,7 @@ const V2Docs = ({ BASE }: { BASE: string }) => (
                     <div><span className="text-text">message</span>       <span className="ml-2 text-text-faint">string — initial prompt sent to the orchestration</span></div>
                     <div><span className="text-text">tenant_id</span>     <span className="ml-2 text-text-faint">string? — used for per-tenant quota and isolation</span></div>
                     <div><span className="text-text">webhook_url</span>   <span className="ml-2 text-text-faint">string? — POST result here on completion/failure</span></div>
-                    <div><span className="text-text">webhook_secret</span><span className="ml-2 text-text-faint">string? — HMAC-SHA256 secret for X-Synapse-Signature</span></div>
+                    <div><span className="text-text">webhook_secret</span><span className="ml-2 text-text-faint">string? — HMAC-SHA256 secret: X-Synapse-Signature-V2 signs &quot;{'{X-Synapse-Timestamp}.{body}'}&quot;; refuse one more than 5 minutes old</span></div>
                     <div><span className="text-text">session_id</span>    <span className="ml-2 text-text-faint">string? — link run to a named session</span></div>
                     <div><span className="text-text">priority</span>      <span className="ml-2 text-text-faint">int? — higher = picked up sooner (default 0)</span></div>
                 </div>
