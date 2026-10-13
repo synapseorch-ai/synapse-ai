@@ -886,8 +886,6 @@ def narrow_allowed_tools(override, agent_tools):
     return [t for t in override if t in agent_tools]
 
 
-@_spans.traced_generator("synapse.agent_step", _spans.agent_step_attributes,
-                         on_event=_spans.agent_step_events)
 def _raised_cap_note(agent: dict, settings: dict, model: str, effort) -> str | None:
     """What to say when thinking raises the Max response length someone set (F432).
 
@@ -913,6 +911,8 @@ def _raised_cap_note(agent: dict, settings: dict, model: str, effort) -> str | N
             f"{model} has room to think; its answer may run past {cap:,}.")
 
 
+@_spans.traced_generator("synapse.agent_step", _spans.agent_step_attributes,
+                         on_event=_spans.agent_step_events)
 async def run_agent_step(
     message,
     agent_id,
