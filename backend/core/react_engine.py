@@ -1399,6 +1399,10 @@ async def run_agent_step(
     current_context_text = f"User Request: {user_message}\n"
     final_response = ""
     _ran_out = False  # the loop spent every turn, rather than breaking out
+    # Why the answer is the loop's words and not the model's (the repeat guard,
+    # running out of turns): named on `final` so a workflow step can fail with
+    # it (F413). Chat shows the words; a step must not take them as its output.
+    _unanswered: dict | None = None
     last_intent = "chat"
     last_data = None
     tool_name = None
@@ -2988,6 +2992,7 @@ async def run_agent_step(
             if _repeat_stop:
                 _log.warning(f"🔁 '{_repeat_stop['tool_name']}' repeated {_repeat_stop['count']}× — ending the turn")
                 yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
+                _unanswered = {"why": "repeating", **_repeat_stop}
                 final_response = (
                     f"I stopped here because I was repeating myself: I called {_repeat_stop['tool_name']} "
                     f"with the same arguments {_repeat_stop['count']} times in a row and got the same result "
@@ -3017,6 +3022,7 @@ async def run_agent_step(
             f"I ran out of turns ({max_turns}) before finishing this task. "
             "The work so far is above."
         )
+        _unanswered = {"why": "turns", "max_turns": max_turns}
 
     # A memory-enabled chat agent leaves a cheap per-exchange trace — one line
     # per turn, no LLM. Orchestration runs get their proper summary at run end.
@@ -3073,6 +3079,8 @@ async def run_agent_step(
         yield _kn_citations
     final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
                    "tool_name": tool_name}
+    if _unanswered is not None:
+        final_event["no_answer"] = _unanswered
     if stream_answer:
         # Whether what streamed is the answer, word for word: a caller that
         # spoke or showed it need not say `response` again. An answer the loop

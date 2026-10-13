@@ -401,6 +401,23 @@ export function explainFailure(input: FailureInput): Explained {
     }
 
     // ── Agents ──
+    // A turn the agent loop ended without an answer (F413): the step fails rather than pass the loop's words on.
+    if ((m = /Agent step '(.+?)' stopped without an answer: it called (.+?) with the same arguments (\d+) times in a row/.exec(raw))) {
+        return {
+            kind: 'agent-repeating',
+            sentence: `${m[1]}’s agent called ${m[2]} ${m[3]} times in a row with the same arguments and got the same result, so it stopped without an answer.`,
+            advice: 'Say in the step’s prompt what to do with that result, or give the agent other tools, then Replay.',
+            fixes: ['editor', 'replay'],
+        };
+    }
+    if ((m = /Agent step '(.+?)' ran out of turns \((\d+)\) before answering/.exec(raw))) {
+        return {
+            kind: 'agent-turns',
+            sentence: `${m[1]}’s agent used all ${m[2]} of its turns without answering.`,
+            advice: 'Raise Max turns in the step’s Guardrails, or ask for less in its prompt, then Replay.',
+            fixes: ['editor', 'replay'],
+        };
+    }
     if (/ended without producing a final response/.test(raw)) {
         return { kind: 'agent-no-answer', sentence: `${its} agent finished without an answer.`, fixes: ['replay'] };
     }

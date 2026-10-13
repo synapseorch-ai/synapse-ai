@@ -62,6 +62,15 @@ def _datetime_context() -> str:
     )
 
 
+def _no_answer_reason(step_name: str, no_answer: dict) -> str:
+    """Why an agent step has no answer, from the loop's `final.no_answer` (F413)."""
+    if no_answer.get("why") == "repeating":
+        return (f"Agent step '{step_name}' stopped without an answer: it called "
+                f"{no_answer.get('tool_name')} with the same arguments {no_answer.get('count')} times "
+                "in a row and got the same result each time.")
+    return f"Agent step '{step_name}' ran out of turns ({no_answer.get('max_turns')}) before answering."
+
+
 class AgentStepExecutor:
     """Run a sub-agent's ReAct loop. Reuses the existing engine.
 
@@ -176,6 +185,7 @@ class AgentStepExecutor:
                       f"(attempt {resume_attempt}, turn {saved_progress.get('turn')})")
 
         final_response = None
+        no_answer: dict | None = None
         _log_status = "completed"
         execution_events: list[dict] = []
         # This step's own list as it last wrote it: beside other branches, its
@@ -282,6 +292,12 @@ class AgentStepExecutor:
                     continue
                 execution_events.append(event)
                 agent_log.log_event(event)
+                if event.get("type") == "final" and event.get("no_answer"):
+                    # The loop's words in place of an answer (the repeat guard,
+                    # out of turns): not the step's output, and not shown as
+                    # its answer in the run log. The step fails below (F413).
+                    no_answer = event["no_answer"]
+                    continue
                 yield {**event, "orch_step_id": step.id, "step_name": step.name}
                 if event.get("type") == "final":
                     final_response = event.get("response", "")
@@ -297,6 +313,13 @@ class AgentStepExecutor:
             agent_log.run_end(_log_status)
             agent_log.close()
 
+        if no_answer is not None:
+            # A turn that ended without an answer fails the step with why, as a
+            # failed child, an exhausted route or a loop over its cap does: in
+            # chat the person reads the loop's sentence; in a workflow the next
+            # step would have taken it as this one's work (F413). Nothing is
+            # written to the output key and no memory trace is kept.
+            raise RuntimeError(_no_answer_reason(step.name, no_answer))
         if final_response is None:
             raise RuntimeError(f"Agent step '{step.name}' ended without producing a final response")
 
