@@ -255,6 +255,11 @@ def _digest_names(calls: list[dict]) -> str:
 def _digests(turns: list[dict]) -> dict[int, str]:
     """Each turn's note, by its index in `turns`: the newest few in detail, the
     rest by name, newest first until the budget is spent."""
+    from core.chat_turns import FAILED_ANSWER, STOPPED_ANSWER
+    # A turn with no answer still ran its calls: said so, or the next turn's
+    # model reads "for this answer" as nothing having run (F426).
+    ended = {FAILED_ANSWER: "This turn failed after these tool calls ran",
+             STOPPED_ANSWER: "This turn was stopped after these tool calls ran"}
     notes: dict[int, str] = {}
     used = 0
     detailed = 0
@@ -262,11 +267,16 @@ def _digests(turns: list[dict]) -> dict[int, str]:
         calls = turns[index].get("calls") or _legacy_calls(turns[index].get("tools"))
         if not calls:
             continue
+        unanswered = ended.get(str(turns[index].get("assistant") or "").strip())
         if detailed < DIGEST_DETAILED_TURNS:
             detailed += 1
-            note = ("[Tool calls you made for this answer, kept by the system for you — not part of "
+            head = (f"{unanswered} — they did run" if unanswered
+                    else "Tool calls you made for this answer")
+            note = (f"[{head}, kept by the system for you — not part of "
                     "your reply. Read any earlier turn in full with session_history.]\n"
                     + "\n".join(_digest_line(c) for c in calls))
+        elif unanswered:
+            note = f"[{unanswered}: {_digest_names(calls)}]"
         else:
             note = f"[Tools you used for this answer: {_digest_names(calls)}]"
         if used + len(note) > DIGEST_MAX_CHARS:

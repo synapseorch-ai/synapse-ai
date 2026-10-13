@@ -691,6 +691,11 @@ async def run_agent_chat_job(
     # What the turn thought, from its events (U60): out here so a failed turn
     # keeps it too.
     thinking_events: list[dict] = []
+    # The last turn-boundary snapshot, and the calls made since it from their
+    # events (F242): out here so a turn that fails after its tools ran keeps
+    # them (F426), even one that failed before the loop started.
+    latest_progress: dict | None = None
+    events_since_progress: list[dict] = []
     # The answer's Sources: the root turn's `knowledge_citations` (F333).
     turn_citations: dict | None = None
 
@@ -779,13 +784,10 @@ async def run_agent_chat_job(
         chat_request._image_refs = list(image_refs or []) or None
         # The run a workflow agent starts, under the enqueuer's id (F417).
         chat_request._workflow_run_id = workflow_run_id or None
-        # The last turn-boundary snapshot, and whether this turn stopped to ask
-        # a person something. Both are read after `_consume` returns, which is
-        # why they are declared out here.
-        latest_progress: dict | None = None
+        # Whether this turn stopped to ask a person something: read after
+        # `_consume` returns, which is why it is declared out here (the last
+        # snapshot and the calls since it are declared above the `try`).
         paused_on: dict | None = None
-        # The calls made since that snapshot, from their events (F242).
-        events_since_progress: list[dict] = []
         # A workflow agent's run waiting on a person (a Human step): its turn is
         # saved where the run ends (F261), so this job writes none (F294).
         workflow_waiting = False
@@ -1003,11 +1005,23 @@ async def run_agent_chat_job(
             # or an interrupted turn does — a reopened conversation used to
             # lose it. The provider's words are not the answer; they went out
             # on the stream above, to the person in the app.
+            #
+            # With the calls that ran before it failed (F426), and the
+            # question's images, as the completed save and the in-process
+            # failed save keep them: saved with no calls, the next turn's model
+            # said it had never run them — and a tool that acts could be run
+            # twice. This whole-column write replaces the engine's own save.
             if not recorded:
                 from core.chat_turns import FAILED_ANSWER
-                from core.session import thinking_from_events
-                history.append({"role": "user", "content": message})
+                from core.session import image_notes, thinking_from_events, tools_from_calls, turn_calls
+                question = {"role": "user", "content": message}
+                if images:
+                    question["images"] = image_notes(images)
+                history.append(question)
                 failed = {"role": "assistant", "content": FAILED_ANSWER}
+                calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
+                if calls:
+                    failed.update(tools=tools_from_calls(calls), calls=calls)
                 reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
                 if reasoning:
                     failed["reasoning"] = reasoning
