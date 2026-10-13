@@ -1,6 +1,8 @@
 """An in-memory `KnowledgeIndex` — the conformance suite's reference.
 
 Exact BM25 (k1 1.2, b 0.75, over lowercased `\\w+` tokens) for the keyword leg,
+where a code written whole in the query ("QX-4471") is one more term, a phrase
+counted where its words appear in order (F421),
 exact cosine for the vector leg, `filters.evaluate` for filters, weighted RRF
 (`reference_rrf`) for `search_hybrid`. Pass a reduced `IndexCapabilities` to
 behave like a store without filter pushdown, without a keyword leg, or with
@@ -157,18 +159,24 @@ class InMemoryKnowledgeIndex:
             wanted = query.filter is not None or bool(query.path_prefix)
             return LegResult("lexical", (), filtered=wanted and self.capabilities.filter_pushdown,
                              exact=True, scanned=len(pool))
-        docs = {e.chunk_id: Counter(tokens(e.text)) for e in pool}
+        phrases = list(dict.fromkeys(tuple(words) for run in query.text.split() if len(words := tokens(run)) > 1))
+        words = {e.chunk_id: tokens(e.text) for e in pool}
+        docs: dict[str, Counter] = {}
+        for cid, toks in words.items():
+            docs[cid] = Counter(toks)
+            for ph in phrases:
+                docs[cid][ph] = sum(1 for i in range(len(toks) - len(ph) + 1) if tuple(toks[i:i + len(ph)]) == ph)
         n = len(pool)
-        avgdl = sum(sum(c.values()) for c in docs.values()) / n or 1.0
-        df = {t: sum(1 for c in docs.values() if t in c) for t in set(terms)}
+        avgdl = sum(len(toks) for toks in words.values()) / n or 1.0
+        df = {t: sum(1 for c in docs.values() if c[t]) for t in {*terms, *phrases}}
         idf = {t: math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5)) for t in df}
         kept, filtered = self._filtered(pool, query.filter, query.path_prefix)
         scored = []
         for e in kept:
             counts = docs[e.chunk_id]
-            dl = sum(counts.values()) or 1
+            dl = len(words[e.chunk_id]) or 1
             score = 0.0
-            for t in terms:
+            for t in [*terms, *phrases]:
                 tf = counts.get(t, 0)
                 if tf:
                     score += idf[t] * tf * (BM25_K1 + 1) / (tf + BM25_K1 * (1 - BM25_B + BM25_B * dl / avgdl))

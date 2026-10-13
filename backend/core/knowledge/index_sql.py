@@ -20,7 +20,16 @@ index holds" and "what the tables hold" can never disagree.
   index. Scores are `-bm25()`.
 * Postgres: a GIN expression index over `textsearch.tsv_expression_sql()`,
   each term through `plainto_tsquery` (bound, so no text ever becomes query
-  syntax), the terms OR-ed with `||`, scored by `ts_rank_cd`.
+  syntax), the terms OR-ed with `||`. A row scores the sum, over the query's
+  words and codes, of `ts_rank_cd(…, 32)` with every lexeme weighted alike: each
+  term adds at most 1 however often it repeats, so the passage that holds more
+  of the question ranks first — BM25's saturation, without its IDF (F421: a
+  ledger that said "freight" on every line outranked the one passage holding
+  every word). `pg_keywords` builds it once, for this index and cloud's.
+
+A code written whole ("QX-4471", "docs.python.org") is also searched as a
+phrase of its words (`query_phrases`), in both dialects, so it ranks above the
+same words apart.
 
 The two dialects rank differently by design (BM25 against cover density), and
 two more differences are known and tested: SQLite stems only English (Porter),
@@ -65,9 +74,10 @@ from dataclasses import dataclass
 from functools import reduce
 from typing import Any
 
-from sqlalchemy import and_, bindparam, column, delete, false, func, literal_column, or_, select, table
+from sqlalchemy import and_, bindparam, column, delete, false, func, literal_column, or_, select, table, true
 from sqlalchemy import text as sql_text
 from sqlalchemy import update
+from sqlalchemy.dialects.postgresql import array
 
 from core.knowledge import vectors
 from core.knowledge.errors import IndexDimensionError, KnowledgeIndexError
@@ -88,7 +98,12 @@ CAPABILITIES = IndexCapabilities(
 )
 
 MAX_TERMS = 32
+#: Codes searched as phrases in one query (`query_phrases`), and the words kept of each.
+MAX_PHRASES = 8
+MAX_PHRASE_WORDS = 8
 RRF_K = 60
+#: `ts_rank_cd`'s weights for D, C, B, A: the expression sets none, so every lexeme is D, which would weigh 0.1 (F421).
+_PG_WEIGHTS = "'{1,1,1,1}'::float4[]"
 _TERM = re.compile(r"[^\W_]+", re.UNICODE)
 _IN_BATCH = 500
 
@@ -117,6 +132,54 @@ def query_terms(text: str) -> list[str]:
         if len(seen) >= MAX_TERMS:
             break
     return list(seen)
+
+
+def query_phrases(text: str) -> list[str]:
+    """The codes in a keyword query: each run of two or more words joined by punctuation and no space ("QX-4471",
+    "INV-2024-0042", "docs.python.org"), as its words joined by spaces, lowercased, once each, at most
+    `MAX_PHRASES`. Each is searched as a phrase, so a code written whole ranks above its words apart (F421)."""
+    seen: dict[str, None] = {}
+    for run in (text or "").split():
+        words = [w.lower() for w in _TERM.findall(run)]
+        if len(words) > 1:
+            seen.setdefault(" ".join(words[:MAX_PHRASE_WORDS]), None)
+            if len(seen) >= MAX_PHRASES:
+                break
+    return list(seen)
+
+
+@dataclass(frozen=True)
+class PgKeywords:
+    """The keyword leg's query on Postgres: `terms` is a CTE with `match`, the words OR-ed, and `ranked`, the words
+    and the phrases a row is scored by (a term that is only stop words dropped, once, here). Shared by
+    `SqlKnowledgeIndex` and cloud's `PgKnowledgeIndex`, so the two rank alike."""
+
+    terms: Any
+
+    def matches(self, tsv: Any) -> Any:
+        return tsv.op("@@", is_comparison=True)(self.terms.c.match)
+
+    def score(self, tsv: Any) -> Any:
+        """Each term's `ts_rank_cd` over `tsv`, every lexeme weighted 1, normalised by 32 (rank / (rank + 1)): a term
+        adds at most 1 however often it repeats; summed."""
+        term = func.unnest(self.terms.c.ranked).column_valued("term")
+        return select(func.coalesce(func.sum(func.ts_rank_cd(literal_column(_PG_WEIGHTS), tsv, term, 32)), 0.0)
+                      ).scalar_subquery()
+
+
+def pg_keywords(text: str, lang: str) -> PgKeywords | None:
+    """`text`'s keyword query in `lang`'s configuration, or None when it has no words. Every word and phrase is a
+    bound parameter; the configuration comes from a fixed list, so the literal is never user text."""
+    words = query_terms(text)
+    if not words:
+        return None
+    config = literal_column(f"'{normalize_language(lang)}'::regconfig")
+    each = [func.plainto_tsquery(config, bindparam(f"_t{i}", w)) for i, w in enumerate(words)]
+    phrases = [func.phraseto_tsquery(config, bindparam(f"_p{i}", p)) for i, p in enumerate(query_phrases(text))]
+    term = func.unnest(array(each + phrases)).column_valued("term")
+    ranked = select(func.array_agg(term)).where(func.numnode(term) > 0).scalar_subquery()
+    match = reduce(lambda a, b: a.op("||")(b), each)
+    return PgKeywords(select(match.label("match"), ranked.label("ranked")).cte("keywords"))
 
 
 def _fts_table(lang: str) -> str:
@@ -450,27 +513,32 @@ class SqlKnowledgeIndex:
             return LegResult("lexical", (), filtered=narrowed, exact=True, scanned=0)
         async with self._session() as s:
             dialect = await self._ensure(s)
+            where = (self._tenant(), self._scopes(query.scopes), _T.c.doc_id.notin_(self._deleting(query.scopes)),
+                     *self._narrow(query.filter, query.path_prefix))
             if dialect == "sqlite":
                 name = _fts_table(query.lang)
                 fts = table(name, column("rowid"))
-                match = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
+                # A phrase is a quoted string of several words: FTS5 matches them in order (F421).
+                match = " OR ".join('"' + t.replace('"', '""') + '"' for t in [*terms, *query_phrases(query.text)])
                 score = (-func.bm25(literal_column(name))).label("score")
                 stmt = (select(_T.c.chunk_id, _T.c.doc_id, _T.c.kb_id, _T.c.snapshot_id, score)
                         .select_from(fts.join(_T, _T.c.id == fts.c.rowid))
-                        .where(literal_column(name).op("MATCH")(bindparam("_match", match))))
+                        .where(literal_column(name).op("MATCH")(bindparam("_match", match)), *where)
+                        .order_by(score.desc(), _T.c.chunk_id.asc()).limit(query.limit))
             else:
-                config = literal_column(f"'{normalize_language(query.lang)}'::regconfig")
-                tsquery = reduce(lambda a, b: a.op("||")(b),
-                                 [func.plainto_tsquery(config, bindparam(f"_t{i}", t)) for i, t in enumerate(terms)])
+                keywords = pg_keywords(query.text, query.lang)
+                assert keywords is not None  # terms is not empty
                 tsv = literal_column(tsv_expression_sql("knowledge_chunks.lang", "knowledge_chunks.context",
                                                         "knowledge_chunks.content"))
-                score = func.ts_rank_cd(tsv, tsquery).label("score")
-                stmt = (select(_T.c.chunk_id, _T.c.doc_id, _T.c.kb_id, _T.c.snapshot_id, score)
-                        .where(tsv.op("@@", is_comparison=True)(tsquery)))
-            stmt = (stmt.where(self._tenant(), self._scopes(query.scopes),
-                               _T.c.doc_id.notin_(self._deleting(query.scopes)),
-                               *self._narrow(query.filter, query.path_prefix))
-                    .order_by(score.desc(), _T.c.chunk_id.asc()).limit(query.limit))
+                # The rows that match, each with its tsvector made once (OFFSET 0 keeps Postgres from inlining the
+                # subquery and making it again for every term the score reads).
+                hits = (select(_T.c.chunk_id, _T.c.doc_id, _T.c.kb_id, _T.c.snapshot_id, tsv.label("tsv"))
+                        .select_from(_T.join(keywords.terms, true())).where(keywords.matches(tsv), *where)
+                        .offset(0).subquery("hits"))
+                score = keywords.score(hits.c.tsv).label("score")
+                stmt = (select(hits.c.chunk_id, hits.c.doc_id, hits.c.kb_id, hits.c.snapshot_id, score)
+                        .select_from(hits.join(keywords.terms, true()))
+                        .order_by(score.desc(), hits.c.chunk_id.asc()).limit(query.limit))
             rows = (await s.execute(stmt)).all()
         return LegResult("lexical", _candidates((r.chunk_id, r.doc_id, r.kb_id, r.snapshot_id, float(r.score))
                                                 for r in rows), filtered=narrowed, exact=True)

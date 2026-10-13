@@ -22,6 +22,7 @@ from dataclasses import dataclass, field, replace
 
 from core.knowledge.errors import IndexDimensionError
 from core.knowledge.filters import evaluate, parse_filter
+from core.knowledge.ids import chunk_id
 from core.knowledge.seams import KnowledgeIndex
 from core.knowledge.testing import corpus
 from core.knowledge.testing.filter_cases import CASES as FILTER_CASES
@@ -155,6 +156,47 @@ async def lexical_takes_plain_text(index: KnowledgeIndex, harness: IndexHarness)
     for text in ("", "   "):
         result = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), text, "simple", None, 5))
         _check(not result.candidates, f"an empty query ({text!r}) finds nothing")
+
+
+#: F421 (C8): a code, a near miss of it and a host name, then passages that repeat one of the question's words —
+#: what business text is full of (invoice, order and policy numbers; a ledger that says "freight" on every line).
+_CODES = (
+    "Harbourline Freight ships perishable goods from Pier 9 every Tuesday at 05:40, and its dock code is QX-4471.",
+    "Dock QX-1234 was repainted, and pallet 4471 went to the Harbourline yard.",
+    "Invoices are due net-21; the terms are at billing.example.com/terms.",
+)
+_LEDGER_WORDS = ("freight", "tonnage", "berth", "pallet", "demurrage", "freight", "quota", "reefer", "freight", "crane")
+
+
+def _codes_entries(scope: Scope) -> list[IndexEntry]:
+    texts = [*_CODES, *(f"Ledger entry {n}: " + " ".join(_LEDGER_WORDS * 12) for n in range(6))]
+    out = []
+    for n, text in enumerate(texts):
+        d = corpus.doc_id(300 + n)
+        out.append(IndexEntry(chunk_id=chunk_id(d, scope.snapshot_id, 1, 0), doc_id=d, kb_id=scope.kb_id,
+                              snapshot_id=scope.snapshot_id, text=text, lang="simple",
+                              vector=corpus.direction(n % corpus.DIMS),
+                              fields=corpus.fields_for(8, f"codes/{n}.txt", {})))
+    return out
+
+
+async def lexical_keeps_codes_and_counts_a_repeat_once(index: KnowledgeIndex, harness: IndexHarness) -> None:
+    """A code is found by its parts and ranks first where it is written whole; a passage that repeats one of the
+    question's words never outranks the one that holds them all (F421)."""
+    entries = _codes_entries(corpus.SCOPE_A1)
+    await _load(index, harness, entries)
+    handbook, _near, terms = (e.chunk_id for e in entries[:3])
+
+    async def ids(text: str) -> list[str]:
+        result = await index.search_lexical(LexicalQuery((corpus.SCOPE_A1,), text, "simple", None, 10))
+        _well_formed(result)
+        return _ids(result)
+
+    _check(handbook in await ids("4471"), "a code's number alone finds it")
+    _check((await ids("Harbourline Freight dock code QX-4471"))[:1] == [handbook],
+           "the passage holding every word of the question ranks above passages repeating one of them")
+    _check((await ids("QX-4471"))[:1] == [handbook], "the code written whole ranks above its parts apart")
+    _check(terms in await ids("billing.example.com"), "a host name is found by its words")
 
 
 async def a_missing_leg_says_so(index: KnowledgeIndex, harness: IndexHarness) -> None:
@@ -374,6 +416,8 @@ CASES: list[ConformanceCase] = [
     ConformanceCase("lexical_finds_the_words", lexical_finds_the_words, needs=frozenset({"lexical"})),
     ConformanceCase("lexical_is_case_insensitive", lexical_is_case_insensitive, needs=frozenset({"lexical"})),
     ConformanceCase("lexical_takes_plain_text", lexical_takes_plain_text, needs=frozenset({"lexical"})),
+    ConformanceCase("lexical_keeps_codes_and_counts_a_repeat_once", lexical_keeps_codes_and_counts_a_repeat_once,
+                    needs=frozenset({"lexical"})),
     ConformanceCase("a_missing_leg_says_so", a_missing_leg_says_so, lacks=frozenset({"lexical"})),
     ConformanceCase("vector_order_is_exact", vector_order_is_exact, needs=frozenset({"vector"})),
     ConformanceCase("ties_break_by_chunk_id", ties_break_by_chunk_id, needs=frozenset({"vector"})),
