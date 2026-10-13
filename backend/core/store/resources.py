@@ -51,9 +51,10 @@ def orchestration_values(item: dict, tenant_id: str) -> dict:
         "name": item.get("name") or item["id"],
         "description": item.get("description") or "",
         "definition": item,
-        # The engine treats NULL is_active as "not active", so an orchestration
-        # written without it would exist, list fine, and be invisible on any
-        # screen that counts `WHERE is_active`.
+        # Always written, true unless the document says false: cloud's screens
+        # count `WHERE is_active IS TRUE`, so a NULL one would exist, run, and be
+        # missing from every list. The engine itself reads only `False` as
+        # retired (`_document`).
         "is_active": bool(item.get("is_active", True)),
     }
 
@@ -130,7 +131,17 @@ _KEYED_BY_ID = frozenset({"agents", "orchestrations"})
 def _document(model, row) -> dict:
     if model.__tablename__ not in _KEYED_BY_ID:
         return row.definition
-    return {**row.definition, "id": row.id, "name": row.definition.get("name") or row.name}
+    doc = {**row.definition, "id": row.id, "name": row.definition.get("name") or row.name}
+    # A workflow deleted by its column alone — cloud keeps the row, which its
+    # runs name, and stores no `is_active` in the definition — reads as retired
+    # to every engine reader of workspace content (`builder_tools._is_visible`):
+    # the MCP server listed one `run_…` tool per deleted workflow, and the
+    # builder could edit one and its save brought it back (F423). The list is
+    # still whole: id checks, resumes and notifications read retired rows too.
+    # A live document gets no key, so it reads exactly as it was saved.
+    if getattr(row, "is_active", None) is False:
+        doc["is_active"] = False
+    return doc
 
 
 def _natural_key(model):
