@@ -4,6 +4,9 @@ Settings fields either do something or are gone (F76).
 * `max_total_cost_usd` ("Max Cost (USD)" on an orchestration), `n8n_table_id`,
   a repo's `embedding_model_provider` and `report_agent_enabled` were saved and
   read by nothing. The installers wrote the settings ones too.
+  The cap per run came back as `max_run_credits` and `max_run_usd` (CAP1, D272),
+  asked by the engine before every step: `tests/unit/test_a_run_stops_at_its_cap.py`
+  proves each stops a run, and that an old `max_total_cost_usd` caps nothing.
 * `prompt_cache_enabled` is read by the prompt cache, but the `Settings` model
   dropped it, so it could not be changed through the settings route.
 * `ollama_base_url` was written by every installer and read by the Ollama call —
@@ -36,6 +39,17 @@ class TestDeadFieldsAreGone:
         from core.models_orchestration import Orchestration
         assert "embedding_model_provider" not in Repo.model_fields
         assert "max_total_cost_usd" not in Orchestration.model_fields
+
+    def test_the_cap_that_replaced_max_cost_is_read(self):
+        """Not a field nothing reads: the engine builds each run's cap from it."""
+        from _fakes import seed as S
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.run_cap import RunCap
+
+        orch = Orchestration.model_validate(
+            {**S.make_orchestration(), "max_run_credits": 5, "max_run_usd": 0.5})
+        assert OrchestrationEngine(orch, None).run_cap == RunCap(credits=5.0, usd=0.5)
 
     @pytest.mark.parametrize("installer", ["setup.py", "synapse/setup_wizard.py", "bin/synapse.js",
                                            "synapse/installer/providers.py"])

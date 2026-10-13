@@ -214,6 +214,27 @@ class Orchestration(BaseModel):
     # still carries it validates: unknown keys are ignored.
     timeout_minutes: int = ORCH_GLOBAL_TIMEOUT_MIN
 
+    #: What one run may spend (CAP1, D272): credits (cloud's; self-hosted has
+    #: none) and model dollars. None is no cap, the default. The engine asks
+    #: before every step (`core/orchestration/run_cap.py`) — not another F76.
+    max_run_credits: float | None = None
+    max_run_usd: float | None = None
+
+    @field_validator("max_run_credits", "max_run_usd", mode="before")
+    @classmethod
+    def _a_cap_or_none(cls, value: Any, info) -> float | None:
+        """A stored cap that is not one reads as no cap.
+
+        Every run and resume validates its definition, and a writer that skips
+        this model (a bundle, the builder) must not leave a workflow that cannot
+        run: a nonsense cap is no cap, never a stop. `OrchestrationIn` refuses
+        one where a person saves it.
+        """
+        from core.orchestration.run_cap import MIN_CREDITS, _positive
+
+        at_least = MIN_CREDITS if info.field_name == "max_run_credits" else None
+        return _positive(value, at_least=at_least)
+
     #: Stop a run when a step's text will not become the type its state key
     #: declares. Off by default, and deliberately: until the engine began
     #: reading `state_schema.type` at all, every type value in every
@@ -241,6 +262,19 @@ class Orchestration(BaseModel):
 
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class OrchestrationIn(Orchestration):
+    """An orchestration as a person saves it: a cap that is not one is refused
+    (422) with a sentence, where it can be said. Read anywhere else, it is no
+    cap (`Orchestration._a_cap_or_none`)."""
+
+    @field_validator("max_run_credits", "max_run_usd", mode="before")
+    @classmethod
+    def _a_cap_or_none(cls, value: Any, info) -> float | None:
+        from core.orchestration.run_cap import clean
+
+        return clean(value, credits=info.field_name == "max_run_credits")
 
 
 class OrchestrationRun(BaseModel):

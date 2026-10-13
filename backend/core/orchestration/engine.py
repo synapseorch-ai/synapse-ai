@@ -21,6 +21,7 @@ from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .step_usage import exact_window
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
+from .run_cap import RunCap
 from .run_gate import stop_reason
 from .time_limits import CONTAINERS, OWN_BUDGET, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
@@ -234,6 +235,11 @@ class OrchestrationEngine:
         #: the file as it is then.
         self._mentions = None
         self.current_transition = None  # set by _execute_loop before each step
+        #: What the run may spend (CAP1): its own workflow's cap at the top; a
+        #: nested run is handed its root's (`steps.py`'s sub-engine, and
+        #: `resume`'s `run_cap`), and never reads its own — the cap of the
+        #: workflow that was started covers everything it calls.
+        self.run_cap: RunCap | None = RunCap.of(orchestration) if depth == 0 else None
 
     def mention_reader(self):
         """The run's `@[path]` reader — see `context.build_step_prompt`."""
@@ -448,9 +454,10 @@ class OrchestrationEngine:
                 yield fail_run(f"Global turn limit ({self.orch.max_total_turns}) exceeded")
                 break
 
-            # The host's gate (F419): a run whose next step it cannot pay for
-            # stops here, with the host's sentence as its reason.
-            stopped = await stop_reason(run.run_id, step.type.value)
+            # The run's cap (CAP1), then the host's gate (F419): a run that has
+            # reached its cap, or whose next step the host cannot pay for, stops
+            # here, with that sentence as its reason.
+            stopped = await stop_reason(run.run_id, step.type.value, getattr(self, "run_cap", None))
             if stopped:
                 yield fail_run(stopped)
                 break
@@ -962,7 +969,7 @@ class OrchestrationEngine:
     @classmethod
     async def resume(
         cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None,
-        *, depth: int = 0, caller: dict | None = None,
+        *, depth: int = 0, caller: dict | None = None, run_cap: RunCap | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Resume a paused orchestration after human input.
 
@@ -978,7 +985,8 @@ class OrchestrationEngine:
         the sub-orchestration it waits on passes its own plus one, so the child
         is not taken for a top-level run — which writes memory summaries and is
         scored — and its nesting cap counts from where it really is. It passes
-        `caller` too, so the child's steps are still told who called them.
+        `caller` too, so the child's steps are still told who called them, and
+        `run_cap`, its root's cap on what the run may spend (CAP1).
         """
         from .state import SharedState as SS
 
@@ -999,6 +1007,8 @@ class OrchestrationEngine:
         engine = cls(orch, server_module, depth=depth)
         engine.images = list(images or [])
         engine.caller = caller
+        if depth:
+            engine.run_cap = run_cap
         async for event in engine.resume_paused(run, human_response):
             yield event
 
@@ -1263,6 +1273,7 @@ class OrchestrationEngine:
                 # The answer's attachments, through a step that passes them (F313).
                 images=list(self.images) if parent_step is not None and parent_step.pass_images else None,
                 depth=self.depth + 1, caller=self.caller_for(run, parent_step),
+                run_cap=getattr(self, "run_cap", None),
             ):
                 sub_events.append(sub_event)
                 sub_outcome.read(sub_event)

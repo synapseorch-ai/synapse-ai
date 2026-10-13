@@ -434,6 +434,9 @@ class AgentStepExecutor:
 
         sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
         sub_engine.caller = engine.caller_for(run, step)
+        # What the run may spend is its root's: the child's own cap is for when
+        # it runs on its own (CAP1).
+        sub_engine.run_cap = getattr(engine, "run_cap", None)
         # What the person attached reaches the child only through a step that
         # passes it (F313); the child's own steps then decide, as here.
         sub_engine.images = list(getattr(engine, "images", None) or []) if step.pass_images else []
@@ -1681,10 +1684,11 @@ class ParallelStepExecutor:
                 yield {"type": "step_error", "orch_step_id": sid, "error": message}
                 raise RuntimeError(message)
 
-            # The host's gate (F419), as before a step at the top of the run.
-            # The run's own reason is the gate's sentence: the branch's failure
-            # reaches the engine as this node's error, worded as a branch's.
-            stopped = await stop_reason(run.run_id, sub_step.type.value)
+            # The run's cap and the host's gate (CAP1, F419), as before a step
+            # at the top of the run. The run's own reason is their sentence: the
+            # branch's failure reaches the engine as this node's error, worded
+            # as a branch's.
+            stopped = await stop_reason(run.run_id, sub_step.type.value, getattr(engine, "run_cap", None))
             if stopped:
                 set_run_error(run, stopped)
                 yield {"type": "step_error", "orch_step_id": step.id, "error": stopped}
@@ -2083,9 +2087,10 @@ class LoopStepExecutor:
                         loop_total=total,
                     )
 
-                    # The host's gate (F419), as before a step at the top of the
-                    # run; the run's own reason is the gate's sentence.
-                    stopped = await stop_reason(run.run_id, sub_step.type.value)
+                    # The run's cap and the host's gate (CAP1, F419), as before a
+                    # step at the top of the run; the run's own reason is their
+                    # sentence.
+                    stopped = await stop_reason(run.run_id, sub_step.type.value, getattr(engine, "run_cap", None))
                     if stopped:
                         set_run_error(run, stopped)
                         yield {"type": "step_error", "orch_step_id": step.id, "error": stopped}

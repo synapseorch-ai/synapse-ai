@@ -9,7 +9,7 @@ import time
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from core.models_orchestration import Orchestration
+from core.models_orchestration import Orchestration, OrchestrationIn
 from core.react_engine import drain_queue_with_heartbeat
 from core.run_ids import new_run_id
 # Registry of active run tasks (for mid-step cancellation), owned by the runner
@@ -424,7 +424,7 @@ async def estimate_run(request: Request):
 
 
 @router.post("/api/orchestrations")
-async def create_or_update_orchestration(orch: Orchestration):
+async def create_or_update_orchestration(orch: OrchestrationIn):
     # A single upsert rather than read-list / mutate / write-list, which loses
     # whichever of two concurrent edits finishes first.
     from core.store.resources import get_orchestration as _get

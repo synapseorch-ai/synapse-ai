@@ -162,6 +162,24 @@ async def query(
     return [_to_dict(r) for r in rows]
 
 
+async def spent_usd(run_id: str) -> float:
+    """What a run's model calls have cost so far, with the runs nested under it.
+
+    One SUM, for a run's cap (`core/orchestration/run_cap.py`), asked before
+    each of its steps; `query` would fetch every row to add them up.
+    """
+    from core.store import session
+    from core.store.models import UsageLogDB
+
+    stmt = select(func.coalesce(func.sum(UsageLogDB.estimated_cost), 0.0)).where(
+        UsageLogDB.tenant_id == get_tenant(),
+        or_(UsageLogDB.run_id == run_id,
+            UsageLogDB.run_id.startswith(f"{run_id}__", autoescape=True)),
+    )
+    async with session() as s:
+        return float((await s.execute(stmt)).scalar() or 0.0)
+
+
 async def all_records() -> list[dict]:
     """Every record for this tenant, oldest first — what the summaries group."""
     from core.store import session

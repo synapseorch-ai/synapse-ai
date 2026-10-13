@@ -15,12 +15,18 @@ or None. A run the gate stops ends `failed` with that sentence as its own reason
 
 The self-hosted product sets no gate. A gate that fails stops nothing: billing
 is the host's, and a lookup error must not end a customer's run.
+
+The workflow's own cap on a run (`run_cap`, CAP1) is asked here too, first: the
+same four places ask, and its stop ends the run the same way. A run at its cap
+stops in the cap's words even when the workspace's wallet is empty as well.
 """
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
 from core.log import get_logger
+
+from . import run_cap
 
 _log = get_logger(__name__)
 
@@ -36,8 +42,17 @@ def set_run_gate(hook: RunGate | None) -> None:
     _run_gate = hook
 
 
-async def stop_reason(run_id: str, step_type: str) -> str | None:
-    """Why this run may not start a step of `step_type`, or None to go on."""
+async def stop_reason(
+    run_id: str, step_type: str, cap: run_cap.RunCap | None = None,
+) -> str | None:
+    """Why this run may not start a step of `step_type`, or None to go on.
+
+    `cap` is the run's own (`OrchestrationEngine.run_cap`): its root's, in a
+    nested run.
+    """
+    capped = await run_cap.stop_reason(run_id, step_type, cap)
+    if capped:
+        return capped
     if _run_gate is None:
         return None
     try:
