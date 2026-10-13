@@ -68,11 +68,11 @@ function lastError(reason: string): string {
     return (m ? m[1] : reasonHeadline(stripClass(reason))).trim().slice(0, 240);
 }
 
-const MODEL_FAILURE = /^(LLMError|EmptyAnswer|EmbeddingFailed): |LLM Error: |^RuntimeError: (LLM|Tool) step '.+' (LLM call )?failed: |Cloud API Error|CLI Provider Error|CLI provider '.+' failed|HuggingFace Provider Error|Bedrock refused|Model gateway refused|model wallet has|Unknown cloud model selected|Local Agent Error: /;
+const MODEL_FAILURE = /^(LLMError|EmptyAnswer|EmbeddingFailed): |LLM Error: |^(?:RuntimeError: )?(LLM|Tool) step '.+' (LLM call )?failed: |Cloud API Error|CLI Provider Error|CLI provider '.+' failed|HuggingFace Provider Error|Bedrock refused|Model gateway refused|model wallet has|Unknown cloud model selected|Local Agent Error: /;
 
 /**
  * Cloud's credit gate (`worker/credit_gate.py`, F419), in its own words. Unanchored: the gate stops a run between
- * steps (the run's reason), in a Loop body ("RuntimeError: Stopped: …" on the Loop), in a Parallel branch ("Branch 2
+ * steps (the run's reason), in a Loop body ("Stopped: …" on the Loop; "RuntimeError: Stopped: …" before F407), in a Parallel branch ("Branch 2
  * failed: …") and in a workflow a step runs ("Sub-orchestration 'X' failed: …"). The numbers are optional: a reason
  * wrapped that deep can lose its tail to the engine's 300-character cap.
  */
@@ -303,7 +303,18 @@ export function explainFailure(input: FailureInput): Explained {
     if (/Docker is not available/.test(raw)) {
         return { kind: 'code-no-docker', sentence: `${step} couldn’t run its Python code: Docker isn’t running on this machine.`, advice: 'Start Docker, then Replay.', fixes: ['replay'] };
     }
+    if ((m = /Transform( \(host\))? failed on line (\d+)(?: \(`([^`]*)`\))?: ([\s\S]+)$/.exec(raw))) {
+        // The engine names your line, its source and what it raised (F407).
+        return {
+            kind: 'code-error',
+            sentence: `${its} Python code raised an error on line ${m[2]}.`,
+            code: m[3] || undefined,
+            detail: `It raised ${m[4].trim()}.`,
+            fixes: ['editor', 'replay'],
+        };
+    }
     if (/Transform error: Transform( \(host\))? failed/.test(raw)) {
+        // A run from before F407: the sandbox's traceback, whose line is the wrapper's.
         const line = [...raw.matchAll(/script\.py", line (\d+)/g)].pop();
         const code = /script\.py", line \d+[^\n]*\n\s*([^\n]+)/.exec(raw.slice(line?.index ?? 0));
         const raised = /\n\s*([A-Z]\w*(?:Error|Exception)\b[^\n]*)\s*$/.exec(raw);

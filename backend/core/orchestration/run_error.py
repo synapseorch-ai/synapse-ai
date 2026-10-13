@@ -41,6 +41,20 @@ def set_run_error(run: Any, reason: str | None) -> None:
         run.step_progress.pop(RUN_KEY, None)
 
 
+def reason_of(exc: BaseException, limit: int = 300) -> str:
+    """A step's failure as its run records it, bounded.
+
+    A `RuntimeError` is the engine saying why in its own words — a timeout, a
+    failed child, a loop over its cap, an agent with no answer — and its class
+    name told a person nothing: "RuntimeError: Step 'X' timed out …" on the run
+    page, in v1/v2 and in a channel's line (F407; Naveen, D267). Any other
+    exception keeps its name: "KeyError: 'x'" says nothing without it, and the
+    run card reads a model's failure by "LLMError:" / "EmptyAnswer:".
+    """
+    text = str(exc)[:limit]
+    return text if type(exc) is RuntimeError else f"{type(exc).__name__}: {text}"
+
+
 def failure_reason(status: str | None, step_history: list | None, step_progress: dict | None) -> str | None:
     """Why a run that did not complete stopped: its own reason, else its newest step error.
 

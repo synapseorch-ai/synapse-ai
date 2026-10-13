@@ -16,7 +16,7 @@ from core.models_orchestration import Orchestration, OrchestrationRun, StepConfi
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
-from .run_error import failure_reason, run_error, set_run_error
+from .run_error import failure_reason, reason_of, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key
 from .step_usage import exact_window
 from .state import SharedState
@@ -734,7 +734,7 @@ class OrchestrationEngine:
                 # API key, both of which read the record anyway, and the widget
                 # drops `step_error` altogether.
                 safe_error = "An internal error occurred while executing this step."
-                real_error = f"{type(e).__name__}: {str(e)[:300]}"
+                real_error = reason_of(e)
                 end_step(run.step_history, {
                     "step_id": step.id,
                     "step_name": step.name,
@@ -1325,7 +1325,7 @@ class OrchestrationEngine:
             # The parent is working by now, so letting this escape would leave
             # it `running` with nothing behind it; before, it stayed paused on a
             # question the answer had already spent.
-            resume_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+            resume_error = reason_of(exc)
 
         # A sub-run that did not complete fails the step waiting on it, with its
         # reason — as it does when it fails without a pause (F253). Its final

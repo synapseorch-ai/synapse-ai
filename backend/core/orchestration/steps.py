@@ -19,7 +19,7 @@ from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 from core.log import get_logger
 from .pauses import end_step, progress_key as _progress_key
 from .step_usage import exact_window
-from .run_error import set_run_error
+from .run_error import reason_of, set_run_error
 from .run_gate import stop_reason
 from .time_limits import CONTAINERS, body_step_limit, timed_out
 
@@ -1557,7 +1557,7 @@ class ParallelStepExecutor:
                                 ev = {"type": _BRANCH_ASKED, "branch": branch_index, "event": ev}
                             await queue.put(ev)
                 except Exception as e:  # noqa: BLE001 — recorded, raised once the others finish
-                    message = f"Branch {branch_index} failed: {type(e).__name__}: {str(e)[:300]}"
+                    message = f"Branch {branch_index} failed: {reason_of(e)}"
                     failures.append(message)
                     await queue.put({"type": "step_error", "orch_step_id": step.id, "error": message})
                 finally:
@@ -2413,6 +2413,7 @@ class TransformStepExecutor:
         """
         from core.config import load_settings
         from core.execution import ExecRequest, HostRunner, Network, get_runner, wrap_transform
+        from core.execution.scripts import transform_failure, transform_line_offset
 
         runtime = (load_settings().get("transform_runtime") or "docker").strip().lower()
         runner = HostRunner() if runtime == "host" else get_runner()
@@ -2435,8 +2436,11 @@ class TransformStepExecutor:
         if result.timed_out:
             raise RuntimeError(f"Transform timed out after {capped}s")
         if result.exit_code != 0:
+            # Your line, its source and what it raised — not the wrapper's line,
+            # the runner's temp path and the whole traceback (F407).
             label = "Transform (host)" if runtime == "host" else "Transform"
-            raise RuntimeError(f"{label} failed (exit {result.exit_code}): {result.stderr[:500]}")
+            raise RuntimeError(transform_failure(
+                result.stderr, code, transform_line_offset(state), result.exit_code, label=label))
 
         return self._parse_script_output(result.stdout)
 

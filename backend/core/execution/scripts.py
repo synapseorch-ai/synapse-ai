@@ -9,6 +9,7 @@ answers `state.key` (see `_STATE_CLASS`).
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -63,12 +64,71 @@ _STATE_CLASS = '''class _SynapseState(dict):
 '''
 
 
-def wrap_transform(code: str, state: dict[str, Any]) -> str:
-    """A transform step: `state` in, `result` out, printed as JSON."""
+def _transform_head(state: dict[str, Any]) -> str:
+    """What a transform's script runs before the person's code."""
     return (
         f'import json\n{_STATE_CLASS}\nstate = json.loads("""{_embed(state)}""", object_hook=_SynapseState)\n'
         'result = None\n\n'
+    )
+
+
+def wrap_transform(code: str, state: dict[str, Any]) -> str:
+    """A transform step: `state` in, `result` out, printed as JSON."""
+    return (
+        _transform_head(state)
         + code
         + '\n\nif result is not None:\n    print(json.dumps({"result": result}, default=str))\n'
         'else:\n    print(json.dumps({"result": None}))\n'
     )
+
+
+def transform_line_offset(state: dict[str, Any]) -> int:
+    """How many script lines come before the person's first: their line N is the
+    script's N + this (F407)."""
+    return _transform_head(state).count("\n")
+
+
+#: A traceback's frame in the wrapped script, whatever the runner named its file:
+#: `/sandbox/script.py` (Docker), a temp dir's (the host, a Lambda).
+_SCRIPT_FRAME = re.compile(r'File "[^"]*script\.py", line (\d+)')
+_NOT_THE_ERROR = ("Traceback (most recent call last)", "During handling of the above exception",
+                  "The above exception was the direct cause")
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def transform_failure(stderr: str, code: str, offset: int, exit_code: int, *,
+                      label: str = "Transform") -> str:
+    """Why a transform failed, in one line a person can act on (F407).
+
+    The sandbox's traceback named the wrapper's line (the state loader sits above
+    the code: the user's line 2 read "line 17"), the runner's temp path, and ran
+    to several lines. Now: the deepest frame in the person's own code, its
+    source and what it raised — "Transform failed on line 2
+    (`raise ValueError('boom')`): ValueError: boom". A frame in the wrapper (the
+    state class answering `state.missing`) is not theirs; the line that read it
+    is. Python has no backticks, so they mark the source unambiguously. No
+    traceback at all (killed, out of memory) says the exit and stderr's tail.
+    """
+    text = stderr or ""
+    start = text.rfind("Traceback (most recent call last):")
+    if start >= 0:
+        text = text[start:]
+    lines = code.splitlines() or [""]
+    line = None
+    for match in _SCRIPT_FRAME.finditer(text):
+        n = int(match.group(1)) - offset
+        if 1 <= n <= len(lines):
+            line = n
+    raised = next((ln.strip() for ln in reversed(text.splitlines())
+                   if ln.strip() and not ln[:1].isspace() and not ln.startswith(_NOT_THE_ERROR)), "")
+    if line is None and start < 0 and not _SCRIPT_FRAME.search(text):
+        tail = _clip(" ".join((stderr or "").split()[-40:]), 300)
+        return f"{label} failed (exit {exit_code})" + (f": {tail}" if tail else "")
+    where = ""
+    if line is not None:
+        source = lines[line - 1].strip()
+        where = f" on line {line}" + (f" (`{_clip(source, 120)}`)" if source and "`" not in source else "")
+    return f"{label} failed{where}: {_clip(raised, 300) or f'exit {exit_code}'}"

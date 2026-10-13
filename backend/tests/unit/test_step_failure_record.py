@@ -86,8 +86,9 @@ class TestTheRealErrorReachesTheRecord:
         await _run(orch, run_id="run_boom2", engine=engine)
 
         assert len(seen_errors) >= 2                       # the failure checkpoint, then finalize
-        assert seen_errors[0].startswith("RuntimeError: ")
-        assert len(seen_errors[0]) <= len("RuntimeError: ") + 300   # bounded
+        # A RuntimeError is the engine's own sentence: no class name before it
+        # (F407, D267); still bounded.
+        assert seen_errors[0] == "x" * 300
 
     async def test_resume_failed_still_pops_the_entry_and_reruns(self, seed_orchestration, monkeypatch):
         from core.models_orchestration import Orchestration, StepType
