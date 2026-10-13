@@ -888,6 +888,31 @@ def narrow_allowed_tools(override, agent_tools):
 
 @_spans.traced_generator("synapse.agent_step", _spans.agent_step_attributes,
                          on_event=_spans.agent_step_events)
+def _raised_cap_note(agent: dict, settings: dict, model: str, effort) -> str | None:
+    """What to say when thinking raises the Max response length someone set (F432).
+
+    `reasoning.plan_for` raises the cap to clear the model's thinking — a budget
+    that does not fit under it is refused, and a larger cap only costs what is
+    written — so on a thinking model the person's cap does not bound the answer:
+    C2 measured 256 tokens on Gemini 3 give a 956-word essay, silently. None
+    when nothing was set, the model does not think, or the cap already clears it.
+    """
+    own = agent.get("max_output_tokens")
+    try:
+        cap = int(own or settings.get("max_output_tokens") or 0)
+    except (TypeError, ValueError):
+        return None
+    if cap <= 0:
+        return None
+    from core.reasoning import plan_for
+    plan = plan_for(model, effort, cap, settings.get("reasoning_models"))
+    if plan is None or plan.max_output_tokens <= cap:
+        return None
+    whose = "This agent's" if own else "The workspace's"
+    return (f"{whose} Max response length ({cap:,} tokens) was raised to {plan.max_output_tokens:,} so "
+            f"{model} has room to think; its answer may run past {cap:,}.")
+
+
 async def run_agent_step(
     message,
     agent_id,
@@ -1692,6 +1717,12 @@ async def run_agent_step(
             return []
         _answer_filter.restart()
         return [{"type": "answer_reset", "turn": _answer_turn, "reason": reason}]
+
+    # A cap someone set that thinking raises does not bind the answer: said once,
+    # where the run log and chat's activity line show it (F432). Not to a visitor.
+    _cap_note = _raised_cap_note(active_agent, current_settings, current_model, reasoning_effort)
+    if _cap_note and _visitor is None:
+        yield {"type": "status", "message": _cap_note}
 
     async with httpx.AsyncClient() as client:
         for turn in range(start_turn, max_turns):

@@ -1239,7 +1239,7 @@ export const AgentsTab = ({
                                                         })}
                                                         aria-describedby="age-max-output-help"
                                                     />
-                                                    <p id="age-max-output-help" className="mt-1 text-xs text-text-faint">The most this agent&apos;s model may write in one response, thinking included, in tokens. Blank uses the workspace&apos;s (Settings → Models).</p>
+                                                    <p id="age-max-output-help" className="mt-1 text-xs text-text-faint">The most this agent&apos;s model may write in one response, thinking included, in tokens. A model that thinks gets it raised to fit its thinking, so its answer may run past it; the run log says when. Blank uses the workspace&apos;s (Settings → Models).</p>
                                                 </div>
                                             </div>
 
