@@ -297,6 +297,7 @@ def test_a_stored_trace_validates_as_one():
 
 # ── B2a (D163): the vector leg, fusion, rerank, costs ──────────────────────────
 
+from _fakes.knowledge_db import multi_tenant  # noqa: E402,F401 — fixture
 from core.knowledge.testing.fakes import FakeReranker, HashingEmbedder  # noqa: E402
 from core.knowledge.testing.reference_index import reference_rrf  # noqa: E402
 from core.store.models import KnowledgeCostDB, UsageLogDB  # noqa: E402
@@ -463,6 +464,87 @@ async def test_a_reranker_that_fails_leaves_the_fused_order_and_says_so():
     response = await _search(query=QUERY, rerank=True, include_trace=True)
     assert response.degraded == ["rerank_failed"] and response.trace.rerank is None
     assert [h.chunk_id for h in response.hits] == _fused_order(response.trace)[:len(response.hits)]
+
+
+class _Refusing(FakeReranker):
+    """A reranker that answers what trying again cannot fix (a missing key, a bad request)."""
+
+    async def rerank(self, query, documents, **kw):
+        from core.knowledge.errors import RerankError
+
+        self.calls.append({"query": query, "documents": list(documents)})
+        raise RerankError("refused: no key", retryable=False)
+
+
+def _later(monkeypatch, seconds: float) -> None:
+    from core.knowledge import rerankers
+
+    now = rerankers._clock()
+    monkeypatch.setattr(rerankers, "_clock", lambda: now + seconds)
+
+
+async def test_a_reranker_that_keeps_failing_is_not_called_for_a_while(monkeypatch):
+    """U71 (C8): while a reranker was down (C2: the gateway's Cohere answered 502), every search still called it and
+    waited ~0.7 s to learn it again. After three failures in a row it is left alone for a few minutes, and a search
+    still says it was not reranked, and why."""
+    from core.knowledge import rerankers
+
+    await _embedded_corpus()
+    reranker = FakeReranker(fail=True)
+    seams.set_reranker(reranker)
+    for _ in range(3):
+        assert (await _search(query=QUERY, rerank=True)).degraded == ["rerank_failed"]
+    skipped = await _search(query=QUERY, rerank=True, include_trace=True)
+    assert len(reranker.calls) == 3, "the fourth search does not wait for a reranker that keeps failing"
+    assert skipped.degraded == ["rerank_failed"] and skipped.trace.rerank is None
+    [why] = [d.detail for d in skipped.trace.degraded if d.code == "rerank_failed"]
+    assert why.startswith("Not tried: it failed 3 times in a row; trying again after ") and why.endswith(" UTC.")
+    assert [h.chunk_id for h in skipped.hits] == _fused_order(skipped.trace)[:len(skipped.hits)]
+
+    _later(monkeypatch, rerankers.BREAKER_OPEN_S + 1)  # its pause is over: one search tries again
+    reranker.fail = False
+    back = await _search(query=QUERY, rerank=True, include_trace=True)
+    assert len(reranker.calls) == 4 and back.degraded == [] and back.trace.rerank is not None
+    await _search(query=QUERY, rerank=True)
+    assert len(reranker.calls) == 5, "an answer closes it: every search reranks again"
+
+
+async def test_a_reranker_failing_again_after_its_pause_is_paused_again(monkeypatch):
+    from core.knowledge import rerankers
+
+    await _embedded_corpus()
+    reranker = FakeReranker(fail=True)
+    seams.set_reranker(reranker)
+    for _ in range(3):
+        await _search(query=QUERY, rerank=True)
+    _later(monkeypatch, rerankers.BREAKER_OPEN_S + 1)
+    await _search(query=QUERY, rerank=True)
+    assert len(reranker.calls) == 4, "after its pause one search tries"
+    assert (await _search(query=QUERY, rerank=True)).degraded == ["rerank_failed"]
+    assert len(reranker.calls) == 4, "a failure then pauses it again at once"
+
+
+async def test_a_refusal_trying_again_cannot_fix_never_pauses_the_reranker():
+    await _embedded_corpus()
+    reranker = _Refusing()
+    seams.set_reranker(reranker)
+    for _ in range(5):
+        assert (await _search(query=QUERY, rerank=True)).degraded == ["rerank_failed"]
+    assert len(reranker.calls) == 5, "a refusal says so on every search, as before"
+
+
+def test_a_pause_is_one_workspaces_and_one_models(multi_tenant):
+    from core.knowledge import rerankers
+    from core.knowledge.errors import RerankError
+    from core.tenancy import tenant_scope
+
+    with tenant_scope("org-a"):
+        for _ in range(3):
+            rerankers.rerank_failed("cohere.rerank-v3.5", RerankError("HTTP 502"))
+        assert rerankers.rerank_paused("cohere.rerank-v3.5")
+        assert rerankers.rerank_paused("voyage.rerank-2.5") is None
+    with tenant_scope("org-b"):
+        assert rerankers.rerank_paused("cohere.rerank-v3.5") is None, "another workspace's key and calls are its own"
 
 
 async def test_a_rerank_asked_for_with_none_configured_says_so():

@@ -66,7 +66,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from core.knowledge import vectors
+from core.knowledge import rerankers, vectors
 from core.knowledge.agent_contract import format_label
 from core.knowledge.api_models import Citation, CostSummary, Hit, SearchRequest, SearchResponse
 from core.knowledge.chunker import ATTACHMENT_KEY, estimate_tokens
@@ -407,6 +407,9 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
     if rerank_on and reranker is None:
         _note(degraded, "rerank_unconfigured", "no rerank model is configured")
         rerank_on = False
+    if rerank_on and (paused := rerankers.rerank_paused(rerank_model)):
+        _note(degraded, "rerank_failed", paused)  # it kept failing: not called for a while, priced at nothing (U71)
+        rerank_on = False
 
     # A knowledge base at its monthly budget searches by keyword only ($0), and pays for no rerank (B2b, D167 #3).
     from core.knowledge.budgets import capped as _capped
@@ -556,7 +559,9 @@ async def search(req: SearchRequest, *, origin: Origin, label_start: int = 1,
                                            attribution=who)
         except Exception as exc:  # noqa: BLE001 — any reranker's failure keeps the fused order, and says why
             _note(degraded, "rerank_failed", str(exc)[:300])
+            rerankers.rerank_failed(rerank_model, exc)
         else:
+            rerankers.rerank_answered(rerank_model)
             usages.append((answer.usage, who))
             reordered = []
             seen: set[int] = set()

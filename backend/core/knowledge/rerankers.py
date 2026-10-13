@@ -19,12 +19,21 @@ Every one answers a `RerankResult`: (document index, score) best first, ties by 
 raises — `RerankError`, or `WalletExhausted` for our gateway's 402 — and the search degrades to its fused order
 with `rerank_failed`. The table is separate from the provider table (`core.providers.registry`): these vendors
 serve no chat, and routing a chat id by them would change where those ids go.
+
+**A reranker that keeps failing is left alone for a while** (U71, C8). While one was down (C2: our gateway's
+Cohere answered 502), every search still called it and waited ~0.7 s to learn it again. After `BREAKER_FAILURES`
+failures in a row that trying again could fix (5xx, 429, a timeout, the network — `RerankError.retryable`), a
+workspace's model is not called for `BREAKER_OPEN_S`; its searches keep their fused order and say `rerank_failed`,
+"not tried", and when it is tried again. Then one search tries: an answer closes it, a failure pauses it again.
+A refusal trying again cannot fix (a missing key) and the wallet's 402 never pause it. It lives in the process that
+searches — OSS's server, cloud's fleet worker — and says so in the log once, when it first pauses.
 """
 from __future__ import annotations
 
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core.knowledge.errors import RerankError, WalletExhausted
@@ -40,6 +49,66 @@ MAX_DOCUMENT_CHARS = 4000
 #: A search waits this long for its rerank, then keeps the fused order. An abandoned call may still be charged
 #: one search unit by a metering server.
 RERANK_TIMEOUT = 30.0
+#: Failures in a row (retryable ones) that pause a workspace's rerank model, and for how long (U71).
+BREAKER_FAILURES = 3
+BREAKER_OPEN_S = 300.0
+
+_clock = time.monotonic
+
+
+@dataclass
+class _Breaker:
+    failures: int = 0
+    open_until: float = 0.0  # `_clock()`; past it, one search tries again
+    again_at: datetime | None = None  # the same moment, for the sentence
+
+
+_breakers: dict[tuple[str, str], _Breaker] = {}
+
+
+def _breaker_key(model: str | None) -> tuple[str, str]:
+    from core.tenancy import get_tenant
+
+    return get_tenant(), model or ""
+
+
+def rerank_paused(model: str | None) -> str | None:
+    """Why this workspace's `model` is not called now — the sentence a search notes with `rerank_failed` — or None."""
+    b = _breakers.get(_breaker_key(model))
+    if b is None or b.again_at is None or _clock() >= b.open_until:
+        return None
+    return (f"Not tried: it failed {b.failures} times in a row; trying again after "
+            f"{b.again_at:%H:%M} UTC.")
+
+
+def rerank_failed(model: str | None, exc: BaseException) -> None:
+    """A rerank call failed. A retryable failure counts toward the pause; at `BREAKER_FAILURES` in a row, and on
+    any failure after a pause, `model` is paused for `BREAKER_OPEN_S`."""
+    if not (isinstance(exc, RerankError) and exc.retryable):
+        return
+    key = _breaker_key(model)
+    b = _breakers.setdefault(key, _Breaker())
+    b.failures += 1
+    if b.failures < BREAKER_FAILURES:
+        return
+    first = b.again_at is None
+    b.open_until = _clock() + BREAKER_OPEN_S
+    b.again_at = datetime.now(timezone.utc) + timedelta(seconds=BREAKER_OPEN_S)
+    if first:
+        _log.warning(f"knowledge: rerank model {model!r} failed {b.failures} times in a row; searches skip it "
+                     f"until {b.again_at:%H:%M} UTC, then try it again: {str(exc)[:200]}")
+
+
+def rerank_answered(model: str | None) -> None:
+    """A rerank call answered: its pause, if any, is over."""
+    b = _breakers.pop(_breaker_key(model), None)
+    if b is not None and b.again_at is not None:
+        _log.info(f"knowledge: rerank model {model!r} answers again; searches rerank")
+
+
+def reset_breakers() -> None:
+    """Forget every pause (tests)."""
+    _breakers.clear()
 
 
 @dataclass(frozen=True)
