@@ -10,7 +10,9 @@ Around that:
   `transfer_call`: on a slow model it played before nearly every answer.
 * **Barge-in (V14):** the caller talking over us cancels the turn (a running tool finishes first) and the answer
   in history is cut to what they heard.
-* **Approvals (V16):** a `confirm` tool parks in the bell; the caller hears that someone will follow up.
+* **Approvals (V16):** a `confirm` tool parks in the bell; the caller hears that someone will follow up. A
+  person who answers while the caller is still on the line is heard on the call (F474): the call carries the
+  turn on at its next quiet moment, after its own lead-in. One it cannot say goes back to be resumed behind.
 * **The voice tools (V17):** `transfer_call` and `end_call` act after the agent's last words.
 * **Silence and the length limit (V17):** "Are you still there?" after 8 s, twice, then goodbye; a minute's
   warning to the agent, then a goodbye at the limit.
@@ -37,6 +39,9 @@ log = logging.getLogger("voice.call")
 DEFAULT_FILLER = "One moment while I check that."
 DEFAULT_FILLER_LATE = "Still working on it."
 APPROVAL_LINE = "I've asked someone on the team to approve that. They'll follow up with you."
+#: Said before an approval's answer that arrives during the call (F474): the caller asked a while ago.
+APPROVED_LINE = "Someone on the team approved that."
+REFUSED_LINE = "Someone on the team said no to that."
 CANNOT_ASK_LINE = "I can't do that on this call, but someone on the team can follow up with you."
 STILL_THERE = "Are you still there?"
 SILENCE_GOODBYE = "I haven't heard anything for a while, so I'll end the call here. Goodbye."
@@ -90,6 +95,11 @@ _LIVE: dict[str, "VoiceCall"] = {}
 
 def live_calls() -> list["VoiceCall"]:
     return list(_LIVE.values())
+
+
+def live_for_session(session_id: str) -> "VoiceCall | None":
+    """The call in this process still on the line in `session_id`'s conversation, if any (F474)."""
+    return next((c for c in _LIVE.values() if c.session_id == session_id), None)
 
 
 def move_all() -> int:
@@ -150,6 +160,8 @@ class _Turn:
         self.narrated = False          # the model's "let me check" was spoken this turn
         self.repeat_stopped = False    # the engine's repeat guard ended it
         self.after_closing = False     # the caller's reply to CLOSING_QUESTION: an end_call now ends the call
+        self.answer: dict | None = None  # an approval's answer this turn carries on (F474), not the caller's words
+        self.refused_tool = ""         # the refused call, which the resumed turn reports and never runs
 
 
 class VoiceCall:
@@ -182,6 +194,9 @@ class VoiceCall:
         self.pending_action: tuple[str, dict] | None = None
         self.outcome: str | None = None
         self.parked_approval = False
+        # Approvals answered while the caller is on the line, waiting for a quiet moment (F474).
+        self._answers: list[dict] = []
+        self._over = False
         self._frames: asyncio.Queue = asyncio.Queue()
         self._turn: _Turn | None = None
         self._turn_task: asyncio.Task | None = None
@@ -204,6 +219,17 @@ class VoiceCall:
         self._move = True
         self._frames.put_nowait(Frame("wake"))
 
+    def hand_answer(self, answer: dict) -> bool:
+        """A person answered this call's parked question while the caller is still on the line (F474): the call
+        says it at its next quiet moment. `answer` is the door's (`approval_id`, `approved`, `tool_name`,
+        `message`, `resume_state`, and whatever its host needs to resume it behind). False once the call is
+        over: the door resumes it behind instead."""
+        if self._over or self._ended:
+            return False
+        self._answers.append(answer)
+        self._frames.put_nowait(Frame("wake"))
+        return True
+
     async def force_end(self, text: str) -> None:
         """End now with one sentence (a host's last resort: cloud's deploy at 110 s, V10)."""
         await self._stop_turn(wait_for_tool=False)
@@ -214,6 +240,12 @@ class VoiceCall:
 
     async def run(self) -> None:
         _LIVE[self.call_sid] = self
+        if self.resume:
+            await self._still_parked()
+        try:
+            await self.host.call_live(self)
+        except Exception as exc:  # noqa: BLE001 — answers then wait for the call's end; the call goes on
+            log.warning("could not mark a call live: %s", exc)
         reader = asyncio.create_task(self._read())
         try:
             await self._loop()
@@ -222,9 +254,36 @@ class VoiceCall:
                 with contextlib.suppress(asyncio.TimeoutError, asyncio.CancelledError):
                     await asyncio.wait_for(asyncio.shield(reader), self.timing.close_wait)
         finally:
+            self._over = True
             reader.cancel()
             await self._stop_turn(wait_for_tool=True)
             _LIVE.pop(self.call_sid, None)
+            await self._answers_after_the_call()
+
+    async def _still_parked(self) -> None:
+        """A call picked up on a new socket (V10) still has the question its first socket parked: the
+        conversation keeps one, and a second ask must not take its place."""
+        from core.store import sessions as _sessions
+        try:
+            waiting = await _sessions.pending_approvals(self.session_id)
+        except Exception as exc:  # noqa: BLE001 — at worst a second ask is refused by its door
+            log.warning("could not read a moved call's parked question: %s", exc)
+            return
+        self.parked_approval = any(agent == self.agent_id for agent, _ in waiting)
+
+    async def _answers_after_the_call(self) -> None:
+        """The call is over: answers it took but could not say are resumed behind, as an answer after the
+        call is, and the bell asks for a call-back."""
+        try:
+            await self.host.call_over(self)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not mark a call over: %s", exc)
+        answers, self._answers = self._answers, []
+        for answer in answers:
+            try:
+                await self.host.resume_after_call(self, answer)
+            except Exception as exc:  # noqa: BLE001 — the bell still holds it as answered; the log says why
+                log.error("could not resume an answer the call could not say: %s", exc)
 
     async def _read(self) -> None:
         try:
@@ -236,10 +295,18 @@ class VoiceCall:
     def _deadline(self) -> float:
         if self._closing_at is not None:
             return self._closing_at
+        limit = self._limit_at - (0 if self._wrapped_up else 60)
         if self._turn_task is not None and not self._turn_task.done():
-            return self._limit_at - (0 if self._wrapped_up else 60)
+            return limit
+        if self._answers:
+            return min(self._speaking_until, limit)  # an answer waits for our own words to end
         silence = max(self._speaking_until, self._last_heard) + self.timing.silence_after
-        return min(silence, self._limit_at - (0 if self._wrapped_up else 60))
+        return min(silence, limit)
+
+    def _quiet(self) -> bool:
+        """Nothing running, nothing of ours still playing, no goodbye under way: an answer may be said."""
+        return (not self._turn_busy() and self._closing_at is None
+                and time.monotonic() >= self._speaking_until)
 
     async def _loop(self) -> None:
         if not self.resume:
@@ -253,6 +320,8 @@ class VoiceCall:
                 await self._say(MOVE_LINE, last=True)
                 await self._end({"reconnect": True}, outcome="moved")
                 return
+            if self._answers and self._quiet():
+                self._start_answer()
             timeout = max(0.0, self._deadline() - time.monotonic())
             try:
                 frame = await asyncio.wait_for(self._frames.get(), timeout=timeout)
@@ -311,8 +380,8 @@ class VoiceCall:
         if now >= self._limit_at - 60 and not self._wrapped_up:
             self._wrapped_up = True  # the next turn's prompt says so
             return
-        if self._turn_busy():
-            return
+        if self._turn_busy() or self._answers:
+            return  # an answer waiting is said next, never talked over by a silence prompt
         if self._closing_asked:
             # Asked whether there was anything else, and nothing came: that is the caller's answer.
             self._closing_asked = False
@@ -335,8 +404,8 @@ class VoiceCall:
         await self._stop_turn(wait_for_tool=True)
         if self._ended:
             return
-        if stopped is not None and not (stopped.sent_any or stopped.saved or stopped.parked
-                                        or stopped.stop_after_tool):
+        if stopped is not None and stopped.answer is None and not (stopped.sent_any or stopped.saved
+                                                                   or stopped.parked or stopped.stop_after_tool):
             # Nothing was answered, so nothing was cut and Twilio sent no interrupt: the caller is still asking,
             # and their first words must not be lost (VOX1d: a question, a silence, "No.", and the call ended).
             if any(name not in _NO_FILLER for name in stopped.tools):
@@ -348,6 +417,20 @@ class VoiceCall:
         turn = _Turn(text)
         turn.after_closing = self._closing_asked or bool(stopped and stopped.after_closing)
         self._closing_asked = False
+        self._turn = turn
+        self._turn_task = asyncio.create_task(self._run_turn(turn))
+
+    def _start_answer(self) -> None:
+        """Carry on the turn an approval stopped, with the person's answer (F474)."""
+        answer = self._answers.pop(0)
+        # Its one question is answered, so another may park.
+        self.parked_approval = False
+        # What the caller hears next is the answer, not the closing question.
+        self._closing_asked = False
+        turn = _Turn(str(answer.get("message") or ""))
+        turn.answer = answer
+        if not answer.get("approved"):
+            turn.refused_tool = str(answer.get("tool_name") or "")
         self._turn = turn
         self._turn_task = asyncio.create_task(self._run_turn(turn))
 
@@ -365,12 +448,18 @@ class VoiceCall:
     async def _run_turn(self, turn: _Turn) -> None:
         refusal = await self.host.before_turn(self)
         if refusal:
+            if turn.answer is not None:
+                self._answers.insert(0, turn.answer)  # resumed behind once the call has ended
             await self._say(refusal, last=True)
             await self._end({"ended": "refused"}, outcome="refused")
             return
         buffer = ""
-        events = self.host.run_turn(self, turn.text, caller_system=self._system(),
-                                    extra_tools=voice_tools.build(self, can_transfer=self._can_transfer()))
+        extra_tools = voice_tools.build(self, can_transfer=self._can_transfer())
+        if turn.answer is not None:
+            await self._say(APPROVED_LINE if turn.answer.get("approved") else REFUSED_LINE, last=True)
+            events = self.host.resume_turn(self, turn.answer, caller_system=self._system(), extra_tools=extra_tools)
+        else:
+            events = self.host.run_turn(self, turn.text, caller_system=self._system(), extra_tools=extra_tools)
         try:
             async for event in events:
                 kind = event.get("type")
@@ -397,7 +486,9 @@ class VoiceCall:
                     turn.in_tool = True
                     name = str(event.get("tool_name") or "")
                     turn.tools.append(name)
-                    if name not in _NO_FILLER:
+                    if name == turn.refused_tool:
+                        turn.refused_tool = ""  # the refused call, reported by the resume: it does not run
+                    elif name not in _NO_FILLER:
                         await self._filler(turn)  # a goodbye, a hand-off or bookkeeping needs no "one moment"
                 elif kind == "tool_result":
                     turn.in_tool = False
@@ -441,11 +532,12 @@ class VoiceCall:
             if turn.cycle_open:
                 await self._say("", last=True)
             if turn.saved:
-                await self._note_filler(turn)
+                await self._note_turn(turn)
             await self._after_turn()
         except asyncio.CancelledError:
             # Barge-in, or the call ending: the caller hears nothing more from this turn.
-            pass
+            if turn.answer is not None and not (turn.sent_any or turn.saved or turn.parked):
+                await self._keep_unsaid_answer(turn)
         except Exception as exc:  # noqa: BLE001 — the caller hears one line; the log has it
             log.error("a voice turn raised: %s", exc)
             with contextlib.suppress(Exception):
@@ -480,7 +572,7 @@ class VoiceCall:
         spoken = to_speech(text)
         if not spoken.strip() and not last:
             return
-        if not turn.sent_any:
+        if not turn.sent_any and turn.answer is None:
             ms = int((time.monotonic() - turn.started) * 1000)
             self.first_text_ms.append(ms)
             # V12's budget, measured per turn: the caller's last word in, our first words out.
@@ -512,15 +604,36 @@ class VoiceCall:
         turn.filler_said.append(line)
         await self._say(line, last=True)
 
-    async def _note_filler(self, turn: _Turn) -> None:
-        """The filler this turn said, on its saved answer: the call's log shows it (VOX1c). Never fails a turn."""
-        if not turn.filler_said:
+    async def _note_turn(self, turn: _Turn) -> None:
+        """On the turn's saved answer, the filler it said (VOX1c) and the approval it answers (F474): the call's
+        log shows the one, and reads the other as the approval's answer, not the caller asking again. Never
+        fails a turn."""
+        fields: dict = {}
+        if turn.filler_said:
+            fields["filler"] = list(turn.filler_said)
+        if turn.answer is not None:
+            # Not `approval`: that key is a question nobody answered (F247), drawn as its card.
+            fields["answered_approval"] = {"id": turn.answer.get("approval_id"),
+                                           "approved": bool(turn.answer.get("approved"))}
+        if not fields:
             return
+        # A caller who hangs up as the answer ends stops the turn here; the note is finished either way.
+        await asyncio.shield(self._mark_last_answer(turn.text, fields))
+
+    async def _mark_last_answer(self, question: str, fields: dict) -> None:
         from core.store import sessions as _sessions
         async with self._history:
             with contextlib.suppress(Exception):
-                await _sessions.mark_last_answer(self.session_id, self.agent_id, question=turn.text,
-                                                 filler=list(turn.filler_said))
+                await _sessions.mark_last_answer(self.session_id, self.agent_id, question=question, **fields)
+
+    async def _keep_unsaid_answer(self, turn: _Turn) -> None:
+        """An answer's turn stopped before the caller heard any of it. One that already acted is kept, as any
+        turn that acted is; one stopped before it began is said again at the next quiet moment, or resumed
+        behind when the call is over."""
+        if any(name not in _NO_FILLER for name in turn.tools):
+            await self._save_cut(turn, heard="")
+        else:
+            self._answers.insert(0, turn.answer)
 
     async def _ask_a_person(self, turn: _Turn, event: dict) -> None:
         """V16: a confirm tool parks in the bell; the call carries on without it."""
@@ -543,7 +656,7 @@ class VoiceCall:
         from core.session import _save_conversation_turn
         with contextlib.suppress(Exception):
             await _save_conversation_turn(self.session_id, self.agent_id, turn.text, line, tools=turn.tools)
-        await self._note_filler(turn)
+        await self._note_turn(turn)
 
     async def _last_words(self, turn: _Turn) -> None:
         """The goodbye (the tool's argument) or the hand-off line, said by us; then the action."""
@@ -563,7 +676,7 @@ class VoiceCall:
             await _save_conversation_turn(self.session_id, self.agent_id, turn.text,
                                           line if not turn.sent_any else turn.since_reset.strip() or line,
                                           tools=turn.tools)
-        await self._note_filler(turn)
+        await self._note_turn(turn)
         await self._after_turn()
 
     async def _ask_before_closing(self, turn: _Turn) -> None:
@@ -611,7 +724,8 @@ class VoiceCall:
         if self._turn_busy() and not turn.saved:
             await self._stop_turn(wait_for_tool=True)
             if not (turn.stop_after_tool or turn.parked):
-                await self._save_cut(turn, heard=heard)
+                if turn.answer is None or turn.sent_any:  # an answer not yet begun is kept as it stopped
+                    await self._save_cut(turn, heard=heard)
                 return
             if not turn.parked:
                 return
@@ -650,7 +764,7 @@ class VoiceCall:
                 await _save_conversation_turn(self.session_id, self.agent_id, turn.text, said.strip(),
                                               tools=turn.tools)
                 await _sessions.cut_last_answer(self.session_id, self.agent_id, "")
-        await self._note_filler(turn)
+        await self._note_turn(turn)
 
     # ── Speaking and ending ──────────────────────────────────────────────────
 

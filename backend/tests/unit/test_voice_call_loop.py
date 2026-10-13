@@ -56,6 +56,8 @@ class ScriptedHost(VoiceHost):
         self.refuse = refuse
         self.records: dict[str, dict] = {}
         self.turns: list[dict] = []
+        self.resumed: list[dict] = []     # answers the live call carried on (F474)
+        self.after_call: list[dict] = []  # answers it handed back to be resumed behind
 
     def max_minutes(self, channel):
         return self.minutes
@@ -73,6 +75,15 @@ class ScriptedHost(VoiceHost):
                 await handlers[step[1]](step[2] if len(step) > 2 else {})
             else:
                 yield step
+
+    async def resume_turn(self, call, answer, *, caller_system, extra_tools):
+        self.resumed.append(answer)
+        async for event in self.run_turn(call, answer.get("message") or "", caller_system=caller_system,
+                                         extra_tools=extra_tools):
+            yield event
+
+    async def resume_after_call(self, call, answer):
+        self.after_call.append(answer)
 
     async def update_call(self, call_sid, changes):
         rec = self.records.setdefault(call_sid, {})
@@ -105,11 +116,19 @@ def saved(monkeypatch):
     return out
 
 
-def _call(host, socket, *, voice=None, started_at=None, timing=FAST):
+def _call(host, socket, *, voice=None, started_at=None, timing=FAST, resume=False):
     channel = {"id": "chn_1", "platform": "twilio_voice", "visitor_tools": [], "voice": voice or {}}
     return VoiceCall(transport=socket, host=host, provider=None, channel=channel, agent={"id": "a1", "name": "Ada"},
                      call_sid=CALL, caller="+14155550100", called="+15551230000",
-                     session_id=f"voice_chn_1_{CALL}", timing=timing, started_at=started_at)
+                     session_id=f"voice_chn_1_{CALL}", timing=timing, started_at=started_at, resume=resume)
+
+
+async def _until(happened, timeout=3.0):
+    for _ in range(int(timeout / 0.01)):
+        if happened():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("it never happened")
 
 
 def _delta(text):
@@ -508,6 +527,169 @@ class TestApprovals:
         await asyncio.wait_for(task, 5)
         assert saved["turns"] == [("refund me", call_mod.APPROVAL_LINE, ["refund"])]
         assert saved["cuts"] == ["I've asked someone"]
+
+
+def _answer(approved=True, approval_id="ap_1"):
+    """What a door hands a live call when a person answers its parked question (F474)."""
+    return {"approval_id": approval_id, "approved": approved, "tool_name": "weather_today", "message": "weather?",
+            "resume_state": {"pending_call": {"approval_id": approval_id, "approved": approved}}}
+
+
+class TestAnAnswerDuringTheCall:
+    """F474 (VOX1e, D263): an approval answered while the caller is still on the line was saved into the call and
+    never spoken, so the call went on from words nobody heard, and a second ask was refused. Now the call speaks
+    it at its next quiet moment, saved once, in the order heard; one it cannot say is resumed after the call."""
+
+    QUIET = Timing(**{**FAST.__dict__, "silence_after": 5.0})
+    ASK = {"type": "human_input_required", "kind": "tool_approval", "tool_name": "weather_today"}
+    ANSWER = [{"type": "tool_execution", "tool_name": "weather_today"},
+              {"type": "tool_result", "tool_name": "weather_today"},
+              _delta("It is cloudy, 27 degrees."), _final("It is cloudy, 27 degrees.")]
+    HEARD = "It is cloudy, 27 degrees."
+
+    @pytest.fixture
+    def parks(self, monkeypatch):
+        parked = []
+
+        async def park(**kw):
+            parked.append(kw)
+            return f"ap_{len(parked)}"
+        from core import api_approvals
+        monkeypatch.setattr(api_approvals, "park", park)
+        return parked
+
+    async def _parked(self, host, socket):
+        call = _call(host, socket, timing=self.QUIET)
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("weather?"))
+        await _until(lambda: (call_mod.APPROVAL_LINE, True) in socket.said)
+        return call, task
+
+    async def _hang_up(self, socket, task):
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+
+    @staticmethod
+    def _after_the_park(socket):
+        return socket.words().split(call_mod.APPROVAL_LINE, 1)[1]
+
+    async def test_it_is_spoken_with_its_lead_in_and_saved_once_as_the_approvals_answer(self, saved, parks):
+        host = ScriptedHost([self.ASK], list(self.ANSWER))
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        assert call_mod.live_for_session(call.session_id) is call
+        assert call.hand_answer(_answer()) is True
+        await _until(lambda: socket.words().endswith(self.HEARD))
+        await self._hang_up(socket, task)
+        assert self._after_the_park(socket) == call_mod.APPROVED_LINE + call_mod.DEFAULT_FILLER + self.HEARD
+        assert host.resumed == [_answer()] and host.after_call == []
+        # The engine saves the resumed turn; the call saves only its own line, and marks the answer as the
+        # approval's, so the log never reads it as the caller asking again.
+        assert saved["turns"] == [("weather?", call_mod.APPROVAL_LINE, [])]
+        assert saved["marks"] == [("weather?", {"filler": [call_mod.DEFAULT_FILLER],
+                                                "answered_approval": {"id": "ap_1", "approved": True}})]
+        assert call.first_text_ms == [], "an answer the caller did not just ask for is not a first-words sample"
+        assert call_mod.live_for_session(call.session_id) is None
+
+    async def test_a_refused_one_says_so_and_no_filler_for_the_tool_that_never_runs(self, saved, parks):
+        refused = [{"type": "tool_execution", "tool_name": "weather_today"},
+                   {"type": "tool_result", "tool_name": "weather_today", "refused": True},
+                   _delta("Okay, I won't check it."), _final("Okay, I won't check it.")]
+        host = ScriptedHost([self.ASK], refused)
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        assert call.hand_answer(_answer(approved=False)) is True
+        await _until(lambda: socket.words().endswith("Okay, I won't check it."))
+        await self._hang_up(socket, task)
+        assert self._after_the_park(socket) == call_mod.REFUSED_LINE + "Okay, I won't check it."
+        assert saved["marks"] == [("weather?", {"answered_approval": {"id": "ap_1", "approved": False}})]
+
+    async def test_it_waits_for_the_turn_that_is_running(self, saved, parks):
+        gate = asyncio.Event()
+        host = ScriptedHost([self.ASK], [("wait", gate), _delta("We open at nine."), _final("We open at nine.")],
+                            list(self.ANSWER))
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        await socket.inbox.put(_prompt("when do you open?"))
+        await _until(lambda: len(host.turns) == 2)
+        assert call.hand_answer(_answer()) is True
+        await asyncio.sleep(0.1)
+        assert call_mod.APPROVED_LINE not in socket.words(), "never over a turn that is running"
+        gate.set()
+        await _until(lambda: socket.words().endswith(self.HEARD))
+        await self._hang_up(socket, task)
+        assert self._after_the_park(socket) == ("We open at nine." + call_mod.APPROVED_LINE
+                                                + call_mod.DEFAULT_FILLER + self.HEARD)
+
+    async def test_after_it_a_second_ask_parks_again(self, saved, parks):
+        host = ScriptedHost([self.ASK], list(self.ANSWER), [self.ASK])
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        call.hand_answer(_answer())
+        await _until(lambda: socket.words().endswith(self.HEARD))
+        await socket.inbox.put(_prompt("and tomorrow?"))
+        await _until(lambda: socket.words().endswith(call_mod.APPROVAL_LINE))
+        await self._hang_up(socket, task)
+        assert len(parks) == 2 and call_mod.CANNOT_ASK_LINE not in socket.words()
+        assert host.records[CALL]["approvals"] == ["ap_1", "ap_2"]
+
+    async def test_one_still_waiting_when_the_caller_hangs_up_is_resumed_after_the_call(self, saved, parks):
+        gate = asyncio.Event()
+        host = ScriptedHost([self.ASK], [("wait", gate), _final("never")])
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        await socket.inbox.put(_prompt("when do you open?"))
+        await _until(lambda: len(host.turns) == 2)
+        assert call.hand_answer(_answer()) is True
+        await self._hang_up(socket, task)
+        assert host.after_call == [_answer()] and host.resumed == []
+        assert call.hand_answer(_answer()) is False, "a call that is over takes no answer"
+
+    async def test_one_the_caller_talks_over_as_it_starts_is_said_after_their_turn(self, saved, parks):
+        gate = asyncio.Event()
+        host = ScriptedHost([self.ASK], [("wait", gate)], [_final("We open at nine.")], list(self.ANSWER))
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        call.hand_answer(_answer())
+        await _until(lambda: socket.words().endswith(call_mod.APPROVED_LINE))
+        await socket.inbox.put(_prompt("when do you open?"))
+        await _until(lambda: socket.words().endswith(self.HEARD))
+        await self._hang_up(socket, task)
+        assert self._after_the_park(socket) == (call_mod.APPROVED_LINE + "We open at nine." + call_mod.APPROVED_LINE
+                                                + call_mod.DEFAULT_FILLER + self.HEARD)
+        assert [t["text"] for t in host.turns] == ["weather?", "weather?", "when do you open?", "weather?"]
+        assert saved["turns"] == [("weather?", call_mod.APPROVAL_LINE, [])], "nothing of the stopped one was kept"
+
+    async def test_talking_over_it_keeps_what_was_heard(self, saved, parks):
+        gate = asyncio.Event()
+        host = ScriptedHost([self.ASK], [_delta("It is cloudy, "), ("wait", gate), _delta("27 degrees."),
+                                         _final(self.HEARD)])
+        socket = FakeSocket()
+        call, task = await self._parked(host, socket)
+        call.hand_answer(_answer())
+        await _until(lambda: socket.words().endswith("It is cloudy, "))
+        await socket.inbox.put(Interrupt("interrupt", heard="It is cloudy"))
+        await asyncio.sleep(0.05)
+        gate.set()
+        await self._hang_up(socket, task)
+        assert saved["turns"][-1][0] == "weather?" and saved["turns"][-1][1].startswith("It is cloudy")
+        assert saved["marks"][-1] == ("weather?", {"answered_approval": {"id": "ap_1", "approved": True}})
+        assert host.after_call == []
+
+    async def test_a_moved_call_knows_its_question_still_waits(self, saved, parks):
+        """A call picked up on a new socket (V10) used to forget it had parked one, and a second ask took the
+        conversation's one slot from the first."""
+        from core.store import sessions as sessions_mod
+        socket = FakeSocket()
+        call = _call(ScriptedHost([self.ASK]), socket, timing=self.QUIET, resume=True)
+        await sessions_mod.set_pending_approval(call.session_id, "a1", {"approval_id": "ap_0",
+                                                                        "tool_name": "weather_today",
+                                                                        "api_turn": {"door": "voice"}})
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("weather?"))
+        await _until(lambda: call_mod.CANNOT_ASK_LINE in socket.words())
+        await self._hang_up(socket, task)
+        assert parks == []
 
 
 class TestTheVoiceTools:

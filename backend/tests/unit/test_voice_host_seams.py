@@ -301,6 +301,102 @@ def _twilio(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+class TestAnAnswerReachesTheCallStillOnTheLine:
+    """F474: the voice door's answer goes to the call that parked it while that call is live, which speaks it;
+    with no call on the line (or one that will not take it) the turn resumes behind, as before."""
+
+    async def _parked(self):
+        from datetime import datetime, timedelta, timezone
+
+        from core.store import sessions as _sessions
+        session_id = f"voice_chn_1_{CALL}"
+        expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        pending = {"approval_id": "ap_1", "tool_name": "weather_today", "tool_args": {"city": "Bangalore"},
+                   "category": "undeclared", "message": "weather?", "progress": {"turn": 1},
+                   "api_turn": {"door": "voice", "agent_name": "Ada", "expires_at": expires,
+                                "caller": "+14155550100", "caller_system": "sys",
+                                "visitor": {"surface": "channel", "tools": [], "approvals": "park"}}}
+        await _sessions.set_pending_approval(session_id, "a1", pending)
+        return session_id, pending
+
+    @pytest.fixture
+    def behind(self, monkeypatch):
+        """The background resume (`api_approvals._resumed`), recorded instead of run."""
+        from core import api_approvals
+        out = []
+
+        async def resumed(session_id, agent_id, pending, *, approve, reason):
+            out.append((session_id, agent_id, pending["approval_id"], approve, reason))
+            if False:
+                yield {}
+        monkeypatch.setattr(api_approvals, "_resumed", resumed)
+        return out
+
+    @staticmethod
+    def _on_the_line(monkeypatch, session_id, takes=True):
+        got = []
+
+        class Live:
+            def hand_answer(self, answer):
+                got.append(answer)
+                return takes
+        monkeypatch.setattr(call_mod, "live_for_session", lambda sid: Live() if sid == session_id else None)
+        return got
+
+    async def test_a_call_still_on_the_line_takes_it_and_nothing_resumes_behind(self, monkeypatch, behind):
+        from core import api_approvals
+        from core.store import sessions as _sessions
+        session_id, _ = await self._parked()
+        got = self._on_the_line(monkeypatch, session_id)
+        settled = []
+
+        async def settle(sid, agent_id, pending, how):
+            settled.append((sid, agent_id, pending["approval_id"], how))
+        monkeypatch.setattr(api_approvals, "_settle", settle)
+        assert await api_approvals.answer(session_id, approve=True, approval_id="ap_1") is None
+        await asyncio.sleep(0.05)
+        assert behind == []
+        [a] = got
+        assert (a["approval_id"], a["approved"], a["message"], a["tool_name"]) == ("ap_1", True, "weather?",
+                                                                                   "weather_today")
+        assert a["resume_state"]["approved_calls"] == ["ap_1"]
+        assert a["resume_state"]["pending_call"]["arguments"] == {"city": "Bangalore"}
+        assert settled == [(session_id, "a1", "ap_1", "allowed")], "the bell's item is settled as answered"
+        assert await _sessions.pending_approvals(session_id) == [], "taken once, as any answer is"
+
+    async def test_with_no_call_on_the_line_it_resumes_behind_as_before(self, monkeypatch, behind):
+        from core import api_approvals
+        session_id, _ = await self._parked()
+        monkeypatch.setattr(call_mod, "live_for_session", lambda sid: None)
+        turn = await api_approvals.answer(session_id, approve=False, reason="no", approval_id="ap_1")
+        assert turn is not None
+        await asyncio.wait_for(turn.task, 5)
+        assert behind == [(session_id, "a1", "ap_1", False, "no")]
+
+    async def test_a_call_that_will_not_take_it_leaves_it_to_resume_behind(self, monkeypatch, behind):
+        from core import api_approvals
+        session_id, _ = await self._parked()
+        got = self._on_the_line(monkeypatch, session_id, takes=False)
+        turn = await api_approvals.answer(session_id, approve=True, approval_id="ap_1")
+        await asyncio.wait_for(turn.task, 5)
+        assert len(got) == 1 and behind == [(session_id, "a1", "ap_1", True, "")]
+
+    async def test_the_default_host_resumes_one_its_call_could_not_say_behind(self, monkeypatch, behind):
+        from core import api_approvals
+        session_id, pending = await self._parked()
+        answer = api_approvals.voice_answer(pending, approve=True, reason="")
+
+        class C:
+            pass
+        C.session_id, C.agent_id = session_id, "a1"
+        await VoiceHost().resume_after_call(C, answer)
+        for _ in range(100):
+            if behind:
+                break
+            await asyncio.sleep(0.01)
+        assert behind == [(session_id, "a1", "ap_1", True, "")]
+
+
 class TestADisconnectSaysWhatWasLeft:
     async def test_a_trial_account_keeps_its_signing_key(self):
         def handler(req):

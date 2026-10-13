@@ -14,7 +14,9 @@ Two doors park here, each in its own conversations:
   its row is removed once its question is settled.
 * ``voice``: a phone call's (`voice_…`, VOX1a, V16). The caller is a visitor, so
   the resumed turn is one too. The conversation is the call's transcript (V27),
-  so it is kept, and the resumed turn is saved into it.
+  so it is kept, and the resumed turn is saved into it. Answered while the
+  caller is still on the line, the call itself carries the turn on and says it
+  (F474); only an answer it cannot say is resumed here.
 """
 from __future__ import annotations
 
@@ -118,14 +120,16 @@ async def _settle(session_id: str, agent_id: str, pending: dict, how: str) -> No
 async def answer(session_id: str, *, approve: bool, reason: str = "", approval_id: str | None = None):
     """Answer the call `session_id` waits on and carry its turn on, in the background.
 
-    Returns the chat turn driving it. Raises `LookupError` when that
+    Returns the chat turn driving it, or None when a phone call still on the
+    line took the answer to say itself (F474). Raises `LookupError` when that
     conversation is not waiting on that call (or it expired), and
     `chat_turns.TurnAlreadyRunning` while another answer is being acted on.
     """
     from core import chat_turns
     from core.store import sessions as _sessions
 
-    if door_for(session_id) is None:
+    door = door_for(session_id)
+    if door is None:
         raise LookupError("This is not an API turn's question.")
     waiting = [(a, p) for a, p in await _sessions.pending_approvals(session_id) if p.get("api_turn")]
     if approval_id is not None:
@@ -142,6 +146,38 @@ async def answer(session_id: str, *, approve: bool, reason: str = "", approval_i
         if _expired(pending):
             await _settle(session_id, agent_id, pending, "expired")
             raise LookupError("That approval expired: " + EXPIRED + ".")
+        if door.name == "voice" and _to_the_live_call(session_id, pending, approve=approve, reason=reason):
+            await _settle(session_id, agent_id, pending, "allowed" if approve else "refused")
+            return None
+        turn.message = pending.get("message") or ""
+        turn.start(_resumed(session_id, agent_id, pending, approve=approve, reason=reason))
+    return turn
+
+
+def voice_answer(pending: dict, *, approve: bool, reason: str) -> dict:
+    """What a live call is handed to carry a parked turn on (F474): `VoiceCall.hand_answer`'s shape, with the
+    parked payload kept for the host to resume it behind if the call cannot say it."""
+    from core.chat_approval import resume_state_for
+
+    return {"approval_id": pending.get("approval_id"), "approved": approve, "reason": reason,
+            "tool_name": pending.get("tool_name"), "message": pending.get("message") or "",
+            "resume_state": resume_state_for(pending, approve=approve, reason=reason), "pending": pending}
+
+
+def _to_the_live_call(session_id: str, pending: dict, *, approve: bool, reason: str) -> bool:
+    """A caller still on the line hears the answer on the call: True when that call took it."""
+    from core.messaging.voice import call as voice_call
+
+    live = voice_call.live_for_session(session_id)
+    return live is not None and live.hand_answer(voice_answer(pending, approve=approve, reason=reason))
+
+
+def resume_behind(session_id: str, agent_id: str, pending: dict, *, approve: bool, reason: str):
+    """Carry an answered turn on in the background: an answer a live call took but could not say (F474).
+    Raises `chat_turns.TurnAlreadyRunning` while another turn is acted on in that conversation."""
+    from core import chat_turns
+
+    with chat_turns.claim(session_id, agent_key=agent_id) as turn:
         turn.message = pending.get("message") or ""
         turn.start(_resumed(session_id, agent_id, pending, approve=approve, reason=reason))
     return turn

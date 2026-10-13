@@ -314,6 +314,67 @@ async def test_a_callers_confirm_tool_parks_in_the_bell_and_the_transcript_is_ke
     assert "Okay, I won't refund it." in [m["content"] for m in row["messages"]]
 
 
+async def test_a_confirm_answered_while_the_caller_is_on_the_line_is_said_on_the_call(phone, twilio, fake_llm,
+                                                                                         monkeypatch, client):
+    """F474 (VOX1e): answered during the call, the answer is spoken on it, after the call's own lead-in, and
+    saved into the call's transcript once; nothing resumes behind it, so the bell never asks for a call-back."""
+    import core.react_engine as re_mod
+    from mcp.types import ToolAnnotations
+
+    from core.messaging import store as channel_store
+    from core.messaging.voice import call as call_mod
+    from core.notifications import hub
+    from core.store import sessions as _sessions
+    from core.tools import VirtualTool
+
+    refund = VirtualTool("refund", "refunds an order", {"type": "object"},
+                         ToolAnnotations(readOnlyHint=False, destructiveHint=True))
+
+    async def aggregated(server_module, agent, custom_tools):
+        ollama = [{"type": "function", "function": {"name": "refund", "description": "x", "parameters": {}}}]
+        return [refund], {"refund": {}}, ollama, "['refund']"
+    monkeypatch.setattr(re_mod, "aggregate_all_tools", aggregated)
+    agent = dict(phone.agent, tool_policy={"destructive": "confirm"})
+    await S.seed_agents([agent])
+    ch = await channel_store.get_channel(phone.channel["id"])
+    ch["visitor_tools"] = ["refund"]
+    await channel_store.save_channel(ch)
+
+    sid = _call_sid(9)
+    url = _socket_url(phone, await _ring(phone, twilio, sid))
+    session_id = f"voice_{phone.channel['id']}_{sid}"
+    fake_llm.script([tool_call("refund", order="A1")])
+    async with websockets.connect(url) as ws:
+        relay = Relay(ws)
+        await relay.send(type="setup", callSid=sid)
+        await relay.say("Refund order A1")
+        frames = await relay.hear()
+        if "approve" not in _words(frames):
+            frames += await relay.hear()
+        ask = [i for i in hub.list() if i["kind"] == "tool_approval"][-1]
+
+        fake_llm.script(["Okay, I won't refund it."])
+        r = await client.post(ask["data"]["answer_url"], json={"approve": False, "reason": "not eligible",
+                                                               "approval_id": ask["data"]["approval_id"]})
+        assert r.status_code == 200, r.text
+        heard = await relay.hear()
+        while "refund it" not in _words(heard):
+            heard += await relay.hear()
+        assert _words(heard) == call_mod.REFUSED_LINE + "Okay, I won't refund it."
+        # The caller hangs up the moment it is said: the note that marks it as the approval's still lands.
+
+    await asyncio.sleep(0.3)
+    assert not [i for i in hub.list() if i["kind"] == "run_completed"], "the caller heard it: no call-back asked"
+    row = await _sessions.get(session_id, agent["id"])
+    said = [m["content"] for m in row["messages"]]
+    assert said.count("Okay, I won't refund it.") == 1
+    assert row["messages"][-1].get("answered_approval") == {"id": ask["data"]["approval_id"], "approved": False}
+    # The Phone tab's log reads it through the history, as the filler note (VOX1c).
+    history = (await client.get(f"/api/sessions/{session_id}/history", params={"agent_id": agent["id"]})).json()
+    assert history["turns"][-1]["answered_approval"] == {"id": ask["data"]["approval_id"], "approved": False}
+    assert "approval" not in history["turns"][-1], "never drawn as a question nobody answered (F247)"
+
+
 async def test_a_signed_number_refuses_an_unsigned_webhook(phone, twilio):
     """V6 with a Standard key: every webhook carries the number's SharedKey signature (VOX1a P3)."""
     from core.messaging import store as channel_store

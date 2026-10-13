@@ -98,6 +98,39 @@ class VoiceHost:
             ):
                 yield event
 
+    async def resume_turn(self, call: Any, answer: dict, *, caller_system: str,
+                          extra_tools: list) -> AsyncIterator[dict]:
+        """The turn a parked question stopped, carried on inside the live call with the person's answer
+        (`answer["resume_state"]`, F474): streamed as `run_turn`'s are, still a visitor's, and saved into the
+        call's conversation in the order the caller hears it."""
+        import core.server as _server
+        from core import visitor as _visitor
+        from core.models import ChatRequest
+        from core.react_engine import run_react_loop
+
+        request = ChatRequest(message=str(answer.get("message") or ""), session_id=call.session_id,
+                              agent_id=call.agent_id)
+        with _visitor.scope(call.visitor):
+            async for event in run_react_loop(
+                request, _server, progress_events=True, stream_answer=True, caller_system=caller_system,
+                log_source="voice", extra_tools=extra_tools, resume_state=answer.get("resume_state") or {},
+            ):
+                yield event
+
+    async def resume_after_call(self, call: Any, answer: dict) -> None:
+        """An answer the call took but could not say (the caller hung up first, F474): resumed behind, as an
+        answer after the call is, and the bell asks for a call-back."""
+        from core import api_approvals
+        api_approvals.resume_behind(call.session_id, call.agent_id, answer["pending"],
+                                    approve=bool(answer.get("approved")), reason=str(answer.get("reason") or ""))
+
+    async def call_live(self, call: Any) -> None:
+        """The call is on the line. Self-hosted, its door finds it in this process (`live_for_session`); a host
+        whose answers arrive in another process (cloud's api) says where to send them."""
+
+    async def call_over(self, call: Any) -> None:
+        """The call is over: no answer reaches it any more (`call_live`'s other half)."""
+
     async def park(self, call: Any, *, event: dict, message: str, progress: dict | None,
                    caller_system: str) -> str:
         """A caller's `confirm` tool waits for a person (V16): keep the turn's snapshot and ask the bell in the

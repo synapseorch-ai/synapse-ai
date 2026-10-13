@@ -83,6 +83,9 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("filler"):
             # What a call said while a tool ran (V13), for the call's log (VOX1c).
             turn["filler"] = list(assistant["filler"])
+        if assistant.get("answered_approval"):
+            # An approval answered while the caller was on the line, said on the call (F474).
+            turn["answered_approval"] = dict(assistant["answered_approval"])
         if assistant.get("citations") or assistant.get("unresolved_citations"):
             # The answer's Sources: its [K#] labels resolved (Knowledge, B1b).
             turn["citations"] = assistant.get("citations") or []
