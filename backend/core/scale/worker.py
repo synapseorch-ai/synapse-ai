@@ -1389,7 +1389,9 @@ async def _load_orchestration(session_factory, orch_id: str, run=None):
         row = result.scalar_one_or_none()
 
     if row is None:
-        raise ValueError(f"Orchestration '{orch_id}' not found in Postgres. Run Sync first.")
+        # The engine's own words (a RuntimeError keeps no class name, D267): a
+        # job that dies here leaves this on its run as the reason (F430).
+        raise RuntimeError(f"The workflow this run belongs to ('{orch_id}') no longer exists, so it could not run.")
 
     return Orchestration.model_validate(row.definition)
 
@@ -1619,6 +1621,10 @@ async def _stop_turn_run(run_id: str) -> None:
         _log.warning(f"[worker] run {run_id}: could not be failed with its cut turn: {e}")
 
 
+#: Every run status but `completed`: what a dead job fails (F430), as its UPDATE always did.
+_NOT_COMPLETED = ("queued", "running", "paused", "failed", "cancelled")
+
+
 async def _fail_outside_a_step(run_id: str, reason: str, *, statuses: tuple[str, ...]) -> bool:
     """Fail a run that stopped outside any step, with `reason` on it. False if it was not in `statuses`.
 
@@ -1727,7 +1733,7 @@ def _further(now: list, before: list) -> bool:
 
 async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | None, exc: Exception,
                     tb: str | None = None) -> None:
-    """Record a job that died outside the engine: run failed, stream ended, dead-lettered.
+    """Record a job that died outside the engine: run failed with why, stream ended, dead-lettered.
 
     Every step is best-effort — this runs while an exception is on its way to
     ARQ, and a second failure here must not replace it.
@@ -1735,29 +1741,42 @@ async def _dead_job(ctx: dict, job_function: str, run_id: str, orch_id: str | No
     The run keeps its position (`current_step_id` is not touched), so retrying
     the dead letter resumes it. A run that had already completed is left
     alone: the resume that raised was refused because there was nothing to do.
+
+    Why it stopped is the run's own reason (F430), which Retry clears: a run
+    given up after its worker stopped too often, or one whose job died before
+    or between its steps, has no failed step to say so, and read `failed` with
+    no reason anywhere but in the dead letter — on the run page, in v1 and v2.
+    In the words a failed step's are kept in (`reason_of`, D267).
     """
+    from core.orchestration.run_error import reason_of
+
     session_factory = ctx["session_factory"]
     tb = traceback.format_exc() if tb is None else tb
+    reason = reason_of(exc)
     _log.warning(f"[worker] {job_function} died for run {run_id}: {exc}")
 
     try:
-        async with session_factory() as session:
-            from sqlalchemy import update
-            from core.scale.models_db import OrchestrationRunDB
-            await session.execute(
-                update(OrchestrationRunDB)
-                .where(OrchestrationRunDB.run_id == run_id)
-                .where(OrchestrationRunDB.status != "completed")
-                .values(status="failed", ended_at=datetime.now(timezone.utc))
-            )
-            await session.commit()
+        await _fail_outside_a_step(run_id, reason, statuses=_NOT_COMPLETED)
     except Exception:
-        pass
+        # The row alone, without its reason, as before: the run is not left `running`.
+        try:
+            async with session_factory() as session:
+                from sqlalchemy import update
+                from core.scale.models_db import OrchestrationRunDB
+                await session.execute(
+                    update(OrchestrationRunDB)
+                    .where(OrchestrationRunDB.run_id == run_id)
+                    .where(OrchestrationRunDB.status != "completed")
+                    .values(status="failed", ended_at=datetime.now(timezone.utc))
+                )
+                await session.commit()
+        except Exception:
+            pass
 
     try:
         from core.scale.pubsub import RunEventPublisher
         publisher = RunEventPublisher(ctx["redis"], run_id)
-        await publisher.publish({"type": "orchestration_error", "error": str(exc)})
+        await publisher.publish({"type": "orchestration_error", "error": reason})
         await publisher.publish_done()
     except Exception:
         pass

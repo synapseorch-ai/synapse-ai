@@ -116,6 +116,37 @@ class TestAJobPastTheRetryPolicyGivesUp:
         assert letters[0].job_function == job
         assert "without finishing" in letters[0].error_message
         assert letters[0].attempt_count == worker.job_retries({}) + 1
+        # And on the run itself, which every reader asks (F430): it read
+        # `failed` with no reason, on the run page, v1 and v2 alike.
+        from core.orchestration.run_error import failure_reason
+        assert failure_reason(run.status, run.step_history, run.step_progress) == letters[0].error_message
+
+    async def test_a_retry_clears_the_reason_it_gave_up_with(self, worker, fake_redis, orch):
+        from core.orchestration.run_error import run_error
+
+        await _running("run_retried", "orch_giveup")
+        await worker.run_orchestration_job(await _ctx(fake_redis, worker.job_retries({}) + 1),
+                                           run_id="run_retried", orch_id="orch_giveup", initial_input="go")
+        assert "without finishing" in (run_error(await _run("run_retried")) or "")
+
+        result = await worker.resume_failed_job(await _ctx(fake_redis, 1), run_id="run_retried")
+
+        assert result["status"] == "completed"
+        assert run_error(await _run("run_retried")) is None
+
+    async def test_a_job_that_dies_outside_the_engine_leaves_its_reason(self, worker, fake_redis):
+        """Not the give-up's words, but still on the run — and in a person's words."""
+        from core.orchestration.run_error import failure_reason
+
+        with pytest.raises(Exception):
+            await worker.run_orchestration_job(await _ctx(fake_redis, 1), run_id="run_gone",
+                                               orch_id="orch_gone", initial_input="go")
+
+        run = await _run("run_gone")
+        reason = failure_reason(run.status, run.step_history, run.step_progress)
+        assert run.status == "failed"
+        assert reason and "orch_gone" in reason and "no longer exists" in reason
+        assert "Sync" not in reason and "Postgres" not in reason and "Error:" not in reason
 
     async def test_within_the_policy_the_run_still_resumes(self, worker, fake_redis, orch):
         await _running("run_within", "orch_giveup")

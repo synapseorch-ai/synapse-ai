@@ -130,7 +130,8 @@ class TestAJobThatDiesIsDeadLettered:
         from core.tenancy import tenant_scope
 
         with tenant_scope("acme"):
-            with pytest.raises(ValueError):
+            # The engine's own words since F430 (a RuntimeError, D267): it is the run's reason now.
+            with pytest.raises(RuntimeError):
                 await worker.run_orchestration_job(
                     await _ctx(fake_redis), run_id="run_dead", orch_id="orch_gone", initial_input="secret input",
                 )
