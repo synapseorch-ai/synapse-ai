@@ -95,6 +95,9 @@ export type CallTurn = {
     filler: string[];
     /** The caller spoke over the answer: it is what they heard (V14). */
     interrupted: boolean;
+    /** An approval answered while the caller was on the line, said on the call (F474): this turn is its answer,
+     *  and its question is the one the call parked, not the caller asking again. */
+    answered: { approved: boolean } | null;
 };
 
 /** The question a call parked in the bell and nobody has answered yet (V16); `approvalId` names it in the answer. */
@@ -224,7 +227,13 @@ function turnFrom(said: unknown, answer: Record<string, unknown>, at: unknown): 
         tools: toolLines(answer.calls, answer.tools),
         filler: list(answer.filler).map(String),
         interrupted: answer.interrupted === true,
+        answered: answeredFrom(answer.answered_approval),
     };
+}
+
+function answeredFrom(raw: unknown): CallTurn['answered'] {
+    const a = obj(raw);
+    return a ? { approved: a.approved === true } : null;
 }
 
 /** Self-hosted: `GET /api/sessions/{id}/history`'s turns. */

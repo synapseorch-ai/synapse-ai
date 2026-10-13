@@ -78,12 +78,25 @@ function ToolDetail({ tool }: { tool: CallTurn['tools'][number] }) {
 function Turn({ turn, startedAt, after, clock }: { turn: CallTurn; startedAt: string | null; after: boolean; clock: Clock }) {
     // During the call, minutes into it; an approval's answer came later, so it says when.
     const at = after ? null : offset(turn.at, startedAt);
+    const tool = turn.tools[0]?.name;
     return (
         <li className="grid gap-3" data-call-turn>
-            <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
-                <span className="text-xs font-medium text-text-muted">Caller</span>
-                <p className="m-0 text-sm text-text">{turn.said}</p>
-            </div>
+            {turn.answered ? (
+                // The answer to the question the call parked, said on the call (F474): not the caller asking again.
+                <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3" data-call-answered-approval>
+                    <span className="text-xs font-medium text-person-ink">Your team</span>
+                    <p className="m-0 text-sm text-text">
+                        {turn.answered.approved ? 'Approved' : 'Refused'}
+                        {tool ? <> <span className="font-code">{tool}</span></> : ' it'}
+                        {' '}while the caller was on the line, so the call said it.
+                    </p>
+                </div>
+            ) : (
+                <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
+                    <span className="text-xs font-medium text-text-muted">Caller</span>
+                    <p className="m-0 text-sm text-text">{turn.said}</p>
+                </div>
+            )}
             <div className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3">
                 <span className="text-xs font-medium text-accent-ink">
                     Agent
@@ -135,6 +148,7 @@ export function CallLog({
     const [answered, setAnswered] = useState<'allowed' | 'refused' | null>(null);
     const [answerError, setAnswerError] = useState('');
     const [laterBefore, setLaterBefore] = useState(0);
+    const [turnsBefore, setTurnsBefore] = useState(0);
     const [reread, setReread] = useState(0);
 
     useEffect(() => {
@@ -146,14 +160,16 @@ export function CallLog({
         return () => { gone = true; };
     }, [host, call, reread]);
 
+    const live = isLive(call);
     // Turns saved after the call ended are an approval's answer; the rest is the call.
     const ended = call.endedAt ? Date.parse(call.endedAt) : NaN;
     const turns = transcript?.turns ?? [];
     const during = turns.filter(t => Number.isNaN(ended) || !t.at || Date.parse(t.at) <= ended + 1000);
     const later = turns.filter(t => !during.includes(t));
 
-    // After an answer the turn carries on behind: read the conversation again until its result is saved (30 s at most).
-    const settled = answered !== null && later.length > laterBefore;
+    // After an answer the turn carries on (on the call while it is live, F474, else behind): read the conversation
+    // again until its result is saved (30 s at most).
+    const settled = answered !== null && (live ? turns.length > turnsBefore : later.length > laterBefore);
     useEffect(() => {
         if (answered === null || settled || reread > 15) return;
         const t = window.setTimeout(() => setReread(r => r + 1), 2000);
@@ -166,6 +182,7 @@ export function CallLog({
         try {
             await host.answer(call, approve, transcript.pending.approvalId);
             setLaterBefore(later.length);
+            setTurnsBefore(turns.length);
             setAnswered(approve ? 'allowed' : 'refused');
             setReread(r => r + 1);
         } catch (e) {
@@ -175,7 +192,6 @@ export function CallLog({
         }
     };
 
-    const live = isLive(call);
     const minutes = startedMinutes(call.seconds);
     const fw = firstWords(call);
     const charged = credits(call);
@@ -240,16 +256,21 @@ export function CallLog({
             )}
             {answered && !transcript?.pending && (
                 <p role="status" data-call-answered className="m-0 text-sm text-text-muted">
-                    {answered === 'allowed'
-                        ? settled ? 'Allowed. It ran, and its result is below. Call them back.' : 'Allowed. It runs now; its result appears below when it is done.'
-                        : 'Refused, not run. Let the caller know.'}
+                    {live
+                        ? answered === 'allowed'
+                            ? 'Allowed. The caller is still on the line and hears the result on the call.'
+                            : 'Refused, not run. The caller is still on the line and hears that on the call.'
+                        : answered === 'allowed'
+                            ? settled ? 'Allowed. It ran, and its result is below. Call them back.' : 'Allowed. It runs now; its result appears below when it is done.'
+                            : 'Refused, not run. Let the caller know.'}
                 </p>
             )}
             {!transcript?.pending && !answered && call.approvals.length > 0 && (
                 <p className="m-0 inline-flex items-center gap-2 text-sm text-person-ink">
                     <span aria-hidden className="size-1.5 rounded-full bg-person" />
-                    This call asked for approval; the caller was told someone will follow up.
-                    {later.length ? ' Its answer is below.' : ''}
+                    {during.some(t => t.answered)
+                        ? 'This call asked for approval, and the caller heard the answer on the call.'
+                        : <>This call asked for approval; the caller was told someone will follow up.{later.length ? ' Its answer is below.' : ''}</>}
                 </p>
             )}
 
