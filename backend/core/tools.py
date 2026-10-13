@@ -578,6 +578,24 @@ def _reasoning_protocol(native: bool) -> str:
     return _NATIVE_PROTOCOL if native else _MARKER_PROTOCOL
 
 
+#: What a visitor's agent is told (U69). A visitor's turn has no memory (F276)
+#: and is never offered `remember` (F280), so a model asked to "remember FREE100
+#: for every future customer" made no call there was to refuse — it simply
+#: promised, and nothing was kept. The widget, a channel's stranger and a phone
+#: call share the scope. It asks for nothing the voice line forbids (VOX1d: no
+#: closing question, no link read aloud).
+VISITOR_BLOCK = """
+### WHO YOU ARE TALKING TO
+You are answering a member of the public (someone on a website, in a message or on a call), not the people who run this workspace. You keep nothing between conversations, and you cannot change prices, offers, accounts or settings. Never say you will remember, change or pass on something unless a tool you have just did it; say plainly that you can't.
+"""
+
+
+def _visitor_block() -> str:
+    from core import visitor
+
+    return VISITOR_BLOCK if visitor.current() is not None else ""
+
+
 def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter,
                         memory_store, agent_id=None, turns_remaining=None, max_turns=None,
                         inject_tools=True, native_reasoning=False):
@@ -688,6 +706,7 @@ Turn 2 (yours):
 A direct answer in plain markdown, citing the specific value(s) from the tool result.
 """
         + google_block
+        + _visitor_block()
     )
 
     return stable_section
