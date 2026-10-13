@@ -150,6 +150,13 @@ export type RunRecord = {
      * ran. `null` for a run from before the copy was kept, drawn on today's.
      */
     definition?: Orchestration | null;
+    /**
+     * Cloud: when retention removed this run's step inputs and outputs (its shared
+     * state, each step's output and error, its plan; F336), and how many days after
+     * a run ends a workspace keeps them. OSS never removes them.
+     */
+    stepDataRemovedAt?: string | null;
+    retentionDays?: number | null;
 };
 
 /** A run a step of this one started (`/runs/{id}/children`). */
@@ -786,6 +793,24 @@ function dayNumber(ms: number, timeZone?: string): number {
     const { y, m, d } = parts(ms, timeZone);
     return Math.round(Date.UTC(y, m - 1, d) / 86_400_000);
 }
+
+/**
+ * Where a run's step data was removed (F428): the page says so in place of
+ * "wrote no shared state" or "no outputs", which would read as a run that made
+ * nothing. `null` when its data is all there.
+ */
+export function removedLine(run: RunRecord, clock: Clock): string | null {
+    const ms = toMs(run.stepDataRemovedAt);
+    if (ms === null) return null;
+    const day = new Intl.DateTimeFormat('en-GB', {
+        timeZone: settled(clock) ? clock.timeZone : 'UTC', day: 'numeric', month: 'long', year: 'numeric',
+    }).format(new Date(ms));
+    const kept = run.retentionDays ? `: a workspace keeps them for ${run.retentionDays} days after a run ends` : '';
+    return `This run's step inputs and outputs were removed on ${day}${kept}.`;
+}
+
+/** What stands where a removed run's state, outputs and step outputs were. */
+export const REMOVED_NOTE = "Removed with this run's step data.";
 
 /** "7:25 PM" (`19:25 UTC` before the page mounts). */
 export function timeOfDay(iso: string, clock: Clock): string {

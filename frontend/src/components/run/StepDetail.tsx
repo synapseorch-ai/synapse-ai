@@ -14,7 +14,7 @@
  */
 import { Markdown } from '@/components/ui';
 
-import { money, type StepExecution, type StepUsage } from './model';
+import { money, REMOVED_NOTE, type StepExecution, type StepUsage } from './model';
 
 export function OutputValue({ value }: { value: unknown }) {
     if (typeof value === 'string') {
@@ -68,11 +68,13 @@ export function UsageLine({ usage }: { usage: StepUsage }) {
     );
 }
 
-export function StepDetail({ step, sharedState, usage, id }: {
+export function StepDetail({ step, sharedState, usage, id, removed }: {
     step: StepExecution;
     sharedState: Record<string, unknown>;
     usage?: StepUsage;
     id?: string;
+    /** Retention removed the run's step data (F428): its output is gone, not unrecorded. */
+    removed?: boolean;
 }) {
     const output = outputOf(step, sharedState);
     return (
@@ -89,7 +91,7 @@ export function StepDetail({ step, sharedState, usage, id }: {
                     <OutputValue value={output} />
                 </div>
             ) : !step.error && (
-                <p className="text-sm text-text-muted">This step recorded no output.</p>
+                <p className="text-sm text-text-muted">{removed ? REMOVED_NOTE : 'This step recorded no output.'}</p>
             )}
         </div>
     );

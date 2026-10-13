@@ -17,6 +17,8 @@
  * - what it produced, its plan, its activity and nested runs, its shared state,
  *   the raw events, and the product's own last sections (cloud's transcript,
  *   OSS's log)
+ * - for a run whose step data retention removed (cloud), a line that says so,
+ *   and "Removed" where its state and outputs were (F428)
  *
  * The data is handed in, mapped by each product (cloud renders on the server,
  * OSS in the browser); what it can do goes through `RunHost`. After an action
@@ -34,7 +36,8 @@ import { ApprovalCard } from './ApprovalCard';
 import { FailureCard } from './FailureCard';
 import { useRunHost } from './host';
 import {
-    bucketOf, creditsText, followedLine, money, pathOrder, when, type Followed, type NestedRun, type RunRecord,
+    bucketOf, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, when, type Followed, type NestedRun,
+    type RunRecord,
 } from './model';
 import { NestedRuns } from './NestedRuns';
 import { RawEventLog } from './RawEventLog';
@@ -117,6 +120,7 @@ export function RunDetail({
     const stopped = run.status === 'failed' || run.status === 'cancelled';
     const asStepper = bucket === 'needs' || bucket === 'failed' || bucket === 'cancelled' || bucket === 'queued';
     const stateKeys = Object.keys(run.sharedState ?? {});
+    const removed = removedLine(run, clock);
     const stepErrors = Object.fromEntries(run.history.filter((h) => h.error).map((h) => [h.step_id, String(h.error)]));
 
     const actions = (
@@ -176,6 +180,7 @@ export function RunDetail({
                     />
                 )}
 
+                {removed && <FollowedLine followed={{ tone: 'neutral', text: removed, notes: [] }} />}
                 {followed && <FollowedLine followed={followed} />}
 
                 <section className="grid gap-2.5">
@@ -212,10 +217,10 @@ export function RunDetail({
                 <Section
                     title="Shared state"
                     description="The values steps read from and wrote to."
-                    summary={stateKeys.length === 1 ? '1 key' : `${stateKeys.length} keys`}
+                    summary={removed && stateKeys.length === 0 ? 'Removed' : stateKeys.length === 1 ? '1 key' : `${stateKeys.length} keys`}
                 >
                     {stateKeys.length === 0
-                        ? <p className="text-sm text-text-muted">This run wrote no shared state.</p>
+                        ? <p className="text-sm text-text-muted">{removed ? REMOVED_NOTE : 'This run wrote no shared state.'}</p>
                         : <SharedState state={run.sharedState} />}
                 </Section>
 

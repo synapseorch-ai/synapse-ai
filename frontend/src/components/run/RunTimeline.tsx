@@ -127,7 +127,7 @@ export function RunTimeline({ run, workflow, nested }: {
                             </div>
                             {expandable && isOpen && entry && (
                                 <div className="border-b border-border py-2.5" style={{ paddingLeft: row.depth ? `${row.depth * 16}px` : undefined }}>
-                                    <StepDetail id={`step-output-${row.key}`} step={entry} sharedState={run.sharedState} usage={usage} />
+                                    <StepDetail id={`step-output-${row.key}`} step={entry} sharedState={run.sharedState} usage={usage} removed={Boolean(run.stepDataRemovedAt)} />
                                 </div>
                             )}
                         </div>

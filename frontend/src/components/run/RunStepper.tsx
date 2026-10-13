@@ -80,7 +80,7 @@ export function RunStepper({ run, workflow }: { run: RunRecord; workflow: Orches
                         </div>
                         {expandable && isOpen && entry && (
                             <div className="px-2.5 pb-3" style={{ paddingLeft: `${54 + row.depth * 18}px` }}>
-                                <StepDetail id={`step-output-${row.stepId}`} step={entry} sharedState={run.sharedState} usage={usage} />
+                                <StepDetail id={`step-output-${row.stepId}`} step={entry} sharedState={run.sharedState} usage={usage} removed={Boolean(run.stepDataRemovedAt)} />
                             </div>
                         )}
                     </li>

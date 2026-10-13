@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { Badge, Button, Modal } from '@/components/ui';
 import type { Orchestration } from '@/types/orchestration';
 
-import { isLive, type RunRecord } from './model';
+import { isLive, REMOVED_NOTE, type RunRecord } from './model';
 import { OutputValue } from './StepDetail';
 
 type Output = { key: string; value: unknown; from: string; description?: string; result: boolean };
@@ -53,7 +53,8 @@ export function RunOutputs({ run, workflow }: { run: RunRecord; workflow: Orches
     const outputs = outputsOf(run, workflow);
     const [opened, setOpened] = useState<Output | null>(null);
     if (outputs.length === 0) {
-        return <p className="text-sm text-text-muted">{isLive(run.status) ? 'Nothing yet.' : 'This run wrote no outputs.'}</p>;
+        const none = isLive(run.status) ? 'Nothing yet.' : run.stepDataRemovedAt ? REMOVED_NOTE : 'This run wrote no outputs.';
+        return <p className="text-sm text-text-muted">{none}</p>;
     }
     return (
         <>
