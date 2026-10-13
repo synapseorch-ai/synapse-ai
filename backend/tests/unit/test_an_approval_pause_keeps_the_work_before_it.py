@@ -57,6 +57,44 @@ class TestAtTheTop:
         assert "worked_seconds" not in entry
 
 
+class TestTwoApprovalsInOneExecution:
+    """F463 (Naveen's call, F140's shape): the step's second question used to add a
+    second entry and leave the first `running` for ever — one execution read as two
+    by the loop guard and a host's pricing. Pausing the one entry again would have
+    given both questions one `pause_ordinal`, which is how an answer names the
+    question it answers. Now the first becomes a closed `human` wait (free, outside
+    active time) and the second, typed as the step, carries its start and all the
+    work: one priced entry, and each question its own ordinal."""
+
+    async def test_one_priced_entry_with_all_its_work_and_two_questions(
+            self, driver, risky_agent, fake_llm, half_second_calls):
+        from core.orchestration.pauses import pause_ordinal
+        orch = S.make_orchestration(id="orch_f463", entry_step_id="work", steps=[_work()])
+        await S.seed_orchestrations([orch])
+        tools = _Tools()
+        a, b = tools.patch()
+        ordinals = []
+        with a, b:
+            fake_llm.script([tool_call("danger"), tool_call("danger", n=2), "done"])
+            status = await driver.start(orch, "run_f463")
+            for _ in range(2):
+                assert status == "paused"
+                ordinals.append(pause_ordinal((await _run("run_f463")).step_history))
+                await asyncio.sleep(WAIT_S)
+                status = await driver.answer("run_f463", {"approve": True})
+        assert status == "completed"
+        assert ordinals[0] != ordinals[1], "each question is its own"
+
+        run = await _run("run_f463")
+        entries = [h for h in run.step_history if h.get("step_id") == "work"]
+        assert [(e["step_type"], e["status"]) for e in entries] == [("human", "completed"), ("agent", "completed")]
+        wait, step = entries
+        assert 3 * CALL_S - 0.1 <= step["duration_seconds"] < 3 * CALL_S + WAIT_S - 0.2, step
+        assert step["started_ms"] <= wait["started_ms"], "the step's entry opens at its own start"
+        assert wait["ended_at"] and "worked_seconds" not in step
+        assert not [e for e in run.step_history if e.get("status") == "running"]
+
+
 class TestInALoop:
     async def test_the_entry_starts_at_the_step_and_counts_its_work(self, driver, risky_agent, fake_llm,
                                                                     half_second_calls):

@@ -17,7 +17,7 @@ from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
 from .run_error import failure_reason, reason_of, run_error, set_run_error
-from .pauses import end_step, innermost_container, pause_chain, progress_key
+from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause
 from .step_usage import exact_window
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
@@ -569,8 +569,8 @@ class OrchestrationEngine:
                                 # Recorded here as "paused" and completed on
                                 # resume, so history means "steps that started"
                                 # whether or not the run is still waiting.
-                                run.step_history.append(
-                                    self._paused_entry(run, step, event, step_start_time))
+                                record_pause(run.step_history,
+                                             self._paused_entry(run, step, event, step_start_time))
                                 # The channel this pause waits on, so a reply
                                 # there can find the run (F54). A nested pause
                                 # carries its sub-step's channel up to here.
@@ -1224,6 +1224,9 @@ class OrchestrationEngine:
         for entry in reversed(run.step_history):
             if entry.get("step_id") == step_id and entry.get("status") == "paused":
                 entry["status"] = "running"
+                # When the person answered: if the step asks again, its first
+                # wait ends here (`pauses.record_pause`, F463).
+                entry["resumed_ms"] = int(time.time() * 1000)
                 break
 
         yield {"type": "tool_approval_resolved", "orch_step_id": step_id,
@@ -1945,6 +1948,9 @@ class OrchestrationEngine:
         """
         if event.get("kind") == "tool_approval" and not event.get("nested_run_id"):
             entry["worked_seconds"] = round(max(0.0, time.time() - stretch_start), 2)
+            # When it asked: a second question in this execution closes this
+            # wait from here (`pauses.record_pause`, F463).
+            entry["paused_ms"] = int(time.time() * 1000)
         return entry
 
     @staticmethod

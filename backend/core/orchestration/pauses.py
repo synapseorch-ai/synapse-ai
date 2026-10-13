@@ -16,6 +16,8 @@ waiting — the messaging layer, cloud's notifier and cancel route — reads the
 """
 from __future__ import annotations
 
+import time
+
 from typing import Any, Mapping
 
 #: The container step types that keep a pause record, and the key each keeps it
@@ -95,6 +97,52 @@ def innermost_container(position: str, chain: list[dict]) -> str:
     return containers[-1]
 
 
+def record_pause(step_history: list, entry: dict) -> None:
+    """Record a pause: a step's first question adds its entry; a later question in
+    the same execution closes the first as the wait it was (F463).
+
+    A step whose approval was answered is `running` in its reopened entry. When it
+    asked again, a second entry was added and the first stayed `running` for ever:
+    one execution read as two by the loop guard and a host's pricing, and as a step
+    that never ended in the run's log. Pausing the one entry again would give both
+    questions one `pause_ordinal`, the index an answer names its question by
+    (F136, F140), so a stale answer could approve a different call.
+
+    F140's shape instead (Naveen, D267): the reopened entry becomes a closed `human`
+    wait — free, outside active time and the executed-step count, and true, a
+    person's wait inside one execution — from the first pause to its answer. The new
+    pause, typed as the step, carries the step's start and every second it worked,
+    so its end prices and times one execution.
+    """
+    for existing in reversed(step_history):
+        if not isinstance(existing, dict) or existing.get("step_id") != entry.get("step_id"):
+            continue
+        if existing.get("status") == "running" and existing.get("step_type") != "human":
+            worked = (existing.pop("worked_seconds", None) or 0) + (entry.get("worked_seconds") or 0)
+            for key in ("started_at", "started_ms"):
+                if existing.get(key):
+                    entry[key] = existing[key]
+            if worked:
+                entry["worked_seconds"] = round(worked, 2)
+            now = time.time()
+            answered = existing.pop("resumed_ms", None)
+            asked = existing.pop("paused_ms", None)
+            waited_to = answered / 1000 if answered else now
+            waited_from = min(asked / 1000, waited_to) if asked else waited_to
+            existing.update(
+                status="completed", step_type="human",
+                started_at=_stamp(waited_from), started_ms=int(waited_from * 1000),
+                ended_at=_stamp(waited_to), ended_ms=int(waited_to * 1000),
+                duration_seconds=round(waited_to - waited_from, 2),
+            )
+        break
+    step_history.append(entry)
+
+
+def _stamp(t: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))
+
+
 def end_step(step_history: list, entry: dict) -> None:
     """Record a step's end: close the entry it has open, or add one.
 
@@ -112,6 +160,8 @@ def end_step(step_history: list, entry: dict) -> None:
             # And what it worked before it asked (F439): the resumed stretch alone
             # left out every model call before the question.
             worked = existing.pop("worked_seconds", None)
+            existing.pop("resumed_ms", None)
+            existing.pop("paused_ms", None)
             existing.update(entry)
             existing.update(kept)
             if worked and isinstance(existing.get("duration_seconds"), (int, float)):
