@@ -1628,9 +1628,14 @@ async def run_agent_step(
         _log.debug(f"RUN_AGENT: ⏯ resuming mid-step from turn {start_turn + 1}/{max_turns}")
 
 
-    # Build type-aware set of always-allowed tools
-    always_allowed = set(DEFAULT_TOOLS_BY_TYPE.get("all_types", set()))
-    always_allowed |= set(DEFAULT_TOOLS_BY_TYPE.get(agent_type, set()))
+    # Build type-aware set of always-allowed tools. An agent with its default
+    # tools switched off (`skip_default_tools`) has none of them: they were kept
+    # out of what it is offered, and a call to one by name used to pass here
+    # anyway — a tightly scoped agent could read the workspace's files (F462).
+    always_allowed: set[str] = set()
+    if not active_agent.get("skip_default_tools", False):
+        always_allowed |= set(DEFAULT_TOOLS_BY_TYPE.get("all_types", set()))
+        always_allowed |= set(DEFAULT_TOOLS_BY_TYPE.get(agent_type, set()))
     if _skill_names:
         # Injected because the agent selected skills, not via tools[] — the
         # execution guard must not block it for narrowly-scoped agents.
