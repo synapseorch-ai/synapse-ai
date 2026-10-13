@@ -19,7 +19,7 @@ import { SearchInput, Select } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { Orchestration } from '@/types/orchestration';
 
-import { isCreditStop } from './failures';
+import { isCapStop, isCreditStop } from './failures';
 import {
     bucketOf, dayKey, dayLabel, glyphOf, money, ordinal, type Clock, type RunBucket, type RunRow,
 } from './model';
@@ -84,6 +84,8 @@ export function StatusLine({ row }: { row: RunRow }) {
         case 'failed':
             // The credit gate stopped it (F444): the workspace ran out, not a step, so no step is named.
             if (isCreditStop(row.error)) return <span className="font-medium text-danger">Out of credits</span>;
+            // Its own cap stopped it (CAP1): the run reached its limit, not a step.
+            if (isCapStop(row.error)) return <span className="font-medium text-danger">Reached its cap</span>;
             return <><span className="font-medium text-danger">Failed</span>{step}</>;
         case 'cancelled':
             return <>Cancelled{step}</>;

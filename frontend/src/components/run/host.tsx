@@ -30,6 +30,8 @@ export type RunLinks = {
     run: (runId: string) => string;
     /** The workflow, opened where the run can be seen on it (OSS restores the run on the canvas). */
     editor: (run: { id: string; workflowId: string }) => string;
+    /** The workflow with its settings open, where its cap per run is (CAP1); absent, the editor. */
+    workflowSettings?: (run: { id: string; workflowId: string }) => string;
     /** Where model keys live; absent where nobody here can set one. */
     models?: string;
     /** The agents. */

@@ -145,6 +145,10 @@ export interface Orchestration {
     state_schema: Record<string, StateSchemaEntry>;
     max_total_turns: number;
     timeout_minutes: number;
+    /** What one run may spend (CAP1): credits (cloud only) and model dollars. Unset or null is no cap.
+     *  The engine asks before every step; a run at its cap stops and says so. */
+    max_run_credits?: number | null;
+    max_run_usd?: number | null;
     /** Stop a run when a step's text will not become the type its state key
      *  declares. Off by default — a type nobody was ever held to is not a
      *  thing to start failing runs over. A value that is simply of another

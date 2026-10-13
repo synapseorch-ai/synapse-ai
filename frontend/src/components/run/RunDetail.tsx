@@ -111,6 +111,10 @@ export function RunDetail({
     // What the run is drawn on: the steps it ran and carries on with (F443), or
     // today's for a run from before the copy was kept.
     const drawn = run.definition ?? workflow;
+    // The cap per run it ran under (CAP1): its own copy's, never today's. A nested run ran under its root's.
+    const capOf = run.id.includes('__') ? null : run.definition;
+    const capCredits = capOf?.max_run_credits ?? null;
+    const capUsd = capOf?.max_run_usd ?? null;
     const path = drawn ? pathOrder(drawn).filter((id) => drawn.steps.find((s) => s.id === id)?.type !== 'end') : [];
     const stepsLine = (bucket === 'completed' || !path.length)
         ? <><b className="font-semibold tabular-nums text-text">{run.history.length}</b> {run.history.length === 1 ? 'step' : 'steps'}</>
@@ -165,9 +169,13 @@ export function RunDetail({
                     {run.creditsCharged != null && (
                         <span title="What the run was charged: the greater of its steps and its minutes, and at least a credit">
                             <b className="font-semibold tabular-nums text-text">{creditsText(run.creditsCharged)}</b> charged
+                            {capCredits ? <span className="text-text-faint"> · cap {creditsText(capCredits)}</span> : null}
                         </span>
                     )}
-                    <span title={run.costHint}><b className="font-semibold tabular-nums text-text">{money(run.costUsd)}</b> model cost</span>
+                    <span title={run.costHint}>
+                        <b className="font-semibold tabular-nums text-text">{money(run.costUsd)}</b> model cost
+                        {capUsd ? <span className="text-text-faint"> · cap {money(capUsd)}</span> : null}
+                    </span>
                 </div>
 
                 {stopped && <FailureCard run={run} nested={nested} onReplay={replay} busy={busy} />}

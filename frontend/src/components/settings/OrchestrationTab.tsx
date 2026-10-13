@@ -16,6 +16,7 @@ import { refusedAnswerMessage } from '@/lib/answers';
 import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
 import { CanvasWorkbench } from '../orchestration/CanvasWorkbench';
 import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
+import { RunCapFields } from '../orchestration/RunCapFields';
 import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
@@ -173,11 +174,16 @@ function fieldList(raw: unknown): HumanField[] {
     return Array.isArray(raw) ? (raw as HumanField[]) : [];
 }
 
-export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
+/** What a cap per run counts here: model dollars on your own keys (CAP1). */
+const OSS_CAP_UNITS = ['usd'] as const;
+
+export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, openSettings }: {
     initialRunId?: string;
     initialOrchId?: string;
     /** A value that changes each time a blank workflow is asked for from elsewhere (⌘K's New workflow, M1a). */
     newRequest?: string;
+    /** `initialOrchId` opens with its settings (`?settings=1`: a run's "Raise the cap", CAP1). */
+    openSettings?: boolean;
 } = {}) {
     // --- Orchestration list ---
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
@@ -1869,6 +1875,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                     lead={step.id === waitingStep ? approval(true) : undefined}
                                 />
                             )}
+                            settingsAtOpen={!!openSettings && draft.id === initialOrchId}
                             renderSettings={(close) => (
                                 <WorkflowSettingsPanel name={draft.name} onClose={close}>
                                     <SettingsSection title="Description">
@@ -1884,6 +1891,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                     />
                                     <SettingsSection title="Cost per run">
                                         <EstimateLine estimate={estimate} busy={estimating} error={estimateError} className="text-sm" />
+                                        {/* Self-hosted has no credits: its cap is in model dollars (CAP1). */}
+                                        <RunCapFields draft={draft} onChange={setDraft} units={OSS_CAP_UNITS} estimate={estimate} />
                                     </SettingsSection>
                                     <SettingsSection title="Guardrails">
                                         <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
@@ -1927,7 +1936,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
                                 input: {
                                     value: runInput,
                                     onChange: setRunInput,
-                                    estimate: <EstimateLine estimate={estimate} busy={estimating} error={estimateError} compact />,
+                                    estimate: <EstimateLine estimate={estimate} busy={estimating} error={estimateError} compact cap={draft} capUnits={OSS_CAP_UNITS} />,
                                 },
                                 runKey,
                                 trail,

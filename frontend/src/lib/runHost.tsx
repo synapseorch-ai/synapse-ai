@@ -102,6 +102,8 @@ export const OSS_RUN_HOST: RunHost = {
         run: (id) => `/runs/${enc(id)}`,
         // The run restored on its canvas, the failed step marked (the editor's deep link).
         editor: (run) => `/workflows?run=${enc(run.id)}`,
+        // Its settings open, where the cap per run is (CAP1).
+        workflowSettings: (run) => `/workflows?id=${enc(run.workflowId)}&settings=1`,
         models: '/settings/models',
         agents: '/agents',
         knowledge: '/knowledge',

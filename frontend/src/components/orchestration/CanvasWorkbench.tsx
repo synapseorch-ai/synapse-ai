@@ -70,6 +70,8 @@ export interface CanvasWorkbenchProps {
     renderStep: (step: StepConfig) => React.ReactNode;
     /** The workflow's settings, as the product composes them (`WorkflowSettingsPanel` and its sections). */
     renderSettings: (close: () => void) => React.ReactNode;
+    /** Open the settings when the workflow opens: a link that came for them (a run's "Raise the cap", CAP1). */
+    settingsAtOpen?: boolean;
     /** The step toolbar's actions, the same ones the panel and ⌘D use. */
     stepActions: {
         duplicate: (stepId: string) => void;
@@ -159,7 +161,7 @@ function subscribeCoarse(onChange: () => void) {
 
 function Workbench({
     orchestration, onChange, agents, knowledgeEnabled = false, selectedStepId, onSelectStep,
-    renderStep, renderSettings, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
+    renderStep, renderSettings, settingsAtOpen = false, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
     insetRight = 0, run, runStrip, runDrawer, lastRun,
 }: CanvasWorkbenchProps) {
     // The canvas is the page: the shell hides the page header and folds the menu (D204).
@@ -186,7 +188,7 @@ function Workbench({
 
     // ── The card: a step's setup, or the workflow's settings ──────────────
     const selectedStep = orchestration.steps.find((s) => s.id === selectedStepId) ?? null;
-    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(settingsAtOpen);
     // Selecting a step shows its setup; the settings give way (adjusted while
     // rendering, not in an effect).
     const [seenSelection, setSeenSelection] = useState(selectedStepId);

@@ -114,7 +114,8 @@ export function GuardrailsFields({ draft, onChange, rubrics, readOnly }: {
                 </Field>
             </div>
             {/* No "Max Cost (USD)": nothing ever enforced it, and batch 1C deleted it
-                from the engine. A cap that does not cap is worse than none (F76). */}
+                from the engine. A cap that does not cap is worse than none (F76). The cap per
+                run that the engine enforces is under Cost per run (`RunCapFields`, CAP1). */}
             <label className="flex cursor-pointer items-start gap-2.5">
                 <input
                     type="checkbox"

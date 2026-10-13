@@ -14,8 +14,10 @@ export default async function WorkflowsPage(props: {
     const orchId = typeof searchParams.id === 'string' ? searchParams.id : undefined;
     // `?new=<n>` (⌘K's New workflow): a blank workflow on the canvas, once per value.
     const newRequest = typeof searchParams.new === 'string' ? searchParams.new : undefined;
+    // `?settings=1` with `?id=`: the workflow opens with its settings (a run's "Raise the cap", CAP1).
+    const openSettings = searchParams.settings === '1';
 
     // The page draws its own frame (M2k): the list on the wide frame with its
     // actions in the header, an open workflow bleeding to the edges.
-    return <OrchestrationTab initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} />;
+    return <OrchestrationTab initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} openSettings={openSettings} />;
 }

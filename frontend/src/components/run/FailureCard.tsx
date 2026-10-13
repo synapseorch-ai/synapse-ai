@@ -66,6 +66,11 @@ export function FailureCard({ run, nested, onReplay, busy }: {
                 return host.links.billing ? <LinkButton key={kind} href={host.links.billing} variant={variant} size="sm">Add balance</LinkButton> : null;
             case 'credits':
                 return host.links.billing ? <LinkButton key={kind} href={host.links.billing} variant={variant} size="sm">Add credits</LinkButton> : null;
+            case 'cap': {
+                // The workflow's settings, where its cap is (CAP1); the editor where a product cannot open them.
+                const where = host.links.workflowSettings ?? host.links.editor;
+                return <LinkButton key={kind} href={where({ id: run.id, workflowId: run.workflowId })} variant={variant} size="sm">Raise the cap</LinkButton>;
+            }
             case 'nested':
                 return said.nestedRunId ? <LinkButton key={kind} href={host.links.run(said.nestedRunId)} variant={variant} size="sm">Open the nested run</LinkButton> : null;
             case 'parent':

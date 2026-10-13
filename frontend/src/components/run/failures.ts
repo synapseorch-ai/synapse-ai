@@ -12,7 +12,8 @@
  * the step executors, the engine's limits and routes, the model providers'
  * adapters, cancel, the restart sweep. Two reasons come from a host instead of
  * the engine: cloud's model wallet and its credit gate (F419, F444), which stops
- * a run through the engine's `run_gate` seam. Anything unmatched falls to the last
+ * a run through the engine's `run_gate` seam. The workflow's own cap per run
+ * (CAP1) stops it through the same seam, in the engine's words. Anything unmatched falls to the last
  * two rows: "<step> stopped this run with an error it didn't expect", with the
  * reason's headline (`lib/runErrors.ts`'s `reasonHeadline`, F195's rule, which
  * both products keep word for word), or "stopped without recording why".
@@ -23,7 +24,7 @@ import { duration, type NestedRun, type StepExecution } from './model';
 
 /** What a failure card can offer; the page shows the ones its product can link. */
 export type FixKind =
-    | 'editor' | 'replay' | 'models' | 'agents' | 'knowledge' | 'billing' | 'credits'
+    | 'editor' | 'replay' | 'models' | 'agents' | 'knowledge' | 'billing' | 'credits' | 'cap'
     | 'nested' | 'parent' | 'log';
 
 export type Explained = {
@@ -81,6 +82,19 @@ const CREDIT_STOP = /Stopped: this workspace is out of execution credits\.(?: Th
 /** Whether the credit gate stopped this run: the run list says so in place of "Failed" (F444). */
 export function isCreditStop(reason: string | null | undefined): boolean {
     return !!reason && CREDIT_STOP.test(reason);
+}
+
+/**
+ * The workflow's cap per run (CAP1, `core/orchestration/run_cap.py`), in the engine's words:
+ * "Stopped: this run reached its cap of 5 credits. It had used about 4.6 credits, and its next step costs 1. …"
+ * or "… its cap of $0.50 in model costs. It had spent about $0.52. …". Unanchored and its numbers optional, as
+ * `CREDIT_STOP` is: the engine asks in the same four places, and a deep wrapper can lose the tail.
+ */
+const CAP_STOP = /Stopped: this run reached its cap of (?:([\d,.]+) credits?|\$([\d,.]+) in model costs)\.(?: It had (?:used about ([\d,.]+) credits?(, and its next step costs [\d,.]+)?|spent about (<?\$[\d,.]+))\.)?/;
+
+/** Whether the run's own cap stopped it: the run list says so in place of "Failed" (CAP1). */
+export function isCapStop(reason: string | null | undefined): boolean {
+    return !!reason && CAP_STOP.test(reason);
 }
 
 /** The parts of a run a sentence can name. */
@@ -141,6 +155,24 @@ export function explainFailure(input: FailureInput): Explained {
             detail: m[1] ? `This run needed about ${m[1]} credits and ${m[2]} were left for it.` : undefined,
             fixes: ['credits', 'replay'],
         };
+    }
+    // Also before the containers: the run reached its cap, not the branch, the loop or the nested workflow (CAP1).
+    if ((m = CAP_STOP.exec(raw))) {
+        const cap = m[1] ? `${m[1]} ${m[1] === '1' ? 'credit' : 'credits'}` : `$${m[2]} in model costs`;
+        const detail = m[3]
+            ? `It had used about ${m[3]} ${m[3] === '1' ? 'credit' : 'credits'}${m[4] ? '; its next step would take it past.' : '.'}`
+            : m[5] ? `It had spent about ${m[5]}.` : undefined;
+        // A nested run stopped at its root's cap: the cap is set on the workflow that was started.
+        if (parentRunId(input.runId)) {
+            return {
+                kind: 'cap',
+                sentence: `The run that started this one reached its cap of ${cap}.`,
+                detail,
+                advice: 'The cap is set on the workflow that was started.',
+                fixes: ['parent'],
+            };
+        }
+        return { kind: 'cap', sentence: `This run reached its cap of ${cap}.`, detail, fixes: ['cap', 'replay'] };
     }
     if (/Server restarted while the run was in progress/.test(raw)) {
         return { kind: 'restart', sentence: 'The server restarted while this run was going.', advice: 'Replay resumes it at the step it had reached.', fixes: ['replay'] };

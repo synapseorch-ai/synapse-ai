@@ -15,7 +15,7 @@
  */
 import { useEffect, useState } from 'react';
 
-import { creditsText } from '@/components/run/model';
+import { creditsText, money } from '@/components/run/model';
 import { cn } from '@/lib/cn';
 
 export type CostSpan = { low: number; high: number; open?: string[] };
@@ -123,18 +123,35 @@ export function walletShort(estimate: RunEstimate): boolean {
     return Boolean(wallet && estimate.wallet_usd != null && estimate.wallet_usd < wallet.low);
 }
 
+/** A workflow's cap per run, as it sets it (CAP1): the two fields, either unset. */
+export type RunCapSetting = { max_run_credits?: number | null; max_run_usd?: number | null };
+
+/** What a product can cap: cloud both, self-hosted dollars only (it has no credits). */
+export type CapUnit = 'credits' | 'usd';
+
+/** "Capped at 5 credits a run.", "Capped at 5 credits and $0.50 of models a run.", or '' with no cap. */
+export function capText(cap: RunCapSetting | null | undefined, units: readonly CapUnit[] = ['credits', 'usd']): string {
+    const parts: string[] = [];
+    if (units.includes('credits') && cap?.max_run_credits) parts.push(creditsText(cap.max_run_credits));
+    if (units.includes('usd') && cap?.max_run_usd) parts.push(`${money(cap.max_run_usd)} of models`);
+    return parts.length ? `Capped at ${parts.join(' and ')} a run.` : '';
+}
+
 /**
  * One estimate, as a line or a short block. `compact` is the single line for a
  * dialog's footer; `topUp` is the product's way to the model wallet, shown when
- * the wallet holds less than the cheapest run.
+ * the wallet holds less than the cheapest run. `cap`, the workflow's cap per run
+ * (CAP1), is said after the figure, in the units `capUnits` this product caps.
  */
-export function EstimateLine({ estimate, busy, error, compact, ceiling, topUp, className }: {
+export function EstimateLine({ estimate, busy, error, compact, ceiling, topUp, cap, capUnits, className }: {
     estimate: RunEstimate | null;
     busy?: boolean;
     error?: string;
     compact?: boolean;
     ceiling?: boolean;
     topUp?: React.ReactNode;
+    cap?: RunCapSetting | null;
+    capUnits?: readonly CapUnit[];
     className?: string;
 }) {
     if (error) return <p className={cn('text-xs text-text-muted', className)}>No estimate: {error}</p>;
@@ -144,9 +161,10 @@ export function EstimateLine({ estimate, busy, error, compact, ceiling, topUp, c
     const { headline, notes } = estimateWords(estimate, { ceiling });
     if (!headline) return null;
     const short = walletShort(estimate);
+    const capped = capText(cap, capUnits);
     return (
         <div className={cn('text-xs leading-relaxed text-text-muted', className)} aria-live="polite">
-            <p className="text-text">{headline}</p>
+            <p className="text-text">{headline}{capped ? ` ${capped}` : ''}</p>
             {!compact && notes.map((note) => <p key={note}>{note}</p>)}
             {short && (
                 <p className="text-text">
@@ -157,9 +175,12 @@ export function EstimateLine({ estimate, busy, error, compact, ceiling, topUp, c
     );
 }
 
-/** The priced parts of a definition: moving a step on the canvas does not price it again. */
+/** What a price never reads: moving a step on the canvas, or changing the cap, does not price it again. */
+const UNPRICED_KEYS = new Set(['position_x', 'position_y', 'max_run_credits', 'max_run_usd']);
+
+/** The priced parts of a definition. */
 function pricedKey(definition: unknown): string {
-    return JSON.stringify(definition, (key, value) => (key === 'position_x' || key === 'position_y' ? undefined : value));
+    return JSON.stringify(definition, (key, value) => (UNPRICED_KEYS.has(key) ? undefined : value));
 }
 
 /** An estimate that follows the definition as it is edited (300 ms after the last change). */
