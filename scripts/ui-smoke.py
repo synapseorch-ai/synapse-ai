@@ -7570,6 +7570,8 @@ _SMOKE_KB_CRAWLS = [{
 _SMOKE_KB_CRAWLS_SLICED = [{
     **_SMOKE_KB_CRAWLS[0], "status": "queued", "finished_at": None, "pages": 12,
     "counts": {**_SMOKE_KB_CRAWLS[0]["counts"], "fetched": 12, "unchanged": 10, "written": 2, "not_followed": 0}}]
+#: The same source while its crawl runs (F422, C8): its counts move as it works.
+_SMOKE_KB_CRAWLS_RUNNING = [{**_SMOKE_KB_CRAWLS_SLICED[0], "status": "running"}]
 _SMOKE_KB_REPORT = {
     **_SMOKE_KB_DOCS[2], "report": {
         "report_version": 1, "doc_id": "kdoc_smoke02", "path": "smoke_kb/failed.md", "sha256": None, "attempt": 2,
@@ -7768,6 +7770,9 @@ LIGHT_STATES = (
     ("knowledge crawl between slices", "/knowledge", [],
      _SMOKE_KB_ROUTES + [("**/api/knowledge/bases/*/crawls", _answer(_SMOKE_KB_CRAWLS_SLICED))], None,
      "Waiting for its turn · 12 pages fetched so far"),
+    ("knowledge crawl running", "/knowledge", [],
+     _SMOKE_KB_ROUTES + [("**/api/knowledge/bases/*/crawls", _answer(_SMOKE_KB_CRAWLS_RUNNING))], None,
+     "Fetching now · 12 pages fetched"),
     ("knowledge costs", "/knowledge", [], _SMOKE_KB_ROUTES,
      lambda p: p.get_by_role("button", name=re.compile("^Costs")).click(), "Reranking"),
     ("knowledge report", "/knowledge", [], _SMOKE_KB_ROUTES,

@@ -19,6 +19,16 @@ counts, the pages the source holds (paths relative to the base's folder, so a
 moved base keeps them) and the request's metadata and caps. The screen reads it
 through `GET /knowledge/bases/{kb_id}/crawls` (CCR-4).
 
+**A running crawl's counts move as it works** (F422, C8). The row gets them
+only when the crawl ends, or its slice does, so a crawl read `0 fetched` for as
+long as it worked (a whole OSS crawl, which has no slices). Every
+`LIVE_EVERY_S` while they change, the crawl writes its counts and the pages the
+source holds to a small row of its own (`knowledge_web_live:<kws_id>`), which
+`crawl_states` reads over a `running` row that names the same crawl — its own
+row, so `_finish` stays the only writer of the source's (F350). The crawl
+drops it as it ends, after its row has the final counts. A new crawl starts
+from zero counts (F460).
+
 **What a crawl deletes** (Naveen's call 1): a page the site says is gone
 (404/410), marks `noindex`, or robots.txt now disallows; and, after a crawl
 that finished with no failure and under its cap, every page the source held
@@ -99,11 +109,17 @@ BEAT_PREFIX = "knowledge_web_beat:"
 #: Where a crawl got to, so a stopped one resumes there (F353): see the module docstring. A row of its own, so the
 #: heartbeat a tend pass reads stays small.
 FRONTIER_PREFIX = "knowledge_web_frontier:"
+#: A running crawl's counts as it works (F422): `{crawl_id, counts, pages, at}`, read over its row's.
+LIVE_PREFIX = "knowledge_web_live:"
+#: How often a running crawl writes its counts while they change.
+LIVE_EVERY_S = 2.0
 MAX_SOURCES = 50
 #: With a runner: a running crawl whose own heartbeat is older than this was left by a worker that stopped.
 RUNNER_STALE = timedelta(minutes=10)
 #: With a runner: how often a crawl says it is alive, and what it has reached so far.
 HEARTBEAT_EVERY_S = 60.0
+#: What one crawl counts (`CrawlCounts`); a new crawl starts with each at zero (F460).
+_NO_COUNTS = ("fetched", "unchanged", "written", "deleted", "blocked", "failed", "skipped", "not_followed")
 #: A crawl started this many times without finishing fails, rather than being started again.
 MAX_ATTEMPTS = 3
 #: A crawl's time limit (`run_crawl(deadline=)`) is never sooner than this from its start.
@@ -318,6 +334,13 @@ async def drop_state(source_id: str) -> None:
     await collections.save(_state_name(source_id), [])
     await collections.save(f"{BEAT_PREFIX}{source_id}", [])
     await collections.save(f"{FRONTIER_PREFIX}{source_id}", [])
+    await collections.save(f"{LIVE_PREFIX}{source_id}", [])
+
+
+async def load_live(source_id: str) -> dict[str, Any]:
+    from core.store import collections
+
+    return dict(await collections.load_one(f"{LIVE_PREFIX}{source_id}", {}) or {})
 
 
 async def load_frontier(source_id: str) -> dict[str, Any]:
@@ -514,7 +537,7 @@ async def _queue(kb: KnowledgeBase, source: WebSource, crawl_id: str, **request:
         if await _live(source.id, state):
             return False
         state.update(source_id=source.id, kb_id=kb.id, url=source.url, kind=source.kind, crawl_id=crawl_id,
-                     status="queued", queued_at=_now().isoformat(), **request)
+                     status="queued", queued_at=_now().isoformat(), counts=dict.fromkeys(_NO_COUNTS, 0), **request)
         await save_state(source.id, state)
         if _runner is None:
             return _start(kb.id, source.id, crawl_id)
@@ -658,11 +681,16 @@ async def crawl_states(kb: KnowledgeBase) -> list[WebCrawlState]:
         status = state.get("status") or "idle"
         if status in ("queued", "running") and not await _live(source.id, state):
             status = "interrupted"  # the process that ran it stopped; the next due pass runs it again
+        pages, counts = len(state.get("pages") or []), state.get("counts") or {}
+        if status == "running":
+            live = await load_live(source.id)
+            if live.get("crawl_id") and live.get("crawl_id") == state.get("crawl_id"):  # F422: what it has done so far
+                pages, counts = int(live.get("pages") or 0), live.get("counts") or {}
         due = _next_due(kb, state)
         out.append(WebCrawlState(
             source_id=source.id, url=source.url, kind=source.kind, status=status, crawl_id=state.get("crawl_id"),
             started_at=state.get("started_at"), finished_at=state.get("finished_at"),
-            pages=len(state.get("pages") or []), counts=CrawlCounts(**(state.get("counts") or {})),
+            pages=pages, counts=CrawlCounts(**counts),
             next_due_at=due.isoformat() if due else None, last_error=state.get("last_error")))
     return out
 
@@ -775,8 +803,7 @@ class _Crawl:
     reached: set[str] = field(default_factory=set)    # relative paths this crawl holds
     outcomes: set[str] = field(default_factory=set)   # relative paths of outcome rows it recorded
     seen: set[str] = field(default_factory=set)       # normalized URLs taken
-    counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(
-        ("fetched", "unchanged", "written", "deleted", "blocked", "failed", "skipped", "not_followed"), 0))
+    counts: dict[str, int] = field(default_factory=lambda: dict.fromkeys(_NO_COUNTS, 0))
     capped: bool = False
     last_error: str | None = None
     checked_at: float = 0.0
@@ -804,6 +831,9 @@ class _Crawl:
     slice_end: float | None = None  # monotonic: past it, the next loop head ends the slice
     in_slice: int = 0  # pages taken this slice — a slice always takes one
     saved_at: float = float("-inf")
+    held_before: frozenset[str] = frozenset()  # the pages the source held when this run began
+    live_at: float = float("-inf")
+    live_said: tuple | None = None  # the counts and pages `_tell` wrote last
 
     def worked(self) -> float:
         return self.worked_before + (time.monotonic() - self.started_mono)
@@ -907,7 +937,8 @@ async def run_crawl(kb_id: str, source_id: str, crawl_id: str, *, deadline: date
                    beat_at=time.monotonic(), room=_vault_room() if _vault_room is not None else None,
                    deadline=None if deadline is None else max(deadline, _now() + MIN_DEADLINE),
                    max_pages=max_pages, max_seconds=hours * 3600 if hours and hours > 0 else None,
-                   slice_end=None if slice_s is None else time.monotonic() + max(0.0, slice_s))
+                   slice_end=None if slice_s is None else time.monotonic() + max(0.0, slice_s),
+                   held_before=frozenset(state.get("pages") or []))
         if resumed:
             _resume_from(c, kept)
         try:
@@ -977,6 +1008,7 @@ async def _still_mine(c: _Crawl) -> dict[str, Any] | None:
         await _drop_beat(c.source.id)
     if c.crawl_id is not None and (await load_frontier(c.source.id)).get("crawl_id") == c.crawl_id:
         await _drop_frontier(c.source.id)
+    await _drop_live(c)
     return None
 
 
@@ -991,6 +1023,7 @@ async def _interrupted(c: _Crawl, state: dict[str, Any]) -> None:
     state.update(status="interrupted", counts=c.counts, pages=sorted(previous | c.reached),
                  outcomes=sorted(previous_outcomes | c.outcomes))
     await save_state(c.source.id, state)
+    await _drop_live(c)
 
 
 async def _finish(c: _Crawl, state: dict[str, Any], status: str, *, complete: bool) -> dict[str, Any]:
@@ -1019,6 +1052,7 @@ async def _finish(c: _Crawl, state: dict[str, Any], status: str, *, complete: bo
                  pages=sorted(c.reached if complete else previous | c.reached),
                  outcomes=sorted(c.outcomes if complete else previous_outcomes | c.outcomes))
     await save_state(c.source.id, state)
+    await _drop_live(c)
     if _runner is not None:
         await _drop_beat(c.source.id)
     if c.crawl_id is not None:
@@ -1037,6 +1071,7 @@ async def _yield(c: _Crawl, state: dict[str, Any]) -> dict[str, Any]:
     state.update(status="queued", queued_at=_now().isoformat(), counts=dict(c.counts),
                  pages=sorted(previous | c.reached), outcomes=sorted(previous_outcomes | c.outcomes))
     await save_state(c.source.id, state)
+    await _drop_live(c)
     if _runner is not None:
         await save_beat(c.source.id, {"crawl_id": c.crawl_id, "at": _now().isoformat(), "attempts": c.attempts,
                                       "reached": sorted(c.reached), "outcomes": sorted(c.outcomes)})
@@ -1101,6 +1136,33 @@ async def _checkpoint(c: _Crawl, *, force: bool = False) -> None:
     await _save_frontier(c.source.id, _frontier_value(c))
 
 
+async def _tell(c: _Crawl) -> None:
+    """At a loop's head, every `LIVE_EVERY_S` while they changed: what `c` has done so far and the pages the source
+    holds, for `crawl_states` (F422). `fetch_document`'s one page tells nothing."""
+    if c.crawl_id is None or not c.owned:
+        return
+    said = (tuple(c.counts.values()), len(c.held_before | c.reached))
+    clock = time.monotonic()
+    if said == c.live_said or clock - c.live_at < LIVE_EVERY_S:
+        return
+    from core.store import collections
+
+    c.live_at, c.live_said = clock, said
+    await collections.save_one(f"{LIVE_PREFIX}{c.source.id}", {
+        "crawl_id": c.crawl_id, "counts": dict(c.counts), "pages": said[1], "at": _now().isoformat()})
+
+
+async def _drop_live(c: _Crawl) -> None:
+    """Drop this crawl's live row (this run's, or a stopped run's), once its row has its counts or no longer names
+    it."""
+    if c.crawl_id is None:
+        return
+    from core.store import collections
+
+    if (await load_live(c.source.id)).get("crawl_id") == c.crawl_id:
+        await collections.save(f"{LIVE_PREFIX}{c.source.id}", [])
+
+
 def _slice_over(c: _Crawl) -> bool:
     """At a loop's head: the slice has run its time and taken a page at least."""
     return c.slice_end is not None and c.in_slice > 0 and time.monotonic() >= c.slice_end
@@ -1160,6 +1222,7 @@ async def _site(c: _Crawl, max_depth: int, max_pages: int) -> None:
         c.taken = 0
     frontier = c.frontier
     while frontier:
+        await _tell(c)
         if c.taken >= max_pages:
             c.capped = True
             c.counts["not_followed"] += len(frontier) + c.dropped
@@ -1206,6 +1269,7 @@ async def _sitemap(c: _Crawl, max_pages: int) -> None:
         c.sitemap_next = 0
     urls = c.sitemap_urls
     while c.sitemap_next < len(urls):
+        await _tell(c)
         if _slice_over(c):
             raise _SliceEnd()
         url = urls[c.sitemap_next]

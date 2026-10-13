@@ -856,6 +856,7 @@ class TestARunner:
         await drain(jobs)
         assert await docs(kb_id) == {}
         assert await web.load_state(source_id) == {} and await web.load_beat(source_id) == {}  # no orphan row
+        assert await web.load_live(source_id) == {}
 
     async def test_a_removed_sources_pages_go_through_the_runner_not_the_request(
             self, on, site, jobs, indexer, runner):
@@ -892,6 +893,53 @@ class TestFetchingAgainDuringACrawl:
         assert (state["status"], state["crawl_id"]) == ("running", first.json()["crawl_id"])
         [state] = await crawls(on, kb["id"])
         assert (state["status"], state["crawl_id"]) == ("done", first.json()["crawl_id"])
+
+
+class TestCountsMoveDuringACrawl:
+    """F422 (C8): a crawl's counts reached its row only when it ended, or its slice did, so a crawl read
+    `running · 0 fetched` for as long as it worked (86 s on C2's 90 pages; a whole OSS crawl, which has no slices)."""
+
+    async def test_a_running_crawl_says_what_it_has_fetched_so_far(self, on, site, jobs, indexer, monkeypatch):
+        monkeypatch.setattr(web, "LIVE_EVERY_S", 0.0)
+        kb = await _kb(on)
+        async with _Hold(monkeypatch, "/docs/b") as hold:  # index and a fetched and written
+            await on.post(f"/api/knowledge/bases/{kb['id']}/urls", json={"urls": [f"{site}/docs/"], "kind": "site"})
+            await hold.wait()
+            [state] = await crawls(on, kb["id"])
+        await crawled()
+        assert state["status"] == "running"
+        assert (state["counts"]["fetched"], state["counts"]["written"], state["pages"]) == (2, 2, 2)
+        [done] = await crawls(on, kb["id"])
+        assert (done["status"], done["counts"]["fetched"], done["pages"]) == ("done", 4, 4)
+        assert await web.load_live(done["source_id"]) == {}  # a finished crawl keeps no live row
+
+    async def test_a_crawl_on_a_runner_says_so_before_its_slice_ends(self, on, site, jobs, indexer, runner,
+                                                                   monkeypatch):
+        monkeypatch.setattr(web, "LIVE_EVERY_S", 0.0)
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        async with _Hold(monkeypatch, "/docs/notes.txt") as hold:  # index, a and b fetched
+            task = asyncio.create_task(runner.run(slice_s=600.0))
+            await hold.wait()
+            [state] = await crawls(on, kb["id"])
+        [result] = await asyncio.wait_for(task, 30)
+        assert (state["status"], state["counts"]["fetched"], state["pages"]) == ("running", 3, 3)
+        assert result["status"] == "done"
+        assert await web.load_live(state["source_id"]) == {}
+
+    async def test_a_new_crawl_starts_from_nothing(self, on, site, jobs, indexer, runner):
+        """F460 (C8): a re-crawl waiting its turn read the last crawl's counts — "Waiting for its turn · 4 pages
+        fetched so far" before it had fetched any."""
+        kb = await _kb(on)
+        await add(on, kb["id"], f"{site}/docs/")
+        await runner.run()
+        [first] = await crawls(on, kb["id"])
+        assert (first["status"], first["counts"]["fetched"]) == ("done", 4)
+        again = await add(on, kb["id"], f"{site}/docs/")
+        [state] = await crawls(on, kb["id"])
+        assert (state["status"], state["crawl_id"]) == ("queued", again["crawl_id"])
+        assert state["counts"] == {k: 0 for k in first["counts"]}
+        assert state["pages"] == 4  # what the source holds now
 
 
 class TestStartDue:
