@@ -51,6 +51,10 @@ def _cancel_guarded(method):
     A decorator rather than an edit to each method: `test_adapter_resume.py`
     reads `resume` at the source level, and a wrapper is transparent to
     `inspect.getsource`.
+
+    A run handed back because its worker is stopping (`drain.HandedBack`, F424)
+    is a cancel nobody requested, so it propagates the same way and ARQ hands
+    the job out again at once.
     """
     @_functools.wraps(method)
     async def wrapper(self, *args, **kwargs):
@@ -100,9 +104,21 @@ class WorkerEngineAdapter:
         self._began = _time.time()
         self._step_started: dict[str, float] = {}
         self._step_ended: dict[str, float] = {}
+        # Whether this job has finished a step of the run itself, not one
+        # nested inside a step — before then it does not hand the run back (F424).
+        self._ended_a_step = False
 
     async def _relay(self, event: dict) -> None:
-        """Publish an engine event, noting the steps it starts and ends."""
+        """Publish an engine event, noting the steps it starts and ends.
+
+        A worker that is stopping hands the run back here, before the next
+        step's start goes out (F424): see `_hands_back_before`.
+        """
+        if event.get("type") == "step_start" and await self._hands_back_before(event):
+            _log.info(f"[worker] run {self._run_id}: handed back before step "
+                      f"{event.get('orch_step_id')} — this worker is stopping (F424)")
+            from core.scale.drain import HandedBack
+            raise HandedBack(f"run {self._run_id} handed back before step {event.get('orch_step_id')}")
         await self._publisher.publish(event)
         step_id = event.get("orch_step_id")
         if step_id:
@@ -111,6 +127,51 @@ class WorkerEngineAdapter:
                 self._step_started[step_id] = _time.time()
             elif kind in ("step_complete", "step_error"):
                 self._step_ended[step_id] = _time.time()
+                if kind == "step_complete" and not event.get("nested_run_id"):
+                    self._ended_a_step = True
+
+    async def _hands_back_before(self, event: dict) -> bool:
+        """Whether a stopping worker gives the run back before this step starts (F424).
+
+        ARQ gives a stopping worker's jobs 45 s and then cuts them wherever they
+        are; the next worker runs the cut step again from its start. Between two
+        steps of the run itself nothing is lost: the engine checkpointed where
+        the run goes next before it announced the step, the step has done
+        nothing yet, and its start is not published. Ending the job here —
+        with a cancel ARQ treats as its own — puts it back on the queue at
+        once, and the next worker resumes at this step, which runs once, with
+        one history entry, one price and one loop-guard count.
+
+        Only at the run's own boundaries. A step nested in a Loop, a Parallel
+        branch or a workflow the step runs is mid-way through its container,
+        whose position is the container's — a nested workflow cut there starts
+        again as a new child run. The row is the judge: the run hands back only
+        when it is stored `running` at exactly this step, which a body step or
+        a child's event (tagged `nested_run_id`, carrying its parent's step id)
+        never is. A read that fails keeps the run going, as before.
+
+        Not before this job has finished a step: a job that hands back with no
+        progress of its own would count, under F376, toward giving the run up.
+        """
+        from core.scale import drain
+
+        if not drain.draining() or not self._ended_a_step or event.get("nested_run_id"):
+            return False
+        step_id = event.get("orch_step_id")
+        if not step_id:
+            return False
+        try:
+            from sqlalchemy import select
+            from core.scale.models_db import OrchestrationRunDB
+            async with self._session_factory() as session:
+                row = (await session.execute(
+                    select(OrchestrationRunDB.status, OrchestrationRunDB.current_step_id)
+                    .where(OrchestrationRunDB.run_id == self._run_id)
+                )).one_or_none()
+        except Exception as e:  # noqa: BLE001 — in doubt, the run carries on
+            _log.warning(f"[worker] run {self._run_id}: could not read where it is, so it is not handed back: {e}")
+            return False
+        return row is not None and row.status == "running" and row.current_step_id == step_id
 
     @_cancel_guarded
     async def run(

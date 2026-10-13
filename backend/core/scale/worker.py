@@ -46,6 +46,24 @@ INTERRUPTED_TURN = (
     "still want it."
 )
 
+#: Why a workflow a chat turn was running stopped with it, when a stopping
+#: worker cut the turn (F424): a chat turn is not run again (F89), so neither is
+#: its run.
+TURN_RUN_STOPPED = (
+    "Stopped: the worker running this chat turn shut down before the workflow finished, and a "
+    "chat turn is not run again. Send the message again if you still want it."
+)
+
+#: How long a stopping worker spends telling a chat turn it cut (F424). ARQ
+#: drops the job's claim only after this, and the grace left after ARQ's wait
+#: is short — fifteen seconds on ECS and compose.
+CUT_TELL_SECONDS = 8.0
+
+#: A chat turn told at its cut (F424), so its next delivery says and saves
+#: nothing more. Kept as long as ARQ keeps its count of the job's deliveries.
+CHAT_TOLD_KEY = "synapse:chat-told:{job_id}"
+CHAT_TOLD_TTL = 88_400
+
 
 def job_retries(ctx: dict) -> int:
     """How many deliveries a job gets to do its work: `WORKER_MAX_RETRIES` (3).
@@ -698,6 +716,34 @@ async def run_agent_chat_job(
     events_since_progress: list[dict] = []
     # The answer's Sources: the root turn's `knowledge_citations` (F333).
     turn_citations: dict | None = None
+    # The conversation as loaded, and the runs this turn started (a workflow
+    # agent's): out here so a turn a stopping worker cuts can be told and saved,
+    # and its runs stopped, at the cut (F424).
+    history: list | None = None
+    turn_runs: list[str] = []
+
+    def _unanswered(content: str) -> list[dict]:
+        """The question, and `content` in place of its answer, with what the turn did.
+
+        With the calls that ran before it stopped (F426), what it thought, and the
+        question's images, as a completed turn is saved: saved with no calls, the
+        next turn's model said it had never run them — and a tool that acts could
+        be run twice.
+        """
+        from core.session import image_notes, thinking_from_events, tools_from_calls, turn_calls
+        question = {"role": "user", "content": message}
+        if images:
+            question["images"] = image_notes(images)
+        answer = {"role": "assistant", "content": content}
+        calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
+        if calls:
+            answer.update(tools=tools_from_calls(calls), calls=calls)
+        reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
+        if reasoning:
+            answer["reasoning"] = reasoning
+        if thoughts:
+            answer["thoughts"] = thoughts
+        return [question, answer]
 
     try:
         # Everything that makes this turn *visible* happens before the pool is
@@ -722,6 +768,13 @@ async def run_agent_chat_job(
             # it again started from scratch — and any tool it had already called
             # ran twice (F89). It is not rerun: the turn says it was
             # interrupted, and the person decides whether to send it again.
+            #
+            # A worker that stopped gracefully said so at the cut, and saved the
+            # turn (F424): nothing is left to say or save.
+            if await _told_at_the_cut(redis, ctx.get("job_id")):
+                _log.info(f"[worker] chat {session_id}: turn handed out again (try {ctx['job_try']}) — "
+                          f"already told at the cut")
+                return {"status": "interrupted", "session_id": session_id, "told_at_the_cut": True}
             from core.scale.pubsub import ChatEventPublisher
             publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
             await publisher.publish({"type": "error", "message": INTERRUPTED_TURN})
@@ -804,6 +857,12 @@ async def run_agent_chat_job(
                 save_turn=save_turn, log_source=log_source,
             )):
                 etype = event.get("type")
+
+                # A run this turn started (a workflow agent's), pumped in a task
+                # of its own: a stopping worker stops it with the turn (F424).
+                if (etype == "orchestration_start" and event.get("run_id")
+                        and not event.get("nested_run_id") and event["run_id"] not in turn_runs):
+                    turn_runs.append(event["run_id"])
 
                 # Engine state, not an event. It is what a resume is rebuilt
                 # from, and forwarding it would put a whole turn's context on
@@ -960,6 +1019,52 @@ async def run_agent_chat_job(
 
         return {"status": "completed", "session_id": session_id}
 
+    except asyncio.CancelledError:
+        # A stopping worker's cut (F424). ARQ gave the turn its 45 s and is now
+        # cutting it; it hands the job out again, and the next delivery used to
+        # be the first to say anything — the person watched "Analyzing your
+        # request…" through the shutdown and the restart. They are told now,
+        # the turn is saved as the next delivery would have saved it, and the
+        # runs it started stop with it. Then the cancel goes on to ARQ, as the
+        # knowledge worker's crawl does (F353), and the next delivery finds the
+        # turn told. Any other cancel (a job timeout) is not a stop: as before.
+        from core.scale import drain
+        if not drain.draining():
+            raise
+        task = asyncio.current_task()
+        if task is not None and hasattr(task, "uncancel"):
+            # The cancel is handled here: left counted, the timeouts inside the
+            # writes below would read it as theirs.
+            task.uncancel()
+
+        async def _tell() -> None:
+            nonlocal publisher
+            for run_id in turn_runs:
+                await _stop_turn_run(run_id)
+            if not recorded:
+                if history is None:
+                    return  # cut before the conversation was read: the next delivery says it, as before
+                if publisher is None:
+                    from core.scale.pubsub import ChatEventPublisher
+                    publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
+                with contextlib.suppress(Exception):
+                    await publisher.publish({"type": "error", "message": INTERRUPTED_TURN})
+                    await publisher.publish_done()
+                history.extend(_unanswered(INTERRUPTED_TURN))
+                await _save_row("failed", history)
+            # Also for a turn whose answer was saved before the cut (its webhook
+            # was going): the next delivery must not add an interruption after it.
+            await _mark_told_at_the_cut(redis, ctx.get("job_id"))
+            _log.info(f"[worker] chat {session_id}: a stop cut this turn — told at the cut (F424)")
+
+        try:
+            # Bounded: the worker's grace runs out after ARQ's wait, and the
+            # job's claim is dropped only once this returns.
+            await asyncio.wait_for(asyncio.shield(_tell()), timeout=CUT_TELL_SECONDS)
+        except BaseException as e:  # noqa: BLE001 — the next delivery says it if this could not
+            _log.warning(f"[worker] chat {session_id}: could not tell the turn at the cut: {e!r}")
+        raise
+
     except Exception as exc:
         tb = traceback.format_exc()
         _log.debug(f"[worker] run_agent_chat_job ERROR {session_id}: {exc}\n{tb}")
@@ -1013,21 +1118,7 @@ async def run_agent_chat_job(
             # twice. This whole-column write replaces the engine's own save.
             if not recorded:
                 from core.chat_turns import FAILED_ANSWER
-                from core.session import image_notes, thinking_from_events, tools_from_calls, turn_calls
-                question = {"role": "user", "content": message}
-                if images:
-                    question["images"] = image_notes(images)
-                history.append(question)
-                failed = {"role": "assistant", "content": FAILED_ANSWER}
-                calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
-                if calls:
-                    failed.update(tools=tools_from_calls(calls), calls=calls)
-                reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
-                if reasoning:
-                    failed["reasoning"] = reasoning
-                if thoughts:
-                    failed["thoughts"] = thoughts
-                history.append(failed)
+                history.extend(_unanswered(FAILED_ANSWER))
             await _save_row("failed", history)
         except Exception:
             pass
@@ -1072,6 +1163,12 @@ async def worker_startup(ctx: dict) -> None:
     _worker_address = f"http://{socket.gethostname()}:{os.getenv('WORKER_HEALTH_PORT', '9000')}"
 
     _log.debug(f"[worker] starting up as {_worker_id} @ {_worker_address}")
+
+    # Hear the stop ARQ hears, so a run is handed back between steps and a chat
+    # turn is told at the cut (F424). After ARQ's own handler, which it installed
+    # when it built the Worker; see `core/scale/drain.py`.
+    from core.scale import drain
+    drain.install()
 
     # Build the store's engine and session factory
     from core.store import build_engine, build_session_factory, init_db, set_store
@@ -1250,6 +1347,8 @@ class WorkerSettings:
     # grace period — k8s `terminationGracePeriodSeconds`, compose's
     # `stop_grace_period` — or SIGKILL lands first, and a killed job is not
     # handed out again until its in-progress key expires, about an hour.
+    # Within the wait a run is handed back at its next step boundary, and a chat
+    # turn the wait cuts is told so at once (F424, `core/scale/drain.py`).
     job_completion_wait = int(os.getenv("WORKER_JOB_COMPLETION_WAIT", "45"))
     on_startup = worker_startup
     on_shutdown = worker_shutdown
@@ -1478,6 +1577,72 @@ async def _deliver_webhook_for_run(
         )
     except Exception as e:
         _log.debug(f"[worker] webhook delivery failed for {run_id}: {e}")
+
+
+async def _told_at_the_cut(redis, job_id: str | None) -> bool:
+    """Whether this chat job's earlier delivery told its turn at the cut (F424)."""
+    if redis is None or not job_id:
+        return False
+    try:
+        return bool(await redis.get(CHAT_TOLD_KEY.format(job_id=job_id)))
+    except Exception as e:  # noqa: BLE001 — in doubt, the turn is told again
+        _log.warning(f"[worker] chat job {job_id}: could not read whether it was told at the cut: {e}")
+        return False
+
+
+async def _mark_told_at_the_cut(redis, job_id: str | None) -> None:
+    if redis is not None and job_id:
+        await redis.set(CHAT_TOLD_KEY.format(job_id=job_id), 1, ex=CHAT_TOLD_TTL)
+
+
+async def _stop_turn_run(run_id: str) -> None:
+    """Stop a run a cut chat turn started, and fail it with the reason (F424).
+
+    A workflow agent's run is pumped in a task of its own (`spawn_engine_run`),
+    which nothing stops when its turn is cut: the process exits under it, the
+    row stays `running` at its step with nothing to resume it, and on a host
+    that meters runs it is never settled and keeps its slot. Its pump is
+    stopped first, so nothing writes after the row is failed. The steps it
+    finished keep their entries — a host prices those — and the step it was in
+    has none.
+    """
+    from core.orchestration.runner import _active_tasks
+
+    task = _active_tasks.get(run_id)
+    if task is not None and not task.done():
+        task.cancel()
+        await asyncio.wait({task}, timeout=3)
+    try:
+        if await _fail_outside_a_step(run_id, TURN_RUN_STOPPED, statuses=("running",)):
+            _log.info(f"[worker] run {run_id}: stopped with the chat turn a stop cut (F424)")
+    except Exception as e:  # noqa: BLE001 — the turn is told either way
+        _log.warning(f"[worker] run {run_id}: could not be failed with its cut turn: {e}")
+
+
+async def _fail_outside_a_step(run_id: str, reason: str, *, statuses: tuple[str, ...]) -> bool:
+    """Fail a run that stopped outside any step, with `reason` on it. False if it was not in `statuses`.
+
+    The boot sweep's shape (`core/scale/heartbeat.py`): the run has no failed
+    step to say why, so the reason is the run's own (F257), and what it was
+    running nested stops with it.
+    """
+    from core.orchestration.descendants import settle_descendants
+    from core.orchestration.run_error import set_run_error
+    from core.orchestration.state import SharedState
+
+    try:
+        restored = await SharedState.restore(run_id)
+    except FileNotFoundError:
+        return False
+    run = restored.run
+    if run.status not in statuses:
+        return False
+    run.status = "failed"
+    run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    set_run_error(run, reason)
+    await restored.checkpoint()
+    await settle_descendants(run_id, "failed", reason)
+    return True
 
 
 async def _gave_up(ctx: dict, job_function: str, run_id: str, orch_id: str | None) -> bool:
