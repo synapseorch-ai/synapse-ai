@@ -1244,9 +1244,35 @@ export const AgentsTab = ({
                                             </div>
 
                                             <div className="divide-y divide-border rounded-lg border border-border bg-surface">
+                                                {/* Default tools (F414) — the Vault's file tools, a code
+                                                    agent's code search and the task list, which the engine
+                                                    hands every agent whatever its tools say. Off saves
+                                                    `skip_default_tools: true`: the agent gets exactly what
+                                                    is ticked. Absent reads as on. */}
+                                                <label className="flex cursor-pointer items-start gap-4 p-3">
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="block text-sm font-medium text-text">Default tools</span>
+                                                        <span id="age-defaults-help" className="mt-0.5 block text-xs text-text-muted">
+                                                            Whatever is ticked above, it can always read files (<span className="font-mono">read_file</span>,{' '}
+                                                            <span className="font-mono">search_files</span>, <span className="font-mono">list_files</span>…)
+                                                            and keep a plan. Turn it off for an agent that only writes what it is asked: it then
+                                                            gets exactly the tools ticked, and nothing else.
+                                                        </span>
+                                                    </span>
+                                                    <Switch
+                                                        label="Default tools"
+                                                        aria-describedby="age-defaults-help"
+                                                        checked={draftAgent.skip_default_tools !== true}
+                                                        onChange={(on) => setDraftAgent({ ...draftAgent, skip_default_tools: !on })}
+                                                        className="mt-0.5"
+                                                    />
+                                                </label>
+
                                                 {/* Planning — the native task list, on unless this agent
                                                     has no use for one. Above Memory because it is the
-                                                    cheaper and more commonly wanted of the two. */}
+                                                    cheaper and more commonly wanted of the two. Off with
+                                                    the default tools, which take the task list with them;
+                                                    its own value is kept. */}
                                                 <label className="flex cursor-pointer items-start gap-4 p-3">
                                                     <span className="min-w-0 flex-1">
                                                         <span id="age-planning-label" className="block text-sm font-medium text-text">Planning</span>
@@ -1255,12 +1281,16 @@ export const AgentsTab = ({
                                                             Let this agent write a plan with <span className="font-mono">update_tasks</span> and
                                                             keep it up to date as it works. The list shows live in the run log. Turn it off for
                                                             one-shot agents, where announcing three tasks costs a turn and tells nobody anything.
+                                                            {draftAgent.skip_default_tools === true && (
+                                                                <span className="mt-1 block text-text-faint">Off with the default tools.</span>
+                                                            )}
                                                         </span>
                                                     </span>
                                                     <Switch
                                                         label="Planning"
                                                         aria-describedby="age-planning-help"
-                                                        checked={draftAgent.planning !== false}
+                                                        checked={draftAgent.planning !== false && draftAgent.skip_default_tools !== true}
+                                                        disabled={draftAgent.skip_default_tools === true}
                                                         onChange={(on) => setDraftAgent({ ...draftAgent, planning: on })}
                                                         className="mt-0.5"
                                                     />
