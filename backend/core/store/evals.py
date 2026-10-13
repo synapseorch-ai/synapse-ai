@@ -323,6 +323,7 @@ def suite_run_to_dict(row) -> dict:
         "rubric_version": row.rubric_version,
         "started_at": _ts(row.started_at),
         "ended_at": _ts(row.ended_at),
+        "stop_reason": row.stop_reason or "",
     }
 
 

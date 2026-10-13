@@ -30,12 +30,22 @@ see, which is the same reason the notification dedup lives in the database.
 **The tally is written as it goes.** A suite that only recorded its result at
 the end would show nothing for the minutes it takes, and nothing at all if the
 process died holding the count.
+
+A host that meters runs starts each case
+----------------------------------------
+Cloud admits every run it bills — a hold, a meter with its plan's length — and
+runs it as that run's job, which is what charges it and bounds it. A case
+started here in-process had none of that (F441): no hold, no charge, no length,
+no credit gate. So a host passes `run_case`, and each case is handed to it with
+its run id and the way to run it; the host admits it, runs it, and may refuse it
+(`CaseRefused`), which stops the set with the host's reason on its row.
 """
 from __future__ import annotations
 
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 
 from core.log import get_logger
 
@@ -45,6 +55,27 @@ _log = get_logger(__name__)
 #: between cases — a case already in flight finishes, because killing a run
 #: mid-step leaves state nobody asked for.
 CANCELLING = "cancelling"
+
+#: The status of a suite its host stopped by refusing a case (F441). Its reason
+#: is the row's `stop_reason`.
+STOPPED = "stopped"
+
+#: How long a case its host cuts waits for its run to stop before the host goes
+#: on to end it.
+CUT_WAIT_SECONDS = 5
+
+#: `run_case(run_id, session_id, go)`: a host's way to start one case (F441).
+#: `go()` runs the case under `run_id`; the host runs it inside whatever admits
+#: and meters a run, or raises `CaseRefused`.
+CaseRunner = Callable[[str, str, Callable[[], Awaitable[None]]], Awaitable[None]]
+
+
+class CaseRefused(Exception):
+    """A host would not start this case — its wallet, its plan (F441).
+
+    The suite stops before it, `stopped`, with the message as the end of its
+    reason: "Stopped before case 4 of 10: <message>".
+    """
 
 
 def new_suite_run_id() -> str:
@@ -88,17 +119,24 @@ async def _stop_requested(suite_run_id: str) -> bool:
     return bool(row and row["status"] == CANCELLING)
 
 
-async def run_suite(suite: dict, server_module, suite_run_id: str | None = None) -> dict:
+async def run_suite(
+    suite: dict,
+    server_module,
+    suite_run_id: str | None = None,
+    *,
+    run_case: CaseRunner | None = None,
+) -> dict:
     """Run every case in `suite`, in order, and score each one.
 
     Returns the finished `eval_suite_runs` row. Never raises for a case that
     fails: a workflow that errors on one input is a result, not an interruption
-    — and quite often the result the suite exists to catch.
+    — and quite often the result the suite exists to catch. A case its host
+    refuses (`CaseRefused`) is not a result: the set stops there and says why.
     """
     from core.evals import store as evals_store
     from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
-    from core.orchestration.runner import stream_engine_events
+    from core.orchestration.runner import SENTINEL, spawn_engine_run
     from core.store import evals as store
     from core.store.resources import get_orchestration
 
@@ -123,22 +161,43 @@ async def run_suite(suite: dict, server_module, suite_run_id: str | None = None)
 
     scored = 0
     stopped = False
+    refused: str | None = None
+    session_id = f"suite_{suite_run_id}"
     for index, case in enumerate(cases):
         if await _stop_requested(suite_run_id):
             stopped = True
             break
         run_id = f"suite_{suite_run_id}_{index}"
-        try:
+
+        async def go(run_id: str = run_id, case: dict = case) -> None:
             orch = Orchestration.model_validate(orch_data)
             engine = OrchestrationEngine(orch, server_module)
             # The seam `_score_run` reads, so this case's verdict is
             # findable as part of this suite rather than only as a run.
             engine.eval_suite_run_id = suite_run_id
-            async for _event in stream_engine_events(
-                engine.run(case.get("input", ""), run_id, session_id=f"suite_{suite_run_id}"),
-                run_id,
-            ):
-                pass
+            task, events = spawn_engine_run(
+                engine.run(case.get("input", ""), run_id, session_id=session_id), run_id
+            )
+            try:
+                while await events.get() is not SENTINEL:
+                    pass
+            except asyncio.CancelledError:
+                # Cut by whoever runs the case (a host's run length, a stopping
+                # worker): its run stops with it rather than going on detached,
+                # so nothing writes after the host has ended it.
+                task.cancel()
+                await asyncio.wait({task}, timeout=CUT_WAIT_SECONDS)
+                raise
+
+        try:
+            if run_case is None:
+                await go()
+            else:
+                await run_case(run_id, session_id, go)
+        except CaseRefused as exc:
+            refused = f"Stopped before case {index + 1} of {len(cases)}: {exc}"
+            _log.info(f"suite run '{suite_run_id}' stopped: {refused}")
+            break
         except Exception as exc:
             _log.warning(f"suite case '{case.get('id')}' failed: {exc}")
 
@@ -154,12 +213,19 @@ async def run_suite(suite: dict, server_module, suite_run_id: str | None = None)
 
     rows = await store.scores_for_suite_run(suite_run_id)
     mean = (sum(r["score"] for r in rows) / len(rows)) if rows else None
+    if refused is not None:
+        status = STOPPED
+    elif stopped or await _stop_requested(suite_run_id):
+        status = "cancelled"
+    else:
+        status = "completed"
     await store.update_suite_run(
         suite_run_id,
-        status="cancelled" if (stopped or await _stop_requested(suite_run_id)) else "completed",
+        status=status,
         scored_count=len(rows),
         mean_score=mean,
         ended_at=_utcnow(),
+        **({"stop_reason": refused} if refused is not None else {}),
     )
 
     return await store.get_suite_run(suite_run_id) or {}

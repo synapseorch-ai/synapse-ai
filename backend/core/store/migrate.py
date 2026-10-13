@@ -59,6 +59,9 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     # The workflow a run started with (F443), so a resume does not follow an
     # edit made while it waited. NULL on older runs, which resume as before.
     ("orchestration_runs", "definition", "JSON", None),
+    # Why a host stopped a golden set before its last case (F441): a wallet that
+    # could not pay for the next one. NULL for any other ending.
+    ("eval_suite_runs", "stop_reason", "TEXT", None),
 )
 
 

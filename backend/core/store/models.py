@@ -504,6 +504,10 @@ class EvalSuiteRunDB(Base):
     started_at = Column(DateTime(timezone=True), nullable=False, default=_now)
     ended_at = Column(DateTime(timezone=True))
 
+    #: Why a host stopped the set before its last case (F441) — "Stopped before
+    #: case 4 of 10: …", with `status` `stopped`. NULL for any other ending.
+    stop_reason = Column(Text)
+
     __table_args__ = (
         Index("idx_eval_suite_runs_tenant_suite", "tenant_id", "suite_id", "started_at"),
     )

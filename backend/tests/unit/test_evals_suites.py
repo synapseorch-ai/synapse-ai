@@ -5,6 +5,8 @@ plus N judge calls — the most costly button in the product — so it runs case
 one at a time, it stops when told to, and it reports its tally as it goes
 rather than only at the end.
 """
+import asyncio
+import contextlib
 import types
 
 import pytest
@@ -200,6 +202,108 @@ class TestASuiteWithoutARubricScoresNothingButStillRuns:
         result = await suites.run_suite(suite, _server())
         assert result["status"] == "completed"
         assert result["scored_count"] == 0 and result["mean_score"] is None
+
+
+class TestAHostStartsEachCase:
+    """F441: a host that meters runs starts each case itself — cloud admits it
+    (a hold, a meter with its plan's length), runs it as that run's job and
+    charges it. The suite hands the host each case's run id and the way to run
+    it; with no host, a case runs as it always has (every test above)."""
+
+    async def test_the_host_runs_each_case_under_its_id(self, fake_llm):
+        fake_llm.set_default(VERDICT)
+        suite, _ = await _setup(case_count=3)
+        seen: list[tuple[str, str]] = []
+
+        async def run_case(run_id, session_id, go):
+            seen.append((run_id, session_id))
+            await go()
+
+        result = await suites.run_suite(suite, _server(), run_case=run_case)
+
+        esr = result["id"]
+        assert seen == [(f"suite_{esr}_{i}", f"suite_{esr}") for i in range(3)]
+        assert result["status"] == "completed" and result["scored_count"] == 3
+        assert result["stop_reason"] == ""
+        # Each case ran as the run the host started: its verdict names that run.
+        scored = {s["run_id"] for s in await store.scores_for_suite_run(esr)}
+        assert scored == {run_id for run_id, _ in seen}
+
+    async def test_a_refused_case_stops_the_suite_and_says_why(self, fake_llm):
+        """A wallet that cannot pay for the next case stops the set there, and the
+        set's row says so — rather than every later case failing the same way."""
+        fake_llm.set_default(VERDICT)
+        suite, _ = await _setup(case_count=3)
+        calls: list[str] = []
+
+        async def run_case(run_id, session_id, go):
+            calls.append(run_id)
+            if len(calls) == 2:
+                raise suites.CaseRefused("this workspace is out of execution credits")
+            await go()
+
+        result = await suites.run_suite(suite, _server(), run_case=run_case)
+
+        assert len(calls) == 2, "nothing after the refused case is started"
+        assert result["status"] == "stopped"
+        assert result["stop_reason"] == (
+            "Stopped before case 2 of 3: this workspace is out of execution credits"
+        )
+        assert result["scored_count"] == 1 and result["ended_at"]
+        assert await suites.running_for(suite["id"]) is None
+
+    async def test_any_other_host_error_is_that_case_failing(self, fake_llm):
+        """Only a refusal stops the set. A case that errors is a result, as it is
+        without a host."""
+        fake_llm.set_default(VERDICT)
+        suite, _ = await _setup(case_count=3)
+        calls: list[str] = []
+
+        async def run_case(run_id, session_id, go):
+            calls.append(run_id)
+            if len(calls) == 2:
+                raise RuntimeError("the case's job broke")
+            await go()
+
+        result = await suites.run_suite(suite, _server(), run_case=run_case)
+
+        assert len(calls) == 3
+        assert result["status"] == "completed" and result["scored_count"] == 2
+        assert result["stop_reason"] == ""
+
+    async def test_a_case_its_host_cuts_stops_its_run(self, fake_llm, monkeypatch):
+        """A host bounds a case — cloud, by its plan's run length — by cancelling
+        it. The case's run is pumped in a task of its own, so it used to go on
+        running detached once its host had ended it: writing and spending after
+        the host had settled its bill."""
+        from core.orchestration.engine import OrchestrationEngine
+
+        began, ended = asyncio.Event(), asyncio.Event()
+
+        async def slow_run(self, initial_input, run_id, **_):
+            try:
+                yield {"type": "orchestration_start", "run_id": run_id}
+                began.set()
+                await asyncio.sleep(30)
+                yield {"type": "orchestration_complete", "run_id": run_id}
+            finally:
+                ended.set()
+
+        monkeypatch.setattr(OrchestrationEngine, "run", slow_run)
+        suite, _ = await _setup(case_count=1, rubric=False)
+        stopped_with_its_case: list[bool] = []
+
+        async def run_case(run_id, session_id, go):
+            case = asyncio.create_task(go())
+            await began.wait()
+            case.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await case
+            stopped_with_its_case.append(ended.is_set())
+
+        await suites.run_suite(suite, _server(), run_case=run_case)
+
+        assert stopped_with_its_case == [True]
 
 
 class TestTheEstimateIsShownBeforeAnythingIsSpent:

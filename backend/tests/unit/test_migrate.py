@@ -136,3 +136,48 @@ async def test_adds_step_progress_to_an_existing_runs_table(tmp_path):
 
     assert await run_migrations(engine) == []  # idempotent
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_a_golden_set_run_gets_its_stop_reason(tmp_path):
+    """F441: an install whose `eval_suite_runs` predates `stop_reason` gets the
+    column, and its old rows read with no reason."""
+    from core.store.models import EvalSuiteRunDB
+    from core.store.evals import suite_run_to_dict
+    from sqlalchemy import select
+
+    url = f"sqlite+aiosqlite:///{tmp_path / 'old.db'}"
+    engine = build_engine(url)
+
+    async with engine.begin() as conn:
+        await conn.execute(text(
+            "CREATE TABLE eval_suite_runs ("
+            "  id VARCHAR(255) PRIMARY KEY,"
+            "  tenant_id VARCHAR(255) NOT NULL DEFAULT 'default',"
+            "  suite_id VARCHAR(255) NOT NULL,"
+            "  orchestration_id VARCHAR(255) NOT NULL,"
+            "  status VARCHAR(50) NOT NULL,"
+            "  case_count INTEGER NOT NULL,"
+            "  scored_count INTEGER NOT NULL,"
+            "  mean_score FLOAT,"
+            "  rubric_id VARCHAR(255),"
+            "  rubric_version INTEGER,"
+            "  started_at TIMESTAMP NOT NULL,"
+            "  ended_at TIMESTAMP"
+            ")"
+        ))
+        await conn.execute(text(
+            "INSERT INTO eval_suite_runs (id, suite_id, orchestration_id, status, case_count, "
+            "scored_count, started_at) VALUES ('esr_old', 'set_1', 'orch_1', 'completed', 2, 2, "
+            "'2026-10-01 00:00:00')"
+        ))
+
+    applied = await run_migrations(engine)
+    assert "eval_suite_runs.stop_reason" in applied
+
+    factory = build_session_factory(engine)
+    async with factory() as session:
+        row = (await session.execute(select(EvalSuiteRunDB))).scalars().one()
+        assert suite_run_to_dict(row)["stop_reason"] == ""
+
+    await engine.dispose()
