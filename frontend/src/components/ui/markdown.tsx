@@ -19,6 +19,11 @@
  * form, say — is `className="text-text-muted"` on the wrapper, because every
  * child that does not set its own colour inherits. One className beats an enum
  * that has to grow a case each time a surface wants something slightly else.
+ *
+ * `breaks` keeps a single line break as a line break. CommonMark reads it as a
+ * space, which is right for a model's markdown and wrong for a question a
+ * person wrote line by line: "Who asked: the travel desk\nDue: Friday" ran
+ * together into one line on the run page's answer card (U70).
  */
 
 import { ExternalLink } from "lucide-react";
@@ -143,12 +148,41 @@ const COMPONENTS: Components = {
   del: ({ children }) => <del className="text-text-faint line-through">{children}</del>,
 };
 
+export type MdNode = { type: string; value?: string; children?: MdNode[] };
+
+/**
+ * What `remark-breaks` does, without the dependency: each newline inside text
+ * becomes a hard break (`<br>`). Code and inline code are not `text`, so they
+ * keep their own lines. Exported for its test (cloud's Vitest).
+ */
+export function keepLineBreaks() {
+  const walk = (node: MdNode) => {
+    if (!node.children) return;
+    node.children = node.children.flatMap((child): MdNode[] => {
+      if (child.type !== "text" || !child.value?.includes("\n")) {
+        walk(child);
+        return [child];
+      }
+      return child.value.split(/\r?\n/).flatMap((part, i): MdNode[] =>
+        i === 0 ? [{ type: "text", value: part }] : [{ type: "break" }, { type: "text", value: part }],
+      );
+    });
+  };
+  return (tree: MdNode) => walk(tree);
+}
+
+const PLUGINS = [remarkGfm];
+const PLUGINS_KEEPING_BREAKS = [remarkGfm, keepLineBreaks];
+
 export function Markdown({
   children,
   className,
+  breaks = false,
 }: {
   children: string;
   className?: string;
+  /** Keep single line breaks (a person's question), rather than CommonMark's spaces. */
+  breaks?: boolean;
 }) {
   if (!children) return null;
   return (
@@ -156,7 +190,7 @@ export function Markdown({
     // inside its line instead of running out of the message (F217). It does
     // not change a table's or a code block's own width, so both still scroll.
     <div className={cn("text-sm text-text break-words", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={COMPONENTS}>
+      <ReactMarkdown remarkPlugins={breaks ? PLUGINS_KEEPING_BREAKS : PLUGINS} components={COMPONENTS}>
         {children}
       </ReactMarkdown>
     </div>

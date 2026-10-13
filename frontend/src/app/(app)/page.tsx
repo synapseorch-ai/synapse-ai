@@ -2328,7 +2328,7 @@ export default function Home() {
               <span aria-hidden className="size-2 rounded-full bg-person" />
               Human Input Required
             </span>
-            <Markdown className="text-[15px] leading-relaxed">{msg.content}</Markdown>
+            <Markdown breaks className="text-[15px] leading-relaxed">{msg.content}</Markdown>
             {Array.isArray(msg.data?.fields) && msg.data.fields.length > 0 ? (
               <HumanStepAnswer
                 fields={msg.data.fields}

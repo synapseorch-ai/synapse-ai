@@ -128,7 +128,8 @@ export function ApprovalCard({
                 </figure>
             )}
             <div className="max-w-[62ch] text-[17px] leading-normal tracking-[-0.012em] text-text [overflow-wrap:anywhere]">
-                <Markdown>{run.humanPrompt ?? ''}</Markdown>
+                {/* As written: a question typed line by line keeps its lines (U70). */}
+                <Markdown breaks>{run.humanPrompt ?? ''}</Markdown>
             </div>
             {(others.length > 0 || !fields.length) && (
                 <div className="grid max-w-xl gap-3">
