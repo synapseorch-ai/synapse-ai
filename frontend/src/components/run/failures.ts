@@ -431,12 +431,16 @@ export function explainFailure(input: FailureInput): Explained {
     // ── A step that timed out (a step's own entry, or a body step's container) ──
     if ((m = /timed out after ([\d.]+)s(?: \(([\s\S]+)\))?/i.exec(raw))) {
         const limit = m[2] ? limitWords(m[2]) : null;
+        // A host's run limit (a plan's) is not the workflow's to raise (F420).
+        const host = !!m[2] && /^what was left of the .+ run limit\b/.test(m[2]);
         return {
             kind: 'step-timeout',
             sentence: `${step} ran out of time after ${duration(Number(m[1]))}.`,
             detail: limit ? `The limit was ${limit}.` : undefined,
-            advice: 'Raise Timeout (minutes) in the workflow’s Guardrails, then Replay.',
-            fixes: ['editor', 'replay'],
+            advice: host
+                ? 'Time waiting for a person doesn’t count toward it.'
+                : 'Raise Timeout (minutes) in the workflow’s Guardrails, then Replay.',
+            fixes: host ? ['replay'] : ['editor', 'replay'],
         };
     }
 

@@ -21,7 +21,7 @@ from .pauses import end_step, progress_key as _progress_key
 from .step_usage import exact_window
 from .run_error import set_run_error
 from .run_gate import stop_reason
-from .time_limits import body_step_limit, timed_out
+from .time_limits import CONTAINERS, body_step_limit, timed_out
 
 _log = get_logger(__name__)
 
@@ -60,6 +60,42 @@ def _datetime_context() -> str:
         f"**Current Time:** {now.strftime('%I:%M %p')}\n"
         f"**Timezone:** {tz_name}\n"
     )
+
+
+#: How close to its end a run must be for a cancel to be its limit's (F420).
+_CUT_SLACK_S = 0.5
+
+
+def cut_by_the_run(engine, run: OrchestrationRun, sub_step: StepConfig, step_start: float) -> None:
+    """Enter a Loop's or a Parallel's body step that the run's limit stopped mid-way (F420).
+
+    The container at the top holds what is left of the run; when that runs out,
+    the step inside sees a cancel, not its own timeout, and wrote nothing — the
+    log never named it and a host that prices a run by its history charged
+    neither its price nor its time. It is entered with the run's reason, as a
+    step cut at the top level is: `cut` for a plain step (one execution, as a
+    cancel's cut entry is, C3), and a plain `failed` for a container, whose own
+    time a host counts only when it is cut — its body's entries are here.
+
+    Only for the run's limit: a person's cancel or a parent's stop is the
+    host's to enter (the fleet's adapter enters the step at the top).
+    """
+    budget = getattr(engine, "run_budget", None)
+    if budget is None:
+        return
+    left, name = budget
+    if left() > _CUT_SLACK_S:
+        return
+    now = time.time()
+    entry = {
+        "step_id": sub_step.id, "step_name": sub_step.name, "step_type": sub_step.type.value,
+        "status": "failed", "error": f"Timed out {timed_out(now - step_start, f'what was left of {name}')}",
+        "started_at": _iso(step_start), "ended_at": _iso(now), **exact_window(step_start, now),
+        "duration_seconds": round(now - step_start, 2),
+    }
+    if sub_step.type not in CONTAINERS:
+        entry["cut"] = True
+    end_step(run.step_history, entry)
 
 
 def _no_answer_reason(step_name: str, no_answer: dict) -> str:
@@ -1556,9 +1592,16 @@ class ParallelStepExecutor:
             finally:
                 # The engine's timeout or a cancel closes this generator; the
                 # branch tasks must not outlive it.
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
+                cancelled = [t for t in tasks if not t.done()]
+                for t in cancelled:
+                    t.cancel()
+                if cancelled:
+                    # Each enters the step the run's limit cut before this node
+                    # enters itself, so the node's sentence is the run's reason
+                    # (F420). Bounded: a branch that will not stop does not
+                    # hold the run's ending.
+                    with anyio.move_on_after(5, shield=True):
+                        await asyncio.wait(cancelled)
             for key in LOOP_MARKERS:
                 if key in markers:
                     run.shared_state[key] = markers[key]
@@ -1648,7 +1691,7 @@ class ParallelStepExecutor:
             # (F291); a Loop or a Parallel has none of its own (F411); this
             # node's own limit holds the rest.
             sub_timeout, sub_why = await body_step_limit(sub_step, engine)
-            sub_after = timed_out(sub_timeout, sub_why) if sub_why else f"after {sub_timeout}s"
+            sub_after = timed_out(sub_timeout, sub_why) if sub_timeout is not None else ""
             _log.debug(f"PARALLEL: ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s")
             yield {"type": "step_start", "orch_step_id": sub_step.id,
                    "step_name": sub_step.name, "step_type": sub_step.type.value}
@@ -1703,6 +1746,9 @@ class ParallelStepExecutor:
                 # and the branch went on without it. A RuntimeError, so the
                 # engine does not read it as the node's own timeout.
                 raise RuntimeError(f"Step '{sub_step.name}' timed out {sub_after}")
+            except anyio.get_cancelled_exc_class():
+                cut_by_the_run(engine, run, sub_step, step_start)
+                raise
 
             if pending_human_event is not None:
                 pause_progress(branch_index, sid)
@@ -2044,7 +2090,7 @@ class LoopStepExecutor:
                     # (F291); a Loop or a Parallel has none of its own (F411); the
                     # loop's own limit holds the rest.
                     sub_timeout, sub_why = await body_step_limit(sub_step, engine)
-                    sub_after = timed_out(sub_timeout, sub_why) if sub_why else f"after {sub_timeout}s"
+                    sub_after = timed_out(sub_timeout, sub_why) if sub_timeout is not None else ""
                     yield {"type": "step_start", "orch_step_id": sub_step.id,
                            "step_name": sub_step.name, "step_type": sub_step.type.value}
 
@@ -2108,6 +2154,9 @@ class LoopStepExecutor:
                         # this one are checkpointed, so a Replay re-enters here.
                         raise RuntimeError(f"Step '{sub_step.name}' timed out {sub_after} "
                                            f"(iteration {iteration})")
+                    except anyio.get_cancelled_exc_class():
+                        cut_by_the_run(engine, run, sub_step, step_start)
+                        raise
 
                     if pending_human_event is not None:
                         # Keep the loop's place, so answering carries it on from

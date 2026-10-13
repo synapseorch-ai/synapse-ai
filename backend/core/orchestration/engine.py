@@ -373,6 +373,10 @@ class OrchestrationEngine:
         def active_seconds() -> float:
             return spent_before + (time.time() - loop_start_time)
 
+        # What is left of the run's budget, and its name: a body step the run's
+        # limit cuts is entered with it (`steps.cut_by_the_run`, F420).
+        self.run_budget = (lambda: timeout_seconds - active_seconds(), budget)
+
         def stamp() -> None:
             """Put the time worked so far on the run, for its next checkpoint.
 
@@ -462,10 +466,14 @@ class OrchestrationEngine:
             # itself, and each of those already gets its own fail_after. Charging
             # the container one step's worth means a 3x loop over one agent step
             # is given 300s to do 900s of work, and the run dies mid-iteration.
-            # The global timeout checked above is the real ceiling for these.
+            # The global timeout checked above is the real ceiling for these,
+            # and the message names it in whole words: the why was dropped, and
+            # a run cut at its plan's limit inside a Loop read "Timed out after
+            # 1799.9887125492096s" (F420).
             if step.type in CONTAINERS:
-                step_timeout, timeout_why = max(1.0, timeout_seconds - active_seconds()), None
-            timeout_text = timed_out(step_timeout, timeout_why) if timeout_why else f"after {step_timeout}s"
+                step_timeout = max(1.0, timeout_seconds - active_seconds())
+                timeout_why = f"what was left of {budget}"
+            timeout_text = timed_out(step_timeout, timeout_why)
 
             # Build and store TransitionContext so executors can access it
             from .context import build_transition_context
