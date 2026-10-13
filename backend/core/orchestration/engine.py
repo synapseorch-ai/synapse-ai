@@ -22,7 +22,7 @@ from .step_usage import exact_window
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_gate import stop_reason
-from .time_limits import OWN_BUDGET, run_ceiling, step_time_limit, timed_out
+from .time_limits import CONTAINERS, OWN_BUDGET, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
@@ -463,7 +463,7 @@ class OrchestrationEngine:
             # the container one step's worth means a 3x loop over one agent step
             # is given 300s to do 900s of work, and the run dies mid-iteration.
             # The global timeout checked above is the real ceiling for these.
-            if step.type in (StepType.LOOP, StepType.PARALLEL):
+            if step.type in CONTAINERS:
                 step_timeout, timeout_why = max(1.0, timeout_seconds - active_seconds()), None
             timeout_text = timed_out(step_timeout, timeout_why) if timeout_why else f"after {step_timeout}s"
 

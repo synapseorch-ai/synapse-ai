@@ -21,7 +21,7 @@ from .pauses import end_step, progress_key as _progress_key
 from .step_usage import exact_window
 from .run_error import set_run_error
 from .run_gate import stop_reason
-from .time_limits import step_time_limit, timed_out
+from .time_limits import body_step_limit, timed_out
 
 _log = get_logger(__name__)
 
@@ -1645,8 +1645,9 @@ class ParallelStepExecutor:
 
             step_start = time.time()
             # A step that runs a workflow waits on that workflow's own budget
-            # (F291); this node's own limit holds the rest.
-            sub_timeout, sub_why = await step_time_limit(sub_step, engine)
+            # (F291); a Loop or a Parallel has none of its own (F411); this
+            # node's own limit holds the rest.
+            sub_timeout, sub_why = await body_step_limit(sub_step, engine)
             sub_after = timed_out(sub_timeout, sub_why) if sub_why else f"after {sub_timeout}s"
             _log.debug(f"PARALLEL: ▶ sub-step '{sub_step.name}' ({sub_step.id}) timeout={sub_timeout}s")
             yield {"type": "step_start", "orch_step_id": sub_step.id,
@@ -2040,8 +2041,9 @@ class LoopStepExecutor:
 
                     step_start = time.time()
                     # A step that runs a workflow waits on that workflow's own budget
-                    # (F291); the loop's own limit holds the rest.
-                    sub_timeout, sub_why = await step_time_limit(sub_step, engine)
+                    # (F291); a Loop or a Parallel has none of its own (F411); the
+                    # loop's own limit holds the rest.
+                    sub_timeout, sub_why = await body_step_limit(sub_step, engine)
                     sub_after = timed_out(sub_timeout, sub_why) if sub_why else f"after {sub_timeout}s"
                     yield {"type": "step_start", "orch_step_id": sub_step.id,
                            "step_name": sub_step.name, "step_type": sub_step.type.value}

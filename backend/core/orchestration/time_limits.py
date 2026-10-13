@@ -48,6 +48,9 @@ _log = get_logger(__name__)
 #: How the capped step's message names what ran out, when no host ceiling binds.
 OWN_BUDGET = "this run's own timeout"
 
+#: The steps that run other steps inside themselves.
+CONTAINERS = (StepType.LOOP, StepType.PARALLEL)
+
 
 @dataclass(frozen=True)
 class RunCeiling:
@@ -97,12 +100,32 @@ async def step_time_limit(
 
     `remaining` is what is left of the run's budget, and caps every step;
     `budget` names that budget in the message. A Loop's or a Parallel's body step
-    passes none, since the container's own limit already holds it.
+    passes none, since the container's own limit already holds it (see
+    `body_step_limit`).
     """
     limit, why = await _step_limit(step, engine)
     if remaining is not None and remaining < limit:
         limit, why = max(1.0, remaining), f"what was left of {budget}"
     return limit, why
+
+
+async def body_step_limit(
+    step: StepConfig, engine: "OrchestrationEngine",
+) -> tuple[float | None, str | None]:
+    """`(seconds, why)` for a Loop's or a Parallel's body step: its own limit,
+    or None for one that is itself a Loop or a Parallel.
+
+    A container has to cover every step it runs inside itself, and each of those
+    has its own limit; held to one step's 300 s, a Loop inside a Loop died
+    after 300 s of iterations, nowhere near the run's own budget (F411). The
+    container around it holds it, and the one at the top of the run holds what
+    is left of the run (`engine._execute_loop`), so the run's budget bounds it all
+    the way down. A Timeout set on a nested container is not read, as it is not
+    at the top level.
+    """
+    if step.type in CONTAINERS:
+        return None, None
+    return await step_time_limit(step, engine)
 
 
 async def _step_limit(step: StepConfig, engine: "OrchestrationEngine") -> tuple[float, str | None]:
