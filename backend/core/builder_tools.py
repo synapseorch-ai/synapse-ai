@@ -2630,6 +2630,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         orch = await _visible_orchestration(orch_id)
         if orch is None:
             return {"error": f"Orchestration '{orch_id}' not found"}
+        # Never one a workflow agent or a schedule runs (F408): the same rule
+        # as the Orchestrations screen's delete, in the same words.
+        from core.orchestration.dependents import refusal, what_runs
+        runners = await what_runs(orch_id)
+        if runners:
+            return {"error": refusal(orch.get("name") or orch_id, runners)}
         await _delete_orch(orch_id)
         _emit(events, "orchestration", "deleted", orch_id, orch.get("name"))
         return {"status": "deleted", "id": orch_id, "name": orch.get("name")}

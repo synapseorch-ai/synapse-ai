@@ -3189,6 +3189,13 @@ _WORKFLOW_CHAIN: "contextvars.ContextVar[tuple[str, ...]]" = contextvars.Context
     "synapse_workflow_chain", default=())
 
 
+def workflow_gone(agent: dict) -> str:
+    """What a workflow agent whose workflow no longer exists answers (F408)."""
+    name = agent.get("name") or agent.get("id")
+    return (f"The workflow that '{name}' runs no longer exists, so it cannot answer. "
+            f"Point '{name}' at another workflow, or delete it.")
+
+
 async def run_orchestrator_agent(
     agent: dict,
     message: str,
@@ -3236,8 +3243,11 @@ async def run_orchestrator_agent(
         from core.scale.context import resolve_orchestration
 
         orch_data = await resolve_orchestration(orch_id)
-        if not orch_data:
-            yield {"type": "error", "message": f"Orchestration '{orch_id}' not found"}
+        if not orch_data or orch_data.get("is_active", True) is False:
+            # Gone, or deleted and kept as a record (a host that keeps a deleted
+            # workflow's row says so with `is_active`): not run either way, and
+            # said naming the agent the person chose, not an id (F408).
+            yield {"type": "error", "message": workflow_gone(agent)}
             return
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)

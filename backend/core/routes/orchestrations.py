@@ -442,7 +442,22 @@ async def create_or_update_orchestration(orch: Orchestration):
 
 @router.delete("/api/orchestrations/{orch_id}")
 async def delete_orchestration(orch_id: str):
-    from core.store.resources import delete_orchestration as _delete
+    """Delete a workflow nothing runs (F408).
+
+    Refused while its workflow agent or a schedule runs it — they would go on
+    answering "not found" — naming each, and what uses each agent, so the person
+    can point them elsewhere or delete them first. A workflow that does not
+    exist is a 404; this used to answer `success` for any id.
+    """
+    from core.orchestration.dependents import refusal, what_runs
+    from core.store.resources import delete_orchestration as _delete, get_orchestration
+
+    orch = await get_orchestration(orch_id)
+    if orch is None:
+        raise HTTPException(status_code=404, detail="Orchestration not found")
+    runners = await what_runs(orch_id)
+    if runners:
+        raise HTTPException(status_code=409, detail=refusal(orch.get("name") or orch_id, runners))
     await _delete(orch_id)
     return {"status": "success"}
 

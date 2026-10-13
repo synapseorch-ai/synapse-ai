@@ -419,6 +419,10 @@ class AgentStepExecutor:
         # By id, through the resource provider — the same path resume takes.
         # This used to load every orchestration in the tenant and scan.
         sub_orch_data = await resolve_orchestration(sub_orch_id)
+        if sub_orch_data and sub_orch_data.get("is_active", True) is False:
+            # Deleted and kept as a record: never run (F408).
+            from core.react_engine import workflow_gone
+            raise RuntimeError(workflow_gone(target_agent))
         if not sub_orch_data:
             raise RuntimeError(
                 f"Sub-orchestration '{sub_orch_id}' (from agent "

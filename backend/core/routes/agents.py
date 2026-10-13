@@ -78,6 +78,31 @@ async def get_agents():
     return await load_workspace_agents()
 
 
+#: What a workflow agent saved with a workflow that does not exist is told (F408).
+NO_SUCH_ORCHESTRATION = (
+    "That orchestration does not exist in this workspace: deploy one from the Orchestrations screen, "
+    "or give the agent the id of one that exists."
+)
+
+
+async def _check_orchestration_exists(document: dict) -> None:
+    """A workflow agent's orchestration must exist here (F408). Only a changed pointer is checked.
+
+    One saved with an id that resolved to nothing was accepted, and answered
+    every message with "Orchestration '…' not found". An agent whose workflow
+    went before this check existed can still be saved as it is.
+    """
+    from core.store.resources import get_agent, get_orchestration
+
+    pointer = document.get("orchestration_id")
+    stored = await get_agent(document["id"]) if document.get("id") else None
+    if stored is not None and stored.get("orchestration_id") == pointer:
+        return
+    orch = await get_orchestration(pointer)
+    if orch is None or orch.get("system") or orch.get("is_active", True) is False:
+        raise HTTPException(status_code=422, detail=NO_SUCH_ORCHESTRATION)
+
+
 @router.post("/api/agents")
 async def create_agent(agent: Agent):
     # One upsert: read-list / mutate / write-list loses a concurrent edit.
@@ -94,6 +119,8 @@ async def create_agent(agent: Agent):
             detail="An orchestrator agent runs an orchestration: give it an orchestration_id, "
                    "or deploy the orchestration from the Orchestrations screen.",
         )
+    if document.get("type") == "orchestrator":
+        await _check_orchestration_exists(document)
     # Stored clean rather than as sent, so an unknown category or a misspelt
     # decision never reaches the document — every reader would have to ignore it
     # again, and one of those readers decides whether a widget may publish this
