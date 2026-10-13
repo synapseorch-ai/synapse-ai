@@ -401,7 +401,8 @@ export function explainFailure(input: FailureInput): Explained {
                 return { kind: 'model-withheld', sentence: `The model withheld its reply to ${step}${m ? ` (${m[1]})` : ' (safety)'}.`, advice: 'Rephrase the step’s prompt, or pick another model.', fixes: ['editor', 'replay'] };
             }
             if (/only reasoning/.test(raw)) {
-                return { kind: 'model-thinking', sentence: `The model spent its whole reply to ${step} thinking.`, advice: 'Raise Max response length on the step, then Replay.', fixes: ['editor', 'replay'] };
+                // The cap is the agent's (Max response length) or the workspace's; a step has none (F459).
+                return { kind: 'model-thinking', sentence: `The model spent its whole reply to ${step} thinking.`, advice: 'Raise Max response length on its agent, or in Settings → Models, then Replay.', fixes: ['agents', 'models', 'replay'] };
             }
             if ((m = /refused this request: ([\s\S]+)$/.exec(raw))) {
                 return { kind: 'model-refused', sentence: `The model refused ${its} request.`, detail: reasonHeadline(m[1]), fixes: ['editor', 'replay'] };
