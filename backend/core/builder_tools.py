@@ -2214,6 +2214,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                                                     allow_dead_ends=True)
             issues += [f"In the inner workflow '{child.get('name')}' ({child['id']}): {i}"
                        for i in child_verdict["issues"]]
+            verdict["warnings"] = [*verdict.get("warnings", []), *(
+                f"In the inner workflow '{child.get('name')}' ({child['id']}): {w}"
+                for w in child_verdict.get("warnings", []))]
         verdict = {**verdict, "ok": not issues, "issues": issues}
         if verdict["ok"]:
             for workflow in (orch, *ours):
@@ -2668,7 +2671,9 @@ def _knowledge_step_issues(step: dict, kbs: dict | None, knowledge_off: bool) ->
 
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False) -> dict:
-    """Return {"ok": bool, "issues": [str, ...]} describing wiring problems.
+    """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
+    problems, and what probably is not meant but runs (a prompt that reads a key
+    before any step writes it, U74) — warnings never make `ok` false.
 
     Checks (matches the engine's expectations in core.orchestration.engine):
       - entry_step_id resolves to a real step
@@ -2880,9 +2885,9 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
 
     # Writer-membership check: every input_key must be `user_input` /
     # `user_query` (engine-seeded) or the `output_key` of some step. Branch
-    # conditioning is not the validator's concern — the engine falls back to
-    # the schema default on unset reads, which is the intended pattern for
-    # optional branch outputs and iterative refinement loops.
+    # conditioning is not the validator's concern — an unset read gets the
+    # schema default, or reads empty in a prompt with none (U74), which is the
+    # intended pattern for optional branch outputs and iterative refinement loops.
     FREE_KEYS = {"user_input", "user_query"}
     writable: set[str] = set(FREE_KEYS)
     for s in steps:
@@ -3072,10 +3077,12 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
 
     # Parallel branches that write the same key: the engine fails the Parallel
     # before any branch runs (F256).
-    from core.orchestration.branch_keys import same_key_branches
+    from core.orchestration.branch_keys import same_key_branches, unset_reads
     issues.extend(same_key_branches(orch))
 
-    return {"ok": not issues, "issues": issues}
+    # A prompt that reads a key before any step writes it reads it empty there
+    # (U74): said, never refused — a feedback loop's first pass is a real pattern.
+    return {"ok": not issues, "issues": issues, "warnings": unset_reads(orch)}
 
 
 def _parse_json_field(value: Any, fallback: Any) -> Any:

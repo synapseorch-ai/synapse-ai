@@ -163,7 +163,7 @@ KBS = {CONTRACTS.id: CONTRACTS,
 
 class TestValidation:
     def test_a_well_formed_retrieve_step_has_no_issues(self):
-        assert _validate_orchestration(_orch(_retrieve()), kbs=KBS) == {"ok": True, "issues": []}
+        assert _validate_orchestration(_orch(_retrieve()), kbs=KBS) == {"ok": True, "issues": [], "warnings": []}
 
     @pytest.mark.parametrize("step,expected", [
         ({"id": "r", "name": "Find", "type": "retrieve", "output_key": "found", "next_step_id": "e"},

@@ -672,14 +672,26 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     there: a state value holding `{{ global.KEY }}` or `{state.x}`, or a global
     value holding either, reaches the model as those words. The semantics are
     otherwise unchanged: `{state.x}` is `str()` of the value, `{{ … }}` is
-    `templating`'s (JSON for an object), and an unknown reference stays visible.
+    `templating`'s (JSON for an object), and an unknown `{{ global.x }}` — or a
+    wrong path inside a state key that is set — stays visible.
+
+    A state key no step has written yet reads empty, in either form (U74): this
+    is a model's prompt, and on a feedback loop's first pass the writer's
+    `{state.feedback}` reached the model as those words, which it echoed into
+    its draft. A declared default already fills the key (`_init_state`). A
+    person's text — a Human or a Print step's — keeps the gap
+    (`steps.render_state_refs`).
     """
     context = {"global": global_variables, "state": shared_state}
 
     def _sub(match: re.Match) -> str:
         if match.group(1) is not None:
+            parts = match.group(1).split(".")
+            if parts[0] == "state" and len(parts) > 1 and shared_state.get(parts[1]) is None:
+                return ""
             return _templating.render(match.group(0), context)
-        return str(shared_state.get(match.group(2), match.group(0)))
+        value = shared_state.get(match.group(2))
+        return "" if value is None else str(value)
 
     return _TASK_REF.sub(_sub, template)
 

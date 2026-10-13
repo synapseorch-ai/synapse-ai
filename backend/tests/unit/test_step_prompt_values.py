@@ -144,9 +144,14 @@ class TestTheTemplateStillRenders:
         prompt = await _chain(fake_llm, logged, "the note", "Echo {{state.note}}")
         assert "Echo the note" in prompt and "{the note}" not in prompt
 
-    async def test_an_unknown_reference_stays_visible(self, fake_llm, logged):
-        prompt = await _chain(fake_llm, logged, "the note", "{{ global.missing }} {state.missing}")
-        assert "{{ global.missing }} {state.missing}" in prompt
+    async def test_an_unknown_global_stays_visible(self, fake_llm, logged):
+        prompt = await _chain(fake_llm, logged, "the note", "{{ global.missing }} after")
+        assert "{{ global.missing }} after" in prompt
+
+    async def test_an_unset_state_key_reads_empty(self, fake_llm, logged):
+        """U74 (D267): it used to stay as written, and a model echoed it."""
+        prompt = await _chain(fake_llm, logged, "the note", "before {state.missing}|{{ state.missing }} after")
+        assert "before | after" in prompt and "missing" not in prompt
 
     async def test_a_global_value_is_not_a_template_either(self, fake_llm, logged):
         await _run(_orch("s1", [_llm("s1", "Key {{ global.KEY }}")]),
@@ -169,10 +174,10 @@ GLOBALS = {"KEY": SECRET, "OTHER": "{state.note}"}
     ("{state.d}", "{'a': 1}"),
     ("{{ state.d }}", '{"a": 1}'),
     ("{state.nope} {{ state.nope }} {{ global.nope }} {{ bare }}",
-     "{state.nope} {{ state.nope }} {{ global.nope }} {{ bare }}"),
+     "  {{ global.nope }} {{ bare }}"),
     ("plain text", "plain text"),
 ], ids=["legacy", "spaced", "unspaced", "global", "global-holding-state-ref",
-        "legacy-dict-is-str", "double-brace-dict-is-json", "unknown-stay", "plain"])
+        "legacy-dict-is-str", "double-brace-dict-is-json", "unset-state-empty-unknown-global-stays", "plain"])
 def test_fill_task_template_is_one_pass(template, expected):
     from core.orchestration.context import _fill_task_template
 

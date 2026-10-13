@@ -324,6 +324,11 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
         }
     }
 
+    // --- A prompt that reads a key before any step writes it (U74) ---
+    // It reads empty there, so a feedback loop's first pass is told — never
+    // blocked: that pass is a real pattern. Mirrors branch_keys.unset_reads.
+    for (const [stepId, message] of unsetReads(orch)) add(stepId, warning(message));
+
     let errorCount = global.filter((i) => i.severity === 'error').length;
     let warningCount = global.filter((i) => i.severity === 'warning').length;
     for (const issues of Object.values(byStep)) {
@@ -386,4 +391,85 @@ function sharedBranchKeys(parallel: StepConfig, byId: Map<string, StepConfig>): 
         sentences.push(`Branches ${which} ${numbers.length === 2 ? 'both write' : 'all write'} “${key}” (${steps}) — only one value would survive. Give each branch its own output key.`);
     }
     return sentences;
+}
+
+/** Keys the engine writes before any step: the run's input, a workflow agent's conversation. */
+const ENGINE_KEYS = new Set(['user_input', 'user_query', 'history']);
+
+/** The keys a model's prompt names (an Agent's, an LLM's or a Tool step's template, a Retrieve query). */
+function promptReads(step: StepConfig): Set<string> {
+    const texts: string[] = [];
+    if (step.type === 'agent' || step.type === 'llm' || step.type === 'tool') texts.push(step.prompt_template || '');
+    if (step.type === 'retrieve') texts.push(step.retrieve?.query || '');
+    const keys = new Set<string>();
+    for (const text of texts) {
+        for (const m of text.matchAll(/\{\{\s*state\.([A-Za-z_]\w*)|\{state\.(\w+)\}/g)) keys.add(m[1] || m[2]);
+    }
+    return keys;
+}
+
+/** What a step writes itself (not its body): its output key, a Loop's index and item, a Human step's answer. */
+function ownWrites(step: StepConfig): Set<string> {
+    const keys = new Set<string>(step.output_key ? [step.output_key] : []);
+    if (step.type === 'loop') {
+        keys.add(step.loop_index_key || 'loop_index');
+        if (step.loop_over) keys.add(step.loop_item_key || 'loop_item');
+    }
+    if (step.type === 'human') keys.add('human_response');
+    return keys;
+}
+
+/** The steps a run can reach before any step writes `key` (a Loop's body is taken to run; a Parallel's every branch). */
+function firstUnwritten(key: string, entry: string | null | undefined, byId: Map<string, StepConfig>): Set<string> {
+    const inLoop = new Map<string, string | null>();
+    for (const s of byId.values()) {
+        if (s.type !== 'loop') continue;
+        const body = (s.loop_step_ids || []).filter((b) => byId.has(b));
+        body.forEach((sid, i) => inLoop.set(sid, body[i + 1] ?? null));
+    }
+    const reached = new Set<string>();
+    const queue = entry && byId.has(entry) ? [entry] : [];
+    while (queue.length) {
+        const sid = queue.pop()!;
+        if (reached.has(sid)) continue;
+        reached.add(sid);
+        const step = byId.get(sid)!;
+        if (ownWrites(step).has(key)) continue;
+        const targets: (string | null | undefined)[] = [];
+        if (step.type === 'loop') targets.push((step.loop_step_ids || []).filter((b) => byId.has(b))[0]);
+        else if (step.type === 'parallel') targets.push(...branchChains(step, byId).map((c) => c[0]));
+        const container = step.type === 'loop' || step.type === 'parallel';
+        if (!container || !keysWritten(sid, byId, new Set()).has(key)) {
+            if (inLoop.has(sid)) targets.push(inLoop.get(sid));
+            else targets.push(
+                step.next_step_id, step.if_true_step_id, step.if_false_step_id, step.switch_default_step_id,
+                step.on_exhausted_step_id, ...Object.values(step.route_map || {}), ...Object.values(step.switch_cases || {}),
+            );
+        }
+        for (const t of targets) if (t && byId.has(t) && !reached.has(t)) queue.push(t);
+    }
+    return reached;
+}
+
+/** `[stepId, sentence]` for each prompt that reads a key before any step writes it. */
+function unsetReads(orch: Orchestration): [string, string][] {
+    const byId = new Map(orch.steps.map((s) => [s.id, s]));
+    const declared = new Set(Object.keys(orch.state_schema || {}));
+    const written = new Set(orch.steps.flatMap((s) => [...ownWrites(s)]));
+    const walks = new Map<string, Set<string>>();
+    const found: [string, string][] = [];
+    for (const step of orch.steps) {
+        for (const key of [...promptReads(step)].sort()) {
+            if (ENGINE_KEYS.has(key) || declared.has(key)) continue;
+            if (!written.has(key)) {
+                found.push([step.id, `Reads “${key}”, which no step writes, so it always reads empty. Write it in an earlier step, or give it a default in Shared state.`]);
+                continue;
+            }
+            if (!walks.has(key)) walks.set(key, firstUnwritten(key, orch.entry_step_id, byId));
+            if (walks.get(key)!.has(step.id)) {
+                found.push([step.id, `Reads “${key}” before any step writes it, so its first pass reads it empty. Give “${key}” a default in Shared state if it should read something.`]);
+            }
+        }
+    }
+    return found;
 }

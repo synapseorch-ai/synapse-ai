@@ -191,3 +191,109 @@ def loop_key_conflicts(parallel: dict, by_id: dict[str, dict]) -> dict[int, list
         if shared:
             found[index] = sorted(shared)
     return found
+
+
+# ── A key read before any step writes it (U74) ──────────────────────────────
+
+#: The keys the engine writes before any step: the run's input, and a workflow
+#: agent's conversation (`run_orchestrator_agent`).
+ENGINE_KEYS = frozenset({"user_input", "user_query", "history"})
+
+#: A state reference in a model's prompt, either form; the top-level key.
+_PROMPT_REF = re.compile(r"\{\{\s*state\.([A-Za-z_]\w*)|\{state\.(\w+)\}")
+
+
+def _prompt_reads(step: dict) -> set[str]:
+    """The keys a model's prompt names: an Agent's, an LLM's or a Tool step's
+    template and a Retrieve step's query — where an unset key reads empty."""
+    texts = []
+    if step.get("type") in ("agent", "llm", "tool"):
+        texts.append(step.get("prompt_template") or "")
+    if step.get("type") == "retrieve" and isinstance(step.get("retrieve"), dict):
+        texts.append(str(step["retrieve"].get("query") or ""))
+    return {next(g for g in m.groups() if g) for text in texts for m in _PROMPT_REF.finditer(text)}
+
+
+def _own_writes(step: dict) -> set[str]:
+    """What a step writes itself (not its body): its output key, a Loop's index
+    and a for-each Loop's item (before its body runs), a Human step's answer."""
+    keys = {step["output_key"]} if step.get("output_key") else set()
+    if step.get("type") == "loop":
+        keys.add(step.get("loop_index_key") or "loop_index")
+        if step.get("loop_over"):
+            keys.add(step.get("loop_item_key") or "loop_item")
+    if step.get("type") == "human":
+        keys.add("human_response")
+    return keys
+
+
+def _first_unwritten(key: str, entry: str | None, by_id: dict[str, dict]) -> set[str]:
+    """The steps a run can reach before any step writes `key`.
+
+    Walked from the entry; a step that writes it ends that path (a step reading
+    and writing the key reads it first, so it is reached). A Loop or a Parallel
+    leads into its body — a Loop's in order, a Parallel's every branch — and on
+    to its own next step only when nothing in it writes the key: a Loop's body
+    is taken to run, and every branch of a Parallel runs before it goes on.
+    """
+    in_loop: dict[str, str | None] = {}  # a Loop body step -> the one after it
+    for step in by_id.values():
+        if step.get("type") == "loop":
+            body = [b for b in step.get("loop_step_ids") or [] if b in by_id]
+            for index, sid in enumerate(body):
+                in_loop[sid] = body[index + 1] if index + 1 < len(body) else None
+    reached: set[str] = set()
+    queue = [entry] if entry in by_id else []
+    while queue:
+        sid = queue.pop()
+        if sid in reached:
+            continue
+        reached.add(sid)
+        step = by_id[sid]
+        if key in _own_writes(step):
+            continue
+        targets: list[str | None] = []
+        if step.get("type") == "loop":
+            body = [b for b in step.get("loop_step_ids") or [] if b in by_id]
+            targets += body[:1]
+        elif step.get("type") == "parallel":
+            targets += [chain[0] for chain in branch_chains(step, by_id) if chain]
+        container = step.get("type") in ("loop", "parallel")
+        if not container or key not in _writes(sid, by_id, set()):
+            if sid in in_loop:
+                targets.append(in_loop[sid])
+            else:
+                targets += [step.get("next_step_id"), step.get("if_true_step_id"), step.get("if_false_step_id"),
+                            step.get("switch_default_step_id"), step.get("on_exhausted_step_id"),
+                            *(step.get("route_map") or {}).values(), *(step.get("switch_cases") or {}).values()]
+        queue += [t for t in targets if t and t in by_id and t not in reached]
+    return reached
+
+
+def unset_reads(orch: dict) -> list[str]:
+    """One sentence per step whose prompt reads a key before any step writes it.
+
+    A warning, never a refusal: a feedback loop's first pass is a real pattern,
+    and the key now reads empty there (U74). A key the schema declares is filled
+    by its default or the run's caller, and the engine's own keys always are.
+    """
+    steps = [s for s in orch.get("steps") or [] if isinstance(s, dict) and s.get("id")]
+    by_id = {s["id"]: s for s in steps}
+    declared = set(orch.get("state_schema") or {})
+    written = set().union(*(_own_writes(s) for s in steps)) if steps else set()
+    sentences: list[str] = []
+    walks: dict[str, set[str]] = {}
+    for step in steps:
+        for key in sorted(_prompt_reads(step) - ENGINE_KEYS - declared):
+            if key not in written:
+                sentences.append(
+                    f"Step '{step['id']}' reads {{state.{key}}}, which no step writes, so it always reads "
+                    f"empty. Write it in an earlier step, or give it a default in the state schema.")
+                continue
+            if key not in walks:
+                walks[key] = _first_unwritten(key, orch.get("entry_step_id"), by_id)
+            if step["id"] in walks[key]:
+                sentences.append(
+                    f"Step '{step['id']}' reads {{state.{key}}} before any step writes it, so its first pass "
+                    f"reads it empty. Give '{key}' a default in the state schema if it should read something.")
+    return sentences

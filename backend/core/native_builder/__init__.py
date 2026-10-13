@@ -87,7 +87,7 @@ State lifecycle rules (CRITICAL — think of state keys as step outputs):
 - HARD RULE: a key may appear in a step's `input_keys` (or be referenced as `{state.X}` in a prompt) only if ONE of these holds:
   (a) X is `user_input` or `user_query`, OR
   (b) Some step in the orchestration has `output_key: X`.
-- Branch conditioning is NOT the validator's concern. If a key's producer sits on one branch and a downstream step on another branch still reads it, that's fine — the engine falls back to the schema default on unset reads. Iterative refinement loops (first pass reads the default, subsequent passes read real data) are first-class patterns.
+- Branch conditioning is NOT the validator's concern. If a key's producer sits on one branch and a downstream step on another branch still reads it, that's fine — an unset read gets the schema default, and with none a prompt reads it empty. Iterative refinement loops (first pass reads the default, subsequent passes read real data) are first-class patterns: give the key a default when the first pass should read something, and `validate_orchestration` lists such reads under `warnings`, which never block.
 - When designing `state_schema`, for each declared key you must be able to name the single step whose `output_key` writes it. If you cannot name the writer, delete the key — don't declare or read phantom keys.
 """
 
