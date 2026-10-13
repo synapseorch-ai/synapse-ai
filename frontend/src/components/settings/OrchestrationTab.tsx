@@ -803,7 +803,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest }: {
     const confirmDeleteOrchestration = async () => {
         if (!confirmDeleteOrchId) return;
         try {
-            await fetch(`/api/orchestrations/${confirmDeleteOrchId}`, { method: 'DELETE' });
+            const res = await fetch(`/api/orchestrations/${confirmDeleteOrchId}`, { method: 'DELETE' });
+            // Refused while a workflow agent or a schedule runs it (F408): the
+            // server's sentence names them, and the workflow stays. A 404 is one
+            // already gone, so it leaves the list as a delete would.
+            if (!res.ok && res.status !== 404) {
+                const err = await res.json().catch(() => null);
+                showToast(typeof err?.detail === 'string' ? err.detail : `Delete failed (HTTP ${res.status})`, 'error');
+                return;
+            }
             setOrchestrations(orchestrations.filter(o => o.id !== confirmDeleteOrchId));
             if (draft?.id === confirmDeleteOrchId) {
                 replaceDraft(null);
