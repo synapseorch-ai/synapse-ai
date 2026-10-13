@@ -1722,3 +1722,76 @@ class TestADeployAsksForRoom:
         result = await call("deploy_orchestration", {"orch_id": "orch_full"}, server)
         assert result == {"status": "already_deployed", "agent_id": "agent_full_wf"}
         assert full == []
+
+
+# ── a run's cap (CAP1, D272) ─────────────────────────────────────────────────
+
+class TestTheBuilderSetsARunsCap:
+    """Every tool that writes a workflow's top-level fields takes the cap; 0
+    removes it, and a value that is not a cap is refused in words — the engine
+    would read it as none, so it must not be saved as if it were one."""
+
+    _END = json.dumps([{"id": "step_1", "name": "End", "type": "end"}])
+
+    async def _get(self, orch_id):
+        from core.store.resources import get_orchestration
+        return await get_orchestration(orch_id)
+
+    async def test_create_and_skeleton_take_it(self, server):
+        made = await call("create_orchestration", {
+            "name": "Capped", "entry_step_id": "step_1", "steps_json": self._END,
+            "max_run_credits": 5, "max_run_usd": 0.5,
+        }, server)
+        stored = await self._get(made["orchestration"]["id"])
+        assert stored["max_run_credits"] == 5 and stored["max_run_usd"] == 0.5
+
+        bare = await call("create_orchestration_skeleton", {
+            "name": "Skeleton", "entry_step_id": "step_1", "max_run_usd": 0.25,
+        }, server)
+        stored = await self._get(bare["orchestration"]["id"])
+        assert stored["max_run_usd"] == 0.25 and "max_run_credits" not in stored
+
+    async def test_meta_sets_changes_and_removes_it(self, server):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_capmeta")])
+
+        result = await call("set_orchestration_meta", {"orch_id": "orch_capmeta", "max_run_credits": 8}, server)
+        assert result["status"] == "meta_updated" and result["fields"] == ["max_run_credits"]
+        assert (await self._get("orch_capmeta"))["max_run_credits"] == 8
+
+        await call("set_orchestration_meta", {"orch_id": "orch_capmeta", "max_run_credits": 0}, server)
+        assert (await self._get("orch_capmeta")).get("max_run_credits") is None
+
+    async def test_update_takes_it(self, server):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_capupd")])
+        result = await call("update_orchestration", {"orch_id": "orch_capupd", "max_run_usd": 1.5}, server)
+        assert result["status"] == "updated"
+        assert (await self._get("orch_capupd"))["max_run_usd"] == 1.5
+
+    @pytest.mark.parametrize("tool,args", [
+        ("set_orchestration_meta", {"orch_id": "orch_capbad", "max_run_credits": 0.5}),
+        ("set_orchestration_meta", {"orch_id": "orch_capbad", "max_run_usd": -1}),
+        ("update_orchestration", {"orch_id": "orch_capbad", "max_run_usd": "lots"}),
+    ])
+    async def test_a_value_that_is_not_a_cap_is_refused(self, server, tool, args):
+        await S.seed_orchestrations([S.make_orchestration(id="orch_capbad")])
+        result = await call(tool, args, server)
+        assert "max_run_" in result["error"]
+        stored = await self._get("orch_capbad")
+        assert stored.get("max_run_credits") is None and stored.get("max_run_usd") is None
+
+    async def test_create_refuses_it_before_it_writes(self, server):
+        from core.routes.orchestrations import load_orchestrations
+
+        result = await call("create_orchestration", {
+            "name": "Bad cap", "entry_step_id": "step_1", "steps_json": self._END, "max_run_credits": 0.2,
+        }, server)
+        assert "1 or more" in result["error"]
+        assert await load_orchestrations() == []
+
+    def test_every_tool_that_writes_limits_offers_it(self):
+        from core.builder_tools import BUILDER_TOOL_SCHEMAS
+
+        for schema in BUILDER_TOOL_SCHEMAS:
+            props = schema["function"]["parameters"]["properties"]
+            if "timeout_minutes" in props:
+                assert {"max_run_credits", "max_run_usd"} <= set(props), schema["function"]["name"]

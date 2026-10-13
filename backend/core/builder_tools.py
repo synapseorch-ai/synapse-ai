@@ -318,6 +318,25 @@ STATE_SCHEMA_JSON_DESCRIPTION = (
     "Pass '{}' (empty object JSON) when the orchestration has no upfront state keys."
 )
 
+#: A run's cap (CAP1, D272), as every tool that writes a workflow's top-level
+#: fields takes it. A number, not a nullable one: 0 removes a cap.
+RUN_CAP_PROPERTIES = {
+    "max_run_credits": {
+        "type": "number",
+        "description": (
+            "Cloud only: the most execution credits one run of this workflow may use, 1 or more. "
+            "A run that reaches it stops before its next step and says so. Set a cap only when "
+            "the person asks for one; 0 removes it."),
+    },
+    "max_run_usd": {
+        "type": "number",
+        "description": (
+            "The most one run of this workflow may spend on models, in US dollars (0.5 is fifty "
+            "cents). A run that has spent it stops before its next step and says so. Set a cap "
+            "only when the person asks for one; 0 removes it."),
+    },
+}
+
 
 # ─── Tool Schemas ─────────────────────────────────────────────────────────────
 
@@ -633,6 +652,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer", "description": "Global turn limit (default 100)"},
                     "timeout_minutes": {"type": "integer", "description": "Overall timeout (default 30)"},
+                    **RUN_CAP_PROPERTIES,
                 },
                 "required": ["name", "steps_json", "entry_step_id"],
             },
@@ -664,6 +684,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    **RUN_CAP_PROPERTIES,
                 },
                 "required": ["orch_id"],
             },
@@ -694,6 +715,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    **RUN_CAP_PROPERTIES,
                 },
                 "required": ["name", "entry_step_id"],
             },
@@ -728,8 +750,9 @@ BUILDER_TOOL_SCHEMAS = [
             "name": "set_orchestration_meta",
             "description": (
                 "Patch top-level orchestration metadata only. Does NOT touch the steps list. Use this for "
-                "renames, description edits, entry_step_id changes, state_schema updates, or turn/timeout "
-                "budget changes. Pass only the fields you want to change."
+                "renames, description edits, entry_step_id changes, state_schema updates, turn/timeout "
+                "budget changes, or a cap on what one run may spend. Pass only the fields you want to "
+                "change."
             ),
             "parameters": {
                 "type": "object",
@@ -744,6 +767,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "max_total_turns": {"type": "integer"},
                     "timeout_minutes": {"type": "integer"},
+                    **RUN_CAP_PROPERTIES,
                     "strict_state_types": {
                         "type": "boolean",
                         "description": (
@@ -1861,6 +1885,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(steps)
         if refused:
             return refused
+        try:
+            caps = _run_cap_args(args)
+        except ValueError as e:
+            return {"error": str(e)}
 
         orch = {
             "id": orch_id,
@@ -1872,6 +1900,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "state_schema": args.get("state_schema", {}),
             "max_total_turns": args.get("max_total_turns", 100),
             "timeout_minutes": args.get("timeout_minutes", 30),
+            **{k: v for k, v in caps.items() if v is not None},
             "trigger": "manual",
             "created_at": now,
             "updated_at": now,
@@ -1892,6 +1921,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     "steps_json", "max_total_turns", "timeout_minutes"):
             if key in args and args[key] is not None:
                 fields[key] = args[key]
+        try:
+            fields.update(_run_cap_args({**legacy_fields, **args}))
+        except ValueError as e:
+            return {"error": str(e)}
         _normalize_state_schema_arg(fields)
         _normalize_steps_arg(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
@@ -1924,6 +1957,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _normalize_state_schema_arg(args)
+        try:
+            caps = _run_cap_args(args)
+        except ValueError as e:
+            return {"error": str(e)}
         orch = {
             "id": orch_id,
             "name": args["name"],
@@ -1934,6 +1971,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "state_schema": args.get("state_schema", {}),
             "max_total_turns": args.get("max_total_turns", 100),
             "timeout_minutes": args.get("timeout_minutes", 30),
+            **{k: v for k, v in caps.items() if v is not None},
             "trigger": "manual",
             "created_at": now,
             "updated_at": now,
@@ -2116,8 +2154,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         allowed = {"name", "description", "entry_step_id", "state_schema",
                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}
+        try:
+            fields.update(_run_cap_args({**dict(args.get("fields") or {}), **args}))
+        except ValueError as e:
+            return {"error": str(e)}
         if not fields:
-            return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed)}"}
+            return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed | set(RUN_CAP_PROPERTIES))}"}
         orch.update(fields)
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
@@ -3166,6 +3208,27 @@ _KNOWLEDGE_FLAT_FIELDS: dict[str, dict[str, str]] = {
     "ingest": {"ingest_kb_id": "kb_id", "ingest_records_from": "records_from", "ingest_id_field": "id_field",
                "ingest_text_field": "text_field", "ingest_metadata_fields": "metadata_fields"},
 }
+
+
+def _run_cap_args(args: dict) -> dict:
+    """The run caps `args` sets, as stored: `{field: number}`, None where 0 removes one.
+
+    A field that is absent or null is left as it is. Raises ValueError, worded
+    for the builder, for a value that is not a cap: a cap the engine would read
+    as none must not be saved as if it were one (CAP1).
+    """
+    from core.orchestration.run_cap import clean
+
+    out: dict = {}
+    for key in RUN_CAP_PROPERTIES:
+        value = args.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, bool) and value in (0, "0"):
+            out[key] = None
+            continue
+        out[key] = clean(value, credits=key == "max_run_credits")
+    return out
 
 
 def _normalize_state_schema_arg(args: dict) -> None:
