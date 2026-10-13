@@ -7,8 +7,8 @@ import {
   SkipForward, XCircle, Workflow, Bot, Server, Wrench,
   AlertCircle, Cpu, RotateCcw, ChevronDown, ChevronUp,
 } from "lucide-react";
-import type { ImportBundle, ImportResult, OrchestrationType, AgentType, McpServerType, CustomToolType } from "./types";
-import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps } from "./utils";
+import type { ImportBundle, ImportResult, ImportWarning, OrchestrationType, AgentType, McpServerType, CustomToolType } from "./types";
+import { orchAgentDeps, agentMcpDeps, agentToolDeps, agentDelegateDeps, normalizeBundle } from "./utils";
 import { SectionTable } from "./SectionTable";
 
 import { Spinner, Switch, buttonStyles } from '@/components/ui';
@@ -137,6 +137,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   const [toolSecrets, setToolSecrets] = useState<Record<string, Record<string, string>>>({});
   const [mcpTokens, setMcpTokens] = useState<Record<string, string>>({});
   const [results, setResults] = useState<Record<string, ImportResult[]>>({});
+  const [warnings, setWarnings] = useState<ImportWarning[]>([]);
   const [googleStatus, setGoogleStatus] = useState<{ is_connected: boolean; user_email?: string | null } | null>(null);
 
   // Refs for always-current selection state
@@ -153,27 +154,28 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   useEffect(() => {
     if (!preloadedBundle) return;
     try {
-      if (!preloadedBundle.synapse_export) throw new Error("Not a valid Synapse export file.");
-      setBundle(preloadedBundle);
+      const pushed = normalizeBundle(preloadedBundle);
+      if (!pushed) throw new Error("Not a valid Synapse export file.");
+      setBundle(pushed);
       setParseError(null);
-      const orchIds = new Set<string>((preloadedBundle.orchestrations || []).map((o: OrchestrationType) => o.id));
-      const agentIds = new Set<string>((preloadedBundle.agents || []).map((a: AgentType) => a.id));
-      const mcpNames = new Set<string>((preloadedBundle.mcp_servers || []).map((m: McpServerType) => m.name));
-      const toolNames = new Set<string>((preloadedBundle.custom_tools || []).map((t: CustomToolType) => t.name));
+      const orchIds = new Set<string>(pushed.orchestrations.map((o: OrchestrationType) => o.id));
+      const agentIds = new Set<string>(pushed.agents.map((a: AgentType) => a.id));
+      const mcpNames = new Set<string>(pushed.mcp_servers.map((m: McpServerType) => m.name));
+      const toolNames = new Set<string>(pushed.custom_tools.map((t: CustomToolType) => t.name));
       setSelOrch(orchIds); setSelAgent(agentIds); setSelMcp(mcpNames); setSelTool(toolNames);
       const ms: Record<string, Record<string, string>> = {};
-      for (const m of preloadedBundle.mcp_servers || []) {
+      for (const m of pushed.mcp_servers) {
         if (m.env && Object.keys(m.env).length > 0)
           ms[m.name] = Object.fromEntries(Object.keys(m.env).map((k: string) => [k, ""]));
       }
       setMcpSecrets(ms);
       const ts: Record<string, Record<string, string>> = {};
-      for (const t of preloadedBundle.custom_tools || []) {
+      for (const t of pushed.custom_tools) {
         if (t.headers && Object.keys(t.headers).length > 0)
           ts[t.name] = Object.fromEntries(Object.keys(t.headers).map((k: string) => [k, ""]));
       }
       setToolSecrets(ts);
-      recalcImport(orchIds, agentIds, preloadedBundle);
+      recalcImport(orchIds, agentIds, pushed);
       fetchGoogleStatus();
       setStep("preview");
     } catch (err: any) { setParseError(err.message); }
@@ -224,8 +226,8 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
     const reader = new FileReader();
     reader.onload = e => {
       try {
-        const parsed = JSON.parse(e.target?.result as string);
-        if (!parsed.synapse_export) throw new Error("Not a valid Synapse export file.");
+        const parsed = normalizeBundle(JSON.parse(e.target?.result as string));
+        if (!parsed) throw new Error("Not a valid Synapse export file.");
         setBundle(parsed);
         setParseError(null);
         const orchIds = new Set<string>((parsed.orchestrations || []).map((o: OrchestrationType) => o.id));
@@ -260,7 +262,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   }, []);
 
   const reset = () => {
-    setStep("upload"); setBundle(null); setParseError(null); setResults({});
+    setStep("upload"); setBundle(null); setParseError(null); setResults({}); setWarnings([]);
     setSelOrch(new Set()); setSelAgent(new Set()); setSelMcp(new Set()); setSelTool(new Set());
     setLockedAgent(new Set()); setLockedMcp(new Set()); setLockedTool(new Set());
     setMcpSecrets({}); setToolSecrets({}); setMcpTokens({});
@@ -300,7 +302,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Import failed");
-      setResults(data.results || {}); setStep("results"); onImportSuccess?.();
+      setResults(data.results || {}); setWarnings(data.warnings || []); setStep("results"); onImportSuccess?.();
     } catch (e: any) { setParseError(e.message); }
     finally { setImporting(false); }
   };
@@ -348,6 +350,10 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             <p className="text-sm font-semibold text-text">Bundle loaded</p>
             <p className="text-[10px] text-text-faint font-mono">
               v{bundle.version || "1.0"} · {bundle.exported_at ? new Date(bundle.exported_at).toLocaleString() : "unknown date"}
+              {bundle.exported_from === "cloud" && " · from SynapseOrch Cloud"}
+            </p>
+            <p className="text-xs text-text-muted mt-1">
+              A workflow or agent with the same id here, or a tool with the same name, is replaced.
             </p>
           </div>
           <button onClick={reset} className="text-xs text-text-faint hover:text-text transition-colors underline underline-offset-2">Change file</button>
@@ -658,7 +664,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
   // ── Results ───────────────────────────────────────────────────────────────
   if (step === "results") {
     const all = Object.values(results).flat();
-    const importedCount = all.filter(r => r.status === "imported" || r.status === "connected").length;
+    const importedCount = all.filter(r => r.status === "imported" || r.status === "replaced" || r.status === "connected").length;
     const groups = [
       { key: "orchestrations", label: "Orchestrations", icon: Workflow },
       { key: "agents", label: "Agents", icon: Bot },
@@ -693,27 +699,34 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                 {items.map((item, i) => {
                   const st = item.status;
                   const StatusIcon =
-                    st === "imported" || st === "connected" ? CheckCircle2 :
-                    st === "skipped_existing" ? SkipForward :
+                    st === "imported" || st === "replaced" || st === "connected" ? CheckCircle2 :
+                    st === "skipped_existing" || st === "skipped" ? SkipForward :
                     st === "disconnected" ? AlertTriangle :
                     st === "oauth_pending" ? AlertCircle :
                     XCircle;
                   const statusCls =
-                    st === "imported" || st === "connected" ? "text-success" :
-                    st === "skipped_existing" || st === "disconnected" ? "text-text-muted" :
+                    st === "imported" || st === "replaced" || st === "connected" ? "text-success" :
+                    st === "skipped_existing" || st === "skipped" || st === "disconnected" ? "text-text-muted" :
                     st === "oauth_pending" ? "text-accent-ink" :
                     "text-danger";
                   const statusLabel =
                     st === "connected" ? "Connected" :
                     st === "imported" ? "Imported" :
+                    st === "replaced" ? "Replaced" :
                     st === "skipped_existing" ? "Skipped — already exists" :
+                    st === "skipped" ? "Skipped" :
                     st === "disconnected" ? "Saved — needs Retry" :
                     st === "oauth_pending" ? "Needs authorization" :
                     "Error";
                   return (
                     <div key={i} className="flex items-center gap-3 px-4 py-2.5 border-t border-border">
                       <StatusIcon className={`h-4 w-4 ${statusCls} flex-shrink-0`} />
-                      <span className="flex-1 text-sm text-text font-semibold">{item.name || item.label}</span>
+                      <span className="flex-1 min-w-0 text-sm text-text font-semibold">
+                        {item.name || item.label}
+                        {st === "skipped" && item.message && (
+                          <span className="block text-xs font-normal text-text-muted">{item.message}</span>
+                        )}
+                      </span>
                       {st === "oauth_pending" && item.auth_url && (
                         <a
                           href={item.auth_url}
@@ -732,6 +745,25 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             );
           })}
         </div>
+
+        {warnings.length > 0 && (
+          <div className="border border-border rounded-md">
+            <div className="flex items-center gap-2 px-4 py-2.5 bg-surface-2">
+              <AlertTriangle className="h-3.5 w-3.5 text-text-faint" />
+              <span className="text-[10px] uppercase font-semibold tracking-wider text-text-faint">
+                Needs a look before it runs
+              </span>
+            </div>
+            <ul className="divide-y divide-border">
+              {warnings.map((w, i) => (
+                <li key={i} className="px-4 py-2.5 text-sm">
+                  <span className="font-semibold text-text">{w.name}</span>
+                  <span className="text-text-muted"> — {w.message}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {results.mcp_servers?.some(m => m.status === "disconnected") && (
           <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">

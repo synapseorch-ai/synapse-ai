@@ -72,7 +72,10 @@ export function SectionTable<T>({
                     )}
                   </span>
                   {desc && <span className="block text-xs text-text-faint mt-0.5 line-clamp-1">{desc}</span>}
-                  <span className="block text-[10px] text-text-faint font-mono mt-0.5">{getId(item)}</span>
+                  <span className="block text-[10px] text-text-faint font-mono mt-0.5">
+                    {/* A workflow Cloud's old file carried without an id is keyed `#<index>` (F464). */}
+                    {String(getId(item)).startsWith("#") ? "gets a new id here" : getId(item)}
+                  </span>
                 </span>
               </label>
             );

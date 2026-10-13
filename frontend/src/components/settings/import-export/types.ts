@@ -55,7 +55,9 @@ export interface ExportData {
 
 export interface ImportBundle {
   synapse_export: boolean;
-  version?: string;
+  version?: string | number;
+  /** "self-host" or "cloud": which product wrote the file (F464). */
+  exported_from?: string;
   exported_at?: string;
   has_python_tools?: boolean;
   orchestrations: OrchestrationType[];
@@ -68,7 +70,17 @@ export interface ImportResult {
   id?: string;
   name?: string;
   label?: string;
-  status: "imported" | "skipped_existing" | "error" | "connected" | "disconnected" | "oauth_pending";
+  status:
+    | "imported" | "replaced" | "skipped" | "skipped_existing" | "error" | "connected" | "disconnected"
+    | "oauth_pending";
   message?: string;
   auth_url?: string;
+}
+
+/** Something imported that can't run here yet: a model, a tool, a missing workflow or agent (F464). */
+export interface ImportWarning {
+  kind: string;
+  id: string;
+  name: string;
+  message: string;
 }

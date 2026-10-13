@@ -1,0 +1,304 @@
+{
+ "synapse_export": true,
+ "version": "1.1",
+ "exported_from": "cloud",
+ "exported_at": "2026-10-13T08:00:00Z",
+ "has_python_tools": false,
+ "orchestrations": [
+  {
+   "id": "orch_01a1278625fa714f9897830d2fb75fde",
+   "name": "Market brief",
+   "steps": [
+    {
+     "id": "step_research",
+     "name": "Gather the news",
+     "type": "agent",
+     "agent_id": "agent_01a1278625f27222894f471bae1aaa99",
+     "max_turns": 12,
+     "input_keys": [],
+     "output_key": "research",
+     "position_x": 60.0,
+     "position_y": 160.0,
+     "next_step_id": "step_analysis",
+     "max_iterations": 3,
+     "prompt_template": "Tickers to cover: {state.tickers}\nSources to read: {state.sources}\n\nScrape each source page, follow the links to the stories that concern these tickers (extract_links, then scrape_url), and collect for EACH ticker the 3–5 most relevant developments from the last few days. For each: date, headline, one line on why it matters, source URL. Finish with a short 'Market-wide' section of themes that affect all of them.",
+     "timeout_seconds": 600
+    },
+    {
+     "id": "step_analysis",
+     "name": "Analyst's read",
+     "type": "llm",
+     "model": "synapse.kimi-k3",
+     "input_keys": [
+      "research"
+     ],
+     "output_key": "analysis",
+     "position_x": 320.0,
+     "position_y": 160.0,
+     "next_step_id": "step_check",
+     "prompt_template": "Using only the research above, write the analyst's read for the tickers {state.tickers}: for each — what moved, the likely why, and what to watch next; then three market-wide themes. Plain language, no hype. Keep facts (from the research, with their sources) visibly separate from interpretation (yours). At most 400 words."
+    },
+    {
+     "id": "step_check",
+     "name": "Check the claims",
+     "type": "llm",
+     "model": "synapse.nova-lite",
+     "input_keys": [
+      "research",
+      "analysis"
+     ],
+     "output_key": "brief",
+     "position_x": 580.0,
+     "position_y": 160.0,
+     "next_step_id": "step_review",
+     "prompt_template": "You are the reviewer. Check every factual claim in the analysis against the research. Rewrite the analysis as the final brief: keep supported claims, mark any unsupported one as 'unverified' or remove it, keep the sources, and add a closing section titled 'Confidence and caveats'. End with this exact sentence on its own line: This brief is generated for information only and is not investment advice."
+    },
+    {
+     "id": "step_review",
+     "name": "Review the brief",
+     "type": "human",
+     "output_key": "review_notes",
+     "position_x": 840.0,
+     "position_y": 160.0,
+     "human_prompt": "Today's brief is ready for your review.\n\n{state.brief}\n\nReply **approve** to accept it as it is, or type the changes you want made.",
+     "next_step_id": "step_gate",
+     "human_timeout_seconds": 86400
+    },
+    {
+     "id": "step_gate",
+     "name": "Approved?",
+     "type": "if_else",
+     "position_x": 1100.0,
+     "position_y": 160.0,
+     "if_condition": "str(state.review_notes).strip().lower() in ('approve', 'approved', 'ok', 'yes', 'lgtm', 'looks good')",
+     "if_true_step_id": "step_publish",
+     "if_false_step_id": "step_revise"
+    },
+    {
+     "id": "step_revise",
+     "name": "Apply the changes",
+     "type": "llm",
+     "model": "synapse.nova-lite",
+     "input_keys": [
+      "brief",
+      "review_notes"
+     ],
+     "output_key": "brief_revised",
+     "position_x": 1360.0,
+     "position_y": 300.0,
+     "next_step_id": "step_publish_revised",
+     "prompt_template": "Apply the reviewer's requested changes to the brief. Keep the sources and the closing sentence 'This brief is generated for information only and is not investment advice.'. Output only the revised brief, complete, with no preamble."
+    },
+    {
+     "id": "step_publish",
+     "name": "Publish",
+     "type": "print",
+     "output_key": "output",
+     "position_x": 1360.0,
+     "position_y": 20.0,
+     "next_step_id": "step_end",
+     "print_content": "# Market brief\n\n{state.brief}"
+    },
+    {
+     "id": "step_publish_revised",
+     "name": "Publish (revised)",
+     "type": "print",
+     "output_key": "output_revised",
+     "position_x": 1620.0,
+     "position_y": 300.0,
+     "next_step_id": "step_end",
+     "print_content": "# Market brief\n\n{state.brief_revised}"
+    },
+    {
+     "id": "step_end",
+     "name": "End",
+     "type": "end",
+     "position_x": 1880.0,
+     "position_y": 160.0
+    }
+   ],
+   "avatar": "default",
+   "trigger": "manual",
+   "description": "Research → analysis → review → your approval → published brief.",
+   "state_schema": {
+    "sources": {
+     "type": "str",
+     "default": "https://finance.yahoo.com/topic/stock-market-news/, https://www.cnbc.com/markets/",
+     "description": "News pages the researcher reads, comma-separated. Public pages only."
+    },
+    "tickers": {
+     "type": "str",
+     "default": "AAPL, MSFT, NVDA",
+     "description": "The tickers to cover, comma-separated."
+    }
+   },
+   "entry_step_id": "step_research",
+   "max_total_turns": 80,
+   "timeout_minutes": 45,
+   "max_total_cost_usd": null
+  },
+  {
+   "id": "orch_01a0ed1c2a0973ef893c84be4d006aa3",
+   "name": "C1B Parent",
+   "steps": [
+    {
+     "id": "p1",
+     "name": "Call flow",
+     "type": "agent",
+     "agent_id": "agent_01a0ed1c29ee72a6ac242f9079c3de6b",
+     "output_key": "child",
+     "next_step_id": "p2",
+     "prompt_template": "{state.user_input}"
+    },
+    {
+     "id": "p2",
+     "name": "End",
+     "type": "end"
+    }
+   ],
+   "trigger": "manual",
+   "description": "C1b fixture: runs C1B Flow as a nested step.",
+   "entry_step_id": "p1",
+   "timeout_minutes": 10
+  },
+  {
+   "id": "orch_01a0ed1c29cc729b9de2d7ebdce5ce8d",
+   "name": "C1B Flow",
+   "steps": [
+    {
+     "id": "s1",
+     "name": "Draft",
+     "type": "agent",
+     "agent_id": "agent_01a0ed1c299571d9ba453d0728f7c9a1",
+     "output_key": "draft",
+     "next_step_id": "s2",
+     "prompt_template": "Write one sentence about: {state.user_input}"
+    },
+    {
+     "id": "s2",
+     "name": "Shout",
+     "type": "llm",
+     "model": "synapse.nova-micro",
+     "output_key": "final_text",
+     "next_step_id": "s3",
+     "prompt_template": "Rewrite this sentence in capital letters: {state.draft}"
+    },
+    {
+     "id": "s3",
+     "name": "End",
+     "type": "end"
+    }
+   ],
+   "trigger": "manual",
+   "description": "C1b fixture: an agent step then an llm step.",
+   "entry_step_id": "s1",
+   "timeout_minutes": 10
+  }
+ ],
+ "agents": [
+  {
+   "name": "Market researcher",
+   "type": "conversational",
+   "model": "synapse.nova-lite",
+   "tools": [
+    "scrape_url",
+    "crawl_multiple",
+    "extract_links",
+    "search_page"
+   ],
+   "description": "Reads the news pages it is given and reports what moved, with sources.",
+   "system_prompt": "You are a market research analyst. You read the sources you are given, extract the developments that matter for the tickers you are asked about, and report them plainly with a source URL on every item. You do not speculate, you do not recommend trades, and you separate what a page says from what it might mean. Rules: never invent a fact, a number or a quote — everything you report must come from a page you actually read, and each item names its source URL. If a page cannot be fetched, say so in one line and move on; do not retry more than once. Read at most eight pages in total. Keep the output as tidy Markdown.",
+   "id": "agent_01a1278625f27222894f471bae1aaa99"
+  },
+  {
+   "name": "C1B Flow",
+   "type": "orchestrator",
+   "repos": [],
+   "tools": [],
+   "avatar": "default",
+   "description": "C1b fixture: an agent step then an llm step.",
+   "system_prompt": "This is an orchestrator agent for 'C1B Flow'. It runs automatically.",
+   "orchestration_id": "orch_01a0ed1c29cc729b9de2d7ebdce5ce8d",
+   "id": "agent_01a0ed1c29ee72a6ac242f9079c3de6b"
+  },
+  {
+   "name": "C1B Step",
+   "model": "synapse.nova-micro",
+   "tools": [],
+   "system_prompt": "Answer in one short sentence.",
+   "id": "agent_01a0ed1c299571d9ba453d0728f7c9a1"
+  },
+  {
+   "name": "Delegate proof",
+   "type": "delegate",
+   "model": "gemini-2.5-pro",
+   "tools": [],
+   "description": "Fixture for round two, item 7: routes work to sub-agents.",
+   "system_prompt": "You coordinate specialists. Always hand the task to the most suitable sub-agent with delegate_to_agent, then report exactly what it answered.",
+   "delegate_agent_ids": [
+    "agent_gpjkm15gtu"
+   ],
+   "id": "agent_01a09a4a450c73c7bcac81f81ca25b01"
+  },
+  {
+   "name": "Wiki Researcher",
+   "type": "conversational",
+   "model": null,
+   "repos": [],
+   "tools": [
+    "scrape_url"
+   ],
+   "avatar": "default",
+   "provider": null,
+   "max_turns": null,
+   "db_configs": [],
+   "description": "Used for tool-resolution in the orchestration to execute deepwiki searches.",
+   "system_prompt": "You are a researcher who searches through the wiki. Use your available tools to find relevant information for the provided queries.",
+   "orchestration_id": null,
+   "delegate_agent_ids": [],
+   "id": "agent_gpjkm15gtu"
+  }
+ ],
+ "mcp_servers": [],
+ "custom_tools": [
+  {
+   "url": "https://geticecream.com/{ice_cream_name}",
+   "name": "test",
+   "method": "GET",
+   "headers": {},
+   "tool_type": "http",
+   "description": "test tool",
+   "generalName": null,
+   "inputSchema": {
+    "type": "object",
+    "required": [],
+    "properties": {
+     "ice_cream_name": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  {
+   "url": "https://httpbin.org/get?n={{ n }}",
+   "name": "i1_echo",
+   "group": null,
+   "method": "GET",
+   "headers": {},
+   "tool_type": "http",
+   "description": "Echo a number back (I1 harness).",
+   "generalName": "I1 Echo",
+   "inputSchema": {
+    "type": "object",
+    "required": [
+     "n"
+    ],
+    "properties": {
+     "n": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ ]
+}

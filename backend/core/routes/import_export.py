@@ -7,6 +7,15 @@ Export:
 
 Import:
   POST /api/import        — import a bundle with user-supplied secret values
+
+One file for both products (F464, P-2): this install and SynapseOrch Cloud both
+write `{synapse_export, version "1.1", exported_from, exported_at, orchestrations,
+agents, mcp_servers, custom_tools}`, and both read `1.0` too. This importer also
+reads the file Cloud wrote before that envelope (`version: 1`, its tools under
+`tools`, workflows without ids): a workflow with no id is keyed by its place in
+the file, `#<index>`, and gets a new id here. What arrives but can't run here (a
+model this install can't serve, a tool it doesn't have, a workflow or agent the
+file doesn't carry) is imported anyway and listed in `warnings` (Naveen, D266).
 """
 
 import json
@@ -18,6 +27,9 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
+
+#: The envelope's version. "1.1" added `exported_from`; "1.0" files still import.
+BUNDLE_VERSION = "1.1"
 
 # --------------------------------------------------------------------------- #
 # Resources come from the store, through the same functions the CRUD routes
@@ -112,7 +124,8 @@ async def export_bundle(req: ExportRequest):
 
     bundle = {
         "synapse_export": True,
-        "version": "1.0",
+        "version": BUNDLE_VERSION,
+        "exported_from": "self-host",
         "exported_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "has_python_tools": has_python_tools,
         "orchestrations": selected_orchs,
@@ -153,11 +166,12 @@ async def import_bundle(req: ImportRequest):
     - MCP Servers: skipped if name already exists
     - Merges user-provided secrets back into env/headers before saving
     """
-    bundle = req.bundle
-
-    # --- Validate bundle ---
-    if not bundle.get("synapse_export"):
+    bundle = normalize_bundle(req.bundle)
+    if bundle is None:
         raise HTTPException(status_code=400, detail="Not a valid Synapse export bundle.")
+
+    from core.store.ids import new_id
+    from core.store.resources import save_agent, save_orchestration
 
     results: Dict[str, List[Dict[str, str]]] = {
         "orchestrations": [],
@@ -167,56 +181,62 @@ async def import_bundle(req: ImportRequest):
     }
 
     # ── Orchestrations ─────────────────────────────────────────────────────────
-    existing_orchs = await _load_orchestrations()
-    existing_orch_ids = {o["id"] for o in existing_orchs}
-    orch_changed = False
+    # Each one saved on its own: the store upserts by id, so re-saving every
+    # workflow the install already had (as this did) bought nothing.
+    existing_orch_ids = {o["id"] for o in await _load_orchestrations()}
+    selected_orchs = set(req.selected_orchestration_ids)
+    imported_orchs: List[dict] = []
 
-    for orch in bundle.get("orchestrations", []):
-        oid = orch.get("id")
-        if not oid or oid not in req.selected_orchestration_ids:
+    for index, orch in enumerate(bundle["orchestrations"]):
+        if not isinstance(orch, dict) or bundle_key(orch, index) not in selected_orchs:
             continue
-        # Upsert
-        existing_orchs = [o for o in existing_orchs if o["id"] != oid]
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         orch = dict(orch)
-        if oid not in existing_orch_ids:
+        oid = orch.get("id")
+        if not oid or str(oid).startswith("#"):
+            # Cloud's file before the envelope carried no workflow ids.
+            oid = orch["id"] = new_id("orch")
+        replaced = oid in existing_orch_ids
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if not replaced:
             orch["created_at"] = now
         orch["updated_at"] = now
-        existing_orchs.append(orch)
-        orch_changed = True
-        results["orchestrations"].append({"id": oid, "name": orch.get("name", oid), "status": "imported"})
-
-    if orch_changed:
-        from core.store.resources import save_orchestration
-        for o in existing_orchs:
-            await save_orchestration(o)
+        await save_orchestration(orch)
+        imported_orchs.append(orch)
+        results["orchestrations"].append(
+            {"id": oid, "name": orch.get("name", oid), "status": _status(replaced)})
 
     # ── Agents ─────────────────────────────────────────────────────────────────
-    existing_agents = await _load_agents()
-    agent_changed = False
+    existing_agent_ids = {a["id"] for a in await _load_agents()}
+    selected_agents = set(req.selected_agent_ids)
+    imported_agents: List[dict] = []
 
-    for agent in bundle.get("agents", []):
-        aid = agent.get("id")
-        if not aid or aid not in req.selected_agent_ids:
+    for agent in bundle["agents"]:
+        aid = agent.get("id") if isinstance(agent, dict) else None
+        if not aid or aid not in selected_agents:
             continue
-        existing_agents = [a for a in existing_agents if a["id"] != aid]
-        existing_agents.append(dict(agent))
-        agent_changed = True
-        results["agents"].append({"id": aid, "name": agent.get("name", aid), "status": "imported"})
-
-    if agent_changed:
-        from core.store.resources import save_agent
-        for a in existing_agents:
-            await save_agent(a)
+        await save_agent(dict(agent))
+        imported_agents.append(agent)
+        results["agents"].append({"id": aid, "name": agent.get("name", aid),
+                                  "status": _status(aid in existing_agent_ids)})
 
     # ── MCP Servers ─────────────────────────────────────────────────────────────
     existing_mcp = await _load_mcp_servers()
     existing_mcp_names = {m["name"] for m in existing_mcp}
-    mcp_changed = False
 
-    for mcp in bundle.get("mcp_servers", []):
-        mname = mcp.get("name")
+    for mcp in bundle["mcp_servers"]:
+        mname = mcp.get("name") if isinstance(mcp, dict) else None
         if not mname or mname not in req.selected_mcp_server_names:
+            continue
+
+        if mcp.get("platform"):
+            # A Cloud connected app (Google, …): its address is Cloud's own
+            # service, which nothing here can reach.
+            results["mcp_servers"].append({
+                "name": mname,
+                "label": mcp.get("label", mname),
+                "status": "skipped",
+                "message": "A Cloud connected app; connect it from this install's own settings.",
+            })
             continue
 
         if mname in existing_mcp_names:
@@ -242,19 +262,14 @@ async def import_bundle(req: ImportRequest):
         elif mcp_entry.get("token") == "xxxxxxxxx":
             mcp_entry["token"] = ""
         mcp_entry["status"] = "disconnected"
-        existing_mcp.append(mcp_entry)
-        mcp_changed = True
+        from core.store.resources import save_mcp_server
+        await save_mcp_server(mcp_entry)
         results["mcp_servers"].append({
             "name": mname,
             "label": mcp.get("label", mname),
             "status": "imported",
             "message": "Saved — connecting…",
         })
-
-    if mcp_changed:
-        from core.store.resources import save_mcp_server
-        for m in existing_mcp:
-            await save_mcp_server(m)
 
     # Always sync manager with authoritative disk state and attempt connections
     # for all selected servers (covers both newly imported and previously saved
@@ -316,11 +331,11 @@ async def import_bundle(req: ImportRequest):
                 mcp_result["message"] = "Saved — use 'Retry' in MCP Servers to connect"
 
     # ── Custom Tools ────────────────────────────────────────────────────────────
-    existing_tools = await _load_custom_tools()
-    tool_changed = False
+    existing_tool_names = {t.get("name") for t in await _load_custom_tools()}
+    imported_tools: List[dict] = []
 
-    for tool in bundle.get("custom_tools", []):
-        tname = tool.get("name")
+    for tool in bundle["custom_tools"]:
+        tname = tool.get("name") if isinstance(tool, dict) else None
         if not tname or tname not in req.selected_custom_tool_names:
             continue
 
@@ -331,25 +346,139 @@ async def import_bundle(req: ImportRequest):
             merged_headers = {k: user_secrets.get(k, "") for k in tool_entry["headers"].keys()}
             tool_entry["headers"] = merged_headers
 
-        existing_tools = [t for t in existing_tools if t["name"] != tname]
-        existing_tools.append(tool_entry)
-        tool_changed = True
+        imported_tools.append(tool_entry)
         results["custom_tools"].append({
             "name": tname,
-            "label": tool.get("generalName", tname),
-            "status": "imported",
+            "label": tool.get("generalName") or tname,
+            "status": _status(tname in existing_tool_names),
         })
 
-    if tool_changed:
+    if imported_tools:
+        # Upserts by name, leaving every other tool alone.
         from core.store.resources import save_tools
-        await save_tools(existing_tools)
+        await save_tools(imported_tools)
 
-    return {"status": "success", "results": results}
+    warnings = await _warnings(imported_orchs, imported_agents, [t["name"] for t in imported_tools])
+    return {"status": "success", "results": results, "warnings": warnings}
 
 
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
+
+def normalize_bundle(bundle: Any) -> Optional[dict]:
+    """The bundle as this importer reads it, or None when it isn't one.
+
+    Three shapes arrive: the envelope both products write (`synapse_export`,
+    "1.0" or "1.1"), and the file Cloud wrote before it (`version: 1`, an
+    integer, with its tools under `tools`).
+    """
+    if not isinstance(bundle, dict):
+        return None
+    if bundle.get("synapse_export"):
+        out = dict(bundle)
+    elif type(bundle.get("version")) is int and bundle["version"] == 1 and any(
+        isinstance(bundle.get(k), list) for k in ("orchestrations", "agents", "tools", "mcp_servers")
+    ):
+        out = {**bundle, "synapse_export": True, "exported_from": "cloud"}
+    else:
+        return None
+    if not isinstance(out.get("custom_tools"), list) and isinstance(out.get("tools"), list):
+        out["custom_tools"] = out["tools"]
+    for key in ("orchestrations", "agents", "mcp_servers", "custom_tools"):
+        if not isinstance(out.get(key), list):
+            out[key] = []
+    return out
+
+
+def bundle_key(orch: dict, index: int) -> str:
+    """How the import screen and a request name a workflow: its id, or `#<index>`
+    for one the file carries without an id."""
+    return str(orch.get("id") or f"#{index}")
+
+
+def _status(replaced: bool) -> str:
+    return "replaced" if replaced else "imported"
+
+
+def _warning(kind: str, entity: dict, message: str) -> Dict[str, str]:
+    return {"kind": kind, "id": str(entity.get("id") or ""),
+            "name": str(entity.get("name") or entity.get("id") or ""), "message": message}
+
+
+async def _available_tool_names() -> set:
+    """Every tool name this install offers right now: its running servers' and
+    its custom tools (the agent editor's picker, `/api/tools/available`)."""
+    try:
+        from core.routes.tools import get_available_tools
+        return {t.get("name") for t in (await get_available_tools()).get("tools", []) if t.get("name")}
+    except Exception:  # noqa: BLE001 — a warning list is never worth failing an import
+        return set()
+
+
+async def _warnings(orchs: List[dict], agents: List[dict], tool_names: List[str]) -> List[Dict[str, str]]:
+    """What was imported but can't run here yet, one sentence each (F464).
+
+    Nothing is refused for these: a self-hosted Ollama agent is still worth
+    having in Cloud, and the other way round, once someone picks a model.
+    """
+    out: List[Dict[str, str]] = []
+    agent_ids = {a["id"] for a in await _load_agents()}
+    orch_ids = {o["id"] for o in await _load_orchestrations()}
+
+    for agent in agents:
+        target = agent.get("orchestration_id")
+        if agent.get("type") == "orchestrator" and target and target not in orch_ids:
+            out.append(_warning("agents", agent, f"It runs the workflow {target}, which isn't in this "
+                                                 "file or on this install. Open it and pick its workflow."))
+        for other in agent.get("delegate_agent_ids") or []:
+            if other not in agent_ids:
+                out.append(_warning("agents", agent, f"It hands work to the agent {other}, which isn't "
+                                                     "in this file or on this install."))
+    for orch in orchs:
+        for step in orch.get("steps") or []:
+            used = step.get("agent_id") if isinstance(step, dict) else None
+            if used and used not in agent_ids:
+                out.append(_warning("orchestrations", orch,
+                                    f"Its step {step.get('name') or step.get('id')} uses the agent {used}, "
+                                    "which isn't in this file or on this install."))
+
+    # Models: imported as they are, and named when this install can't serve them.
+    uses: Dict[str, List[tuple]] = {}
+    for agent in agents:
+        if agent.get("model"):
+            uses.setdefault(str(agent["model"]), []).append(("agents", agent))
+    for orch in orchs:
+        for model in dict.fromkeys(str(s["model"]) for s in orch.get("steps") or []
+                                   if isinstance(s, dict) and s.get("model")):
+            uses.setdefault(model, []).append(("orchestrations", orch))
+    if uses:
+        try:
+            from core.config import load_settings
+            from core.model_readiness import model_problems
+            problems = await model_problems(dict(load_settings()), list(uses))
+        except Exception:  # noqa: BLE001
+            problems = {}
+        for model, problem in problems.items():
+            for kind, entity in uses.get(model, []) if problem else []:
+                out.append(_warning(kind, entity, f"Its model {model} can't answer on this install: "
+                                                  f"{problem} Pick a model for it."))
+
+    # Tools: an agent's tool this install doesn't have, now or in this file.
+    available = await _available_tool_names() | set(tool_names)
+    servers = {m.get("name") for m in await _load_mcp_servers()}
+    for agent in agents:
+        for tool in agent.get("tools") or []:
+            if (tool == "all" or str(tool).startswith("group:") or tool in available
+                    or ("__" in str(tool) and str(tool).split("__", 1)[0] in servers)):
+                continue
+            out.append(_warning("agents", agent, f"Its tool {tool} isn't available on this install."))
+
+    unique: Dict[tuple, Dict[str, str]] = {}
+    for w in out:
+        unique.setdefault((w["kind"], w["id"], w["message"]), w)
+    return list(unique.values())
+
 
 def _sanitize_mcp_servers(servers: List[dict]) -> List[dict]:
     """Replace MCP server env values with empty strings (keep keys). Redact token with placeholder."""
