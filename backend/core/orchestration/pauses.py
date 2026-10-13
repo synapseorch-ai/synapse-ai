@@ -109,8 +109,13 @@ def end_step(step_history: list, entry: dict) -> None:
         if (isinstance(existing, dict) and existing.get("step_id") == entry.get("step_id")
                 and existing.get("status") == "running"):
             kept = {key: existing[key] for key in ("started_at", "started_ms") if existing.get(key)}
+            # And what it worked before it asked (F439): the resumed stretch alone
+            # left out every model call before the question.
+            worked = existing.pop("worked_seconds", None)
             existing.update(entry)
             existing.update(kept)
+            if worked and isinstance(existing.get("duration_seconds"), (int, float)):
+                existing["duration_seconds"] = round(existing["duration_seconds"] + worked, 2)
             if "started_ms" not in kept:
                 # Opened before the exact stamps: its window stays the whole-second one.
                 existing.pop("started_ms", None)

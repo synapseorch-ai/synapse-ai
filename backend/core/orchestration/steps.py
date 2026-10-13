@@ -1716,7 +1716,9 @@ class ParallelStepExecutor:
                 with anyio.fail_after(sub_timeout):
                     async for event in sub_gen:
                         if event.get("type") == "human_input_required":
-                            pending_human_event = event
+                            # When this step started, for its entry: an approval's
+                            # entry counts the work before the pause (F439).
+                            pending_human_event = event if event.get("nested_run_id") else {**event, "step_started": step_start}
                             break
                         if event.get("type") == "orchestration_end":
                             pending_end_event = event
@@ -2120,7 +2122,9 @@ class LoopStepExecutor:
                         with anyio.fail_after(sub_timeout):
                             async for event in sub_gen:
                                 if event.get("type") == "human_input_required":
-                                    pending_human_event = event
+                                    # When this step started, for its entry: an approval's
+                                    # entry counts the work before the pause (F439).
+                                    pending_human_event = event if event.get("nested_run_id") else {**event, "step_started": step_start}
                                     break
                                 if event.get("type") == "orchestration_end":
                                     pending_end_event = event

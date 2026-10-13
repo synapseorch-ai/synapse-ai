@@ -1892,7 +1892,7 @@ class OrchestrationEngine:
         """
         asker = self.step_map.get(event.get("orch_step_id")) or step
         if asker is step:
-            return {
+            entry = {
                 "step_id": step.id,
                 "step_name": step.name,
                 "step_type": step.type.value,
@@ -1901,18 +1901,40 @@ class OrchestrationEngine:
                 "started_ms": int(step_start_time * 1000),
                 "output_key": step.output_key,
             }
+            return self._worked_before_asking(entry, event, step_start_time)
         chain = pause_chain(self.step_map, run.shared_state, step.id)
-        return {
+        # The pause, not the container's start: this is the wait. A step that
+        # asks for an approval opens at its own start, as at the top level, so
+        # its window holds the work it did before asking (F439).
+        started = time.time()
+        if event.get("kind") == "tool_approval" and event.get("step_started"):
+            started = float(event["step_started"])
+        entry = {
             "step_id": asker.id,
             "step_name": asker.name,
             "step_type": asker.type.value,
             "status": "paused",
-            # The pause, not the container's start: this is the wait.
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "started_ms": int(time.time() * 1000),
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started)),
+            "started_ms": int(started * 1000),
             "output_key": asker.output_key,
             "within": innermost_container(step.id, chain) if chain else step.id,
         }
+        return self._worked_before_asking(entry, event, started)
+
+    @staticmethod
+    def _worked_before_asking(entry: dict, event: dict, stretch_start: float) -> dict:
+        """An approval's pause keeps how long its step worked before asking (F439).
+
+        The answer reopens the entry and `pauses.end_step` closes it, adding the
+        resumed stretch to this: the step's duration is its work, the person's
+        wait in neither. It used to be the resumed stretch alone, so a host that
+        bills by duration charged nothing for the model calls before the question.
+        Not for a person's question (a Human step's entry is its wait) or a
+        workflow's (the nested run keeps its own).
+        """
+        if event.get("kind") == "tool_approval" and not event.get("nested_run_id"):
+            entry["worked_seconds"] = round(max(0.0, time.time() - stretch_start), 2)
+        return entry
 
     @staticmethod
     def _reopen_nested_pause(run: OrchestrationRun, step_id: str, parent_step) -> None:
