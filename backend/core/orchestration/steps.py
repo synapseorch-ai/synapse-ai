@@ -682,7 +682,10 @@ class ToolStepExecutor:
         custom_tools = resolved.custom_tools if resolved else await run_custom_tools(engine)
 
         tool_name = step.forced_tool
-        tool_obj = await resolve_one_tool(engine.server_module, tool_name, active_agent, custom_tools)
+        # A step with no agent names its own tool, and naming a tool is what opting in is: an opt-in builder tool
+        # (F495) is found here as by an agent that lists it. An agent's own list still governs a step that has one.
+        tool_obj = await resolve_one_tool(engine.server_module, tool_name, active_agent or {"tools": [tool_name]},
+                                          custom_tools)
         if not tool_obj:
             # Failed the way a tool call that fails is, below: the step's own
             # line says why (the engine's stream message is sanitised), and the

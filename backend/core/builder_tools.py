@@ -190,7 +190,7 @@ KNOWLEDGE_STEP_TYPES = frozenset({"retrieve", "ingest"})
 KNOWLEDGE_BUILDER_TOOLS = frozenset({"list_knowledge_bases"})
 #: Builder tools `"all"` does not reach (`core.tools.permits(opt_in=)`): an agent names them, as the builder's
 #: analyst does. Knowledge on or off, no `"all"` agent's roster — nor its prompt cache — changes (B1b's rule).
-OPT_IN_BUILDER_TOOLS = KNOWLEDGE_BUILDER_TOOLS
+OPT_IN_BUILDER_TOOLS: set[str] = set(KNOWLEDGE_BUILDER_TOOLS)
 _KNOWLEDGE_OFF = "Knowledge is switched off in this workspace"
 
 
@@ -1399,14 +1399,18 @@ _REGISTERED: dict[str, Any] = {}
 
 
 def register_builder_tool(schema: dict, handler: Any) -> None:
-    """Add a builder tool that lives in another module. Its schema joins `BUILDER_TOOL_SCHEMAS` (offered to an agent
-    that names it, as any builder tool is) and `_dispatch` hands its calls to `handler`, which may `_emit`."""
+    """Add a builder tool that lives in another module. Its schema joins `BUILDER_TOOL_SCHEMAS` and `_dispatch` hands
+    its calls to `handler`, which may `_emit`.
+
+    Opt-in (F495): offered to an agent that names it — the builder's own agents, a forced tool step — never through
+    `"all"`, so no other agent's roster, prompt or cache changes when one is added."""
     name = schema["function"]["name"]
     if name in BUILDER_TOOL_NAMES and name not in _REGISTERED:
         raise ValueError(f"builder tool {name!r} already exists")
     if name not in _REGISTERED:
         BUILDER_TOOL_SCHEMAS.append(schema)
         BUILDER_TOOL_NAMES.add(name)
+    OPT_IN_BUILDER_TOOLS.add(name)
     _REGISTERED[name] = handler
 
 
