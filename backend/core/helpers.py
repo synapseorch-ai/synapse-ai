@@ -41,6 +41,12 @@ conversation. Its parent's turn goes on, and may end. When it ends, its result g
 
 A server restart leaves it failed, and says so in its parent's conversation
 (`sweep_interrupted`, at boot).
+
+**On a fleet** (cloud, SUB1b) a turn runs in any worker, so a host installs itself
+(`install`): it starts a background helper where it runs it — a chat job of its own,
+`run_agent_chat_job(helper=…)` — counts a conversation's helpers wherever they work
+(`elsewhere`), and takes each result back (`deliver`: one follow-up job, which waits
+for any turn running there). With no host, all of it is in-process, as above.
 """
 from __future__ import annotations
 
@@ -149,6 +155,8 @@ class Helper:
     #: A background helper's own conversation (`helperc_…`), and the one it reports back to.
     session_id: str = ""
     conversation: "Conversation | None" = None
+    #: Whether it starts marked (F279): its parent's flag, carried to wherever it runs.
+    untrusted: bool = False
     _timed_out: bool = False
 
     @property
@@ -156,6 +164,26 @@ class Helper:
         if not self.started_at:
             return 0.0
         return round((self.ended_at or time.time()) - self.started_at, 1)
+
+    def spec(self, *, untrusted: bool) -> dict:
+        """What a host needs to run it elsewhere (cloud: a job's kwarg), as JSON."""
+        return {"id": self.id, "name": self.name, "task": self.task, "tools": list(self.tools),
+                "withheld": list(self.withheld), "model": self.model, "agent": dict(self.agent),
+                "mode": self.mode, "limit_seconds": self.limit_seconds, "session_id": self.session_id,
+                "conversation": self.conversation.link() if self.conversation is not None else None,
+                "untrusted": bool(untrusted)}
+
+    @classmethod
+    def from_spec(cls, spec: dict) -> "Helper":
+        link = spec.get("conversation")
+        return cls(id=str(spec["id"]), name=str(spec.get("name") or "Helper"), task=str(spec.get("task") or ""),
+                   tools=list(spec.get("tools") or []), withheld=list(spec.get("withheld") or []),
+                   model=str(spec.get("model") or ""), agent=dict(spec.get("agent") or {}),
+                   mode=str(spec.get("mode") or "background"),
+                   limit_seconds=float(spec.get("limit_seconds") or BACKGROUND_SECONDS),
+                   session_id=str(spec.get("session_id") or ""),
+                   conversation=Conversation.from_link(link) if isinstance(link, dict) else None,
+                   untrusted=bool(spec.get("untrusted")))
 
     def tag(self, event: dict) -> dict:
         return {"type": "helper_event", "helper_id": self.id, "helper_name": self.name, "event": event}
@@ -380,10 +408,13 @@ def live(key: tuple) -> dict[str, Helper]:
     return _LIVE.get(key, {})
 
 
-def reserve(key: tuple, helper: Helper) -> bool:
-    """Count the helper in; False (nothing counted) at the cap."""
+def reserve(key: tuple, helper: Helper, *, elsewhere: int = 0) -> bool:
+    """Count the helper in; False (nothing counted) at the cap. `elsewhere` is how many of this conversation's
+    helpers work in other processes (a host's, `elsewhere()`): they count too."""
     held = _LIVE.setdefault(key, {})
-    if len(held) >= MAX_LIVE:
+    if len(held) + max(0, elsewhere) >= MAX_LIVE:
+        if not held:
+            _LIVE.pop(key, None)
         return False
     held[helper.id] = helper
     return True
@@ -395,6 +426,11 @@ def release(key: tuple, helper_id: str) -> None:
         held.pop(helper_id, None)
         if not held:
             _LIVE.pop(key, None)
+
+
+def live_in(session_id: str) -> bool:
+    """Whether a helper works in this process for this conversation (its Stop can be asked from elsewhere)."""
+    return any(key[0] == "conversation" and key[2] == session_id and held for key, held in _LIVE.items())
 
 
 def find(helper_id: str, session_id: str | None = None) -> Helper | None:
@@ -630,23 +666,83 @@ def _detached() -> contextvars.Context:
     return ctx
 
 
-async def start_background(helper: Helper, *, conversation: Conversation, key: tuple, server_module,
-                           untrusted: bool) -> None:
-    """Start a reserved helper on a chat turn of its own, in the background; it reports back when it ends."""
-    from core import chat_turns
-    from core.store import sessions as store
+# ── a host that runs them elsewhere (SUB1b) ──────────────────────────────────
+#
+# In one process (OSS) a background helper is a task the server holds, and its
+# result is handed to a turn in the same process. A fleet (cloud) runs a turn in
+# any worker, so a host installs itself here: it starts a background helper where
+# it runs it (cloud: a chat job of its own), says how many of a conversation's
+# helpers work elsewhere, and takes a result back (cloud: one follow-up job). With
+# none installed, everything here is in-process, as it was.
 
+
+class Refused(Exception):
+    """A background helper the host would not start (a cap, no credits): its words are what the agent reads."""
+
+
+_HOST = None
+
+
+def install(host) -> None:
+    """Install the host: `start_background(helper, *, conversation, live_here, untrusted)`, `elsewhere(key)`
+    and `deliver(conversation, items)`, all async."""
+    global _HOST
+    _HOST = host
+
+
+def uninstall() -> None:
+    global _HOST
+    _HOST = None
+
+
+async def elsewhere(key: tuple) -> int:
+    """How many of this conversation's helpers work in other processes (0 with no host, or in a workflow step)."""
+    if _HOST is None or not key or key[0] != "conversation":
+        return 0
+    try:
+        return max(0, int(await _HOST.elsewhere(key)))
+    except Exception as exc:  # noqa: BLE001 — the host's own start claim is the hard cap
+        _log.warning(f"counting helpers elsewhere: {exc}")
+        return 0
+
+
+def prepare_background(helper: Helper, conversation: Conversation) -> None:
+    """Make a built helper a background one: its own conversation, its time limit, where it reports."""
     helper.mode = "background"
     helper.limit_seconds = BACKGROUND_SECONDS
-    helper.session_id = f"{SESSION_PREFIX}{uuid.uuid4().hex[:16]}"
+    helper.session_id = helper.session_id or f"{SESSION_PREFIX}{uuid.uuid4().hex[:16]}"
     helper.conversation = conversation
-    # Its row first, linked to its parent's conversation: a restart from here on is found and told (the sweep).
+
+
+async def open_row(helper: Helper, conversation: Conversation) -> None:
+    """Its row, linked to its parent's conversation, `running`: a restart from here on is found and told."""
+    from core.store import sessions as store
+
     await store.append_turn(helper.session_id, helper.id, [{
         "role": "user", "content": helper.task,
         "automated": {"kind": "helper_brief", "helper_id": helper.id, "name": helper.name,
                       "tools": list(helper.tools), "model": helper.model, **conversation.link()},
     }])
     await store.set_status(helper.session_id, helper.id, "running")
+
+
+async def start_background(helper: Helper, *, conversation: Conversation, key: tuple, server_module,
+                           untrusted: bool) -> None:
+    """Start a reserved helper on a chat turn of its own, in the background; it reports back when it ends.
+
+    With a host installed the host starts it where it runs it, and counts it there: it leaves this process's
+    count. A host that will not start it raises `Refused`.
+    """
+    from core import chat_turns
+
+    prepare_background(helper, conversation)
+    helper.untrusted = bool(untrusted)
+    if _HOST is not None:
+        await _HOST.start_background(helper, conversation=conversation,
+                                     live_here=max(0, len(live(key)) - 1), untrusted=bool(untrusted))
+        release(key, helper.id)
+        return
+    await open_row(helper, conversation)
     with chat_turns.claim(helper.session_id, message=helper.task, agent_key=helper.id) as turn:
         turn.start(_background(helper, server_module=server_module, untrusted=untrusted), context=_detached())
     _BACKGROUND[helper.id] = helper
@@ -671,8 +767,22 @@ async def _background(helper: Helper, *, server_module, untrusted: bool) -> Asyn
         await _finish(helper)
 
 
+async def run_detached(helper: Helper, *, server_module) -> AsyncIterator[dict]:
+    """A background helper's run where its host drives it (a fleet job): its events, as `run`'s. The host saves
+    how it ended (`save_ending`) and reports it (`report`)."""
+    async for event in run(helper, server_module=server_module, session_id=helper.conversation.session_id,
+                           source="chat", run_id=None, untrusted=helper.untrusted):
+        yield event
+
+
 async def _finish(helper: Helper) -> None:
     """Save how a background helper ended, then send its result back (in a task of its own)."""
+    await save_ending(helper)
+    await report(helper)
+
+
+async def save_ending(helper: Helper) -> None:
+    """Save how a background helper ended, on its own row: its record and its status."""
     from core.session import _now
     from core.store import sessions as store
 
@@ -685,6 +795,14 @@ async def _finish(helper: Helper) -> None:
         await store.set_status(helper.session_id, helper.id, helper.status)
     except Exception as exc:  # noqa: BLE001 — the result still goes back
         _log.warning(f"saving background helper {helper.id}: {exc}")
+
+
+async def report(helper: Helper, *, said: str | None = None) -> None:
+    """Send a background helper's result back to the agent that sent it — never one a person stopped.
+
+    `said` is a reply posted with it, in place of a model call (a helper a restart cut short). With a host
+    installed the host takes it (cloud: one follow-up job), and this waits until it has.
+    """
     conversation = helper.conversation
     if helper.status == "cancelled":
         # Stopped by the person, who knows: no follow-up. A turn still reading there is told.
@@ -692,11 +810,25 @@ async def _finish(helper: Helper) -> None:
         if inbox is not None:
             inbox.put({"kind": "helper_stopped", "helper_id": helper.id, "name": helper.name})
         return
-    redeliver(conversation, [result_item(helper)])
+    item = result_item(helper)
+    if said:
+        item["said"] = said
+    if _HOST is not None:
+        await _HOST.deliver(conversation, [item])
+        return
+    redeliver(conversation, [item])
 
 
 def redeliver(conversation: Conversation, items: list[dict]) -> None:
     """Send results back, each exactly once, in tasks of their own (the caller may be ending)."""
+    if not items:
+        return
+    if _HOST is not None:
+        task = asyncio.create_task(_HOST.deliver(conversation, [dict(i) for i in items]),
+                                   name="helper-deliver-host", context=_detached())
+        _DELIVERING.add(task)
+        task.add_done_callback(_delivered)
+        return
     for item in items:
         task = asyncio.create_task(deliver(conversation, item), name=f"helper-deliver-{item.get('helper_id')}",
                                    context=_detached())

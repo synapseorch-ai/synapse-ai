@@ -1751,13 +1751,15 @@ async def run_agent_step(
         nonlocal _spawn_results
         made: list = []
         results: list = []
+        # This conversation's helpers working in other processes count too (a fleet's background ones, SUB1b).
+        _elsewhere = await _helpers.elsewhere(_helper_cap)
         for args in group:
             helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
                                     available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
                                     roles=model_roles, settings=current_settings)
             if args.get("background"):
                 helper.note = _helpers.RAN_AS_A_WAIT
-            if _helpers.reserve(_helper_cap, helper):
+            if _helpers.reserve(_helper_cap, helper, elsewhere=_elsewhere):
                 made.append(helper)
                 results.append(helper)
             else:
@@ -1783,12 +1785,16 @@ async def run_agent_step(
         helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
                                 available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
                                 roles=model_roles, settings=current_settings, mode="background")
-        if not _helpers.reserve(_helper_cap, helper):
+        if not _helpers.reserve(_helper_cap, helper, elsewhere=await _helpers.elsewhere(_helper_cap)):
             _spawn_results = [(helper.name, _helpers.AT_CAP.format(n=_helpers.MAX_LIVE))]
             return
         try:
             await _helpers.start_background(helper, conversation=inbox.conversation, key=_helper_cap,
                                             server_module=server_module, untrusted=_memory_tainted)
+        except _helpers.Refused as refused:  # a host's cap, or no credits: its own words, said once
+            _helpers.release(_helper_cap, helper.id)
+            _spawn_results = [(helper.name, str(refused))]
+            return
         except Exception as exc:  # noqa: BLE001 — told to the model, which carries on
             _helpers.release(_helper_cap, helper.id)
             _log.warning(f"background helper '{helper.name}' did not start: {exc}")
@@ -3274,6 +3280,12 @@ async def run_agent_step(
         yield _kn_citations
     final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
                    "tool_name": tool_name}
+    if not (not is_orchestrator and persist_turn and not _workflow_step and save_turn):
+        # Saved by its caller (the fleet's chat job, `save_here=False`, SUB1b): what to keep with the answer —
+        # its helpers' records, and the results it read, which `run_react_loop` then counts as arrived.
+        _read_here = inbox.in_flight_ids() if inbox is not None else []
+        if _turn_helpers or _read_here:
+            final_event.update(helpers=[dict(h) for h in _turn_helpers], inbox_read=_read_here)
     if _unanswered is not None:
         final_event["no_answer"] = _unanswered
     if stream_answer:
@@ -3734,6 +3746,10 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                 # with the question, for the resume to read (`_event_stream` parks it).
                 yield {"type": "_inbox_parked", "state": _inbox.park()}
             elif _inbox is not None and event.get("type") == "final":
+                if not (save_turn and save_here):
+                    # Its caller saves the answer, with the results it read (`final`'s `inbox_read`): they
+                    # have arrived, and must not go back again (SUB1b).
+                    _inbox.settle()
                 # Answered: what arrived after its last look goes back another way.
                 _helpers.redeliver(_inbox.conversation, _inbox.close())
             _agent_log.log_event(event)

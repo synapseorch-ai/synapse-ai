@@ -138,21 +138,30 @@ class ChatEventPublisher:
     hundred stream entries rather than one per model chunk — the stream is
     capped at `STREAM_MAXLEN`, and a reader that reattaches replays it. Any
     other event sends what is held first, so the order is the engine's.
+
+    `chat_turn` tags every event this publisher sends, `done` included (SUB1b):
+    a conversation has one stream, and two turns on it — a person's, and the
+    follow-up a helper's result starts — must not read as one. A reader that
+    names its turn skips the other's events and ends on its own `done`. Untagged,
+    events are as they always were. Not `turn`: that is the loop's step number.
     """
 
     STREAM_MAXLEN = 5_000
     DELTA_WINDOW = 0.1
 
-    def __init__(self, redis_client, session_id: str, ttl: int = 3600):
+    def __init__(self, redis_client, session_id: str, ttl: int = 3600, *, chat_turn: str | None = None):
         self._redis = redis_client
         self._session_id = session_id
         self._key = f"synapse:chat:{session_id}:events"
         self._ttl = ttl
+        self._chat_turn = chat_turn or None
         self._held: dict | None = None          # a merged answer_delta not yet sent
         self._flusher: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict) -> None:
+        if self._chat_turn is not None:
+            event = {**event, "chat_turn": self._chat_turn}
         if event.get("type") == "answer_delta":
             async with self._lock:
                 held = self._held
@@ -226,6 +235,32 @@ async def clear_cancellation(redis_client, run_id: str) -> None:
 #: names a session after a run.
 def _chat_cancel_key(session_id: str) -> str:
     return f"synapse:cancel:chat:{session_id}"
+
+
+def _helper_stop_key(session_id: str) -> str:
+    return f"synapse:helper-stop:chat:{session_id}"
+
+
+async def publish_helper_stop(redis_client, session_id: str, helper_id: str, ttl: int = 3600) -> None:
+    """Ask the turn running for this chat session to stop one helper it waits for (SUB1b).
+
+    A helper its parent waits for runs inside the parent's job, in whichever
+    worker has it; the job's cancel watcher reads this set while it has helpers
+    working, and the helper stops at its next turn (`core.helpers`).
+    """
+    key = _helper_stop_key(session_id)
+    await redis_client.sadd(key, helper_id)
+    await redis_client.expire(key, ttl)
+
+
+async def take_helper_stops(redis_client, session_id: str) -> list[str]:
+    """The helper ids asked to stop in this chat session, taken (each is acted on once)."""
+    key = _helper_stop_key(session_id)
+    members = await redis_client.smembers(key)
+    if not members:
+        return []
+    await redis_client.srem(key, *members)
+    return [m.decode() if isinstance(m, bytes) else str(m) for m in members]
 
 
 async def publish_chat_cancellation(redis_client, session_id: str, ttl: int = 3600) -> None:

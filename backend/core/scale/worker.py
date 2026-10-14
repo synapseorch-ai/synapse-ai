@@ -575,6 +575,7 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
                 if await is_chat_cancelled(redis, session_id):
                     driver.cancel()
                     return
+                await _stop_asked_helpers(redis, session_id)
             except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
                 pass
             with contextlib.suppress(asyncio.TimeoutError):
@@ -596,6 +597,119 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
         watcher.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await watcher
+
+
+async def _stop_asked_helpers(redis, session_id: str) -> None:
+    """Stop the helpers a person stopped from another process, that this turn waits for (SUB1b).
+
+    Their parent's job runs them, in whichever worker has it, so a Stop is a
+    Redis set the job's watcher reads — only while a helper works here.
+    """
+    from core import helpers
+
+    if not helpers.live_in(session_id):
+        return
+    from core.scale.pubsub import take_helper_stops
+
+    for helper_id in await take_helper_stops(redis, session_id):
+        found = helpers.find(helper_id, session_id)
+        if found is not None:
+            found.stop_requested = True
+
+
+#: What a background helper a restart cut short says, in place of the result it never had (SUB1a's words).
+HELPER_CUT_SHORT = "It stopped when the server restarted, before it finished."
+
+
+async def _run_background_helper(ctx: dict, session_id: str, spec: dict, *, chat_turn: str | None) -> dict:
+    """A background helper's own job (SUB1b): `run_agent_chat_job(helper=…)`.
+
+    It runs on its own conversation (`helperc_…`, whose row the host wrote when it
+    started it) and its own stream, which its lane reads; Stop is that
+    conversation's cancel. However it ends, its row says so, and its result goes
+    back once to the agent that sent it (`helpers.report`: the host's follow-up) —
+    never one a person stopped. Handed out again after a cut, it does not run
+    again: it says it stopped, as the in-process boot sweep does.
+    """
+    from core import helpers
+    from core.scale import drain, mcp_needs
+    from core.scale.pubsub import ChatEventPublisher
+
+    cfg = get_scale_config()
+    redis = ctx["redis"]
+    helper = helpers.Helper.from_spec(spec)
+    publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl, chat_turn=chat_turn)
+
+    async def cut_short() -> None:
+        helper.status, helper.error = "failed", HELPER_CUT_SHORT
+        helper.ended_at = helper.ended_at or time.time()
+        await helpers.save_ending(helper)
+        with contextlib.suppress(Exception):
+            await publisher.publish(helper.finished_event())
+            await publisher.publish_done()
+        await helpers.report(helper, said=helpers.RESTARTED.format(name=helper.name))
+
+    if ctx.get("job_try", 1) > 1:
+        if await _told_at_the_cut(redis, ctx.get("job_id")):
+            return {"status": "interrupted", "session_id": session_id, "told_at_the_cut": True}
+        await cut_short()
+        _log.info(f"[worker] helper {helper.id}: handed out again (try {ctx['job_try']}) — not rerun")
+        return {"status": "interrupted", "session_id": session_id}
+
+    leased = False
+    try:
+        needs = await mcp_needs.for_agent(helper.agent)
+        with mcp_pool.needing(needs):
+            server_module = await mcp_pool.acquire()
+        leased = True
+
+        async def consume():
+            async for event in helpers.run_detached(helper, server_module=server_module):
+                await publisher.publish(event)
+
+        cancelled = await _run_chat_turn_cancellably(redis, session_id, consume)
+        if cancelled:
+            # Stopped from outside: the run recorded it and said nothing more, so its lane is told here.
+            helper.status = "cancelled"
+            await clear_chat_cancellation(redis, session_id)
+            await publisher.publish(helper.finished_event())
+        await helpers.save_ending(helper)
+        await publisher.publish_done()
+        await helpers.report(helper)
+        return {"status": helper.status, "session_id": session_id}
+
+    except asyncio.CancelledError:
+        # A stopping worker's cut (F424): said now, and the next delivery finds it told.
+        if not drain.draining():
+            raise
+        task = asyncio.current_task()
+        if task is not None and hasattr(task, "uncancel"):
+            task.uncancel()
+
+        async def tell() -> None:
+            await cut_short()
+            await _mark_told_at_the_cut(redis, ctx.get("job_id"))
+
+        try:
+            await asyncio.wait_for(asyncio.shield(tell()), timeout=CUT_TELL_SECONDS)
+        except BaseException as e:  # noqa: BLE001 — the next delivery says it if this could not
+            _log.warning(f"[worker] helper {helper.id}: could not tell the cut: {e!r}")
+        raise
+
+    except Exception as exc:  # noqa: BLE001 — it failed before it could run: its agent is told, once
+        _log.warning(f"[worker] helper {helper.id} failed: {exc}")
+        helper.status, helper.error = "failed", str(exc) or type(exc).__name__
+        helper.ended_at = helper.ended_at or time.time()
+        await helpers.save_ending(helper)
+        with contextlib.suppress(Exception):
+            await publisher.publish(helper.finished_event())
+            await publisher.publish_done()
+        await helpers.report(helper)
+        return {"status": "failed", "session_id": session_id}
+
+    finally:
+        if leased:
+            await mcp_pool.release()
 
 
 async def _visitor_turn(visitor: dict | None, events):
@@ -648,8 +762,32 @@ async def run_agent_chat_job(
     log_source: str = "chat",
     report_usage: bool = False,
     keep_parked: bool = False,
+    background_ok: bool = False,
+    automated: dict | None = None,
+    inbox_seed: list | None = None,
+    helper: dict | None = None,
+    chat_turn: str | None = None,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
+
+    Helpers (SUB1b, `core.helpers`). Every one defaults to "as before", for a job
+    enqueued before they existed (a parked voice answer's stored kwargs, VOX1f):
+
+    * `background_ok` is the enqueuer's word that this is the app's chat or a
+      member's own channel, where an agent may send a helper to the background
+      (S4) — never a visitor's turn, which the engine refuses whatever is said. It
+      opens the turn's inbox, as the app's chat route does in-process.
+    * `automated` makes the turn a follow-up: its question is a helper's result,
+      not the person's words. It is read as automated, untrusted, offers no
+      background, never expands `@[…]`, never moves past a parked question, and
+      every save of it keeps the mark.
+    * `inbox_seed` is results a host took off a question the person moved past,
+      for this turn to read first.
+    * `helper` is a background helper's spec (`Helper.spec`): this job *is* that
+      helper, on its own conversation, and reports back when it ends
+      (`_run_background_helper`).
+    * `chat_turn` tags every event this job publishes, so two turns on one
+      conversation's stream never read as one (`ChatEventPublisher`).
 
     `keep_parked` is a phone call's (F486): the question the call parked waits while the caller talks on — it
     is answered from the bell, and said on the call (F474) — so a new turn does not move past it, and a second
@@ -693,11 +831,25 @@ async def run_agent_chat_job(
     _active_jobs += 1
     cfg = get_scale_config()
     await _load_job_settings()
+    if helper is not None:
+        try:
+            return await _run_background_helper(ctx, session_id, helper, chat_turn=chat_turn)
+        finally:
+            _active_jobs = max(0, _active_jobs - 1)
 
     redis = ctx["redis"]
     session_factory = ctx["session_factory"]
     leased = False
     images = images or []
+    # A helper's result posted back is nobody's text: never read as the person's `@[…]` (SUB1b).
+    expand_mentions = expand_mentions and not automated
+    # What the turn's helpers did, from their events: kept by a turn saved from outside the loop's answer.
+    helper_events: list[dict] = []
+    # From the loop's `final`, when it answers: the records, and the results the answer read.
+    turn_helpers: list[dict] | None = None
+    turn_inbox_read: list[str] = []
+    # What the turn's inbox held when it parked (never published).
+    parked_inbox: dict | None = None
 
     # Set before the `try`, so the `except` can tell "we never got far enough to
     # have a publisher" from "the turn failed with one". See below.
@@ -735,10 +887,13 @@ async def run_agent_chat_job(
         next turn's model said it had never run them — and a tool that acts could
         be run twice.
         """
-        from core.session import image_notes, thinking_from_events, tools_from_calls, turn_calls
+        from core.session import (helpers_from_events, image_notes, thinking_from_events, tools_from_calls,
+                                  turn_calls)
         question = {"role": "user", "content": message}
         if images:
             question["images"] = image_notes(images)
+        if automated:
+            question["automated"] = dict(automated)
         answer = {"role": "assistant", "content": content}
         calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
         if calls:
@@ -748,6 +903,9 @@ async def run_agent_chat_job(
             answer["reasoning"] = reasoning
         if thoughts:
             answer["thoughts"] = thoughts
+        # Its helpers' lanes, as far as they got (SUB1b): a background one works on in its own conversation.
+        if kept := helpers_from_events(helper_events, resume_state):
+            answer["helpers"] = kept
         return [question, answer]
 
     try:
@@ -781,28 +939,35 @@ async def run_agent_chat_job(
                           f"already told at the cut")
                 return {"status": "interrupted", "session_id": session_id, "told_at_the_cut": True}
             from core.scale.pubsub import ChatEventPublisher
-            publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
+            publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl, chat_turn=chat_turn)
             await publisher.publish({"type": "error", "message": INTERRUPTED_TURN})
             await publisher.publish_done()
-            history.append({"role": "user", "content": message})
+            history.append({"role": "user", "content": message,
+                            **({"automated": dict(automated)} if automated else {})})
             history.append({"role": "assistant", "content": INTERRUPTED_TURN})
             await _save_row("failed", history)
             _log.info(f"[worker] chat {session_id}: turn handed out again (try {ctx['job_try']}) — not rerun")
             return {"status": "interrupted", "session_id": session_id}
 
-        if resume_state is None and not keep_parked:
+        seed = [dict(i) for i in inbox_seed or [] if isinstance(i, dict)]
+        if resume_state is None and not keep_parked and not automated:
             # A new message refuses the call this conversation waits on (F247).
             # The turn that asked goes into `history` in its own place, which
             # the row below writes before the loop reads the conversation.
+            # A follow-up never does: the person did not move on (SUB1a).
             from core.chat_approval import settle_moved_past
-            moved = await settle_moved_past(session_id, agent_id or "default", save_as=None, redis=redis)
+            # What that turn kept from its helpers, this one reads first (SUB1b).
+            carried: list = []
+            moved = await settle_moved_past(session_id, agent_id or "default", save_as=None, redis=redis,
+                                            carried=carried)
             if moved:
                 history.extend(moved)
+            seed.extend(carried)
 
         await _save_row("running", history)
 
         from core.scale.pubsub import ChatEventPublisher
-        publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
+        publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl, chat_turn=chat_turn)
 
         # This tenant's MCP session set, from the bounded pool. It merges the
         # process-wide native servers with the tenant's own, so what the engine
@@ -842,6 +1007,10 @@ async def run_agent_chat_job(
         chat_request._image_refs = list(image_refs or []) or None
         # The run a workflow agent starts, under the enqueuer's id (F417).
         chat_request._workflow_run_id = workflow_run_id or None
+        # Helpers (SUB1b): the app's chat or a member's channel, a follow-up's mark, results to read first.
+        chat_request._app_chat = bool(background_ok)
+        chat_request._automated = dict(automated) if automated else None
+        chat_request._inbox_seed = seed or None
         # Whether this turn stopped to ask a person something: read after
         # `_consume` returns, which is why it is declared out here (the last
         # snapshot and the calls since it are declared above the `try`).
@@ -853,7 +1022,8 @@ async def run_agent_chat_job(
         async def _consume():
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
-            nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting, turn_citations
+            nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting, turn_citations, \
+                turn_helpers, turn_inbox_read, parked_inbox
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
@@ -879,6 +1049,18 @@ async def run_agent_chat_job(
                     latest_progress = {k: v for k, v in event.items() if k != "type"}
                     events_since_progress.clear()
                     continue
+                # What the turn's helpers sent and it had not answered, as it parked (SUB1b): engine state,
+                # kept with the question, never on the stream.
+                if etype == "_inbox_parked":
+                    parked_inbox = event.get("state") or None
+                    continue
+                if etype in ("helper_started", "helper_finished"):
+                    helper_events.append(event)
+                elif etype == "final" and ("helpers" in event or "inbox_read" in event):
+                    # This job saves the answer: what to keep with it comes on `final`, and stays off the stream.
+                    turn_helpers = list(event.get("helpers") or [])
+                    turn_inbox_read = list(event.get("inbox_read") or [])
+                    event = {k: v for k, v in event.items() if k not in ("helpers", "inbox_read")}
                 if etype in ("tool_execution", "tool_result"):
                     events_since_progress.append(event)
                 elif etype in ("llm_reasoning", "llm_thought"):
@@ -957,9 +1139,13 @@ async def run_agent_chat_job(
             from core.store import sessions as _sessions
             waiting = await _sessions.get_pending_approval(session_id, agent_id or "default") if keep_parked else None
             if waiting is None:
+                progress = latest_progress
+                if parked_inbox and (parked_inbox.get("pending") or parked_inbox.get("in_flight")):
+                    # Read when the question is answered, or by the next turn if it is moved past (SUB1a).
+                    progress = {**(latest_progress or {}), "inbox": parked_inbox}
                 await _sessions.set_pending_approval(
                     session_id, agent_id or "default",
-                    parked_payload(paused_on, message=message, progress=latest_progress),
+                    parked_payload(paused_on, message=message, progress=progress, automated=automated),
                 )
             # Else a call's first question still waits (F486): this one is not asked; the call says so.
             await _save_row("paused", history)
@@ -987,10 +1173,13 @@ async def run_agent_chat_job(
         # With what the question carried (F245) and what the turn's tools did
         # (F242), as the in-process path saves them: a bare pair left the next
         # turn blind to both.
-        from core.session import citation_fields, image_notes, thinking_from_events, turn_calls, tools_from_calls
+        from core.session import (citation_fields, helpers_from_events, image_notes, thinking_from_events,
+                                  turn_calls, tools_from_calls)
         question = {"role": "user", "content": message}
         if images:
             question["images"] = image_notes(images)
+        if automated:
+            question["automated"] = dict(automated)
         history.append(question)
         calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
         answer_entry = {"role": "assistant", "content": response_text}
@@ -1005,6 +1194,13 @@ async def run_agent_chat_job(
         # they name the owner's files (F333).
         if visitor is None:
             answer_entry.update(citation_fields(turn_citations))
+        # Its helpers' lanes (SUB1a's S7, on the fleet): the loop's own records when it answered, else what
+        # their events said (a Stop). And the results it read, so each is known to have arrived.
+        kept_helpers = turn_helpers if turn_helpers is not None else helpers_from_events(helper_events, resume_state)
+        if kept_helpers:
+            answer_entry["helpers"] = [dict(h) for h in kept_helpers]
+        if turn_inbox_read:
+            answer_entry["inbox_read"] = list(turn_inbox_read)
         history.append(answer_entry)
         recorded = True
         await _save_row("cancelled" if cancelled else "completed", history)
@@ -1057,7 +1253,7 @@ async def run_agent_chat_job(
                     return  # cut before the conversation was read: the next delivery says it, as before
                 if publisher is None:
                     from core.scale.pubsub import ChatEventPublisher
-                    publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl)
+                    publisher = ChatEventPublisher(redis, session_id, ttl=cfg.pubsub_event_ttl, chat_turn=chat_turn)
                 with contextlib.suppress(Exception):
                     await publisher.publish({"type": "error", "message": INTERRUPTED_TURN})
                     await publisher.publish_done()

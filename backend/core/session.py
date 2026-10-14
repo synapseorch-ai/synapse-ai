@@ -193,14 +193,20 @@ def calls_from_events(events: list[dict]) -> list[dict]:
 
 def helpers_from_events(events: list[dict], resumed: dict | None = None) -> list[dict]:
     """The records of the helpers a turn sent, for a turn saved from outside the engine (a Stop): those its
-    snapshot held, then each `helper_finished` since — a helper the Stop cut short is kept as stopped."""
+    snapshot held, then each `helper_finished` since — a helper the Stop cut short is kept as stopped. A helper
+    sent to the background works on in its own conversation, whatever its parent did: it is kept running, with
+    that conversation, for History to read how it went (F566)."""
     kept = {h.get("id"): dict(h) for h in (resumed or {}).get("helpers") or [] if isinstance(h, dict)}
     for event in events:
         if event.get("type") == "helper_started" and event.get("helper_id") not in kept:
+            background = event.get("mode") == "background"
             kept[event["helper_id"]] = {"id": event["helper_id"], "name": event.get("helper_name") or "",
                                         "task": event.get("task") or "", "tools": list(event.get("tools") or []),
                                         "model": event.get("model") or "", "mode": event.get("mode") or "wait",
-                                        "status": "cancelled", "calls": [], "answer": ""}
+                                        "status": "running" if background else "cancelled", "calls": [],
+                                        "answer": ""}
+            if background and event.get("session_id"):
+                kept[event["helper_id"]]["session_id"] = event["session_id"]
         elif event.get("type") == "helper_finished" and isinstance(event.get("record"), dict):
             kept[event.get("helper_id")] = dict(event["record"])
     return list(kept.values())

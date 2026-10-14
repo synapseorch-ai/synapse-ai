@@ -253,6 +253,7 @@ async def _isolate_helpers(_isolate_chat_turns):
                          chat_turns._FREE):
             registry.clear()
         helpers._DELIVERED.clear()
+        helpers.uninstall()  # a host one test installed (SUB1b) never reaches the next
 
     clear()
     yield
