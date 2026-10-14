@@ -72,15 +72,13 @@ async def missing(names: list[Any], server_module: Any, *, cutoff: float = 0.75)
 
 
 async def unknown(names: list[Any], server_module: Any) -> dict | None:
-    """The refusal for a tool list naming tools nothing provides, or None when every name is real."""
-    exists = await _resolver(server_module)
-    missing = [n for n in names if isinstance(n, str) and not await exists(n)]
-    if not missing:
+    """The refusal for a tool list naming tools nothing provides, or None when every name is real. Worded for the
+    builder model, with looser suggestions than a person reads (`missing()`'s own cutoff)."""
+    gone = await missing(names, server_module, cutoff=0.5)
+    if not gone:
         return None
-    known = await _known_names(server_module)
-    near = {n: difflib.get_close_matches(n, known, n=3, cutoff=0.5) for n in missing}
-    hints = "; ".join(f"'{n}' (did you mean {', '.join(repr(c) for c in near[n])}?)" if near[n] else f"'{n}'"
-                      for n in missing)
+    hints = "; ".join(f"'{n}' (did you mean {', '.join(repr(c) for c in near)}?)" if near else f"'{n}'"
+                      for n, near in gone)
     return {"error": f"No tool here is called {hints}. Give the agent only tools that exist: read them with "
                      "`get_tools_detail` or `list_server_tools`, or create the tool first (`create_http_tool`). If "
                      "the plan needs a tool nothing provides, say so in your answer instead of naming it."}
@@ -153,19 +151,17 @@ async def check_plan(plan: str, server_module: Any, *, checks: int = 0) -> dict:
     from core.routes.agents import load_user_agents
 
     names = names_in_plan(plan)
-    exists = await _resolver(server_module)
-    missing_tools = [t for t in names["tools"] if not await exists(t)]
+    gone = await missing(names["tools"], server_module)
+    missing_tools = [t for t, _ in gone]
     have = {a.get("id") for a in await load_user_agents()}
     missing_agents = [a for a in names["reused_agents"] if a not in have]
     checks += 1
     out: dict[str, Any] = {"checks": checks, "missing_tools": missing_tools, "missing_agents": missing_agents,
                            "redraft": bool(missing_tools or missing_agents) and checks == 1, "note": ""}
-    if missing_tools:
-        known = await _known_names(server_module)
-        # Closer than F489's suggestions: a far match ("list_schedules" for `smtp_send_mail`) would steer the
-        # drafter to a tool that does something else.
-        near = {t: difflib.get_close_matches(t, known, n=3, cutoff=0.75) for t in missing_tools}
-        out["nearest"] = {t: n for t, n in near.items() if n}
+    if gone:
+        # `missing()`'s close cutoff: a far match ("list_schedules" for `smtp_send_mail`) would steer the drafter to
+        # a tool that does something else.
+        out["nearest"] = {t: near for t, near in gone if near}
     if out["redraft"]:
         out["note"] = ("Nothing in this workspace provides " + ", ".join(f"`{t}`" for t in missing_tools + missing_agents)
                        + ". Redraft using only tools and agents that exist" + (
