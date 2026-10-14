@@ -50,6 +50,8 @@ export type MarkdownEditorProps = {
   onTabChange?: (tab: MarkdownTab) => void;
   /** What Preview shows for an empty value. */
   previewEmpty?: React.ReactNode;
+  /** Preview shows a leading YAML block as a code block, as `Markdown`'s `frontMatter` (a file's metadata). */
+  frontMatter?: boolean;
   id?: string;
   invalid?: boolean;
   className?: string;
@@ -96,6 +98,7 @@ export function MarkdownEditor({
   defaultTab = "write",
   onTabChange,
   previewEmpty,
+  frontMatter = false,
   id,
   invalid,
   className,
@@ -266,7 +269,7 @@ export function MarkdownEditor({
       >
         {tab === "preview" &&
           (value.trim() ? (
-            <Markdown className={compact ? "text-xs" : undefined}>{value}</Markdown>
+            <Markdown className={compact ? "text-xs" : undefined} frontMatter={frontMatter}>{value}</Markdown>
           ) : (
             <p className="text-sm text-text-faint">{previewEmpty ?? "Nothing to preview."}</p>
           ))}

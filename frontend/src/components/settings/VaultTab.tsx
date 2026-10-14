@@ -714,6 +714,7 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                                 textareaClassName={EDITOR_HEIGHT}
                                 placeholder={"# Title\n\nStart writing..."}
                                 previewEmpty="Empty file"
+                                frontMatter
                             />
                         )}
                     </>

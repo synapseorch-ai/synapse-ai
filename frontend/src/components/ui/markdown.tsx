@@ -174,15 +174,41 @@ export function keepLineBreaks() {
 const PLUGINS = [remarkGfm];
 const PLUGINS_KEEPING_BREAKS = [remarkGfm, keepLineBreaks];
 
+/** A leading `---` … `---` (or `...`) block, as a skill's or a note's metadata opens a file. */
+const FRONT_MATTER = /^\uFEFF?---[ \t]*\r?\n(?:([\s\S]*?)\r?\n)?(?:---|\.\.\.)[ \t]*(?:\r?\n|$)/;
+
+/**
+ * A file's YAML front matter and the body after it (F505). Markdown reads the block as a
+ * thematic break, text and a setext heading — the closing `---` underlines the last line — so
+ * the Vault's preview showed `name: x` as a heading. No block: `yaml` is null and the text is
+ * unchanged. Exported for its test (cloud's Vitest).
+ */
+export function splitFrontMatter(text: string): { yaml: string | null; body: string } {
+  const found = FRONT_MATTER.exec(text);
+  return found ? { yaml: found[1] ?? "", body: text.slice(found[0].length) } : { yaml: null, body: text };
+}
+
+/** The front matter as a quiet `yaml` code block above the body: shown, never a heading. Exported for its test. */
+export function frontMatterShown(text: string): string {
+  const { yaml, body } = splitFrontMatter(text);
+  if (yaml === null) return text;
+  // A fence longer than any run of backticks inside, so the block cannot close early.
+  const fence = "`".repeat(Math.max(3, ...Array.from(yaml.matchAll(/`+/g), (m) => m[0].length + 1)));
+  return `${fence}yaml\n${yaml}\n${fence}\n\n${body}`;
+}
+
 export function Markdown({
   children,
   className,
   breaks = false,
+  frontMatter = false,
 }: {
   children: string;
   className?: string;
   /** Keep single line breaks (a person's question), rather than CommonMark's spaces. */
   breaks?: boolean;
+  /** A file's leading YAML block shows as a `yaml` code block, not as a heading (the Vault's files). */
+  frontMatter?: boolean;
 }) {
   if (!children) return null;
   return (
@@ -191,7 +217,7 @@ export function Markdown({
     // not change a table's or a code block's own width, so both still scroll.
     <div className={cn("text-sm text-text break-words", className)}>
       <ReactMarkdown remarkPlugins={breaks ? PLUGINS_KEEPING_BREAKS : PLUGINS} components={COMPONENTS}>
-        {children}
+        {frontMatter ? frontMatterShown(children) : children}
       </ReactMarkdown>
     </div>
   );
