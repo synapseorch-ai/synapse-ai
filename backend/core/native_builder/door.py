@@ -46,6 +46,9 @@ MASKED_NOTICE = (
     "encrypted."
 )
 
+#: What a conversation keeps, and the panel shows, in place of a message the door refused.
+NOT_KEPT = "‹message not kept: it held a card number or a password›"
+
 
 @dataclass(frozen=True)
 class Checked:
@@ -62,11 +65,14 @@ class Checked:
         return MASKED_NOTICE if self.removed else None
 
     def event(self) -> dict | None:
-        """The panel's event for this check, or None when there is nothing to say."""
+        """The panel's event for this check, or None when there is nothing to say.
+
+        `kept` is the message as it was kept (`NOT_KEPT` for a refused one). The panel shows it in place of what
+        the person typed, so the screen matches the conversation and a later turn's history never carries the
+        secret back."""
         if not self.notice:
             return None
-        return {"type": "builder_notice", "reason": self.refused or "masked", "message": self.notice,
-                "final": bool(self.refused)}
+        return notice(self.refused or "masked", NOT_KEPT if self.refused else self.text, final=bool(self.refused))
 
 
 # ── cards ────────────────────────────────────────────────────────────────────
@@ -188,6 +194,13 @@ def _secret_looking(value: str) -> bool:
     return has_alpha and has_other
 
 
+def notice(reason: Refusal | Literal["masked"], kept: str, *, final: bool) -> dict:
+    """A `builder_notice` event: the fixed sentence for `reason`, and the message as kept (omitted when empty)."""
+    event = {"type": "builder_notice", "reason": reason,
+             "message": MASKED_NOTICE if reason == "masked" else REFUSALS[reason], "final": final}
+    return {**event, "kept": kept} if kept else event
+
+
 class Refused(ValueError):
     """An answer to a builder run that the door refuses; `str()` is the sentence the person reads."""
 
@@ -231,6 +244,17 @@ def check_answer(response: Any, question: str | None = None) -> tuple[Any, int]:
     return walk(response), removed
 
 
+def kept_answer(response: Any) -> str:
+    """The text of a checked answer the panel shows in place of the person's: the one string a panel's answer
+    holds (`{"answer": "…"}`), or "" when the answer is not one string."""
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict) and len(response) == 1:
+        (only,) = response.values()
+        return only if isinstance(only, str) else ""
+    return ""
+
+
 def mask_history(history: list[dict] | None) -> list[dict]:
     """Earlier turns the client sends back: a refused one is dropped, keys are masked in the rest."""
     out = []
@@ -244,5 +268,5 @@ def mask_history(history: list[dict] | None) -> list[dict]:
     return out
 
 
-__all__ = ["CREDENTIAL_MARK", "Checked", "MASKED_NOTICE", "REFUSALS", "Refused", "check", "check_answer",
-           "has_card", "has_password", "mask_history"]
+__all__ = ["CREDENTIAL_MARK", "Checked", "MASKED_NOTICE", "NOT_KEPT", "REFUSALS", "Refused", "check",
+           "check_answer", "has_card", "has_password", "kept_answer", "mask_history", "notice"]

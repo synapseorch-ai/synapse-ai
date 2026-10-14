@@ -262,8 +262,18 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         // leaves its question open, so the person answers it again.
         case 'builder_notice': {
             const final = event.final === true;
+            // `kept` is the person's message as it was kept (a key masked, a
+            // refused message not kept at all). It replaces what they typed, so
+            // the screen matches the conversation and the next turn's history
+            // never sends the secret back.
+            const kept = typeof event.kept === 'string' && event.kept ? event.kept : null;
+            const at = kept === null ? -1 : state.messages.map((m) => m.role).lastIndexOf('user');
+            const shown = at < 0 ? state : {
+                ...state,
+                messages: state.messages.map((m, i) => (i === at ? { ...m, content: kept as string } : m)),
+            };
             return append(
-                final ? { ...state, status: null, done: true, pending: null } : state,
+                final ? { ...shown, status: null, done: true, pending: null } : shown,
                 {
                     role: 'assistant', content: String(event.message ?? ''), kind: 'text',
                     key: `notice-${event.reason ?? ''}-${seq}`,

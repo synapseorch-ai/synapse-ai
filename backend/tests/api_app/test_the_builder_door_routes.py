@@ -18,7 +18,7 @@ import json
 import pytest
 
 from core.native_builder import seed_native_builder
-from core.native_builder.door import CREDENTIAL_MARK, MASKED_NOTICE, REFUSALS
+from core.native_builder.door import CREDENTIAL_MARK, MASKED_NOTICE, NOT_KEPT, REFUSALS
 
 from test_builder_routes import route, stream
 
@@ -39,7 +39,8 @@ class TestThePanelsChat:
     async def test_a_card_number_ends_at_the_door_with_no_run(self, client, builder, fake_llm):
         events = await stream(client, "/api/builder/chat", {
             "message": f"Pay this invoice with our card {VISA} exp 12/28", "client_session_id": "door-1"})
-        assert events == [{"type": "builder_notice", "reason": "card", "message": REFUSALS["card"], "final": True}]
+        assert events == [{"type": "builder_notice", "reason": "card", "message": REFUSALS["card"], "final": True,
+                           "kept": NOT_KEPT}]
         assert fake_llm.call_count == 0, "no model saw it"
 
     async def test_a_password_ends_at_the_door(self, client, builder, fake_llm):
@@ -52,7 +53,8 @@ class TestThePanelsChat:
         fake_llm.set_default(route("answer"))
         events = await stream(client, "/api/builder/chat", {
             "message": f"Here's my Stripe key {STRIPE}, which apps do I have?", "client_session_id": "door-3"})
-        assert events[0] == {"type": "builder_notice", "reason": "masked", "message": MASKED_NOTICE, "final": False}
+        assert events[0] == {"type": "builder_notice", "reason": "masked", "message": MASKED_NOTICE, "final": False,
+                             "kept": f"Here's my Stripe key {CREDENTIAL_MARK}, which apps do I have?"}
         assert "orchestration_start" in [e["type"] for e in events]
         assert STRIPE not in json.dumps(events), "not in any event the panel or the log gets"
         assert STRIPE not in _everything_the_model_saw(fake_llm)
@@ -88,7 +90,7 @@ class TestTheAnswerDoors:
         events = await stream(client, "/api/builder/resume", {
             "run_id": run_id, "response": {"answer": "Hunter2-CANARY-portal"}})
         assert events == [{"type": "builder_notice", "reason": "password", "message": REFUSALS["password"],
-                           "final": False}]
+                           "final": False, "kept": NOT_KEPT}]
         assert fake_llm.call_count == calls, "the run did not move on"
         from core.orchestration.state import SharedState
         run = (await SharedState.restore(run_id)).run
@@ -100,7 +102,7 @@ class TestTheAnswerDoors:
         fake_llm.set_default(route("draft"))
         events = await stream(client, "/api/builder/resume", {
             "run_id": run_id, "response": {"answer": "dbk_live_" + "Q" * 8}})
-        assert events[0]["reason"] == "masked"
+        assert events[0]["reason"] == "masked" and events[0]["kept"] == CREDENTIAL_MARK
         assert "dbk_live_" not in _everything_the_model_saw(fake_llm)
 
     async def test_the_run_pages_answer_to_a_builder_run_is_refused_as_a_bad_answer(

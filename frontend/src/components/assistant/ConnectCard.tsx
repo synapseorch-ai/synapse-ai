@@ -12,7 +12,7 @@
  *
  * Nothing connects silently: the card is the person's to press.
  */
-import { Check, ExternalLink, Lock } from 'lucide-react';
+import { ArrowRight, Check, Lock } from 'lucide-react';
 import * as React from 'react';
 
 import { Button, buttonStyles, Input } from '@/components/ui';
@@ -141,7 +141,7 @@ export function ConnectCard({
                         Needs you
                     </span>
                 )}
-                <span className="text-text-faint">· Connect</span>
+                {!done && <span className="text-text-faint">· Connect</span>}
             </div>
 
             <div className="flex flex-col gap-1">
@@ -201,7 +201,7 @@ export function ConnectCard({
                     ) : link ? (
                         <a href={link} className={buttonStyles({ variant: 'secondary', size: 'sm' })}>
                             Open {spec.screen?.label ?? 'settings'}
-                            <ExternalLink className="size-3.5" aria-hidden />
+                            <ArrowRight className="size-3.5" aria-hidden />
                         </a>
                     ) : null}
                 </div>

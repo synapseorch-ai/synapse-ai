@@ -437,7 +437,7 @@ export const ModelsTab = ({
                 </Field>
                 {/* `builder_model` has been writable and honoured end to end since the builder shipped;
                     the only other way to set it is "Set as default" inside the panel. */}
-                <Field label="Builder model" hint="Used by the AI builder for every step of a build. Reasoning-capable models do noticeably better here.">
+                <Field label="Builder model" hint="Used by the AI builder for every step of a build, except the quick steps when you pick a model for them below. Reasoning-capable models do noticeably better here.">
                     <Combobox
                         value={builderModel || DEFAULT_SENTINEL}
                         onChange={(v) => setBuilderModel(v === DEFAULT_SENTINEL ? '' : v)}

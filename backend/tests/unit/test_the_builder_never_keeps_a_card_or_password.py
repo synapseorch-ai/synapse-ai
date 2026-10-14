@@ -11,7 +11,8 @@ front of every message and every answer the builder receives:
   PIN, a sentence *about* a password;
 - a key or a token is masked, on every message (SW1 masked only pasted Agents SDK code);
 - an answer is read with its question: a lone secret-looking word in reply to "what's the password?" is refused,
-  and one in reply to "paste your API key" is masked.
+  and one in reply to "paste your API key" is masked;
+- the panel's notice carries the message as kept, which the panel shows in place of what the person typed.
 
 Every card number and key below is assembled at run time: a literal one in a source file trips secret scanners.
 """
@@ -22,13 +23,16 @@ import pytest
 from core.native_builder.door import (
     CREDENTIAL_MARK,
     MASKED_NOTICE,
+    NOT_KEPT,
     REFUSALS,
     Refused,
     check,
     check_answer,
     has_card,
     has_password,
+    kept_answer,
     mask_history,
+    notice,
 )
 
 VISA = "4242" * 4               # Stripe's public test Visa
@@ -63,7 +67,7 @@ def test_a_card_number_or_its_code_is_refused(text):
     assert checked.text == "", "a refused message is not kept, not even masked"
     assert checked.notice == REFUSALS["card"]
     assert checked.event() == {"type": "builder_notice", "reason": "card", "message": REFUSALS["card"],
-                               "final": True}
+                               "final": True, "kept": NOT_KEPT}
 
 
 @pytest.mark.parametrize("text", [
@@ -132,7 +136,7 @@ def test_a_pasted_key_is_masked_on_an_ordinary_message_and_the_rest_still_runs()
     assert "connect both" in checked.text
     assert checked.removed == 2
     assert checked.event() == {"type": "builder_notice", "reason": "masked", "message": MASKED_NOTICE,
-                               "final": False}
+                               "final": False, "kept": checked.text}
 
 
 def test_an_ordinary_message_passes_unchanged_with_nothing_to_say():
@@ -168,6 +172,18 @@ def test_a_lone_secret_in_reply_to_a_key_question_is_masked():
 def test_an_ordinary_reply_to_a_secret_question_is_left_alone(reply):
     answer, removed = check_answer({"answer": reply}, question="What's your API key?")
     assert answer == {"answer": reply} and removed == 0
+
+
+@pytest.mark.parametrize("answer,kept", [
+    ({"answer": "use " + CREDENTIAL_MARK}, "use " + CREDENTIAL_MARK),
+    ("plain " + CREDENTIAL_MARK, "plain " + CREDENTIAL_MARK),
+    ({"answer": "a", "more": "b"}, ""),
+    ({"answer": ["a"]}, ""),
+])
+def test_the_panel_is_shown_an_answer_as_kept_only_when_it_is_one_string(answer, kept):
+    assert kept_answer(answer) == kept
+    event = notice("masked", kept_answer(answer), final=False)
+    assert event.get("kept", "") == kept, "an answer that is not one string leaves the panel's bubble alone"
 
 
 def test_history_drops_a_refused_turn_and_masks_keys():

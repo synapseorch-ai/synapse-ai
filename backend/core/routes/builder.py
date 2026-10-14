@@ -84,7 +84,7 @@ class BuilderResumeRequest(BaseModel):
 
 
 #: What a conversation keeps in place of a message the door refused.
-NOT_KEPT = "‹message not kept: it held a card number or a password›"
+NOT_KEPT = door.NOT_KEPT
 
 
 def _as_kept(message: str) -> str:
@@ -588,7 +588,7 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     try:
         response, removed = door.check_answer(request.response, question=await _pending_question(request.run_id))
     except door.Refused as exc:
-        return _one({"type": "builder_notice", "reason": exc.reason, "message": str(exc), "final": False})
+        return _one(door.notice(exc.reason, door.NOT_KEPT, final=False))
     _task, queue = spawn_engine_run(
         OrchestrationEngine.resume(
             request.run_id, response,
@@ -596,7 +596,7 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
         ),
         request.run_id,
     )
-    masked = door.Checked(text="", removed=removed).event()
+    masked = door.notice("masked", door.kept_answer(response), final=False) if removed else None
     return _stream(_after(masked, _queue_events(queue)))
 
 
