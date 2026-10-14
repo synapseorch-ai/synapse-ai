@@ -1491,6 +1491,11 @@ async def run_agent_step(
     _repeat_count = 0
     _repeat_stop: dict | None = None
     REPEAT_NOTE_AT, REPEAT_STOP_AT = 2, 3
+    # And for a round (F476): one reply's calls, all of them, made again by the next reply with the same arguments
+    # and the same results. gpt-4.1-mini made the same three searches three replies in a row (A,B,C,A,B,C,A,B,C),
+    # where no call is like the one just before it. The same counts as for a call, told after the whole round.
+    _round_key: str | None = None
+    _round_count = 0
     # Why the open call was not run, when it was refused (U68): kept on its
     # record, so the saved turn and anything reading it can tell a refused call
     # from one that ran — the answer may still say "done".
@@ -1519,6 +1524,25 @@ async def run_agent_step(
                 "different, or give your final response; a third identical call ends this turn.\n"
             )
         return _record
+
+    def _check_round(records: list[dict]) -> None:
+        """The repeat guard for a whole reply's calls (F476); one call a reply is `_close_call`'s."""
+        nonlocal _round_key, _round_count, _repeat_stop, current_context_text
+        _key = json.dumps([[r["tool"], r["args"], r["result"]] for r in records], sort_keys=True, default=str)
+        _round_count = _round_count + 1 if _key == _round_key else 1
+        _round_key = _key
+        if len(records) < 2:
+            return
+        _names = ", ".join(dict.fromkeys(str(r["tool"]) for r in records))
+        if _round_count >= REPEAT_STOP_AT:
+            _repeat_stop = {"tool_name": _names, "count": _round_count, "round": len(records)}
+        elif _round_count == REPEAT_NOTE_AT:
+            current_context_text += (
+                f"\nSystem: your last reply made the same {len(records)} calls as the one before it "
+                f"({_names}, with the same arguments) and got the same results — you already have those "
+                "answers. Use them, try something different, or give your final response; a third identical "
+                "round ends this turn.\n"
+            )
     # ── Task list: the run's working plan (see core/task_list.py) ──
     # Seeded from the run so a later step (or a resumed one) sees the plan
     # earlier steps wrote; every accepted update is yielded as a structural
@@ -2228,6 +2252,7 @@ async def run_agent_step(
                         parent_agent=active_agent,
                     )
 
+            _round_from = len(_turn_calls)
             for tool_call in tool_calls:
                 _close_call()
                 if _repeat_stop:
@@ -3065,15 +3090,24 @@ async def run_agent_step(
                         pass
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
             _close_call()
+            if not _repeat_stop:
+                _check_round(_turn_calls[_round_from:])
             if _repeat_stop:
                 _log.warning(f"🔁 '{_repeat_stop['tool_name']}' repeated {_repeat_stop['count']}× — ending the turn")
                 yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
                 _unanswered = {"why": "repeating", **_repeat_stop}
-                final_response = (
-                    f"I stopped here because I was repeating myself: I called {_repeat_stop['tool_name']} "
-                    f"with the same arguments {_repeat_stop['count']} times in a row and got the same result "
-                    "each time, so calling it again would not help. The work so far is above."
-                )
+                if _repeat_stop.get("round"):
+                    final_response = (
+                        f"I stopped here because I was repeating myself: I made the same {_repeat_stop['round']} "
+                        f"calls ({_repeat_stop['tool_name']}) {_repeat_stop['count']} times in a row and got the "
+                        "same results each time, so making them again would not help. The work so far is above."
+                    )
+                else:
+                    final_response = (
+                        f"I stopped here because I was repeating myself: I called {_repeat_stop['tool_name']} "
+                        f"with the same arguments {_repeat_stop['count']} times in a row and got the same result "
+                        "each time, so calling it again would not help. The work so far is above."
+                    )
                 break
 
             if progress_events:

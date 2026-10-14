@@ -100,6 +100,11 @@ def cut_by_the_run(engine, run: OrchestrationRun, sub_step: StepConfig, step_sta
 
 def _no_answer_reason(step_name: str, no_answer: dict) -> str:
     """Why an agent step has no answer, from the loop's `final.no_answer` (F413)."""
+    if no_answer.get("why") == "repeating" and no_answer.get("round"):
+        # A whole reply's calls made again (F476).
+        return (f"Agent step '{step_name}' stopped without an answer: it made the same {no_answer.get('round')} "
+                f"calls ({no_answer.get('tool_name')}) {no_answer.get('count')} times in a row and got the same "
+                "results each time.")
     if no_answer.get("why") == "repeating":
         return (f"Agent step '{step_name}' stopped without an answer: it called "
                 f"{no_answer.get('tool_name')} with the same arguments {no_answer.get('count')} times "

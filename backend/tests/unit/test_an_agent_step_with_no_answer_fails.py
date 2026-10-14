@@ -123,6 +123,26 @@ class TestTheRepeatGuard:
         assert "draft" not in run.shared_state and "o_tail" not in run.shared_state
 
 
+class TestARepeatedRound:
+    async def test_it_fails_the_step_and_names_the_round(self, driver, fake_llm, tools):
+        """F476: a whole reply's calls made again three times ends the turn as one call does (F243), so the step
+        fails with that reason, never the chat sentence, on every driver (C5's note at VOX1f's plan)."""
+        import json
+        both = "\n".join(json.dumps({"tool": "look", "arguments": {"where": w}}) for w in ("vault", "inbox"))
+        orch = S.make_orchestration(id="orch_f476_round", entry_step_id="write", steps=[
+            _agent_step(nxt="after"), _print("after")])
+        await _seed(orch)
+        fake_llm.script([both] * 3 + ["never reached"])
+
+        assert await driver.start(orch, "run_f476_round") == "failed"
+        run = await _run("run_f476_round")
+        assert "draft" not in run.shared_state and "o_after" not in run.shared_state
+        entry = _entry(run)
+        assert entry["status"] == "failed"
+        assert "without an answer" in entry["error"] and "the same 2 calls (look)" in entry["error"]
+        assert "3 times" in entry["error"] and "I stopped here" not in entry["error"]
+
+
 class TestRunningOutOfTurns:
     async def test_it_fails_the_step_and_names_the_limit(self, driver, fake_llm, tools):
         orch = S.make_orchestration(id="orch_f413_turns", entry_step_id="write", steps=[
