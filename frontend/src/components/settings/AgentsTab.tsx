@@ -102,6 +102,8 @@ export const AgentsTab = ({
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
     const [toolQuery, setToolQuery] = useState('');
+    // Tools the agent names that nothing here provides (F526): run without them, so said here.
+    const [unknownTools, setUnknownTools] = useState<{ name: string; nearest: string[] }[]>([]);
     const [aiBuilderDesc, setAiBuilderDesc] = useState('');
     const [agentQuery, setAgentQuery] = useState('');
     const [isBuilding, setIsBuilding] = useState(false);
@@ -128,7 +130,8 @@ export const AgentsTab = ({
                 body: JSON.stringify(copy),
             });
             if (res.ok) {
-                const saved = await res.json();
+                const { unknown_tools, ...saved } = await res.json();
+                setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
                 loadDraftAgent(saved);
@@ -192,7 +195,8 @@ export const AgentsTab = ({
                 body: JSON.stringify(draftAgent),
             });
             if (res.ok) {
-                const saved = await res.json();
+                const { unknown_tools, ...saved } = await res.json();
+                setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
                 const isNew = !agents.some((a: any) => a.id === draftAgent.id);
                 if (isNew) {
                     dispatch(addAgent(saved));
@@ -215,6 +219,24 @@ export const AgentsTab = ({
     };
 
     const [testDrawer, setTestDrawer] = useState(false);
+
+    // An agent opened here asks which of its tools nothing provides (F526): one saved by a script or the API never
+    // went through this page's save, and Harbor's `web_search` went unnoticed for two sessions.
+    const openedId = draftAgent?.id;
+    useEffect(() => {
+        const tools: string[] = (draftAgent?.tools || []).filter((t: string) => t !== 'all' && !t.startsWith('group:'));
+        if (!openedId || !tools.length) { setUnknownTools([]); return; }
+        let gone = false;
+        fetch('/api/agents/tool-check', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tools }),
+        })
+            .then(r => (r.ok ? r.json() : { unknown_tools: [] }))
+            .then(body => { if (!gone) setUnknownTools(Array.isArray(body.unknown_tools) ? body.unknown_tools : []); })
+            .catch(() => { if (!gone) setUnknownTools([]); });
+        return () => { gone = true; };
+        // Asked when an agent opens, not on every tick of a box: a save answers for the rest.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [openedId]);
 
     // Reset the sub-tab whenever the selected agent changes, and read its
     // channels: the setup's "Where it works" names them, as the two tabs do.
@@ -894,6 +916,28 @@ export const AgentsTab = ({
                                             ) : (
                                             <div className="space-y-3">
                                                 <Label className="sr-only">Capabilities (Tools)</Label>
+                                                {unknownTools.length > 0 && (
+                                                    <div role="note" data-unknown-tools className="grid gap-1.5 rounded-md border border-person/40 bg-person-subtle px-3 py-2.5 text-sm text-text">
+                                                        <span>
+                                                            Nothing here provides {unknownTools.map((t, i) => (
+                                                                <span key={t.name}>{i ? ', ' : ''}<span className="font-code">{t.name}</span>{t.nearest.length ? <span className="text-text-muted"> (nearest: {t.nearest.join(', ')})</span> : null}</span>
+                                                            ))}, so this agent runs without {unknownTools.length > 1 ? 'them' : 'it'}.
+                                                        </span>
+                                                        <div>
+                                                            <Button
+                                                                size="sm"
+                                                                variant="secondary"
+                                                                onClick={() => {
+                                                                    const drop = new Set(unknownTools.map(t => t.name));
+                                                                    setDraftAgent({ ...draftAgent, tools: draftAgent.tools.filter((t: string) => !drop.has(t)) });
+                                                                    setUnknownTools([]);
+                                                                }}
+                                                            >
+                                                                Remove {unknownTools.length > 1 ? 'them' : 'it'} from this agent
+                                                            </Button>
+                                                        </div>
+                                                    </div>
+                                                )}
                                                 {loadingCapabilities ? (
                                                     /* ── Skeleton loader ── */
                                                     <div className="grid gap-3 @2xl:grid-cols-2">
