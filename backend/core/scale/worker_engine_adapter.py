@@ -263,7 +263,10 @@ class WorkerEngineAdapter:
         # This is the whole reason the override rides in shared_state: the
         # worker resuming is rarely the worker that paused, and it loaded
         # `self._orch` fresh from Postgres with every step's own model.
-        apply_model_override(self._orch, run.shared_state.get(OrchestrationEngine.MODEL_OVERRIDE_KEY))
+        # And its model roles (BWA1): a run the fleet resumed used to lose them, so the builder's quick steps after
+        # a question ran on the builder's model (the engine's own resumes re-applied both).
+        apply_model_override(self._orch, run.shared_state.get(OrchestrationEngine.MODEL_OVERRIDE_KEY),
+                             run.shared_state.get(OrchestrationEngine.MODEL_ROLES_KEY))
 
         # Build engine using self._orch (Postgres-loaded) so step_map is always populated.
         engine = self._build_engine()

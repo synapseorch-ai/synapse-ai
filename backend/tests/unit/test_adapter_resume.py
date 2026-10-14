@@ -183,3 +183,41 @@ class TestThereIsOneResume:
             made = calls(fn)
             assert "resume_paused" in made, f"{name} no longer calls resume_paused"
             assert not made & deciding, f"{name} decides for itself again: {sorted(made & deciding)}"
+
+
+class TestAFleetResumeKeepsTheRunsModels:
+    async def test_the_model_roles_come_back_with_the_override(self, fake_redis):
+        """BWA1 (found by SUB1a): the adapter re-applied `_model_override` on resume but not `_model_roles`, so a
+        builder run the fleet resumed after a question ran its quick steps on the builder's model. The engine's own
+        resumes re-applied both."""
+        from core.models_orchestration import Orchestration
+        from core.scale.pubsub import RunEventPublisher
+        from core.scale.worker_engine_adapter import WorkerEngineAdapter
+        from core.store import get_store
+
+        shape = {**PAUSING, "id": "orch_adapter_roles", "steps": [
+            *PAUSING["steps"],
+            # Never reached: they only carry the models a resume re-applies.
+            {"id": "quick", "name": "Route", "type": "llm", "model_role": "quick", "next_step_id": None},
+            {"id": "plain", "name": "Draft", "type": "llm", "next_step_id": None},
+        ]}
+        await S.seed_orchestrations([S.make_orchestration(**shape)])
+
+        def adapter(run_id):
+            async def make():
+                return WorkerEngineAdapter(
+                    orch=Orchestration.model_validate(S.make_orchestration(**shape)), run_id=run_id,
+                    worker_server_module=_server(), publisher=RunEventPublisher(fake_redis, run_id),
+                    session_factory=await get_store(), redis_client=fake_redis, worker_id="w-test",
+                    job_id="job-test")
+            return make()
+
+        run_id = "run_adapter_roles"
+        first = await adapter(run_id)
+        assert await first.run(initial_input="go", initial_state={
+            "ticket": "SYN-2", "_model_override": "big-model", "_model_roles": {"quick": "small-model"}}) == "paused"
+
+        resumed = await adapter(run_id)
+        await resumed.resume({"decision": "yes"})
+        models = {s.id: s.model for s in resumed._orch.steps}
+        assert models["quick"] == "small-model" and models["plain"] == "big-model"
