@@ -290,9 +290,12 @@ def _digests(turns: list[dict]) -> dict[int, str]:
     rest by name, newest first until the budget is spent."""
     from core.chat_turns import FAILED_ANSWER, STOPPED_ANSWER
     # A turn with no answer still ran its calls: said so, or the next turn's
-    # model reads "for this answer" as nothing having run (F426).
+    # model reads "for this answer" as nothing having run (F426). An empty
+    # answer is one too: a phone call saves a turn the caller's next words cut
+    # that way, and its next turn searched again for what it had found (F477).
     ended = {FAILED_ANSWER: "This turn failed after these tool calls ran",
-             STOPPED_ANSWER: "This turn was stopped after these tool calls ran"}
+             STOPPED_ANSWER: "This turn was stopped after these tool calls ran",
+             "": "This turn was cut off before it answered, after these tool calls ran"}
     notes: dict[int, str] = {}
     used = 0
     detailed = 0
