@@ -647,8 +647,13 @@ async def run_agent_chat_job(
     save_turn: bool = True,
     log_source: str = "chat",
     report_usage: bool = False,
+    keep_parked: bool = False,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
+
+    `keep_parked` is a phone call's (F486): the question the call parked waits while the caller talks on — it
+    is answered from the bell, and said on the call (F474) — so a new turn does not move past it, and a second
+    question never takes its place in the conversation's one slot.
 
     `stream_answer` publishes the answer as it is written (U72): `answer_delta`
     and `answer_reset` events, merged by the publisher so a long answer is a
@@ -785,7 +790,7 @@ async def run_agent_chat_job(
             _log.info(f"[worker] chat {session_id}: turn handed out again (try {ctx['job_try']}) — not rerun")
             return {"status": "interrupted", "session_id": session_id}
 
-        if resume_state is None:
+        if resume_state is None and not keep_parked:
             # A new message refuses the call this conversation waits on (F247).
             # The turn that asked goes into `history` in its own place, which
             # the row below writes before the loop reads the conversation.
@@ -950,10 +955,13 @@ async def run_agent_chat_job(
         if paused_on is not None and not cancelled:
             from core.chat_approval import parked_payload
             from core.store import sessions as _sessions
-            await _sessions.set_pending_approval(
-                session_id, agent_id or "default",
-                parked_payload(paused_on, message=message, progress=latest_progress),
-            )
+            waiting = await _sessions.get_pending_approval(session_id, agent_id or "default") if keep_parked else None
+            if waiting is None:
+                await _sessions.set_pending_approval(
+                    session_id, agent_id or "default",
+                    parked_payload(paused_on, message=message, progress=latest_progress),
+                )
+            # Else a call's first question still waits (F486): this one is not asked; the call says so.
             await _save_row("paused", history)
             return {"status": "paused", "session_id": session_id}
 
