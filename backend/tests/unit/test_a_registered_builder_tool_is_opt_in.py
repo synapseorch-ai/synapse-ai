@@ -12,7 +12,7 @@ import pytest
 
 from core.builder_tools import BUILDER_TOOL_NAMES, OPT_IN_BUILDER_TOOLS
 
-REGISTERED = {"read_workspace", "search_help", "product_capabilities", "prepare_connection"}
+REGISTERED = {"read_workspace", "search_help", "product_capabilities", "prepare_connection", "check_plan"}
 
 
 class _Server:
