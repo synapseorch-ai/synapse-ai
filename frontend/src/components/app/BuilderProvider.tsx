@@ -19,6 +19,7 @@ import {
 import {
     applyBuilderEvent,
     emptyBuilderState,
+    refusedAnswer,
     type BuilderMessage,
     type BuilderState,
     type SavedResource,
@@ -534,6 +535,9 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
                 if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
                 await consume(response);
+                // A refused answer leaves its question open (BWA1): the run is
+                // still parked on it, so the next message answers it again.
+                if (pending) setState((prev) => (refusedAnswer(prev) && !prev.pending ? { ...prev, pending } : prev));
             } catch (error) {
                 reportStreamEnd(error);
             } finally {

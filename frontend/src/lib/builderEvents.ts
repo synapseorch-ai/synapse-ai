@@ -97,6 +97,17 @@ export function emptyBuilderState(messages: BuilderMessage[] = []): BuilderState
 }
 
 /**
+ * Whether the last thing said is the door's refusal of an answer (BWA1): the
+ * run is still parked on its question, so the panel gives the question back
+ * and the next message answers it again. A host clears `pending` as it sends
+ * an answer, so only it can restore what it cleared.
+ */
+export function refusedAnswer(state: BuilderState): boolean {
+    const last = state.messages[state.messages.length - 1];
+    return !state.done && !!last && /^notice-(card|password)-/.test(last.key);
+}
+
+/**
  * `resource_saved` is the one event whose whole point is that the panel does
  * not have to guess. Everything else is presentation.
  */
