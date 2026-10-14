@@ -247,30 +247,39 @@ export const MessagingTab = () => {
     }, []);
     // POST /api/settings merges with exclude_unset, so sending two keys does not
     // clear the rest. agent_name rides along because the model requires it.
-    const patchSettings = async (patch: Record<string, unknown>) =>
-        fetch('/api/settings', {
+    // A refused save throws with the server's reason: it toasted "saved" (F501).
+    const patchSettings = async (patch: Record<string, unknown>) => {
+        const res = await fetch('/api/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent_name: agentNameRef.current, ...patch }),
         });
+        if (!res.ok) throw new Error(await reasonOf(res, `the server answered ${res.status}`));
+        return res;
+    };
     const saveNotifyChannel = async (channelId: string) => {
+        const before = notifyChannelId;
         setNotifyChannelId(channelId);
         try {
             await patchSettings({ run_notification_channel_id: channelId });
             showToast(channelId ? 'Run notifications enabled for channel' : 'Run notifications set to in-app only');
-        } catch {
-            showToast('Failed to save notification channel', 'danger');
+        } catch (e: any) {
+            setNotifyChannelId(before);
+            showToast(`Failed to save notification channel: ${e.message}`, 'danger');
         }
     };
+    /** Saved once, on blur — Enter blurs — and only when it changed (F501): Enter then the blur
+     *  that followed saved and toasted twice, and every focus-and-leave saved again. */
     const saveWebhookBase = async () => {
         const value = webhookBaseDraft.trim().replace(/\/+$/, '');
+        if (value === webhookBase) { setWebhookBaseDraft(value); return; }
         try {
             await patchSettings({ messaging_webhook_base_url: value });
             setWebhookBase(value);
             setWebhookBaseDraft(value);
             showToast(value ? 'Webhook address saved' : 'Webhook address cleared');
-        } catch {
-            showToast('Failed to save the webhook address', 'danger');
+        } catch (e: any) {
+            showToast(`Failed to save the webhook address: ${e.message}`, 'danger');
         }
     };
 
@@ -626,7 +635,7 @@ export const MessagingTab = () => {
                                     value={webhookBaseDraft}
                                     onChange={e => setWebhookBaseDraft(e.target.value)}
                                     onBlur={saveWebhookBase}
-                                    onKeyDown={e => { if (e.key === 'Enter') saveWebhookBase(); }}
+                                    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                                     placeholder="https://synapse.example.com"
                                     aria-label="Public webhook base URL"
                                     className="font-code"

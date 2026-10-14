@@ -10309,6 +10309,44 @@ async def check_channelfeedback(browser) -> str:
                 api(f"/api/messaging/channels/{c['id']}", "DELETE")
     return "; ".join(said)
 
+
+@check
+async def check_webhookonce(browser) -> str:
+    """The webhook address saves once (F501): Enter, then the blur that followed, posted /api/settings twice and
+    toasted twice; leaving the field unchanged saved again; a refused save toasted "Webhook address saved"."""
+    before = api("/api/settings").get("messaging_webhook_base_url") or ""
+    address = f"https://smoke-{int(time.time())}.example.com"
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    posts: list[str] = []
+    page.on("request", lambda r: posts.append(r.url) if r.method == "POST" and r.url.endswith("/api/settings") else None)
+    try:
+        # The page's own settings read fills the field, and proves it hydrated: typed into before that,
+        # Enter has no handler.
+        async with page.expect_response(lambda r: r.url.endswith("/api/settings") and r.request.method == "GET",
+                                        timeout=30_000):
+            await page.goto(f"{APP}/channels", wait_until="domcontentloaded")
+        field = page.get_by_role("textbox", name="Public webhook base URL")
+        await field.wait_for(timeout=30_000)
+        await field.fill(address)
+        await field.press("Enter")
+        await _status_saying(page, "Webhook address saved")
+        await page.get_by_role("heading", name="Channels").first.click()  # the blur Enter used to be followed by
+        await field.click()
+        await page.get_by_role("heading", name="Channels").first.click()  # in and out, unchanged
+        await page.wait_for_timeout(1_500)
+        if len(posts) != 1:
+            raise AssertionError(f"{len(posts)} saves for one address (expected 1)")
+        await page.route("**/api/settings", _answer({"detail": "Not a URL."}, status=422, methods=("POST",)))
+        await field.fill("https://refused.example.com")
+        await field.press("Enter")
+        said = await _status_saying(page, "Failed to save the webhook address: Not a URL.")
+    finally:
+        await ctx.close()
+        api("/api/settings", "POST", {"agent_name": api("/api/settings").get("agent_name") or "Synapse",
+                                      "messaging_webhook_base_url": before})
+    return f"one save for Enter + blur, none for an unchanged field; refused: {said}"
+
 # ── the Phone tab (VOX1c) ────────────────────────────────────────────────────
 
 #: A number as the channel list serves it (the Channels tab must not show it), and the Phone tab's reads.
