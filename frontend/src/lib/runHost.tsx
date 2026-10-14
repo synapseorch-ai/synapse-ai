@@ -139,6 +139,9 @@ export const OSS_RUN_HOST: RunHost = {
         await postAndRelease(`/api/orchestrations/runs/${enc(runId)}/resume`, {}, (res) => detailOf(res, 'The run was not replayed'));
         return 'Replaying from where it stopped.';
     },
+    // One login (F452): whoever is here may answer, cancel and replay.
+    canAnswer: true,
+    canControl: true,
 };
 
 /** A row of `GET /api/orchestrations/runs`, for the list. */

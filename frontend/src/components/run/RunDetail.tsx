@@ -130,12 +130,13 @@ export function RunDetail({
     const actions = (
         <div className="flex flex-wrap items-center gap-2">
             <LinkButton href={host.links.editor({ id: run.id, workflowId: run.workflowId })} size="sm">Open in editor</LinkButton>
-            {(run.status === 'running' || run.status === 'queued') && (
+            {/* A builder's (F452): anyone else got the API's 403. */}
+            {host.canControl && (run.status === 'running' || run.status === 'queued') && (
                 <Button variant="ghost" size="sm" className="text-danger hover:bg-danger-subtle hover:text-danger" disabled={busy} onClick={cancel}>
                     Cancel
                 </Button>
             )}
-            {stopped && !isNested && (
+            {host.canControl && stopped && !isNested && (
                 <Button variant="secondary" size="sm" disabled={busy} onClick={replay}>Replay</Button>
             )}
         </div>

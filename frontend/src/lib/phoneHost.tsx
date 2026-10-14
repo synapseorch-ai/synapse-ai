@@ -194,6 +194,7 @@ export const OSS_PHONE_HOST: PhoneHost = {
     Frame: ({ actions, children }) => <AppScreen id="phone" width="wide" actions={actions}>{children}</AppScreen>,
     VisitorTools: OssVisitorTools,
     canEdit: true,
+    canAnswer: true,
     credits: false,
     links: {
         agent: id => `/agents?id=${enc(id)}`,

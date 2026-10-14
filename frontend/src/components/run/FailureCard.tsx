@@ -55,6 +55,8 @@ export function FailureCard({ run, nested, onReplay, busy }: {
             case 'replay':
                 // A nested run is replayed by the run that called it (the API refuses it here).
                 if (isNested) return parent ? <LinkButton key={kind} href={host.links.run(parent)} variant={variant} size="sm">Open the calling run</LinkButton> : null;
+                // A builder's (F452).
+                if (!host.canControl) return null;
                 return <Button key={kind} variant={variant} size="sm" onClick={onReplay} disabled={busy}>Replay</Button>;
             case 'models':
                 return host.links.models ? <LinkButton key={kind} href={host.links.models} variant={variant} size="sm">Model settings</LinkButton> : null;

@@ -131,7 +131,7 @@ export function ApprovalCard({
                 {/* As written: a question typed line by line keeps its lines (U70). */}
                 <Markdown breaks>{run.humanPrompt ?? ''}</Markdown>
             </div>
-            {(others.length > 0 || !fields.length) && (
+            {host.canAnswer && (others.length > 0 || !fields.length) && (
                 <div className="grid max-w-xl gap-3">
                     {fields.length ? (
                         <HumanFieldsForm fields={others} values={values} onChange={setValues} idPrefix={`run-${run.id}-field`} />
@@ -164,7 +164,10 @@ export function ApprovalCard({
             )}
             {error && <ErrorNote>{error}</ErrorNote>}
             <div className="flex flex-wrap items-center gap-2">
-                {decision ? (
+                {/* An approver's and up (F452, AP1): anyone else is told who can, as the bell says. */}
+                {!host.canAnswer ? (
+                    <p className="text-xs text-text-faint">An approver, builder or admin can answer this.</p>
+                ) : decision ? (
                     <>
                         <Button variant="person" onClick={() => send('yes')} loading={sending === 'yes'} disabled={locked}>
                             <Check className="size-4" aria-hidden />
@@ -180,14 +183,16 @@ export function ApprovalCard({
                         Send answer
                     </Button>
                 )}
-                <Button
-                    variant="ghost"
-                    className="text-danger hover:bg-danger-subtle hover:text-danger"
-                    disabled={locked}
-                    onClick={onCancel}
-                >
-                    Cancel run
-                </Button>
+                {host.canControl && (
+                    <Button
+                        variant="ghost"
+                        className="text-danger hover:bg-danger-subtle hover:text-danger"
+                        disabled={locked}
+                        onClick={onCancel}
+                    >
+                        Cancel run
+                    </Button>
+                )}
                 {openHref && (
                     <Link
                         href={openHref}

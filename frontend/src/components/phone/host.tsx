@@ -17,7 +17,8 @@
  *   and tabs stay each product's own, and the visitor-tools picker, which reads
  *   each product's tool catalogue.
  * - Whether this person may change anything (cloud's viewers may not; OSS has
- *   no roles), and whether calls are charged in credits (cloud).
+ *   no roles), whether they may answer a call's approval (cloud: an approver and
+ *   up, F452), and whether calls are charged in credits (cloud).
  *
  * Without a provider the screens get `DEFAULT_PHONE_HOST`: no numbers and
  * nothing to do, never a broken request.
@@ -83,6 +84,8 @@ export type PhoneHost = {
     /** What a caller may make the agent use (D233's picker). */
     VisitorTools: ComponentType<VisitorToolsProps>;
     canEdit: boolean;
+    /** Whether this person may approve or refuse a call's tool (cloud: an approver and up, F452; OSS: true). */
+    canAnswer: boolean;
     /** Calls are charged in credits here (cloud: 4 a started minute, V21). */
     credits: boolean;
     links: {
@@ -116,6 +119,7 @@ export const DEFAULT_PHONE_HOST: PhoneHost = {
     Frame: ({ children }) => <>{children}</>,
     VisitorTools: () => null,
     canEdit: false,
+    canAnswer: false,
     credits: false,
     links: { agent: () => '#' },
     costLine: '',

@@ -290,7 +290,9 @@ export function CallLog({
                     <span className="text-xs text-text-muted">
                         The caller was told someone will follow up. Approve or refuse it here or from the bell, then call them back.
                     </span>
-                    {host.canEdit && (
+                    {/* An approver's and up (F452), not only a builder's: it was behind number editing's `canEdit`. */}
+                    {!host.canAnswer && <span className="text-xs text-text-faint">An approver, builder or admin can answer this.</span>}
+                    {host.canAnswer && (
                         <div className="mt-1.5 flex flex-wrap items-center gap-2">
                             <Button size="sm" variant="person" onClick={() => void answer(true)} loading={answering === 'allow'} disabled={answering !== null}>
                                 Approve

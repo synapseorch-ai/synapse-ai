@@ -14,6 +14,9 @@
  *   one's archive.
  * - What a person can do to a run: answer, cancel, replay. Each resolves with
  *   the sentence to show, or throws an Error whose message says why not.
+ * - Whether this person may (F452): `canAnswer` and `canControl`. OSS has one
+ *   login, so both are true; cloud fills them from the member's role, so a
+ *   viewer is never offered a button the API answers with a 403.
  *
  * Without a provider the screens get `DEFAULT_RUN_HOST`: nothing to read and
  * nothing to do, so a missing provider shows empty, never a broken request.
@@ -60,6 +63,10 @@ export type RunHost = {
     cancel: (runId: string) => Promise<string>;
     /** Replay a failed or cancelled run from where it stopped. Resolves with what to say. */
     replay: (runId: string) => Promise<string>;
+    /** Whether this person may answer a waiting run (cloud: an approver and up, AP1). */
+    canAnswer: boolean;
+    /** Whether this person may cancel or replay a run (cloud: a builder and up). */
+    canControl: boolean;
 };
 
 const nothing = async () => { throw new Error('This page has no run host.'); };
@@ -72,6 +79,8 @@ export const DEFAULT_RUN_HOST: RunHost = {
     answer: nothing,
     cancel: nothing,
     replay: nothing,
+    canAnswer: false,
+    canControl: false,
 };
 
 const RunHostContext = createContext<RunHost>(DEFAULT_RUN_HOST);
