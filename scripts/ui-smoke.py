@@ -9959,6 +9959,57 @@ async def check_logfirst(browser) -> str:
 
 
 @check
+async def check_goldendelete(browser) -> str:
+    """A golden set can be deleted from Evals (F508): before, only through the API. Never while it runs: the
+    button waits for Stop and the route refuses (409). Its past runs stay."""
+    stamp = int(time.time())
+    suite = api("/api/evals/suites", "POST", {"name": f"Smoke delete set {stamp}", "orchestration_id": "orch_none",
+                                              "cases": [{"name": "one", "input": "hi", "notes": ""}]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    deleted: list[str] = []
+    page.on("request", lambda r: deleted.append(r.url) if r.method == "DELETE" and "/api/evals/suites/" in r.url else None)
+    try:
+        # A set that runs: Delete waits for Stop.
+        listed = api("/api/evals/suites")
+
+        async def running(route):
+            if route.request.method != "GET":
+                return await route.fallback()
+            await route.fulfill(status=200, content_type="application/json",
+                                body=json.dumps([{**x, "running": x["id"] == suite["id"]} for x in listed]))
+        await page.route("**/api/evals/suites", running)
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(f"^Smoke delete set {stamp}")).click(timeout=30_000)
+        detail = page.locator('section[aria-label="Detail"]')
+        remove = detail.get_by_role("button", name="Delete set")
+        await remove.wait_for(timeout=10_000)
+        if not await remove.is_disabled():
+            raise AssertionError("Delete is offered while the set runs")
+        await page.unroute("**/api/evals/suites", running)
+
+        # At rest: confirmed, deleted, gone from the list.
+        await page.reload(wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(f"^Smoke delete set {stamp}")).click(timeout=30_000)
+        await detail.get_by_role("button", name="Delete set").click()
+        await page.get_by_role("dialog").get_by_role("button", name="Delete").click()
+        await _status_saying(page, "Set deleted. Its past runs are kept.")
+        await page.get_by_role("button", name=re.compile(f"^Smoke delete set {stamp}")).wait_for(
+            state="detached", timeout=10_000)
+        if [x for x in api("/api/evals/suites") if x["id"] == suite["id"]]:
+            raise AssertionError("the set is still stored")
+        if len(deleted) != 1:
+            raise AssertionError(f"{len(deleted)} delete requests (expected 1)")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/evals/suites/{suite['id']}", "DELETE")
+        except Exception:
+            pass
+    return "Delete waits for a running set, then deletes it with a confirm; the list lets it go"
+
+
+@check
 async def check_logswitch(browser) -> str:
     """Switching kinds never reads the open log as the other kind's (F503): Agent logs → Workflow logs fetched the
     open agent log's id as a workflow log (`/api/logs/orchestrations/agentrun_…`, a 404, "This log is no longer on

@@ -171,3 +171,41 @@ class TestFeedback:
     async def test_a_verdict_outside_the_range_is_refused(self, client):
         assert (await client.post("/api/evals/feedback",
                                   json={"run_id": "r1", "verdict": 5})).status_code == 422
+
+
+class TestDeletingAGoldenSet:
+    """F508: OSS had no Delete for a golden set on screen; the route deleted one even while it ran."""
+
+    async def _set(self, client):
+        r = await client.post("/api/evals/suites", json={
+            "name": "Regression set", "orchestration_id": "orch_gs",
+            "cases": [{"name": "a", "input": "one", "notes": ""}],
+        })
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    async def test_a_running_set_is_refused_and_kept(self, client):
+        suite = await self._set(client)
+        await store.create_suite_run({
+            "id": "esr_running", "suite_id": suite["id"], "orchestration_id": "orch_gs", "status": "running",
+        })
+
+        r = await client.delete(f"/api/evals/suites/{suite['id']}")
+
+        assert r.status_code == 409 and r.json()["detail"] == "Stop the set's run first."
+        from core.evals import store as evals_store
+
+        assert await evals_store.get_suite(suite["id"]) is not None
+
+    async def test_a_set_at_rest_goes_and_its_runs_stay(self, client):
+        suite = await self._set(client)
+        await store.create_suite_run({
+            "id": "esr_done", "suite_id": suite["id"], "orchestration_id": "orch_gs", "status": "completed",
+        })
+
+        from core.evals import store as evals_store
+
+        assert (await client.delete(f"/api/evals/suites/{suite['id']}")).status_code == 200
+        assert await evals_store.get_suite(suite["id"]) is None
+        assert [r["id"] for r in await store.suite_runs_for(suite["id"])] == ["esr_done"]
+        assert (await client.delete(f"/api/evals/suites/{suite['id']}")).status_code == 404

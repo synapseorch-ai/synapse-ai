@@ -289,6 +289,14 @@ async def update_suite(suite_id: str, payload: SuiteIn):
 
 @router.delete("/api/evals/suites/{suite_id}")
 async def delete_suite(suite_id: str):
+    """Delete a golden set; its past runs stay. Never one that is running (F508): the run
+    would go on with its own copy of the cases, scoring a set nobody can open any more."""
+    from core.evals import suites as suites_mod
+
+    if await evals_store.get_suite(suite_id) is None:
+        raise HTTPException(status_code=404, detail="Set not found")
+    if await suites_mod.running_for(suite_id) is not None:
+        raise HTTPException(status_code=409, detail="Stop the set's run first.")
     if not await evals_store.delete_suite(suite_id):
         raise HTTPException(status_code=404, detail="Set not found")
     return {"status": "deleted"}

@@ -274,6 +274,7 @@ export function EvalsScreen() {
                                 onToast={show}
                                 onChanged={refreshSuites}
                                 onSaved={async (id) => { await refreshSuites(); setPicked({ kind: "set", id }); }}
+                                onDeleted={async () => { setPicked(null); await refreshSuites(); }}
                                 onCancelNew={() => setPicked(null)}
                             />
                         )}
@@ -661,13 +662,14 @@ function RubricDetail({
  * saved on arrival: a set the model wrote unattended tests what it finds easy.
  */
 function SetDetail({
-    suite, orchestrations, onToast, onChanged, onSaved, onCancelNew,
+    suite, orchestrations, onToast, onChanged, onSaved, onDeleted, onCancelNew,
 }: {
     suite: Suite | null;
     orchestrations: Orchestration[];
     onToast: ToastFn;
     onChanged: () => Promise<void>;
     onSaved: (id: string) => Promise<void>;
+    onDeleted: () => Promise<void>;
     onCancelNew: () => void;
 }) {
     type Draft = Omit<Suite, "id" | "estimate" | "running"> & { id?: string };
@@ -677,6 +679,7 @@ function SetDetail({
     const [busy, setBusy] = useState(false);
     const [history, setHistory] = useState<SuiteRun[] | null>(null);
     const [confirmRun, setConfirmRun] = useState(false);
+    const [confirmDelete, setConfirmDelete] = useState(false);
     const clock = useClock();
 
     const suiteId = suite?.id;
@@ -778,6 +781,25 @@ function SetDetail({
         }
     }
 
+    // A set could not be deleted here (F508), only through the API. Never while it runs: the
+    // route refuses, and the button waits for Stop.
+    async function removeSet() {
+        if (!suite) return;
+        try {
+            const res = await fetch(`/api/evals/suites/${suite.id}`, { method: "DELETE" });
+            if (!res.ok) {
+                const body = await res.json().catch(() => null);
+                throw new Error(typeof body?.detail === "string" ? body.detail : `the server answered ${res.status}`);
+            }
+            onToast("Set deleted. Its past runs are kept.", "success");
+            setConfirmDelete(false);
+            await onDeleted();
+        } catch (e) {
+            setConfirmDelete(false);
+            onToast(`Could not delete the set: ${e instanceof Error ? e.message : "it was refused"}`, "danger");
+        }
+    }
+
     const latest = history?.[0];
     const workflow = orchestrations.find((o) => o.id === suite?.orchestration_id);
 
@@ -787,15 +809,27 @@ function SetDetail({
                 title={suite ? suite.name : "New set"}
                 sub={suite && `${count(suite.estimate.cases, "case")} · ${workflow?.name ?? "no workflow"}${
                     workflow && !workflow.rubric_id ? " (no rubric bound)" : ""}`}
-                actions={suite && (suite.running ? (
-                    <Button size="sm" variant="secondary" onClick={stop}>
-                        <Square className="h-3.5 w-3.5" aria-hidden /> Stop
-                    </Button>
-                ) : (
-                    <Button size="sm" onClick={() => setConfirmRun(true)} disabled={suite.estimate.cases === 0}>
-                        <Play className="h-3.5 w-3.5" aria-hidden /> Run
-                    </Button>
-                ))}
+                actions={suite && (
+                    <>
+                        {suite.running ? (
+                            <Button size="sm" variant="secondary" onClick={stop}>
+                                <Square className="h-3.5 w-3.5" aria-hidden /> Stop
+                            </Button>
+                        ) : (
+                            <Button size="sm" onClick={() => setConfirmRun(true)} disabled={suite.estimate.cases === 0}>
+                                <Play className="h-3.5 w-3.5" aria-hidden /> Run
+                            </Button>
+                        )}
+                        <IconButton
+                            label="Delete set"
+                            title={suite.running ? "Stop the set's run first" : "Delete set"}
+                            icon={Trash}
+                            tone="danger"
+                            disabled={suite.running}
+                            onClick={() => setConfirmDelete(true)}
+                        />
+                    </>
+                )}
             />
 
             {suite && (
@@ -958,6 +992,14 @@ function SetDetail({
                 description={suite ? runCost(suite, orchestrations) : undefined}
                 confirmLabel="Run set"
                 onConfirm={() => start()}
+            />
+            <ConfirmDialog
+                open={confirmDelete}
+                onClose={() => setConfirmDelete(false)}
+                title={`Delete “${suite?.name ?? "this set"}”?`}
+                description="Its cases go with it. Its past runs stay in Runs, with their scores."
+                confirmLabel="Delete"
+                onConfirm={() => removeSet()}
             />
         </div>
     );
