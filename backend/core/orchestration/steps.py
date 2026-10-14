@@ -257,11 +257,17 @@ class AgentStepExecutor:
                 # 2026-09-27: "every step asks"), and the run pauses for it.
                 untrusted_message=True,
             ):
-                if event.get("type") == "tasks_updated":
+                if event.get("type") == "tasks_updated" and not event.get("delegate_from"):
                     # Task state lives on the run, not in a tool's process
                     # memory: checkpointing here is what makes the plan survive
                     # a resume on any worker. The event still falls through to
                     # the journal (structural) and the live stream.
+                    #
+                    # Never a delegate's (F536): the engine re-yields its events
+                    # tagged `delegate_from`, and its plan is its own. Taking it
+                    # replaced the run's plan with the delegate's, seeded the next
+                    # step with it, and beside other branches dropped the lead's
+                    # tasks from the run as if the lead had removed them.
                     new_tasks = [dict(t) for t in (event.get("tasks") or [])]
                     if IN_CONCURRENT_BRANCH.get():
                         from core.task_list import merge_branch_tasks

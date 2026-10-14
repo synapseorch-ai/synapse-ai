@@ -376,8 +376,12 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
       if (data.tool_name === "update_tasks") return state;
       return add({ kind: "tool_result", tool_name: data.tool_name, preview: data.preview || "" });
     case "tasks_updated":
+      // A delegate's plan is its own, never the run's (F536): the engine forwards
+      // it tagged `delegate_from`, and the run keeps its lead's.
+      if (data.delegate_from) return state;
       return { ...state, tasks: Array.isArray(data.tasks) ? data.tasks : [] };
     case "tasks_incomplete": {
+      if (data.delegate_from) return state;
       const open = Array.isArray(data.tasks) ? data.tasks.length : 0;
       return add(line("warn", `Step ended with ${open} open task${open === 1 ? "" : "s"}`));
     }
