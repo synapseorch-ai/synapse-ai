@@ -67,6 +67,9 @@ export type PhoneHost = {
     answer: (call: CallRecord, approve: boolean, approvalId: string | null) => Promise<void>;
     /** What the call's model calls cost, in dollars; null when nothing is recorded. Never rejects. */
     modelCost: (call: CallRecord) => Promise<number | null>;
+    /** The call's voicemail, to play in its log (F480): read from Twilio with the number's key, never stored. Rejects
+     *  with words to show, such as which permission the key lacks. */
+    voicemail: (call: CallRecord) => Promise<Blob>;
     /** The numbers a key can see (step two). A refused key rejects with Twilio's reason. */
     twilioNumbers: (key: TwilioKey) => Promise<TwilioNumber[]>;
     /** Connect a number and point it at us. Resolves with it, its notes (`manual_url`, `signing_error`) included. */
@@ -104,6 +107,7 @@ export const DEFAULT_PHONE_HOST: PhoneHost = {
     transcript: async () => ({ turns: [], pending: null }),
     answer: nothing,
     modelCost: async () => null,
+    voicemail: nothing,
     twilioNumbers: nothing,
     connect: nothing,
     save: nothing,

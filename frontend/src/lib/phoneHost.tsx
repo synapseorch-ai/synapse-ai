@@ -132,6 +132,11 @@ export const OSS_PHONE_HOST: PhoneHost = {
         await call(`/api/messaging/${PLATFORM}/approvals/${enc(c.sessionId)}`,
             json('POST', { approve, approval_id: approvalId }), 'That answer did not go through');
     },
+    voicemail: async c => {
+        const res = await fetch(`/api/messaging/${PLATFORM}/calls/${enc(c.id)}/voicemail`);
+        if (!res.ok) throw await refusal(res, 'The voicemail could not be played');
+        return res.blob();
+    },
     modelCost: async c => {
         try {
             const body = await call<{ logs?: { estimated_cost?: number }[] }>(

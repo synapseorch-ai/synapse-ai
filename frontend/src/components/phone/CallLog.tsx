@@ -15,7 +15,7 @@
  * the bell: the turn carries on behind, and the log reads the conversation
  * again until its result arrives.
  */
-import { ArrowLeft, PhoneIncoming, Wrench } from 'lucide-react';
+import { ArrowLeft, PhoneIncoming, Play, Wrench } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
 import { RunChip } from '@/components/assistant';
@@ -128,6 +128,46 @@ function Turn({ turn, startedAt, after, clock }: { turn: CallTurn; startedAt: st
                 </div>
             </div>
         </li>
+    );
+}
+
+/** A voicemail the caller left, played here (F480): fetched through the host only when asked for, never kept. */
+function Voicemail({ call }: { call: CallRecord }) {
+    const host = usePhoneHost();
+    const [src, setSrc] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [why, setWhy] = useState('');
+    useEffect(() => () => { if (src) URL.revokeObjectURL(src); }, [src]);
+    const vm = call.voicemail;
+    if (!vm) return null;
+    const play = async () => {
+        setLoading(true); setWhy('');
+        try {
+            setSrc(URL.createObjectURL(await host.voicemail(call)));
+        } catch (e) {
+            setWhy(errorWords(e, 'The voicemail could not be played.'));
+        } finally {
+            setLoading(false);
+        }
+    };
+    return (
+        <div data-call-voicemail className="grid gap-2">
+            <p className="m-0 inline-flex flex-wrap items-center gap-2 text-sm text-person-ink">
+                <span aria-hidden className="size-1.5 rounded-full bg-person" />
+                The caller left a voicemail{vm.seconds ? ` (${clockLength(vm.seconds)})` : ''}.
+                {!src && (
+                    <Button size="sm" variant="secondary" onClick={() => void play()} loading={loading}>
+                        <Play className="size-3.5" aria-hidden /> Play it
+                    </Button>
+                )}
+            </p>
+            {src && <audio controls autoPlay src={src} aria-label="The caller's voicemail" className="w-full max-w-md" />}
+            {why && (
+                <p role="alert" className="m-0 text-xs text-danger">
+                    {why} It is in your Twilio account{vm.recording_sid ? <> as <span className="font-code">{vm.recording_sid}</span></> : null}.
+                </p>
+            )}
+        </div>
     );
 }
 
@@ -293,14 +333,7 @@ export function CallLog({
                     {call.transfer.status ? ` (${call.transfer.status.replace(/-/g, ' ')})` : ''}.
                 </p>
             )}
-            {call.voicemail && (
-                <p data-call-voicemail className="m-0 inline-flex flex-wrap items-center gap-2 text-sm text-person-ink">
-                    <span aria-hidden className="size-1.5 rounded-full bg-person" />
-                    The caller left a voicemail
-                    {call.voicemail.seconds ? ` (${clockLength(call.voicemail.seconds)})` : ''}. It is in your Twilio account
-                    {call.voicemail.recording_sid ? <span className="font-code text-xs text-text-muted">{call.voicemail.recording_sid}</span> : null}
-                </p>
-            )}
+            {call.voicemail && <Voicemail call={call} />}
 
             {later.length > 0 && (
                 <div className="grid gap-4 border-t border-border pt-5">

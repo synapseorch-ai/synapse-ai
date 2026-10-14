@@ -250,7 +250,7 @@ export function AddNumber({
                                     recommended
                                     summary="Can do only what calls need: read and answer calls, point a number."
                                 >
-                                    <span>Tick these permissions (the recordings one only if you will record calls):</span>
+                                    <span>Tick these permissions (<span className="font-code">calls.recordings/create</span> only if you will record calls; <span className="font-code">recordings/read</span> plays voicemail in a call&apos;s log):</span>
                                     <ul className="m-0 grid min-w-0 gap-0.5 pl-4 font-code text-xs text-text [overflow-wrap:anywhere]">
                                         {RESTRICTED_PERMISSIONS.map(p => <li key={p}>{p}</li>)}
                                     </ul>

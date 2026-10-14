@@ -421,11 +421,13 @@ export const DEFAULT_NOTICE = "Hi, you're speaking with {agent}, an AI assistant
 export const DEFAULT_FILLER = 'One moment while I check that.';
 export const DEFAULT_FILLER_LATE = 'Still working on it.';
 
-/** The six permissions a Restricted key needs (19 → Probes, P2); the recordings one only with recording on. */
+/** The permissions a Restricted key needs (19 → Probes, P2): `calls.recordings/create` only with recording on;
+ *  `recordings/read` plays a voicemail in a call's log (F480, Twilio's Voice list: GET …/Recordings/{Sid}). */
 export const RESTRICTED_PERMISSIONS = [
     '/twilio/voice/calls/read',
     '/twilio/voice/calls/update',
     '/twilio/voice/calls.recordings/create',
+    '/twilio/voice/recordings/read',
     'twilio/phone-numbers/active-numbers/list',
     'twilio/phone-numbers/active-numbers/read',
     'twilio/phone-numbers/active-numbers/update',
