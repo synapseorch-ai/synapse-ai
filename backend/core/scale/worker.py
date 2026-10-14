@@ -760,7 +760,7 @@ async def run_agent_chat_job(
         # These three reads and the publisher need only Postgres and Redis, so
         # there is nothing to trade away by doing them first. A wedged turn is
         # now a `running` row a staff console or a support reply can see.
-        history = await _load_chat_history(session_factory, session_id, agent_id)
+        history = TurnRows(await _load_chat_history(session_factory, session_id, agent_id))
 
         if ctx.get("job_try", 1) > 1:
             # Handed out again: the first try was stopped mid-turn (a deploy, a
@@ -854,7 +854,10 @@ async def run_agent_chat_job(
                 progress_events=True, resume_state=resume_state,
                 expand_mentions=expand_mentions, stream_answer=stream_answer,
                 history_override=history_override, caller_system=caller_system,
-                save_turn=save_turn, log_source=log_source,
+                # This job saves the turn (`_save_row`), every ending of it: the loop's own copy
+                # was written over by the job's whole list, and is a second pair now that a save
+                # appends (F475).
+                save_turn=save_turn, log_source=log_source, save_here=False,
             )):
                 etype = event.get("type")
 
@@ -1511,6 +1514,20 @@ async def _load_chat_history(session_factory, session_id: str, agent_id: str | N
     return []
 
 
+class TurnRows(list):
+    """A chat turn's conversation as it holds it: what it loaded, then what it added (F475).
+
+    `stored` is how much of it is in the conversation's row already: what was
+    loaded, then what each save wrote. A save appends only the rest, to the row as
+    it stands then, so a turn another writer saved meanwhile (a phone call's own,
+    beside the fleet resuming its approval, VOX1e) is kept.
+    """
+
+    def __init__(self, messages=()):
+        super().__init__(messages)
+        self.stored = len(self)
+
+
 async def _upsert_chat_session(
     session_factory,
     session_id: str,
@@ -1518,7 +1535,16 @@ async def _upsert_chat_session(
     status: str,
     messages: list,
 ) -> None:
-    """Create or update a chat session row."""
+    """Create or update a chat session row.
+
+    `messages` is the conversation as the turn holds it. A `TurnRows` adds what is
+    past its `stored` to the row as it stands now, holding the row from read to
+    commit (F475): writing the whole list back erased every turn another writer
+    appended while this one ran. A plain list is written whole, as it always was.
+    """
+    if isinstance(messages, TurnRows):
+        await _append_chat_session(session_factory, session_id, agent_id, status, messages)
+        return
     from core.store import upsert
     from core.store.models import ChatSessionDB
 
@@ -1540,6 +1566,47 @@ async def _upsert_chat_session(
             update=["status", "messages", "last_message_at", "worker_id"],
         )
         await session.commit()
+
+
+async def _append_chat_session(session_factory, session_id: str, agent_id: str | None, status: str,
+                               turn: TurnRows) -> None:
+    """`turn`'s unsaved messages appended to the row under its lock, its status set (F475)."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    from core.store.models import ChatSessionDB
+
+    new = list(turn[turn.stored:])
+    agent = agent_id or "default"
+
+    async def write() -> None:
+        now = datetime.now(timezone.utc)
+        async with session_factory() as session:
+            row = (await session.execute(
+                select(ChatSessionDB).where(
+                    ChatSessionDB.tenant_id == get_tenant(),
+                    ChatSessionDB.session_id == session_id,
+                    ChatSessionDB.agent_id == agent,
+                ).with_for_update()
+            )).scalar_one_or_none()
+            if row is None:
+                # No row (a first turn, or one deleted while it ran): the turn's whole view, as before.
+                session.add(ChatSessionDB(
+                    tenant_id=get_tenant(), session_id=session_id, agent_id=agent, status=status,
+                    messages=list(turn), last_message_at=now, worker_id=_worker_id,
+                ))
+            else:
+                if new:
+                    row.messages = list(row.messages or []) + new
+                row.status = status
+                row.last_message_at = now
+                row.worker_id = _worker_id
+            await session.commit()
+
+    try:
+        await write()
+    except IntegrityError:
+        await write()  # another writer created the row first: append to it
+    turn.stored = len(turn)
 
 
 async def _deliver_webhook_for_run(

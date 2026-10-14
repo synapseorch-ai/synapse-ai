@@ -3389,8 +3389,15 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                          progress_events: bool = False, resume_state: dict | None = None,
                          expand_mentions: bool = False, stream_answer: bool = False,
                          history_override: list | None = None, caller_system: str | None = None,
-                         save_turn: bool = True, log_source: str = "chat", extra_tools=None):
+                         save_turn: bool = True, log_source: str = "chat", extra_tools=None,
+                         save_here: bool = True):
     """Async generator that runs the ReAct loop and yields structured events.
+
+    `save_here=False` is for a caller that saves the turn itself (the fleet's
+    chat job, which keeps every ending: stopped, failed, interrupted): the loop
+    writes nothing to the conversation, so the turn has one writer (F475). Its
+    whole-list save used to write over the loop's copy; an append keeps both.
+    `save_turn` still decides whether the turn belongs to a conversation at all.
 
     `extra_tools` are the caller's own tools for this turn (a phone call's,
     VOX1a); see `run_agent_step`. A workflow agent's run does not get them.
@@ -3533,7 +3540,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         # A run resumed here (F290) paused before, so its turn is owed and the
         # engine saves it where the run ends (F261) — not twice.
         resumed = bool(resume_state and resume_state.get("run_id"))
-        if (answer is not None or failure is not None) and not resumed and save_turn:
+        if (answer is not None or failure is not None) and not resumed and save_turn and save_here:
             from core.chat_turns import FAILED_RUN_ANSWER
             try:
                 await _save_conversation_turn(
@@ -3572,7 +3579,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             stream_answer=stream_answer,
             history_override=history_override,
             system_prompt_extra=_caller_instructions(caller_system),
-            save_turn=save_turn,
+            save_turn=save_turn and save_here,
             extra_tools=extra_tools,
         ):
             _agent_log.log_event(event)

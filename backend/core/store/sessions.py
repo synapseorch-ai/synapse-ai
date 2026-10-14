@@ -8,12 +8,27 @@ worker's local disk so that `core/session.py` could find it there.
 
 Keyed `(tenant_id, session_id, agent_id)`. See `ChatSessionDB` for why the
 agent belongs in the key rather than beside it.
+
+**One writer at a time per conversation (F475).** Every write reads the row,
+changes it in Python and writes it back, so two at once kept only the later
+one's: a phone call's turn was lost to the fleet resuming its approval (VOX1e),
+and F247's "two turns cannot both settle the same question" held for neither.
+A write now holds the conversation from its read to its commit (`_writing`):
+the row's lock where the database has one (`FOR UPDATE`, Postgres, across
+processes), and a lock in this process, which SQLite needs (it has no row locks,
+and its driver begins a transaction only at the first write, after the read).
+Self-hosted SQLite is one process; scale mode runs on Postgres.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import weakref
 from datetime import datetime, timezone
+from typing import AsyncIterator
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 
 from core.tenancy import get_tenant
 
@@ -38,18 +53,47 @@ def _to_dict(row) -> dict:
     }
 
 
-async def _row(s, session_id: str, agent_id: str):
+async def _row(s, session_id: str, agent_id: str, *, for_update: bool = False):
     from core.store.models import ChatSessionDB
 
-    return (
-        await s.execute(
-            select(ChatSessionDB).where(
-                ChatSessionDB.tenant_id == get_tenant(),
-                ChatSessionDB.session_id == session_id,
-                ChatSessionDB.agent_id == agent_id,
-            )
-        )
-    ).scalar_one_or_none()
+    stmt = select(ChatSessionDB).where(
+        ChatSessionDB.tenant_id == get_tenant(),
+        ChatSessionDB.session_id == session_id,
+        ChatSessionDB.agent_id == agent_id,
+    )
+    if for_update:
+        stmt = stmt.with_for_update()  # nothing on SQLite, which `_writing`'s own lock covers
+    return (await s.execute(stmt)).scalar_one_or_none()
+
+
+#: The conversations being written in this process, each with its lock (F475). Weak: a lock lives while a writer
+#: holds or waits for it, so the map never outgrows the writes in flight. Keyed by event loop too: a lock belongs to
+#: the loop it was first awaited in.
+_WRITERS: "weakref.WeakValueDictionary[tuple, asyncio.Lock]" = weakref.WeakValueDictionary()
+
+
+@contextlib.asynccontextmanager
+async def _writing(session_id: str, agent_id: str) -> AsyncIterator:
+    """A store session that holds this conversation from its read to its commit (F475): read the row in it with
+    `_row(…, for_update=True)`. Not reentrant: a write never calls another."""
+    from core.store import session
+
+    key = (id(asyncio.get_running_loop()), get_tenant(), session_id, agent_id)
+    lock = _WRITERS.get(key)
+    if lock is None:
+        lock = _WRITERS[key] = asyncio.Lock()
+    async with lock:
+        async with session() as s:
+            yield s
+
+
+async def _first_write_wins(write) -> None:
+    """Run `write()`, once more if it lost a race to create the row (two first turns from two processes: the
+    second's insert meets the first's key, and its retry then finds the row and appends to it)."""
+    try:
+        await write()
+    except IntegrityError:
+        await write()
 
 
 async def get(session_id: str, agent_id: str) -> dict | None:
@@ -85,26 +129,27 @@ async def load(agent_id: str | None = None) -> list[dict]:
 
 async def append_turn(session_id: str, agent_id: str, messages: list[dict]) -> None:
     """Append messages to a session, creating it if this is the first turn."""
-    from core.store import session
     from core.store.models import ChatSessionDB
 
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
-        if row is None:
-            s.add(ChatSessionDB(
-                tenant_id=get_tenant(),
-                session_id=session_id,
-                agent_id=agent_id,
-                messages=list(messages),
-                cli_session_ids={},
-                last_message_at=datetime.now(timezone.utc),
-            ))
-        else:
-            # Reassigned rather than mutated in place: SQLAlchemy does not track
-            # in-place changes to a JSON column, so `row.messages.append(...)`
-            # would be a write that silently does nothing.
-            row.messages = list(row.messages or []) + list(messages)
-            row.last_message_at = datetime.now(timezone.utc)
+    async def write() -> None:
+        async with _writing(session_id, agent_id) as s:
+            row = await _row(s, session_id, agent_id, for_update=True)
+            if row is None:
+                s.add(ChatSessionDB(
+                    tenant_id=get_tenant(),
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    messages=list(messages),
+                    cli_session_ids={},
+                    last_message_at=datetime.now(timezone.utc),
+                ))
+            else:
+                # Reassigned rather than mutated in place: SQLAlchemy does not track
+                # in-place changes to a JSON column, so `row.messages.append(...)`
+                # would be a write that silently does nothing.
+                row.messages = list(row.messages or []) + list(messages)
+                row.last_message_at = datetime.now(timezone.utc)
+    await _first_write_wins(write)
 
 
 async def pop_last_turn(session_id: str, agent_id: str,
@@ -130,10 +175,8 @@ async def pop_last_turn(session_id: str, agent_id: str,
     — an empty session, a tail that does not pair (left alone rather than
     guessed at), or a tail that is not the turn the caller meant.
     """
-    from core.store import session
-
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
         if row is None:
             return None
         messages = list(row.messages or [])
@@ -175,10 +218,8 @@ async def cut_last_answer(session_id: str, agent_id: str, heard: str) -> bool:
     are; either way the answer is marked interrupted. Only the content changes,
     the turn's tools and calls stay. False when the tail is not an answer.
     """
-    from core.store import session
-
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
         if row is None:
             return False
         messages = list(row.messages or [])
@@ -200,10 +241,8 @@ async def mark_last_answer(session_id: str, agent_id: str, *, question: str, **f
     belongs to an earlier question, which must not be marked. False when the
     tail is not that question's answer.
     """
-    from core.store import session
-
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
         if row is None:
             return False
         messages = list(row.messages or [])
@@ -225,29 +264,30 @@ async def set_pending_approval(session_id: str, agent_id: str, pending: dict | N
     the call or refuses it, or the next turn re-opens a question already
     answered.
     """
-    from core.store import session
     from core.store.models import ChatSessionDB
 
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
-        if row is None:
-            if pending is None:
+    async def write() -> None:
+        async with _writing(session_id, agent_id) as s:
+            row = await _row(s, session_id, agent_id, for_update=True)
+            if row is None:
+                if pending is None:
+                    return
+                # The row is written on the first *completed* turn, so a
+                # conversation whose very first turn stops to ask permission has
+                # nothing to hang the question on yet. Without this the pause was
+                # dropped and answering it returned "not waiting on an approval".
+                s.add(ChatSessionDB(
+                    tenant_id=get_tenant(),
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    messages=[],
+                    cli_session_ids={},
+                    pending_approval=pending,
+                    last_message_at=datetime.now(timezone.utc),
+                ))
                 return
-            # The row is written on the first *completed* turn, so a
-            # conversation whose very first turn stops to ask permission has
-            # nothing to hang the question on yet. Without this the pause was
-            # dropped and answering it returned "not waiting on an approval".
-            s.add(ChatSessionDB(
-                tenant_id=get_tenant(),
-                session_id=session_id,
-                agent_id=agent_id,
-                messages=[],
-                cli_session_ids={},
-                pending_approval=pending,
-                last_message_at=datetime.now(timezone.utc),
-            ))
-            return
-        row.pending_approval = pending
+            row.pending_approval = pending
+    await _first_write_wins(write)
 
 
 async def get_pending_approval(session_id: str, agent_id: str) -> dict | None:
@@ -261,13 +301,12 @@ async def get_pending_approval(session_id: str, agent_id: str) -> dict | None:
 async def take_pending_approval(session_id: str, agent_id: str) -> dict | None:
     """The parked call, cleared in the same write — or None when nothing waits.
 
-    One transaction, so two turns starting at once cannot both settle the same
-    question (F247): the second finds it gone.
+    One write holding the conversation (`_writing`, F475), so two turns
+    starting at once cannot both settle the same question (F247): the second
+    finds it gone.
     """
-    from core.store import session
-
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
         if row is None or not row.pending_approval:
             return None
         pending = dict(row.pending_approval)
@@ -315,21 +354,22 @@ async def pending_approvals(session_id: str) -> list[tuple[str, dict]]:
 
 
 async def set_cli_session_id(session_id: str, agent_id: str, provider_key: str, cli_id: str) -> None:
-    from core.store import session
     from core.store.models import ChatSessionDB
 
-    async with session() as s:
-        row = await _row(s, session_id, agent_id)
-        if row is None:
-            s.add(ChatSessionDB(
-                tenant_id=get_tenant(),
-                session_id=session_id,
-                agent_id=agent_id,
-                messages=[],
-                cli_session_ids={provider_key: cli_id},
-            ))
-        else:
-            row.cli_session_ids = {**(row.cli_session_ids or {}), provider_key: cli_id}
+    async def write() -> None:
+        async with _writing(session_id, agent_id) as s:
+            row = await _row(s, session_id, agent_id, for_update=True)
+            if row is None:
+                s.add(ChatSessionDB(
+                    tenant_id=get_tenant(),
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    messages=[],
+                    cli_session_ids={provider_key: cli_id},
+                ))
+            else:
+                row.cli_session_ids = {**(row.cli_session_ids or {}), provider_key: cli_id}
+    await _first_write_wins(write)
 
 
 async def delete_one(session_id: str, agent_id: str) -> bool:
