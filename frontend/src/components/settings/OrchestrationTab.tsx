@@ -447,7 +447,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         };
     }, [fetchActiveRuns]);
 
-    // Land on the Active table when something is running/paused (once).
+    // Land on the Active table when something is running/paused (once), unless the person
+    // has already picked a pill: the runs read can land after their click (F510).
     useEffect(() => {
         if (!autoTabRef.current && activeRuns.length > 0) {
             autoTabRef.current = true;
@@ -1755,7 +1756,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 key={v.id}
                                 type="button"
                                 aria-pressed={landingTab === v.id}
-                                onClick={() => setLandingTab(v.id)}
+                                onClick={() => { autoTabRef.current = true; setLandingTab(v.id); }}
                                 className={`inline-flex h-[30px] shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-[13px] font-medium transition-colors ${
                                     landingTab === v.id
                                         ? 'border-transparent bg-text text-bg'

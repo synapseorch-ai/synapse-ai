@@ -9650,6 +9650,37 @@ def _person_orchestration(oid: str, name: str) -> dict:
 
 
 @check
+async def check_workflowpillstays(browser) -> str:
+    """A pill the person picked on Workflows stays picked (F510). The page jumps to Active once when a run waits,
+    and that read can land after the click: on a seeded workspace `workflowlist` and `workflowmenu` clicked
+    Workflows, then lost the list (and its search box) to Active. The runs read is held 2 s here."""
+    paused = [{"run_id": "run_smoke_pill", "orchestration_id": "orch_smoke_pill", "orchestration_name": "Smoke pill",
+               "status": "paused", "waiting_for_human": True, "started_at": "2026-10-14T09:00:00Z"}]
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/orchestrations/runs", _answer(paused, hold=2.0))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        pill = page.get_by_role("group", name="Show").get_by_role("button", name=re.compile("^Workflows"))
+        await pill.click(timeout=30_000)
+        await page.wait_for_timeout(3_500)  # the held read lands
+        if await pill.get_attribute("aria-pressed") != "true":
+            raise AssertionError("the page moved off the pill the person picked")
+        # With no pick, a waiting run still lands it on Active, as before.
+        await page.reload(wait_until="domcontentloaded")
+        active = page.get_by_role("group", name="Show").get_by_role("button", name=re.compile("^Active"))
+        await page.wait_for_function(
+            "() => [...document.querySelectorAll('[role=group][aria-label=Show] button')]"
+            ".some(b => /^Active/.test(b.textContent.trim()) && b.getAttribute('aria-pressed') === 'true')",
+            timeout=10_000)
+        if await active.get_attribute("aria-pressed") != "true":
+            raise AssertionError("a waiting run no longer lands the page on Active")
+    finally:
+        await ctx.close()
+    return "a picked pill stays; with no pick a waiting run still lands on Active"
+
+
+@check
 async def check_workflowlist(browser) -> str:
     """The Workflows list (M2k): a row per workflow says what starts it, how its last run went (time, duration, cost
     through `money`) and its steps by role, a person's step named in the path; a schedule's chip is its rhythm in
