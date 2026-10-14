@@ -10,9 +10,14 @@ Now the paused entry keeps what was worked before the pause, the resumed
 stretch adds to it, and the person's wait is in neither. Inside a container the
 entry starts at the step's own start, as at the top level.
 
-Measured on the real clock: every model call is half a second.
+Measured on the real clock: every model call is half a second. That the
+person's wait is not counted is proven against the entry's own window less the
+wait this test held (F519): the engine paused before the test saw it and resumed
+after the answer, so its count can never exceed that, however slow the machine.
+A fixed margin ("under 1.8 s") failed when a loaded machine stretched the work.
 """
 import asyncio
+import time
 
 import pytest
 
@@ -32,28 +37,41 @@ def half_second_calls(monkeypatch):
 
 
 async def _approved(driver, orch, run_id, fake_llm, script, approvals=1):
+    """The step's entries, and how long this test held the run paused, in seconds."""
     await S.seed_orchestrations([orch])
     tools = _Tools()
     a, b = tools.patch()
+    held = 0.0
     with a, b:
         fake_llm.script(script)
         status = await driver.start(orch, run_id)
         for _ in range(approvals):
             assert status == "paused"
+            seen = time.time()
             await asyncio.sleep(WAIT_S)                    # the person's wait
+            held += time.time() - seen
             status = await driver.answer(run_id, {"approve": True})
     assert status == "completed"
-    return [h for h in (await _run(run_id)).step_history if h.get("step_id") == "work"]
+    return [h for h in (await _run(run_id)).step_history if h.get("step_id") == "work"], held
+
+
+def _work_only(entry, held):
+    """Its window less the wait this test held: the most its work can be (see the docstring)."""
+    return (entry["ended_ms"] - entry["started_ms"]) / 1000 - held + ROUNDING
+
+
+#: A duration is kept to the hundredth and a stamp to the millisecond.
+ROUNDING = 0.02
 
 
 class TestAtTheTop:
     async def test_the_work_before_the_pause_is_counted(self, driver, risky_agent, fake_llm, half_second_calls):
         orch = S.make_orchestration(id="orch_f439_top", entry_step_id="work", steps=[_work()])
-        (entry,) = await _approved(driver, orch, "run_f439_top", fake_llm, [tool_call("danger"), "done"])
+        (entry,), held = await _approved(driver, orch, "run_f439_top", fake_llm, [tool_call("danger"), "done"])
 
         assert entry["status"] == "completed"
-        # Two calls of half a second each: one before the pause, one after.
-        assert 2 * CALL_S - 0.1 <= entry["duration_seconds"] < 2 * CALL_S + WAIT_S - 0.2, entry
+        # Two calls of half a second each: one before the pause, one after — and not the wait.
+        assert 2 * CALL_S - 0.1 <= entry["duration_seconds"] <= _work_only(entry, held), (entry, held)
         assert "worked_seconds" not in entry
 
 
@@ -74,13 +92,16 @@ class TestTwoApprovalsInOneExecution:
         tools = _Tools()
         a, b = tools.patch()
         ordinals = []
+        held = 0.0
         with a, b:
             fake_llm.script([tool_call("danger"), tool_call("danger", n=2), "done"])
             status = await driver.start(orch, "run_f463")
             for _ in range(2):
                 assert status == "paused"
+                seen = time.time()
                 ordinals.append(pause_ordinal((await _run("run_f463")).step_history))
                 await asyncio.sleep(WAIT_S)
+                held += time.time() - seen
                 status = await driver.answer("run_f463", {"approve": True})
         assert status == "completed"
         assert ordinals[0] != ordinals[1], "each question is its own"
@@ -89,7 +110,7 @@ class TestTwoApprovalsInOneExecution:
         entries = [h for h in run.step_history if h.get("step_id") == "work"]
         assert [(e["step_type"], e["status"]) for e in entries] == [("human", "completed"), ("agent", "completed")]
         wait, step = entries
-        assert 3 * CALL_S - 0.1 <= step["duration_seconds"] < 3 * CALL_S + WAIT_S - 0.2, step
+        assert 3 * CALL_S - 0.1 <= step["duration_seconds"] <= _work_only(step, held), (step, held)
         assert step["started_ms"] <= wait["started_ms"], "the step's entry opens at its own start"
         assert wait["ended_at"] and "worked_seconds" not in step
         assert not [e for e in run.step_history if e.get("status") == "running"]
@@ -101,9 +122,9 @@ class TestInALoop:
         loop = {"id": "lp", "name": "Each", "type": "loop", "loop_count": 1, "loop_step_ids": ["work"],
                 "next_step_id": None}
         orch = S.make_orchestration(id="orch_f439_loop", entry_step_id="lp", steps=[loop, _work()])
-        (entry,) = await _approved(driver, orch, "run_f439_loop", fake_llm, [tool_call("danger"), "done"])
+        (entry,), held = await _approved(driver, orch, "run_f439_loop", fake_llm, [tool_call("danger"), "done"])
 
         assert entry["status"] == "completed"
-        assert 2 * CALL_S - 0.1 <= entry["duration_seconds"] < 2 * CALL_S + WAIT_S - 0.2, entry
+        assert 2 * CALL_S - 0.1 <= entry["duration_seconds"] <= _work_only(entry, held), (entry, held)
         # Its window holds the call before the pause: it opens at the step's start.
         assert entry["ended_ms"] - entry["started_ms"] >= (2 * CALL_S + WAIT_S) * 1000 - 100, entry

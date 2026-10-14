@@ -70,23 +70,32 @@ def slow_prints(monkeypatch):
 
 @pytest.fixture
 def held_prints(monkeypatch):
-    """A Print step that runs until the limit cuts it (F519).
+    """Prints that finish at once until `held_prints.after` have, then run until the limit cuts them (F519).
 
-    A 0.4 s Print timed the cut against step boundaries: on a loaded machine a
-    branch could be between two steps — writing its checkpoint — when the limit
-    fired, and was left with no cut entry while the engine was right. Held, every
-    branch is inside its first step when the limit comes.
+    A 0.4 s Print timed the cut against step boundaries: on a loaded machine the
+    limit could fire while the run was between two steps — writing its checkpoint
+    — and the run was left with no cut entry while the engine was right. Held,
+    there is always a step in progress when the limit comes, and the ones before
+    it have finished.
     """
     from core.models_orchestration import StepType
     from core.orchestration import steps as steps_mod
 
     class Held:
+        after = 0
+        done = 0
+
         async def execute(self, step, run, engine):
-            await anyio.sleep_forever()
+            if self.done >= self.after:
+                await anyio.sleep_forever()
+            self.done += 1
+            run.shared_state[step.output_key] = step.id
             return
             yield
 
-    monkeypatch.setitem(steps_mod.STEP_EXECUTORS, StepType.PRINT, Held())
+    held = Held()
+    monkeypatch.setitem(steps_mod.STEP_EXECUTORS, StepType.PRINT, held)
+    return held
 
 
 def _print(sid, nxt=None):
@@ -134,7 +143,8 @@ class TestAContainerAtTheTop:
         _no_raw_float(outer["error"])
         assert _reason(run) == outer["error"], "the run's reason is the container's sentence"
 
-    async def test_the_step_it_cut_is_entered(self, slow_prints):
+    async def test_the_step_it_cut_is_entered(self, held_prints):
+        held_prints.after = 2  # two finished, the third in progress when the limit comes
         ceiling()
         await _run([_loop("outer", ["inner"]), _print("inner")], "outer", "run_f420_cut")
 
@@ -147,7 +157,8 @@ class TestAContainerAtTheTop:
         assert cut["started_at"] and cut["ended_at"] and 0 <= cut["duration_seconds"] < 1
         assert run.step_history[-1]["step_id"] == "outer", "the container's entry is the newest"
 
-    async def test_a_container_cut_inside_is_failed_not_cut(self, slow_prints):
+    async def test_a_container_cut_inside_is_failed_not_cut(self, held_prints):
+        held_prints.after = 2
         ceiling()
         await _run([_loop("outer", ["middle"], count=5), _loop("middle", ["inner"], count=20), _print("inner")],
                    "outer", "run_f420_nest")
