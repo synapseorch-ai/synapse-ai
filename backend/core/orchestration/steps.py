@@ -18,7 +18,7 @@ from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
 from .pauses import end_step, progress_key as _progress_key
-from .step_usage import exact_window
+from .step_usage import exact_window, step_scope
 from .run_error import reason_of, set_run_error
 from .run_gate import stop_reason
 from .time_limits import CONTAINERS, body_step_limit, timed_out
@@ -1745,7 +1745,8 @@ class ParallelStepExecutor:
             failed = False
             sub_gen = executor.execute(sub_step, run, engine)
             try:
-                with anyio.fail_after(sub_timeout):
+                # A branch's calls are its own step's, beside the others (F461).
+                with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id):
                     async for event in sub_gen:
                         if event.get("type") == "human_input_required":
                             # When this step started, for its entry: an approval's
@@ -2152,7 +2153,7 @@ class LoopStepExecutor:
                     # transport is reaped on some later, unrelated event loop.
                     sub_gen = executor.execute(sub_step, run, engine)
                     try:
-                        with anyio.fail_after(sub_timeout):
+                        with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id):
                             async for event in sub_gen:
                                 if event.get("type") == "human_input_required":
                                     # When this step started, for its entry: an approval's

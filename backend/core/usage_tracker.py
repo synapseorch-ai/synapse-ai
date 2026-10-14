@@ -212,7 +212,7 @@ async def log_usage(
                        output_tokens=output_tokens, cache_read_tokens=cache_read_tokens,
                        cache_write_tokens=cache_write_tokens, cost=estimated_cost,
                        response_cache_hit=response_cache_hit)
-    await usage_store.append({
+    row = {
         "timestamp": datetime.now(timezone.utc),
         "model": model,
         "provider": provider,
@@ -231,7 +231,14 @@ async def log_usage(
         "cache_write_tokens": cache_write_tokens,
         "estimated_savings": estimated_savings,
         "response_cache_hit": response_cache_hit,
-    })
+    }
+    # The step it was made for, while one runs (F461): the run page gives the call to that step rather than
+    # to whichever step's window holds it, which for Parallel branches running at once was the first to end.
+    from core.orchestration.step_usage import current_step
+    step = current_step()
+    if step:
+        row["details"] = {"step": step}
+    await usage_store.append(row)
     _sid_display = (session_id[:8] + '…') if session_id and len(session_id) > 8 else (session_id or '-')
     _cache_tag = ""
     if response_cache_hit:

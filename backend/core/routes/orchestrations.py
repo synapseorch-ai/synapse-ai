@@ -551,7 +551,8 @@ async def _step_usage(run) -> tuple[dict, list]:
         rows = await get_usage_logs(run_id=run.run_id, limit=100_000)
         if not rows:
             return {}, []
-        return sweep(run.step_history or [], calls_from_rows(rows), unpriced=_unpriced(await _ensure_pricing()))
+        return sweep(run.step_history or [], calls_from_rows(rows), unpriced=_unpriced(await _ensure_pricing()),
+                     run_id=run.run_id)
     except Exception:
         return {}, []
 

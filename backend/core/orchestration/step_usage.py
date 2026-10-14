@@ -32,11 +32,27 @@ figure is kept as well, for a timeline that shows each attempt.
 
 `cost_usd` is None, never 0, when a step's only calls are on a model nothing
 prices: "free" would be a claim (F63).
+
+## A call says which step it ran for (F461)
+
+Windows cannot tell steps apart that run at once: a Parallel's branches start
+together, and each branch's entry is written when it ends, so the first branch
+to finish held a window around every branch's calls. C9 measured four branches'
+four calls all under `w0`. So the engine stamps a call with the step it ran for
+(`step_scope`, set where every executor runs a step), `usage_tracker` writes the
+stamp in the row's `details`, and `sweep` gives a stamped call of this run to its
+step before any window is read. A wallet's settle (cloud) has no step of its
+own; it follows the stamped call it paid for, matched by its tokens, since the
+gateway settles as the call returns and the engine logs it a moment later. What
+carries no stamp — a row from before, a nested run's call (its own run's step,
+F284) — is swept by time, as before.
 """
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -47,6 +63,33 @@ EXACT_SLACK = timedelta(seconds=0.5)
 #: How far past a whole-second end it may be: the second the stamp dropped, and a
 #: little more (the rule the run page has always used for these entries).
 LEGACY_SLACK = timedelta(seconds=2)
+
+#: How far apart a settle and the call it paid for may be logged (measured: 10–50 ms).
+PAIR_SLACK = timedelta(seconds=2)
+
+#: The run and step a model call is made for, while a step runs (F461).
+_STEP: ContextVar[dict | None] = ContextVar("synapse_current_step", default=None)
+
+
+@contextmanager
+def step_scope(run_id: str | None, step_id: str | None) -> Iterator[None]:
+    """Stamp the model calls made inside it with `run_id`'s step `step_id`.
+
+    A task made inside it (a Parallel's branch, a helper, a delegate) inherits the
+    stamp and may set its own. The previous value is put back rather than reset by
+    token: an abandoned generator is closed from another task, where a reset fails.
+    """
+    previous = _STEP.get()
+    _STEP.set({"run_id": run_id, "step_id": step_id} if run_id and step_id else previous)
+    try:
+        yield
+    finally:
+        _STEP.set(previous)
+
+
+def current_step() -> dict | None:
+    """`{"run_id", "step_id"}` while a step runs; None otherwise."""
+    return _STEP.get()
 
 
 def exact_window(started: float, ended: float | None = None) -> dict[str, int]:
@@ -68,6 +111,10 @@ class Call:
     cost: float = 0.0
     context_chars: int = 0
     latency: float = 0.0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    #: (run_id, step_id) the call was made for, when the engine stamped it (F461).
+    step: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +123,11 @@ class Payment:
 
     at: datetime
     usd: float
+    #: The call's tokens as the settle records them, to find the stamped call it paid for (F461).
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 def calls_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[Call]:
@@ -95,8 +147,18 @@ def calls_from_rows(rows: Iterable[Mapping[str, Any]]) -> list[Call]:
             cost=float(row.get("estimated_cost") or 0.0),
             context_chars=int(row.get("context_chars") or 0),
             latency=float(row.get("latency_seconds") or 0.0),
+            cache_read_tokens=int(row.get("cache_read_tokens") or 0),
+            cache_write_tokens=int(row.get("cache_write_tokens") or 0),
+            step=stamp_of(row.get("step")),
         ))
     return calls
+
+
+def stamp_of(value: Any) -> tuple[str, str] | None:
+    """A row's step stamp (`{"run_id", "step_id"}`) as (run_id, step_id); None when it has none."""
+    if isinstance(value, Mapping) and value.get("run_id") and value.get("step_id"):
+        return str(value["run_id"]), str(value["step_id"])
+    return None
 
 
 def parse_utc(value: Any) -> datetime | None:
@@ -155,49 +217,110 @@ def figure(calls: list[Call], payments: list[Payment], *, unpriced: Callable[[st
     }
 
 
+def _entry_for(call: Call, indexes: list[int], history: list[Any]) -> int:
+    """Which pass of its step a stamped call belongs to: the entry whose window holds it, else the last to start."""
+    started_before = None
+    for i in indexes:
+        started, limit = window(history[i])
+        if started is not None and call.at >= started:
+            if limit is None or call.at <= limit:
+                return i
+            started_before = i
+    return started_before if started_before is not None else indexes[0]
+
+
+def _pays_for(payment: Payment, call: Call) -> bool:
+    if payment.input_tokens is None or payment.output_tokens is None:
+        return False
+    return (payment.input_tokens == call.input_tokens and payment.output_tokens == call.output_tokens
+            and (payment.cache_read_tokens or 0) == call.cache_read_tokens
+            and (payment.cache_write_tokens or 0) == call.cache_write_tokens
+            and abs(call.at - payment.at) <= PAIR_SLACK)
+
+
 def sweep(
     history: Iterable[Any],
     calls: Iterable[Call],
     payments: Iterable[Payment] = (),
     *,
     unpriced: Callable[[str], bool] = lambda model: False,
+    run_id: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any] | None]]:
     """Each step's spend (passes summed), and each history entry's own.
 
     The second list is aligned with `history`: an entry that claimed no call is
     None. A call inside no window is left out rather than forced into the
-    nearest step; the run's own total stays the authority.
+    nearest step; the run's own total stays the authority. With `run_id`, a call
+    stamped with one of this run's steps is that step's first (F461).
     """
-    unclaimed = sorted((c for c in calls if c.at is not None), key=lambda c: c.at)
-    unpaid = sorted((p for p in payments if p.at is not None), key=lambda p: p.at)
-    per_entry: list[dict[str, Any] | None] = []
-    per_step: dict[str, tuple[list[Call], list[Payment]]] = {}
+    history = list(history)
+    calls = [c for c in calls if c.at is not None]
+    payments = [p for p in payments if p.at is not None]
+    entry_calls: list[list[Call]] = [[] for _ in history]
+    entry_paid: list[list[Payment]] = [[] for _ in history]
 
-    for entry in history:
+    def step_of(entry: Any) -> str:
         step_id = str(entry.get("step_id") or "") if isinstance(entry, Mapping) else ""
         # A person's wait calls no model, so it claims nothing: its window can hold
         # the calls of a step running beside it, or of the step after the answer.
-        if step_id and entry.get("step_type") == "human":
-            step_id = ""
+        return "" if step_id and entry.get("step_type") == "human" else step_id
+
+    # A stamped call is its step's, whatever the windows say (F461); a settle follows the call it paid for.
+    if run_id:
+        entries_of: dict[str, list[int]] = {}
+        for i, entry in enumerate(history):
+            if step_of(entry):
+                entries_of.setdefault(step_of(entry), []).append(i)
+        stamped: list[tuple[Call, int]] = []
+        rest: list[Call] = []
+        for c in calls:
+            if c.step and c.step[0] == run_id and c.step[1] in entries_of:
+                i = _entry_for(c, entries_of[c.step[1]], history)
+                entry_calls[i].append(c)
+                stamped.append((c, i))
+            else:
+                rest.append(c)
+        calls = rest
+        unpaired: list[Payment] = []
+        for p in sorted(payments, key=lambda p: p.at):
+            match = min((s for s in stamped if _pays_for(p, s[0])), key=lambda s: abs(s[0].at - p.at), default=None)
+            if match is None:
+                unpaired.append(p)
+                continue
+            stamped.remove(match)
+            entry_paid[match[1]].append(p)
+        payments = unpaired
+
+    # Everything else by time, steps in history order, each claiming what its window holds.
+    unclaimed = sorted(calls, key=lambda c: c.at)
+    unpaid = sorted(payments, key=lambda p: p.at)
+    for i, entry in enumerate(history):
+        step_id = step_of(entry)
         started, limit = window(entry) if step_id else (None, None)
         if started is None:
-            per_entry.append(None)
             continue
 
         def inside(at: datetime, started: datetime = started, limit: datetime | None = limit) -> bool:
             return at >= started and (limit is None or at <= limit)
 
         mine = [c for c in unclaimed if inside(c.at)]
-        if not mine:
-            per_entry.append(None)
+        if not mine and not entry_calls[i]:
             continue
         unclaimed = [c for c in unclaimed if not inside(c.at)]
-        paid = [p for p in unpaid if inside(p.at)]
+        entry_calls[i].extend(mine)
+        entry_paid[i].extend(p for p in unpaid if inside(p.at))
         unpaid = [p for p in unpaid if not inside(p.at)]
-        per_entry.append(figure(mine, paid, unpriced=unpriced))
-        held = per_step.setdefault(step_id, ([], []))
-        held[0].extend(mine)
-        held[1].extend(paid)
+
+    per_entry: list[dict[str, Any] | None] = []
+    per_step: dict[str, tuple[list[Call], list[Payment]]] = {}
+    for i, entry in enumerate(history):
+        if not entry_calls[i]:
+            per_entry.append(None)
+            continue
+        per_entry.append(figure(entry_calls[i], entry_paid[i], unpriced=unpriced))
+        held = per_step.setdefault(step_of(entry), ([], []))
+        held[0].extend(entry_calls[i])
+        held[1].extend(entry_paid[i])
 
     by_step = {sid: figure(c, p, unpriced=unpriced) for sid, (c, p) in per_step.items()}
     return by_step, per_entry

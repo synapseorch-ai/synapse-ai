@@ -74,6 +74,9 @@ def _to_dict(row) -> dict:
     record = {"timestamp": _ts(row.timestamp)}
     record.update({k: getattr(row, k) for k in _USAGE_KEYS})
     record["response_cache_hit"] = bool(record["response_cache_hit"])
+    # The step the call was made for (F461), only on a row that has one.
+    if isinstance(row.details, dict) and row.details.get("step"):
+        record["step"] = row.details["step"]
     return record
 
 

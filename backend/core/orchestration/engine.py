@@ -18,7 +18,7 @@ from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
 from .run_error import failure_reason, reason_of, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause
-from .step_usage import exact_window
+from .step_usage import exact_window, step_scope
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_cap import RunCap
@@ -542,7 +542,8 @@ class OrchestrationEngine:
                 # current task) and yield the event below.
                 human_input_event: dict | None = None
                 try:
-                    with anyio.fail_after(step_timeout):
+                    # The step its model calls are made for (F461).
+                    with anyio.fail_after(step_timeout), step_scope(run.run_id, step.id):
                         async for event in executor.execute(step, run, self):
                             # Feed every event to the logger
                             if logger:
