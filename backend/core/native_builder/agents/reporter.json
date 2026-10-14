@@ -19,7 +19,8 @@
         "get_tools_detail",
         "list_recent_runs",
         "get_run_summary",
-        "prepare_connection"
+        "prepare_connection",
+        "read_workspace"
     ],
     "repos": [],
     "db_configs": [],

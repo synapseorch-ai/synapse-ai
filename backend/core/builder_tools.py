@@ -3354,5 +3354,5 @@ def _fill_step_defaults(steps: list) -> list:
 # they import from here exists.
 import importlib as _importlib  # noqa: E402
 
-for _module in ("core.builder_connect",):
+for _module in ("core.builder_connect", "core.builder_readers"):
     _importlib.import_module(_module)

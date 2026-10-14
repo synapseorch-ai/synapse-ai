@@ -33,7 +33,8 @@
         "delete_orchestration",
         "delete_custom_tool",
         "delete_schedule",
-        "prepare_connection"
+        "prepare_connection",
+        "read_workspace"
     ],
     "repos": [],
     "db_configs": [],
