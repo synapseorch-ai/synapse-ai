@@ -49,11 +49,28 @@ def signature(secret: str, url: str, params: dict) -> str:
     return base64.b64encode(hmac.new(secret.encode(), base.encode(), hashlib.sha256).digest()).decode()
 
 
+#: The header naming the key and algorithm a webhook was signed with, as Twilio has spelt it: `<key>;HMAC_SHA256`
+#: until 2026-10-13, `key=<key>,algorithm=HMAC_SHA256` under a plural name from 2026-10-14 (F527).
+_SIGNED_WITH = ("x-twilio-webhooks-signature-settings", "x-twilio-webhook-signature-settings")
+
+
+def _signed_with_sha256(headers) -> bool:
+    """Whether the settings header says HMAC-SHA256, in either spelling. Without one, Twilio signed with the
+    account's auth token, which is not this number's key."""
+    for name in _SIGNED_WITH:
+        used = str(headers.get(name) or "")
+        if used:
+            algorithm = used.rsplit(";", 1)[-1] if "algorithm=" not in used else next(
+                (part.split("=", 1)[1] for part in used.split(",") if part.strip().startswith("algorithm=")), "")
+            return algorithm.strip().upper() == "HMAC_SHA256"
+    return False
+
+
 def verify_signature(secret: str, url: str, params: dict, headers) -> bool:
-    """A webhook signed with this number's SharedKey (V6). Constant-time; the settings header names the key."""
+    """A webhook signed with this number's SharedKey (V6). Constant-time. The HMAC is the check; the settings
+    header only says it is HMAC-SHA256 (read in both of Twilio's spellings, F527)."""
     given = headers.get("x-twilio-signature") or ""
-    used = headers.get("x-twilio-webhook-signature-settings") or ""
-    if not given or not used.endswith(";HMAC_SHA256"):
+    if not given or not _signed_with_sha256(headers):
         return False
     return hmac.compare_digest(given, signature(secret, url, params))
 

@@ -307,6 +307,23 @@ class TestSignedWebhooks:
         assert not verify_signature("sekret", url + "x", params, headers)
         assert not verify_signature("sekret", url, params, {"x-twilio-signature": sig}), "the auth token's is not ours"
 
+    def test_twilios_renamed_headers_verify_too(self):
+        """F527 (VOX1f): on 2026-10-14 Twilio sent `x-twilio-webhooks-signature-settings` (plural) as
+        `key=…,algorithm=HMAC_SHA256`, beside `x-twilio-webhooks-settings` and `x-twilio-signature-key-sid`,
+        and every call was refused though its signature matched the number's key (captured at the rig)."""
+        from core.messaging.voice.twilio import signature, verify_signature
+        url, params = "https://h/api/messaging/twilio_voice/webhook/r/incoming", {"CallSid": CALL, "To": NUMBER}
+        sig = signature("sekret", url, params)
+        headers = {"x-twilio-signature": sig, "x-twilio-signature-key-sid": "webhooks_sharedkey_1",
+                   "x-twilio-webhooks-settings": "rule=webhooks_rule_1,setting=webhooks_setting_1",
+                   "x-twilio-webhooks-signature-settings": "key=webhooks_sharedkey_1,algorithm=HMAC_SHA256"}
+        assert verify_signature("sekret", url, params, headers)
+        assert not verify_signature("other", url, params, headers)
+        assert not verify_signature("sekret", url, {**params, "To": "+1"}, headers)
+        other = {**headers, "x-twilio-webhooks-signature-settings": "key=webhooks_sharedkey_1,algorithm=HMAC_SHA1"}
+        assert not verify_signature("sekret", url, params, other), "only the algorithm we compute"
+        assert not verify_signature("sekret", url, params, {**headers, "x-twilio-signature": ""})
+
     async def test_start_makes_a_key_a_setting_and_a_rule_for_the_numbers_urls(self):
         calls = []
 
