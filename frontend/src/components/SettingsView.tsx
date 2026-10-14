@@ -47,6 +47,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [selectedModel, setSelectedModel] = useState('');
     const [embeddingModel, setEmbeddingModel] = useState('');
     const [builderModel, setBuilderModel] = useState('');
+    const [builderQuickModel, setBuilderQuickModel] = useState('');
     // The workspace response cap (F263), as typed: '' is automatic.
     const [maxOutputTokens, setMaxOutputTokens] = useState('');
     // The workspace reasoning effort (F269): the setting existed, nothing set it.
@@ -218,6 +219,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             model: selectedModel,
             embedding_model: embeddingModel,
             builder_model: builderModel,
+            builder_quick_model: builderQuickModel,
             // Blank is automatic — null clears a stored cap (F263).
             max_output_tokens: maxOutputTokens.trim() ? Number(maxOutputTokens) : null,
             reasoning_effort: reasoningEffort,
@@ -444,6 +446,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setSelectedModel(data.model || 'ollama.mistral');
                 setEmbeddingModel(data.embedding_model || '');
                 setBuilderModel(data.builder_model || '');
+                setBuilderQuickModel(data.builder_quick_model || '');
                 setMaxOutputTokens(data.max_output_tokens ? String(data.max_output_tokens) : '');
                 setReasoningEffort(data.reasoning_effort || 'medium');
                 setMode(data.mode || 'local');
@@ -653,6 +656,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         selectedModel={selectedModel} setSelectedModel={setSelectedModel}
                         embeddingModel={embeddingModel} setEmbeddingModel={setEmbeddingModel}
                         builderModel={builderModel} setBuilderModel={setBuilderModel}
+                        builderQuickModel={builderQuickModel} setBuilderQuickModel={setBuilderQuickModel}
                         maxOutputTokens={maxOutputTokens} setMaxOutputTokens={setMaxOutputTokens}
                         reasoningEffort={reasoningEffort} setReasoningEffort={setReasoningEffort}
                         reasoningWithoutOff={rModels.reasoning_without_off || []}

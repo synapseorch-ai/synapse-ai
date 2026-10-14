@@ -31,6 +31,8 @@ interface ModelsTabProps {
     selectedModel: string; setSelectedModel: (v: string) => void;
     embeddingModel: string; setEmbeddingModel: (v: string) => void;
     builderModel: string; setBuilderModel: (v: string) => void;
+    /** The builder's quick steps (its routing); empty follows the builder model (BWA1). */
+    builderQuickModel: string; setBuilderQuickModel: (v: string) => void;
     /** The workspace response cap as typed; '' is automatic (F263). */
     maxOutputTokens: string; setMaxOutputTokens: (v: string) => void;
     /** The workspace reasoning effort, for agents that set none (F269). */
@@ -243,6 +245,7 @@ export const ModelsTab = ({
     providers, selectedModel, setSelectedModel,
     embeddingModel, setEmbeddingModel,
     builderModel, setBuilderModel,
+    builderQuickModel, setBuilderQuickModel,
     maxOutputTokens, setMaxOutputTokens,
     reasoningEffort, setReasoningEffort, reasoningWithoutOff, reasoningOffMinimum,
     awsRegion, setAwsRegion, loadingModels, onRefresh,
@@ -281,6 +284,10 @@ export const ModelsTab = ({
     const builderOptions = [
         { value: DEFAULT_SENTINEL, label: `Same as default model${selectedModel ? ` (${selectedModel})` : ''}` },
         ...withUnreachable(buildModelOptions(providers), builderModel),
+    ];
+    const quickOptions = [
+        { value: DEFAULT_SENTINEL, label: `Same as builder model${(builderModel || selectedModel) ? ` (${builderModel || selectedModel})` : ''}` },
+        ...withUnreachable(buildModelOptions(providers), builderQuickModel),
     ];
 
     /** The setting that holds each provider's key, where its card saves one. */
@@ -438,6 +445,18 @@ export const ModelsTab = ({
                         placeholder={loadingModels ? 'Loading models…' : 'Select builder model…'}
                         searchPlaceholder="Search models…"
                         aria-label="Builder model"
+                    />
+                </Field>
+                {/* BWA1: the builder's quick steps — deciding what a message asks for, whether a plan was
+                    approved — on their own model, often a small one. Empty follows the builder model. */}
+                <Field label="Builder model for quick steps" hint="Used by the AI builder to decide what you asked for and whether you approved a plan. A small, fast model usually does this as well as a large one.">
+                    <Combobox
+                        value={builderQuickModel || DEFAULT_SENTINEL}
+                        onChange={(v) => setBuilderQuickModel(v === DEFAULT_SENTINEL ? '' : v)}
+                        options={quickOptions}
+                        placeholder={loadingModels ? 'Loading models…' : 'Select a model for quick steps…'}
+                        searchPlaceholder="Search models…"
+                        aria-label="Builder model for quick steps"
                     />
                 </Field>
                 {/* Reasoning effort — the workspace default (F269). Every agent with none of its own runs

@@ -77,18 +77,29 @@ _MODEL_FREE_STEP_TYPES = {"end", "human", "merge", "parallel", "loop", "print", 
                           "retrieve", "ingest"}
 
 
-def apply_model_override(orchestration: "Orchestration", model: str | None) -> None:
-    """Point every LLM-backed step at `model`, in place.
+def apply_model_override(orchestration: "Orchestration", model: str | None, roles: dict | None = None) -> None:
+    """Point every LLM-backed step at `model`, in place, and a step with a `model_role` the run maps at that role's.
 
     A per-run choice expressed through the per-step field the engine already
     reads, so nothing downstream needs to learn about it. A step that names its
     own model is overridden too — the caller picking a model for the run means
     the run, not "the steps that had not decided".
+
+    `roles` ({role: model}, BWA1) is the host's per-run choice for steps that name a role: the AI builder's quick
+    steps on a small model, say, while the rest run on the person's. A role it does not map, or a run with no
+    roles, leaves the step to `model` exactly as before.
     """
-    if not model:
+    roles = {k: v for k, v in roles.items() if isinstance(k, str) and isinstance(v, str) and v} \
+        if isinstance(roles, dict) else {}
+    if not model and not roles:
         return
     for step in orchestration.steps:
-        if step.type not in _MODEL_FREE_STEP_TYPES:
+        if step.type in _MODEL_FREE_STEP_TYPES:
+            continue
+        by_role = roles.get(step.model_role) if step.model_role else None
+        if by_role:
+            step.model = by_role
+        elif model:
             step.model = model
 
 
@@ -271,6 +282,8 @@ class OrchestrationEngine:
     #: purpose: the state is checkpointed, so a run that pauses on a human step
     #: and resumes on a different worker still uses the model the user picked.
     MODEL_OVERRIDE_KEY = "_model_override"
+    #: A run's `{role: model}` for steps that name a `model_role` (BWA1): set by the host, re-applied on resume.
+    MODEL_ROLES_KEY = "_model_roles"
 
     async def run(
         self,
@@ -298,7 +311,8 @@ class OrchestrationEngine:
         # The workflow as this run starts it, which its resumes carry on with
         # (F443) — taken before a per-run model, which a resume re-applies.
         definition = kept_definition(self.orch)
-        apply_model_override(self.orch, shared_state.get(self.MODEL_OVERRIDE_KEY))
+        apply_model_override(self.orch, shared_state.get(self.MODEL_OVERRIDE_KEY),
+                             shared_state.get(self.MODEL_ROLES_KEY))
 
         run = OrchestrationRun(
             run_id=run_id,
@@ -920,7 +934,8 @@ class OrchestrationEngine:
         orch = Orchestration.model_validate(orch_data)
         if not interrupted:
             run.keep_definition(kept_definition(orch))
-        apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
+        apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY),
+                             run.shared_state.get(cls.MODEL_ROLES_KEY))
         engine = cls(orch, server_module)
         kept_refs = (run.step_progress.get(ACTIVE_TIME_KEY) or {}).get(run_images.REFS_KEY)
         engine.images = run_images.joined(await run_images.load(run_id, kept_refs), images)
@@ -1003,7 +1018,8 @@ class OrchestrationEngine:
             return
 
         orch = Orchestration.model_validate(orch_data)
-        apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY))
+        apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY),
+                             run.shared_state.get(cls.MODEL_ROLES_KEY))
         engine = cls(orch, server_module, depth=depth)
         engine.images = list(images or [])
         engine.caller = caller

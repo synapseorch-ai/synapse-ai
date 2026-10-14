@@ -57,6 +57,10 @@ class StepConfig(BaseModel):
     fallback_route: str | None = None
     # Per-step model override (especially useful for evaluators)
     model: str | None = None
+    #: A role the host resolves to a model for this step (BWA1, D274): the AI builder's quick steps (its routing
+    #: evaluators) are "quick". A run whose state maps the role (`OrchestrationEngine.MODEL_ROLES_KEY`) gives the step
+    #: that model, over the run's own; a role the run does not map leaves the step to the run's model, as before.
+    model_role: str | None = None
 
     # PARALLEL -- each inner list is a sequential chain of step IDs
     parallel_branches: list[list[str]] = []

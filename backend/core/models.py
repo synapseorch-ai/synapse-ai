@@ -156,6 +156,7 @@ class Settings(BaseModel):
     agent_name: str = "Synapse"
     model: str = "mistral" # Default model (Ollama or Cloud)
     builder_model: str = ""  # Model for the AI builder; empty = use `model`
+    builder_quick_model: str = ""  # Model for the builder's quick steps (its routing); empty = the builder model (BWA1)
     judge_model: str = ""    # Model for eval scoring; empty = use `model`
     reasoning_effort: str = "medium"  # workspace default; agents may override
     # The most a model may write in one response (F263). None = automatic: each

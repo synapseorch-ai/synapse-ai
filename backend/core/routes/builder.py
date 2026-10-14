@@ -230,6 +230,14 @@ def _knowledge_steps() -> str:
     return KNOWLEDGE_STEPS_PALETTE if knowledge_enabled() else ""
 
 
+def _quick_roles() -> dict[str, str]:
+    """`{"quick": model}` when the workspace sets "Builder model for quick steps", else nothing (BWA1, D274)."""
+    from core.config import load_settings
+
+    quick = (load_settings().get("builder_quick_model") or "").strip()
+    return {"quick": quick} if quick else {}
+
+
 async def prepare_builder_run(request: BuilderChatRequest, server_module, *, panel: bool = False):
     """Everything up to the first step: the run's id and the engine's generator.
 
@@ -289,6 +297,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # Applied by the engine on run and re-applied on resume, so the second
         # half of a conversation runs on the model the first half did.
         OrchestrationEngine.MODEL_OVERRIDE_KEY: await _selected_model(request.model),
+        # The builder's quick steps (its routing evaluators, `model_role: "quick"`) on their own model when the
+        # workspace names one (BWA1); empty leaves them on the builder model.
+        OrchestrationEngine.MODEL_ROLES_KEY: _quick_roles(),
     }
 
     return run_id, engine.run(

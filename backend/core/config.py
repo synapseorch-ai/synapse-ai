@@ -155,6 +155,7 @@ _DEFAULTS = {
         # being able to point it at a stronger model than the day-to-day one
         # without changing every agent.
         "builder_model": "",
+        "builder_quick_model": "",
         "judge_model": "",
         "mode": "local",
         "openai_key": "",
