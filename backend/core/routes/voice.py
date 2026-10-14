@@ -154,6 +154,29 @@ async def answer_call_approval(session_id: str, body: ApprovalAnswer):
     return {"status": "allowed" if body.approve else "refused", "session_id": session_id}
 
 
+@router.get("/api/messaging/" + PLATFORM + "/calls/{call_sid}/voicemail", include_in_schema=False)
+async def play_voicemail(call_sid: str):
+    """A call's voicemail, played in its log (F480): read from Twilio with the number's own key and passed on,
+    never stored (V26). 409 says which permission a key lacks."""
+    from core.messaging import store as channel_store
+    from core.messaging.voice import connect, hooks
+    from core.messaging.voice.provider import CallRefused
+
+    host = hooks.current()
+    record = await host.get_call(call_sid)
+    recording = str(((record or {}).get("voicemail") or {}).get("recording_sid") or "")
+    if not recording:
+        raise HTTPException(status_code=404, detail="This call left no voicemail.")
+    channel = await channel_store.get_channel(str(record.get("channel_id") or ""))
+    if channel is None:
+        raise HTTPException(status_code=404, detail="This call's number is gone, and its key with it.")
+    try:
+        audio, media = await connect.provider_for(await host.secrets(channel)).fetch_recording(recording)
+    except CallRefused as exc:
+        raise HTTPException(status_code=409 if exc.permission else 502, detail=exc.reason)
+    return Response(content=audio, media_type=media, headers={"Cache-Control": "private, no-store"})
+
+
 class NumbersRequest(BaseModel):
     account_sid: str
     api_key_sid: str

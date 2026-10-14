@@ -9,6 +9,7 @@ import base64
 import hashlib
 import hmac
 import logging
+import re
 from xml.sax.saxutils import escape, quoteattr
 
 import httpx
@@ -172,6 +173,29 @@ class TwilioProvider(CallProvider):
         if code >= 300:
             raise self._refusal(code, body, "record calls")
         return str(body.get("sid") or "")
+
+    #: What a key needs to play a voicemail in a call's log (F480): Twilio's Voice permission for
+    #: GET …/Recordings/{Sid}, which a Restricted key is told to tick.
+    RECORDINGS_READ = "/twilio/voice/recordings/read"
+
+    async def fetch_recording(self, recording_sid: str) -> tuple[bytes, str]:
+        if not re.fullmatch(r"RE[0-9a-fA-F]{32}", recording_sid or ""):
+            raise CallRefused("That is not a recording's id.")
+        url = f"{API}/Accounts/{self.account_sid}/Recordings/{recording_sid}.mp3"
+        # Twilio may answer with a redirect to the file; httpx drops the key on a redirect to another host.
+        if self._http is not None:
+            resp = await self._http.get(url, auth=self._auth, follow_redirects=True)
+        else:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.get(url, auth=self._auth, follow_redirects=True)
+        if resp.status_code in (401, 403):
+            raise CallRefused("Twilio would not play it with this number's key: give the key the permission "
+                              f"{self.RECORDINGS_READ}, or use a Standard key.", permission=self.RECORDINGS_READ)
+        if resp.status_code == 404:
+            raise CallRefused("Twilio no longer has this recording.")
+        if resp.status_code >= 300:
+            raise CallRefused(f"Twilio could not play it (HTTP {resp.status_code}).")
+        return resp.content, resp.headers.get("content-type", "").split(";")[0] or "audio/mpeg"
 
     # ── Signed webhooks (V6, VOX1a P3) ───────────────────────────────────────
     # SharedKeys (public beta, 2026-09-08) sign the HTTP webhooks with a key we hold, so the auth token is never

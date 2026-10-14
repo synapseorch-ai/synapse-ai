@@ -71,6 +71,11 @@ class CallProvider(ABC):
     #: The `messaging_channels.platform` this provider serves.
     platform: str = ""
 
+    async def fetch_recording(self, recording_sid: str) -> tuple[bytes, str]:
+        """A recording's audio and its media type, read with the number's own key to play in a call's log, and
+        never stored (V26, F480). Raises `CallRefused`; its `permission` names what the key lacks."""
+        raise CallRefused("Recordings can't be played from here for this provider.")
+
     @abstractmethod
     async def verify_incoming(self, form: dict, *, number: str) -> CallInfo:
         """The call this webhook names, if it is real and for `number`. Raises `CallRefused`."""

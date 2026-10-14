@@ -217,6 +217,50 @@ def _twilio(handler):
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
+class TestPlayingAVoicemail:
+    """F480 (VOX1e, D263): a voicemail could not be heard from the call's log, which showed its recording's id.
+    It is read from Twilio with the number's own key, never stored (V26); a key that may not read recordings is
+    told which permission to add (Twilio's Voice list: GET …/Recordings/{Sid} is `/twilio/voice/recordings/read`)."""
+
+    REC = "RE" + "a" * 32
+
+    def _p(self, handler):
+        return TwilioProvider(account_sid=ACCOUNT, api_key_sid="SKx", api_key_secret="s", http=_twilio(handler))
+
+    async def test_it_is_read_with_the_numbers_key(self):
+        seen = []
+
+        def handler(req):
+            seen.append((req.method, req.url.path, req.headers.get("authorization", "")))
+            return httpx.Response(200, content=b"ID3 audio", headers={"content-type": "audio/mpeg"})
+        audio, media = await self._p(handler).fetch_recording(self.REC)
+        assert (audio, media) == (b"ID3 audio", "audio/mpeg")
+        [(method, path, auth)] = seen
+        assert method == "GET" and path == f"/2010-04-01/Accounts/{ACCOUNT}/Recordings/{self.REC}.mp3"
+        assert auth.startswith("Basic ")
+
+    async def test_a_key_that_may_not_read_recordings_is_told_which_permission(self):
+        from core.messaging.voice.provider import CallRefused
+        for code in (401, 403):
+            with pytest.raises(CallRefused) as refused:
+                await self._p(lambda req: httpx.Response(code, json={"message": "Forbidden"})).fetch_recording(self.REC)
+            assert refused.value.permission == "/twilio/voice/recordings/read"
+            assert "/twilio/voice/recordings/read" in refused.value.reason
+
+    async def test_a_recording_twilio_no_longer_has(self):
+        from core.messaging.voice.provider import CallRefused
+        with pytest.raises(CallRefused) as refused:
+            await self._p(lambda req: httpx.Response(404, json={"message": "Not found"})).fetch_recording(self.REC)
+        assert refused.value.permission is None and "no longer has" in refused.value.reason
+
+    async def test_only_a_recording_id_is_asked_for(self):
+        from core.messaging.voice.provider import CallRefused
+        asked = []
+        with pytest.raises(CallRefused):
+            await self._p(lambda req: asked.append(req) or httpx.Response(200)).fetch_recording("../Calls/CA1")
+        assert asked == []
+
+
 class TestVerifyingACall:
     """No REST lookup: `GET /Calls/{sid}` was a 404 for every real call (VOX1a P2). The webhook is read as is;
     the route token and, when the number has one, the SharedKey signature are what admit it."""
