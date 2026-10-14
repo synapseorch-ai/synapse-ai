@@ -182,6 +182,14 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                         handleNotification(item, false);
                     }
                     if (boundary > lastIdRef.current) lastIdRef.current = boundary;
+                    // Seen past the newest one there is: the server's notifications began again (lost in a reset
+                    // or a new install) while this browser kept the last id it had seen, so every new one read as
+                    // seen and the badge stayed dark (F479's class). None of these was seen here.
+                    setSeenId(prev => {
+                        if (prev <= boundary) return prev;
+                        localStorage.setItem(SEEN_KEY, '0');
+                        return 0;
+                    });
 
                     // The tail from there. The server subscribes before it
                     // replays, so anything published after the list arrives
