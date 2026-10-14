@@ -221,8 +221,9 @@ class TestSeeHowImBuilt:
         legend = (await client.get("/api/builder/legend")).json()
 
         assert legend["name"] == "Synapse AI Builder"
-        # 24 since D122: the plan-room check and its refusal (F154), and finish_build (F156).
-        assert legend["step_count"] == 24
+        # 24 since D122: the plan-room check and its refusal (F154), and finish_build (F156); 26 since BWA1: the
+        # plan's check and where it sends the plan (F492).
+        assert legend["step_count"] == 26
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {"create", "update", "manage", "answer"}
         assert {a["role"] for a in legend["agents"]} == {
@@ -637,6 +638,7 @@ class TestTheBuilderKnowsWhatYouMean:
             "Requirements: check the final JSON has quality and content.",  # step_understand
             route("draft"),                                                   # step_clarify_route
             "## Overview\nOne new step.",                                     # step_draft_plan
+            tool_call("check_plan"),                                          # step_check_plan's arguments (F492)
         ])
         after = await stream(client, "/api/builder/resume", {
             "run_id": asked["run_id"], "response": {"answer": "quality and content"},

@@ -64,6 +64,7 @@ async def test_the_inner_workflow_survives_the_build_and_its_parent_finds_it(cli
         "Requirements: review three vendors, each with an inner check.",  # step_understand
         route("draft"),                                          # step_clarify_route
         "## Plan\nVendor review calls Vendor check for each vendor.",     # step_draft_plan
+        tool_call("check_plan"),                                 # step_check_plan's arguments (F492)
     ])
     events = await stream(client, "/api/builder/chat", {"message": "build a vendor review with an inner check"})
     run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]

@@ -1514,6 +1514,35 @@ _HOLLOW_WORKFLOW_AGENT = (
 )
 
 
+async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
+    """The agents `run` made for a build that saved no workflow, which nothing else uses (F492).
+
+    The agent creator runs before the saver, so a saver that stopped ("Tool not found", "Agents are missing")
+    left them in the workspace with nothing to run them. Read from the run's own writes at its last checkpoint
+    (`run_writes`); a build that kept any workflow keeps its agents.
+    """
+    from core.orchestration.run_writes import WRITES_KEY
+    from core.orchestration.state import SharedState
+    from core.routes.orchestrations import load_orchestrations
+
+    try:
+        writes = (await SharedState.restore(run)).run.shared_state.get(WRITES_KEY) or []
+    except FileNotFoundError:
+        return []
+    writes = [w for w in writes if isinstance(w, dict)]
+    gone = {(w.get("kind"), w.get("id")) for w in writes if w.get("action") == "deleted"}
+    built = [w for w in writes if w.get("kind") == "orchestration" and w.get("action") == "created"
+             and w.get("id") not in removed and ("orchestration", w.get("id")) not in gone]
+    if built:
+        return []
+    made = [w for w in writes if w.get("kind") == "agent" and w.get("action") == "created"
+            and ("agent", w.get("id")) not in gone]
+    if not made:
+        return []
+    used = {step.get("agent_id") for o in await load_orchestrations() for step in o.get("steps") or []}
+    return [{"id": w["id"], "name": w.get("name")} for w in made if w.get("id") and w["id"] not in used]
+
+
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
     """Dispatch a builder tool call and return a JSON string result."""
     output, _events = await execute_builder_tool_with_events(tool_name, args, server_module)
@@ -1549,8 +1578,10 @@ def _emit(
     resource_id: str | None,
     name: str | None,
     resource: Any = None,
+    reason: str | None = None,
 ) -> None:
-    """Record that the builder changed something the workspace can see."""
+    """Record that the builder changed something the workspace can see. `reason`: why a removal happened, which
+    the run's own summary says (`run_writes`)."""
     events.append({
         "type": "resource_saved",
         "kind": kind,           # agent | orchestration | tool | skill | schedule
@@ -1558,6 +1589,7 @@ def _emit(
         "id": resource_id,
         "name": name,
         "resource": resource,
+        **({"reason": reason} if reason else {}),
     })
 
 
@@ -2333,6 +2365,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"))
                 removed.append(orch["id"])
                 removed_names.append(orch.get("name") or orch["id"])
+        if run is not None:
+            for agent in await _orphaned_agents(run, removed):
+                from core.store.resources import delete_agent as _delete_agent
+                await _delete_agent(agent["id"])
+                _emit(events, "agent", "deleted", agent["id"], agent.get("name"),
+                      reason="the build stopped before its workflow was saved")
+                removed_names.append(agent.get("name") or agent["id"])
         return {"status": "finished", "removed": removed, "removed_names": removed_names, "kept": kept}
 
     # ── Custom HTTP tools ────────────────────────────────────────────────────
@@ -3377,5 +3416,5 @@ def _fill_step_defaults(steps: list) -> list:
 # they import from here exists.
 import importlib as _importlib  # noqa: E402
 
-for _module in ("core.builder_connect", "core.builder_readers", "core.builder_help"):
+for _module in ("core.builder_connect", "core.builder_readers", "core.builder_help", "core.builder_guard"):
     _importlib.import_module(_module)

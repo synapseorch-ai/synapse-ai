@@ -204,6 +204,15 @@ export function PlanCard({
                         </p>
                     )}
                     {estimate && <PlanEstimate plan={plan} load={estimate} />}
+                    {plan.needs && (
+                        <div className="flex flex-col gap-1 rounded-lg border border-person/60 bg-person-subtle px-3 py-2.5">
+                            <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">
+                                <span aria-hidden className="size-2 rounded-full bg-person" />
+                                Missing here
+                            </span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.needs}</Markdown>
+                        </div>
+                    )}
                     {plan.openQuestions && (
                         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
                             <span className="text-xs font-medium text-text">Open questions</span>
