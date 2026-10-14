@@ -27,6 +27,7 @@ import { removeAgent } from "@/store/settingsSlice";
 import type { AgentStatus } from "./AgentTest";
 import { AgentsTab } from "./AgentsTab";
 import { useAppSettings } from "./hooks/useAppSettings";
+import { takeAgentDraft } from "@/lib/agentDraft";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useSettingsData } from "./hooks/useSettingsData";
 
@@ -66,28 +67,31 @@ export function AgentsScreen() {
 
     // The agents workbench (M2d) never opens empty (UX1): with nothing asked
     // for, the first agent opens. After a delete, the next first one does.
-    const askedFor = useSearchParams().get("id");
+    const params = useSearchParams();
+    const askedFor = params.get("id");
+    const askedForDraft = params.get("draft") === "1";
     useEffect(() => {
-        if (draftAgent || askedFor) return;
+        if (draftAgent || askedFor || askedForDraft) return;
         const first = (agents as any[])[0];
         if (!first) return;
         setSelectedAgentId(first.id);
         loadDraftAgent({ ...first });
-    }, [agents, draftAgent, askedFor, loadDraftAgent]);
+    }, [agents, draftAgent, askedFor, askedForDraft, loadDraftAgent]);
 
     // A new agent, unsaved until Save (it was the list's "+").
+    const blankAgent = () => ({
+        id: `agent_${Date.now()}`,
+        name: "New Agent",
+        description: "A custom agent.",
+        system_prompt: "You are a helpful assistant.",
+        tools: [] as string[],
+        repos: [],
+        type: "conversational",
+        avatar: "default",
+        max_turns: 30,
+    });
     const newAgent = () => {
-        const agent = {
-            id: `agent_${Date.now()}`,
-            name: "New Agent",
-            description: "A custom agent.",
-            system_prompt: "You are a helpful assistant.",
-            tools: [],
-            repos: [],
-            type: "conversational",
-            avatar: "default",
-            max_turns: 30,
-        };
+        const agent = blankAgent();
         guard(() => {
             loadDraftAgent(agent);
             setSelectedAgentId(agent.id);
@@ -128,6 +132,26 @@ export function AgentsScreen() {
         setTestOpenState(open);
         try { localStorage.setItem(TEST_OPEN_KEY, open ? "1" : "0"); } catch { /* private window */ }
     };
+
+    // `?draft=1`: a helper's "Save as agent" (SUB1a, S9) — a new agent made from it, its brief as its
+    // instructions, its tools and its model. Nothing is saved until Save: it reads as an unsaved edit of
+    // a blank agent, so leaving asks.
+    useEffect(() => {
+        if (!askedForDraft) return;
+        const url = new URL(window.location.href);
+        url.searchParams.delete("draft");
+        window.history.replaceState(null, "", `${url.pathname}${url.search}`);
+        const draft = takeAgentDraft();
+        if (!draft) return;
+        const blank = blankAgent();
+        const agent = { ...blank, name: draft.name.slice(0, 100) || blank.name, description: "Made from a helper.",
+                        system_prompt: draft.system_prompt || blank.system_prompt, tools: draft.tools,
+                        ...(draft.model ? { model: draft.model } : {}) };
+        setSelectedAgentId(agent.id);
+        setDraftAgent(agent);
+        setBaseline(JSON.stringify(blank));
+        // Once, on arrival: the draft is taken and the address no longer asks.
+    }, [askedForDraft]);
 
     // `?id=<agent>` opens that agent — ⌘K's agents by name (M1a) — through the
     // same question as a click on another agent. The address then drops it, so
@@ -235,6 +259,7 @@ export function AgentsScreen() {
                 reasoningWithoutOff={models.reasoning_without_off || []}
                 reasoningOffMinimum={models.reasoning_off_minimum || []}
                 defaultModel={defaultModel}
+                quickModel={settings.builder_quick_model || ''}
                 workspaceEffort={settings.reasoning_effort}
                 loadingAgents={loading}
                 dirty={dirty}

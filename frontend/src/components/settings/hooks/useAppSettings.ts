@@ -23,6 +23,8 @@ export type AppSettings = {
     n8n_api_key_set?: boolean;
     /** What an agent with no effort of its own runs at (F99). */
     reasoning_effort?: string;
+    /** "Model for quick steps" (BWA1): the AI builder's quick steps, and helpers set to it (SUB1a). */
+    builder_quick_model?: string;
 };
 
 export function useAppSettings() {

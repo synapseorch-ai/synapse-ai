@@ -7,6 +7,7 @@
    "On “Setup”, set its name, description and model; “Use default” follows Settings → Models.",
    "Under “Instructions”, describe the agent in “AI Prompt Writer” and click “Generate”, or write the instructions yourself.",
    "Turn on what it may use under “Tools” (and its Tool Policy), then its skills and, when shown, knowledge bases.",
+   "Turn on “Can send helpers” to let it hand a focused task to a short-lived helper with some of its tools; “Helper model” is what they run on, the agent’s own unless you pick another.",
    "Click “Save” in the bar at the foot. Try it in the test chat on the right, which talks to the saved agent; “Runs”, “Metrics” and “Used by” show what it ran, what it cost and where it is used."
   ],
   "guide": "/guides/start/agents",
@@ -49,6 +50,7 @@
   "steps": [
    "Click the agent’s name at the foot of the message box and pick who to talk to; switching agents starts a new conversation.",
    "Type your message and press Enter; Shift+Enter adds a line, and “Stop” halts the agent.",
+   "An agent that can send helpers shows each one as it works, with its own “Stop”; “View its work” opens what it did, and “Save as agent” opens a new agent made from it, saved only when you click “Save”. One sent to work in the background posts its result here when it finishes, marked “From your helper”.",
    "Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.",
    "Click + for a new chat, or the history button to reopen or delete an earlier one."
   ],

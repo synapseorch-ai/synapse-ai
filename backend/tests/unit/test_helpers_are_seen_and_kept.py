@@ -386,3 +386,14 @@ class TestAHelperInAWorkflow:
         assert llm.calls_for("CHECK A"), "the helper ran"
         tasks = [t["content"] for t in (await state_mod.get_state_backend().load("run_helper_plan")).tasks]
         assert tasks == ["lead: split it"]
+
+
+class TestAnAgentThatSendsHelpersIsNotToldTheyAreMissing:
+    async def test_the_engines_own_tools_are_provided(self):
+        """F549: F526's check knew only servers' and custom tools, so "Can send helpers" read as a tool nothing
+        provides, with "Remove it from this agent" beside it — and so did the task list, skills and the task list's
+        retired name (VOX1f measured `update_tasks` on dev)."""
+        from core import builder_guard
+
+        names = ["spawn_subtask", "update_tasks", "load_skill", "sequentialthinking"]
+        assert await builder_guard.missing(names, None) == []

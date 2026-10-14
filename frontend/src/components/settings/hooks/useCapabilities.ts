@@ -42,10 +42,16 @@ type AvailableTool = {
     tokens?: number;
 };
 
+/** The tool an agent sends helpers with; stored in its `tools` like any other (D204). */
+export const HELPERS_TOOL = "spawn_subtask";
+
 function group(tools: AvailableTool[]): Capability[] {
     const groups: Record<string, Capability> = {};
 
     for (const t of tools) {
+        // Helpers have a switch of their own ("Can send helpers", SUB1a), never a row here:
+        // a row would also let unticking another tool on an "every tool" agent switch them on.
+        if (t.name === HELPERS_TOOL) continue;
         if (t.source === "custom_http" && t.group) {
             // A grouped tool: one capability per group, taken whole. The agent's
             // list then holds `group:<id>`, which the engine expands at run

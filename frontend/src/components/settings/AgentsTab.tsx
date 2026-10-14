@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
 import { toolContext } from '@/lib/toolTokens';
-import { selectedToolNames, sizedTools } from './hooks/useCapabilities';
+import { HELPERS_TOOL, selectedToolNames, sizedTools } from './hooks/useCapabilities';
 import { vaultMentions } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
 import { useDispatch } from 'react-redux';
@@ -51,6 +51,8 @@ interface AgentsTabProps {
     /** Where Off is the model's lowest thinking level rather than none (F269). */
     reasoningOffMinimum?: string[];
     defaultModel?: string;
+    /** The workspace's "Model for quick steps" (empty when none is set): a choice for "Helper model". */
+    quickModel?: string;
     /** The workspace's `reasoning_effort`, which an agent with none of its own
      *  runs at. Absent when the workspace never set one. */
     workspaceEffort?: string;
@@ -75,7 +77,7 @@ import React, { useState, useEffect } from 'react';
 export const AgentsTab = ({
     agents, selectedAgentId, setSelectedAgentId,
     draftAgent, setDraftAgent, loadDraftAgent, guard, availableCapabilities, loadingCapabilities = false, customTools,
-    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, workspaceEffort, loadingAgents = false,
+    onDeleteAgent, providers, reasoningCapable, reasoningWithoutOff, reasoningOffMinimum, defaultModel, quickModel = '', workspaceEffort, loadingAgents = false,
     dirty, onDiscard, agentStatus, testOpen, setTestOpen, aiBuilderOpen, setAiBuilderOpen,
 }: AgentsTabProps) => {
     const dispatch = useDispatch<AppDispatch>();
@@ -308,7 +310,7 @@ export const AgentsTab = ({
             // own names were listed read false, re-added them beside "all", and
             // the box could never be turned off (F235).
             const allToolsFlat = availableCapabilities.flatMap((c: any) => c.tools);
-            const newTools = allToolsFlat.filter((t: string) => !cap.tools.includes(t));
+            const newTools = [...allToolsFlat.filter((t: string) => !cap.tools.includes(t)), ...ownSwitches(draftAgent.tools)];
             setDraftAgent({ ...draftAgent, tools: newTools });
         } else {
             const allGroupEnabled = cap.tools.every((t: string) => draftAgent.tools.includes(t));
@@ -326,7 +328,7 @@ export const AgentsTab = ({
         if (draftAgent.tools.includes("all")) {
             // Switch from "all" to explicit list minus this tool
             const allToolsFlat = availableCapabilities.flatMap((c: any) => c.tools);
-            const newTools = allToolsFlat.filter((t: string) => t !== toolName);
+            const newTools = [...allToolsFlat.filter((t: string) => t !== toolName), ...ownSwitches(draftAgent.tools)];
             setDraftAgent({ ...draftAgent, tools: newTools });
         } else {
             if (draftAgent.tools.includes(toolName)) {
@@ -1378,6 +1380,51 @@ export const AgentsTab = ({
                                                     />
                                                 </label>
 
+                                                {/* Helpers (SUB1a, S1): the agent may hand a focused task to a
+                                                    throwaway agent of its own. Stored as `spawn_subtask` in its
+                                                    tools, as it always was (D204); the grid has no row for it.
+                                                    Not for a workflow agent, which runs its workflow. */}
+                                                {draftAgent.type !== 'orchestrator' && (
+                                                    <div className="p-3">
+                                                        <label className="flex cursor-pointer items-start gap-4">
+                                                            <span className="min-w-0 flex-1">
+                                                                <span className="block text-sm font-medium text-text">Can send helpers</span>
+                                                                <span id="age-helpers-help" className="mt-0.5 block text-xs text-text-muted">
+                                                                    Let it hand a focused task to a helper with <span className="font-mono">spawn_subtask</span>:
+                                                                    a short-lived agent with some of its tools, which asks nobody and sends no helpers of its own.
+                                                                    Up to three work at once, each shown in the chat as it works. In the app&apos;s chat a helper
+                                                                    can also work in the background and post its result when it is done.
+                                                                </span>
+                                                            </span>
+                                                            <Switch
+                                                                label="Can send helpers"
+                                                                aria-describedby="age-helpers-help"
+                                                                checked={(draftAgent.tools || []).includes(HELPERS_TOOL)}
+                                                                onChange={(on) => setDraftAgent({
+                                                                    ...draftAgent,
+                                                                    tools: on
+                                                                        ? [...(draftAgent.tools || []).filter((t: string) => t !== HELPERS_TOOL), HELPERS_TOOL]
+                                                                        : (draftAgent.tools || []).filter((t: string) => t !== HELPERS_TOOL),
+                                                                })}
+                                                                className="mt-0.5"
+                                                            />
+                                                        </label>
+                                                        {(draftAgent.tools || []).includes(HELPERS_TOOL) && (
+                                                            <div className="mt-3 space-y-1">
+                                                                <Label className="block">Helper model</Label>
+                                                                <Combobox
+                                                                    value={draftAgent.helper_model || '__same__'}
+                                                                    onChange={v => setDraftAgent({ ...draftAgent, helper_model: v === '__same__' ? null : v })}
+                                                                    aria-label="Helper model"
+                                                                    searchPlaceholder="Search models…"
+                                                                    options={helperModelOptions(providers, draftAgent.model || defaultModel || '', quickModel, draftAgent.helper_model)}
+                                                                />
+                                                                <p className="mt-1 text-xs text-text-faint">What its helpers run on. The quick-step model is set in Settings → Models.</p>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+
                                                 {/* Whether a picture reaches it: computed from its saved
                                                     model, not a setting (M2d). A workflow step passes
                                                     images on with its own "Sees attachments". */}
@@ -1546,6 +1593,27 @@ export const AgentsTab = ({
 };
 
 /** The tool policy in one line, for its folded row: what is set, or that nothing is. */
+/** The agent's tools the grid has no row for, kept when an "every tool" agent's list is spelled out (SUB1a). */
+function ownSwitches(tools: string[]): string[] {
+    return tools.includes(HELPERS_TOOL) ? [HELPERS_TOOL] : [];
+}
+
+/** "Helper model"'s choices: the agent's own (stored as none), the workspace's quick-step model, then every model. */
+function helperModelOptions(providers: Record<string, any> | undefined, ownModel: string, quickModel: string,
+                            current: string | null | undefined) {
+    const models = Object.entries(providers ?? {}).flatMap(([providerKey, info]: [string, any]) =>
+        !info.available || info.models.length === 0
+            ? []
+            : info.models.map((m: string) => ({ value: m, label: m, group: providerLabel(providerKey) })));
+    const options = [
+        { value: '__same__', label: `Same as this agent (${ownModel || 'not set'})` },
+        { value: 'role:quick', label: quickModel ? `Quick-step model · ${quickModel}` : "Quick-step model (none set: runs on this agent's)" },
+        ...models,
+    ];
+    if (current && !options.some(o => o.value === current)) options.push({ value: current, label: `${current} (not available now)` });
+    return quickModel || current === 'role:quick' ? options : options.filter(o => o.value !== 'role:quick');
+}
+
 function policySummary(policy: ToolPolicy): string {
     const rules = toolRules(policy).length;
     const ruled = rules ? ` · ${rules} rule${rules === 1 ? '' : 's'} for one tool` : '';

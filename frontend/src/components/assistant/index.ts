@@ -14,6 +14,18 @@ export { Composer, composerPillClass, PillAvatar, type ComposerProps } from './C
 export { AgentAvatar, AgentTurn, RunChip, Suggestions, UserBubble } from './messages';
 export { APPROVE_WORD, PlanCard, QUESTION_FOLD, QuestionCard } from './cards';
 export { ConnectCard, type ConnectResult, type Connector } from './ConnectCard';
+export { HelperLane, HelperLanes, HelperNote } from './HelperLane';
+export {
+    agentFromHelper,
+    foldHelpers,
+    helperDuration,
+    helperStatusLine,
+    isHelperEvent,
+    laneFromRecord,
+    type HelperCall,
+    type HelperLaneData,
+    type HelperStatus,
+} from './helpers';
 export { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from './switch';
 export {
     BUILDER_QUESTION_STEPS,

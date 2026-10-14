@@ -1,3 +1,5 @@
+import type { HelperLaneData } from '@/components/assistant/helpers';
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { KnowledgeCitation } from '@/lib/knowledge';
 
@@ -80,6 +82,8 @@ export interface Message {
     // turn shows its tool chip before a reload as well as after (M2c). A
     // reopened turn has the same list, saved, in `data.calls`.
     toolCalls?: { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string }[];
+    // The helpers its turn sent (SUB1a): each one's lane, live or as saved.
+    helpers?: HelperLaneData[];
 }
 
 export interface SystemStatus {

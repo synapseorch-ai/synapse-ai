@@ -231,7 +231,7 @@ def _knowledge_steps() -> str:
 
 
 def _quick_roles() -> dict[str, str]:
-    """`{"quick": model}` when the workspace sets "Builder model for quick steps", else nothing (BWA1, D274)."""
+    """`{"quick": model}` when the workspace sets "Model for quick steps", else nothing (BWA1, D274)."""
     from core.config import load_settings
 
     quick = (load_settings().get("builder_quick_model") or "").strip()

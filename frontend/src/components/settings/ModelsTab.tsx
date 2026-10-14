@@ -448,15 +448,16 @@ export const ModelsTab = ({
                     />
                 </Field>
                 {/* BWA1: the builder's quick steps — deciding what a message asks for, whether a plan was
-                    approved — on their own model, often a small one. Empty follows the builder model. */}
-                <Field label="Builder model for quick steps" hint="Used by the AI builder to decide what you asked for and whether you approved a plan. A small, fast model usually does this as well as a large one.">
+                    approved — on their own model, often a small one. Empty follows the builder model.
+                    Helpers set to "Quick-step model" run on it too (SUB1a), hence not the builder's alone. */}
+                <Field label="Model for quick steps" hint="Used by the AI builder to decide what you asked for and whether you approved a plan, and by an agent's helpers when its Helper model is the quick-step model. A small, fast model usually does this as well as a large one.">
                     <Combobox
                         value={builderQuickModel || DEFAULT_SENTINEL}
                         onChange={(v) => setBuilderQuickModel(v === DEFAULT_SENTINEL ? '' : v)}
                         options={quickOptions}
                         placeholder={loadingModels ? 'Loading models…' : 'Select a model for quick steps…'}
                         searchPlaceholder="Search models…"
-                        aria-label="Builder model for quick steps"
+                        aria-label="Model for quick steps"
                     />
                 </Field>
                 {/* Reasoning effort — the workspace default (F269). Every agent with none of its own runs

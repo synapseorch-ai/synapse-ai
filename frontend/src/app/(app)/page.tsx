@@ -7,13 +7,17 @@ import { Command } from 'cmdk';
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { putAgentDraft } from '@/lib/agentDraft';
 import { CollectDataForm } from '@/components/CollectDataForm';
 import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { Button, IconButton, Markdown, PageFrameHeader } from '@/components/ui';
-import { AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, PillAvatar, RunChip, UserBubble } from '@/components/assistant';
+import {
+  AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, HelperLanes, HelperNote, PillAvatar, RunChip, UserBubble,
+  agentFromHelper, foldHelpers, isHelperEvent, laneFromRecord, type HelperLaneData,
+} from '@/components/assistant';
 import { StepIcon } from '@/components/run';
 
 import { cn } from '@/lib/utils';
@@ -369,6 +373,10 @@ type SessionTurn = {
   /** The answer's Sources, as the turn saved them (Knowledge, B1b). Absent on most turns. */
   citations?: KnowledgeCitation[];
   unresolved_citations?: string[];
+  /** The helpers the turn sent, each one's record (SUB1a): their lanes, reopened. */
+  helpers?: Record<string, unknown>[];
+  /** Set when nobody typed the question: a helper's result posted back (SUB1a). */
+  automated?: Automated;
 };
 
 /** The loop's own line before every model call (`react_engine.py`): no news once the agent has had a thought. */
@@ -404,7 +412,11 @@ type ParkedApproval = {
 };
 
 /** A turn still being written. A turn is saved when it ends, so it is not in `turns` yet. */
-type RunningTurn = { turn_id: string; message: string; started_at: number; cursor: string };
+/** `automated`: a helper's follow-up nobody typed (SUB1a) — drawn as the helper's, never the person's. */
+type RunningTurn = { turn_id: string; message: string; started_at: number; cursor: string; automated?: Automated };
+
+/** A question nobody typed: a background helper's result, posted back (SUB1a). */
+type Automated = { kind: string; helper_id?: string; name?: string; status?: string; session_id?: string | null };
 
 type StepState = {
   thoughts: string[];
@@ -789,6 +801,9 @@ export default function Home() {
   // `response` puts the answer of record in its place.
   const [draftAnswer, setDraftAnswer] = useState('');
   const [currentAgentId, setCurrentAgentId] = useState<string | null>(null);
+  // The agent as it is now, for work that outlives the render that started it (a background helper's follow-up).
+  const currentAgentIdRef = useRef<string | null>(null);
+  useEffect(() => { currentAgentIdRef.current = currentAgentId; }, [currentAgentId]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
@@ -881,6 +896,15 @@ export default function Home() {
   /** The turn's own tool calls as they streamed, for the chip under its answer (M2c) — what a reopened
    *  turn reads from its saved `calls`. The agent's own, not a delegate's or a workflow step's. */
   const liveCallsRef = useRef<NonNullable<Message['toolCalls']>>([]);
+  // The helpers this turn sent (SUB1a): their lanes as they work, given to the answer when it comes.
+  const liveHelpersRef = useRef<HelperLaneData[]>([]);
+  const [liveHelpers, setLiveHelpers] = useState<HelperLaneData[]>([]);
+  // A background helper's lane as its own conversation streams it since its turn ended, by id.
+  const [backgroundLanes, setBackgroundLanes] = useState<Record<string, HelperLaneData>>({});
+  const followedHelpersRef = useRef<Set<string>>(new Set());
+  const [stoppingHelpers, setStoppingHelpers] = useState<Set<string>>(new Set());
+  // The turn on screen is a helper's follow-up: there is no question of the person's to retry.
+  const automatedTurnRef = useRef(false);
   /** The answer's Sources (`knowledge_citations`, B1b), drawn under the answer that follows;
    *  a workflow step's under that step's result. */
   const sourcesRef = useRef<{ citations: KnowledgeCitation[]; unresolvedCitations: string[] } | null>(null);
@@ -993,7 +1017,7 @@ export default function Home() {
    */
   const reopenConversation = async (sid: string, agentId: string | null, epoch = conversationEpochRef.current) => {
     const running = await loadConversation(sid, agentId, epoch);
-    if (running && epoch === conversationEpochRef.current) await watchTurn(sid, running.cursor, running.message);
+    if (running && epoch === conversationEpochRef.current) await watchTurn(sid, running.cursor, running.message, !!running.automated);
   };
 
   /** Draw the conversation as stored; the turn still being written, if any, is returned to be followed. */
@@ -1021,6 +1045,8 @@ export default function Home() {
         restored.push({
           role: 'user', content: t.user,
           ...(t.images && t.images.length > 0 ? { data: { imageNotes: t.images } } : {}),
+          // A question nobody typed — a helper's result (SUB1a) — drawn as the helper's.
+          ...(t.automated ? { data: { automated: t.automated } } : {}),
         });
         if (t.approval) {
           // A question nobody answered, drawn where it was asked and not
@@ -1048,6 +1074,8 @@ export default function Home() {
           // Its Sources, as live (B1b).
           ...(t.citations?.length || t.unresolved_citations?.length
             ? { citations: t.citations ?? [], unresolvedCitations: t.unresolved_citations ?? [] } : {}),
+          // Its helpers' lanes, as live (SUB1a).
+          ...(t.helpers?.length ? { helpers: t.helpers.map(laneFromRecord) } : {}),
         });
       }
       if (parked) {
@@ -1060,7 +1088,8 @@ export default function Home() {
           },
         });
       }
-      if (running) restored.push({ role: 'user', content: running.message });
+      if (running) restored.push({ role: 'user', content: running.message,
+                                   ...(running.automated ? { data: { automated: running.automated } } : {}) });
       setMessages(restored);
       setTurnOutcome(null);
       setSessionId(sid);
@@ -1071,6 +1100,20 @@ export default function Home() {
       return null;
     }
   };
+
+  // A background helper's lane goes on after its turn (SUB1a): followed once per helper.
+  useEffect(() => {
+    for (const msg of messages) {
+      for (const lane of msg.helpers ?? []) {
+        if (lane.mode !== 'background' || lane.status !== 'running' || !lane.sessionId) continue;
+        if (followedHelpersRef.current.has(lane.id)) continue;
+        followedHelpersRef.current.add(lane.id);
+        void followHelper(lane, sessionId);
+      }
+    }
+    // followHelper reads refs and the conversation it is given; `messages` is what changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
 
   // Helper to refresh status
   // Escape closes the History drawer: its backdrop closes it on a click, and a
@@ -1339,6 +1382,91 @@ export default function Home() {
    * resolves on it rather than rejecting, so stopping does not fall through to
    * the HTTP path and quietly run the whole turn again.
    */
+  /** This turn's helpers' lanes, taken for the message they belong with (SUB1a). */
+  const takeLiveHelpers = (): HelperLaneData[] => {
+    const helpers = liveHelpersRef.current;
+    liveHelpersRef.current = [];
+    setLiveHelpers([]);
+    return helpers;
+  };
+
+  /** Lanes with no answer to sit with (a turn that paused or stopped): a line of their own. */
+  const helperNote = (helpers: HelperLaneData[]): Message[] =>
+    helpers.length > 0 ? [{ role: 'assistant', msgType: 'note', content: '', helpers }] : [];
+
+  /** A lane's Stop: that helper alone, whether its agent waits for it or it works in the background. */
+  const stopHelper = async (helper: HelperLaneData) => {
+    setStoppingHelpers(prev => new Set(prev).add(helper.id));
+    try {
+      await fetch(`/api/chat/${encodeURIComponent(sessionId)}/helpers/${encodeURIComponent(helper.id)}/stop`,
+                  { method: 'POST' });
+    } catch {
+      // The lane says how it ended either way.
+    }
+  };
+
+  /** "Save as agent" (S9): a new agent opened in the editor, made from the helper; nothing saved until Save. */
+  const saveHelperAsAgent = (helper: HelperLaneData) => {
+    if (putAgentDraft(agentFromHelper(helper))) router.push('/agents?draft=1');
+  };
+
+  /**
+   * A background helper's lane, followed on its own conversation's stream until it ends;
+   * then whatever it posted (a follow-up turn, watched as it is written) or its record as saved.
+   * A turn of the person's that is running reads the result itself, so the page leaves it be.
+   */
+  const followHelper = async (lane: HelperLaneData, sid: string) => {
+    let current = lane;
+    try {
+      const res = await fetch(`/api/chat/${encodeURIComponent(lane.sessionId ?? '')}/events`);
+      if (res.ok && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let cut: number;
+          while ((cut = buffer.indexOf('\n\n')) !== -1) {
+            const block = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            for (const line of block.split('\n')) {
+              if (!line.startsWith('data: ')) continue;
+              try {
+                const event = JSON.parse(line.slice(6));
+                if (!isHelperEvent(event)) continue;
+                current = foldHelpers([current], event)[0] ?? current;
+                setBackgroundLanes(prev => ({ ...prev, [current.id]: current }));
+              } catch {
+                // not an event
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Gone: the conversation below says how it ended.
+    }
+    const epoch = conversationEpochRef.current;
+    const agentId = currentAgentIdRef.current;
+    const query = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : '';
+    for (let look = 0; look < 15; look++) {
+      await new Promise(resolve => setTimeout(resolve, look === 0 ? 300 : 700));
+      if (epoch !== conversationEpochRef.current || streamActiveRef.current) return;
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/history${query}`).catch(() => null);
+      if (!res?.ok) continue;
+      const data = await res.json();
+      const posted = (data.running?.automated?.helper_id === lane.id)
+        || (data.turns ?? []).some((t: SessionTurn) => t.automated?.helper_id === lane.id);
+      if (posted) {
+        await reopenConversation(sid, agentId, epoch);
+        return;
+      }
+    }
+    if (epoch === conversationEpochRef.current && !streamActiveRef.current) await loadConversation(sid, agentId, epoch);
+  };
+
   const handleStop = async () => {
     if (!isLoading) return;
     setTurnOutcome({ kind: 'cancelled' });
@@ -1612,6 +1740,9 @@ export default function Home() {
     lastThoughtRef.current = null;
     refusedRef.current = [];
     liveCallsRef.current = [];
+    liveHelpersRef.current = [];
+    setLiveHelpers([]);
+    automatedTurnRef.current = false;
     sourcesRef.current = null;
     stepSourcesRef.current = {};
     try {
@@ -1680,7 +1811,8 @@ export default function Home() {
   });
 
   /** Show a turn this page did not start — found running when a conversation reopened. */
-  const watchTurn = (sid: string, cursor: string, question: string) => inTurn(question, undefined, async () => {
+  const watchTurn = (sid: string, cursor: string, question: string, automated = false) => inTurn(question, undefined, async () => {
+    automatedTurnRef.current = automated;
     try {
       const how = await followTurn(sid, cursor);
       if (how === 'gone') await showSavedAnswer(sid, question);
@@ -1698,6 +1830,12 @@ export default function Home() {
     data: Record<string, any>,
     stepState: StepState
   ): { done: boolean; error?: Error } => {
+    if (isHelperEvent(data)) {
+      // A helper's own work (SUB1a): its lane, never the agent's activity line or its answer.
+      liveHelpersRef.current = foldHelpers(liveHelpersRef.current, data);
+      setLiveHelpers(liveHelpersRef.current);
+      return { done: false };
+    }
     switch (data.type) {
 
       // ── Standard events ────────────────────────────────────────────────────
@@ -1807,7 +1945,8 @@ export default function Home() {
             stepState.orchStepId = data.orch_step_id as string;
           }
           stepState.thoughts = [...stepState.thoughts, data.thought as string];
-        } else {
+        } else if (!data.delegate_from) {
+          // A delegate's thought is its own, not this agent's (F547): it shows in the line below only.
           pendingThoughtsRef.current = [...pendingThoughtsRef.current, data.thought as string];
         }
         {
@@ -1846,9 +1985,11 @@ export default function Home() {
         liveCallsRef.current = [];
         const sources = sourcesRef.current;
         sourcesRef.current = null;
+        const helpers = takeLiveHelpers();
         setMessages(prev => [...answerOnce(prev, data.content as string), {
           role: 'assistant',
           content: data.content as string,
+          ...(helpers.length > 0 ? { helpers } : {}),
           intent: data.intent,
           data: data.data,
           tool: data.tool_name,
@@ -1896,9 +2037,11 @@ export default function Home() {
           liveCallsRef.current = [];
           const sources = sourcesRef.current;
           sourcesRef.current = null;
+          const helpers = takeLiveHelpers();
           setMessages(prev => [...answerOnce(prev, data.response as string), {
             role: 'assistant',
             content: data.response as string,
+            ...(helpers.length > 0 ? { helpers } : {}),
             intent: data.intent,
             data: data.data,
             tool: data.tool_name,
@@ -2017,7 +2160,7 @@ export default function Home() {
         // question (F209), offering to re-run a turn that was only waiting.
         turnAnsweredRef.current = true;
         setStreamingActivity(null);
-        setMessages(prev => [...prev, {
+        setMessages(prev => [...prev, ...helperNote(takeLiveHelpers()), {
           role: 'assistant',
           content: (data.prompt as string) || (data.content as string) || 'Please provide input to continue.',
           msgType: 'human_input_required',
@@ -2107,8 +2250,12 @@ export default function Home() {
         }]);
         return { done: false };
 
-      case 'done':
+      case 'done': {
+        // A turn that ended with no answer (stopped, failed) keeps its helpers' lanes.
+        const helpers = takeLiveHelpers();
+        if (helpers.length > 0) setMessages(prev => [...prev, ...helperNote(helpers)]);
         return { done: true };
+      }
 
       case 'error': {
         const err = new Error(data.message as string) as Error & { engineError?: boolean; modelError?: boolean };
@@ -2256,6 +2403,17 @@ export default function Home() {
 
   // ─── Rendering helpers ─────────────────────────────────────────────────────
 
+  /** A message's helpers' lanes (SUB1a), a background one as its own stream has it since. */
+  const lanesOf = (msg: Message) => msg.helpers?.length ? (
+    <HelperLanes
+      helpers={msg.helpers.map(lane => backgroundLanes[lane.id] ?? lane)}
+      onStop={stopHelper}
+      onSaveAsAgent={saveHelperAsAgent}
+      stopping={stoppingHelpers}
+      className="mb-2"
+    />
+  ) : null;
+
   const renderMessage = (msg: Message, idx: number) => {
     // ── Orchestration start / complete banners ──
     if (msg.msgType === 'orchestration_start') {
@@ -2295,6 +2453,9 @@ export default function Home() {
     }
 
     // ── A quiet line: something the loop did, not something anyone said ──
+    if (msg.msgType === 'note' && msg.helpers?.length) {
+      return <div key={idx} className="pl-10">{lanesOf(msg)}</div>;
+    }
     if (msg.msgType === 'note') {
       return (
         <div key={idx} className="flex items-center gap-2 py-0.5 pl-10 text-xs text-text-faint">
@@ -2350,6 +2511,16 @@ export default function Home() {
       );
     }
 
+    // ── A helper's result, posted back: not your message (SUB1a) ──
+    if (msg.role === 'user' && msg.data?.automated) {
+      const automated = msg.data.automated as Automated;
+      return (
+        <div key={idx} className="pl-10">
+          <HelperNote name={automated.name || 'Helper'} status={automated.status} text={msg.content} />
+        </div>
+      );
+    }
+
     // ── Your message ──
     if (msg.role === 'user') {
       return (
@@ -2384,6 +2555,7 @@ export default function Home() {
     // ── The agent's answer ──
     return (
       <AgentTurn key={idx} className="group" avatar={<AgentAvatar><Bot className="h-4 w-4" aria-hidden /></AgentAvatar>} aside={<CopyAnswer text={msg.content} />}>
+        {lanesOf(msg)}
         <AssistantBubble msg={msg} agentName={agentName} />
         {/* Dynamic UI based on Intent - Rendered Outside the answer */}
         {msg.intent === 'render_local_file' && (
@@ -2603,6 +2775,9 @@ export default function Home() {
                     and the activity in words beside it. */}
                 {isLoading && (
                   <AgentTurn working>
+                    {liveHelpers.length > 0 && (
+                      <HelperLanes helpers={liveHelpers} onStop={stopHelper} stopping={stoppingHelpers} className="mb-2" />
+                    )}
                     {draftAnswer ? (
                       // The answer arriving: words, not a status line about them.
                       <div data-answer-draft className="min-w-0 max-w-full">
@@ -2667,10 +2842,13 @@ export default function Home() {
                       Settings → Models
                     </Link>
                   )}
-                  <Button type="button" variant="secondary" size="sm" onClick={handleRetry}>
-                    <RotateCcw className="h-3 w-3" aria-hidden />
-                    Try again
-                  </Button>
+                  {/* A helper's follow-up has no question of yours to send again (SUB1a). */}
+                  {!automatedTurnRef.current && (
+                    <Button type="button" variant="secondary" size="sm" onClick={handleRetry}>
+                      <RotateCcw className="h-3 w-3" aria-hidden />
+                      Try again
+                    </Button>
+                  )}
                   <IconButton icon={X} label="Dismiss" size="sm" onClick={() => setTurnOutcome(null)} />
                 </div>
               </div>

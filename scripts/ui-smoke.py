@@ -10816,5 +10816,182 @@ async def check_persontoast(browser) -> str:
     return "a run that needs someone toasts on the person wash"
 
 
+
+# ── helpers: a lane, a follow-up, "Save as agent", the switch (SUB1a, D279) ────
+
+def _helper_frames(hid: str, name: str) -> list[dict]:
+    return [
+        {"type": "helper_started", "helper_id": hid, "helper_name": name, "task": "check the 12 orders",
+         "tools": ["lookup_order"], "mode": "wait"},
+        {"type": "helper_event", "helper_id": hid, "helper_name": name,
+         "event": {"type": "tool_execution", "tool_name": "lookup_order", "args": {"order": "HP-2041"}}},
+        {"type": "helper_event", "helper_id": hid, "helper_name": name,
+         "event": {"type": "tool_result", "tool_name": "lookup_order", "preview": "shipped day 12"}},
+    ]
+
+
+@check
+async def check_helperlane(browser) -> str:
+    """A helper's lane shows its work as it happens, and its Stop stops that helper alone (SUB1a, S7).
+
+    A helper used to run invisibly: only its answer came back, after it ended.
+    """
+    history = {"turns": [], "pending_approval": None,
+               "running": {"turn_id": "t1", "message": "check last week's orders", "started_at": 0, "cursor": "t1-0"}}
+    ctx, page = await _chat_page(browser, "uismoke-helper-lane", history)
+    try:
+        await _stream_open(page, "events")
+        frames = "".join(_frame(e, f"t1-{i + 1}") for i, e in enumerate(_helper_frames("subtask_lane", "30-day check")))
+        await page.evaluate(f"() => window.__streams.events.push({json.dumps(frames)})")
+        lane = page.get_by_role("region", name="Helper: 30-day check")
+        await lane.wait_for(timeout=10_000)
+        text = await lane.inner_text()
+        if "Working" not in text or "lookup_order" not in text or "shipped day 12" not in text:
+            raise AssertionError(f"the working lane does not show its call: {text!r}")
+        await lane.get_by_role("button", name="Stop the helper 30-day check").click()
+        for _ in range(30):
+            calls = await page.evaluate("() => window.__calls")
+            if any("/helpers/subtask_lane/stop" in c["url"] and c["method"] == "POST" for c in calls):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("Stop did not ask the server to stop that helper")
+        if any("/cancel" in c["url"] for c in calls):
+            raise AssertionError("a helper's Stop stopped the whole turn")
+        ended = {"type": "helper_finished", "helper_id": "subtask_lane", "helper_name": "30-day check",
+                 "status": "cancelled", "seconds": 4,
+                 "record": {"id": "subtask_lane", "name": "30-day check", "task": "check the 12 orders",
+                            "tools": ["lookup_order"], "mode": "wait", "status": "cancelled", "seconds": 4,
+                            "calls": [{"tool": "lookup_order", "args": {"order": "HP-2041"}, "result": "shipped day 12"}],
+                            "answer": ""}}
+        tail = _frame(ended, "t1-4") + _frame({"type": "response", "content": "I checked one before you stopped it."},
+                                               "t1-5") + _frame({"type": "done"}, "t1-6")
+        await page.evaluate(f"() => window.__streams.events.push({json.dumps(tail)})")
+        if not await _on_screen(page, "I checked one before you stopped it."):
+            raise AssertionError("the answer after the stopped helper never showed")
+        kept = page.get_by_role("region", name="Helper: 30-day check")
+        if "Stopped" not in await kept.inner_text():
+            raise AssertionError("the lane does not say it was stopped")
+        await kept.get_by_role("button", name="View its work").click()
+        if "What it was asked" not in await kept.inner_text():
+            raise AssertionError("View its work does not open what the helper did")
+    finally:
+        await ctx.close()
+    return "a helper's lane shows its calls live, its Stop asks for that helper alone, and View its work opens"
+
+
+@check
+async def check_helperfollowup(browser) -> str:
+    """A background helper's result reads as the helper's, never as the person's message (SUB1a, S2)."""
+    lane = {"id": "subtask_bg", "name": "30-day check", "task": "check the 12 orders", "tools": ["lookup_order"],
+            "mode": "background", "status": "completed", "seconds": 100, "calls": [], "answer": "3 of the 12 are late.",
+            "session_id": "helperc_smoke"}
+    history = {"turns": [
+        {"user": "check last week's orders", "assistant": "I've sent a helper; I'll come back with the late ones.",
+         "tools": [], "timestamp": "", "helpers": [lane]},
+        {"user": "3 of the 12 are late.", "assistant": "Three orders are late: HP-2044, HP-2049, HP-2051.",
+         "tools": [], "timestamp": "",
+         "automated": {"kind": "helper_result", "helper_id": "subtask_bg", "name": "30-day check", "status": "completed"}},
+    ], "pending_approval": None, "running": None}
+    ctx, page = await _chat_page(browser, "uismoke-helper-follow", history)
+    try:
+        note = page.get_by_role("region", name="From your helper: 30-day check")
+        await note.wait_for(timeout=15_000)
+        said = await note.inner_text()
+        if "Automated: posted when the helper finished" not in said:
+            raise AssertionError(f"the follow-up is not marked automated: {said!r}")
+        if not await _on_screen(page, "Three orders are late"):
+            raise AssertionError("the agent's follow-up answer is not shown")
+        if "3 of the 12 are late." in await page.evaluate("() => document.body.innerText"):
+            raise AssertionError("the helper's result was drawn as a message, not under its note")
+        if await note.get_by_role("button", name="Edit this message and send it again").count():
+            raise AssertionError("a helper's result offers Edit as if the person had written it")
+    finally:
+        await ctx.close()
+    return "a background helper's result is drawn under \"From your helper\", automated, never as the person's"
+
+
+@check
+async def check_helpersave(browser) -> str:
+    """"Save as agent" opens the agent editor with the helper made into a new agent, and saves nothing (S9)."""
+    lane = {"id": "subtask_save", "name": "Order checker", "task": "Check each order against the 30-day rule.",
+            "tools": [], "mode": "wait", "status": "completed", "seconds": 12, "calls": [], "answer": "done"}
+    history = {"turns": [{"user": "check them", "assistant": "Checked.", "tools": [], "timestamp": "",
+                          "helpers": [lane]}], "pending_approval": None, "running": None}
+    posts = r"""
+window.__agentWrites = [];
+const _f2 = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (url.includes('/api/agents') && method !== 'GET') window.__agentWrites.push({url: url, method: method});
+  return _f2(input, init);
+};
+"""
+    ctx, page = await _chat_page(browser, "uismoke-helper-save", history, extra_init=posts)
+    try:
+        region = page.get_by_role("region", name="Helper: Order checker")
+        await region.wait_for(timeout=15_000)
+        await region.get_by_role("button", name="Save as agent").click()
+        await page.wait_for_url("**/agents**", timeout=20_000)
+        await page.wait_for_function(
+            "() => [...document.querySelectorAll('input')].some(i => i.value === 'Order checker')", timeout=20_000)
+        body = await page.evaluate("() => document.body.innerText")
+        boxes = await page.evaluate("() => [...document.querySelectorAll('textarea')].map(t => t.value).join(' ')")
+        if "Check each order against the 30-day rule." not in body + boxes:
+            raise AssertionError("the new agent does not carry the helper's brief as its instructions")
+        if "not saved yet" not in body.lower():
+            raise AssertionError("the agent made from the helper does not read as unsaved")
+        writes = await page.evaluate("() => window.__agentWrites")
+        if writes:
+            raise AssertionError(f"opening it wrote an agent: {writes}")
+    finally:
+        await ctx.close()
+    return "Save as agent opens the editor on a new, unsaved agent with the helper's name and brief"
+
+
+@check
+async def check_helperswitch(browser) -> str:
+    """An agent's "Can send helpers" switch, its "Helper model", and no helper row in the Tools grid (SUB1a, S1)."""
+    aid = f"agent_uismoke_helpers_{int(time.time())}"
+    name = f"Helpers {aid[-6:]}"
+    api("/api/agents", "POST", {**_agent(aid, name), "tools": ["all"]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+        await page.wait_for_function(
+            "(n) => [...document.querySelectorAll('input')].some(i => i.value === n)", arg=name, timeout=30_000)
+        await asyncio.sleep(1.0)
+        tools = page.locator('section[aria-labelledby="setup-tools"]')
+        if await tools.get_by_text("spawn_subtask").count() or await tools.get_by_text("Sub-Agent").count():
+            raise AssertionError("the Tools grid still has a row for helpers")
+        switch = page.get_by_role("switch", name="Can send helpers", exact=True)
+        if await switch.get_attribute("aria-checked") != "false":
+            raise AssertionError("an agent with every tool reads as sending helpers")
+        await switch.click()
+        await page.locator('[aria-label="Helper model"]').first.wait_for(timeout=5_000)
+        await page.get_by_role("button", name="Save agent").click()
+        saved: dict = {}
+        for _ in range(40):
+            saved = next((a for a in api("/api/agents") if a.get("id") == aid), {})
+            if "spawn_subtask" in (saved.get("tools") or []):
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError(f"Save did not keep the switch: {saved.get('tools')}")
+        if "all" not in saved["tools"]:
+            raise AssertionError(f"switching helpers on took away every tool: {saved['tools']}")
+        await asyncio.sleep(1.0)
+        if "Nothing here provides spawn_subtask" in await page.evaluate("() => document.body.innerText"):
+            raise AssertionError("the agent page says nothing provides its helpers (F549)")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    return "Can send helpers turns helpers on beside every tool and shows Helper model; the grid has no helper row"
+
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))

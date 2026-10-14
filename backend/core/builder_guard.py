@@ -26,15 +26,28 @@ from typing import Any
 _NOT_A_NAME = ("all",)
 
 
+def _engine_provides() -> frozenset[str]:
+    """Tools the engine itself provides, which no server or custom tool does: the task list, skills, its retired
+    alias, and "Can send helpers"' `spawn_subtask` (SUB1a). `resolve_one_tool` resolves none of them, so each read as
+    a tool nothing provides — every agent that sends helpers was told so (F549). From the engine's own names, as
+    cloud's `unknown_tool_names` counts them."""
+    from core.spawn_subtask import SPAWN_SUBTASK_TOOL_NAME
+    from core.task_list import LEGACY_TASK_TOOL_ALIAS, TASK_TOOL_NAME
+    from core.visitor import ENGINE_TOOLS
+
+    return frozenset({*ENGINE_TOOLS, TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, SPAWN_SUBTASK_TOOL_NAME})
+
+
 async def _resolver(server_module: Any):
     from core.routes.tools import load_custom_tools
     from core.tools import resolve_one_tool
 
     custom = await load_custom_tools()
     cache: dict[str, bool] = {}
+    engine = _engine_provides()
 
     async def exists(name: str) -> bool:
-        if name in _NOT_A_NAME or name.startswith("group:"):
+        if name in _NOT_A_NAME or name in engine or name.startswith("group:"):
             return True
         if name not in cache:
             try:
