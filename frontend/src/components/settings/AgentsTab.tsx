@@ -15,7 +15,7 @@ import { ToastNotification } from './ToastNotification';
 import { AgentActivity, ActivityTab, ThisMonth, WhereItWorks } from './AgentActivity';
 import { AgentTest, toolNamesOf, type AgentStatus } from './AgentTest';
 import { AgentMemory } from './AgentMemory';
-import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, type ToolPolicy } from './ToolPolicy';
+import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type ToolPolicy } from './ToolPolicy';
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
 import { cn } from '@/lib/cn';
@@ -1199,6 +1199,7 @@ export const AgentsTab = ({
                                                     value={draftAgent.tool_policy || {}}
                                                     onChange={(next) => setDraftAgent({ ...draftAgent, tool_policy: next })}
                                                     inheritFrom={policyDefaults}
+                                                    tools={(draftAgent.tools || []).filter((t: string) => t !== 'all' && !t.startsWith('group:'))}
                                                 />
                                             </Section>
                                             {/* Outside the fold: a warning is never folded away. */}
@@ -1546,12 +1547,14 @@ export const AgentsTab = ({
 
 /** The tool policy in one line, for its folded row: what is set, or that nothing is. */
 function policySummary(policy: ToolPolicy): string {
+    const rules = toolRules(policy).length;
+    const ruled = rules ? ` · ${rules} rule${rules === 1 ? '' : 's'} for one tool` : '';
     const set = POLICY_CATEGORIES.filter(c => policy[c.id]);
-    if (set.length === 0) return 'Default for all three';
+    if (set.length === 0) return `Default for all three${ruled}`;
     const word: Record<string, string> = { allow: 'Allow', confirm: 'Ask first', deny: 'Block' };
-    if (set.length > 1) return `${set.length} of 3 set`;
+    if (set.length > 1) return `${set.length} of 3 set${ruled}`;
     const c = set[0];
-    return `${word[policy[c.id]] ?? policy[c.id]}: ${c.label.toLowerCase()}`;
+    return `${word[policy[c.id]] ?? policy[c.id]}: ${c.label.toLowerCase()}${ruled}`;
 }
 
 /** The box a row of chips sits in, with even room above and below whether it holds chips or a note. */

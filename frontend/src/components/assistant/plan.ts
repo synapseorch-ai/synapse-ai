@@ -87,6 +87,10 @@ export interface Plan {
      * is, the build would stop there.
      */
     needs: string | null;
+    /** What the plan's tools change outside, and who approves each (BWA1, decision 4). */
+    asksFirst: string | null;
+    /** What the person said may act without anyone approving it each time. */
+    actsAlone: string | null;
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -349,7 +353,7 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
         const steps = changeSteps(body);
         if (!steps.length) return null;
         const overview = firstParagraph(preamble.split('\n').filter((l) => !/^\s*(?:[-*•]|\d+[.)])\s/.test(l)).join('\n'));
-        return { kind, body, overview, steps, schedule: null, newAgents: [], openQuestions: null, notCarried: null, needs: null };
+        return { kind, body, overview, steps, schedule: null, newAgents: [], openQuestions: null, notCarried: null, needs: null, asksFirst: null, actsAlone: null };
     }
 
     const stepsSection = find(list, /^steps?\b/) ?? find(list, /\bsteps\b/);
@@ -362,6 +366,8 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
     const open = find(list, /open questions?/)?.text.trim() ?? '';
     const left = find(list, /^not carried over\b/)?.text.trim() ?? '';
     const needs = find(list, /^missing here\b/)?.text.trim() ?? '';
+    const asks = find(list, /^asks you first\b/)?.text.trim() ?? '';
+    const alone = find(list, /^acts without asking\b/)?.text.trim() ?? '';
     return {
         kind,
         body,
@@ -372,5 +378,7 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
         openQuestions: open && !isNone(open) ? open : null,
         notCarried: left && !isNone(left) && !/^[\s\-*_]*nothing\b/i.test(left) ? left : null,
         needs: needs || null,
+        asksFirst: asks && !isNone(asks) ? asks : null,
+        actsAlone: alone && !isNone(alone) ? alone : null,
     };
 }

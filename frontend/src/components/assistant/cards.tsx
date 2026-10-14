@@ -204,6 +204,18 @@ export function PlanCard({
                         </p>
                     )}
                     {estimate && <PlanEstimate plan={plan} load={estimate} />}
+                    {plan.asksFirst && (
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">Asks you first</span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.asksFirst}</Markdown>
+                        </div>
+                    )}
+                    {plan.actsAlone && (
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">Acts without asking</span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.actsAlone}</Markdown>
+                        </div>
+                    )}
                     {plan.needs && (
                         <div className="flex flex-col gap-1 rounded-lg border border-person/60 bg-person-subtle px-3 py-2.5">
                             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">

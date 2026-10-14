@@ -429,6 +429,10 @@ BUILDER_TOOL_SCHEMAS = [
                         "items": {"type": "string"},
                         "description": "For delegate agents: list of agent IDs to restrict delegation to. Leave empty to allow delegation to any agent.",
                     },
+                    "tool_policy": {
+                        "type": "object",
+                        "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
+                    },
                 },
                 "required": ["name", "description", "type", "tools", "system_prompt"],
             },
@@ -483,6 +487,10 @@ BUILDER_TOOL_SCHEMAS = [
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": "For delegate agents: agent IDs to restrict delegation to. Empty = allow any agent.",
+                                },
+                                "tool_policy": {
+                                    "type": "object",
+                                    "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
                                 },
                             },
                             "required": ["name", "description", "type", "tools", "system_prompt"],
@@ -1498,6 +1506,13 @@ _current_run: _contextvars.ContextVar[str | None] = _contextvars.ContextVar(
 
 # ─── Tool Implementations ──────────────────────────────────────────────────────
 
+def _agent_policy(value) -> dict:
+    """An agent's tool policy as the builder may write it: the categories and `tool:<name>` rules the engine knows,
+    nothing else (`tool_policy.clean_policy`, the agents route's own writer)."""
+    from core.tool_policy import clean_policy
+    return clean_policy(value)
+
+
 def _long_agent_name(name) -> str | None:
     """The refusal for an agent name past the limit (F217), or None."""
     from core.models import AGENT_NAME_MAX
@@ -1512,6 +1527,22 @@ _HOLLOW_WORKFLOW_AGENT = (
     "build that orchestration first, then call deploy_orchestration(orch_id) and use the agent id it "
     "returns. One orchestration is built per build — a nested design is built child first."
 )
+
+
+async def _plan_and_agents_of(run: str | None) -> tuple[str, set[str]]:
+    """The plan `run` showed the person and the agents it made, from its last checkpoint; nothing outside a run."""
+    if run is None:
+        return "", set()
+    from core.orchestration.run_writes import WRITES_KEY
+    from core.orchestration.state import SharedState
+
+    try:
+        state = (await SharedState.restore(run)).run.shared_state or {}
+    except FileNotFoundError:
+        return "", set()
+    made = {w.get("id") for w in state.get(WRITES_KEY) or []
+            if isinstance(w, dict) and w.get("kind") == "agent" and w.get("action") == "created"}
+    return str(state.get("plan_draft") or ""), made
 
 
 async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
@@ -1674,6 +1705,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "max_turns": None,
             "delegate_agent_ids": args.get("delegate_agent_ids", []) or [],
         }
+        if (policy := _agent_policy(args.get("tool_policy"))):
+            agent["tool_policy"] = policy
         await save_agent(agent)
         _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
@@ -1729,6 +1762,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     "max_turns": None,
                     "delegate_agent_ids": spec.get("delegate_agent_ids", []) or [],
                 }
+                if (policy := _agent_policy(spec.get("tool_policy"))):
+                    agent["tool_policy"] = policy
                 documents.append(agent)
                 created.append({
                     "role": spec.get("role"),
@@ -1758,6 +1793,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             from core import builder_guard  # F489: never a tool nothing provides
             if (phantom := await builder_guard.unknown(fields.get("tools") or [], server_module)) is not None:
                 return phantom
+        if "tool_policy" in fields:
+            fields["tool_policy"] = _agent_policy(fields["tool_policy"])
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
@@ -2330,6 +2367,14 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         tool_issues, tool_warnings = await builder_guard.missing_in([orch, *ours], agents, server_module)
         issues += tool_issues
         verdict["warnings"] = [*verdict.get("warnings", []), *tool_warnings]
+        # Decision 4 (BWA1): in a build of its own, nothing that changes something outside runs with nobody
+        # approving it, except what the approved plan lets act without asking. A workflow it only edits is warned.
+        plan, made = await _plan_and_agents_of(run)
+        guard_issues, guard_warnings = await builder_guard.unapproved(
+            [orch, *ours], agents, server_module, made_agents=made, exempt=builder_guard.exempt_in_plan(plan),
+            strict=run is not None and orch.get("building_run") == run)
+        issues += guard_issues
+        verdict["warnings"] = [*verdict.get("warnings", []), *guard_warnings]
         verdict = {**verdict, "ok": not issues, "issues": issues}
         if verdict["ok"]:
             for workflow in (orch, *ours):
@@ -2800,6 +2845,33 @@ def _knowledge_step_issues(step: dict, kbs: dict | None, knowledge_off: bool) ->
     return issues
 
 
+def step_successors(s: dict, by_id: dict) -> list[str]:
+    """The steps a step can go to next — its next step, routes, loop body, branches, if/else and switch targets —
+    that exist. The validator's walk and the approval guard (`builder_guard.unapproved`) read the graph the same way."""
+    successors: list[str] = []
+    nxt = s.get("next_step_id")
+    if nxt and nxt in by_id:
+        successors.append(nxt)
+    for target in (s.get("route_map") or {}).values():
+        if target and target in by_id:
+            successors.append(target)
+    for lsid in s.get("loop_step_ids") or []:
+        if lsid in by_id:
+            successors.append(lsid)
+    for branch in s.get("parallel_branches") or []:
+        for bsid in branch:
+            if bsid in by_id:
+                successors.append(bsid)
+    for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id", "on_exhausted_step_id"):
+        ref = s.get(ref_key)
+        if ref and ref in by_id:
+            successors.append(ref)
+    for target in (s.get("switch_cases") or {}).values():
+        if target and target in by_id:
+            successors.append(target)
+    return successors
+
+
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False) -> dict:
     """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
@@ -3096,29 +3168,7 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                 continue
             if s.get("type") == "end":
                 continue
-            successors: list[str] = []
-            nxt = s.get("next_step_id")
-            if nxt and nxt in by_id:
-                successors.append(nxt)
-            for target in (s.get("route_map") or {}).values():
-                if target and target in by_id:
-                    successors.append(target)
-            for lsid in s.get("loop_step_ids") or []:
-                if lsid in by_id:
-                    successors.append(lsid)
-            for branch in s.get("parallel_branches") or []:
-                for bsid in branch:
-                    if bsid in by_id:
-                        successors.append(bsid)
-            # New branching step successors
-            for ref_key in ("if_true_step_id", "if_false_step_id", "switch_default_step_id",
-                            "on_exhausted_step_id"):
-                ref = s.get(ref_key)
-                if ref and ref in by_id:
-                    successors.append(ref)
-            for target in (s.get("switch_cases") or {}).values():
-                if target and target in by_id:
-                    successors.append(target)
+            successors = step_successors(s, by_id)
             if not successors:
                 # A run whose last step finishes completes, End or no End: a called
                 # workflow without one is not refused for it (F429, Naveen).

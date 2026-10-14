@@ -45,6 +45,15 @@ DEFAULT_POLICY: dict[str, Decision] = {c: "allow" for c in CATEGORIES}
 
 _VALID: frozenset[str] = frozenset(("allow", "confirm", "deny"))
 
+#: A policy may also name one tool, `tool:<name>`, and that decision wins over the tool's category (BWA1, D274): an
+#: agent that books can ask before `create_booking` while its searches run freely, and the AI builder can say so
+#: when it builds the agent. A visitor's `confirm` is a `deny` for these keys too (the rewrites map every key).
+TOOL_KEY = "tool:"
+
+
+def _is_tool_key(key) -> bool:
+    return isinstance(key, str) and key.startswith(TOOL_KEY) and len(key) > len(TOOL_KEY)
+
 
 def resolve_policy(agent: dict | None, settings: dict | None) -> dict[str, Decision]:
     """The effective policy: built-in defaults, then the deployment's, then
@@ -54,7 +63,7 @@ def resolve_policy(agent: dict | None, settings: dict | None) -> dict[str, Decis
         if not isinstance(source, dict):
             continue
         for category, decision in source.items():
-            if category in CATEGORIES and decision in _VALID:
+            if (category in CATEGORIES or _is_tool_key(category)) and decision in _VALID:
                 policy[category] = decision
     return policy
 
@@ -66,6 +75,11 @@ def decide(tool, policy: dict[str, Decision]) -> tuple[Decision, str]:
     reads, so a person is never asked to approve something unexplained.
     """
     from core.tools import tool_hints
+
+    name = getattr(tool, "name", None)
+    own = policy.get(f"{TOOL_KEY}{name}") if name else None
+    if own in _VALID:
+        return own, "tool"
 
     hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
 
@@ -85,6 +99,7 @@ REASONS = {
     "destructive": "it can modify data in a way that cannot be undone",
     "open_world": "it reaches systems outside this workspace",
     "undeclared": "it does not declare what it does",
+    "tool": "this agent's tool policy names this tool",
     # Not a policy category: a `remember` in a turn that read a file or a
     # tool's result is always held for a person (F279, `react_engine`).
     "memory_from_content": ("it would save something this turn read from a file or a tool "
@@ -111,4 +126,6 @@ def clean_policy(value) -> dict[str, Decision]:
     """
     if not isinstance(value, dict):
         return {}
-    return {c: value[c] for c in CATEGORIES if value.get(c) in _VALID}
+    out = {c: value[c] for c in CATEGORIES if value.get(c) in _VALID}
+    out.update({k: value[k] for k in sorted(value) if _is_tool_key(k) and value[k] in _VALID})
+    return out

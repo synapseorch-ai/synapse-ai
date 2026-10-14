@@ -13,6 +13,8 @@
  * it is saved; the engine remains the only thing that enforces any of it.
  */
 
+import { Select } from '@/components/ui';
+
 export type ToolPolicy = Record<string, string>;
 
 /** Riskiest first — the first category a tool matches decides. */
@@ -76,9 +78,22 @@ export function gatingCategories(agent: ToolPolicy | null | undefined, defaults:
     return POLICY_CATEGORIES.filter(c => resolved[c.id] === 'confirm').map(c => c.id);
 }
 
+/** A rule for one tool (BWA1): `tool:<name>` beside the categories, which wins over the tool's category in the
+ *  engine (`core/tool_policy.py::decide`). */
+export const TOOL_KEY = 'tool:';
+
+export function toolRules(value: ToolPolicy | null | undefined): [string, string][] {
+    return Object.entries(value ?? {})
+        .filter(([k]) => k.startsWith(TOOL_KEY) && k.length > TOOL_KEY.length)
+        .map(([k, v]) => [k.slice(TOOL_KEY.length), v] as [string, string])
+        .sort(([a], [b]) => a.localeCompare(b));
+}
+
 interface ToolPolicyFieldsProps {
     value: ToolPolicy;
     onChange: (next: ToolPolicy) => void;
+    /** The agent's own tools, for rules about one tool. Omitted at the workspace level. */
+    tools?: string[];
     /** The workspace defaults an unset category falls back to. Omit at the
      *  workspace level, where there is nothing above to inherit and unset
      *  simply means Allow. */
@@ -86,7 +101,7 @@ interface ToolPolicyFieldsProps {
     disabled?: boolean;
 }
 
-export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = false }: ToolPolicyFieldsProps) {
+export function ToolPolicyFields({ value, onChange, inheritFrom, tools, disabled = false }: ToolPolicyFieldsProps) {
     const canInherit = inheritFrom !== undefined && inheritFrom !== null;
     const resolvedDefaults = resolvePolicy(null, inheritFrom);
 
@@ -163,6 +178,75 @@ export function ToolPolicyFields({ value, onChange, inheritFrom, disabled = fals
                     </div>
                 );
             })}
+            {tools && <OneToolRules value={value} onChange={onChange} tools={tools} disabled={disabled} />}
+        </div>
+    );
+}
+
+/** Rules about one tool: the tool's own decision, whatever its category says (BWA1). */
+function OneToolRules({ value, onChange, tools, disabled }: {
+    value: ToolPolicy;
+    onChange: (next: ToolPolicy) => void;
+    tools: string[];
+    disabled: boolean;
+}) {
+    const rules = toolRules(value);
+    const ruled = new Set(rules.map(([name]) => name));
+    const left = tools.filter(t => !ruled.has(t));
+    const set = (name: string, decision: string | null) => {
+        const next = { ...value };
+        if (decision === null) delete next[TOOL_KEY + name];
+        else next[TOOL_KEY + name] = decision;
+        onChange(next);
+    };
+    return (
+        <div className="space-y-2 border-t border-border pt-3">
+            <span className="block text-xs font-medium text-text-muted">For one tool</span>
+            <p className="text-2xs text-text-faint">A rule here wins over the tool’s category above: ask before one tool books or sends, while the rest run freely.</p>
+            {rules.map(([name, decision]) => (
+                <div key={name} className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-text">{name}</span>
+                    <div className="flex gap-1">
+                        {POLICY_CHOICES.map(choice => (
+                            <button
+                                key={choice.value}
+                                type="button"
+                                disabled={disabled}
+                                onClick={() => set(name, choice.value)}
+                                aria-pressed={decision === choice.value}
+                                aria-label={`${choice.label}: ${name}`}
+                                className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                                    decision === choice.value
+                                        ? 'border-accent bg-accent/10 text-accent-ink'
+                                        : 'border-border bg-bg text-text-muted hover:border-border-strong hover:text-text'
+                                }`}
+                            >
+                                {choice.label}
+                            </button>
+                        ))}
+                    </div>
+                    <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => set(name, null)}
+                        aria-label={`Remove the rule for ${name}`}
+                        className="rounded-md px-1.5 py-1 text-xs text-text-faint hover:text-text disabled:opacity-50"
+                    >
+                        Remove
+                    </button>
+                </div>
+            ))}
+            {left.length > 0 && (
+                <Select
+                    value={undefined}
+                    onChange={v => set(v, 'confirm')}
+                    options={left.map(t => ({ value: t, label: t }))}
+                    placeholder="Add a rule for one tool…"
+                    size="sm"
+                    disabled={disabled}
+                    aria-label="Add a rule for one tool"
+                />
+            )}
         </div>
     );
 }
