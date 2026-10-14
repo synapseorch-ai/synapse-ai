@@ -116,9 +116,12 @@ async def create_or_update_channel(request: Request):
         if problems:
             raise HTTPException(status_code=422, detail=" ".join(problems))
     # A save is a full replace, and the screen never has the secrets to send
-    # back: one it leaves blank keeps what is stored (F207).
+    # back: one it leaves blank keeps what is stored (F207). Only on the same
+    # platform: a secret is its platform's, so a channel switched to another
+    # carries none across (F499) — a Telegram token must never reach Discord.
+    # Telegram mints its webhook secret again at its start.
     existing = await channel_store.get_channel(body["id"]) if body.get("id") else None
-    if existing:
+    if existing and existing.get("platform") == body.get("platform"):
         creds = dict(body.get("credentials") or {})
         for k, v in (existing.get("credentials") or {}).items():
             if (k in SECRET_CREDENTIALS or k in _SERVER_ONLY_CREDENTIALS) and not creds.get(k):

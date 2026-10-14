@@ -316,6 +316,32 @@ export const MessagingTab = () => {
         showDetail(detailRef.current);
     };
 
+    /** A saved channel switched to another platform stays that channel (F499): it keeps its id — a save
+     *  without one made a second channel beside it — and what is not the platform's own. The credentials
+     *  are the new platform's: the server carries no secret across a switch, so back on the stored
+     *  platform the stored fields, and which secrets are set, return. A new channel resets as before. */
+    const switchPlatform = (p: Platform) => {
+        if (!draft) return;
+        if (!draft.id) { setDraft({ ...EMPTY_CHANNEL, platform: p, name: draft.name }); return; }
+        const stored = channels.find(c => c.id === draft.id);
+        const back = stored?.platform === p ? stored : null;
+        setDraft({
+            ...EMPTY_CHANNEL,
+            id: draft.id,
+            name: draft.name,
+            platform: p,
+            agent_ids: draft.agent_ids,
+            multi_agent_mode: draft.multi_agent_mode,
+            enabled: draft.enabled,
+            senders_are_members: draft.senders_are_members,
+            visitor_tools: draft.visitor_tools,
+            status: draft.status,
+            last_error: draft.last_error,
+            ...(back ? { mode: back.mode, credentials: back.credentials, credentials_set: back.credentials_set } : {}),
+        });
+        if (back?.platform === 'whatsapp') setWaMode((back.credentials?.whatsapp_mode as any) || 'meta_api');
+    };
+
     const saveAndConnect = async () => {
         if (!draft) return;
         if (!draft.name.trim()) { showToast('Please enter a channel name', 'warning'); return; }
@@ -618,7 +644,7 @@ export const MessagingTab = () => {
                             <Segmented
                                 label="Platform"
                                 value={draft.platform}
-                                onChange={p => setDraft({ ...EMPTY_CHANNEL, platform: p, name: draft.name })}
+                                onChange={switchPlatform}
                                 options={PLATFORMS.map(p => ({
                                     value: p.id,
                                     label: p.label,

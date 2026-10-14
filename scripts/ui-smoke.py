@@ -10214,6 +10214,44 @@ async def check_channelsfirst(browser) -> str:
     return "the first channel is open; New channel opens a blank one"
 
 
+
+@check
+async def check_channelplatform(browser) -> str:
+    """A saved channel switched to another platform stays that channel (F499): before, the switch dropped its id
+    and Save & connect made a second channel beside it. One channel after the save, its id unchanged, and the old
+    platform's token not carried across (the server keeps no secret over a switch)."""
+    name = f"Smoke platform switch {int(time.time())}"
+    made = api("/api/messaging/channels", "POST", {
+        "name": name, "platform": "telegram", "mode": "polling", "credentials": {"bot_token": "123456:smoke-token"}})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    # Starting it would reach Discord: the enable answers the channel as saved, stopped.
+    await ctx.route("**/api/messaging/channels/*/enable",
+                    _answer({**made, "platform": "discord", "status": "stopped", "credentials": {}}, methods=("POST",)))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/channels", wait_until="domcontentloaded")
+        await page.locator(f'[data-channel-row="{made["id"]}"] button').first.click(timeout=30_000)
+        await page.get_by_role("heading", name=name).wait_for(timeout=10_000)
+        await page.get_by_role("radiogroup", name="Platform").get_by_role("radio", name="Discord").click()
+        async with page.expect_response(lambda r: r.url.endswith("/api/messaging/channels")
+                                        and r.request.method == "POST", timeout=15_000) as saved:
+            await page.get_by_role("button", name="Save & connect").click()
+        if (await saved.value).status != 200:
+            raise AssertionError(f"the save answered {(await saved.value).status}")
+        mine = [c for c in api("/api/messaging/channels") if c["name"] == name]
+    finally:
+        await ctx.close()
+        for c in api("/api/messaging/channels"):
+            if c["name"] == name:
+                api(f"/api/messaging/channels/{c['id']}", "DELETE")
+    if len(mine) != 1:
+        raise AssertionError(f"{len(mine)} channels named {name!r} after the switch (expected 1)")
+    if mine[0]["id"] != made["id"] or mine[0]["platform"] != "discord":
+        raise AssertionError(f"the saved channel is {mine[0]['id']} on {mine[0]['platform']}")
+    if (mine[0].get("credentials_set") or {}).get("bot_token"):
+        raise AssertionError("the Telegram token was carried into the Discord channel")
+    return "the switched channel saved in place: one channel, same id, no token carried across"
+
 # ── the Phone tab (VOX1c) ────────────────────────────────────────────────────
 
 #: A number as the channel list serves it (the Channels tab must not show it), and the Phone tab's reads.

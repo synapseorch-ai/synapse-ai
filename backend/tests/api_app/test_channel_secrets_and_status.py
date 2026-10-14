@@ -106,6 +106,23 @@ class TestNoResponseCarriesASecret:
         # The server-minted secret the screen never sees survives too.
         assert stored["credentials"]["webhook_secret"] == "minted-by-the-server"
 
+    async def test_a_platform_switch_carries_no_secret_across(self, client, manager):
+        """F499: the screen keeps a saved channel's id when its platform changes, so the save
+        updates that channel — and a blank secret must not fill from the old platform's."""
+        ch = await _telegram("123456:telegram-token")
+
+        resp = await client.post("/api/messaging/channels", json={
+            "id": ch["id"], "name": "TG", "platform": "discord", "mode": "polling",
+            "credentials": {"bot_token": "", "channel_id": "12345"},
+        })
+
+        assert resp.status_code == 200 and resp.json()["id"] == ch["id"]
+        assert resp.json()["credentials_set"] == {"bot_token": False}
+        stored = await channel_store.get_channel(ch["id"])
+        assert stored["platform"] == "discord"
+        assert stored["credentials"] == {"bot_token": "", "channel_id": "12345"}
+        assert [c["id"] for c in await channel_store.list_channels()] == [ch["id"]]
+
     async def test_a_new_secret_replaces_it(self, client, manager):
         ch = await _telegram("123456:old")
 
