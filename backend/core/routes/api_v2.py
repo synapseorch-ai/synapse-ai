@@ -20,9 +20,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.images import checked_images
+from core.routes.api_v1 import refuse_engine_keys
 
 from core.api_key_middleware import require_api_key
 from core.scale.config import QUEUE_NAME
@@ -36,10 +37,22 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 class V2OrchestrationRunRequest(BaseModel):
+    # A field it does not know is refused by name, as v1 and cloud's v2 refuse it
+    # (F434): `initial_state` used to be dropped here without a word, the run
+    # starting with none of the caller's inputs.
+    model_config = ConfigDict(extra="forbid")
+
     message: str = ""
     session_id: str | None = None
+    # The run's inputs, merged into its shared state — v1's field and rule (D126).
+    initial_state: dict = {}
     webhook_url: str | None = None
     webhook_secret: str | None = None
+
+    @field_validator("initial_state")
+    @classmethod
+    def _no_engine_keys(cls, value: dict) -> dict:
+        return refuse_engine_keys(value)
     # No `tenant_id`. It was accepted from the request body and written onto
     # the run row, so any caller who could reach this endpoint could label its
     # run with any tenant. The tenant comes from the execution context now —
@@ -57,6 +70,9 @@ class V2ResumeRequest(BaseModel):
 
 
 class V2ChatRequest(BaseModel):
+    # A misspelt field is refused by name, not dropped (F434), as v1's chat does.
+    model_config = ConfigDict(extra="forbid")
+
     message: str
     agent: str | None = None
     session_id: str | None = None
@@ -335,6 +351,7 @@ async def v2_run_orchestration(
         orch_id=orch_id,
         initial_input=body.message,
         session_id=body.session_id,
+        initial_state=body.initial_state or None,
         webhook_url=body.webhook_url,
         webhook_secret=body.webhook_secret,
         _queue_name=queue_name,

@@ -64,6 +64,19 @@ class V1ChatRequest(BaseModel):
     _check_images = checked_images()
 
 
+def refuse_engine_keys(value: dict) -> dict:
+    """A run's `initial_state`, refused when it sets the engine's own keys.
+
+    A leading underscore is the engine's bookkeeping (`_model_override`, …), so a
+    caller setting one would steer the engine, not give the run an input (D126).
+    v1 and v2 both take `initial_state` (F434), by this one rule.
+    """
+    engine_keys = sorted(k for k in value if str(k).startswith("_"))
+    if engine_keys:
+        raise ValueError(f"these keys are the engine's own and cannot be set: {', '.join(engine_keys)}")
+    return value
+
+
 class V1OrchestrationRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -76,10 +89,7 @@ class V1OrchestrationRunRequest(BaseModel):
     @field_validator("initial_state")
     @classmethod
     def _no_engine_keys(cls, value: dict) -> dict:
-        engine_keys = sorted(k for k in value if str(k).startswith("_"))
-        if engine_keys:
-            raise ValueError(f"these keys are the engine's own and cannot be set: {', '.join(engine_keys)}")
-        return value
+        return refuse_engine_keys(value)
 
 
 class V1ResumeRequest(BaseModel):
