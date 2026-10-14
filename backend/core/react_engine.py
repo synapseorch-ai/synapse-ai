@@ -26,6 +26,7 @@ from core.session import (
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
 from core.answer_filter import AnswerFilter
+from core.tool_call_shapes import calls_in, is_pseudo_format
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
@@ -251,8 +252,9 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
             obj = json.loads(m.group(1).strip())
         except json.JSONDecodeError:
             continue
-        if _is_tool_call(obj):
-            xml_calls.append(obj)
+        calls = calls_in(obj)
+        if calls:
+            xml_calls.extend(calls)
             if stop_on_non_tool_json:
                 return [xml_calls[0]]
     if xml_calls:
@@ -265,6 +267,9 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
     decoder = json.JSONDecoder()
     tool_calls: list[dict] = []
     used_end = -1  # byte end of the last decoded blob (skip nested braces)
+    # Calls already taken from OpenAI's pseudo-format (F537): the model that wrote
+    # one wrote the whole block twice, and each call runs once.
+    pseudo_seen: set[str] = set()
 
     for pos in [i for i, ch in enumerate(cleaned) if ch == "{"]:
         if pos < used_end:
@@ -274,15 +279,24 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
             used_end = pos + end_offset
         except json.JSONDecodeError:
             continue
-        if _is_tool_call(obj):
+        calls = calls_in(obj)
+        if calls:
             if pos > 0 and not tool_calls:
                 preamble = cleaned[:min(pos, 120)].replace("\n", " ")
                 _log.debug(
                     f"DEBUG _scan_tool_calls: ⚠️  JSON tool call found after "
                     f"{pos} chars of preamble: «{preamble}…»",
                 )
-            tool_calls.append(obj)
-            if stop_on_non_tool_json:
+            if is_pseudo_format(obj):
+                fresh = []
+                for call in calls:
+                    key = json.dumps(call, sort_keys=True, default=str)
+                    if key not in pseudo_seen:
+                        pseudo_seen.add(key)
+                        fresh.append(call)
+                calls = fresh
+            tool_calls.extend(calls)
+            if stop_on_non_tool_json and tool_calls:
                 return [tool_calls[0]]
         elif isinstance(obj, dict) and stop_on_non_tool_json:
             _log.debug(
@@ -295,7 +309,9 @@ def _scan_tool_calls(llm_output: str, *, stop_on_non_tool_json: bool) -> list[di
     return tool_calls
 
 
-_TOOL_SHAPE_RE = _re.compile(r'<tool_call>|"tool"\s*:|\'tool\'\s*:', _re.IGNORECASE)
+# `"tool_uses"` and `"recipient_name"`: OpenAI's pseudo-format (F537, `tool_call_shapes`).
+_TOOL_SHAPE_RE = _re.compile(r'<tool_call>|"tool"\s*:|\'tool\'\s*:|"tool_uses"\s*:|"recipient_name"\s*:',
+                             _re.IGNORECASE)
 
 
 def looks_like_a_tool_call(text: str) -> bool:

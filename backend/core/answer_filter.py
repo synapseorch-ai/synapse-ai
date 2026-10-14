@@ -11,9 +11,10 @@ decides, piece by piece, what is certainly answer text:
 * a closing `</think>` with no opening one means everything before it was
   thinking (a template that opened the tag for the model), so what went out is
   taken back: a reset, then the text after it;
-* JSON is held from its `{` until the object closes. A tool call (any object
-  with a `tool` key, as `react_engine._is_tool_call` reads it) stops the call's
-  stream for good; any other object is released. A `{` that does not open a
+* JSON is held from its `{` until the object closes. A tool call (any shape
+  the engine runs as one, `tool_call_shapes.calls_in`: `{"tool": …}`, and
+  OpenAI's `tool_uses` pseudo-format, F537) stops the call's stream for good;
+  any other object is released. A `{` that does not open a
   JSON object (`{name}`, code) streams as text;
 * a fence streams unless its first line opens with `{`, and is held to its
   closing fence then, as JSON is;
@@ -31,6 +32,8 @@ from __future__ import annotations
 
 import json
 import re
+
+from core.tool_call_shapes import calls_in
 
 #: Every marker that hides or reveals text, as one tokenizer.
 _MARKER_RE = re.compile(r"\[REASONING\]|\[/REASONING\]|</?think(?:ing)?>", re.IGNORECASE)
@@ -85,7 +88,8 @@ def _strip_reasoning(raw: str) -> tuple[str, bool]:
 
 
 def _is_tool_call(obj) -> bool:
-    return isinstance(obj, dict) and isinstance(obj.get("tool"), str) and bool(obj["tool"].strip())
+    # Any shape the engine runs as a call, OpenAI's pseudo-format included (F537).
+    return bool(calls_in(obj))
 
 
 def _json_object_at(text: str, pos: int) -> tuple[str, int]:
