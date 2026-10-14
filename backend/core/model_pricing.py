@@ -56,6 +56,15 @@ DEFAULT_MODEL_PRICING: dict[str, dict] = {
     "claude-fable-5-1": {
         "provider": "anthropic", "input_per_1m": 10, "output_per_1m": 50, "cache_read_per_1m": 0.25,
     },
+    # F493 (2026-10-14), from the claude-api reference (cached 2026-10-06). Without them Opus 5.5 took Opus 5's
+    # rate by prefix and Haiku 5.5 was unpriced. Haiku 5.5 is $0.50 / $2.50 on a prompt over 100K tokens; the card
+    # has no tiers, so such a call is under-counted.
+    # Cache reads at $0.20/M: a twentieth of its input rate, not the usual tenth.
+    "claude-opus-5-5": {
+        "provider": "anthropic", "input_per_1m": 4, "output_per_1m": 20, "cache_read_per_1m": 0.2,
+    },
+    "claude-sonnet-5-5": {"provider": "anthropic", "input_per_1m": 2, "output_per_1m": 10},
+    "claude-haiku-5-5": {"provider": "anthropic", "input_per_1m": 0.1, "output_per_1m": 0.5},
     # The hosted OpenAI-style providers (PROV1, D245), keyed by the routed id.
     # NVIDIA's hosted catalogue is a free trial with no per-token price, and
     # OpenRouter prices every model itself (its /models says), so neither has

@@ -50,6 +50,21 @@ class TestTheCurrentClaudeRates:
     def test_rate(self, model, rate):
         assert _rate(model) == rate
 
+    @pytest.mark.parametrize("model,rate", [
+        ("claude-opus-5-5", (4, 20)),
+        ("claude-sonnet-5-5", (2, 10)),
+        ("claude-haiku-5-5", (0.1, 0.5)),
+    ])
+    def test_the_5_5_models_have_their_own_rate(self, model, rate):
+        """F493: Opus 5.5 took Opus 5's $5 / $25 by prefix, and Haiku 5.5 was unpriced (a dollar cap could not see
+        it)."""
+        assert _rate(model) == rate
+
+    def test_opus_5_5_reads_its_cache_at_twenty_cents(self, monkeypatch):
+        import core.usage_tracker as ut
+        monkeypatch.setattr(ut, "_pricing_snapshot", DEFAULT_MODEL_PRICING)
+        assert calculate_cost("claude-opus-5-5", 0, 0, cache_read_tokens=1_000_000) == pytest.approx(0.20)
+
     def test_fable_5_1_reads_its_cache_at_a_quarter_dollar(self, monkeypatch):
         import core.usage_tracker as ut
         monkeypatch.setattr(ut, "_pricing_snapshot", DEFAULT_MODEL_PRICING)
