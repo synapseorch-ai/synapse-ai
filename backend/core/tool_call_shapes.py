@@ -10,7 +10,8 @@ parallel-call pseudo-format, which OpenAI's own tool runner uses internally, as 
 `functions.` is OpenAI's namespace, not part of the name; `multi_tool_use.parallel` is the same block wrapped.
 
 `calls_in` is what `react_engine._scan_tool_calls` and `answer_filter` both ask, so a shape one of them reads is a
-shape the other holds back.
+shape the other holds back. A reply that is only JSON objects names no call (`bare_objects`); the engine decides,
+from the tools it offered, whether those are a call's arguments (F551).
 """
 from __future__ import annotations
 
@@ -68,6 +69,26 @@ def calls_in(obj: Any) -> list[dict]:
     if "recipient_name" in obj:
         return _recipient(obj) or []
     return []
+
+
+def bare_objects(text: str) -> list[dict]:
+    """The JSON objects `text` is made of, when it is nothing but JSON objects and none of them a call; [] otherwise.
+    For F551: gpt-4.1-mini answered with its calls' arguments alone — `{"order":"HP-2041"}` twice. Whether such a
+    reply is arguments (not an answer) or a structured answer is the engine's to say, from the tools it offered."""
+    import json
+
+    decoder = json.JSONDecoder()
+    rest, found = text.strip(), []
+    while rest:
+        try:
+            obj, end = decoder.raw_decode(rest)
+        except ValueError:
+            return []
+        if not isinstance(obj, dict) or not obj or calls_in(obj):
+            return []
+        found.append(obj)
+        rest = rest[end:].lstrip()
+    return found
 
 
 def is_pseudo_format(obj: Any) -> bool:

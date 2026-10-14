@@ -26,7 +26,7 @@ from core.session import (
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
 from core.answer_filter import AnswerFilter, strip_copied_digest
-from core.tool_call_shapes import calls_in, is_pseudo_format
+from core.tool_call_shapes import bare_objects, calls_in, is_pseudo_format
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
@@ -346,6 +346,33 @@ def _approval_id(tool_name: str, tool_args: dict) -> str:
     payload = json.dumps({"tool": tool_name, "arguments": tool_args or {}},
                          sort_keys=True, default=str)
     return _h.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _arguments_only(text: str, schemas: dict) -> bool:
+    """Whether `text` is only JSON objects that are an offered tool's arguments with its name left off (F551):
+    every object's keys fit exactly one offered tool's input properties. A structured answer rarely does."""
+    objects = bare_objects(strip_reasoning(text or ""))
+    if not objects or not schemas:
+        return False
+    properties = []
+    for schema in schemas.values():
+        # An input schema, or (a caller's own tool list) an OpenAI-format tool whose function holds it.
+        params = schema.get("function", {}).get("parameters") if isinstance(schema, dict) and "function" in schema \
+            else schema
+        props = params.get("properties") if isinstance(params, dict) else None
+        if isinstance(props, dict) and props:
+            properties.append(set(props))
+    return all(sum(1 for props in properties if set(obj) <= props) == 1 for obj in objects)
+
+
+def _offered_name(name: str, offered) -> str:
+    """A call's name with OpenAI's `functions.` namespace taken off when that is the offered tool (F550):
+    gpt-4.1-mini wrote `{"tool": "functions.spawn_subtask"}` and the guard refused a tool it does not have. Never
+    when the dotted name is itself offered, or the bare one is not."""
+    prefix = "functions."
+    if isinstance(name, str) and name.startswith(prefix) and name not in offered and name[len(prefix):] in offered:
+        return name[len(prefix):]
+    return name
 
 
 def _own_model(agent: dict | None) -> str | None:
@@ -2209,22 +2236,36 @@ async def run_agent_step(
                     yield _e
 
             if not tool_calls:
+                # A reply of argument objects alone names no tool and says nothing to a
+                # person (F551): asked again once, as a call that did not parse is, and
+                # never the answer. Only in chat, and only when every object is shaped
+                # like one offered tool's arguments: a structured answer is a JSON answer.
+                _bare = not _workflow_step and _arguments_only(action_text, tool_schema_map)
+                if _bare and not (_parse_retries < MAX_PARSE_RETRIES and turn + 1 < max_turns):
+                    for _e in _unstream("error"):
+                        yield _e
+                    await _save_failed_turn()
+                    raise _no_answer("", _llm_result.stop_reason)
                 # ── A tool call that did not parse is not a final answer ─────
                 # Ask for it again rather than presenting broken JSON as the
                 # agent's response. Once: a model that cannot produce valid
                 # JSON twice is not going to on the third attempt, and the
                 # text still reaches the user as the answer below.
-                if (looks_like_a_tool_call(action_text) and _parse_retries < MAX_PARSE_RETRIES
+                if ((_bare or looks_like_a_tool_call(action_text)) and _parse_retries < MAX_PARSE_RETRIES
                         and turn + 1 < max_turns):
                     _parse_retries += 1
                     _log.warning(f"⚠️ Response looks like a tool call but did not parse "
                                  f"(retry {_parse_retries}/{MAX_PARSE_RETRIES})")
                     current_context_text += (
                         f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
-                        "\nSystem: that looked like a tool call but it could not be parsed as "
-                        "JSON. Emit the whole call again as one valid JSON object: "
-                        '{"tool": "<name>", "arguments": {...}}. If you did not mean to call a '
-                        "tool, answer in plain text with no JSON.\n"
+                        + ("\nSystem: that reply was only JSON shaped like a tool's arguments, with no tool "
+                           "named, so nothing ran. To call a tool, write the whole call: "
+                           '{"tool": "<name>", "arguments": {...}}. If you already have the answer, give it '
+                           "to the person in plain words.\n" if _bare else
+                           "\nSystem: that looked like a tool call but it could not be parsed as "
+                           "JSON. Emit the whole call again as one valid JSON object: "
+                           '{"tool": "<name>", "arguments": {...}}. If you did not mean to call a '
+                           "tool, answer in plain text with no JSON.\n")
                     )
                     for _e in _unstream("retry"):
                         yield _e
@@ -2322,7 +2363,7 @@ async def run_agent_step(
                 _close_call()
                 if _repeat_stop:
                     break
-                tool_name = tool_call.get("tool", "")
+                tool_name = _offered_name(tool_call.get("tool", ""), tool_schema_map)
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue
                 tool_args = tool_call.get("arguments", {})
