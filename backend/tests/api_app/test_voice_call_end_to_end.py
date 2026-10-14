@@ -129,8 +129,8 @@ async def test_a_whole_call(phone, twilio, fake_llm):
 
     sid = _call_sid(1)
     twiml = await _ring(phone, twilio, sid)
-    assert 'welcomeGreeting="Hi, you&apos;re speaking with Ada, an AI assistant."' in twiml or \
-        "welcomeGreeting=\"Hi, you're speaking with Ada, an AI assistant.\"" in twiml
+    assert 'welcomeGreeting="Hi, you&apos;re speaking with Ada, an AI assistant. How can I help?"' in twiml or \
+        "welcomeGreeting=\"Hi, you're speaking with Ada, an AI assistant. How can I help?\"" in twiml
     assert 'welcomeGreetingInterruptible="none"' in twiml and f'action="{phone.live.url}{phone.base}/end"' in twiml
     assert twilio.requests == [], "no REST lookup: it 404s for real calls (VOX1a P2)"
     url = _socket_url(phone, twiml)
@@ -357,7 +357,9 @@ async def test_a_confirm_answered_while_the_caller_is_on_the_line_is_said_on_the
         r = await client.post(ask["data"]["answer_url"], json={"approve": False, "reason": "not eligible",
                                                                "approval_id": ask["data"]["approval_id"]})
         assert r.status_code == 200, r.text
-        heard = await relay.hear()
+        # The call says it once its own words are done: here the notice, the filler and the approval's line,
+        # about 11 s at the speed it reckons (real time, unlike the loop tests).
+        heard = await relay.hear(timeout=20)
         while "refund it" not in _words(heard):
             heard += await relay.hear()
         assert _words(heard) == call_mod.REFUSED_LINE + "Okay, I won't refund it."

@@ -160,16 +160,36 @@ class TestTwiML:
 
 
 class TestTheNotice:
-    def test_default_names_the_agent(self):
-        assert notice_for({}, agent_name="Ada") == "Hi, you're speaking with Ada, an AI assistant."
+    def test_default_names_the_agent_and_invites_the_caller(self):
+        """Changed deliberately (F478, VOX1f): the default only greeted ("…an AI assistant."), so callers greeted
+        back and the agent greeted again over their question; it now ends by inviting them to speak."""
+        assert notice_for({}, agent_name="Ada") == "Hi, you're speaking with Ada, an AI assistant. How can I help?"
 
     def test_it_cannot_be_emptied(self):
         assert notice_for({"notice": "   "}, agent_name="Ada").startswith("Hi, you're speaking with Ada")
 
     def test_recording_is_always_said(self):
+        """Changed deliberately (F478): the invitation follows the recording line, so it is the last thing heard."""
         assert notice_for({"notice": "Hello from {agent}.", "recording": True}, agent_name="Ada") == (
-            "Hello from Ada. This call may be recorded.")
-        assert notice_for({"notice": "Calls are recorded.", "recording": True}, agent_name="A") == "Calls are recorded."
+            "Hello from Ada. This call may be recorded. How can I help?")
+        assert notice_for({"notice": "Calls are recorded.", "recording": True}, agent_name="A") == (
+            "Calls are recorded. How can I help?")
+
+    def test_a_notice_that_asks_keeps_its_question_last(self):
+        assert notice_for({"notice": "Thanks for calling {agent}, what can I do for you?"}, agent_name="Ada") == (
+            "Thanks for calling Ada, what can I do for you?")
+        assert notice_for({"notice": "Thanks for calling, what can I do for you?", "recording": True},
+                          agent_name="Ada") == (
+            "This call may be recorded. Thanks for calling, what can I do for you?")
+
+    def test_the_placeholders_for_org_says_nothing_without_an_organisation(self):
+        """The Phone tab's placeholder reads "…an AI assistant for {org}."; typed in on a self-hosted install,
+        which names no organisation, it said "…an AI assistant for ." (F478, found at VOX1f's plan)."""
+        typed = "Hi, you're speaking with {agent}, an AI assistant for {org}. How can I help?"
+        assert notice_for({"notice": typed}, agent_name="Ada") == (
+            "Hi, you're speaking with Ada, an AI assistant. How can I help?")
+        assert notice_for({"notice": typed}, agent_name="Ada", org="Acme") == (
+            "Hi, you're speaking with Ada, an AI assistant for Acme. How can I help?")
 
 
 class TestSpeech:

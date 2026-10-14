@@ -27,6 +27,9 @@ GOODBYE_AFTER_VOICEMAIL = "Thank you. Goodbye."
 MAX_RESUMES = 3
 DEFAULT_NOTICE = "Hi, you're speaking with {agent}, an AI assistant{for_org}."
 RECORDING_LINE = "This call may be recorded."
+#: The notice's last words when it does not end by asking (F478): a notice that only greets left the caller to greet
+#: back ("Hi."), and the agent greeted again over their question (VOX1e, calls 2, 3 and 5).
+INVITATION = "How can I help?"
 
 
 def _now_iso() -> str:
@@ -46,12 +49,19 @@ async def channel_for_route(route_token: str) -> dict | None:
 
 
 def notice_for(voice: dict, *, agent_name: str, org: str = "") -> str:
-    """The opening notice (V25): editable, never empty, and it says so when the call is recorded."""
+    """The opening notice (V25): editable, never empty, it says so when the call is recorded, and it ends by
+    inviting the caller to speak (F478): a notice that does not end with a question gets `INVITATION`, and with
+    one the recording line goes first, so the question is the last thing heard. " for {org}" (the Phone tab's
+    placeholder) says nothing where there is no organisation (self-hosted), as `{for_org}` does."""
     text = str(voice.get("notice") or "").strip() or DEFAULT_NOTICE
-    text = text.replace("{agent}", agent_name or "an assistant").replace(
-        "{org}", org).replace("{for_org}", f" for {org}" if org else "")
+    for_org = f" for {org}" if org else ""
+    text = (text.replace("{agent}", agent_name or "an assistant").replace(" for {org}", for_org)
+            .replace("{org}", org).replace("{for_org}", for_org))
+    asks = text.rstrip().endswith("?")
     if voice.get("recording") and "record" not in text.lower():
-        text = f"{text} {RECORDING_LINE}"
+        text = f"{RECORDING_LINE} {text}" if asks else f"{text} {RECORDING_LINE}"
+    if not asks:
+        text = f"{text} {INVITATION}"
     return text
 
 

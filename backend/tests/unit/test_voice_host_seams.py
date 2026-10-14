@@ -187,14 +187,15 @@ class TestTheNoticeNamesTheHostsOrganisation:
         host.org = "Harbor Home"
         markup = service._connect(_channel(), TwilioProvider.from_credentials(CREDS), CALL, agent_name="Ada",
                                   resume=False)
-        assert 'welcomeGreeting="Hi, you\'re speaking with Ada, an AI assistant for Harbor Home."' in markup
+        assert ('welcomeGreeting="Hi, you\'re speaking with Ada, an AI assistant for Harbor Home. How can I help?"'
+                in markup), "the invitation is the call's own words (F478)"
 
     async def test_self_hosted_names_no_one(self):
         hooks.install(None)
         assert VoiceHost().org_name({}) == ""
         markup = service._connect(_channel(), TwilioProvider.from_credentials(CREDS), CALL, agent_name="Ada",
                                   resume=False)
-        assert 'welcomeGreeting="Hi, you\'re speaking with Ada, an AI assistant."' in markup
+        assert 'welcomeGreeting="Hi, you\'re speaking with Ada, an AI assistant. How can I help?"' in markup
 
 
 class FakeSocket:
