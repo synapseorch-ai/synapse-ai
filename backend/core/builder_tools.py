@@ -1608,6 +1608,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": _HOLLOW_WORKFLOW_AGENT}
         if (too_long := _long_agent_name(args.get("name"))) is not None:
             return {"error": too_long}
+        from core import builder_guard  # F489: never a tool nothing provides
+        if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
+            return phantom
         if (refusal := await _refused("agent", 1)) is not None:
             return refusal
         agents = await load_user_agents()
@@ -1664,6 +1667,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (too_long := _long_agent_name(spec["name"])) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": too_long})
                     continue
+                from core import builder_guard  # F489: never a tool nothing provides
+                if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
+                    continue
                 # Guarantee uniqueness even when called repeatedly in the same millisecond.
                 new_id = _mint_id("agent", length=10)
                 while new_id in existing_ids:
@@ -1710,6 +1717,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": "An agent cannot be made part of the builder: `system` and type 'builder' are not editable."}
         if "name" in fields and (too_long := _long_agent_name(fields["name"])) is not None:
             return {"error": too_long}
+        if "tools" in fields:
+            from core import builder_guard  # F489: never a tool nothing provides
+            if (phantom := await builder_guard.unknown(fields.get("tools") or [], server_module)) is not None:
+                return phantom
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
@@ -2277,6 +2288,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             verdict["warnings"] = [*verdict.get("warnings", []), *(
                 f"In the inner workflow '{child.get('name')}' ({child['id']}): {w}"
                 for w in child_verdict.get("warnings", []))]
+        # F489: a forced tool nothing provides fails the first run; an agent naming one runs without it.
+        from core import builder_guard
+        tool_issues, tool_warnings = await builder_guard.missing_in([orch, *ours], agents, server_module)
+        issues += tool_issues
+        verdict["warnings"] = [*verdict.get("warnings", []), *tool_warnings]
         verdict = {**verdict, "ok": not issues, "issues": issues}
         if verdict["ok"]:
             for workflow in (orch, *ours):
