@@ -1217,6 +1217,12 @@ async def worker_startup(ctx: dict) -> None:
     # Redis client (already provided by ARQ as ctx["redis"])
     redis = ctx["redis"]
 
+    # A run this worker pumps in a task of its own (a workflow agent's turn, a
+    # delegated workflow) holds a lease: the sweeps see it alive, and its
+    # Cancel reaches it (F470).
+    from core.scale import run_lease
+    run_lease.install(redis, holder=_worker_id)
+
     # This worker's notifications (an eval's regression, a resolved approval) join the one ring every API
     # server and worker shares, rather than a copy of it written over theirs (F361).
     from core.notifications import hub as notification_hub

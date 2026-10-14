@@ -355,6 +355,24 @@ async def update_suite_run(suite_run_id: str, **values) -> None:
         )
 
 
+async def end_suite_run(suite_run_id: str, statuses: tuple[str, ...], **values) -> bool:
+    """Write a suite run's ending if it is still in one of `statuses` (F471). Whether it was."""
+    from core.store import session
+    from core.store.models import EvalSuiteRunDB
+
+    async with session() as s:
+        result = await s.execute(
+            update(EvalSuiteRunDB)
+            .where(
+                EvalSuiteRunDB.tenant_id == get_tenant(),
+                EvalSuiteRunDB.id == suite_run_id,
+                EvalSuiteRunDB.status.in_(statuses),
+            )
+            .values(**values)
+        )
+        return bool(result.rowcount)
+
+
 async def get_suite_run(suite_run_id: str) -> dict | None:
     from core.store import session
     from core.store.models import EvalSuiteRunDB
@@ -366,6 +384,20 @@ async def get_suite_run(suite_run_id: str) -> dict | None:
     async with session() as s:
         row = (await s.execute(stmt)).scalars().first()
     return suite_run_to_dict(row) if row is not None else None
+
+
+async def suite_runs_in(statuses: tuple[str, ...]) -> list[dict]:
+    """The tenant's suite runs in `statuses` — what a sweep reads for sets left in flight (F471)."""
+    from core.store import session
+    from core.store.models import EvalSuiteRunDB
+
+    stmt = select(EvalSuiteRunDB).where(
+        EvalSuiteRunDB.tenant_id == get_tenant(),
+        EvalSuiteRunDB.status.in_(statuses),
+    )
+    async with session() as s:
+        rows = (await s.execute(stmt)).scalars().all()
+    return [suite_run_to_dict(r) for r in rows]
 
 
 async def suite_runs_for(suite_id: str, limit: int = 50) -> list[dict]:

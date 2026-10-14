@@ -702,8 +702,19 @@ async def lifespan(app: FastAPI):
 
         # --- Sweep zombie orchestration runs (stale "running" from prior server crash) ---
         try:
+            from core.scale.config import get_scale_config as _sweep_scale_cfg
             from core.scale.heartbeat import sweep_interrupted_runs
-            swept = await sweep_interrupted_runs()
+            # In scale mode a worker's task may still pump a run with no owner on
+            # its row (a workflow agent's turn); its lease says so (F470).
+            _lease_redis = None
+            if _sweep_scale_cfg().scale_mode:
+                from core.scale.pubsub import get_redis_client as _lease_client
+                _lease_redis = _lease_client(_sweep_scale_cfg().redis_url)
+            try:
+                swept = await sweep_interrupted_runs(redis=_lease_redis)
+            finally:
+                if _lease_redis is not None:
+                    await _lease_redis.aclose()
             if swept:
                 print(f"Swept {len(swept)} zombie orchestration run(s) (marked failed)")
         except Exception as e:
@@ -771,10 +782,18 @@ async def lifespan(app: FastAPI):
                 app.state.pg_engine = _pg_engine
                 app.state.pg_session_factory = _pg_session_factory
 
-                # Background task: reap workers that crash without sending shutdown
+                # A run this server pumps in a task of its own holds a lease, so
+                # the sweeps see it alive and its Cancel reaches it (F470).
+                import os as _lease_os
+                import socket as _lease_socket
+                from core.scale import run_lease as _run_lease
+                _run_lease.install(_redis, holder=f"api-{_lease_socket.gethostname()}-{_lease_os.getpid()}")
+
+                # Background task: reap workers that crash without sending shutdown,
+                # and fail the runs nothing is running any more (F470)
                 from core.scale.heartbeat import reap_stale_workers
                 _reap_task = asyncio.create_task(
-                    reap_stale_workers(_pg_session_factory),
+                    reap_stale_workers(_pg_session_factory, redis=_redis),
                     name="reap_stale_workers",
                 )
                 app.state.reap_task = _reap_task

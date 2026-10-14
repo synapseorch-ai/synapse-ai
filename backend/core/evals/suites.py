@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import types
 import uuid
 from collections.abc import Awaitable, Callable
 
@@ -63,6 +64,25 @@ STOPPED = "stopped"
 #: How long a case its host cuts waits for its run to stop before the host goes
 #: on to end it.
 CUT_WAIT_SECONDS = 5
+
+#: Why a set stopped when its run was cut short (F471) — its host's time limit,
+#: or a worker stopping under it — after "Stopped before case k of n: ".
+SET_CUT = ("the set was cut off before it finished: the worker running it stopped, or it ran "
+           "past its time limit.")
+
+#: Why a set nothing was running any more stopped (F471): its worker was killed,
+#: or the server running it restarted.
+SET_GONE = "the worker running the set stopped before it finished."
+
+#: Why a set handed out again after its worker stopped did not run again (F471):
+#: as a chat turn is not (F89), since the cases it ran may already have acted.
+SET_HANDED_OUT_AGAIN = ("the worker running the set stopped, and a set is not run again on its "
+                        "own: its earlier cases may already have acted. Start it again to run "
+                        "every case.")
+
+#: How long a cut set's ending may take on its way out (F471): the cut is the
+#: host's, and an ending that hangs must not hold it.
+SET_END_SECONDS = 3
 
 #: `run_case(run_id, session_id, go)`: a host's way to start one case (F441).
 #: `go()` runs the case under `run_id`; the host runs it inside whatever admits
@@ -103,13 +123,55 @@ async def running_for(suite_id: str) -> str | None:
 
     Read from the store rather than a process-local set, so a second Start is
     refused whichever worker picked the first one up.
+
+    A row no live set holds is over, where sets hold leases (scale mode, a
+    host's fleet): its worker was killed under it, and nothing will ever end it
+    or let Start go again. It is ended here, with why (F471). Standalone, a set
+    runs in this process, and a restart's sweep ends the ones it left.
     """
+    from core.scale import run_lease
     from core.store import evals as store
 
     for row in await store.suite_runs_for(suite_id, limit=1):
         if row["status"] in ("running", CANCELLING):
+            if run_lease.installed() and not await run_lease.held(row["id"]):
+                await end_set(row["id"], SET_GONE)
+                return None
             return row["id"]
     return None
+
+
+async def end_set(suite_run_id: str, why: str, *, before_case: int | None = None) -> bool:
+    """End a set its run left unended (F471). False if it had already ended.
+
+    `stopped` with "Stopped before case k of n: <why>", or `cancelled` when
+    somebody had asked it to stop — that is what it did. `k` is the case after
+    the last one scored when the caller does not know it. Conditional on the
+    row still being in flight, so it never rewrites an ending.
+    """
+    from core.store import evals as store
+
+    row = await store.get_suite_run(suite_run_id)
+    if row is None or row["status"] not in ("running", CANCELLING):
+        return False
+    # The tally as the loop last wrote it, unless a score landed after.
+    scores = await store.scores_for_suite_run(suite_run_id)
+    scored = max(len(scores), int(row["scored_count"] or 0))
+    mean = (sum(r["score"] for r in scores) / len(scores)) if scores else row["mean_score"]
+    values: dict = {"scored_count": scored, "mean_score": mean, "ended_at": _utcnow()}
+    if row["status"] == CANCELLING:
+        values["status"] = "cancelled"
+    else:
+        total = int(row["case_count"] or 0)
+        k = before_case if before_case is not None else min(scored + 1, max(total, 1))
+        values["status"] = STOPPED
+        values["stop_reason"] = stop_line(k, total, why)
+    return await store.end_suite_run(suite_run_id, ("running", CANCELLING), **values)
+
+
+def stop_line(case: int, total: int, why: str) -> str:
+    """A stopped set's reason: "Stopped before case k of n: <why>" — a host's ending too (F441, F471)."""
+    return f"Stopped before case {case} of {total}: {why}"
 
 
 async def _stop_requested(suite_run_id: str) -> bool:
@@ -134,9 +196,7 @@ async def run_suite(
     refuses (`CaseRefused`) is not a result: the set stops there and says why.
     """
     from core.evals import store as evals_store
-    from core.models_orchestration import Orchestration
-    from core.orchestration.engine import OrchestrationEngine
-    from core.orchestration.runner import SENTINEL, spawn_engine_run
+    from core.scale import run_lease
     from core.store import evals as store
     from core.store.resources import get_orchestration
 
@@ -149,21 +209,60 @@ async def run_suite(
     cases = suite.get("cases") or []
     suite_run_id = suite_run_id or new_suite_run_id()
 
-    await store.create_suite_run({
-        "id": suite_run_id,
-        "suite_id": suite_id,
-        "orchestration_id": orch_data["id"],
-        "status": "running",
-        "case_count": len(cases),
-        "rubric_id": (rubric or {}).get("id", ""),
-        "rubric_version": int((rubric or {}).get("version") or 1),
-    })
+    # Held while the set runs, where the host shares Redis: what tells Start,
+    # Stop and the sweeps that it is alive (F471).
+    async with run_lease.hold(suite_run_id, kind="set"):
+        if await store.get_suite_run(suite_run_id) is not None:
+            # Handed out again: its worker stopped under it and its job came
+            # back. It is not run again, as a chat turn is not (F89) — the cases
+            # it ran may already have acted. One that had ended stays as it was.
+            await end_set(suite_run_id, SET_HANDED_OUT_AGAIN)
+            return await store.get_suite_run(suite_run_id) or {}
+        await store.create_suite_run({
+            "id": suite_run_id,
+            "suite_id": suite_id,
+            "orchestration_id": orch_data["id"],
+            "status": "running",
+            "case_count": len(cases),
+            "rubric_id": (rubric or {}).get("id", ""),
+            "rubric_version": int((rubric or {}).get("version") or 1),
+        })
+        at = types.SimpleNamespace(case=1)
+        try:
+            return await _run_cases(suite_run_id, orch_data, cases, server_module, run_case, at)
+        except asyncio.CancelledError:
+            # Cut: the host's time limit, a stopping worker. Its ending used to
+            # come only after the loop, so a cut set read `running` for good and
+            # refused every Start (F471).
+            await _end_cut(suite_run_id, SET_CUT, at.case)
+            raise
+        except Exception as exc:
+            await _end_cut(suite_run_id, f"the set could not go on: {exc}", at.case)
+            raise
+
+
+async def _end_cut(suite_run_id: str, why: str, before_case: int) -> None:
+    """A cut set's ending, bounded: the cut is its host's, and must not wait on it."""
+    try:
+        await asyncio.wait_for(end_set(suite_run_id, why, before_case=before_case), SET_END_SECONDS)
+    except Exception:  # noqa: BLE001 — TimeoutError included; a restart's sweep ends it then
+        _log.warning(f"suite run '{suite_run_id}': its ending was not written after its cut",
+                     exc_info=True)
+
+
+async def _run_cases(suite_run_id, orch_data, cases, server_module, run_case, at) -> dict:
+    """Run the cases in order, then write the set's ending (`run_suite`). `at.case` follows the loop."""
+    from core.models_orchestration import Orchestration
+    from core.orchestration.engine import OrchestrationEngine
+    from core.orchestration.runner import SENTINEL, spawn_engine_run
+    from core.store import evals as store
 
     scored = 0
     stopped = False
     refused: str | None = None
     session_id = f"suite_{suite_run_id}"
     for index, case in enumerate(cases):
+        at.case = index + 1
         if await _stop_requested(suite_run_id):
             stopped = True
             break
@@ -195,7 +294,7 @@ async def run_suite(
             else:
                 await run_case(run_id, session_id, go)
         except CaseRefused as exc:
-            refused = f"Stopped before case {index + 1} of {len(cases)}: {exc}"
+            refused = stop_line(index + 1, len(cases), str(exc))
             _log.info(f"suite run '{suite_run_id}' stopped: {refused}")
             break
         except Exception as exc:

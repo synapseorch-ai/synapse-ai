@@ -74,15 +74,22 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
     queue: asyncio.Queue = asyncio.Queue()
 
     async def _pump():
+        from core.scale import run_lease
+
         last_type = None
         try:
-            async for event in agen:
-                await _observe(run_id, event)
-                last_type = event.get("type")
-                await queue.put(event)
-                # Yield so the SSE consumer can dequeue and flush this event
-                # to the HTTP response before the next one is enqueued.
-                await asyncio.sleep(0)
+            # Held while this task drives the run, where the host shares Redis:
+            # the sign, outside this process, that something is still running
+            # it, and the way its Cancel reaches it (F470). Inside the `try`, so
+            # a cancel that lands while it is taken still ends the stream.
+            async with run_lease.hold(run_id):
+                async for event in agen:
+                    await _observe(run_id, event)
+                    last_type = event.get("type")
+                    await queue.put(event)
+                    # Yield so the SSE consumer can dequeue and flush this event
+                    # to the HTTP response before the next one is enqueued.
+                    await asyncio.sleep(0)
         except asyncio.CancelledError:
             event = {"type": "orchestration_error", "error": "Cancelled"}
             await _observe(run_id, event)
