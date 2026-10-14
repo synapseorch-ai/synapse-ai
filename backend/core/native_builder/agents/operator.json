@@ -34,7 +34,9 @@
         "delete_custom_tool",
         "delete_schedule",
         "prepare_connection",
-        "read_workspace"
+        "read_workspace",
+        "search_help",
+        "product_capabilities"
     ],
     "repos": [],
     "db_configs": [],

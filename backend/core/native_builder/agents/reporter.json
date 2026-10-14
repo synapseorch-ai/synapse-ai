@@ -20,7 +20,9 @@
         "list_recent_runs",
         "get_run_summary",
         "prepare_connection",
-        "read_workspace"
+        "read_workspace",
+        "search_help",
+        "product_capabilities"
     ],
     "repos": [],
     "db_configs": [],
