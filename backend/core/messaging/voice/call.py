@@ -56,6 +56,11 @@ DEFAULT_GOODBYE = "Thanks for calling. Goodbye."
 #: The close is the call's, not the model's (VOX1d): the first end_call asks this instead of ending, so a "No."
 #: to some other question ("anything else about this product?") never hangs up on a caller who isn't done.
 CLOSING_QUESTION = "Is there anything else I can help you with?"
+#: When the caller has just answered a question the agent itself asked (it asks "anything else?" whatever the
+#: prompt says, F529), the close leaves the door open instead of asking again, and waits longer (`invite_grace`).
+INVITE_GOODBYE = "Thanks for calling. If you think of anything else, just say so. Goodbye."
+#: What ends a question in the languages a call speaks (full-width and Arabic too).
+_QUESTION_MARKS = ("?", "\uff1f", "\u061f")
 DEFAULT_TRANSFER_LINE = "I'm connecting you to someone on the team now."
 
 #: Added to the agent's prompt on every voice turn (V15), after its own.
@@ -126,6 +131,9 @@ class Timing:
     #: After the agent's goodbye has played, how long the caller may still speak and keep the call (VOX1d: a
     #: "No… just add it to my cart" lost its second half to a goodbye that ended the call at once).
     goodbye_grace: float = 1.5
+    #: After the goodbye that invites (the caller has just answered the agent's own question, F529), how long they
+    #: may still speak and carry on: the door was left open, so it stays open longer.
+    invite_grace: float = 3.0
 
 
 #: Where a phrase may end: punctuation and the space after it (kept with the phrase, so a sentence that follows
@@ -161,6 +169,7 @@ class _Turn:
         self.narrated = False          # the model's "let me check" was spoken this turn
         self.repeat_stopped = False    # the engine's repeat guard ended it
         self.after_closing = False     # the caller's reply to CLOSING_QUESTION: an end_call now ends the call
+        self.after_question = False    # the caller's reply to a question the agent asked (F529)
         self.answer: dict | None = None  # an approval's answer this turn carries on (F474), not the caller's words
         self.refused_tool = ""         # the refused call, which the resumed turn reports and never runs
 
@@ -189,6 +198,7 @@ class VoiceCall:
         self.visitor = _visitor.VisitorScope(
             "channel", frozenset(_visitor.clean_tools(channel.get("visitor_tools"))), approvals="park")
         self._closing_asked = False  # CLOSING_QUESTION was the last thing said
+        self._agent_asked = False  # the last answer the caller heard ended with a question (F529)
         self._closing_at: float | None = None  # the goodbye was said: the session ends then, unless the caller speaks
         self._closing: dict = {}
         self._said_until = 0.0
@@ -423,6 +433,8 @@ class VoiceCall:
                 text = f"{stopped.text} {text}"
         turn = _Turn(text)
         turn.after_closing = self._closing_asked or bool(stopped and stopped.after_closing)
+        turn.after_question = self._agent_asked or bool(stopped and stopped.after_question)
+        self._agent_asked = False
         if stopped is not None and stopped.answer is None and not stopped.sent_any:
             # The caller is still asking the request the stopped turn heard, and has heard its filler: once a
             # request, not once a turn (F477).
@@ -538,9 +550,12 @@ class VoiceCall:
             elif turn.final is not None:
                 if turn.streamed and (turn.since_reset + buffer).strip():
                     await self._flush(turn, buffer, final=True)
+                    heard = turn.since_reset
                 else:
-                    await self._say(to_speech(turn.final), last=True)
+                    heard = to_speech(turn.final)
+                    await self._say(heard, last=True)
                     turn.sent_any = True
+                self._agent_asked = heard.rstrip().endswith(_QUESTION_MARKS)
             elif turn.parked:
                 pass
             else:
@@ -685,11 +700,17 @@ class VoiceCall:
     async def _last_words(self, turn: _Turn) -> None:
         """The goodbye (the tool's argument) or the hand-off line, said by us; then the action."""
         kind, data = self.pending_action
-        if kind == "end" and not turn.after_closing:
+        inviting = kind == "end" and not turn.after_closing and turn.after_question
+        if kind == "end" and not turn.after_closing and not inviting:
             await self._ask_before_closing(turn)
             return
         if kind == "transfer":
             line = str(self.voice.get("transfer_line") or DEFAULT_TRANSFER_LINE)
+        elif inviting:
+            # The caller has just said no to the agent's own question: not asked again (F529), but told the door is
+            # open, and given longer to walk back through it (VOX1d's narrow "anything else about this product?").
+            line = INVITE_GOODBYE
+            self.pending_action = (kind, {**data, "invite": True})
         else:
             line = data.get("goodbye") or DEFAULT_GOODBYE
         if turn.cycle_open or not turn.sent_any:
@@ -724,13 +745,15 @@ class VoiceCall:
         if kind == "transfer":
             await self._end({"transfer": data.get("reason") or ""}, outcome="transferred")
         else:
-            self._close_after_goodbye({"ended": "agent"})
+            self._close_after_goodbye({"ended": "agent"},
+                                      grace=self.timing.invite_grace if data.get("invite") else None)
 
-    def _close_after_goodbye(self, handoff: dict) -> None:
+    def _close_after_goodbye(self, handoff: dict, *, grace: float | None = None) -> None:
         """The goodbye plays, then a moment in which the caller may still speak (VOX1d). Words in it keep the call;
         silence ends it (the loop's timer). A hand-off is never held: it ends at once."""
         self._closing = handoff
-        self._closing_at = max(self._said_until, time.monotonic()) + self.timing.goodbye_grace
+        wait = self.timing.goodbye_grace if grace is None else grace
+        self._closing_at = max(self._said_until, time.monotonic()) + wait
         self._frames.put_nowait(Frame("wake"))
 
     def _keep_the_call(self) -> None:

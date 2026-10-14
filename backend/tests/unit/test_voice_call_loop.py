@@ -827,6 +827,56 @@ class TestTheVoiceTools:
         assert hung_up.ended == [] and call.outcome == "agent_ended"
         assert host.records[CALL]["outcome"] == "agent_ended"
 
+    async def test_after_the_agents_own_question_the_close_invites_instead_of_asking_again(self, saved):
+        """F529 (VOX1f): the agent ended its answer "Is there anything else I can help you with?", the caller said
+        "No. Thank you.", and the call asked the same question again before the goodbye (calls 1 and 3, two models,
+        though the prompt says not to). Now the caller's reply to the agent's own question gets one line that
+        leaves the door open, and a longer moment to carry on; VOX1d's question is kept for every other close."""
+        answer = "The weather in Delhi is sunny. Is there anything else I can help you with?"
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Bye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}]
+        host = ScriptedHost([_delta(answer), _final(answer)], list(end))
+        socket = FakeSocket()
+        call = _call(host, socket, timing=Timing(**{**FAST.__dict__, "invite_grace": 0.05}))
+        await _drive(call, socket, _prompt("weather in Delhi?"), 0.1, _prompt("No. Thank you."), settle=0.3,
+                     hang_up=False)
+        said = [t for t, _ in socket.said]
+        assert call_mod.CLOSING_QUESTION not in said
+        assert said[-1] == call_mod.INVITE_GOODBYE
+        assert socket.ended == [{"ended": "agent"}] and host.records[CALL]["outcome"] == "agent_ended"
+        assert saved["turns"][-1] == ("No. Thank you.", call_mod.INVITE_GOODBYE, ["end_call"])
+
+    async def test_a_caller_who_speaks_after_the_invitation_carries_on(self, saved):
+        answer = "It is in stock. Anything else about this product?"
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Bye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}]
+        host = ScriptedHost([_delta(answer), _final(answer)], list(end),
+                            [_delta("The watch is $89.99."), _final("The watch is $89.99.")])
+        socket = FakeSocket()
+        call = _call(host, socket, timing=Timing(**{**FAST.__dict__, "invite_grace": 0.6}))
+        await _drive(call, socket, _prompt("is the case in stock?"), 0.1, _prompt("No."), 0.15,
+                     _prompt("but how much is a watch?"), settle=0.2)
+        assert [t for t, _ in socket.said][-2:] == [call_mod.INVITE_GOODBYE, "The watch is $89.99."]
+        assert socket.ended == [], "VOX1d's narrow question: the caller still had more, and the call kept them"
+
+    async def test_the_invitation_holds_longer_than_a_goodbye(self, saved):
+        answer = "Done. Is there anything else?"
+        end = [{"type": "tool_execution", "tool_name": "end_call"}, ("tool", "end_call", {"goodbye": "Bye!"}),
+               {"type": "tool_result", "tool_name": "end_call"}]
+        socket = FakeSocket()
+        call = _call(ScriptedHost([_delta(answer), _final(answer)], list(end)), socket,
+                     timing=Timing(**{**FAST.__dict__, "goodbye_grace": 0.05, "invite_grace": 0.5}))
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("cancel my order"))
+        await asyncio.sleep(0.1)
+        await socket.inbox.put(_prompt("no"))
+        await asyncio.sleep(0.25)
+        assert socket.ended == [], "still open past the goodbye's moment"
+        await asyncio.sleep(0.5)
+        assert socket.ended == [{"ended": "agent"}]
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+
     async def test_transfer_is_offered_only_with_a_number(self, saved):
         host = ScriptedHost([{"type": "tool_execution", "tool_name": "transfer_call"},
                              ("tool", "transfer_call", {"reason": "billing"}), {"type": "tool_result"},
