@@ -222,10 +222,11 @@ class TestSeeHowImBuilt:
 
         assert legend["name"] == "Synapse AI Builder"
         # 24 since D122: the plan-room check and its refusal (F154), and finish_build (F156); 26 since BWA1: the
-        # plan's check and where it sends the plan (F492).
-        assert legend["step_count"] == 26
+        # plan's check and where it sends the plan (F492); 29 with the how-to, connect and can't-do look-ups.
+        assert legend["step_count"] == 29
         assert legend["entry_step"]["type"] == "evaluator"
-        assert {r["label"] for r in legend["routes"]} == {"create", "update", "manage", "answer"}
+        assert {r["label"] for r in legend["routes"]} == {
+            "create", "update", "manage", "answer", "howto", "connect", "cantdo"}
         assert {a["role"] for a in legend["agents"]} == {
             "analyst", "agent_creator", "saver_create", "saver_update", "operator", "reporter",
         }
