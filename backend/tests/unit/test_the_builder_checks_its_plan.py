@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from _fakes import seed as S
 from core.builder_guard import check_plan, names_in_plan
 
 PLAN = """## Overview
@@ -165,3 +166,25 @@ class TestFinishBuildLeavesNoOrphans:
             {"kind": "agent", "action": "created", "id": agent_id, "name": "Digest Writer"},
             {"kind": "orchestration", "action": "created", "id": "orch_kept", "name": "Digest"}])
         assert agent_id in {a["id"] for a in await load_user_agents()}
+
+    async def test_its_clean_up_deletes_as_the_agent_delete_does(self, monkeypatch):
+        """Memory goes with the agent; one something else uses stays (F467, F469 — BF5's rule for the builder's deletes)."""
+        from core import agent_memory
+        from core.routes.agents import load_user_agents
+
+        from core.store.resources import get_agent, save_agent
+
+        lead, member, kept = [await self._agent(n) for n in ("Desk Lead", "Desk Member", "Desk Helper")]
+        await save_agent({**await get_agent(lead), "delegate_agent_ids": [member]})
+        await agent_memory.write_memory(member, "note", "the door code is 4471")
+        await save_agent(S.make_agent(id="agent_theirs", name="Theirs", delegate_agent_ids=[kept]))
+
+        got, events = await self._finish(monkeypatch, [
+            {"kind": "agent", "action": "created", "id": a, "name": n}
+            for a, n in ((member, "Desk Member"), (lead, "Desk Lead"), (kept, "Desk Helper"))])
+
+        left = {a["id"] for a in await load_user_agents()}
+        assert lead not in left and member not in left, "the lead goes first, so its member is free"
+        assert kept in left, "an agent of the person's hands work to it"
+        assert sorted(got["removed_names"]) == ["Desk Lead", "Desk Member"]
+        assert agent_memory.read_memory(member, "note") is None

@@ -1550,11 +1550,11 @@ async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
 
     The agent creator runs before the saver, so a saver that stopped ("Tool not found", "Agents are missing")
     left them in the workspace with nothing to run them. Read from the run's own writes at its last checkpoint
-    (`run_writes`); a build that kept any workflow keeps its agents.
+    (`run_writes`); a build that kept any workflow keeps its agents. Whether something else uses one is
+    `finish_build`'s to ask, as the agent delete asks it (F467).
     """
     from core.orchestration.run_writes import WRITES_KEY
     from core.orchestration.state import SharedState
-    from core.routes.orchestrations import load_orchestrations
 
     try:
         writes = (await SharedState.restore(run)).run.shared_state.get(WRITES_KEY) or []
@@ -1566,12 +1566,9 @@ async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
              and w.get("id") not in removed and ("orchestration", w.get("id")) not in gone]
     if built:
         return []
-    made = [w for w in writes if w.get("kind") == "agent" and w.get("action") == "created"
+    return [{"id": w["id"], "name": w.get("name")} for w in writes
+            if w.get("kind") == "agent" and w.get("action") == "created" and w.get("id")
             and ("agent", w.get("id")) not in gone]
-    if not made:
-        return []
-    used = {step.get("agent_id") for o in await load_orchestrations() for step in o.get("steps") or []}
-    return [{"id": w["id"], "name": w.get("name")} for w in made if w.get("id") and w["id"] not in used]
 
 
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
@@ -2411,12 +2408,23 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 removed.append(orch["id"])
                 removed_names.append(orch.get("name") or orch["id"])
         if run is not None:
-            for agent in await _orphaned_agents(run, removed):
-                from core.store.resources import delete_agent as _delete_agent
-                await _delete_agent(agent["id"])
-                _emit(events, "agent", "deleted", agent["id"], agent.get("name"),
-                      reason="the build stopped before its workflow was saved")
-                removed_names.append(agent.get("name") or agent["id"])
+            from core import agent_memory
+            from core.orchestration.dependents import what_uses_agent
+            from core.store.resources import delete_agent as _delete_agent
+            left = await _orphaned_agents(run, removed)
+            # As the agent delete does (F467, F469): one something uses stays, and its memory goes with it. A lead
+            # the build made goes on one pass, so the member it handed work to is free on the next.
+            while left:
+                free = [agent for agent in left if not await what_uses_agent(agent["id"])]
+                if not free:
+                    break
+                for agent in free:
+                    await _delete_agent(agent["id"])
+                    await agent_memory.wipe(agent["id"])
+                    _emit(events, "agent", "deleted", agent["id"], agent.get("name"),
+                          reason="the build stopped before its workflow was saved")
+                    removed_names.append(agent.get("name") or agent["id"])
+                left = [agent for agent in left if agent not in free]
         return {"status": "finished", "removed": removed, "removed_names": removed_names, "kept": kept}
 
     # ── Custom HTTP tools ────────────────────────────────────────────────────
