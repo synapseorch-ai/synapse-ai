@@ -46,6 +46,42 @@ if TYPE_CHECKING:
     from .engine import OrchestrationEngine
 
 
+def role_fallback(step: StepConfig, run: OrchestrationRun, model: str) -> str | None:
+    """The model a step on a role falls back to when that role's model fails (BWA1, D274, 7a), or None.
+
+    The AI builder's quick steps run on their own model ("Builder model for quick steps", or a host's pick). A wrong
+    id, a key that lapsed or a wallet that ran dry must never stop a build the builder model could finish, so a step
+    whose model is its role's tries the run's own model once — the builder model — else the workspace default.
+    A step whose model is not its role's (no role, a role the run does not map) has none: its failure stops the run
+    as before.
+    """
+    roles = run.shared_state.get("_model_roles")
+    if not step.model_role or not isinstance(roles, dict) or roles.get(step.model_role) != model:
+        return None
+    from core.config import load_settings
+    fallback = run.shared_state.get("_model_override") or load_settings().get("model")
+    return fallback if isinstance(fallback, str) and fallback and fallback != model else None
+
+
+async def on_model_or_fallback(call, model: str, fallback: str | None, used: list) -> str:
+    """`call(model)`; when it fails and the step has a `fallback`, `call(fallback)` once (BWA1, 7a).
+
+    `used` gets the model that answered and, after a fallback, why (`used[1]`), for the step to say so. A model's
+    failure is `LLMError` (every adapter raises it after its own retries); anything else — a cancel, a timeout —
+    is not the model's and is never retried here.
+    """
+    from core.llm_providers import LLMError
+    used[:] = [model]
+    try:
+        return await call(model)
+    except LLMError as exc:
+        if not fallback:
+            raise
+        _log.warning(f"model {model} failed for a step on a role; falling back to {fallback}: {exc}")
+        used[:] = [fallback, f"{model} failed ({str(exc)[:160]}), so this step ran on {fallback}."]
+        return await call(fallback)
+
+
 def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
@@ -813,11 +849,12 @@ class ToolStepExecutor:
                         tool_sys_prompt = system_prompt_prefix + "\n\n" + tool_sys_prompt
                     from core.model_wait import ModelWait
 
-                    _wait = ModelWait(llm_generate(
+                    _used: list = []
+                    _wait = ModelWait(on_model_or_fallback(lambda _model: llm_generate(
                         prompt_msg=turn_prompt,
                         sys_prompt=tool_sys_prompt,
-                        mode=mode,
-                        current_model=model,
+                        mode=mode if _model == model else detect_mode_from_model(_model),
+                        current_model=_model,
                         current_settings=settings,
                         # The workspace's effort, as an agent without its own gets
                         # (F77); passing nothing meant "medium" whatever it said.
@@ -826,10 +863,15 @@ class ToolStepExecutor:
                         agent_id=step.agent_id or "tool_step",
                         source="orchestration",
                         run_id=run.run_id,
-                    ), label=f"Tool step '{step.name}'", extra={"orch_step_id": step.id})
+                    ), model, role_fallback(step, run, model), _used),
+                        label=f"Tool step '{step.name}'", extra={"orch_step_id": step.id})
                     async for _wait_event in _wait.events():
                         yield _wait_event
                     response = _wait.result
+                    if len(_used) > 1:
+                        # The rest of the step's turns stay on the model that answered.
+                        model, mode = _used[0], detect_mode_from_model(_used[0])
+                        yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
                 except Exception as e:
                     from core.llm_providers import LLMError
                     if isinstance(e, LLMError):
@@ -1184,11 +1226,12 @@ class EvaluatorStepExecutor:
             # Out loud, as the agent loop waits: this step is the AI builder's
             # first, and a hung call here was the full step timeout of silence
             # under "Evaluator deciding route..." before the run failed.
-            _wait = ModelWait(llm_generate_response(
+            _used: list = []
+            _wait = ModelWait(on_model_or_fallback(lambda _model: llm_generate_response(
                 prompt_msg=prompt,
                 sys_prompt="You are a routing decision maker. Output ONLY valid JSON.",
-                mode=eval_mode,
-                current_model=eval_model,
+                mode=eval_mode if _model == eval_model else detect_mode_from_model(_model),
+                current_model=_model,
                 current_settings=settings,
                 reasoning_effort=settings.get("reasoning_effort"),  # F77
                 session_id=run.session_id,
@@ -1200,10 +1243,12 @@ class EvaluatorStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
-            ), label="Evaluator", extra={"orch_step_id": step.id})
+            ), eval_model, role_fallback(step, run, eval_model), _used), label="Evaluator", extra={"orch_step_id": step.id})
             async for _wait_event in _wait.events():
                 yield _wait_event
             response = _wait.result
+            if len(_used) > 1:
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
             _log.debug(f"🔀 Evaluator LLM response: {response}")
 
             # Emit evaluator LLM response for the logger
@@ -2552,11 +2597,12 @@ class LLMStepExecutor:
         try:
             from core.model_wait import ModelWait
 
-            _wait = ModelWait(llm_generate(
+            _used: list = []
+            _wait = ModelWait(on_model_or_fallback(lambda _model: llm_generate(
                 prompt_msg=prompt,
                 sys_prompt=sys_prompt,
-                mode=mode,
-                current_model=model,
+                mode=mode if _model == model else detect_mode_from_model(_model),
+                current_model=_model,
                 current_settings=settings,
                 reasoning_effort=settings.get("reasoning_effort"),  # F77
                 session_id=run.session_id,
@@ -2568,10 +2614,13 @@ class LLMStepExecutor:
                 cache_response_ttl=step.cache_response_ttl_seconds,
                 cache_response_step_id=step.id,
                 cache_response_threshold=step.cache_response_threshold,
-            ), label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
+            ), model, role_fallback(step, run, model), _used),
+                label=f"LLM step '{step.name}'", extra={"orch_step_id": step.id, "step_name": step.name})
             async for _wait_event in _wait.events():
                 yield _wait_event
             response = _wait.result
+            if len(_used) > 1:
+                yield {"type": "step_warning", "orch_step_id": step.id, "message": _used[1]}
         except Exception as e:
             from core.llm_providers import LLMError
             if isinstance(e, LLMError):
