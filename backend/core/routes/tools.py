@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from core.models import AddMCPServerRequest
 from core.openapi_import import parse_openapi_spec
 import core.mcp_oauth_state as oauth_state
+from core.tools import declaration_tokens
 
 router = APIRouter()
 
@@ -76,13 +77,16 @@ async def get_available_tools():
 
             result = await session.list_tools()
             for t in result.tools:
+                name = f"{server_name}__{t.name}" if is_external else t.name
                 all_tools.append({
-                    "name": f"{server_name}__{t.name}" if is_external else t.name,
+                    "name": name,
                     "description": t.description,
                     "source": server_name,
                     "source_label": display_label,
                     "type": tool_type,
-                    "schema": t.inputSchema
+                    "schema": t.inputSchema,
+                    # What it adds to every call an agent holding it makes (F483).
+                    "tokens": declaration_tokens(name, t.description, t.inputSchema),
                 })
         except Exception as e:
             print(f"Error listing tools for agent '{name}': {e}")
@@ -101,6 +105,8 @@ async def get_available_tools():
                 "source": "custom_http" if tool_type != "python" else "custom_python",
                 "type": tool_type,
                 "schema": t.get("inputSchema") or t.get("schema"),
+                "tokens": declaration_tokens(t.get("name") or "", t.get("description"),
+                                             t.get("inputSchema") or t.get("schema")),
                 # The picker shows one row per group; an agent may take the
                 # whole group as `group:<id>` (core/tools.py).
                 "group": group,
