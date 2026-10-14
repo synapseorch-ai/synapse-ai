@@ -226,7 +226,12 @@ class AgentStepExecutor:
         execution_events: list[dict] = []
         # This step's own list as it last wrote it: beside other branches, its
         # rewrites replace its own tasks in the run's list, not everyone's.
-        own_tasks = [dict(t) for t in (run.tasks or [])]
+        # Empty until it writes (F523): it was the run's list when the step
+        # started, and a branch that started after others had written — a fifth
+        # beside four — took their tasks for its own and removed them with its
+        # first write. A branch may drop only what it wrote; a sibling's or an
+        # earlier step's task it can mark cancelled, not remove by leaving out.
+        own_tasks: list[dict] = []
         try:
             async for event in run_agent_step(
                 message=prompt,

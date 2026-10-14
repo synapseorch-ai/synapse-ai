@@ -293,6 +293,15 @@ class TestTaskLists:
         tasks = (await _saved("run_par_tasks")).tasks
         assert sorted(t["content"] for t in tasks) == ["fetch prices", "fetch reviews"]
 
+    async def test_a_branch_that_starts_late_keeps_the_others_plans(self, agents):
+        """F523: six branches, four at once. The fifth and sixth start after the first four wrote, and each took
+        the run's list at its start for its own, so its first write removed theirs: the run kept two plans of six."""
+        agents.tasks = {f"a{i}": [{"content": f"task of a{i}", "status": "completed"}] for i in range(6)}
+        await _run(_fanout([_agent_step(f"a{i}") for i in range(6)]), run_id="run_par_late")
+
+        tasks = (await _saved("run_par_late")).tasks
+        assert sorted(t["content"] for t in tasks) == [f"task of a{i}" for i in range(6)]
+
 
 class TestWorkflowBranches:
     async def _children(self, *specs):
