@@ -175,6 +175,51 @@ def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
 OPT_IN_SERVERS: frozenset[str] = frozenset({"sql"})
 
 
+#: How many tokens of declarations `"all"` may add to one turn from the servers a
+#: workspace connected, for tools the agent did not name (F483).
+#:
+#: `"all"` is what an agent made with no `tools` key holds, and nothing bounded
+#: what it reached. A server can grow without anyone in the workspace doing
+#: anything: acme's Vercel server went from the 37 tools its discovery stored to
+#: 236 live, and an `["all"]` turn there sent 343 tools, 169,391 tokens on every
+#: model call. nova-micro (128K) refused each one ("Input Tokens Exceeded"); a
+#: model that could read it paid for it on every call, unseen.
+#:
+#: So a turn leaves out whole servers, largest first, until what `"all"` adds
+#: from them fits, and says which (`react_engine`). Whole servers, so a model is
+#: never handed half of one; never a tool the agent named; never a native or
+#: builder tool, which are the product's own and small. 40K holds what a
+#: workspace usually connects (acme's other two servers are about 2K together)
+#: and stays well inside the smallest context a platform model has.
+ALL_TOOLS_TOKEN_BUDGET = 40_000
+
+
+def declaration_tokens(name: str, description: str | None, schema) -> int:
+    """About how many tokens a tool's declaration costs a call: its characters / 4.
+
+    The product's rule everywhere it estimates, and low for JSON: it puts Vercel's
+    236 at 124K where Bedrock counted 147K. A budget, not a bill.
+    """
+    return (len(name or "") + len(description or "") + len(json.dumps(schema or {}, default=str))) // 4
+
+
+def _over_budget(reached: dict[str, list], budget: int) -> list[tuple[str, int, list]]:
+    """The servers to leave out of a turn, largest first, until the rest fit `budget`.
+
+    `reached` maps a server to the tools it added only through `"all"`.
+    """
+    sizes = {server: sum(declaration_tokens(t.name, t.description, t.inputSchema) for t in tools)
+             for server, tools in reached.items()}
+    total = sum(sizes.values())
+    out = []
+    for server in sorted(sizes, key=lambda s: (-sizes[s], s)):
+        if total <= budget:
+            break
+        out.append((server, sizes[server], reached[server]))
+        total -= sizes[server]
+    return out
+
+
 def permits(allowed_tools, name: str, *, opt_in: bool = False) -> bool:
     """Whether an agent whose list is `allowed_tools` may call `name`.
 
@@ -305,7 +350,7 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
     return None
 
 
-async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
+async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *, budget=None, left_out=None):
     """
     Aggregate all available tools: MCP tools + virtual tools + custom tools.
 
@@ -314,6 +359,12 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
     router that decides which of them services a call, and the cache of what each
     one advertises. Reading those from `core.server` while the sessions came from
     somewhere else is what made this function wrong inside a worker.
+
+    `budget` is for a turn's own tool set (F483): the tokens `"all"` may add
+    from connected servers for tools the agent did not name. Past it, whole
+    servers are left out, largest first, and each is appended to `left_out` as
+    `{"server", "tools", "tokens"}` for the turn to say so. A caller asking what
+    exists — the builder's listing, its guard — passes none and sees everything.
 
     Returns:
         tuple: (all_tools, tool_schema_map, ollama_tools, tools_json)
@@ -355,6 +406,8 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
             pass  # a read-only stand-in still works, just uncached
 
     allowed_tools = effective_allowed_tools(active_agent)
+    # Each connected server's tools that only `"all"` reached: what a budget may leave out.
+    through_all: dict[str, list] = {}
 
     # Standard MCP Tools
     for session_name, session in agent_sessions.items():
@@ -396,9 +449,12 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
                 # every existing agent's list silently stop matching.
                 name = key or f"{session_name[len('ext_mcp_'):]}{SEP}{t.name}"
                 if permits(allowed_tools, name, opt_in=opt_in):
-                    all_tools.append(VirtualTool(name, t.description, t.inputSchema,
-                                                 getattr(t, "annotations", None),
-                                                 trusted=False))
+                    declared = VirtualTool(name, t.description, t.inputSchema,
+                                           getattr(t, "annotations", None),
+                                           trusted=False)
+                    all_tools.append(declared)
+                    if name not in allowed_tools:
+                        through_all.setdefault(session_name[len('ext_mcp_'):], []).append(declared)
                 continue
 
             # A native tool an agent asked for *by its namespaced key*. This is
@@ -418,6 +474,16 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list):
                 if key is not None and not tool_router.declares(session_name, t.name):
                     continue
                 all_tools.append(t)
+
+    # What `"all"` added from connected servers, bounded for a turn (F483).
+    if budget is not None and through_all:
+        for server, tokens, tools in _over_budget(through_all, budget):
+            dropped = {id(t) for t in tools}
+            all_tools = [t for t in all_tools if id(t) not in dropped]
+            _log.info(f"Left out {server}'s {len(tools)} tools from an \"all\" turn: ~{tokens} tokens, "
+                      f"past the {budget}-token budget")
+            if left_out is not None:
+                left_out.append({"server": server, "tools": len(tools), "tokens": tokens})
 
     # Populate schema map for MCP tools
     for t in all_tools:

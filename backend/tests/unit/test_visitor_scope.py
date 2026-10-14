@@ -41,7 +41,7 @@ def two_tools(monkeypatch):
     """The agent holds exactly `danger` (destructive) and `peek` (trusted read-only)."""
     import core.react_engine as re_mod
 
-    async def aggregated(server_module, agent, custom_tools):
+    async def aggregated(server_module, agent, custom_tools, **_):
         tools = [DANGER, PEEK]
         ollama = [{"type": "function", "function": {"name": t.name, "description": t.description,
                                                     "parameters": t.inputSchema}} for t in tools]

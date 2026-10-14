@@ -272,7 +272,7 @@ async def test_a_callers_confirm_tool_parks_in_the_bell_and_the_transcript_is_ke
     refund = VirtualTool("refund", "refunds an order", {"type": "object"},
                          ToolAnnotations(readOnlyHint=False, destructiveHint=True))
 
-    async def aggregated(server_module, agent, custom_tools):
+    async def aggregated(server_module, agent, custom_tools, **_):
         ollama = [{"type": "function", "function": {"name": "refund", "description": "x", "parameters": {}}}]
         return [refund], {"refund": {}}, ollama, "['refund']"
     monkeypatch.setattr(re_mod, "aggregate_all_tools", aggregated)
@@ -330,7 +330,7 @@ async def test_a_confirm_answered_while_the_caller_is_on_the_line_is_said_on_the
     refund = VirtualTool("refund", "refunds an order", {"type": "object"},
                          ToolAnnotations(readOnlyHint=False, destructiveHint=True))
 
-    async def aggregated(server_module, agent, custom_tools):
+    async def aggregated(server_module, agent, custom_tools, **_):
         ollama = [{"type": "function", "function": {"name": "refund", "description": "x", "parameters": {}}}]
         return [refund], {"refund": {}}, ollama, "['refund']"
     monkeypatch.setattr(re_mod, "aggregate_all_tools", aggregated)

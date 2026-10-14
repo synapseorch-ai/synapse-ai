@@ -205,10 +205,10 @@ class TestABranchThatCanAskRunsAfterTheOthers:
         await S.seed_agents([*_base_agents(), S.make_agent(id="a_browser", tools=["all"])])
         real = tools_mod.aggregate_all_tools
 
-        async def aggregate(server_module, agent, custom):
+        async def aggregate(server_module, agent, custom, **kwargs):
             if agent.get("id") == "a_browser":
                 return [mt.Tool(name="browser_click", inputSchema={"type": "object"})], {}, [], ""
-            return await real(server_module, agent, custom)
+            return await real(server_module, agent, custom, **kwargs)
 
         monkeypatch.setattr(tools_mod, "aggregate_all_tools", aggregate)
         events = await _run(_fanout([_agent_step("a0"), _agent_step("web", agent_id="a_browser")]))

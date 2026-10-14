@@ -19,7 +19,7 @@ same agent must start from the aggregated set, not from the first step's edits.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,6 +36,9 @@ class ResolvedAgent:
     tool_schema_map: dict | None = None
     ollama_tools: list | None = None
     tools_json: str | None = None
+    # The servers `"all"` was over its budget with, left out of every turn this
+    # agent takes in the run (F483), for each turn to say so.
+    left_out: list[dict] = field(default_factory=list)
 
     @property
     def has_tools(self) -> bool:
@@ -95,9 +98,10 @@ async def resolve_for_run(
         cache[agent_id] = entry
 
     if tools and not entry.has_tools:
-        from core.tools import aggregate_all_tools
+        from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools
         all_tools, schema_map, ollama_tools, tools_json = await aggregate_all_tools(
-            engine.server_module, entry.agent, entry.custom_tools
+            engine.server_module, entry.agent, entry.custom_tools,
+            budget=ALL_TOOLS_TOKEN_BUDGET, left_out=entry.left_out,
         )
         entry.all_tools = all_tools
         entry.tool_schema_map = schema_map

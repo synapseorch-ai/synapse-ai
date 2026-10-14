@@ -34,7 +34,7 @@ def _server():
 def one_tool(monkeypatch):
     import core.react_engine as re_mod
 
-    async def aggregated(server_module, agent, custom_tools):
+    async def aggregated(server_module, agent, custom_tools, **_):
         ollama = [{"type": "function", "function": {"name": DANGER.name, "description": DANGER.description,
                                                     "parameters": DANGER.inputSchema}}]
         return [DANGER], {DANGER.name: DANGER.inputSchema}, ollama, str([DANGER.name])

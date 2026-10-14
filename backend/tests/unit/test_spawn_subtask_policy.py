@@ -49,7 +49,7 @@ class _Session:
 def server(monkeypatch):
     import core.react_engine as re_mod
 
-    async def aggregated(server_module, agent, custom_tools):
+    async def aggregated(server_module, agent, custom_tools, **_):
         wanted = agent.get("tools") or []
         held = [t for t in (DANGER, PEEK) if "all" in wanted or t.name in wanted]
         ollama = [{"type": "function", "function": {"name": t.name, "description": t.description,

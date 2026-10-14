@@ -538,7 +538,7 @@ class TestWhatAnOwnerCanTick:
         danger = VirtualTool("danger", "d", {}, ToolAnnotations(readOnlyHint=False, destructiveHint=True))
         peek = VirtualTool("peek", "d", {}, ToolAnnotations(readOnlyHint=True, idempotentHint=True))
 
-        async def aggregated(server_module, agent, custom_tools):
+        async def aggregated(server_module, agent, custom_tools, **_):
             held = [t for t in (danger, peek) if t.name in (agent.get("tools") or [])]
             return held, {}, [], ""
 

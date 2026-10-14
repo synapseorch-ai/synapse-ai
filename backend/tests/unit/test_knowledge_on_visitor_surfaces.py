@@ -18,7 +18,7 @@ from core.chat_widgets import limits as _limits
 def no_other_tools(monkeypatch):
     import core.tools as tools_mod
 
-    async def aggregated(server_module, agent, custom_tools):
+    async def aggregated(server_module, agent, custom_tools, **_):
         return [], {}, [], ""
 
     monkeypatch.setattr(tools_mod, "aggregate_all_tools", aggregated)

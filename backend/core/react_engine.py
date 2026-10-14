@@ -26,7 +26,7 @@ from core.session import (
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
 from core.answer_filter import AnswerFilter
-from core.tools import aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
+from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
 from core import visitor as _visitor_mod
@@ -911,6 +911,23 @@ def _raised_cap_note(agent: dict, settings: dict, model: str, effort) -> str | N
             f"{model} has room to think; its answer may run past {cap:,}.")
 
 
+def _left_out_note(left_out: list[dict]) -> str | None:
+    """What to say when every-tool left out a connected server's tools (F483). None when it left out nothing."""
+    if not left_out:
+        return None
+    from core.tools import ALL_TOOLS_TOKEN_BUDGET
+
+    def k(tokens: int) -> str:
+        return f"{round(tokens / 1000)}K" if tokens >= 1000 else str(tokens)
+
+    servers = [f"{x['server']}'s {x['tools']} tool{'' if x['tools'] == 1 else 's'}" for x in left_out]
+    which = servers[0] if len(servers) == 1 else ", ".join(servers[:-1]) + " and " + servers[-1]
+    tokens = sum(int(x.get("tokens") or 0) for x in left_out)
+    return (f"Left out {which}: about {k(tokens)} tokens on every model call, and an agent set to every tool takes "
+            f"at most {k(ALL_TOOLS_TOKEN_BUDGET)} from connected servers. Choose the ones it needs in its tools "
+            "to use them.")
+
+
 @_spans.traced_generator("synapse.agent_step", _spans.agent_step_attributes,
                          on_event=_spans.agent_step_events)
 async def run_agent_step(
@@ -1036,6 +1053,7 @@ async def run_agent_step(
     inject_tools_in_prompt = mode in ("cli", "bedrock", "hf")
 
     # Aggregate tools & build system prompt
+    _tools_left_out: list[dict] = []  # servers every-tool was over its budget with (F483)
     if tools_override is not None:
         # Caller provided a fixed tool set (e.g. builder) — skip MCP aggregation
         tool_schema_map = {t["function"]["name"]: t for t in tools_override}
@@ -1049,13 +1067,15 @@ async def run_agent_step(
         # tools are appended below and the next step must not inherit them.
         all_tools, tool_schema_map, ollama_tools, tools_json = preresolved.tool_lists()
         custom_tools = preresolved.custom_tools
+        _tools_left_out = list(preresolved.left_out)
         _log.debug(f"RUN_AGENT: start agent_id={agent_id_for_session}, preresolved tool_count={len(all_tools)}")
     else:
         from core.scale.context import resolve_custom_tools as _ctx_resolve_tools
         custom_tools = await _ctx_resolve_tools()
         _log.debug(f"RUN_AGENT: start agent_id={agent_id_for_session}, sessions={list(server_module.agent_sessions.keys())}")
         all_tools, tool_schema_map, ollama_tools, tools_json = await aggregate_all_tools(
-            server_module, active_agent, custom_tools
+            server_module, active_agent, custom_tools,
+            budget=ALL_TOOLS_TOKEN_BUDGET, left_out=_tools_left_out,
         )
         _log.debug(f"RUN_AGENT: aggregate_all_tools done, tool_count={len(all_tools)}")
     allowed_tools = narrow_allowed_tools(allowed_tools_override, active_agent.get("tools", ["all"]))
@@ -1728,6 +1748,10 @@ async def run_agent_step(
     _cap_note = _raised_cap_note(active_agent, current_settings, current_model, reasoning_effort)
     if _cap_note and _visitor is None:
         yield {"type": "status", "message": _cap_note}
+    # The same for a connected server every-tool left out (F483). Not to a visitor.
+    _left_note = _left_out_note(_tools_left_out)
+    if _left_note and _visitor is None:
+        yield {"type": "status", "message": _left_note}
 
     async with httpx.AsyncClient() as client:
         for turn in range(start_turn, max_turns):
