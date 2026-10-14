@@ -261,6 +261,8 @@ class AgentStepExecutor:
                 # mid-transcript will not see them again.
                 images=(getattr(engine, "images", None) or None) if step.pass_images else None,
                 should_stop=getattr(engine, "cancel_hook", None),
+                # The run's roles (BWA1's MODEL_ROLES_KEY), for a helper model that names one (SUB1a).
+                model_roles=run.shared_state.get("_model_roles"),
                 # A step's prompt is built from the run, not typed by a person: an
                 # earlier step's scraped page, a webhook's input, a vault file.
                 # So a `remember` in a workflow always asks (F279; Naveen,

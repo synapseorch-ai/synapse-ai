@@ -194,6 +194,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
     events_since_progress: list[dict] = []
     # What it thought, for the same save (U60): every one this request saw.
     thinking_events: list[dict] = []
+    # The helpers it sent, started and finished (SUB1a), for the same save.
+    helper_events: list[dict] = []
     if turn is not None and agent:
         # Stopped before it answered, a turn still keeps its question — as the
         # fleet's chat job does. Otherwise Stop destroyed the exchange rather
@@ -204,15 +206,16 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         # it made: saved with none, the next turn redid them (F242).
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
-            from core.session import (_save_conversation_turn, image_notes, thinking_from_events,
-                                      turn_calls, tools_from_calls)
+            from core.session import (_save_conversation_turn, helpers_from_events, image_notes,
+                                      thinking_from_events, turn_calls, tools_from_calls)
             calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
             reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
+            helpers = helpers_from_events(helper_events, resumed=latest_progress or resume_state)
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER,
                                           tools=tools_from_calls(calls), calls=calls,
                                           images=image_notes(getattr(request, "images", None)),
-                                          reasoning=reasoning, thoughts=thoughts)
+                                          reasoning=reasoning, thoughts=thoughts, helpers=helpers)
         turn.on_stop = _save_stopped
 
     # Route builder agents to the dedicated builder stream
@@ -264,9 +267,11 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 events_since_progress.append(event)
             elif etype in ("llm_reasoning", "llm_thought"):
                 thinking_events.append(event)
+            elif etype in ("helper_started", "helper_finished"):
+                helper_events.append(event)
 
             if etype == "status":
-                yield f"data: {json.dumps({'type': 'status', 'message': event['message']})}\n\n"
+                yield f"data: {json.dumps(whose({'type': 'status', 'message': event['message']}))}\n\n"
 
             elif etype == "thinking":
                 yield f"data: {json.dumps(whose({'type': 'thinking', 'message': event.get('message', ''), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}))}\n\n"
@@ -280,6 +285,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 if event.get('refused'):
                     # Not run (U68): the page marks it rather than ticking it.
                     frame.update(refused=True, reason=event.get('reason'))
+                if event.get('subtask_name'):
+                    # Which helper's result this is (the page names it).
+                    frame['subtask_name'] = event['subtask_name']
                 yield f"data: {json.dumps(whose(frame))}\n\n"
 
             elif etype == "llm_reasoning":
@@ -299,7 +307,7 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 # Action text (tool-call JSON or final-response prose) with
                 # reasoning already stripped — carries orch_step_id & step_name
                 # when inside orchestration.
-                yield f"data: {json.dumps({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}, default=str)}\n\n"
+                yield f"data: {json.dumps(whose({'type': 'llm_thought', 'thought': event['thought'], 'turn': event.get('turn', 1), 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name')}), default=str)}\n\n"
 
             elif etype == "final":
                 # Sub-agent step final (inside orchestration) → agent_step_result
@@ -375,6 +383,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 # An agent's Knowledge calls and its answer's Sources (B1b):
                 # ids, labels, paths and citations, never passage text.
                 "knowledge_search", "knowledge_read", "knowledge_citations",
+                # The helpers it sent (SUB1a): each one started, what it does
+                # (wrapped, from the engine's allowlist), and its record.
+                "helper_started", "helper_event", "helper_finished",
             ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 

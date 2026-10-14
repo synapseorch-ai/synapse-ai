@@ -89,6 +89,9 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("answered_approval"):
             # An approval answered while the caller was on the line, said on the call (F474).
             turn["answered_approval"] = dict(assistant["answered_approval"])
+        if assistant.get("helpers"):
+            # The helpers the turn sent (SUB1a): each one's brief, calls and answer.
+            turn["helpers"] = [dict(h) for h in assistant["helpers"]]
         if assistant.get("citations") or assistant.get("unresolved_citations"):
             # The answer's Sources: its [K#] labels resolved (Knowledge, B1b).
             turn["citations"] = assistant.get("citations") or []
@@ -183,6 +186,21 @@ def calls_from_events(events: list[dict]) -> list[dict]:
                 # Not run, and why (U68) — as the engine's own record says.
                 calls[-1].update(refused=True, reason=event.get("reason") or "")
     return calls
+
+
+def helpers_from_events(events: list[dict], resumed: dict | None = None) -> list[dict]:
+    """The records of the helpers a turn sent, for a turn saved from outside the engine (a Stop): those its
+    snapshot held, then each `helper_finished` since — a helper the Stop cut short is kept as stopped."""
+    kept = {h.get("id"): dict(h) for h in (resumed or {}).get("helpers") or [] if isinstance(h, dict)}
+    for event in events:
+        if event.get("type") == "helper_started" and event.get("helper_id") not in kept:
+            kept[event["helper_id"]] = {"id": event["helper_id"], "name": event.get("helper_name") or "",
+                                        "task": event.get("task") or "", "tools": list(event.get("tools") or []),
+                                        "model": event.get("model") or "", "mode": event.get("mode") or "wait",
+                                        "status": "cancelled", "calls": [], "answer": ""}
+        elif event.get("type") == "helper_finished" and isinstance(event.get("record"), dict):
+            kept[event.get("helper_id")] = dict(event["record"])
+    return list(kept.values())
 
 
 def panel_text(items: list | None) -> list[str]:
@@ -334,6 +352,7 @@ async def _save_conversation_turn(
     reasoning: list[str] | None = None,
     thoughts: list[str] | None = None,
     citations: dict | None = None,
+    helpers: list[dict] | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
@@ -341,7 +360,8 @@ async def _save_conversation_turn(
     `reasoning` and `thoughts` are what the turn thought (U60), kept for a
     person reading it back and never sent to the model as history.
     `citations` is the answer's `knowledge_citations` event: its Sources, kept
-    for a reopened chat to draw again.
+    for a reopened chat to draw again. `helpers` are the records of the helpers
+    the turn sent (`core.helpers`, SUB1a): their lanes, reopened.
     """
     from core.store import sessions as store
 
@@ -356,6 +376,8 @@ async def _save_conversation_turn(
         if kept := panel_text(items):
             answer[key] = kept
     answer.update(citation_fields(citations))
+    if helpers:
+        answer["helpers"] = [dict(h) for h in helpers]
     await store.append_turn(
         session_id,
         _agent(agent_id),

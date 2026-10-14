@@ -92,6 +92,9 @@ class Agent(BaseModel):
     system_prompt: str
     orchestration_id: str | None = None  # for orchestrator type agents
     model: str | None = None  # per-agent model override (None = use default)
+    # The model its helpers run on (`spawn_subtask`, "Helper model"; SUB1a): None = this agent's own,
+    # a model, or `role:quick` = the workspace's "Model for quick steps" (core/helpers.py).
+    helper_model: str | None = None
     provider: str | None = None  # auto-detected from model name
     max_turns: int | None = None  # per-agent turn limit override (None = use global default of 30)
     # "off" | "low" | "medium" | "high"; None = inherit the workspace setting.

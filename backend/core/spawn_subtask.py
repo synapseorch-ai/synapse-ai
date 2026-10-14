@@ -6,6 +6,14 @@ Not an MCP server. Imported directly by react_engine.py and routes/tools.py.
 
 SPAWN_SUBTASK_TOOL_NAME = "spawn_subtask"
 
+#: The `background` argument (SUB1a, S2): wait for the result (the default), or carry on and get it later.
+BACKGROUND_DESCRIPTION = (
+    "false (the default): wait for its result before going on. true: it works in the background while "
+    "you carry on or end your turn, and its result comes back to you once, when it finishes. Use true "
+    "only for an independent task with a clear brief. Where background is not available it runs while "
+    "you wait."
+)
+
 # Static schema registered in /api/tools/available so the frontend can show
 # it as a toggleable capability in the agent config UI.
 SPAWN_SUBTASK_STATIC_SCHEMA = {
@@ -34,18 +42,23 @@ SPAWN_SUBTASK_STATIC_SCHEMA = {
                 "type": "string",
                 "description": "Optional label for this subtask (shown in UI)",
             },
+            "background": {
+                "type": "boolean",
+                "description": BACKGROUND_DESCRIPTION,
+            },
         },
         "required": ["task", "tools"],
     },
 }
 
 
-def build_dynamic_spawn_subtask_tool(available_tool_names: list[str]):
+def build_dynamic_spawn_subtask_tool(available_tool_names: list[str], *, background: bool = False):
     """Build the runtime VirtualTool with the correct tools enum based on what
-    the calling agent actually has available."""
+    the calling agent actually has available. `background` offers the argument,
+    where this turn can run a helper in the background (the app's chat, SUB1a)."""
     from core.tools import VirtualTool
 
-    return VirtualTool(
+    tool = VirtualTool(
         name="spawn_subtask",
         description=(
             "Spawn an ephemeral sub-agent to complete a focused task. "
@@ -68,7 +81,14 @@ def build_dynamic_spawn_subtask_tool(available_tool_names: list[str]):
                     "type": "string",
                     "description": "Optional label for this subtask",
                 },
+                "background": {
+                    "type": "boolean",
+                    "description": BACKGROUND_DESCRIPTION,
+                },
             },
             "required": ["task", "tools"],
         },
     )
+    if not background:
+        tool.inputSchema["properties"].pop("background", None)
+    return tool

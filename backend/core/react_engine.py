@@ -348,6 +348,12 @@ def _approval_id(tool_name: str, tool_args: dict) -> str:
     return _h.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _own_model(agent: dict | None) -> str | None:
+    """The model an agent names for itself; None for "the default" — empty, or "default" (as `run_agent_step` reads it)."""
+    model = str((agent or {}).get("model") or "").strip()
+    return model if model and model.lower() != "default" else None
+
+
 def parse_all_tool_calls(llm_output: str) -> list[dict]:
     """Extract ALL tool-call JSON objects from one LLM response, in order."""
     return _scan_tool_calls(llm_output, stop_on_non_tool_json=False)
@@ -774,103 +780,25 @@ async def _run_spawn_subtask_batch(
     declarations: dict | None = None,
     parent_agent: dict | None = None,
 ) -> list[tuple[str, str]]:
-    """Run a batch of spawn_subtask calls in parallel.
+    """Run a batch of spawn_subtask calls side by side; their `(name, result)` in call order.
 
-    Each call gets an ephemeral agent config with only the requested tools
-    (validated as a subset of the parent's available tools). Returns a list of
-    (name, result_text) tuples in the same order as subtask_calls.
-
-    A sub-agent can do no more than its parent may (F266). `policy` is the
-    parent's *resolved* tool policy and `declarations` its tools by name: a tool
-    the parent would be refused, or would have to ask a person about, is not
-    given to the sub-agent — a sub-agent cannot show a card, and it used to run
-    such a tool with no card and no refusal. The result says what was withheld,
-    so the parent can call it itself, where the person is asked.
+    For a caller that wants only the answers. The engine itself runs helpers
+    through `core.helpers`, which streams what each one does and keeps it
+    (SUB1a); see there for what a helper may be given (F266) and runs on.
     """
-    import uuid
-    import asyncio
+    from core import helpers as _helpers
 
-    policy = dict(policy) if policy else dict(_tool_policy.DEFAULT_POLICY)
-    declarations = declarations or {}
-
-    def _decision(tool_name: str) -> tuple[str, str]:
-        declared = declarations.get(tool_name)
-        return _tool_policy.decide(declared if declared is not None else _UndeclaredTool(tool_name), policy)
-
-    async def _run_one(args: dict) -> tuple[str, str]:
-        task = args.get("task", "")
-        requested_tools = args.get("tools") or []
-        name = args.get("name") or task[:40]
-        # Enforce subset — sub-agent can only use tools the parent actually has
-        valid_tools = [t for t in requested_tools if t in available_tools]
-        withheld: list[str] = []
-        if valid_tools:
-            granted = []
-            for tool_name in valid_tools:
-                decision, category = _decision(tool_name)
-                if decision == "allow":
-                    granted.append(tool_name)
-                elif decision == "deny":
-                    withheld.append(f"{tool_name} (your tool policy blocks it: {_tool_policy.explain(category)})")
-                else:
-                    withheld.append(f"{tool_name} (it needs a person's approval — call it yourself "
-                                    "and they will be asked)")
-            valid_tools = granted
-        else:
-            # Nothing it asked for exists: the first few it may run outright.
-            valid_tools = [t for t in available_tools if _decision(t)[0] == "allow"][:5]
-
-        ephemeral_agent = {
-            "id": f"subtask_{uuid.uuid4().hex[:8]}",
-            "name": name,
-            "type": "conversational",
-            "model": None,  # inherit global default
-            "system_prompt": (
-                "You are a focused sub-agent. Complete the given task using only "
-                "the provided tools. Return a concise, structured result."
-            ),
-            "tools": valid_tools,
-            "max_turns": 10,
-            # The parent's resolved policy, with nobody to ask: a backstop for a
-            # name the sub-agent is offered that was never judged above.
-            "tool_policy": {c: ("deny" if d == "confirm" else d) for c, d in policy.items()},
-            # And the parent's scoping: a `run_sql_query` the parent may run
-            # against `sales` only must not reach `hr` through a sub-agent (an
-            # empty `db_configs` is no restriction), nor may a parent that
-            # declined the default file tools hand them out.
-            "db_configs": list((parent_agent or {}).get("db_configs") or []),
-            "repos": list((parent_agent or {}).get("repos") or []),
-            "skip_default_tools": bool((parent_agent or {}).get("skip_default_tools")),
-        }
-
-        sub_final = ""
-        try:
-            async for sub_event in run_agent_step(
-                message=task,
-                agent_id=ephemeral_agent["id"],
-                session_id=session_id,
-                server_module=server_module,
-                max_turns=10,
-                source=source,
-                run_id=run_id,
-                agent_override=ephemeral_agent,
-                # A hand-off, like a delegate's: it reads none of the parent's
-                # conversation and leaves no `subtask_*` chat in History (F261).
-                history_override=[],
-                persist_turn=False,
-            ):
-                if sub_event.get("type") == "final":
-                    sub_final = sub_event.get("response", "")
-        except Exception as exc:
-            sub_final = f"Subtask error: {exc}"
-            _log.warning(f"❌ spawn_subtask '{name}' failed: {exc}")
-
-        _log.debug(f"✅ spawn_subtask '{name}' completed ({len(sub_final)} chars)")
-        if withheld:
-            sub_final = f"Not given to the sub-agent: {'; '.join(withheld)}.\n\n{sub_final}"
-        return (name, sub_final)
-
-    return list(await asyncio.gather(*[_run_one(args) for args in subtask_calls]))
+    settings = load_settings()
+    parent_model = (parent_agent or {}).get("model") or settings.get("model", "mistral")
+    made = [_helpers.build(args, parent_agent=parent_agent, parent_model=parent_model,
+                           available_tools=available_tools, policy=policy, declarations=declarations,
+                           settings=settings) for args in subtask_calls]
+    # Uncounted, as these always were: a cap is the engine's, which counts its own.
+    key = _helpers.cap_key(None, workflow_step=True)
+    async for _event in _helpers.batch(made, key=key, server_module=server_module, session_id=session_id,
+                                       source=source, run_id=run_id, untrusted=False):
+        pass
+    return [(helper.name, helper.result_for_parent()) for helper in made]
 
 
 def narrow_allowed_tools(override, agent_tools):
@@ -979,6 +907,7 @@ async def run_agent_step(
     stream_answer: bool = False,          # yield answer_delta / answer_reset while the answer is written (U72)
     save_turn: bool = True,               # False = keep the turn out of the conversation (the OpenAI endpoint's own)
     extra_tools=None,                     # [(tool, async handler(args) -> str)]: the caller's own tools for this turn (VOX1a)
+    model_roles: dict | None = None,      # the run's {role: model} (BWA1's MODEL_ROLES_KEY): a helper model naming a role
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1480,6 +1409,8 @@ async def run_agent_step(
     # reopened chat shows them; carried across an approval pause like `calls`.
     _turn_reasoning: list[str] = list((resume_state or {}).get("reasoning") or [])
     _turn_thoughts: list[str] = list((resume_state or {}).get("thoughts") or [])
+    # The helpers it sent (SUB1a): each one's record, kept with the turn and carried across a pause.
+    _turn_helpers: list[dict] = list((resume_state or {}).get("helpers") or [])
     _open_call: tuple | None = None
     # The repeat guard (F243): the same tool, arguments and result as the call
     # just before it. One turn made eleven identical `list_directory` calls for
@@ -1608,6 +1539,9 @@ async def run_agent_step(
             # stay as they were.
             snap["reasoning"] = panel_text(_turn_reasoning)
             snap["thoughts"] = panel_text(_turn_thoughts)
+            if _turn_helpers:
+                # The helpers it sent, kept with the turn (SUB1a).
+                snap["helpers"] = list(_turn_helpers)
         kn_state = _kturn.to_state()
         if kn_state:
             # The turn's [K#] labels (a delegate's included), so a resumed answer
@@ -1736,6 +1670,7 @@ async def run_agent_step(
                 images=image_notes(images),
                 reasoning=_turn_reasoning,
                 thoughts=_turn_thoughts,
+                helpers=_turn_helpers,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
@@ -1751,6 +1686,40 @@ async def run_agent_step(
     # tool it was offered, before `allowed_tools` narrowed them.
     _spawn_grantable = [n for n in _spawn_subtask_available_tools
                         if "all" in allowed_tools or n in allowed_tools or n in always_allowed]
+
+    # ── Helpers (spawn_subtask; core/helpers.py, SUB1a) ──────────────────────
+    # Each runs on this agent's model unless it names a helper model (S5, F538),
+    # starts as marked as this turn is (F279), and counts against the cap where
+    # this turn runs; what each did is kept with this turn.
+    from core import helpers as _helpers
+    _helper_cap = _helpers.cap_key(session_id, workflow_step=_workflow_step)
+
+    async def _send_helpers(group: list[dict]):
+        """One reply's spawns side by side, yielding what they do; their results land in `_spawn_results`."""
+        nonlocal _spawn_results
+        made: list = []
+        results: list = []
+        for args in group:
+            helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
+                                    available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
+                                    roles=model_roles, settings=current_settings)
+            if args.get("background"):
+                helper.note = _helpers.RAN_AS_A_WAIT
+            if _helpers.reserve(_helper_cap, helper):
+                made.append(helper)
+                results.append(helper)
+            else:
+                results.append((helper.name, _helpers.AT_CAP.format(n=_helpers.MAX_LIVE)))
+        if made:
+            yield {"type": "thinking", "message": f"Sending {len(made)} helper{'s' if len(made) > 1 else ''}..."}
+            async for event in _helpers.batch(made, key=_helper_cap, server_module=server_module,
+                                              session_id=session_id, source=source, run_id=run_id,
+                                              untrusted=_memory_tainted, parent_should_stop=should_stop):
+                if event.get("type") == "helper_finished":
+                    _turn_helpers.append(event["record"])
+                yield event
+        _spawn_results = [(r.name, r.result_for_parent()) if isinstance(r, _helpers.Helper) else r
+                          for r in results]
 
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip
@@ -2214,14 +2183,16 @@ async def run_agent_step(
             if action_text.strip():
                 current_context_text += f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
 
-            # ── SPAWN_SUBTASK batch pre-run ──────────────────────────────────────
-            # Collect all spawn_subtask calls from this turn and run them in parallel
-            # BEFORE the sequential tool loop. Results are consumed in order below.
-            _spawn_subtask_result_queue: list[tuple[str, str]] = []
+            # ── SPAWN_SUBTASK: helpers run where their calls are ────────────────
+            # A reply's spawns side by side, started when the loop reaches the
+            # first of them (`core.helpers`): never before an earlier call in the
+            # reply that stops to ask a person, whose turn then never reads them.
+            # Results are consumed in order below.
+            _spawn_results: list[tuple[str, str]] = []
             # Only when the spawn itself would pass the guard and the policy
             # below (F266): it declares nothing, so `undeclared` decides it, and
             # a step can take it away. Otherwise each call meets the gate in the
-            # loop — refused, or a card — and an approved one runs there.
+            # loop — refused, or a card — and an approved one runs alone there.
             _spawn_may_run = (
                 ("all" in allowed_tools or SPAWN_SUBTASK_TOOL_NAME in allowed_tools
                  or SPAWN_SUBTASK_TOOL_NAME in always_allowed)
@@ -2230,30 +2201,9 @@ async def run_agent_step(
                     _policy,
                 )[0] == "allow"
             )
-            if _spawn_subtask_enabled and _spawn_may_run:
-                _spawn_calls_this_turn = [
-                    tc.get("arguments", {})
-                    for tc in tool_calls
-                    if tc.get("tool") == SPAWN_SUBTASK_TOOL_NAME
-                ]
-                if _spawn_calls_this_turn:
-                    n = len(_spawn_calls_this_turn)
-                    yield {"type": "thinking", "message": f"Spawning {n} sub-agent{'s' if n > 1 else ''}..."}
-                    _spawn_subtask_result_queue = await _run_spawn_subtask_batch(
-                        subtask_calls=_spawn_calls_this_turn,
-                        parent_agent_id=agent_id_for_session,
-                        available_tools=_spawn_grantable,
-                        session_id=session_id,
-                        server_module=server_module,
-                        source=source,
-                        run_id=run_id,
-                        policy=_policy,
-                        declarations=_tool_by_name,
-                        parent_agent=active_agent,
-                    )
 
             _round_from = len(_turn_calls)
-            for tool_call in tool_calls:
+            for _call_index, tool_call in enumerate(tool_calls):
                 _close_call()
                 if _repeat_stop:
                     break
@@ -2640,25 +2590,19 @@ async def run_agent_step(
 
                 # ===== SPAWN_SUBTASK =====
                 if tool_name == SPAWN_SUBTASK_TOOL_NAME and _spawn_subtask_enabled:
-                    if _spawn_subtask_result_queue:
-                        sub_name, result_text = _spawn_subtask_result_queue.pop(0)
-                    else:
-                        # Fallback: run synchronously if queue is unexpectedly empty
-                        sub_name = tool_args.get("name") or tool_args.get("task", "")[:40]
-                        results = await _run_spawn_subtask_batch(
-                            subtask_calls=[tool_args],
-                            parent_agent_id=agent_id_for_session,
-                            available_tools=_spawn_grantable,
-                            session_id=session_id,
-                            server_module=server_module,
-                            source=source,
-                            run_id=run_id,
-                            policy=_policy,
-                            declarations=_tool_by_name,
-                            parent_agent=active_agent,
-                        )
-                        sub_name, result_text = results[0] if results else (sub_name, "No result")
-
+                    if not _spawn_results:
+                        # This call, and the spawns straight after it in this reply
+                        # when every spawn may run (the gate decides them alike),
+                        # side by side; one an approval let through runs alone.
+                        _group = [tool_args]
+                        if _spawn_may_run:
+                            for _next in tool_calls[_call_index + 1:]:
+                                if _next.get("tool") != SPAWN_SUBTASK_TOOL_NAME:
+                                    break
+                                _group.append(_next.get("arguments") or {})
+                        async for _e in _send_helpers(_group):
+                            yield _e
+                    sub_name, result_text = _spawn_results.pop(0)
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Subtask '{sub_name}' result:\n{result_text}\n"
                     tools_used_summary.append(f"spawn_subtask({sub_name}): {result_text[:200]}")
                     preview = result_text[:500] + "..." if len(result_text) > 500 else result_text
@@ -2734,6 +2678,10 @@ async def run_agent_step(
                             # One root turn's labels: the delegate's searches
                             # continue the lead's [K#] count (agent_contract).
                             knowledge_turn=_kturn,
+                            # A member with no model of its own works on its lead's
+                            # (its step's, in a workflow), not the workspace default
+                            # (F538); one with its own model keeps it.
+                            model_override=None if _own_model(target_agent) else current_model,
                         ):
                             if sub_event.get("type") == "_step_progress":
                                 # The delegate's state, not the lead's: forwarded,
@@ -3181,6 +3129,7 @@ async def run_agent_step(
                 # The Sources a reopened answer draws — never for a visitor:
                 # the widget shows none, and they name the owner's files.
                 citations=_kn_citations if _visitor is None else None,
+                helpers=_turn_helpers,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
