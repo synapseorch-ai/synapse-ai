@@ -25,15 +25,19 @@ OPENAI = "sk-" + "proj-" + "Q" * 40
 
 @pytest.fixture(autouse=True)
 def settings_from_the_store():
-    """`load_settings()` reaches the store once the lifespan installs the provider; the same wiring here."""
-    from core import settings_runtime
-    from core.config import set_settings_provider
+    """`load_settings()` reaches the store once the lifespan installs the provider; the same wiring here.
 
+    The provider in place before is put back, not None: `core.server` installs it once, at import, and a test that
+    dropped it left every later settings read on bare defaults while the writes went to the store (F91)."""
+    from core import settings_runtime
+    from core.config import get_settings_provider, set_settings_provider
+
+    previous = get_settings_provider()
     settings_runtime.reset_state()
     settings_runtime.install_provider()
     yield
     settings_runtime.reset_state()
-    set_settings_provider(None)
+    set_settings_provider(previous)
 
 
 async def _read(**args) -> dict:
