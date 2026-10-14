@@ -70,6 +70,9 @@ export type CallRecord = {
     approvals: string[];
     error: string | null;
     firstWordsMs: number[];
+    /** Seconds the agent was on the call (its sessions' segments): what a call is charged by (V21). 0 for one
+     *  hung up before it was answered (F485), whose `seconds` is Twilio's whole call. */
+    answeredSeconds: number;
     /** Cloud: the call's one charge, in millicredits; null until settled. */
     chargedMc: number | null;
     settledAt: string | null;
@@ -95,6 +98,8 @@ export type CallTurn = {
     filler: string[];
     /** The caller spoke over the answer: it is what they heard (V14). */
     interrupted: boolean;
+    /** What the call said on its own timer after this answer: "Are you still there?", a goodbye (F485). */
+    saidAfter: string[];
     /** An approval answered while the caller was on the line, said on the call (F474): this turn is its answer,
      *  and its question is the one the call parked, not the caller asking again. */
     answered: { approved: boolean } | null;
@@ -199,6 +204,7 @@ export function callFromRecord(raw: unknown): CallRecord {
         approvals: list(r.approvals).map(String),
         error: strOrNull(r.error),
         firstWordsMs: list(r.first_words_ms).map(Number).filter(n => Number.isFinite(n)),
+        answeredSeconds: summed,
         chargedMc: typeof r.charged_mc === 'number' ? r.charged_mc : null,
         settledAt: strOrNull(r.settled_at),
     };
@@ -227,6 +233,7 @@ function turnFrom(said: unknown, answer: Record<string, unknown>, at: unknown): 
         tools: toolLines(answer.calls, answer.tools),
         filler: list(answer.filler).map(String),
         interrupted: answer.interrupted === true,
+        saidAfter: list(answer.said_after).map(String),
         answered: answeredFrom(answer.answered_approval),
     };
 }
@@ -270,6 +277,7 @@ export type Tone = 'machine' | 'person' | 'success' | 'danger' | 'neutral';
 
 const OUTCOMES: Record<string, { word: string; tone: Tone }> = {
     caller_hung_up: { word: 'Ended by the caller', tone: 'success' },
+    hung_up_early: { word: 'Hung up before it was answered', tone: 'neutral' },
     agent_ended: { word: 'Ended by the agent', tone: 'success' },
     transferred: { word: 'Transferred to a person', tone: 'neutral' },
     voicemail: { word: 'Left a voicemail', tone: 'person' },
@@ -350,13 +358,25 @@ export function twilioEstimate(call: CallRecord): number {
     return Math.round(minutes * (TWILIO_US.relay + inbound + recording) * 10000) / 10000;
 }
 
-/** The middle of a call's first-words times, in seconds (V12: the caller's last word in, our first out). */
-export function firstWords(call: CallRecord): number | null {
-    const ms = [...call.firstWordsMs].sort((a, b) => a - b);
-    if (!ms.length) return null;
-    const mid = Math.floor(ms.length / 2);
-    const median = ms.length % 2 ? ms[mid] : (ms[mid - 1] + ms[mid]) / 2;
-    return Math.round(median / 100) / 10;
+/**
+ * How soon the agent spoke, in seconds (V12: the caller's last word in, our first out): the call's first answer,
+ * and the middle of the later ones. Read as one number it was the median, labelled like the first answer (F485:
+ * a call whose first answer took 1.9 s showed 1.1 s).
+ */
+export function firstWords(call: CallRecord): { first: number; later: number | null } | null {
+    if (!call.firstWordsMs.length) return null;
+    const s = (ms: number) => Math.round(ms / 100) / 10;
+    const rest = [...call.firstWordsMs.slice(1)].sort((a, b) => a - b);
+    if (!rest.length) return { first: s(call.firstWordsMs[0]), later: null };
+    const mid = Math.floor(rest.length / 2);
+    return { first: s(call.firstWordsMs[0]), later: s(rest.length % 2 ? rest[mid] : (rest[mid - 1] + rest[mid]) / 2) };
+}
+
+/** "First answer in 1.9 s, later about 1.1 s", or nothing when the agent never spoke. */
+export function firstWordsLine(call: CallRecord): string | undefined {
+    const fw = firstWords(call);
+    if (!fw) return undefined;
+    return fw.later === null ? `First answer in ${fw.first} s` : `First answer in ${fw.first} s, later about ${fw.later} s`;
 }
 
 /** Whether `model` is fast enough for a call (V15): a prefix of the list the API serves. */

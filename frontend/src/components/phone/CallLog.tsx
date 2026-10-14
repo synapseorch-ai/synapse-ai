@@ -26,7 +26,7 @@ import { cn } from '@/lib/cn';
 import { usePhoneHost } from './host';
 import {
     errorWords,
-    callerLabel, clockLength, credits, firstWords, isLive, outcomeOf, outcomeSentence, startedMinutes,
+    callerLabel, clockLength, credits, firstWordsLine, isLive, outcomeOf, outcomeSentence, startedMinutes,
     twilioEstimate, type CallRecord, type CallTurn, type Tone, type Transcript,
 } from './phone';
 
@@ -125,6 +125,9 @@ function Turn({ turn, startedAt, after, clock }: { turn: CallTurn; startedAt: st
                             )}
                         </p>
                     )}
+                    {turn.saidAfter.map((line, i) => (
+                        <p key={`a${i}`} data-call-said-after className="m-0 text-sm italic text-text-faint">{line}</p>
+                    ))}
                 </div>
             </div>
         </li>
@@ -193,6 +196,12 @@ export function CallLog({
 
     useEffect(() => {
         let gone = false;
+        if (!isLive(call) && call.answeredSeconds === 0 && !call.voicemail && !call.approvals.length) {
+            // Never answered (F485): there is no conversation to read, and asking for it was a 404.
+            setTranscript({ turns: [], pending: null });
+            host.modelCost(call).then(c => { if (!gone) setCost(c); });
+            return () => { gone = true; };
+        }
         host.transcript(call)
             .then(t => { if (!gone) { setTranscript(t); setError(''); } })
             .catch(e => { if (!gone) setError(errorWords(e, 'The conversation could not be read.')); });
@@ -232,11 +241,11 @@ export function CallLog({
         }
     };
 
-    const minutes = startedMinutes(call.seconds);
-    const fw = firstWords(call);
+    // Charged by the minutes the agent was on the call (V21), not Twilio's whole call (F485).
+    const minutes = startedMinutes(call.answeredSeconds);
     const charged = credits(call);
     const cells: StatCell[] = [
-        { label: 'Length', value: clockLength(call.seconds), sub: fw === null ? undefined : `First words in ${fw} s` },
+        { label: 'Length', value: clockLength(call.seconds), sub: firstWordsLine(call) },
         ...(host.credits ? [{
             label: 'This call',
             value: charged === null ? '—' : `${charged.toLocaleString()} credits`,
