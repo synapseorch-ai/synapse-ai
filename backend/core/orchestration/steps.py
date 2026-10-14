@@ -1059,6 +1059,17 @@ class ToolStepExecutor:
 
 
 
+def route_named(reply: str, labels: list[str]) -> str | None:
+    """The route a model's reply names, or None. Asked for `route_<label>`, but the bare label counts too, in any case
+    (F491, BWA1): Nova Pro answers `{"tool": "manage", ...}`, and on cloud dev 49 of 80 of the AI builder's first
+    routing decisions, all right, were thrown away for it and fell back to the builder's first route, `create`; 102 of
+    Nova Pro's 663 evaluator decisions in all. A reply that is nothing but a label counts as well."""
+    raw = (reply or "").strip().strip("\"'`").strip()
+    bare = raw[len("route_"):] if raw.lower().startswith("route_") else raw
+    by_lower = {label.lower(): label for label in labels}
+    return by_lower.get(bare.lower())
+
+
 class EvaluatorStepExecutor:
     """Pure routing node — no agent. Makes a single LLM call using
     evaluator_prompt + route_descriptions + context from input_keys
@@ -1169,21 +1180,20 @@ class EvaluatorStepExecutor:
 
             from core.react_engine import parse_tool_call
             tool_call, _ = parse_tool_call(response)
-            if tool_call:
-                tool_name = tool_call.get("tool", "")
-                if tool_name in {f"route_{l}" for l in labels}:
-                    routing_decision = {
-                        # The step's own event: which route the model picked.
-                        # `routing_decision` is the ROUTER's name for the
-                        # resolved target, and this used to borrow it — two
-                        # payloads sharing no field, so the run log printed
-                        # `Evaluator routed → undefined` before every real
-                        # decision. Named for its step type now, exactly like
-                        # `if_decision` and `switch_decision`.
-                        "type": "evaluator_decision",
-                        "tool_name": tool_name,
-                        "arguments": tool_call.get("arguments", {}),
-                    }
+            picked = route_named(tool_call.get("tool", "") if tool_call else response, labels)
+            if picked:
+                routing_decision = {
+                    # The step's own event: which route the model picked.
+                    # `routing_decision` is the ROUTER's name for the
+                    # resolved target, and this used to borrow it — two
+                    # payloads sharing no field, so the run log printed
+                    # `Evaluator routed → undefined` before every real
+                    # decision. Named for its step type now, exactly like
+                    # `if_decision` and `switch_decision`.
+                    "type": "evaluator_decision",
+                    "tool_name": f"route_{picked}",
+                    "arguments": (tool_call or {}).get("arguments", {}),
+                }
         except Exception as e:
             # LLM errors must propagate to stop orchestration
             from core.llm_providers import LLMError
