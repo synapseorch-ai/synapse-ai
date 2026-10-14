@@ -14,14 +14,16 @@ const FILL: Record<StepRole, string> = {
     person: 'bg-person',
 };
 
-export function PathGlyph({ bars, done, className }: {
+export function PathGlyph({ bars, done, className, max = GLYPH_MAX }: {
     bars: GlyphBar[];
     /** Steps recorded so far, when the product reports it; said, not drawn. */
     done?: number | null;
     className?: string;
+    /** The most bars drawn; past it, one fewer and the count of the rest (a fixed column's width, F482). */
+    max?: number;
 }) {
     if (!bars.length) return <span className={cn('text-xs text-text-faint', className)}>—</span>;
-    const shown = bars.length > GLYPH_MAX ? bars.slice(0, GLYPH_MAX - 1) : bars;
+    const shown = bars.length > max ? bars.slice(0, max - 1) : bars;
     const more = bars.length - shown.length;
     const count = (r: StepRole) => bars.filter((b) => b.role === r).length;
     const failed = bars.find((b) => b.mark === 'failed');

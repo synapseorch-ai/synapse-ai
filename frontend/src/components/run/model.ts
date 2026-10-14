@@ -284,6 +284,12 @@ export type GlyphBar = { id: string; role: StepRole; mark?: 'failed' | 'waiting'
 
 /** The most bars a glyph draws; the rest are counted. */
 export const GLYPH_MAX = 12;
+/**
+ * The most bars the run list's Path column holds (F482): its track is a fixed
+ * 120px, a bar 14px with a 3px gap, so six fit, or five and the "+N" count. At
+ * `GLYPH_MAX` a long run's glyph ran ~80px into Took and its "+6" covered the time.
+ */
+export const RUN_LIST_GLYPH_MAX = 6;
 
 /**
  * A list row's path glyph: one bar per step of the workflow, by role. The step

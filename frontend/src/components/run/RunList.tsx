@@ -21,7 +21,7 @@ import type { Orchestration } from '@/types/orchestration';
 
 import { isCapStop, isCreditStop } from './failures';
 import {
-    bucketOf, dayKey, dayLabel, glyphOf, money, ordinal, type Clock, type RunBucket, type RunRow,
+    bucketOf, dayKey, dayLabel, glyphOf, money, ordinal, RUN_LIST_GLYPH_MAX, type Clock, type RunBucket, type RunRow,
 } from './model';
 import { PathGlyph } from './PathGlyph';
 import { TimeOfDay, Took, useClock, When } from './When';
@@ -348,8 +348,9 @@ function Row({
                     <StatusLine row={row} />
                 </span>
             </span>
-            <span role="cell" className="hidden sm:block">
-                <PathGlyph bars={bars} done={row.stepsDone} />
+            {/* Held to its column (F482): the bars that fit, and clipped should a count run wide. */}
+            <span role="cell" className="hidden min-w-0 overflow-hidden sm:block">
+                <PathGlyph bars={bars} done={row.stepsDone} max={RUN_LIST_GLYPH_MAX} />
             </span>
             <span role="cell" className={num}><Took start={row.startedAt} end={row.endedAt} /></span>
             {hasTokens && <span role="cell" className={num}>{row.tokens == null ? '—' : row.tokens.toLocaleString()}</span>}
