@@ -8,6 +8,7 @@ when a task drains (V10).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import secrets as _secrets
 import time
@@ -91,12 +92,14 @@ class VoiceHost:
         from core.react_engine import run_react_loop
 
         request = ChatRequest(message=text, session_id=call.session_id, agent_id=call.agent_id)
+        # Closed with this stream, in the call's task (F528): a turn the call ends early closes the engine's too.
         with _visitor.scope(call.visitor):
-            async for event in run_react_loop(
+            async with contextlib.aclosing(run_react_loop(
                 request, _server, progress_events=True, stream_answer=True, caller_system=caller_system,
                 log_source="voice", extra_tools=extra_tools,
-            ):
-                yield event
+            )) as events:
+                async for event in events:
+                    yield event
 
     async def resume_turn(self, call: Any, answer: dict, *, caller_system: str,
                           extra_tools: list) -> AsyncIterator[dict]:
@@ -111,11 +114,12 @@ class VoiceHost:
         request = ChatRequest(message=str(answer.get("message") or ""), session_id=call.session_id,
                               agent_id=call.agent_id)
         with _visitor.scope(call.visitor):
-            async for event in run_react_loop(
+            async with contextlib.aclosing(run_react_loop(
                 request, _server, progress_events=True, stream_answer=True, caller_system=caller_system,
                 log_source="voice", extra_tools=extra_tools, resume_state=answer.get("resume_state") or {},
-            ):
-                yield event
+            )) as events:
+                async for event in events:
+                    yield event
 
     async def resume_after_call(self, call: Any, answer: dict) -> None:
         """An answer the call took but could not say (the caller hung up first, F474): resumed behind, as an
