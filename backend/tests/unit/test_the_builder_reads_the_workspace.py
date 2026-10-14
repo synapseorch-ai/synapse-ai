@@ -71,6 +71,16 @@ async def test_channels_and_phone_numbers_never_carry_a_secret():
     assert TOKEN not in json.dumps(channels) + json.dumps(phone)
 
 
+async def test_a_channel_whose_agent_is_gone_says_so():
+    """Found on cloud dev (BWA1's browser pass): a channel still assigned to a deleted agent came back as a bare id,
+    and the model guessed a name for it."""
+    from core.messaging import store
+    await store.save_channel({"id": "chn_tg2", "name": "Patient chat", "platform": "telegram", "enabled": True})
+    await store.assign_channel("chn_tg2", "agent_gone0000")
+    (item,) = (await _read(topic="channels"))["items"]
+    assert item["agents"] == ["an agent that no longer exists (agent_gone0000)"]
+
+
 async def test_widgets_say_their_agent_and_sites():
     from core.chat_widgets.store import save_widget
     await save_widget({"id": "w1", "name": "Website helper", "agent_id": "agent_none",

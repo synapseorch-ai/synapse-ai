@@ -150,7 +150,9 @@ async def _channels(args: dict, phone: bool = False) -> dict:
         is_phone = c.get("platform") == VOICE
         if is_phone != phone:
             continue
-        answering = [agents.get(a, a) for a in await store.get_agent_ids_for_channel(c.get("id"))]
+        # An assignment can outlive its agent: say so, rather than hand back an id the model then guesses a name for.
+        answering = [agents.get(a) or f"an agent that no longer exists ({a})"
+                     for a in await store.get_agent_ids_for_channel(c.get("id"))]
         if phone:
             out.append({"name": c.get("name"), "number": (c.get("voice") or {}).get("number"),
                         "on": bool(c.get("enabled")), "answered_by": answering[:1] or None,
