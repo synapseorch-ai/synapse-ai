@@ -364,14 +364,22 @@ class TestTheSummaryHasSomethingToName:
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
         return steps["step_summarize"]
 
-    def test_it_reads_the_plan_and_the_target(self):
-        keys = set(self._summarize()["input_keys"])
-        assert {"final_orch", "manage_result", "plan_draft", "current_orchestration_name"} <= keys
+    # F490 (BWA1, D274) replaced the model's summary with the run's own record of its writes, so what F53 asked for
+    # — the summary names what was built, never "the orchestration" — now holds by construction, and these say so.
 
-    def test_it_is_not_told_the_closing_word_is_the_orchestration(self):
-        prompt = self._summarize()["prompt_template"]
-        assert "Orchestration built or changed:\n{state.final_orch}" not in prompt
-        assert "plan_draft" in prompt and "current_orchestration_name" in prompt
+    def test_it_prints_the_runs_own_record_not_a_models_recollection(self):
+        summarize = self._summarize()
+        assert summarize["type"] == "print" and summarize["print_content"] == "{state.run_changes}"
+        assert summarize["output_key"] == "summary"
+
+    def test_it_names_what_was_built_by_its_own_name(self):
+        from core.orchestration import run_writes
+
+        state: dict = {}
+        run_writes.record(state, {"type": "resource_saved", "kind": "orchestration", "action": "created",
+                                  "id": "o1", "name": "Vendor review"})
+        assert state["run_changes"] == 'Built the workflow "Vendor review".'
+
 
 
 class TestAServerNameIsNotACapability:
@@ -493,10 +501,18 @@ class TestWhatWasAskedForIsBuilt:
         assert steps["step_human_review"]["type"] == "human"
 
     def test_the_summary_names_a_schedule_it_made(self):
-        prompt = self._step("step_summarize")["prompt_template"]
-        assert "schedule" in prompt.lower()
-        # F155: and says it waits, paused, for a person to turn it on.
-        assert "created paused" in prompt
+        # F490: the summary is the run's own record; F155's words come from the schedule the run saved — that it was
+        # made, when it runs (UTC), and that it waits, paused, for a person to turn it on.
+        from core.orchestration import run_writes
+
+        assert self._step("step_summarize")["print_content"] == "{state.run_changes}"
+        state: dict = {}
+        run_writes.record(state, {"type": "resource_saved", "kind": "schedule", "action": "created", "id": "s1",
+                                  "name": "Friday report", "resource": {"enabled": False,
+                                                                        "cron_expression": "0 16 * * 5"}})
+        said = state["run_changes"]
+        assert '"Friday report"' in said and '"0 16 * * 5" (UTC)' in said
+        assert "paused: turn it on under Schedules" in said
         assert "SCHEDULED (paused)" in self._agent("saver_create")["system_prompt"]
 
 

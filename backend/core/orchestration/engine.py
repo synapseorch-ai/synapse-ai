@@ -28,6 +28,7 @@ from .logger import OrchestrationLogger
 
 from core.log import get_logger
 from core.telemetry import spans as _spans
+from core.orchestration import run_writes
 
 _log = get_logger(__name__)
 
@@ -550,6 +551,13 @@ class OrchestrationEngine:
                             # _log_ prefixed events are metadata for the logger only
                             if event.get("type", "").startswith("_log_"):
                                 continue
+
+                            # What the run changed, from its own writes (F490): kept in its state as the
+                            # events pass, so a summary can say exactly that rather than recall it.
+                            if event.get("type") == "resource_saved":
+                                run_writes.record(run.shared_state, event)
+                            elif event.get("type") == "tool_result":
+                                run_writes.note_failure(run.shared_state, event)
 
                             if event.get("type") == "human_input_required":
                                 run.waiting_for_human = True

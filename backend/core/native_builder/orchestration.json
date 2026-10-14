@@ -7,6 +7,7 @@
     "entry_step_id": "step_intent",
     "state_schema": {
         "user_message": {"type": "str", "default": "", "description": "The user's latest message"},
+        "run_changes": {"type": "str", "default": "Nothing in your workspace changed.", "description": "What this run changed in the workspace, in words, from its own writes; set by the engine as they happen (F490)"},
         "chat_history": {"type": "str", "default": "", "description": "Prior conversation turns"},
         "selected_agent_ids": {"type": "list", "default": [], "description": "Agent IDs the user pre-selected"},
         "can_create_agents": {"type": "bool", "default": false, "description": "Whether the builder may create new agents"},
@@ -814,9 +815,10 @@
         {
             "id": "step_summarize",
             "name": "Summarise Result",
-            "type": "llm",
+            "type": "print",
             "agent_id": null,
-            "prompt_template": "The Synapse AI Builder has just finished. Exactly one of these two is filled in.\n\nOrchestration work — the saver's closing word (DONE, or DONE with the reason it stopped, and a SCHEDULED or NOT SCHEDULED line when the plan asked for a schedule):\n{state.final_orch}\n\nWorkspace changes made:\n{state.manage_result}\n\nWhat the build cleaned up when it finished (empty when nothing new was built):\n{state.build_cleanup}\n\nWrite a short, friendly 2–3 sentence confirmation for the user, describing whichever one actually happened. If an orchestration was built or changed, name it: plan_draft (the approved plan) names a new one, and current_orchestration_name is the one that was changed — both are in the context below. Say it is ready to use, unless the closing word gives a reason it stopped; then say what did not finish. If the clean-up removed any orchestration (removed_names), name each one, say it was removed because it never passed validation, and do not say the build is ready to use. If a schedule was made, say it was created paused, when it will run once turned on (in UTC), and that they should check what each run starts with and then turn it on under Schedules; if one was asked for and NOT SCHEDULED, say so plainly. For workspace changes, name what was created or changed. Do not mention the empty one. If plan_draft has a section \"Not carried over\", end with one sentence saying that what could not be carried over from the pasted code is listed on the plan above, to set up by hand.",
+            "prompt_template": null,
+            "print_content": "{state.run_changes}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -830,13 +832,7 @@
             "human_fields": [],
             "human_channel_id": null,
             "human_timeout_seconds": 3600,
-            "input_keys": [
-                "final_orch",
-                "manage_result",
-                "plan_draft",
-                "current_orchestration_name",
-                "build_cleanup"
-            ],
+            "input_keys": [],
             "output_key": "summary",
             "forced_tool": null,
             "max_turns": 1,

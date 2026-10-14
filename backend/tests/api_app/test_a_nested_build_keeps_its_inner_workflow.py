@@ -74,8 +74,7 @@ async def test_the_inner_workflow_survives_the_build_and_its_parent_finds_it(cli
         route("no"),                      # step_agents_needed
         route("create"),                  # step_save_route
         *SAVER,                           # step_save_create
-        tool_call("finish_build"),        # step_finish_build's arguments
-        "Your Vendor review workflow is ready.",  # step_summarize
+        tool_call("finish_build"),        # step_finish_build's arguments (the summary asks no model: F490)
     ])
     after = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "approve"}})
 
@@ -92,9 +91,9 @@ async def test_the_inner_workflow_survives_the_build_and_its_parent_finds_it(cli
     cleanup = str(done["final_state"].get("build_cleanup"))
     assert "'removed': []" in cleanup or '"removed": []' in cleanup, cleanup
 
-    # The summary was asked with what the clean-up did in front of it.
-    summary_prompt = str(fake_llm.calls[-1])
-    assert "What the build cleaned up" in summary_prompt and "removed" in summary_prompt
+    # The summary is the run's own record (F490): both workflows built, nothing removed.
+    summary = done["final_state"].get("summary") or ""
+    assert summary.startswith("Built the workflows ") and "Removed" not in summary, summary
 
     # And the outer workflow's first run reaches the inner one — C2's failed with
     # "Sub-orchestration 'orch_209xwc1' … not found".

@@ -1568,14 +1568,20 @@ class TestTheBuildersAnswerNamesWhatFinishBuildRemoved:
     `finish_build` had just deleted half the build; the deletion was only a
     collapsed tool line. The summary step reads what `finish_build` removed."""
 
-    def test_the_summary_step_reads_build_cleanup(self):
+    def test_the_summary_says_what_finish_build_removed(self):
+        # F490: the summary is the run's own record of its writes, and `finish_build`'s removals are writes — a
+        # workflow it created and then removed is said removed, with why, and never said built.
         from core.native_builder import bundled_definitions
+        from core.orchestration import run_writes
 
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
-        summary = steps["step_summarize"]
-        assert "build_cleanup" in summary["input_keys"]
-        assert "{state.build_cleanup}" in summary["prompt_template"]
-        assert "never passed validation" in summary["prompt_template"]
+        assert steps["step_summarize"]["print_content"] == "{state.run_changes}"
+        state: dict = {}
+        for action in ("created", "deleted"):
+            run_writes.record(state, {"type": "resource_saved", "kind": "orchestration", "action": action,
+                                      "id": "o1", "name": "Vendor review"})
+        assert state["run_changes"] == 'Removed the workflow "Vendor review" again: it never passed validation.'
+
 
 
 class TestTheBuilderMintsIdsTheStoresWay:
