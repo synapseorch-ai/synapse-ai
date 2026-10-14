@@ -25,7 +25,7 @@ import { CallLog, OutcomeWord } from './CallLog';
 import { usePhoneHost, type NumberPatch } from './host';
 import {
     errorWords,
-    DEFAULT_FILLER, DEFAULT_FILLER_LATE, DEFAULT_NOTICE, E164, agentNotes, callSeconds, callerLabel, clockLength,
+    DEFAULT_FILLER, DEFAULT_FILLER_LATE, DEFAULT_NOTICE, NOTICE_HINT, E164, agentNotes, callSeconds, callerLabel, clockLength,
     UNSET, fromChoice, isLive, settingsOf, settingsToSend, toChoice, type CallRecord, type PhoneAgent, type PhoneNumber, type PhoneOptions,
     type VoiceSettings,
 } from './phone';
@@ -305,7 +305,7 @@ export function NumberPane({
                     </Field>
                     <Field
                         label="What callers hear first"
-                        hint="Said on every call before the agent speaks. Leave empty for this default; {agent} and {org} are filled in. With recording on, “This call may be recorded.” is added."
+                        hint={NOTICE_HINT}
                     >
                         <Textarea id="phone-pane-notice" rows={2} value={v.notice} placeholder={DEFAULT_NOTICE}
                             onChange={e => setVoice({ notice: e.target.value })} />

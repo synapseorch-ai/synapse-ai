@@ -415,8 +415,9 @@ export function settingsToSend(s: VoiceSettings, options: Pick<PhoneOptions, 'sp
         : rest;
 }
 
-/** The default notice's words (OSS `service.DEFAULT_NOTICE`): `{agent}` and `{org}` are filled in on the call. */
-export const DEFAULT_NOTICE = "Hi, you're speaking with {agent}, an AI assistant for {org}.";
+/** The default notice as the caller hears it (OSS `service.notice_for`): `{agent}` and `{org}` are filled in on the
+ *  call, " for {org}" says nothing where there is no organisation, and it ends by inviting the caller (F478). */
+export const DEFAULT_NOTICE = "Hi, you're speaking with {agent}, an AI assistant for {org}. How can I help?";
 export const DEFAULT_FILLER = 'One moment while I check that.';
 export const DEFAULT_FILLER_LATE = 'Still working on it.';
 
@@ -471,3 +472,6 @@ export function errorWords(e: unknown, fallback: string): string {
     const message = e instanceof Error ? e.message : '';
     return message.replace(/(^|\. )Value error, /g, '$1').trim() || fallback;
 }
+
+/** What the notice fields say about it: shared by Add a number and the number's pane. */
+export const NOTICE_HINT = 'Said on every call before the agent speaks. Leave empty for this default; {agent} and {org} are filled in. With recording on, “This call may be recorded.” is added. Unless it ends with a question, “How can I help?” is added, so callers know it is their turn.';

@@ -27,7 +27,7 @@ import { cn } from '@/lib/cn';
 import { usePhoneHost } from './host';
 import {
     errorWords,
-    DEFAULT_NOTICE, E164, RESTRICTED_PERMISSIONS, TWILIO_KEYS_URL, UNSET, fromChoice, settingsToSend, toChoice,
+    DEFAULT_NOTICE, NOTICE_HINT, E164, RESTRICTED_PERMISSIONS, TWILIO_KEYS_URL, UNSET, fromChoice, settingsToSend, toChoice,
     type PhoneAgent, type PhoneNumber, type PhoneOptions, type TwilioNumber, type VoiceSettings,
 } from './phone';
 
@@ -357,7 +357,7 @@ export function AddNumber({
                         </Field>
                         <Field
                             label="What callers hear first"
-                            hint="Said on every call before the agent speaks. Leave empty for this default; {agent} and {org} are filled in. With recording on, “This call may be recorded.” is added."
+                            hint={NOTICE_HINT}
                         >
                             <Textarea id="phone-notice" rows={2} value={voice.notice} placeholder={DEFAULT_NOTICE}
                                 onChange={e => setVoice({ ...voice, notice: e.target.value })} />
