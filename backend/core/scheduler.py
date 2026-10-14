@@ -97,6 +97,45 @@ def _parse_iso(s: str) -> datetime:
     return dt
 
 
+def gone_target_sentence(what: str, kind: str) -> str:
+    """Why a schedule was turned off (F468), as the end of a sentence — cloud's notice too.
+
+    "the workflow it runs was deleted, so this schedule was turned off. Point it
+    at another workflow, or delete it"
+    """
+    return (f"{what} was deleted, so this schedule was turned off. "
+            f"Point it at another {kind}, or delete it")
+
+
+async def gone_target(s: dict) -> str | None:
+    """Why this schedule's target can never run again, or None (F468).
+
+    A workflow deleted — outright, or kept as a record (`is_active` false) — an
+    agent deleted, or a workflow agent whose workflow was. An agent schedule
+    naming no agent runs the active one, as it always has.
+    """
+    from core.store.resources import get_agent, get_orchestration
+
+    def retired(orch: dict | None) -> bool:
+        return orch is None or orch.get("is_active", True) is False
+
+    target_id = s.get("target_id") or ""
+    if s.get("target_type") == "agent":
+        if not target_id:
+            return None
+        agent = await get_agent(target_id)
+        if agent is None:
+            return gone_target_sentence("the agent it runs", "agent")
+        if agent.get("type") == "orchestrator" and retired(
+                await get_orchestration(agent.get("orchestration_id") or "")):
+            name = agent.get("name") or target_id
+            return gone_target_sentence(f"the workflow its agent '{name}' runs", "workflow")
+        return None
+    if retired(await get_orchestration(target_id)):
+        return gone_target_sentence("the workflow it runs", "workflow")
+    return None
+
+
 class ScheduleManager:
     """Manages persistent schedule execution with restart-proof state."""
 
@@ -264,6 +303,13 @@ class ScheduleManager:
         if not s or not s.get("enabled"):
             return
 
+        # What it targets is gone (F468): every occurrence would fail, or — an
+        # agent's — run another agent. Skipped, said once, and turned off.
+        gone = await gone_target(s)
+        if gone:
+            await self._turn_off(s, gone)
+            return
+
         now = _utc_now()
         next_dt = compute_next_run(s, now)
         await schedule_store.set_next_run(schedule_id, next_dt)
@@ -280,6 +326,21 @@ class ScheduleManager:
         # rewrite this used to be clobbered any edit made through the API while
         # the run was in flight. Only for an occurrence: Run Now is not one.
         await schedule_store.set_last_run(schedule_id, now)
+
+    async def _turn_off(self, s: dict, why: str) -> None:
+        """Turn a schedule off with why: in its log and the bell, once (F468)."""
+        from core.notifications import hub
+
+        name = s.get("name") or s["id"]
+        sentence = why[:1].upper() + why[1:] + "."
+        await schedule_store.save({**s, "enabled": False})
+        logger.warning("[Scheduler] Schedule '%s' turned off: %s", name, sentence)
+        sched_log = self._schedule_logger(s)
+        sched_log.log_event({"type": "error", "message": sentence})
+        sched_log.run_end("skipped")
+        sched_log.close()
+        hub.publish("schedule_skipped", f"{name} was turned off", body=sentence,
+                    data={"schedule_id": s["id"], "schedule_name": name})
 
     @staticmethod
     def _schedule_logger(s: dict, *, continues: str | None = None, note: str = ""):
