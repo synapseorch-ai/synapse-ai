@@ -283,6 +283,10 @@ async def status(channel: dict, form: dict) -> None:
             changes["call_seconds"] = int(form.get("CallDuration") or 0)
         except (TypeError, ValueError):
             pass
+        record = await host.get_call(call_sid) or {}
+        if not record.get("segments") and not record.get("outcome"):
+            # Over before its socket ever opened: the caller hung up while it rang or the notice played (F485).
+            changes["outcome"] = "hung_up_early"
     if form.get("RecordingSid") and form.get("RecordingStatus"):
         changes["recording_sid"] = str(form.get("RecordingSid"))
     if changes:

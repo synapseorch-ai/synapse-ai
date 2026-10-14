@@ -197,6 +197,8 @@ class VoiceCall:
         self.parked_approval = False
         # Approvals answered while the caller is on the line, waiting for a quiet moment (F474).
         self._answers: list[dict] = []
+        # What the call said on its own timer since the last turn, noted on that turn's saved answer (F485).
+        self._said_after: list[str] = []
         self._over = False
         self._frames: asyncio.Queue = asyncio.Queue()
         self._turn: _Turn | None = None
@@ -376,6 +378,7 @@ class VoiceCall:
         if now >= self._limit_at:
             await self._stop_turn(wait_for_tool=True)
             await self._say(LIMIT_GOODBYE, last=True)
+            await self._note_said_after(LIMIT_GOODBYE)
             await self._end({"ended": "limit"}, outcome="limit")
             return
         if now >= self._limit_at - 60 and not self._wrapped_up:
@@ -387,13 +390,16 @@ class VoiceCall:
             # Asked whether there was anything else, and nothing came: that is the caller's answer.
             self._closing_asked = False
             await self._say(DEFAULT_GOODBYE, last=True)
+            await self._note_said_after(DEFAULT_GOODBYE)
             self._close_after_goodbye({"ended": "agent"})
             return
         if self._silence_prompts < self.timing.silence_prompts:
             self._silence_prompts += 1
             await self._say(STILL_THERE, last=True)
+            await self._note_said_after(STILL_THERE)
             return
         await self._say(SILENCE_GOODBYE, last=True)
+        await self._note_said_after(SILENCE_GOODBYE)
         await self._end({"ended": "silence"}, outcome="silence")
 
     # ── A turn ───────────────────────────────────────────────────────────────
@@ -422,6 +428,7 @@ class VoiceCall:
             # request, not once a turn (F477).
             turn.filler = stopped.filler
         self._closing_asked = False
+        self._said_after = []
         self._turn = turn
         self._turn_task = asyncio.create_task(self._run_turn(turn))
 
@@ -436,6 +443,7 @@ class VoiceCall:
         turn.answer = answer
         if not answer.get("approved"):
             turn.refused_tool = str(answer.get("tool_name") or "")
+        self._said_after = []
         self._turn = turn
         self._turn_task = asyncio.create_task(self._run_turn(turn))
 
@@ -627,6 +635,14 @@ class VoiceCall:
             return
         # A caller who hangs up as the answer ends stops the turn here; the note is finished either way.
         await asyncio.shield(self._mark_last_answer(turn.text, fields))
+
+    async def _note_said_after(self, line: str) -> None:
+        """A line the call said on its own timer, noted on the last turn's saved answer (F485): the log ends where
+        the call did, not at the closing question. Nothing before the first turn."""
+        if self._turn is None:
+            return
+        self._said_after.append(line)
+        await asyncio.shield(self._mark_last_answer(self._turn.text, {"said_after": list(self._said_after)}))
 
     async def _mark_last_answer(self, question: str, fields: dict) -> None:
         from core.store import sessions as _sessions

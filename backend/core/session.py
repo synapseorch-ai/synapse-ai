@@ -83,6 +83,9 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("filler"):
             # What a call said while a tool ran (V13), for the call's log (VOX1c).
             turn["filler"] = list(assistant["filler"])
+        if assistant.get("said_after"):
+            # What a call said on its own timer after this answer (F485): its log ends where the call did.
+            turn["said_after"] = list(assistant["said_after"])
         if assistant.get("answered_approval"):
             # An approval answered while the caller was on the line, said on the call (F474).
             turn["answered_approval"] = dict(assistant["answered_approval"])

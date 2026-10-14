@@ -878,6 +878,45 @@ class TestSilenceAndTheLimit:
         assert socket.ended == [{"ended": "limit"}]
 
 
+class TestTheTimedLinesAreKept:
+    """F485 (VOX1e, call CAe1789c…): the lines the call says on its own timer — "Are you still there?", the
+    goodbye after silence at the closing question, the silence and limit goodbyes — were never saved, so the log
+    ended at the closing question. Each is noted on the last saved answer, as the filler is."""
+
+    async def test_silence_after_an_answer_is_noted_on_it(self, saved):
+        socket = FakeSocket()
+        call = _call(ScriptedHost([_final("Yes.")]), socket)
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("open on sunday?"))
+        await asyncio.wait_for(task, 5)
+        assert saved["marks"][-1] == ("open on sunday?", {"said_after": [
+            call_mod.STILL_THERE, call_mod.STILL_THERE, call_mod.SILENCE_GOODBYE]})
+
+    async def test_the_goodbye_after_silence_at_the_closing_question_is_noted(self, saved):
+        host = ScriptedHost([{"type": "tool_execution", "tool_name": "end_call"},
+                             ("tool", "end_call", {"goodbye": "Bye!"}), {"type": "tool_result"}])
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("that's it"), settle=0.6, hang_up=False)
+        assert saved["marks"][-1] == ("that's it", {"said_after": [call_mod.DEFAULT_GOODBYE]})
+
+    async def test_a_new_turn_starts_its_own(self, saved):
+        host = ScriptedHost([_final("Yes.")], [_final("No.")])
+        socket = FakeSocket()
+        call = _call(host, socket)
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("one"))
+        await _until(lambda: call_mod.STILL_THERE in socket.words())
+        await socket.inbox.put(_prompt("two"))
+        await asyncio.wait_for(task, 5)
+        assert ("one", {"said_after": [call_mod.STILL_THERE]}) in saved["marks"]
+        assert saved["marks"][-1][0] == "two" and saved["marks"][-1][1]["said_after"][0] == call_mod.STILL_THERE
+
+    async def test_a_call_with_no_turn_notes_nothing(self, saved):
+        socket = FakeSocket()
+        await asyncio.wait_for(_call(ScriptedHost(), socket).run(), 5)
+        assert saved["marks"] == []
+
+
 class TestMovingTheCall:
     async def test_between_turns_it_ends_with_reconnect(self, saved):
         socket = FakeSocket()

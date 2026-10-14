@@ -398,6 +398,36 @@ class TestAnAnswerReachesTheCallStillOnTheLine:
         assert behind == [(session_id, "a1", "ap_1", True, "")]
 
 
+class TestACallHungUpBeforeItWasAnswered:
+    async def test_its_end_says_so(self):
+        """F485 (VOX1e, CA455b7d…): hung up before its socket opened, a call's record kept no outcome, and its log
+        said "Ended"; the number's status callback names it."""
+        host = RecordingHost()
+        hooks.install(host)
+        try:
+            await host.save_call(call_mod.new_record(
+                call_sid=CALL, channel_id="chn_1", agent_id="a1", session_id=f"voice_chn_1_{CALL}",
+                caller="+14155550100", called=NUMBER))
+            await service.status({"id": "chn_1"}, {"CallSid": CALL, "CallStatus": "completed", "CallDuration": "3"})
+            assert host.records[CALL]["outcome"] == "hung_up_early"
+            assert host.records[CALL]["call_seconds"] == 3
+        finally:
+            hooks.install(None)
+
+    async def test_an_answered_call_keeps_its_own(self):
+        host = RecordingHost()
+        hooks.install(host)
+        try:
+            record = call_mod.new_record(call_sid=CALL, channel_id="chn_1", agent_id="a1",
+                                         session_id=f"voice_chn_1_{CALL}", caller="+14155550100", called=NUMBER)
+            record.update(segments=[{"seconds": 40}], outcome="agent_ended")
+            await host.save_call(record)
+            await service.status({"id": "chn_1"}, {"CallSid": CALL, "CallStatus": "completed", "CallDuration": "41"})
+            assert host.records[CALL]["outcome"] == "agent_ended"
+        finally:
+            hooks.install(None)
+
+
 class TestADisconnectSaysWhatWasLeft:
     async def test_a_trial_account_keeps_its_signing_key(self):
         def handler(req):
