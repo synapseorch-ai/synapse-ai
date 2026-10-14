@@ -1356,8 +1356,9 @@ BUILDER_TOOL_SCHEMAS = [
         "function": {
             "name": "delete_agent",
             "description": (
-                "Delete an agent. Destructive: requires confirm=true. Orchestration steps that name "
-                "this agent will fail until they are repointed — check with list_orchestrations first."
+                "Delete an agent. Destructive: requires confirm=true. Refused while anything uses it "
+                "— a widget, a channel or phone number, a schedule, a workflow's step or another agent "
+                "that hands work to it — naming each; repoint or delete those first."
             ),
             "parameters": {
                 "type": "object",
@@ -2685,19 +2686,18 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         agent = await _load_agent(agent_id)
         if agent is None or agent.get("system"):
             return {"error": f"Agent '{agent_id}' not found"}
-        # Name what breaks rather than silently leaving dangling references.
-        orphaned = [
-            {"orchestration_id": o.get("id"), "step_id": s.get("id")}
-            for o in await load_orchestrations() if _is_visible(o)
-            for s in (o.get("steps") or []) if s.get("agent_id") == agent_id
-        ]
+        # Not while something uses it, in the route's words (F467): it used to be
+        # deleted anyway, with the workflow steps it left pointing at nothing listed.
+        from core.orchestration.dependents import agent_refusal, what_uses_agent
+        users = await what_uses_agent(agent_id)
+        if users:
+            return {"error": agent_refusal(agent.get("name") or agent_id, users)}
         await _delete_agent(agent_id)
         _emit(events, "agent", "deleted", agent_id, agent.get("name"))
         return {
             "status": "deleted",
             "id": agent_id,
             "name": agent.get("name"),
-            "orphaned_steps": orphaned,
         }
 
     elif tool_name == "delete_orchestration":

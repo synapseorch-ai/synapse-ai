@@ -15,6 +15,11 @@ delete them first.
 `what_runs` reads the engine's own stores. `refusal` is only the sentence, from
 whatever a host found, so cloud — which reads its own tables — says it in the
 same words.
+
+An agent is held the same way, one level down (F467): its widgets, channels and
+phone numbers, the schedules that run it, the live workflows whose steps run it
+and the agents that hand work to it. Deleting it used to leave each of them
+pointing at nothing. `what_uses_agent` and `agent_refusal` are that rule.
 """
 from __future__ import annotations
 
@@ -31,7 +36,8 @@ class Dependent:
 
     `kind` is "agent" or "schedule" for what runs it, and "widget", "channel",
     "schedule" or "workflow" for what uses one of its agents — those carry the
-    agent's `id` in `via`.
+    agent's `id` in `via`. What uses an agent (F467) is any of "widget",
+    "channel", "phone number", "schedule", "workflow" or "agent", with no `via`.
     """
 
     kind: str
@@ -117,3 +123,60 @@ def refusal(name: str, dependents: list[Dependent]) -> str:
         parts.append(part)
     them = "it" if len(runners) == 1 else "them"
     return f"'{name}' was not deleted: {'; '.join(parts)}. Point {them} at another workflow, or delete {them}, first."
+
+
+#: The phone numbers among an agent's channels (`core/messaging/voice`).
+_PHONE_PLATFORM = "twilio_voice"
+
+
+async def what_uses_agent(agent_id: str) -> list[Dependent]:
+    """What uses agent `agent_id` in this tenant, so that deleting it never leaves them pointing at nothing (F467).
+
+    Every read is a reason to refuse, so none is skipped: a store that cannot be
+    read raises, and a delete is never let through on a read that did not happen.
+    A workflow deleted and kept as a record (F423) runs nothing, and holds nothing.
+    """
+    from core.chat_widgets.store import list_widgets
+    from core.messaging.store import get_channels_for_agent
+    from core.store import schedules as schedule_store
+    from core.store.resources import load_agents, load_orchestrations
+
+    found = [Dependent("widget", w.get("name") or w["id"])
+             for w in await list_widgets() if w.get("agent_id") == agent_id]
+    found += [Dependent("phone number" if c.get("platform") == _PHONE_PLATFORM else "channel",
+                        c.get("name") or c["id"])
+              for c in await get_channels_for_agent(agent_id)]
+    found += [Dependent("schedule", s.get("name") or s["id"]) for s in await schedule_store.load()
+              if s.get("target_type") == "agent" and s.get("target_id") == agent_id]
+    found += [Dependent("workflow", o.get("name") or o["id"]) for o in await load_orchestrations()
+              if not _gone(o) and _calls(o, agent_id)]
+    found += [Dependent("agent", a.get("name") or a["id"]) for a in await load_agents()
+              if a.get("id") != agent_id and not a.get("system")
+              and agent_id in (a.get("delegate_agent_ids") or [])]
+    return found
+
+
+#: What each kind does to the agent, in the order the sentence names them.
+_DOES = (
+    (("widget", "channel", "phone number"), "use it", "uses it"),
+    (("schedule",), "run it", "runs it"),
+    (("workflow",), "run it in a step", "runs it in a step"),
+    (("agent",), "hand work to it", "hands work to it"),
+)
+
+
+def agent_refusal(name: str, dependents: list[Dependent]) -> str:
+    """The sentence a refused agent delete answers with (F467).
+
+    "'Front desk' was not deleted: the widget 'Support' and the channel 'Team
+    Telegram' use it; the schedule 'Every morning' runs it. Point them at another
+    agent, or delete them, first."
+    """
+    parts = []
+    for kinds, many, one in _DOES:
+        things = [f"the {d.kind} '{d.name}'" for d in dependents if d.kind in kinds]
+        if not things:
+            continue
+        parts.append(f"{_join(things)} {one if len(things) == 1 else many}")
+    them = "it" if len(dependents) == 1 else "them"
+    return f"'{name}' was not deleted: {'; '.join(parts)}. Point {them} at another agent, or delete {them}, first."

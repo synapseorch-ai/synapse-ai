@@ -158,6 +158,17 @@ async def _unknown_tools(names: list) -> list[dict]:
 async def delete_agent(agent_id: str):
     global active_agent_id
     from core.store.resources import delete_agent as _delete
+    from core.store.resources import get_agent
+
+    # Not while something uses it (F467): a widget, a channel or phone number, a
+    # schedule, a workflow's step or another agent would be left pointing at
+    # nothing. Refused naming them, as a workflow's delete is (F408).
+    agent = await get_agent(agent_id)
+    if agent is not None:
+        from core.orchestration.dependents import agent_refusal, what_uses_agent
+        users = await what_uses_agent(agent_id)
+        if users:
+            raise HTTPException(status_code=409, detail=agent_refusal(agent.get("name") or agent_id, users))
     await _delete(agent_id)
     # Its memory goes with it (F297): left behind, an agent created later with
     # the same id started out knowing what this one had remembered.

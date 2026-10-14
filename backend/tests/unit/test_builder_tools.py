@@ -535,17 +535,20 @@ class TestDeletesRefuseWithoutConfirmation:
     async def test_confirm_must_be_true_not_merely_present(self, server, tool, args):
         assert "error" in await call(tool, args, server)
 
-    async def test_deleting_an_agent_names_the_steps_it_orphans(self, server):
+    async def test_deleting_an_agent_a_step_runs_is_refused_naming_the_workflow(self, server):
+        """It used to be deleted anyway, the steps it orphaned listed after the fact (F467)."""
         await S.seed_agents([S.make_agent(id="agent_doomed", name="Doomed")])
-        await S.seed_orchestrations([S.make_orchestration(id="orch_uses_it", steps=[
+        await S.seed_orchestrations([S.make_orchestration(id="orch_uses_it", name="Uses it", steps=[
             {"id": "step_1", "name": "Work", "type": "agent", "agent_id": "agent_doomed"},
         ])])
         result = await call("delete_agent", {"agent_id": "agent_doomed", "confirm": True}, server)
-        assert result["status"] == "deleted"
-        assert result["orphaned_steps"] == [{"orchestration_id": "orch_uses_it", "step_id": "step_1"}]
+        assert result["error"] == (
+            "'Doomed' was not deleted: the workflow 'Uses it' runs it in a step. "
+            "Point it at another agent, or delete it, first."
+        )
 
         from core.store.resources import get_agent
-        assert await get_agent("agent_doomed") is None
+        assert await get_agent("agent_doomed") is not None
 
     async def test_the_builders_own_parts_cannot_be_deleted(self, server):
         await S.seed_agents([S.make_agent(id="agent_native_builder", system="native_builder")])
