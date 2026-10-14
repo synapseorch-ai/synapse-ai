@@ -30,6 +30,15 @@ class ChatRequest(BaseModel):
     #: The id a workflow agent's run takes, set by the worker from its job's
     #: enqueuer, who admitted that run (cloud, F417) — never by a caller.
     _workflow_run_id: str | None = PrivateAttr(default=None)
+    #: The app's own chat (its stream, an answer's resume, a helper's follow-up), set by those routes — never by a
+    #: caller. Only such a turn has an inbox for its helpers' results, and may send one to work in the background
+    #: (SUB1a, S4).
+    _app_chat: bool = PrivateAttr(default=False)
+    #: A turn nobody typed — a helper's result posted back (SUB1a): {kind, helper_id, name, status}. Saved on its
+    #: question, which a page draws as the helper's and the model reads as automated, never as the person's words.
+    _automated: dict | None = PrivateAttr(default=None)
+    #: Helper results a turn starts with: kept by a question it moved past (SUB1a).
+    _inbox_seed: list[dict] | None = PrivateAttr(default=None)
 
     _check_images = checked_images()
 

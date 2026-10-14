@@ -24,11 +24,29 @@ model (F538). Now:
   and at most `MAX_LIVE` at once in a conversation; past that the tool says no
   and not to try again. It starts as marked as its parent is (F279).
 * **It can be stopped** on its own, and stops with its parent.
+
+**In the background** (`background: true`, the app's chat only — never a visitor's turn, a
+workflow step, OAI1 or a channel, where it runs while its parent waits, S4, S6) a helper is
+a chat turn of its own on a session `helperc_…` (`chat_turns`: a task the server holds, a
+log its lane reads, the turn's Stop), saved as a row of that session linked to its parent's
+conversation. Its parent's turn goes on, and may end. When it ends, its result goes back
+**exactly once** (`deliver`):
+
+1. into the inbox of that agent's live turn in that conversation (`Inbox`), which reads it
+   between model calls as one automated block, never as the person's words;
+2. else into the turn a parked question stopped there, which reads it when the question is
+   answered — or hands it to the next turn if the question is moved past;
+3. else into **one follow-up turn** of the agent (`follow_up`), whose question is the
+   result, marked automated; it waits for any turn running there first.
+
+A server restart leaves it failed, and says so in its parent's conversation
+(`sweep_interrupted`, at boot).
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +61,10 @@ _log = get_logger(__name__)
 MAX_TURNS = 10
 #: How long a helper its parent waits for may work (Naveen, SUB1a: 5 minutes).
 WAIT_SECONDS = 300
+#: How long a helper working in the background may work (Naveen, SUB1a: 15 minutes).
+BACKGROUND_SECONDS = 900
+#: A background helper's own conversation: `helperc_<hex>`, its row keyed by the helper's id.
+SESSION_PREFIX = "helperc_"
 #: How many helpers may work at once in one conversation, or in one workflow agent step (S6).
 MAX_LIVE = 3
 #: An answer kept with the turn, and a call's result, as a saved turn clips them.
@@ -124,6 +146,9 @@ class Helper:
     error: str = ""
     #: A note for the parent alongside the answer (background asked where it cannot run).
     note: str = ""
+    #: A background helper's own conversation (`helperc_…`), and the one it reports back to.
+    session_id: str = ""
+    conversation: "Conversation | None" = None
     _timed_out: bool = False
 
     @property
@@ -136,8 +161,11 @@ class Helper:
         return {"type": "helper_event", "helper_id": self.id, "helper_name": self.name, "event": event}
 
     def started_event(self) -> dict:
-        return {"type": "helper_started", "helper_id": self.id, "helper_name": self.name, "task": self.task,
-                "tools": list(self.tools), "withheld": list(self.withheld), "model": self.model, "mode": self.mode}
+        event = {"type": "helper_started", "helper_id": self.id, "helper_name": self.name, "task": self.task,
+                 "tools": list(self.tools), "withheld": list(self.withheld), "model": self.model, "mode": self.mode}
+        if self.session_id:
+            event["session_id"] = self.session_id
+        return event
 
     def record(self) -> dict:
         """What the turn that sent it keeps: its brief, tools, model, calls and answer."""
@@ -149,6 +177,8 @@ class Helper:
                 "answer": _clip(self.answer, ANSWER_CHARS)}
         if self.error:
             kept["error"] = _clip(self.error, 500)
+        if self.session_id:
+            kept["session_id"] = self.session_id
         return kept
 
     def finished_event(self) -> dict:
@@ -420,3 +450,418 @@ async def batch(helpers: list[Helper], *, key: tuple, **run_kw) -> AsyncIterator
         for task in tasks:
             with contextlib.suppress(BaseException):
                 await task
+
+
+# ── where a result goes back to ──────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class Conversation:
+    """The conversation a background helper reports back to."""
+
+    session_id: str
+    #: The key its turns and parked question are held under (`request.agent_id or "default"`).
+    agent_key: str
+    #: The id its turns are saved under: the agent the turn resolved.
+    agent_id: str
+    tenant: str = ""
+
+    @property
+    def key(self) -> tuple:
+        return (self.tenant, self.session_id, self.agent_key)
+
+    def link(self) -> dict:
+        return {"parent_session_id": self.session_id, "agent_key": self.agent_key,
+                "parent_agent_id": self.agent_id, "tenant": self.tenant}
+
+    @classmethod
+    def from_link(cls, link: dict) -> "Conversation":
+        return cls(session_id=str(link.get("parent_session_id") or ""), agent_key=str(link.get("agent_key") or
+                   "default"), agent_id=str(link.get("parent_agent_id") or "default"),
+                   tenant=str(link.get("tenant") or ""))
+
+
+INBOX_HEADING = "Helper results (since your last step)"
+
+#: Each live root chat turn's inbox, by conversation (`Conversation.key`).
+_OPEN: dict[tuple, "Inbox"] = {}
+#: Who waits to deliver into a conversation, woken when an inbox opens or closes there.
+_CHANGED: dict[tuple, asyncio.Event] = {}
+
+
+def _changed(key: tuple) -> None:
+    event = _CHANGED.pop(key, None)
+    if event is not None:
+        event.set()
+
+
+class Inbox:
+    """What a running root chat turn's helpers send back, read between its model calls.
+
+    One per turn, open from the turn's start until it answers, stops or parks.
+    `drain` hands the engine what arrived since it last looked, which stays "in
+    flight" until the answer that read it is saved (`settle`); `close` returns
+    whatever is not settled — arrived late, or read by a call that failed or was
+    stopped — so it goes back another way, and `park` keeps it with a parked
+    question. No method awaits: each is whole on the event loop, so an item is
+    taken by exactly one of them.
+    """
+
+    def __init__(self, conversation: Conversation, state: dict | None = None):
+        self.conversation = conversation
+        state = state if isinstance(state, dict) else {}
+        self._pending: list[dict] = [dict(i) for i in state.get("pending") or [] if isinstance(i, dict)]
+        self._in_flight: list[dict] = [dict(i) for i in state.get("in_flight") or [] if isinstance(i, dict)]
+        self._open = False
+
+    def open(self) -> "Inbox":
+        self._open = True
+        _OPEN[self.conversation.key] = self
+        _changed(self.conversation.key)
+        return self
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    def put(self, item: dict) -> bool:
+        if not self._open:
+            return False
+        self._pending.append(dict(item))
+        return True
+
+    def add(self, items: list[dict]) -> None:
+        """Items the turn starts with (moved past with a question), read at its first look."""
+        self._pending.extend(dict(i) for i in items)
+
+    def drain(self) -> list[dict]:
+        items, self._pending = self._pending, []
+        self._in_flight.extend(items)
+        return items
+
+    def in_flight_ids(self) -> list[str]:
+        return [str(i.get("helper_id")) for i in self._in_flight if i.get("kind") == "helper_result"]
+
+    def settle(self) -> None:
+        """The answer that read what is in flight is saved: it has arrived."""
+        self._in_flight = []
+
+    def _shut(self) -> None:
+        if self._open:
+            self._open = False
+            if _OPEN.get(self.conversation.key) is self:
+                _OPEN.pop(self.conversation.key, None)
+            _changed(self.conversation.key)
+
+    def close(self) -> list[dict]:
+        """Shut, and hand back what did not arrive: the unread, and the read but never answered."""
+        self._shut()
+        left, self._pending, self._in_flight = [*self._in_flight, *self._pending], [], []
+        return [i for i in left if i.get("kind") == "helper_result"]
+
+    def park(self) -> dict:
+        """Shut, keeping what is not settled for the turn a parked question stopped."""
+        self._shut()
+        state = {"pending": list(self._pending), "in_flight": list(self._in_flight)}
+        self._pending, self._in_flight = [], []
+        return state
+
+
+def render_inbox(items: list[dict]) -> str:
+    """The automated block a turn reads its helpers' results in, in the order they arrived."""
+    lines = [f"\n[{INBOX_HEADING} — automated, not from the person]"]
+    for item in items:
+        if item.get("kind") == "helper_stopped":
+            lines.append(f"Your helper '{item.get('name')}' was stopped by the person before it finished.")
+            continue
+        status = _STATUS_WORDS.get(str(item.get("status")), str(item.get("status") or "finished"))
+        lines.append(f"From your helper '{item.get('name')}' (it {status}):\n{item.get('text') or ''}")
+    return "\n".join(lines) + "\n"
+
+
+def result_item(helper: Helper) -> dict:
+    return {"kind": "helper_result", "helper_id": helper.id, "name": helper.name, "status": helper.status,
+            "text": helper.result_for_parent(), "session_id": helper.session_id, "at": time.time()}
+
+
+def automated_mark(item: dict) -> dict:
+    """What a follow-up's question carries: whose result it is, never the person's words."""
+    return {"kind": "helper_result", "helper_id": item.get("helper_id"), "name": item.get("name"),
+            "status": item.get("status"), "session_id": item.get("session_id")}
+
+
+def automated_opening(mark: dict, text: str) -> str:
+    """How a follow-up's transcript starts, in place of "User Request:"."""
+    status = _STATUS_WORDS.get(str(mark.get("status")), "finished")
+    return (f"Automated input, not from the person: your helper '{mark.get('name')}' {status}. "
+            f"Tell the person what it found, as part of this conversation.\nIts result:\n{text}\n")
+
+
+def automated_history(mark: dict, text: str) -> str:
+    """An automated question as a later turn's history reads it."""
+    return f"[Automated: the result of your helper '{mark.get('name')}', not something the person said]\n{text}"
+
+
+# ── in the background ────────────────────────────────────────────────────────
+
+#: Live background helpers by id.
+_BACKGROUND: dict[str, Helper] = {}
+#: Deliveries in flight (held, so none is collected before it ends).
+_DELIVERING: set[asyncio.Task] = set()
+#: Results handed on durably in this process (parked, or a follow-up started), by helper id.
+_DELIVERED: set[str] = set()
+#: One delivery at a time per conversation.
+_LOCKS: dict[tuple, asyncio.Lock] = {}
+
+
+def _detached() -> contextvars.Context:
+    """A copy of this context without the turn's meters, for work that outlives the turn."""
+    from core import chat_approval, turn_usage, visitor
+    from core.orchestration import step_usage
+
+    ctx = contextvars.copy_context()
+
+    def reset() -> None:
+        turn_usage._meter.set(None)
+        step_usage._STEP.set(None)
+        visitor._current.set(None)
+        chat_approval._nobody_to_ask.set(False)
+
+    ctx.run(reset)
+    return ctx
+
+
+async def start_background(helper: Helper, *, conversation: Conversation, key: tuple, server_module,
+                           untrusted: bool) -> None:
+    """Start a reserved helper on a chat turn of its own, in the background; it reports back when it ends."""
+    from core import chat_turns
+    from core.store import sessions as store
+
+    helper.mode = "background"
+    helper.limit_seconds = BACKGROUND_SECONDS
+    helper.session_id = f"{SESSION_PREFIX}{uuid.uuid4().hex[:16]}"
+    helper.conversation = conversation
+    # Its row first, linked to its parent's conversation: a restart from here on is found and told (the sweep).
+    await store.append_turn(helper.session_id, helper.id, [{
+        "role": "user", "content": helper.task,
+        "automated": {"kind": "helper_brief", "helper_id": helper.id, "name": helper.name,
+                      "tools": list(helper.tools), "model": helper.model, **conversation.link()},
+    }])
+    await store.set_status(helper.session_id, helper.id, "running")
+    with chat_turns.claim(helper.session_id, message=helper.task, agent_key=helper.id) as turn:
+        turn.start(_background(helper, server_module=server_module, untrusted=untrusted), context=_detached())
+    _BACKGROUND[helper.id] = helper
+
+    def ended(_task: asyncio.Task) -> None:
+        release(key, helper.id)
+        _BACKGROUND.pop(helper.id, None)
+
+    turn.task.add_done_callback(ended)
+
+
+async def _background(helper: Helper, *, server_module, untrusted: bool) -> AsyncIterator[dict]:
+    from core.scale import run_lease
+
+    conversation = helper.conversation
+    try:
+        async with run_lease.hold(f"helper_{helper.id}", kind="helper"):
+            async for event in run(helper, server_module=server_module, session_id=conversation.session_id,
+                                   source="chat", run_id=None, untrusted=untrusted):
+                yield event
+    finally:
+        await _finish(helper)
+
+
+async def _finish(helper: Helper) -> None:
+    """Save how a background helper ended, then send its result back (in a task of its own)."""
+    from core.session import _now
+    from core.store import sessions as store
+
+    if helper.status == "running":
+        helper.status, helper.error = "failed", helper.error or "it stopped unexpectedly"
+    helper.ended_at = helper.ended_at or time.time()
+    try:
+        await store.append_turn(helper.session_id, helper.id, [{
+            "role": "assistant", "content": helper.answer or "", "timestamp": _now(), "helper": helper.record()}])
+        await store.set_status(helper.session_id, helper.id, helper.status)
+    except Exception as exc:  # noqa: BLE001 — the result still goes back
+        _log.warning(f"saving background helper {helper.id}: {exc}")
+    conversation = helper.conversation
+    if helper.status == "cancelled":
+        # Stopped by the person, who knows: no follow-up. A turn still reading there is told.
+        inbox = _OPEN.get(conversation.key)
+        if inbox is not None:
+            inbox.put({"kind": "helper_stopped", "helper_id": helper.id, "name": helper.name})
+        return
+    redeliver(conversation, [result_item(helper)])
+
+
+def redeliver(conversation: Conversation, items: list[dict]) -> None:
+    """Send results back, each exactly once, in tasks of their own (the caller may be ending)."""
+    for item in items:
+        task = asyncio.create_task(deliver(conversation, item), name=f"helper-deliver-{item.get('helper_id')}",
+                                   context=_detached())
+        _DELIVERING.add(task)
+        task.add_done_callback(_delivered)
+
+
+def _delivered(task: asyncio.Task) -> None:
+    _DELIVERING.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        _log.error(f"delivering a helper's result failed: {task.exception()!r}")
+
+
+async def already_delivered(conversation: Conversation, helper_id: str) -> bool:
+    """Whether this conversation already holds the result: as a follow-up's question, as read by a turn, or kept
+    with its parked question."""
+    from core.store import sessions as store
+
+    if helper_id in _DELIVERED:
+        return True
+    row = await store.get(conversation.session_id, conversation.agent_id)
+    for message in (row or {}).get("messages") or []:
+        if (message.get("automated") or {}).get("helper_id") == helper_id:
+            return True
+        if helper_id in (message.get("inbox_read") or []):
+            return True
+    pending = await store.get_pending_approval(conversation.session_id, conversation.agent_key)
+    inbox = ((pending or {}).get("progress") or {}).get("inbox") or {}
+    return any(i.get("helper_id") == helper_id for i in [*(inbox.get("pending") or []),
+                                                          *(inbox.get("in_flight") or [])])
+
+
+async def _until_changed(conversation: Conversation, timeout: float = 5.0) -> None:
+    """Until the conversation comes free or an inbox opens or closes there (the timeout is a backstop)."""
+    from core import chat_turns
+
+    event = _CHANGED.get(conversation.key)
+    if event is None:
+        event = _CHANGED[conversation.key] = asyncio.Event()
+    waits = {asyncio.ensure_future(chat_turns.until_free(conversation.session_id)),
+             asyncio.ensure_future(event.wait())}
+    try:
+        await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for wait in waits:
+            wait.cancel()
+
+
+async def deliver(conversation: Conversation, item: dict) -> str:
+    """Send one result back, exactly once: an open inbox, else a parked question, else one follow-up turn.
+
+    Returns where it went (`inbox`, `parked`, `follow_up`), or `already`.
+    """
+    from core import chat_turns
+    from core.store import sessions as store
+
+    helper_id = str(item.get("helper_id"))
+    lock = _LOCKS.setdefault(conversation.key, asyncio.Lock())
+    async with lock:
+        while True:
+            if await already_delivered(conversation, helper_id):
+                return "already"
+            inbox = _OPEN.get(conversation.key)
+            if inbox is not None and inbox.put(item):
+                return "inbox"
+            if chat_turns.busy(conversation.session_id) is not None:
+                # A turn holds it: one that opens an inbox takes the result, else wait until it ends.
+                await _until_changed(conversation)
+                continue
+            if await store.add_to_parked(conversation.session_id, conversation.agent_key, item):
+                _DELIVERED.add(helper_id)
+                return "parked"
+            try:
+                start_follow_up(conversation, item)
+            except chat_turns.TurnAlreadyRunning:
+                continue  # a turn started meanwhile: look again
+            _DELIVERED.add(helper_id)
+            return "follow_up"
+
+
+def start_follow_up(conversation: Conversation, item: dict) -> None:
+    """Start the agent's one follow-up turn on the conversation, its question the result. Raises
+    `TurnAlreadyRunning`, from the claim."""
+    import core.server as _server
+    from core import chat_turns
+    from core.models import ChatRequest
+    from core.routes.chat import _event_stream
+
+    mark = automated_mark(item)
+    request = ChatRequest(message=str(item.get("text") or ""), session_id=conversation.session_id,
+                          agent_id=None if conversation.agent_key == "default" else conversation.agent_key)
+    request._app_chat = True
+    request._automated = mark
+    with chat_turns.claim(conversation.session_id, message=request.message, agent_key=conversation.agent_key) as turn:
+        turn.automated = mark
+        turn.start(_event_stream(request, _server, None, expand_mentions=False))
+
+
+async def stop(session_id: str, helper_id: str) -> bool:
+    """Stop one helper in this conversation: one its parent waits for ends at its next turn, one in the
+    background as its turn's Stop ends it. False when no such helper is working there."""
+    from core import chat_turns
+
+    helper = find(helper_id, session_id)
+    if helper is None:
+        return False
+    if helper.mode == "background" and helper.session_id:
+        return await chat_turns.stop(helper.session_id)
+    helper.stop_requested = True
+    return True
+
+
+# ── a restart ────────────────────────────────────────────────────────────────
+
+RESTARTED = ("My helper '{name}' stopped when the server restarted, so its work was lost. "
+             "Ask me again if you still need it.")
+FINISHED_DURING_RESTART = "My helper '{name}' finished while the server was restarting; its result is above."
+
+
+async def sweep_interrupted(redis=None) -> int:
+    """At boot: tell each conversation about the background helpers a restart cut short (S3).
+
+    A helper still `running` with no live lease (scale mode: another process
+    may hold it) is failed, and its parent's conversation gets one automated
+    turn saying so, with no model call. One that had ended but whose result
+    never arrived gets it the same way. Each is looked at once (`settled`).
+    Reads this tenant's rows: a self-hosted install has one.
+    """
+    from core.scale import run_lease
+    from core.session import _now
+    from core.store import sessions as store
+
+    told = 0
+    for row in await store.with_status(SESSION_PREFIX, ("running", "completed", "failed", "timed_out")):
+        messages = row.get("messages") or []
+        brief = next((m.get("automated") for m in messages
+                      if (m.get("automated") or {}).get("kind") == "helper_brief"), None)
+        if not brief:
+            continue
+        helper_id, name = row["agent_id"], brief.get("name") or "a helper"
+        conversation = Conversation.from_link(brief)
+        if row["status"] == "running":
+            if redis is not None and await run_lease.held(f"helper_{helper_id}", redis):
+                continue
+            item = {"helper_id": helper_id, "name": name, "status": "failed",
+                    "text": "It stopped when the server restarted, before it finished."}
+            said = RESTARTED.format(name=name)
+        else:
+            record = next((m.get("helper") for m in reversed(messages) if m.get("helper")), None) or {}
+            helper = Helper(id=helper_id, name=name, task=str(record.get("task") or ""),
+                            tools=list(record.get("tools") or []), withheld=list(record.get("withheld") or []),
+                            model=str(record.get("model") or ""), agent={}, status=row["status"],
+                            calls=list(record.get("calls") or []), answer=str(record.get("answer") or ""),
+                            error=str(record.get("error") or ""))
+            item = {"helper_id": helper_id, "name": name, "status": row["status"],
+                    "text": helper.result_for_parent()}
+            said = FINISHED_DURING_RESTART.format(name=name)
+        try:
+            if not await already_delivered(conversation, helper_id):
+                await store.append_turn(conversation.session_id, conversation.agent_id, [
+                    {"role": "user", "content": item["text"], "automated": automated_mark(item)},
+                    {"role": "assistant", "content": said, "tools": [], "timestamp": _now()},
+                ])
+                told += 1
+            await store.set_status(row["session_id"], helper_id, "settled")
+        except Exception as exc:  # noqa: BLE001 — the next one still gets its turn
+            _log.warning(f"telling the conversation about helper {helper_id}: {exc}")
+    return told

@@ -235,6 +235,37 @@ async def _isolate_chat_turns(_isolate_run_checkpoints):
     chat_turns._TURNS.clear()
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _isolate_helpers(_isolate_chat_turns):
+    """No helper's result is still on its way back when its test ends (SUB1a).
+
+    A background helper is a chat turn (`_isolate_chat_turns` ends it); its result
+    goes back in a task of its own, which could start a follow-up turn on a store
+    the next test has replaced. Torn down before the chat turns.
+    """
+    import asyncio
+    import contextlib
+
+    from core import chat_turns, helpers
+
+    def clear():
+        for registry in (helpers._LIVE, helpers._OPEN, helpers._CHANGED, helpers._BACKGROUND, helpers._LOCKS,
+                         chat_turns._FREE):
+            registry.clear()
+        helpers._DELIVERED.clear()
+
+    clear()
+    yield
+    leftovers = [t for t in helpers._DELIVERING if not t.done()]
+    for task in leftovers:
+        task.cancel()
+    for task in leftovers:
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(task, 5)
+    helpers._DELIVERING.clear()
+    clear()
+
+
 # ── fake LLM (autouse) ───────────────────────────────────────────────────────
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch):

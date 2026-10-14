@@ -132,6 +132,8 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
     await _refuse_unread_images(request)
+    # The app's chat (SUB1a): this turn's helpers may work in the background, and report back to it.
+    request._app_chat = True
     try:
         turn = _start(request, expand_mentions=True)
     except chat_turns.TurnAlreadyRunning:
@@ -176,18 +178,25 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
     """One chat turn's events as SSE frames — the producer a turn's task drives."""
     agent = await _resolve_agent(request)
     turn = chat_turns.current_turn.get()
-    if resume_state is None:
+    # A follow-up nobody typed (a helper's result, SUB1a): its question keeps that mark wherever it is saved.
+    automated = getattr(request, "_automated", None) or None
+    if resume_state is None and not automated:
         # A new message in a conversation waiting on a tool call refuses that
         # call (F247): it is not run, the turn that asked is saved in its own
         # place marked expired, and nothing can allow it afterwards. Before the
         # loop starts, so the new turn's history already says so. An answer's
         # own resume (`resume_state`) is not a new message.
         from core.chat_approval import settle_moved_past
+        # What the turn it moves past kept from its helpers, this one reads first (SUB1a). An
+        # automated follow-up never moves past a question: the person did not move on.
+        carried: list = []
         await settle_moved_past(
             request.session_id or "", getattr(request, "agent_id", None) or "default",
             save_as=(agent or {}).get("id") or getattr(request, "agent_id", None) or "default",
-            redis=getattr(_server, "redis_client", None),
+            redis=getattr(_server, "redis_client", None), carried=carried,
         )
+        if carried:
+            request._inbox_seed = [*(getattr(request, "_inbox_seed", None) or []), *carried]
     # What the turn did before a Stop (F242): the calls its last snapshot holds,
     # and the ones made since, read from their events.
     latest_progress: dict | None = None
@@ -196,6 +205,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
     thinking_events: list[dict] = []
     # The helpers it sent, started and finished (SUB1a), for the same save.
     helper_events: list[dict] = []
+    # What its inbox kept when it parked (SUB1a), parked with the question.
+    inbox_parked: dict | None = None
     if turn is not None and agent:
         # Stopped before it answered, a turn still keeps its question — as the
         # fleet's chat job does. Otherwise Stop destroyed the exchange rather
@@ -215,7 +226,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER,
                                           tools=tools_from_calls(calls), calls=calls,
                                           images=image_notes(getattr(request, "images", None)),
-                                          reasoning=reasoning, thoughts=thoughts, helpers=helpers)
+                                          reasoning=reasoning, thoughts=thoughts, helpers=helpers,
+                                          automated=automated)
         turn.on_stop = _save_stopped
 
     # Route builder agents to the dedicated builder stream
@@ -262,6 +274,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
             if etype == "_step_progress":
                 latest_progress = {k: v for k, v in event.items() if k != "type"}
                 events_since_progress.clear()
+                continue
+            if etype == "_inbox_parked":
+                inbox_parked = event.get("state") or None
                 continue
             if etype in ("tool_execution", "tool_result"):
                 events_since_progress.append(event)
@@ -353,13 +368,17 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 if event.get("kind") == "tool_approval":
                     from core.chat_approval import parked_payload
                     from core.store import sessions as _sessions
+                    progress = latest_progress
+                    if inbox_parked and (inbox_parked.get("pending") or inbox_parked.get("in_flight")):
+                        progress = {**(latest_progress or {}), "inbox": inbox_parked}
                     await _sessions.set_pending_approval(
                         getattr(request, "session_id", "") or "",
                         getattr(request, "agent_id", None) or "default",
                         parked_payload(
                             event,
                             message=getattr(request, "message", "") or "",
-                            progress=latest_progress,
+                            progress=progress,
+                            automated=automated,
                         ),
                     )
                 yield f"data: {json.dumps(event, default=str)}\n\n"
@@ -475,17 +494,18 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
     # than cleared and then refused.
     try:
         with chat_turns.claim(session_id, agent_key=agent_key) as turn:
-            pending = await _sessions.get_pending_approval(session_id, agent_key)
+            # Taken in one write, so what a helper keeps with the question (SUB1a) is either
+            # in what this took or never written into it (`add_to_parked`). Cleared before
+            # the turn runs, not after: a resume that crashed with the row still set would
+            # re-open a question the person has already answered.
+            pending = await _sessions.take_pending_approval(session_id, agent_key)
             if not pending:
                 raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
             if decision.approval_id is not None and decision.approval_id != pending.get("approval_id"):
+                # Not this question's answer: it stays as it was.
+                await _sessions.set_pending_approval(session_id, agent_key, pending)
                 raise HTTPException(status_code=409,
                                     detail="That approval is not the one this conversation is waiting on.")
-
-            # Cleared before the turn runs, not after. A resume that crashed with
-            # the row still set would re-open a question the person has already
-            # answered.
-            await _sessions.set_pending_approval(session_id, agent_key, None)
 
             if pending.get("schedule"):
                 # A scheduled run's call, answered from its conversation: the
@@ -509,8 +529,29 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
                 session_id=session_id,
                 agent_id=None if agent_key == "default" else agent_key,
             )
+            # The app's chat, resumed: its inbox comes back with what was kept (SUB1a). A follow-up's
+            # question is still automated, and a helper's words never read the vault (no @[path]).
+            resumed._app_chat = True
+            resumed._automated = pending.get("automated") or None
             turn.message = resumed.message
-            turn.start(_event_stream(resumed, _server, resume_state, expand_mentions=True))
+            turn.automated = resumed._automated
+            turn.start(_event_stream(resumed, _server, resume_state,
+                                     expand_mentions=not resumed._automated))
     except chat_turns.TurnAlreadyRunning:
         raise HTTPException(status_code=409, detail=TURN_RUNNING)
     return _sse(_read(turn))
+
+
+@router.post("/chat/{session_id}/helpers/{helper_id}/stop")
+async def stop_helper(session_id: str, helper_id: str):
+    """Stop one helper working in this conversation (SUB1a, S7): its lane's Stop.
+
+    One its agent waits for ends at its next turn and its agent carries on with
+    what it had; one in the background ends as its own turn's Stop ends it. Like
+    `/cancel`, it answers `"stopping"`, and `stopped` false when nothing was
+    working — not an error: it may have just finished.
+    """
+    from core import helpers
+
+    stopped = await helpers.stop(session_id, helper_id)
+    return {"status": "stopping", "session_id": session_id, "helper_id": helper_id, "stopped": stopped}

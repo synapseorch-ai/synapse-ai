@@ -314,6 +314,59 @@ async def take_pending_approval(session_id: str, agent_id: str) -> dict | None:
         return pending
 
 
+async def add_to_parked(session_id: str, agent_id: str, item: dict) -> bool:
+    """Keep `item` with the turn this conversation's parked question stopped (a helper's result, SUB1a).
+
+    The turn reads it when the question is answered (its resume's inbox), or the
+    next turn does when the question is moved past. One write holding the
+    conversation (`_writing`), as `take_pending_approval`'s is: an item written as
+    an answer takes the question is either in what it took, or finds nothing
+    parked (False) and goes another way — never written into a question already
+    taken.
+    """
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
+        if row is None or not row.pending_approval:
+            return False
+        pending = dict(row.pending_approval)
+        progress = dict(pending.get("progress") or {})
+        inbox = dict(progress.get("inbox") or {})
+        inbox["pending"] = [*(inbox.get("pending") or []), dict(item)]
+        progress["inbox"] = inbox
+        pending["progress"] = progress
+        row.pending_approval = pending  # reassigned: an in-place change to a JSON column is not tracked
+        return True
+
+
+async def set_status(session_id: str, agent_id: str, status: str) -> bool:
+    """Set a conversation's `status` (a helper's own: running, then how it ended, SUB1a). False when no row."""
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
+        if row is None:
+            return False
+        row.status = status
+        return True
+
+
+async def with_status(session_prefix: str, statuses: tuple[str, ...]) -> list[dict]:
+    """Every conversation whose id starts with `session_prefix` and whose `status` is one of `statuses`,
+    this tenant's — the boot sweep's read of helpers a restart cut short (SUB1a)."""
+    from core.store import session
+    from core.store.models import ChatSessionDB
+
+    async with session() as s:
+        rows = (
+            await s.execute(
+                select(ChatSessionDB).where(
+                    ChatSessionDB.tenant_id == get_tenant(),
+                    ChatSessionDB.session_id.startswith(session_prefix, autoescape=True),
+                    ChatSessionDB.status.in_(statuses),
+                )
+            )
+        ).scalars().all()
+    return [_to_dict(r) for r in rows]
+
+
 async def parked_approvals(session_prefix: str) -> list[tuple[str, str, dict]]:
     """Every parked call in conversations whose id starts with `session_prefix`,
     as `(session_id, agent_id, pending)` — the scheduler's expiry sweep (F268)."""

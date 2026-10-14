@@ -126,6 +126,9 @@ class ChatTurn:
         #: Called once if the turn is stopped before it answered. Set by the
         #: producer once it knows whose turn this is (`routes/chat.py`).
         self.on_stop: Callable[[], Awaitable[None]] | None = None
+        #: An automated turn's mark (a helper's follow-up, SUB1a): a page draws its message as the helper's, never
+        #: the person's.
+        self.automated: dict | None = None
         self._next_seq = 1
         self._bytes = 0
         self._ended = False
@@ -146,10 +149,13 @@ class ChatTurn:
 
     def summary(self) -> dict:
         """What a page needs to show a turn it did not start."""
-        return {
+        summary = {
             "turn_id": self.id, "message": self.message,
             "started_at": self.started_at, "cursor": self.cursor(0),
         }
+        if self.automated:
+            summary["automated"] = dict(self.automated)
+        return summary
 
     # ── the log ──────────────────────────────────────────────────────────────
     def append(self, event: dict, data: str | None = None) -> None:
@@ -181,11 +187,15 @@ class ChatTurn:
         return [e for e in self.entries if e.seq > seq]
 
     # ── running ──────────────────────────────────────────────────────────────
-    def start(self, producer: AsyncIterator) -> None:
-        """Drive `producer` in a task of its own. Call from the route handler."""
+    def start(self, producer: AsyncIterator, *, context: contextvars.Context | None = None) -> None:
+        """Drive `producer` in a task of its own. Call from the route handler.
+
+        `context` runs it in that context instead of a copy of the caller's: a
+        helper started inside another turn must not carry that turn's meters.
+        """
         if self.task is not None:
             raise RuntimeError("a turn is started once")
-        self.task = asyncio.create_task(_drive(self, producer), name=f"chat-turn-{self.id}")
+        self.task = asyncio.create_task(_drive(self, producer), name=f"chat-turn-{self.id}", context=context)
 
     async def wait(self) -> None:
         """Until the turn has finished. Cancelling the waiter leaves the turn."""
@@ -194,6 +204,8 @@ class ChatTurn:
 
 
 _TURNS: dict[tuple[str, str], ChatTurn] = {}
+#: Who waits for a conversation to come free (`until_free`), woken when its claim is released or its turn ends.
+_FREE: dict[tuple[str, str], asyncio.Event] = {}
 
 
 def _key(session_id: str) -> tuple[str, str]:
@@ -239,6 +251,34 @@ def claim(session_id: str | None, *, message: str = "", agent_key: str = "defaul
             _TURNS.pop(key, None)
             if current is not None:
                 _TURNS[key] = current  # the finished turn it displaced stays readable
+            _freed(key)
+
+
+def _freed(key: tuple[str, str]) -> None:
+    event = _FREE.pop(key, None)
+    if event is not None:
+        event.set()
+
+
+def busy(session_id: str) -> ChatTurn | None:
+    """The turn holding this conversation — running, or claimed and not started yet."""
+    turn = _TURNS.get(_key(session_id))
+    return turn if turn is not None and turn.live else None
+
+
+async def until_free(session_id: str) -> None:
+    """Until no turn holds this conversation: one claimed and not started yet included.
+
+    A claim is held across awaits before its turn starts (the approve route reads
+    the question first), when `ChatTurn.wait()` has no task to wait on and returns
+    at once — a loop on it would never let the claim's holder run.
+    """
+    key = _key(session_id)
+    while busy(session_id) is not None:
+        event = _FREE.get(key)
+        if event is None:
+            event = _FREE[key] = asyncio.Event()
+        await event.wait()
 
 
 def live(session_id: str) -> ChatTurn | None:
@@ -374,4 +414,5 @@ async def _drive(turn: ChatTurn, producer: AsyncIterator) -> None:
     finally:
         turn.finished_at = time.time()
         turn._wake()
+        _freed(turn.key)
         current_turn.reset(token)

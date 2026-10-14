@@ -92,6 +92,9 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("helpers"):
             # The helpers the turn sent (SUB1a): each one's brief, calls and answer.
             turn["helpers"] = [dict(h) for h in assistant["helpers"]]
+        if user.get("automated"):
+            # A question nobody typed: a helper's result posted back (SUB1a) — drawn as the helper's.
+            turn["automated"] = dict(user["automated"])
         if assistant.get("citations") or assistant.get("unresolved_citations"):
             # The answer's Sources: its [K#] labels resolved (Knowledge, B1b).
             turn["citations"] = assistant.get("citations") or []
@@ -353,6 +356,8 @@ async def _save_conversation_turn(
     thoughts: list[str] | None = None,
     citations: dict | None = None,
     helpers: list[dict] | None = None,
+    automated: dict | None = None,
+    inbox_read: list[str] | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
@@ -361,7 +366,9 @@ async def _save_conversation_turn(
     person reading it back and never sent to the model as history.
     `citations` is the answer's `knowledge_citations` event: its Sources, kept
     for a reopened chat to draw again. `helpers` are the records of the helpers
-    the turn sent (`core.helpers`, SUB1a): their lanes, reopened.
+    the turn sent (`core.helpers`, SUB1a): their lanes, reopened. `automated` marks
+    a question nobody typed (a helper's result posted back), and `inbox_read` names
+    the helpers whose results the answer read — so each is known to have arrived.
     """
     from core.store import sessions as store
 
@@ -369,6 +376,8 @@ async def _save_conversation_turn(
     question = {"role": "user", "content": user}
     if images:
         question["images"] = images
+    if automated:
+        question["automated"] = dict(automated)
     answer = {"role": "assistant", "content": assistant, "tools": tools or [], "timestamp": now}
     if calls:
         answer["calls"] = calls
@@ -378,6 +387,8 @@ async def _save_conversation_turn(
     answer.update(citation_fields(citations))
     if helpers:
         answer["helpers"] = [dict(h) for h in helpers]
+    if inbox_read:
+        answer["inbox_read"] = list(inbox_read)
     await store.append_turn(
         session_id,
         _agent(agent_id),
@@ -444,6 +455,10 @@ async def get_recent_history_messages(session_id: str, agent_id: str | None = No
     messages = []
     for index, turn in enumerate(recent):
         question = turn["user"]
+        if turn.get("automated"):
+            # Never read back as the person's words (SUB1a, S2).
+            from core.helpers import automated_history
+            question = automated_history(turn["automated"], question)
         if turn.get("images"):
             # Told it was there and is gone, so it can say so (F245): with
             # nothing, a follow-up about the screenshot was answered with a
@@ -515,8 +530,10 @@ async def render_session_history(session_id: str, agent_id: str | None, turn: An
         return f"There is no turn {number}; this conversation has {len(turns)}."
     entry = turns[number - 1]
     images = f" {_image_placeholder(entry['images'])}" if entry.get("images") else ""
+    asked = "Question" if not entry.get("automated") else \
+        f"Automated (the result of your helper '{entry['automated'].get('name')}', not the person's words)"
     parts = [f"Turn {number} · {_when(entry)}",
-             f"Question: {_clip(entry.get('user'), 2_000)}{images}",
+             f"{asked}: {_clip(entry.get('user'), 2_000)}{images}",
              f"Answer: {_clip(entry.get('assistant'), 3_000)}"]
     calls = entry.get("calls") or _legacy_calls(entry.get("tools"))
     if calls:

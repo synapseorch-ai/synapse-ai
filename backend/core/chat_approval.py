@@ -48,7 +48,8 @@ def nobody_to_ask() -> Iterator[None]:
         _nobody_to_ask.reset(token)
 
 
-def parked_payload(event: dict, *, message: str, progress: dict | None) -> dict[str, Any]:
+def parked_payload(event: dict, *, message: str, progress: dict | None,
+                   automated: dict | None = None) -> dict[str, Any]:
     """What to store when the loop yields `human_input_required`/`tool_approval`.
 
     `message` is the question that started the turn: a resume rebuilds the
@@ -68,6 +69,9 @@ def parked_payload(event: dict, *, message: str, progress: dict | None) -> dict[
         # A workflow's call, asked in a chat with its agent: the answer resumes
         # that run (F290). Re-running the chat turn started the workflow again.
         payload["run_id"] = event["run_id"]
+    if automated:
+        # A helper's follow-up asked it (SUB1a): its question is still nobody's words when it is saved.
+        payload["automated"] = dict(automated)
     return payload
 
 
@@ -200,8 +204,11 @@ def moved_past_turn(pending: dict, *, why: str) -> list[dict[str, Any]]:
     calls.append(gated)
     card = public_view(pending) or {}
     card.pop("message", None)
+    question: dict[str, Any] = {"role": "user", "content": pending.get("message") or ""}
+    if pending.get("automated"):
+        question["automated"] = dict(pending["automated"])
     return [
-        {"role": "user", "content": pending.get("message") or ""},
+        question,
         {"role": "assistant",
          "content": f"This turn stopped to ask permission to run `{tool}`. It was not run: {why}.",
          "tools": tools_from_calls(calls), "calls": calls, "timestamp": _now(),
@@ -210,7 +217,8 @@ def moved_past_turn(pending: dict, *, why: str) -> list[dict[str, Any]]:
 
 
 async def settle_moved_past(session_id: str, agent_key: str, *, save_as: str | None,
-                            why: str = MOVED_ON, redis: Any = None) -> list[dict[str, Any]] | None:
+                            why: str = MOVED_ON, redis: Any = None,
+                            carried: list | None = None) -> list[dict[str, Any]] | None:
     """Settle the question this conversation waits on, before a new turn starts.
 
     The call is not run and can no longer be allowed: the parked approval is
@@ -221,6 +229,10 @@ async def settle_moved_past(session_id: str, agent_key: str, *, save_as: str | N
     would otherwise stay answerable from the run's page, and allowing it there
     runs the abandoned call. Returns the two messages saved, or None when
     nothing was waiting.
+
+    Helper results the parked turn kept and never answered (SUB1a) are not lost
+    with it: they go into `carried`, for the new turn to read first, or back by
+    another way when a caller gives no list.
     """
     from core.store import sessions as _sessions
 
@@ -228,6 +240,18 @@ async def settle_moved_past(session_id: str, agent_key: str, *, save_as: str | N
     if not pending:
         return None
     messages = moved_past_turn(pending, why=why)
+    kept = (pending.get("progress") or {}).get("inbox") or {}
+    results = [dict(i) for i in [*(kept.get("in_flight") or []), *(kept.get("pending") or [])]
+               if isinstance(i, dict) and i.get("kind") == "helper_result"]
+    if results:
+        if carried is not None:
+            carried.extend(results)
+        else:
+            from core import helpers
+            from core.tenancy import get_tenant
+            helpers.redeliver(helpers.Conversation(session_id=session_id or "", agent_key=agent_key,
+                                                   agent_id=save_as or agent_key, tenant=get_tenant() or ""),
+                              results)
     if pending.get("run_id"):
         from core.orchestration.cancel import cancel_run
         await cancel_run(pending["run_id"], redis=redis, reason=RUN_STOPPED)

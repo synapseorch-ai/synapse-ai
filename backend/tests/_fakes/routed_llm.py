@@ -23,12 +23,13 @@ from typing import Any
 class RoutedLLM:
     def __init__(self, default: str = "Task complete.") -> None:
         self.default = default
-        self._scripts: list[tuple[str, list[Any]]] = []
+        self._scripts: list[tuple[str, list[Any], bool]] = []
         self._otherwise: list[Any] | None = None
         self.calls: list[dict[str, Any]] = []
 
-    def on(self, request_starts: str, replies: list[Any]) -> "RoutedLLM":
-        self._scripts.append((request_starts, list(replies)))
+    def on(self, request_starts: str, replies: list[Any], *, raw: bool = False) -> "RoutedLLM":
+        """`raw`: match the prompt's own start, not its `User Request:` (an automated follow-up's)."""
+        self._scripts.append((request_starts, list(replies), raw))
         return self
 
     def otherwise(self, replies: list[Any]) -> "RoutedLLM":
@@ -44,8 +45,8 @@ class RoutedLLM:
 
         prompt = str(kwargs.get("prompt_msg") or (args[0] if args else ""))
         matched, script = None, None
-        for starts, replies in self._scripts:
-            if prompt.startswith(f"User Request: {starts}"):
+        for starts, replies, raw in self._scripts:
+            if prompt.startswith(starts if raw else f"User Request: {starts}"):
                 matched, script = starts, replies
                 break
         self.calls.append({**kwargs, "_matched": matched})

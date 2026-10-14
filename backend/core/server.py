@@ -720,6 +720,24 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Zombie run sweep failed: {e}")
 
+        # --- Background helpers a restart cut short: each conversation told (SUB1a) ---
+        try:
+            from core.helpers import sweep_interrupted as _sweep_helpers
+            from core.scale.config import get_scale_config as _helper_scale_cfg
+            _helper_redis = None
+            if _helper_scale_cfg().scale_mode:
+                from core.scale.pubsub import get_redis_client as _helper_client
+                _helper_redis = _helper_client(_helper_scale_cfg().redis_url)
+            try:
+                told = await _sweep_helpers(redis=_helper_redis)
+            finally:
+                if _helper_redis is not None:
+                    await _helper_redis.aclose()
+            if told:
+                print(f"Told {told} conversation(s) about background helpers the restart ended")
+        except Exception as e:
+            print(f"Warning: Background helper sweep failed: {e}")
+
         # --- Notification hub: observe run events + surface missed pauses ---
         try:
             import core.server as _server_mod

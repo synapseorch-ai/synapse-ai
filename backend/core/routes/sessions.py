@@ -65,6 +65,29 @@ async def get_sessions(agent_id: str | None = Query(default=None)):
             if not _the_builders_own(s) and not _a_runs_own(s) and not _an_api_turns_own(s)]
 
 
+async def _background_helpers_as_they_are(turns: list[dict]) -> None:
+    """A background helper's record as its own conversation holds it now (SUB1a).
+
+    The turn that sent it saved it as it started; it works on, and ends, in a
+    conversation of its own (`helperc_…`), whose row says how it went and what it
+    did. A reopened page draws its lane from that.
+    """
+    from core.store import sessions as store
+
+    for turn in turns:
+        for kept in turn.get("helpers") or []:
+            if kept.get("mode") != "background" or not kept.get("session_id"):
+                continue
+            row = await store.get(kept["session_id"], kept.get("id") or "")
+            if row is None:
+                continue
+            ended = next((m.get("helper") for m in reversed(row.get("messages") or []) if m.get("helper")), None)
+            if ended:
+                kept.update({k: ended[k] for k in ("status", "seconds", "calls", "answer", "error") if k in ended})
+            else:
+                kept["status"] = "running" if row.get("status") == "running" else (row.get("status") or "running")
+
+
 @router.get("/api/sessions/{session_id}/history")
 async def get_session_history(session_id: str, agent_id: str | None = Query(default=None)):
     """Return the full list of turns for a session — and what is still open in it.
@@ -78,6 +101,7 @@ async def get_session_history(session_id: str, agent_id: str | None = Query(defa
     from core.store import sessions as store
 
     turns = await _get_conversation_history(session_id, agent_id=agent_id)
+    await _background_helpers_as_they_are(turns)
     turn = chat_turns.live(session_id)
     pending = await store.get_pending_approval(session_id, agent_id or "default")
     return {

@@ -908,6 +908,9 @@ async def run_agent_step(
     save_turn: bool = True,               # False = keep the turn out of the conversation (the OpenAI endpoint's own)
     extra_tools=None,                     # [(tool, async handler(args) -> str)]: the caller's own tools for this turn (VOX1a)
     model_roles: dict | None = None,      # the run's {role: model} (BWA1's MODEL_ROLES_KEY): a helper model naming a role
+    inbox=None,                           # core.helpers.Inbox: a root chat turn's, read between model calls (SUB1a)
+    background: bool = False,             # its helpers may work in the background (the app's chat only, S4)
+    automated: dict | None = None,        # a follow-up nobody typed: the helper result it answers (SUB1a)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1061,7 +1064,8 @@ async def run_agent_step(
             if n and n != SPAWN_SUBTASK_TOOL_NAME
         ]
         if _spawn_subtask_available_tools:
-            spawn_tool = build_dynamic_spawn_subtask_tool(_spawn_subtask_available_tools)
+            spawn_tool = build_dynamic_spawn_subtask_tool(
+                _spawn_subtask_available_tools, background=bool(background and inbox is not None))
             # Remove any static placeholder that may have been loaded via aggregate_all_tools
             all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) != SPAWN_SUBTASK_TOOL_NAME]
             all_tools.append(spawn_tool)
@@ -1386,7 +1390,10 @@ async def run_agent_step(
                  "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
                 for t in all_tools
             ])
-    current_context_text = f"User Request: {user_message}\n"
+    from core import helpers as _helpers
+    # A follow-up a helper's result started (SUB1a) says so where a person's words would be.
+    current_context_text = (_helpers.automated_opening(automated, user_message) if automated
+                            else f"User Request: {user_message}\n")
     final_response = ""
     _ran_out = False  # the loop spent every turn, rather than breaking out
     # Why the answer is the loop's words and not the model's (the repeat guard,
@@ -1671,6 +1678,7 @@ async def run_agent_step(
                 reasoning=_turn_reasoning,
                 thoughts=_turn_thoughts,
                 helpers=_turn_helpers,
+                automated=automated,
             )
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
@@ -1691,7 +1699,6 @@ async def run_agent_step(
     # Each runs on this agent's model unless it names a helper model (S5, F538),
     # starts as marked as this turn is (F279), and counts against the cap where
     # this turn runs; what each did is kept with this turn.
-    from core import helpers as _helpers
     _helper_cap = _helpers.cap_key(session_id, workflow_step=_workflow_step)
 
     async def _send_helpers(group: list[dict]):
@@ -1720,6 +1727,34 @@ async def run_agent_step(
                 yield event
         _spawn_results = [(r.name, r.result_for_parent()) if isinstance(r, _helpers.Helper) else r
                           for r in results]
+
+    def _in_background(args: dict) -> bool:
+        """A spawn that asks for the background, where this turn may run one (the app's chat, S4)."""
+        return bool(background and inbox is not None and isinstance(args, dict) and args.get("background") is True)
+
+    async def _send_to_background(args: dict):
+        """Start one helper in the background; what the model reads lands in `_spawn_results`."""
+        nonlocal _spawn_results
+        helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
+                                available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
+                                roles=model_roles, settings=current_settings, mode="background")
+        if not _helpers.reserve(_helper_cap, helper):
+            _spawn_results = [(helper.name, _helpers.AT_CAP.format(n=_helpers.MAX_LIVE))]
+            return
+        try:
+            await _helpers.start_background(helper, conversation=inbox.conversation, key=_helper_cap,
+                                            server_module=server_module, untrusted=_memory_tainted)
+        except Exception as exc:  # noqa: BLE001 — told to the model, which carries on
+            _helpers.release(_helper_cap, helper.id)
+            _log.warning(f"background helper '{helper.name}' did not start: {exc}")
+            _spawn_results = [(helper.name, f"The helper could not be started: {exc}")]
+            return
+        yield helper.started_event()
+        _turn_helpers.append(helper.record())
+        withheld = f"Not given to the sub-agent: {'; '.join(helper.withheld)}.\n\n" if helper.withheld else ""
+        _spawn_results = [(helper.name, (
+            f"{withheld}Helper '{helper.name}' started in the background. Its result comes back to you when it "
+            "finishes; carry on with other work, or end your turn."))]
 
     # Browser tools produce DOM snapshots that are only useful for the current turn.
     # Previous snapshots become stale the moment the page changes, so we skip
@@ -1877,6 +1912,20 @@ async def run_agent_step(
                         "reduction_pct": (_compact_stats or {}).get("reduction_pct", 0),
                         "archive_path": _compact_path,
                     }
+
+            # ── The inbox (SUB1a): what this turn's helpers sent back since it last looked ──
+            # Read here, before every model call (retries included), as one automated
+            # block in the transcript, so a pause's snapshot keeps it. A helper's result
+            # is tool output: the turn holds content nobody typed (F279).
+            if inbox is not None:
+                _arrived = inbox.drain()
+                if _arrived:
+                    current_context_text += _helpers.render_inbox(_arrived)
+                    active_prompt = current_context_text
+                    _memory_tainted = True
+                    yield {"type": "helper_results_read",
+                           "items": [{"helper_id": i.get("helper_id"), "name": i.get("name"),
+                                      "status": i.get("status")} for i in _arrived]}
 
             # Safety guard: truncate if too long
             total_prompt_chars = len(active_prompt) + len(volatile_tail) + len(active_sys_prompt) + len(memory_context)
@@ -2590,16 +2639,24 @@ async def run_agent_step(
 
                 # ===== SPAWN_SUBTASK =====
                 if tool_name == SPAWN_SUBTASK_TOOL_NAME and _spawn_subtask_enabled:
-                    if not _spawn_results:
+                    if _in_background(tool_args):
+                        # Started here and not waited for (S2, S3): this turn goes on, and
+                        # may end; the result comes back once, between this agent's model
+                        # calls or as a turn of its own. No id in what the model reads, so
+                        # the repeat guard still sees a repeat (F476).
+                        async for _e in _send_to_background(tool_args):
+                            yield _e
+                    elif not _spawn_results:
                         # This call, and the spawns straight after it in this reply
                         # when every spawn may run (the gate decides them alike),
                         # side by side; one an approval let through runs alone.
                         _group = [tool_args]
                         if _spawn_may_run:
                             for _next in tool_calls[_call_index + 1:]:
-                                if _next.get("tool") != SPAWN_SUBTASK_TOOL_NAME:
+                                _next_args = _next.get("arguments") or {}
+                                if _next.get("tool") != SPAWN_SUBTASK_TOOL_NAME or _in_background(_next_args):
                                     break
-                                _group.append(_next.get("arguments") or {})
+                                _group.append(_next_args)
                         async for _e in _send_helpers(_group):
                             yield _e
                     sub_name, result_text = _spawn_results.pop(0)
@@ -3115,6 +3172,8 @@ async def run_agent_step(
     # delegated hand-off, which is work done for another agent, not a chat, and
     # for a workflow's step, F261)
     if not is_orchestrator and persist_turn and not _workflow_step and save_turn:
+        # The helpers' results this answer read (SUB1a): kept with it, so each is known to have arrived.
+        _inbox_read = inbox.in_flight_ids() if inbox is not None else []
         try:
             await _save_conversation_turn(
                 session_id=session_id,
@@ -3130,7 +3189,11 @@ async def run_agent_step(
                 # the widget shows none, and they name the owner's files.
                 citations=_kn_citations if _visitor is None else None,
                 helpers=_turn_helpers,
+                automated=automated,
+                inbox_read=_inbox_read,
             )
+            if inbox is not None:
+                inbox.settle()
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
 
@@ -3460,6 +3523,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         user_message = request.message
     # A file read into the message is content nobody typed (F279).
     _file_in_message = any(getattr(m, "outcome", "") == "inlined" for m in _mentions)
+    # A follow-up a helper's result started (SUB1a): nobody typed it, and it is tool output.
+    _automated = getattr(request, "_automated", None) or None
 
     # Merge client state
     ss = _get_session_state(session_id)
@@ -3546,6 +3611,24 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         user_message=user_message,
     )
     _log_status = "completed"
+    # The app's own chat turn has an inbox for its helpers' results (SUB1a): open from here until it answers,
+    # stops or parks. Never a visitor's — a widget turn runs the same stream — and never an API caller's.
+    from core import helpers as _helpers
+    from core import visitor as _visitor_scope
+    _inbox = None
+    if getattr(request, "_app_chat", False) and _visitor_scope.current() is None:
+        from core.chat_turns import current_turn as _current_turn
+        from core.tenancy import get_tenant as _tenant
+        _held = _current_turn.get()
+        _inbox = _helpers.Inbox(
+            _helpers.Conversation(session_id=session_id,
+                                  agent_key=(_held.agent_key if _held is not None else None)
+                                  or request.agent_id or "default",
+                                  agent_id=active_agent.get("id") or "default", tenant=_tenant() or ""),
+            state=(resume_state or {}).get("inbox"),
+        )
+        _inbox.add(getattr(request, "_inbox_seed", None) or [])
+        _inbox.open()
     try:
         agent_max_turns = active_agent.get("max_turns") or None
         async for event in run_agent_step(
@@ -3558,13 +3641,24 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             should_stop=should_stop,
             progress_events=progress_events,
             resume_state=resume_state,
-            untrusted_message=_file_in_message,
+            untrusted_message=_file_in_message or bool(_automated),
             stream_answer=stream_answer,
             history_override=history_override,
             system_prompt_extra=_caller_instructions(caller_system),
             save_turn=save_turn and save_here,
             extra_tools=extra_tools,
+            inbox=_inbox,
+            # Not from a follow-up: a helper's result never sends another helper away.
+            background=_inbox is not None and not _automated,
+            automated=_automated,
         ):
+            if _inbox is not None and event.get("type") == "human_input_required":
+                # Parked: what its helpers sent and the turn has not answered stays
+                # with the question, for the resume to read (`_event_stream` parks it).
+                yield {"type": "_inbox_parked", "state": _inbox.park()}
+            elif _inbox is not None and event.get("type") == "final":
+                # Answered: what arrived after its last look goes back another way.
+                _helpers.redeliver(_inbox.conversation, _inbox.close())
             _agent_log.log_event(event)
             yield event
     except asyncio.CancelledError:
@@ -3576,5 +3670,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         _log_status = "error"
         raise
     finally:
+        if _inbox is not None and _inbox.is_open:
+            # Stopped, failed or left: nothing it read was answered, so all of it goes back.
+            _helpers.redeliver(_inbox.conversation, _inbox.close())
         _agent_log.run_end(_log_status)
         _agent_log.close()
