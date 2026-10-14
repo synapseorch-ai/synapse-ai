@@ -2450,6 +2450,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if not name:
             return {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
         url = str(args.get("url") or "").strip()
+        from core.builder_guard import PLACES_CALLS, places_calls
+        if places_calls(url, args.get("method")):
+            # Outbound calls wait for VOX2's consent model (V20, F497): the builder never makes a tool that dials.
+            return {"error": PLACES_CALLS}
         refused = await _refuse_inward_url(url)
         if refused:
             return refused
@@ -2507,6 +2511,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         except ValueError as exc:
             return {"error": str(exc)}
 
+        # An operation that starts a phone call is left out, and said (F497); the rest of the API still comes in.
+        from core.builder_guard import PLACES_CALLS, places_calls
+        left_out = [t["name"] for t in generated if places_calls(t.get("url") or "", t.get("method"))]
+        generated = [t for t in generated if t["name"] not in left_out]
+        if not generated:
+            return {"error": PLACES_CALLS}
+
         info = spec.get("info") or {}
         group_name = (
             str(args.get("group") or "").strip()
@@ -2534,6 +2545,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "name": group_name,
             "tool_names": [t["name"] for t in generated],
             "count": len(generated),
+            **({"left_out": left_out, "why": PLACES_CALLS} if left_out else {}),
         }
 
     elif tool_name == "delete_custom_tool":

@@ -15,6 +15,9 @@ Every name is checked with the engine's own resolver (`core.tools.resolve_one_to
 - `missing_in(workflows, agents)` — for `validate_orchestration`: a forced tool step naming one is an issue (it fails
   on the first run, certainly); an agent naming one is a warning, since a workspace's own older agents may name a
   tool from a server that has gone, and refusing every build that uses them would be a new failure.
+
+And one thing it may not make at all (F497): `places_calls(url, method)` — an HTTP tool that starts an outbound phone
+call, which waits for VOX2's consent model.
 """
 from __future__ import annotations
 
@@ -324,3 +327,38 @@ async def unapproved(workflows: list[dict], agents: dict[str, dict], server_modu
                             f"{{\"tool:{name}\": \"confirm\"}} (update_agent's tool_policy); or, if the person said it "
                             "may act without asking, the plan lists it under 'Acts without asking'.", own)
     return issues, warnings
+
+
+# ── A tool that places phone calls (F497) ────────────────────────────────────────────────────────────────────────
+
+#: The endpoints that start an outbound call, as (host, path) patterns: a POST to one dials a number. Outbound calls
+#: wait for VOX2, which brings the consent an AI voice calling someone needs (V20: TCPA/FCC 24-17, AB 2905, SHAKEN/
+#: STIR, TRAI); until then the AI builder never makes such a tool. A tool a person saves is theirs (D204).
+_CALL_PLACING = tuple((re.compile(host, re.I), re.compile(path, re.I)) for host, path in (
+    (r"^api\.twilio\.com$", r"/calls(\.json)?/?$"),
+    (r"^api\.telnyx\.com$", r"^/v2/calls/?$"),
+    (r"(^|\.)(nexmo|vonage)\.com$", r"^/v1/calls/?$"),
+    (r"^api\.plivo\.com$", r"/call/?$"),
+    (r"^voice\.bandwidth\.com$", r"/calls/?$"),
+    (r"(^|\.)api\.sinch\.com$", r"/callouts/?$"),
+    (r"^api\.vapi\.ai$", r"^/call(/phone)?/?$"),
+    (r"^api\.bland\.ai$", r"^/v1/calls/?$"),
+    (r"^api\.retellai\.com$", r"/create-phone-call/?$"),
+))
+
+#: What the builder says instead, in the can't-do answer's words (`builder_help`'s capabilities).
+PLACES_CALLS = ("This product does not place phone calls yet: its phone line answers incoming calls, and calling out "
+                "waits until it can record each person's consent to be called by an AI voice. The nearest thing that "
+                "works: an agent drafts the message and sends it by email or on a chat channel, and a person can "
+                "approve it first.")
+
+
+def places_calls(url: str, method: str | None) -> bool:
+    """Whether an HTTP tool with this URL and method starts a phone call (F497). A GET only reads a call log."""
+    from urllib.parse import urlsplit
+
+    if (method or "GET").upper() in ("GET", "HEAD", "OPTIONS"):
+        return False
+    parts = urlsplit(str(url or "").strip())
+    host, path = (parts.hostname or ""), parts.path or ""
+    return any(h.search(host) and p.search(path) for h, p in _CALL_PLACING)
