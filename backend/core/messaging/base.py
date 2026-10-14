@@ -321,6 +321,7 @@ class MessagingAdapter(ABC):
                 agent_id=active_agent_id,
                 session_id=session_id,
                 channel_id=self.channel_id,
+                chat_id=chat_id,
             )
         except Exception as e:
             logger.error("[%s] Agent run failed: %s", self.platform, e)

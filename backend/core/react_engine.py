@@ -1054,6 +1054,9 @@ async def run_agent_step(
         and SPAWN_SUBTASK_TOOL_NAME in (active_agent.get("tools") or [])
     )
     _spawn_subtask_available_tools: list[str] = []
+    # Background where the caller opened an inbox — and never on a visitor's turn, whoever the caller is (S6).
+    from core import visitor as _visitor_now
+    _background_offered = bool(background and inbox is not None and _visitor_now.current() is None)
     if _spawn_subtask_enabled:
         # Collect all tool names currently available to this agent (excluding spawn_subtask itself)
         _spawn_subtask_available_tools = [
@@ -1066,7 +1069,7 @@ async def run_agent_step(
         ]
         if _spawn_subtask_available_tools:
             spawn_tool = build_dynamic_spawn_subtask_tool(
-                _spawn_subtask_available_tools, background=bool(background and inbox is not None))
+                _spawn_subtask_available_tools, background=_background_offered)
             # Remove any static placeholder that may have been loaded via aggregate_all_tools
             all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) != SPAWN_SUBTASK_TOOL_NAME]
             all_tools.append(spawn_tool)
@@ -1777,7 +1780,7 @@ async def run_agent_step(
 
     def _in_background(args: dict) -> bool:
         """A spawn that asks for the background, where this turn may run one (the app's chat, S4)."""
-        return bool(background and inbox is not None and isinstance(args, dict) and args.get("background") is True)
+        return bool(_background_offered and isinstance(args, dict) and args.get("background") is True)
 
     async def _send_to_background(args: dict):
         """Start one helper in the background; what the model reads lands in `_spawn_results`."""

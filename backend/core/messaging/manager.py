@@ -242,12 +242,18 @@ class MessagingManager:
 
     async def run_agent(
         self, message: str, agent_id: str, session_id: str, channel_id: Optional[str] = None,
+        chat_id: Optional[str] = None,
     ) -> str:
         """
         Run an agent's ReAct loop and return the final text response.
 
         An Orchestrator agent runs its orchestration instead (F71): the reply is
         the orchestration's answer, its error, or where it paused.
+
+        A member's own channel (no visitor in scope, and a chat to answer in) may
+        send a helper to the background (S4, SUB1b): the turn has an inbox, as the
+        app's chat has, and a result that arrives after it answered comes back as
+        one follow-up in the same chat (`follow_up_in_channel`).
         """
         from core.react_engine import resolve_agent_for_run, run_agent_step
         try:
@@ -260,8 +266,15 @@ class MessagingManager:
         if agent and agent.get("type") == "orchestrator":
             return strip_labels(await self._run_orchestrator(agent, message, session_id, channel_id))
 
+        from core import helpers, visitor
         from core.chat_approval import nobody_to_ask
+        from core.tenancy import get_tenant
 
+        inbox = None
+        if channel_id and chat_id and visitor.current() is None:
+            inbox = helpers.Inbox(helpers.Conversation(
+                session_id=session_id, agent_key=agent_id, agent_id=agent_id, tenant=get_tenant() or "",
+                reply_to={"channel_id": channel_id, "chat_id": str(chat_id)})).open()
         final_response = ""
         try:
             # A channel parks no approval, so nobody can answer one here: a
@@ -275,6 +288,8 @@ class MessagingManager:
                     server_module=self.server_module,
                     max_turns=15,
                     allowed_tools_override=None,
+                    inbox=inbox,
+                    background=inbox is not None,
                 ):
                     if event.get("type") == "final":
                         final_response = event.get("response", "")
@@ -285,6 +300,10 @@ class MessagingManager:
             logger.error("[Manager] run_agent error (agent=%s): %s", agent_id, e)
             final_response = FAILED_REPLY
         finally:
+            if inbox is not None:
+                # What arrived after its last look, or was read by an answer never saved, goes back as a
+                # follow-up in this chat.
+                helpers.redeliver(inbox.conversation, inbox.close())
             # A channel turn never parks: what it claimed on a board is open again (BOARD1a).
             from core.boards import resolve as _board_resolve
             await _board_resolve.release(f"session:{session_id}", settings=None, why="the channel turn ended")
@@ -491,6 +510,59 @@ async def send_human_prompt(
         await adapter.send_message(conversation, text)
     else:
         logger.warning("[Manager] run %s: %s has no sender in this process; question not sent", run_id, platform)
+
+
+async def follow_up_in_channel(conversation, text: str, mark: dict) -> None:
+    """A helper's result in a member's messaging channel (SUB1b): one turn of the agent that sent it, whose
+    question is the result — read as automated and untrusted, saved with its mark, nobody to ask — and its
+    answer sent to the chat the helper was sent from."""
+    import core.server as _server
+    from core.chat_approval import nobody_to_ask
+    from core.knowledge.citations import strip_labels
+    from core.react_engine import run_agent_step
+
+    target = conversation.reply_to or {}
+    final_response = ""
+    try:
+        with nobody_to_ask():
+            async for event in run_agent_step(
+                message=text,
+                agent_id=conversation.agent_id,
+                session_id=conversation.session_id,
+                server_module=_server,
+                max_turns=15,
+                untrusted_message=True,
+                automated=mark,
+            ):
+                if event.get("type") == "final":
+                    final_response = event.get("response", "")
+    except Exception as e:  # noqa: BLE001 — the chat is told, as a turn's failure is (F133)
+        logger.error("[Manager] helper follow-up error (agent=%s): %s", conversation.agent_id, e)
+        final_response = FAILED_REPLY
+    reply = strip_labels(final_response)
+    if reply:
+        await send_to_chat(str(target.get("channel_id") or ""), str(target.get("chat_id") or ""), reply)
+
+
+async def send_to_chat(channel_id: str, chat_id: str, text: str) -> None:
+    """Send `text` to one chat of a channel from anywhere in this process: the platform's REST API, else the
+    running adapter (as `send_human_prompt` does). Says why in the log when it cannot."""
+    import core.server as _server
+    from core.messaging import senders
+
+    channel = await channel_store.get_channel(channel_id) if channel_id else None
+    if not channel or not channel.get("enabled", True) or not chat_id:
+        logger.warning("[Manager] channel %s is missing or disabled, or has no chat; message not sent", channel_id)
+        return
+    platform = channel.get("platform", "")
+    manager = getattr(_server, "messaging_manager", None)
+    adapter = manager.get_adapter(channel_id) if manager else None
+    if senders.supports_rest_send(platform):
+        await senders.send(platform, channel.get("credentials") or {}, chat_id, text)
+    elif adapter is not None:
+        await adapter.send_message(chat_id, text)
+    else:
+        logger.warning("[Manager] %s has no sender in this process; message not sent", platform)
 
 
 async def question_expired(run_id: str, *, now: Optional[float] = None) -> bool:

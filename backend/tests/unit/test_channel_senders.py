@@ -49,7 +49,7 @@ def manager(monkeypatch):
     m.scopes = []
     m.asked_waiting = 0
 
-    async def run_agent(message, agent_id, session_id, channel_id=None):
+    async def run_agent(message, agent_id, session_id, channel_id=None, chat_id=None):
         m.scopes.append(visitor.current())
         return "ok"
 

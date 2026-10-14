@@ -500,20 +500,28 @@ class Conversation:
     #: The id its turns are saved under: the agent the turn resolved.
     agent_id: str
     tenant: str = ""
+    #: Where its follow-up's answer is sent, when the conversation is a member's messaging channel (SUB1b):
+    #: OSS `{"channel_id", "chat_id"}`, a host's own shape otherwise. None for the app's chat.
+    reply_to: dict | None = field(default=None, compare=False, hash=False)
 
     @property
     def key(self) -> tuple:
         return (self.tenant, self.session_id, self.agent_key)
 
     def link(self) -> dict:
-        return {"parent_session_id": self.session_id, "agent_key": self.agent_key,
+        link = {"parent_session_id": self.session_id, "agent_key": self.agent_key,
                 "parent_agent_id": self.agent_id, "tenant": self.tenant}
+        if self.reply_to:
+            link["reply_to"] = dict(self.reply_to)
+        return link
 
     @classmethod
     def from_link(cls, link: dict) -> "Conversation":
+        reply_to = link.get("reply_to")
         return cls(session_id=str(link.get("parent_session_id") or ""), agent_key=str(link.get("agent_key") or
                    "default"), agent_id=str(link.get("parent_agent_id") or "default"),
-                   tenant=str(link.get("tenant") or ""))
+                   tenant=str(link.get("tenant") or ""), reply_to=dict(reply_to) if isinstance(reply_to, dict)
+                   else None)
 
 
 INBOX_HEADING = "Helper results (since your last step)"
@@ -911,13 +919,21 @@ async def deliver(conversation: Conversation, item: dict) -> str:
 
 def start_follow_up(conversation: Conversation, item: dict) -> None:
     """Start the agent's one follow-up turn on the conversation, its question the result. Raises
-    `TurnAlreadyRunning`, from the claim."""
-    import core.server as _server
+    `TurnAlreadyRunning`, from the claim. In a member's messaging channel, its answer is sent to the same chat."""
     from core import chat_turns
+
+    mark = automated_mark(item)
+    if conversation.reply_to:
+        with chat_turns.claim(conversation.session_id, message=str(item.get("text") or ""),
+                              agent_key=conversation.agent_key) as turn:
+            turn.automated = mark
+            turn.start(_in_the_channel(conversation, item, mark), context=_detached())
+        return
+
+    import core.server as _server
     from core.models import ChatRequest
     from core.routes.chat import _event_stream
 
-    mark = automated_mark(item)
     request = ChatRequest(message=str(item.get("text") or ""), session_id=conversation.session_id,
                           agent_id=None if conversation.agent_key == "default" else conversation.agent_key)
     request._app_chat = True
@@ -925,6 +941,18 @@ def start_follow_up(conversation: Conversation, item: dict) -> None:
     with chat_turns.claim(conversation.session_id, message=request.message, agent_key=conversation.agent_key) as turn:
         turn.automated = mark
         turn.start(_event_stream(request, _server, None, expand_mentions=False))
+
+
+async def _in_the_channel(conversation: Conversation, item: dict, mark: dict) -> AsyncIterator[str]:
+    """A follow-up in a member's messaging channel: the agent's turn, its answer sent to the chat (SUB1b).
+
+    Held by the conversation's claim, so a second result waits for it; yields nothing for the turn's log.
+    """
+    from core.messaging.manager import follow_up_in_channel
+
+    await follow_up_in_channel(conversation, str(item.get("text") or ""), mark)
+    return
+    yield  # an async generator: what `chat_turns` drives
 
 
 async def stop(session_id: str, helper_id: str) -> bool:
