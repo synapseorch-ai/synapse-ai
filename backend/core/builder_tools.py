@@ -2430,7 +2430,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         body_template = args.get("body_template")
         if body_template:
             tool["body"] = body_template
-        await save_tool(tool)
+        from core.tools import hinted
+        # Its method's hints, marked as the builder's: believed when they restrict, as a server's are (F488).
+        await save_tool(hinted(tool, by_builder=True))
         _emit(events, "tool", "created", name, name, tool)
         return {"status": "created", "id": name, "name": name}
 
@@ -2467,7 +2469,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         for t in generated:
             t["group"] = group["id"]
         await _upsert_group(group)
-        await save_tools(generated)
+        from core.tools import hinted
+        await save_tools([hinted(t, by_builder=True) for t in generated])
         # One event for the import, not one per operation: a 60-endpoint spec
         # would otherwise fill the panel with sixty identical banners.
         _emit(events, "tool", "created", group["id"], group_name,

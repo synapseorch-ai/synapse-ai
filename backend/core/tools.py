@@ -131,6 +131,48 @@ def describe_with_hints(description: str, hints: "ToolHints") -> str:
     return description or ""
 
 
+#: Who wrote a custom tool's hints when it was not the person: the AI builder's are a claim, believed only when they
+#: restrict (F488), as a third-party server's are.
+BUILDER_HINTS = "builder"
+
+
+def method_hints(method: str | None) -> dict:
+    """The MCP hints a custom HTTP tool declares from its method (F488, BWA1).
+
+    Every custom tool was undeclared, so a policy of `open_world: confirm` let a booking API's POST run with no
+    approval. GET reads (and reaches outside, as the built-in web tools say they do); DELETE destroys; every other
+    method changes something outside this workspace.
+    """
+    m = (method or "GET").upper()
+    if m in ("GET", "HEAD", "OPTIONS"):
+        return {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True}
+    if m == "DELETE":
+        return {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}
+    return {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}
+
+
+def hinted(tool: dict, *, by_builder: bool = False) -> dict:
+    """`tool` as it is saved: an HTTP tool that declares nothing gets its method's hints (F488).
+
+    Applied where a tool is created or saved, so a tool nobody has saved since keeps behaving as it did (Naveen's
+    call: new and edited tools only). Hints the person set are kept. The AI builder's are marked as its own.
+    """
+    if (tool.get("tool_type") or "http") != "http":
+        return tool
+    if not isinstance(tool.get("annotations"), dict):
+        tool["annotations"] = method_hints(tool.get("method"))
+    if by_builder:
+        tool["annotations_by"] = BUILDER_HINTS
+    return tool
+
+
+def custom_virtual_tool(ct: dict) -> "VirtualTool":
+    """A custom tool as the engine offers it, with the hints it was saved with (none for a tool saved before F488)."""
+    return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"},
+                       annotations=ct.get("annotations") if isinstance(ct.get("annotations"), dict) else None,
+                       trusted=ct.get("annotations_by") != BUILDER_HINTS)
+
+
 def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
     """The hints for one `Tool` or `VirtualTool`."""
     ann = getattr(tool, "annotations", None)
@@ -338,7 +380,7 @@ async def resolve_one_tool(server_module, name: str, active_agent: dict, custom_
         if ct.get("name") != name:
             continue
         if permits(allowed, name) or (group_ids and ct.get("group") in group_ids):
-            return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"})
+            return custom_virtual_tool(ct)
         return None
 
     from core.builder_tools import BUILDER_TOOL_SCHEMAS, OPT_IN_BUILDER_TOOLS, builder_tool_offered
@@ -505,7 +547,7 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *,
     for ct in custom_tools_list:
         in_group = bool(group_ids) and ct.get("group") in group_ids
         if permits(allowed_tools, ct['name']) or in_group:
-            vt = VirtualTool(ct['name'], ct['description'], ct['inputSchema'])
+            vt = custom_virtual_tool(ct)
             all_tools.append(vt)
             tool_schema_map[vt.name] = vt.inputSchema
 

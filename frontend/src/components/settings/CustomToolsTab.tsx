@@ -6,6 +6,7 @@ import { PythonToolEditor, type PythonDraftTool } from './PythonToolEditor';
 import { OpenApiImport } from './OpenApiImport';
 import { Badge, Button, buttonStyles, CodeEditor, ConfirmDialog, Label, Select, TemplateInput, TemplateScope, schemaArgs } from '@/components/ui';
 import { AppScreen } from '@/components/app/AppScreen';
+import { annotationsFor, effectOf, effectOfMethod, TOOL_EFFECTS, type ToolEffect } from '@/lib/toolHints';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -366,10 +367,31 @@ export const CustomToolsTab = ({
                                 <Label className="block">Method</Label>
                                 <Select
                                     value={draftTool.method || 'POST'}
-                                    onChange={v => setDraftTool({ ...draftTool, method: v })}
+                                    onChange={v => setDraftTool({
+                                        ...draftTool,
+                                        method: v,
+                                        // What it does follows the method until the person says otherwise (F488).
+                                        annotations: draftTool.annotations
+                                            && effectOf(draftTool.annotations, draftTool.method) !== effectOfMethod(draftTool.method || 'POST')
+                                            ? draftTool.annotations : undefined,
+                                    })}
                                     aria-label="HTTP method"
                                     options={['POST', 'GET', 'PUT', 'DELETE'].map(m => ({ value: m, label: m }))}
                                 />
+                            </div>
+
+                            {/* What it does (F488): the tool policy decides from this whether it asks first. */}
+                            <div className="space-y-1">
+                                <Label className="block">What it does</Label>
+                                <Select
+                                    value={effectOf(draftTool.annotations, draftTool.method || 'POST')}
+                                    onChange={v => setDraftTool({ ...draftTool, annotations: annotationsFor(v as ToolEffect) })}
+                                    aria-label="What the tool does"
+                                    options={TOOL_EFFECTS}
+                                />
+                                <p className="text-xs text-text-muted">
+                                    Your tool policy reads this: a tool that changes or deletes something can wait for a person before it runs.
+                                </p>
                             </div>
 
                             {/* Group */}

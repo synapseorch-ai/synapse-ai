@@ -125,7 +125,12 @@ async def _upsert_custom_tools(new_tools: list[dict]) -> None:
     rewrites every row to change one.
     """
     from core.store.resources import save_tools
-    await save_tools(new_tools)
+    from core.tools import hinted
+    # What the person creates or saves declares what it does (F488); a tool nobody saves keeps its old behaviour.
+    # Saved by the person, the builder's hints are theirs now: they saw them in the editor.
+    for t in new_tools:
+        t.pop("annotations_by", None)
+    await save_tools([hinted(t) for t in new_tools])
 
 
 @router.post("/api/tools/custom")
