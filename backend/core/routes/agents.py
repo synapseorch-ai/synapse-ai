@@ -127,7 +127,31 @@ async def create_agent(agent: Agent):
     # agent. The response carries what was stored, not what was asked for.
     document["tool_policy"] = clean_policy(document.get("tool_policy"))
     await save_agent(document)
-    return document
+    # Saved as given, and told (F526): a tool nothing here provides is silently missing at run time — Harbor's
+    # `web_search` transferred every weather ask for two sessions. Not refused: a server can be away a while.
+    return {**document, "unknown_tools": await _unknown_tools(document.get("tools") or [])}
+
+
+class ToolCheck(BaseModel):
+    tools: list[str]
+
+
+@router.post("/api/agents/tool-check")
+async def check_agent_tools(body: ToolCheck):
+    """The tools in a list that nothing here provides, with the nearest real names (F526): the agent's page marks
+    them when it opens, since an agent saved by a script or the API never went through the editor's save."""
+    return {"unknown_tools": await _unknown_tools(body.tools)}
+
+
+async def _unknown_tools(names: list) -> list[dict]:
+    import core.server as _server
+    from core import builder_guard
+
+    try:
+        return [{"name": name, "nearest": near} for name, near in await builder_guard.missing(names, _server)]
+    except Exception as exc:  # noqa: BLE001 — a check that cannot run says nothing, never refuses a save
+        logger.warning("could not check an agent's tools: %s", exc)
+        return []
 
 
 @router.delete("/api/agents/{agent_id}")

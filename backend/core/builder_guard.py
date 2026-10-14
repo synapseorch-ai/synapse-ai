@@ -10,6 +10,8 @@ Every name is checked with the engine's own resolver (`core.tools.resolve_one_to
 
 - `unknown(names)` — the names in a list that nothing provides; `create_agent(s)` and `update_agent` refuse them,
   with the nearest names that do exist, at the moment the builder writes them;
+- `missing(names)` — the same check for a person (F526): an agent saved through its editor or the API is told,
+  not refused, and its page marks the names;
 - `missing_in(workflows, agents)` — for `validate_orchestration`: a forced tool step naming one is an issue (it fails
   on the first run, certainly); an agent naming one is a warning, since a workspace's own older agents may name a
   tool from a server that has gone, and refusing every build that uses them would be a new failure.
@@ -53,6 +55,19 @@ async def _known_names(server_module: Any) -> list[str]:
         return sorted({getattr(t, "name", "") for t in tools if getattr(t, "name", "")})
     except Exception:  # noqa: BLE001 — suggestions are a courtesy
         return []
+
+
+async def missing(names: list[Any], server_module: Any, *, cutoff: float = 0.75) -> list[tuple[str, list[str]]]:
+    """Each name nothing provides, with the nearest names that do exist, for a person to read (F526, VOX1f): an
+    agent saved through its editor or the API, or shown on its page. `all` and `group:` are lists, not names.
+    The cutoff is closer than `unknown()`'s for the builder model: at 0.5 `smtp_send_mail` came back
+    "nearest: list_schedules" (BWA1, F492)."""
+    exists = await _resolver(server_module)
+    gone = [n for n in dict.fromkeys(names) if isinstance(n, str) and n and not await exists(n)]
+    if not gone:
+        return []
+    known = await _known_names(server_module)
+    return [(n, difflib.get_close_matches(n, known, n=3, cutoff=cutoff)) for n in gone]
 
 
 async def unknown(names: list[Any], server_module: Any) -> dict | None:

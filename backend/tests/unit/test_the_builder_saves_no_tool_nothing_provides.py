@@ -69,3 +69,18 @@ async def test_validation_fails_a_forced_tool_and_warns_on_an_agents():
     issues, warnings = await missing_in([workflow], agents, _Server())
     assert len(issues) == 1 and "fetch_invoices" in issues[0] and "first run would fail" in issues[0]
     assert len(warnings) == 1 and "gone_tool" in warnings[0] and "Old helper" in warnings[0]
+
+
+class TestForAPerson:
+    """F526 (VOX1f): `missing()` gives each name nothing provides with its nearest real ones, at a closer cutoff
+    than the builder's refusal, for an agent saved through its editor or the API."""
+
+    async def test_each_missing_name_with_its_nearest_real_ones(self):
+        from core import builder_guard
+        got = await builder_guard.missing(["list_agentz", "list_agents", "all", "group:g1", "list_agentz"], _Server())
+        assert [name for name, _ in got] == ["list_agentz"], "named once; lists and real tools are not missing"
+        assert "list_agents" in dict(got)["list_agentz"]
+
+    async def test_a_far_name_gets_no_guess(self):
+        from core import builder_guard
+        assert await builder_guard.missing(["smtp_send_mail"], _Server()) == [("smtp_send_mail", [])]
