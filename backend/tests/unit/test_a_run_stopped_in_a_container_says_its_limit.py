@@ -68,6 +68,27 @@ def slow_prints(monkeypatch):
     monkeypatch.setitem(steps_mod.STEP_EXECUTORS, StepType.PRINT, Slow())
 
 
+@pytest.fixture
+def held_prints(monkeypatch):
+    """A Print step that runs until the limit cuts it (F519).
+
+    A 0.4 s Print timed the cut against step boundaries: on a loaded machine a
+    branch could be between two steps — writing its checkpoint — when the limit
+    fired, and was left with no cut entry while the engine was right. Held, every
+    branch is inside its first step when the limit comes.
+    """
+    from core.models_orchestration import StepType
+    from core.orchestration import steps as steps_mod
+
+    class Held:
+        async def execute(self, step, run, engine):
+            await anyio.sleep_forever()
+            return
+            yield
+
+    monkeypatch.setitem(steps_mod.STEP_EXECUTORS, StepType.PRINT, Held())
+
+
 def _print(sid, nxt=None):
     return {"id": sid, "name": sid.title(), "type": "print", "print_content": "x",
             "output_key": f"o_{sid}", "next_step_id": nxt}
@@ -140,7 +161,7 @@ class TestAContainerAtTheTop:
         assert f"(what was left of {LIMIT})" in by_id["middle"]["error"]
         assert _reason(run) == by_id["outer"]["error"]
 
-    async def test_a_parallels_branches_are_entered_before_it(self, slow_prints):
+    async def test_a_parallels_branches_are_entered_before_it(self, held_prints):
         ceiling()
         fan = {"id": "fan", "name": "Fan", "type": "parallel", "next_step_id": None,
                "parallel_branches": [["a1", "a2", "a3", "a4"], ["b1", "b2", "b3", "b4"]]}

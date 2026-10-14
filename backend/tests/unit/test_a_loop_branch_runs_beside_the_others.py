@@ -15,7 +15,7 @@ reason one of its own branches has.
 import pytest
 
 from _fakes import seed as S
-from test_parallel_agents_run_together import DELAY, _Agents, _agent_step, _base_agents, _run, _status
+from test_parallel_agents_run_together import _Agents, _agent_step, _base_agents, _run, _status
 
 
 class _Recording(_Agents):
@@ -64,21 +64,23 @@ def _start(events):
 
 class TestALoopBranch:
     async def test_it_runs_beside_an_agent_branch(self, agents):
+        gate = agents.together(2)  # a0 and the loop's first iteration, in flight together (F519)
         events = await _run(_fanout([_agent_step("a0")], _loop("lp", _agent_step("lb"), 2)))
 
         assert _status(events) == "completed"
-        assert agents.start("lb") < agents.end("a0"), "the loop waited for the agent branch"
+        assert gate.held, "the loop waited for the agent branch"
         assert "in_order" not in _start(events)
         assert len(agents.spans["lb"]) == 2
 
     async def test_two_loops_with_their_own_keys_run_together_and_each_knows_where_it_is(self, agents):
+        gate = agents.together(2)
         events = await _run(_fanout(
             _loop("la", _agent_step("ba"), 2, loop_index_key="i_a"),
             _loop("lc", _agent_step("bc"), 3, loop_index_key="i_c"),
         ))
 
         assert _status(events) == "completed"
-        assert abs(agents.start("ba") - agents.start("bc")) < DELAY / 2, "the loops took turns"
+        assert gate.held, "the loops took turns"
         assert len(agents.told["ba"]) == 2 and len(agents.told["bc"]) == 3
         for i, told in enumerate(agents.told["ba"], 1):
             assert f"Loop iteration {i} of 2" in told and '"LA"' in told, told
@@ -142,10 +144,11 @@ class TestANestedParallel:
         inner = [{"id": "inner", "name": "Inner", "type": "parallel",
                   "parallel_branches": [["n1"], ["n2"]], "next_step_id": None},
                  _agent_step("n1"), _agent_step("n2")]
+        gate = agents.together(3)  # a0 beside both of the nested Parallel's branches
         events = await _run(_fanout([_agent_step("a0")], inner))
 
         assert _status(events) == "completed"
-        assert agents.start("n1") < DELAY / 2 and agents.start("n2") < DELAY / 2
+        assert gate.held, "the nested Parallel's branches did not run beside the others"
         assert "in_order" not in _start(events)
 
     async def test_it_keeps_its_order_when_a_branch_of_its_own_would(self, agents):

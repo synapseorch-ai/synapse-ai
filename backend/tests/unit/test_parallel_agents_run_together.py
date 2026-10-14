@@ -15,7 +15,10 @@ Those run afterwards, in order. A failed branch still fails the node once the
 running ones finish, and one waiting for a slot does not start. A branch that
 asks anyway is held until the others finish, and the node pauses on it.
 
-The fake agent sleeps a fixed 0.3 s, so "at the same time" is a wall-clock fact.
+The fake agent sleeps a fixed 0.3 s. "At the same time" is proven by the calls
+meeting at a gate (`_fakes/together.py`, F519); a time window a loaded machine
+stretches failed while the engine was right. "Afterwards" stays a time order —
+a later start is never earlier, however slow the machine.
 """
 import asyncio
 import re
@@ -85,6 +88,13 @@ class _Agents:
         self.fail: set[str] = set()
         self.ask: set[str] = set()
         self.tasks: dict[str, list[dict]] = {}
+        #: Calls that must overlap meet here first (F519); None: no gate.
+        self.gate = None
+
+    def together(self, n):
+        from _fakes.together import Together
+        self.gate = Together(n)
+        return self.gate
 
     def start(self, key):
         return min(s for s, _ in self.spans[key])
@@ -104,6 +114,8 @@ class _Agents:
                        "approval_id": f"ap_{key}", "tool_name": "danger", "tool_args": {},
                        "category": "destructive", "prompt": f"Allow {key}?"}
                 return
+            if self.gate is not None:
+                await self.gate.arrive()
             await asyncio.sleep(DELAY)
             if key in self.fail:
                 raise RuntimeError(f"{key} exploded")
@@ -135,32 +147,35 @@ async def agents(monkeypatch):
 
 class TestAgentBranchesOverlap:
     async def test_four_agent_branches_take_the_max_not_the_sum(self, agents):
+        gate = agents.together(4)
         events = await _run(_fanout([_agent_step(f"a{i}") for i in range(4)]))
 
         assert _status(events) == "completed"
         assert agents.most == 4, f"at most {agents.most} ran at once"
-        last_end = max(agents.end(f"a{i}") for i in range(4))
-        assert last_end < 2 * DELAY, f"the last branch ended at {last_end:.2f}s — they took turns"
+        assert gate.held, "the four branches were never in flight together — they took turns"
         state = (await _saved("run_par_agents")).shared_state
         assert all(state[f"o_a{i}"] == f"a{i} done" for i in range(4))
 
     async def test_no_more_than_four_run_at_once(self, agents):
+        gate = agents.together(4)  # four in flight together, so the count is the cap's, not the clock's
         events = await _run(_fanout([_agent_step(f"a{i}") for i in range(6)]))
 
         assert _status(events) == "completed"
-        assert agents.most == 4
+        assert gate.held and agents.most == 4
         assert sorted(agents.spans) == [f"a{i}" for i in range(6)]
 
     async def test_an_agent_branch_overlaps_the_llm_ones(self, agents, fake_llm, monkeypatch):
         for k, v in (("MIN", "0.3"), ("MAX", "0.3"), ("PROB", "1")):
             monkeypatch.setenv(f"SYNAPSE_FAKE_LLM_DELAY_{k}", v)
         fake_llm.set_default("branch output")
+        from _fakes.together import through
+        gate = through(fake_llm, agents.together(3), monkeypatch)
         events = await _run(_fanout([_llm("l1"), _agent_step("ag"), _llm("l2")]))
 
         assert _status(events) == "completed"
         llm_done = [e for e in events if e.get("type") == "step_complete" and e.get("orch_step_id") in {"l1", "l2"}]
         assert len(llm_done) == 2
-        assert agents.start("ag") < DELAY / 2, "the agent branch waited for the llm branches"
+        assert gate.held, "the agent branch waited for the llm branches"
 
 
 class TestABranchThatCanAskRunsAfterTheOthers:
@@ -170,23 +185,25 @@ class TestABranchThatCanAskRunsAfterTheOthers:
         (_agent_step("dlg", agent_id="a_delegate"), "delegates"),
     ])
     async def test_it_starts_once_the_others_are_done(self, agents, branch, why):
+        gate = agents.together(2)
         events = await _run(_fanout([_agent_step("a0"), branch, _agent_step("a1")]))
 
         assert _status(events) == "completed"
         key = branch["id"]
         others_done = max(agents.end("a0"), agents.end("a1"))
         assert agents.start(key) >= others_done - 0.01, f"'{key}' ran beside the others"
-        assert abs(agents.start("a0") - agents.start("a1")) < DELAY / 2, "the others did not overlap"
+        assert gate.held, "the others did not overlap"
         start = next(e for e in events if e.get("type") == "parallel_start")
         assert [(r["branch"], why in r["reason"]) for r in start["in_order"]] == [(1, True)]
 
     async def test_a_human_step_keeps_its_branch_in_order(self, agents):
         human = {"id": "ok", "name": "OK", "type": "human", "human_prompt": "ok?", "output_key": "h",
                  "next_step_id": None}
+        gate = agents.together(2)
         events = await _run(_fanout([_agent_step("a0"), human, _agent_step("a1")]))
 
         assert _status(events) == "paused"
-        assert abs(agents.start("a0") - agents.start("a1")) < DELAY / 2
+        assert gate.held, "the two agent branches did not overlap"
         start = next(e for e in events if e.get("type") == "parallel_start")
         assert start["in_order"] == [{"branch": 1, "reason": "a person answers a step in it"}]
 
@@ -323,12 +340,12 @@ class TestWorkflowBranches:
             monkeypatch.setenv(f"SYNAPSE_FAKE_LLM_DELAY_{k}", v)
         fake_llm.set_default("child output")
         await self._children(*[(f"child{i}", False) for i in range(3)])
-        t0 = time.perf_counter()
+        from _fakes.together import Together, through
+        gate = through(fake_llm, Together(3), monkeypatch)
         events = await _run(_fanout([_agent_step(f"w{i}", agent_id=f"agent_child{i}") for i in range(3)]))
-        elapsed = time.perf_counter() - t0
 
         assert _status(events) == "completed"
-        assert elapsed < 0.7, f"{elapsed:.2f}s — the workflows took turns"
+        assert gate.held, "the workflows' calls were never in flight together — they took turns"
         start = next(e for e in events if e.get("type") == "parallel_start")
         assert "in_order" not in start
 

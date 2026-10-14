@@ -21,7 +21,6 @@ No network: the transport is faked at `_open_remote`, where the real failures
 arrive, as `test_worker_mcp_isolation.py` does.
 """
 import asyncio
-import time
 
 import pytest
 
@@ -87,12 +86,22 @@ class _Provider:
 
 @pytest.fixture
 def net(monkeypatch):
-    """The transport: per-server delay and failure, and every URL opened."""
-    state = {"delay": {}, "fail": set(), "opened": []}
+    """The transport: per-server delay and failure, and every URL opened.
+
+    `gate` (a `Together`) makes connects that must overlap meet first; `held[name]`
+    keeps that server's connect open until the test sets it; `entered[name]` is set
+    once its connect has begun. Events, not time windows (F519).
+    """
+    state = {"delay": {}, "fail": set(), "opened": [], "gate": None, "held": {}, "entered": {}}
 
     async def fake_open_remote(exit_stack, url, headers):
         state["opened"].append(url)
         name = url.split("//", 1)[1].split(".", 1)[0]
+        state["entered"].setdefault(name, asyncio.Event()).set()
+        if state["gate"] is not None:
+            await state["gate"].arrive()
+        if name in state["held"]:
+            await state["held"][name].wait()
         await asyncio.sleep(state["delay"].get(name, 0))
         if name in state["fail"]:
             raise asyncio.CancelledError()  # what a 401 arrives as
@@ -177,21 +186,22 @@ class TestATurnConnectsWhatItNeeds:
         assert list(module.agent_sessions) == ["time", "ext_mcp_alpha", "ext_mcp_beta"]
 
     async def test_a_turn_that_needs_nothing_is_not_held_by_a_slow_server(self, pool, net):
+        from _fakes.together import GIVE_UP
         pool.servers = [_cfg("slow")]
-        net["delay"]["slow"] = 0.5
+        held = net["held"]["slow"] = asyncio.Event()  # the slow server connects only when let
+        entered = net["entered"].setdefault("slow", asyncio.Event())
         with tenant_scope("acme"):
             everything = asyncio.create_task(_acquire(None))
-            await asyncio.sleep(0.05)  # the slow connect is under way
-            started = time.monotonic()
-            module = await _acquire(frozenset())
-            waited = time.monotonic() - started
+            await asyncio.wait_for(entered.wait(), GIVE_UP)  # the slow connect is under way
+            # Answered while the slow server is still connecting: it never waited for one.
+            module = await asyncio.wait_for(_acquire(frozenset()), GIVE_UP)
             assert "ext_mcp_slow" not in module.agent_sessions
             assert not everything.done()
+            held.set()
             await everything
             await mcp_pool.release()
             await mcp_pool.release()
 
-        assert waited < 0.2, f"a turn needing no server waited {waited:.2f}s for one"
         assert "ext_mcp_slow" in module.agent_sessions, "and the warm-up still finished"
 
     async def test_two_turns_needing_one_server_connect_it_once(self, pool, net):
@@ -222,18 +232,18 @@ class TestTheWaitIsBounded:
     async def test_a_server_past_the_bound_fails_the_turn_names_the_tenant_and_is_stopped(
         self, pool, net, monkeypatch
     ):
+        from _fakes.together import GIVE_UP
         pool.servers = [_cfg("stuck")]
-        net["delay"]["stuck"] = 5
+        net["held"]["stuck"] = asyncio.Event()  # never set: it never connects
         monkeypatch.setattr(mcp_pool, "_build_timeout", lambda: 0.2)
         with tenant_scope("acme"):
             with pytest.raises(TimeoutError, match="stuck.*'acme'"):
                 await _acquire({"stuck__do_thing"})
-            # Stopped, not inherited: the next turn is told at once.
-            started = time.monotonic()
-            module = await _acquire({"stuck__do_thing"})
+            # Stopped, not inherited: the next turn is told at once — it would wait for
+            # ever on a connect that never ends if it had inherited the stopped one (F519).
+            module = await asyncio.wait_for(_acquire({"stuck__do_thing"}), GIVE_UP)
             await mcp_pool.release()
 
-        assert time.monotonic() - started < 0.2
         assert "ext_mcp_stuck" not in module.agent_sessions
         assert mcp_pool.stats()["tenants"]["acme"]["refs"] == 0, "the failed acquire kept its ref"
 
@@ -263,19 +273,19 @@ class TestAnEpochDuringAConnect:
 class TestConnectingAtOnce:
     @pytest.mark.parametrize("order", [["slow", "good", "bad"], ["bad", "good", "slow"]])
     async def test_the_slowest_sets_the_pace_and_the_list_sets_the_order(self, net, monkeypatch, order):
+        from _fakes.together import Together
         net["delay"].update({"slow": 0.4, "bad": 0.3})
         net["fail"].add("bad")
+        gate = net["gate"] = Together(3)
 
         async def resolve():
             return [_cfg(n) for n in order]
 
         monkeypatch.setattr("core.scale.context.resolve_mcp_servers", resolve)
         module = wsm.WorkerServerModule()
-        started = time.monotonic()
         await module._connect_user_mcp(set())  # noqa: SLF001 — every server, as before
-        took = time.monotonic() - started
 
-        assert took < 0.6, f"{took:.2f}s: the servers connected one after another (0.7s)"
+        assert gate.held, "the servers connected one after another"
         assert module.mcp_disabled == ["bad"]
         connected = [n for n in order if n != "bad"]
         assert list(module.agent_sessions) == [f"ext_mcp_{n}" for n in connected]

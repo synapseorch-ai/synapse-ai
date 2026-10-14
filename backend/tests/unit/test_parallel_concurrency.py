@@ -4,8 +4,9 @@ A parallel step's branches run at the same time.
 Branches of llm / transform / print / extract_json / if_else / switch / merge
 steps overlap, and since F255 so do agent and tool branches
 (`test_parallel_agents_run_together.py`). A branch that could stop to ask a
-person still runs alone, afterwards. The fake LLM sleeps for a fixed 0.3s here,
-so "at the same time" is a wall-clock fact.
+person still runs alone, afterwards. The fake LLM sleeps for a fixed 0.3s here;
+"at the same time" is proven by the calls meeting at a gate (`_fakes/together.py`,
+F519), never by a time window a loaded machine stretches.
 """
 import asyncio
 import time
@@ -57,13 +58,13 @@ def slow_llm(fake_llm, monkeypatch):
 
 
 class TestToolFreeBranchesOverlap:
-    async def test_three_llm_branches_take_the_max_not_the_sum(self, slow_llm):
-        t0 = time.perf_counter()
+    async def test_three_llm_branches_take_the_max_not_the_sum(self, slow_llm, monkeypatch):
+        from _fakes.together import Together, through
+        gate = through(slow_llm, Together(3), monkeypatch)
         events = await _run(_fanout([_llm("a"), _llm("b"), _llm("c")]))
-        elapsed = time.perf_counter() - t0
 
         assert any(e.get("type") == "parallel_complete" for e in events)
-        assert elapsed < 0.7, f"{elapsed:.2f}s — branches ran one after another"
+        assert gate.held, "the three branches' calls were never in flight together — they ran one after another"
         state = _final(events)
         assert all(state[f"o_{s}"] == "branch output" for s in "abc")
         assert set(state["joined"]) and len(state["joined"]) == 3
