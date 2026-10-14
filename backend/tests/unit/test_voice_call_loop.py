@@ -95,10 +95,11 @@ class ScriptedHost(VoiceHost):
 @pytest.fixture
 def saved(monkeypatch):
     """The conversation writes `VoiceCall` makes itself (a stopped turn, a parked one)."""
-    out = {"turns": [], "cuts": [], "marks": []}
+    out = {"turns": [], "cuts": [], "marks": [], "calls": []}
 
     async def save_turn(session_id, agent_id, user, assistant, tools=None, **kw):
         out["turns"].append((user, assistant, list(tools or [])))
+        out["calls"].append(kw.get("calls"))
 
     async def cut(session_id, agent_id, heard):
         out["cuts"].append(heard)
@@ -461,6 +462,71 @@ class TestBargeIn:
         socket = FakeSocket()
         await _drive(_call(host, socket), socket, _prompt("q"), 0.1, Interrupt("interrupt", heard="A long answer"))
         assert saved["cuts"] == ["A long answer"] and saved["turns"] == []
+
+
+class TestACutTurnKeepsWhatItDid:
+    """F477 (VOX1e, D263, call CA0b8498…): speech-to-text split "Can you check the prices of phone case, a
+    charger, and a watch? | And tell me which is cheapest?". The first turn searched "phone case" and said the
+    filler; the continuation stopped it after the tool and kept the tool's name only, so the next turn searched
+    "phone case" again and said "One moment…" again. A cut turn keeps its finished calls' results, as a barge-in
+    and a chat's Stop keep them; the filler is said once a request, not once a turn."""
+
+    SEARCH = {"type": "tool_execution", "tool_name": "shop_search_products", "args": {"query": "phone case"}}
+    FOUND = {"type": "tool_result", "tool_name": "shop_search_products", "preview": '{"products": []}'}
+
+    async def _split(self, host, socket):
+        gate = asyncio.Event()
+        host.scripts[0] = [self.SEARCH, ("wait", gate), self.FOUND, _delta("never said"), _final("never said")]
+        call = _call(host, socket)
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("Check the prices of a phone case, a charger and a watch?"))
+        await _until(lambda: call_mod.DEFAULT_FILLER in socket.words())
+        await socket.inbox.put(_prompt("And tell me which is cheapest?"))
+        await asyncio.sleep(0.05)
+        gate.set()
+        return call, task
+
+    async def test_its_finished_calls_are_kept_with_their_results(self, saved):
+        host = ScriptedHost([], [_final("The charger is cheapest.")])
+        socket = FakeSocket()
+        _, task = await self._split(host, socket)
+        await _until(lambda: "cheapest" in socket.words())
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert saved["turns"][0] == ("Check the prices of a phone case, a charger and a watch?", "",
+                                     ["shop_search_products"])
+        assert saved["calls"][0] == [{"tool": "shop_search_products", "args": {"query": "phone case"},
+                                      "result": '{"products": []}'}]
+
+    async def test_the_filler_is_said_once_for_the_request(self, saved):
+        again = [{"type": "tool_execution", "tool_name": "shop_search_products", "args": {"query": "charger"}},
+                 {"type": "tool_result", "tool_name": "shop_search_products", "preview": "[]"},
+                 _final("The charger is cheapest.")]
+        host = ScriptedHost([], again)
+        socket = FakeSocket()
+        _, task = await self._split(host, socket)
+        await _until(lambda: "cheapest" in socket.words())
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert socket.words().count(call_mod.DEFAULT_FILLER) == 1, socket.words()
+        assert saved["marks"][0] == ("Check the prices of a phone case, a charger and a watch?",
+                                     {"filler": [call_mod.DEFAULT_FILLER]}), "the log shows it once, where it was said"
+
+    async def test_a_new_request_after_an_answer_gets_its_own_filler(self, saved):
+        """Once a request: a request the caller makes after hearing an answer is a new one."""
+        tool = [{"type": "tool_execution", "tool_name": "shop_search_products", "args": {"query": "x"}},
+                {"type": "tool_result", "tool_name": "shop_search_products", "preview": "[]"}]
+        host = ScriptedHost(tool + [_final("First.")], tool + [_final("Second.")])
+        socket = FakeSocket()
+        call = _call(host, socket, timing=Timing(**{**FAST.__dict__, "silence_after": 5.0}))
+        task = asyncio.create_task(call.run())
+        await socket.inbox.put(_prompt("one"))
+        await _until(lambda: "First." in socket.words())
+        await socket.inbox.put(_prompt("two"))
+        await _until(lambda: "Second." in socket.words())
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert socket.words().count(call_mod.DEFAULT_FILLER) == 2
 
 
 class TestApprovals:

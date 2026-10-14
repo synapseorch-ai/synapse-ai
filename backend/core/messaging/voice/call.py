@@ -157,6 +157,7 @@ class _Turn:
         self.parked = False
         self.late: asyncio.Task | None = None  # "Still working on it", while a tool runs
         self.progress: dict | None = None  # the latest turn-boundary snapshot, for parking
+        self.events_since: list[dict] = []  # its calls' events since that snapshot: a cut keeps their results (F477)
         self.narrated = False          # the model's "let me check" was spoken this turn
         self.repeat_stopped = False    # the engine's repeat guard ended it
         self.after_closing = False     # the caller's reply to CLOSING_QUESTION: an end_call now ends the call
@@ -416,6 +417,10 @@ class VoiceCall:
                 text = f"{stopped.text} {text}"
         turn = _Turn(text)
         turn.after_closing = self._closing_asked or bool(stopped and stopped.after_closing)
+        if stopped is not None and stopped.answer is None and not stopped.sent_any:
+            # The caller is still asking the request the stopped turn heard, and has heard its filler: once a
+            # request, not once a turn (F477).
+            turn.filler = stopped.filler
         self._closing_asked = False
         self._turn = turn
         self._turn_task = asyncio.create_task(self._run_turn(turn))
@@ -465,6 +470,7 @@ class VoiceCall:
                 kind = event.get("type")
                 if kind == "_step_progress":
                     turn.progress = {k: v for k, v in event.items() if k != "type"}
+                    turn.events_since.clear()
                 elif kind == "answer_delta":
                     buffer += event.get("text") or ""
                     buffer = await self._flush(turn, buffer, final=False)
@@ -484,6 +490,7 @@ class VoiceCall:
                     turn.since_reset = ""
                 elif kind == "tool_execution":
                     turn.in_tool = True
+                    turn.events_since.append(event)
                     name = str(event.get("tool_name") or "")
                     turn.tools.append(name)
                     if name == turn.refused_tool:
@@ -492,6 +499,7 @@ class VoiceCall:
                         await self._filler(turn)  # a goodbye, a hand-off or bookkeeping needs no "one moment"
                 elif kind == "tool_result":
                     turn.in_tool = False
+                    turn.events_since.append(event)
                     if turn.late is not None:
                         turn.late.cancel()
                         turn.late = None
@@ -754,15 +762,19 @@ class VoiceCall:
     async def _save_cut(self, turn: _Turn, *, heard: str) -> None:
         """A turn stopped before the engine saved it: keep the question, what was heard, and its tools.
 
-        What was heard is what was sent, up to the end of the clause the caller was hearing.
+        What was heard is what was sent, up to the end of the clause the caller was hearing. Its finished calls
+        are kept with their results, as a chat's Stop keeps them: kept by name alone, the next turn's model saw
+        no result and ran the tool again (F477).
         """
-        from core.session import _save_conversation_turn
+        from core.session import _save_conversation_turn, turn_calls
         from core.store import sessions as _sessions
         said = _sessions.cut_at_heard(turn.since_reset, heard) if heard.strip() else ""
+        resumed = (turn.answer or {}).get("resume_state") if turn.answer is not None else None
+        calls = turn_calls(turn.progress, turn.events_since, resumed=resumed)
         async with self._history:
             with contextlib.suppress(Exception):
                 await _save_conversation_turn(self.session_id, self.agent_id, turn.text, said.strip(),
-                                              tools=turn.tools)
+                                              tools=turn.tools, calls=calls or None)
                 await _sessions.cut_last_answer(self.session_id, self.agent_id, "")
         await self._note_turn(turn)
 
