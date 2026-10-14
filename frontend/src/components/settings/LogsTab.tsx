@@ -69,9 +69,16 @@ const isoOf = (stamp?: string) => {
     return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
 
+const NO_LOGS: LogSummary[] = [];
+
 export const LogsTab = () => {
     const [logType, setLogType] = useState<LogType>('agents');
     const [logs, setLogs] = useState<LogSummary[]>([]);
+    // The kind `logs` was read for (F503). While a switch's read is out, the old kind's logs
+    // are not this kind's: the open one was fetched as the new kind's
+    // (`/api/logs/orchestrations/agentrun_…`, a 404) until the new list arrived.
+    const [logsType, setLogsType] = useState<LogType>('agents');
+    const readNo = useRef(0);
     const [runs, setRuns] = useState<Map<string, LogRun>>(new Map());
     const [selectedId, setSelectedId] = useState<string | null>(null);
     // A click on the open log reads it again.
@@ -92,6 +99,9 @@ export const LogsTab = () => {
     }, []);
 
     const fetchLogs = useCallback(async (isLoadMore = false) => {
+        // A read a newer one replaced (another kind, a refresh) is dropped when it lands.
+        const mine = isLoadMore ? readNo.current : ++readNo.current;
+        const type = logType;
         setLoading(true);
         if (!isLoadMore) {
             setSelectedId(null);
@@ -101,25 +111,38 @@ export const LogsTab = () => {
         }
 
         const currentOffset = isLoadMore ? offset : 0;
+        let applied = false;
 
         try {
-            const res = await fetch(`/api/logs/${logType}?limit=${LIMIT}&offset=${currentOffset}`);
-            if (res.ok) {
+            const res = await fetch(`/api/logs/${type}?limit=${LIMIT}&offset=${currentOffset}`);
+            if (res.ok && mine === readNo.current) {
                 const data = await res.json();
                 if (isLoadMore) {
                     setLogs(prev => [...prev, ...data]);
                 } else {
                     setLogs(data);
+                    setLogsType(type);
                 }
+                applied = true;
                 if (data.length < LIMIT) {
                     setHasMore(false);
                 }
                 setOffset(prev => isLoadMore ? prev + data.length : data.length);
             }
         } finally {
-            setLoading(false);
+            if (mine === readNo.current) {
+                setLoading(false);
+                // A failed read of another kind leaves that kind's list empty, not the old kind's.
+                if (!isLoadMore && !applied && type !== logsType) {
+                    setLogs(NO_LOGS);
+                    setLogsType(type);
+                }
+            }
         }
-    }, [logType, offset, fetchRuns]);
+    }, [logType, logsType, offset, fetchRuns]);
+
+    // Only the open kind's logs: none while a switch's read is out.
+    const current = logsType === logType ? logs : NO_LOGS;
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => { fetchLogs(); setFilterById('all'); }, [logType]);
@@ -134,8 +157,8 @@ export const LogsTab = () => {
 
     // Under Agents: hide logs a schedule started (they belong under Schedule logs).
     const visibleLogs = useMemo(
-        () => (logType === 'agents' ? logs.filter(l => l.source !== 'schedule') : logs),
-        [logs, logType],
+        () => (logType === 'agents' ? current.filter(l => l.source !== 'schedule') : current),
+        [current, logType],
     );
 
     // The names for the filter (by name, not run id).
@@ -207,7 +230,7 @@ export const LogsTab = () => {
 
     // The pane never opens empty: the newest log is open until another is picked.
     const openRow = rows.find(r => r.id === selectedId) ?? rows[0] ?? null;
-    const openLog = openRow ? logs.find(l => l.run_id === openRow.id) : undefined;
+    const openLog = openRow ? current.find(l => l.run_id === openRow.id) : undefined;
     const calledBy = logType === 'agents' && openLog?.source?.startsWith('orchestration:')
         ? openLog.source.slice('orchestration:'.length)
         : null;
@@ -232,7 +255,7 @@ export const LogsTab = () => {
 
     const actions = (
         <>
-            <span className="text-xs tabular-nums text-text-faint">{logs.length} log{logs.length !== 1 ? 's' : ''}</span>
+            <span className="text-xs tabular-nums text-text-faint">{current.length} log{current.length !== 1 ? 's' : ''}</span>
             <button
                 type="button"
                 aria-label="Refresh"
@@ -272,7 +295,7 @@ export const LogsTab = () => {
                     )}
                 </div>
 
-                {loading && logs.length === 0 ? (
+                {(loading || logsType !== logType) && current.length === 0 ? (
                     <p className="py-10 text-center text-sm text-text-faint">Loading...</p>
                 ) : rows.length === 0 ? (
                     <EmptyState title="No logs yet">

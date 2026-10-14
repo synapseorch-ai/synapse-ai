@@ -9959,6 +9959,38 @@ async def check_logfirst(browser) -> str:
 
 
 @check
+async def check_logswitch(browser) -> str:
+    """Switching kinds never reads the open log as the other kind's (F503): Agent logs → Workflow logs fetched the
+    open agent log's id as a workflow log (`/api/logs/orchestrations/agentrun_…`, a 404, "This log is no longer on
+    disk.") until the workflow list arrived, under the Workflow logs pill. Here that list is held for 2 s."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/logs/agents?*", _answer([{"run_id": "agentrun_smoke", "agent_name": "Smoke agent",
+                                                      "source": "chat", "session_id": "",
+                                                      "started_at": "2026-09-30 10:00:00", "file_size_kb": 1}]))
+    await ctx.route("**/api/logs/agents/*", _answer("hello\n", content_type="text/plain"))
+    await ctx.route("**/api/logs/orchestrations?*", _answer(_M2H_LOGS, hold=2.0))
+    await ctx.route("**/api/logs/orchestrations/*", _answer("STEP START\n", content_type="text/plain"))
+    page = await ctx.new_page()
+    crossed: list[str] = []
+    page.on("request", lambda r: crossed.append(r.url) if "/api/logs/orchestrations/agentrun_" in r.url else None)
+    try:
+        await page.goto(f"{APP}/logs", wait_until="domcontentloaded")
+        await page.locator('[data-log-row="agentrun_smoke"]').wait_for(timeout=30_000)
+        await page.get_by_role("button", name="Copy").wait_for(timeout=10_000)
+        await page.get_by_role("button", name=re.compile("^Workflow logs")).click()
+        await page.wait_for_timeout(500)
+        if await page.locator('[data-log-row="agentrun_smoke"]').count():
+            raise AssertionError("the agent log is still listed under Workflow logs")
+        await page.get_by_text("Loading...").wait_for(timeout=2_000)
+        await page.locator(f'[data-log-row="{_M2H_LOGS[0]["run_id"]}"]').wait_for(timeout=10_000)
+        if crossed:
+            raise AssertionError(f"the agent log was fetched as a workflow log: {crossed[0]}")
+    finally:
+        await ctx.close()
+    return "the agent log left the list at once, Loading... until the workflow logs came; no crossed read"
+
+
+@check
 async def check_logstatus(browser) -> str:
     """A workflow log says how its run went from the runs list (M2h): a failure in words, a finished run quiet,
     and a log with no run never reads as Failed."""
