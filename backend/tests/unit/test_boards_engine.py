@@ -336,7 +336,7 @@ class TestTheTools:
         assert f"There is no card {card.id} on your boards" in text and "Not yours" not in text
 
     async def test_a_secret_in_card_text_is_refused(self, boards_on, fake_llm):
-        await _turn(fake_llm, [tool_call("board_add", title="Deploy", body="key sk-proj-abcdefghijklmnopqrstu123"),
+        await _turn(fake_llm, [tool_call("board_add", title="Deploy", body="key " + "sk-" + "proj-" + "abcdefghijklmnopqrstu123"),
                                "done"], _agent(id="fixer"), **_wf())
         assert "looks like it holds a secret" in _observations(fake_llm, 1)
         assert await store.find_scoped_board("workflow", "wf_bugs") is None or not await store.list_cards(
