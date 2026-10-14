@@ -332,6 +332,19 @@ function RubricDetail({
     }, [orchId, loadTrend]);
 
     async function saveRubric() {
+        // The store would quietly put a bad scale back to 0–10 and a weight of 0 to 1 (F509): say so instead.
+        if (!(draft.scale.min < draft.scale.max)) {
+            onToast("Scale min must be below Scale max.", "danger");
+            return;
+        }
+        if (draft.criteria.some((c) => c.name.trim() && !((c.weight ?? 1) > 0))) {
+            onToast("A criterion's weight must be above 0.", "danger");
+            return;
+        }
+        if (!(Number.isInteger(draft.baseline_runs) && draft.baseline_runs >= 1)) {
+            onToast("Baseline runs must be a whole number, at least 1.", "danger");
+            return;
+        }
         setBusy(true);
         try {
             const body = {
@@ -520,6 +533,14 @@ function RubricDetail({
 
                     <div className="space-y-2">
                         <span className={SUB_LABEL}>Criteria</span>
+                        {draft.criteria.length > 0 && (
+                            <div aria-hidden className="flex gap-2 text-xs text-text-faint">
+                                <span className="w-40">Name</span>
+                                <span className="flex-1">Guidance</span>
+                                <span className="w-20">Weight</span>
+                                <span className="w-8" />
+                            </div>
+                        )}
                         {draft.criteria.map((criterion, index) => (
                             <div key={index} className="flex gap-2">
                                 <Input
@@ -541,6 +562,20 @@ function RubricDetail({
                                     onChange={(e) => {
                                         const next = [...draft.criteria];
                                         next[index] = { ...criterion, guidance: e.target.value };
+                                        setDraft({ ...draft, criteria: next });
+                                    }}
+                                />
+                                {/* How much it counts toward the score, told to the judge (F509). */}
+                                <Input
+                                    className="w-20"
+                                    type="number"
+                                    min={0.1}
+                                    step={0.5}
+                                    aria-label={`Criterion ${index + 1} weight`}
+                                    value={criterion.weight ?? 1}
+                                    onChange={(e) => {
+                                        const next = [...draft.criteria];
+                                        next[index] = { ...criterion, weight: e.target.value === "" ? undefined : Number(e.target.value) };
                                         setDraft({ ...draft, criteria: next });
                                     }}
                                 />
@@ -567,7 +602,7 @@ function RubricDetail({
                         </Button>
                         {draft.version !== undefined && (
                             <Muted className="block text-xs">
-                                Changing a criterion or the scale starts version {draft.version + 1}.
+                                Changing a criterion, a weight or the scale starts version {draft.version + 1}.
                                 Earlier scores stay on version {draft.version} and are not rewritten —
                                 the trend shows a break rather than comparing across the change.
                             </Muted>
@@ -575,6 +610,18 @@ function RubricDetail({
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-3">
+                        <Field label="Scale min">
+                            <Input
+                                type="number"
+                                value={draft.scale.min}
+                                onChange={(e) =>
+                                    setDraft({
+                                        ...draft,
+                                        scale: { ...draft.scale, min: Number(e.target.value) },
+                                    })
+                                }
+                            />
+                        </Field>
                         <Field label="Scale max">
                             <Input
                                 type="number"
@@ -609,6 +656,15 @@ function RubricDetail({
                                         drop: e.target.value === "" ? null : Number(e.target.value),
                                     })
                                 }
+                            />
+                        </Field>
+                        <Field label="Baseline runs" hint="How many recent runs a fall is measured against.">
+                            <Input
+                                type="number"
+                                min={1}
+                                step={1}
+                                value={draft.baseline_runs}
+                                onChange={(e) => setDraft({ ...draft, baseline_runs: Number(e.target.value) })}
                             />
                         </Field>
                     </div>
@@ -935,7 +991,7 @@ function SetDetail({
                         )}
 
                         {draft.cases.map((c, index) => (
-                            <div key={index} className="flex gap-2">
+                            <div key={index} className="flex items-start gap-2">
                                 <Input
                                     className="w-40"
                                     aria-label={`Case ${index + 1} name`}
@@ -947,17 +1003,30 @@ function SetDetail({
                                         setDraft({ ...draft, cases: next });
                                     }}
                                 />
-                                <Input
-                                    className="flex-1"
-                                    aria-label={`Case ${index + 1} input`}
-                                    placeholder="The input this case sends"
-                                    value={c.input}
-                                    onChange={(e) => {
-                                        const next = [...draft.cases];
-                                        next[index] = { ...c, input: e.target.value };
-                                        setDraft({ ...draft, cases: next });
-                                    }}
-                                />
+                                <div className="grid flex-1 gap-1.5">
+                                    <Input
+                                        aria-label={`Case ${index + 1} input`}
+                                        placeholder="The input this case sends"
+                                        value={c.input}
+                                        onChange={(e) => {
+                                            const next = [...draft.cases];
+                                            next[index] = { ...c, input: e.target.value };
+                                            setDraft({ ...draft, cases: next });
+                                        }}
+                                    />
+                                    {/* For the person reading the set; the judge never sees it (F509). */}
+                                    <Input
+                                        size="sm"
+                                        aria-label={`Case ${index + 1} notes`}
+                                        placeholder="Notes: what this case checks (optional)"
+                                        value={c.notes ?? ""}
+                                        onChange={(e) => {
+                                            const next = [...draft.cases];
+                                            next[index] = { ...c, notes: e.target.value };
+                                            setDraft({ ...draft, cases: next });
+                                        }}
+                                    />
+                                </div>
                                 <IconButton
                                     label="Remove case"
                                     icon={Trash}

@@ -10010,6 +10010,55 @@ async def check_goldendelete(browser) -> str:
 
 
 @check
+async def check_evalfields(browser) -> str:
+    """A criterion's weight, the scale's min, the baseline runs and a case's notes are edited on Evals (F509):
+    before, the store kept them and the screen sent them back untouched, with no field for any. A scale whose
+    min is not below its max is refused in words, not quietly put back to 0-10 by the store."""
+    stamp = int(time.time())
+    rubric = api("/api/rubrics", "POST", {"name": f"Smoke fields {stamp}", "judge_model": "default",
+                                          "criteria": [{"name": "Clear", "guidance": "Plain words"}]})
+    suite = api("/api/evals/suites", "POST", {"name": f"Smoke fields set {stamp}", "orchestration_id": "orch_none",
+                                              "cases": [{"name": "one", "input": "hi", "notes": ""}]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    puts: list[str] = []
+    page.on("request", lambda r: puts.append(r.url) if r.method == "PUT" and "/api/rubrics/" in r.url else None)
+    try:
+        await page.goto(f"{APP}/evals", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(f"^Smoke fields {stamp}")).click(timeout=30_000)
+        detail = page.locator('section[aria-label="Detail"]')
+        await detail.get_by_role("spinbutton", name="Criterion 1 weight").fill("2.5")
+        await detail.get_by_role("spinbutton", name="Scale min").fill("10")
+        await detail.get_by_role("button", name="Save rubric").click()
+        await _status_saying(page, "Scale min must be below Scale max.")
+        if puts:
+            raise AssertionError("a scale with min at max was sent")
+        await detail.get_by_role("spinbutton", name="Scale min").fill("1")
+        await detail.get_by_role("spinbutton", name="Baseline runs").fill("7")
+        await detail.get_by_role("button", name="Save rubric").click()
+        await _status_saying(page, "Saved as version 2")
+        stored = next(r for r in api("/api/rubrics") if r["id"] == rubric["id"])
+        if (stored["criteria"][0]["weight"], stored["scale"]["min"], stored["baseline_runs"]) != (2.5, 1.0, 7):
+            raise AssertionError(f"stored {stored['criteria'][0]['weight']}, {stored['scale']}, {stored['baseline_runs']}")
+
+        await page.get_by_role("button", name=re.compile(f"^Smoke fields set {stamp}")).click()
+        await detail.get_by_role("textbox", name="Case 1 notes").fill("A greeting with nothing else")
+        await detail.get_by_role("button", name="Save set").click()
+        await _status_saying(page, "Set saved.")
+        notes = next(x for x in api("/api/evals/suites") if x["id"] == suite["id"])["cases"][0]["notes"]
+        if notes != "A greeting with nothing else":
+            raise AssertionError(f"the case's notes read {notes!r}")
+    finally:
+        await ctx.close()
+        for path in (f"/api/evals/suites/{suite['id']}", f"/api/rubrics/{rubric['id']}"):
+            try:
+                api(path, "DELETE")
+            except Exception:
+                pass
+    return "weight 2.5, scale 1-10, baseline 7 and a case's notes saved and read back; min at max refused in words"
+
+
+@check
 async def check_logswitch(browser) -> str:
     """Switching kinds never reads the open log as the other kind's (F503): Agent logs → Workflow logs fetched the
     open agent log's id as a workflow log (`/api/logs/orchestrations/agentrun_…`, a 404, "This log is no longer on
