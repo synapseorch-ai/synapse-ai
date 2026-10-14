@@ -228,6 +228,21 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             });
         }
 
+        // The builder's door (BWA1, D274): a message or an answer it would not keep
+        // (a card number, a password), or a key it took out of one. Said as the
+        // builder's reply. A refused message ends the turn; a refused answer
+        // leaves its question open, so the person answers it again.
+        case 'builder_notice': {
+            const final = event.final === true;
+            return append(
+                final ? { ...state, status: null, done: true, pending: null } : state,
+                {
+                    role: 'assistant', content: String(event.message ?? ''), kind: 'text',
+                    key: `notice-${event.reason ?? ''}-${seq}`,
+                },
+            );
+        }
+
         case 'orchestration_error':
         case 'step_error':
             // A requested cancel arrives as this event too — the engine's own

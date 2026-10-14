@@ -131,6 +131,24 @@ def _waiting(status: Optional[str], waiting_for_human: Any) -> bool:
 _answering: set[str] = set()
 
 
+def _through_door(run_id: str, response: Any, question: Optional[str]) -> Any:
+    """An answer to an AI builder run goes through the builder's door (BWA1, D274), whichever way it arrives (the
+    run page, v1, the MCP server, a channel): a card number or a password is refused as a bad answer, before
+    anything is queued or kept, and a key is masked. Read with the question it answers, so a lone secret-looking
+    word in reply to "what's the password?" counts as one. Any other run's answer is untouched."""
+    from core.native_builder.seed import BUILDER_RUN_PREFIX
+
+    if not str(run_id).startswith(BUILDER_RUN_PREFIX):
+        return response
+    from core.native_builder import door
+
+    try:
+        masked, _removed = door.check_answer(response, question=question)
+    except door.Refused as exc:
+        raise BadAnswer("answer", str(exc)) from None
+    return masked
+
+
 async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answered:
     """Resume `run_id` with `response`, on the fleet or in this process.
 
@@ -147,6 +165,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
     if row is not None:
         if not _waiting(row.status, row.waiting_for_human):
             raise RunNotWaiting(run_id, row.status)
+        response = _through_door(run_id, response, getattr(row, "human_prompt", None))
         response = check_answer(row.human_fields, response)
         from core.orchestration.pauses import pause_ordinal
         from core.scale.config import QUEUE_NAME
@@ -185,6 +204,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
             raise RunNotWaiting(run_id, None)
         if not _waiting(run.status, run.waiting_for_human):
             raise RunNotWaiting(run_id, run.status)
+        response = _through_door(run_id, response, run.human_prompt)
         response = check_answer(run.human_fields, response)
 
         from core.orchestration.engine import OrchestrationEngine

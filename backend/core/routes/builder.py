@@ -29,8 +29,8 @@ from core.native_builder import (
     BUILDER_RUN_PREFIX,
     NATIVE_BUILDER_ORCH_ID,
     bundled_definitions,
+    door,
     export_state,
-    read_export,
 )
 from core.orchestration.engine import OrchestrationEngine
 from core.orchestration.runner import (
@@ -83,11 +83,17 @@ class BuilderResumeRequest(BaseModel):
     _check_images = checked_images()
 
 
+#: What a conversation keeps in place of a message the door refused.
+NOT_KEPT = "‹message not kept: it held a card number or a password›"
+
+
 def _as_kept(message: str) -> str:
-    """The message as a run or a conversation may keep it: pasted Agents SDK
-    code loses its credentials first, anything else is unchanged (SW1)."""
-    read = read_export(message)
-    return read.text if read else message
+    """The message as a run or a conversation may keep it (BWA1, D274): one with a
+    card number or a password is not kept at all, and every other loses its keys
+    and tokens. SW1 took credentials only out of pasted Agents SDK code; the door
+    (`core/native_builder/door.py`) does it for every message."""
+    checked = door.check(message)
+    return NOT_KEPT if checked.refused else checked.text
 
 
 def _format_history(history: list[dict]) -> str:
@@ -538,6 +544,12 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
     every route.
     """
     await reject_unseeable_images(request)
+    # The door (BWA1): a card number or a password ends here, before a run, a
+    # model or a log sees it; a key is masked and the rest still runs.
+    checked = door.check(request.message)
+    if checked.refused:
+        return _one(checked.event())
+    request = request.model_copy(update={"message": checked.text})
     await _expire_parked()
     prepared = await prepare_builder_run(
         request, http_request.app.state.server_module, panel=True)
@@ -545,7 +557,7 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
         return _one(dict(MISSING_BUILDER))
     run_id, agen = prepared
     _task, queue = spawn_engine_run(agen, run_id)
-    return _stream(_queue_events(queue))
+    return _stream(_after(checked.event(), _queue_events(queue)))
 
 
 @router.post("/api/builder/resume")
@@ -560,14 +572,44 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     Both are the engine's job.
     """
     _refuse_if_active(request.run_id)
+    # The door (BWA1), with the question the answer is for: a refused answer
+    # leaves the question open, so the panel shows why and the person answers again.
+    try:
+        response, removed = door.check_answer(request.response, question=await _pending_question(request.run_id))
+    except door.Refused as exc:
+        return _one({"type": "builder_notice", "reason": exc.reason, "message": str(exc), "final": False})
     _task, queue = spawn_engine_run(
         OrchestrationEngine.resume(
-            request.run_id, request.response,
+            request.run_id, response,
             http_request.app.state.server_module, request.images,
         ),
         request.run_id,
     )
-    return _stream(_queue_events(queue))
+    masked = door.Checked(text="", removed=removed).event()
+    return _stream(_after(masked, _queue_events(queue)))
+
+
+async def _pending_question(run_id: str) -> str | None:
+    """What a paused builder run asked, for reading its answer (the door's `question`)."""
+    from sqlalchemy import select
+
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        return (await s.execute(
+            select(OrchestrationRunDB.human_prompt).where(
+                OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.run_id == run_id)
+        )).scalar_one_or_none()
+
+
+async def _after(first: dict | None, events):
+    """`events`, with `first` (the door's notice) ahead of them when there is one."""
+    if first:
+        yield first
+    async for event in events:
+        yield event
 
 
 async def _save_chat_turn(request, answer: str) -> None:
@@ -605,8 +647,18 @@ async def run_builder_stream_compat(request, server_module):
         getattr(request, "session_id", None) or "default",
         agent_id=getattr(request, "agent_id", None),
     )
+    # The door (BWA1): a refused message is answered here and kept nowhere,
+    # not even as this conversation's turn.
+    checked = door.check(request.message or "")
+    if checked.refused:
+        yield _sse({"type": "response", "content": checked.notice, "intent": "chat", "data": None,
+                    "tool_name": None})
+        yield _sse({"type": "done"})
+        return
+    if checked.removed:
+        yield _sse({"type": "status", "message": checked.notice})
     builder_req = BuilderChatRequest(
-        message=request.message,
+        message=checked.text,
         history=history,
         can_create_agents=True,
         client_session_id=str(getattr(request, "session_id", "") or "chat"),
