@@ -15,13 +15,15 @@
  * fetch would run twice.
  */
 import { useEffect, useState } from "react";
+import type { SizedTool } from "@/lib/toolTokens";
 
 export type Capability = {
     id: string;
     label: string;
     description?: string;
     tools: string[];
-    toolDetails: { name: string; description: string }[];
+    /** `tokens`: what the tool adds to every model call (F483, `lib/toolTokens.ts`). */
+    toolDetails: { name: string; description: string; tokens?: number }[];
     /** Drives the badge: MCP, native, or a user's own tool. */
     toolType: "mcp" | "native" | "custom";
 };
@@ -36,6 +38,8 @@ type AvailableTool = {
     /** A custom tool's group id and name, when it belongs to one. */
     group?: string | null;
     group_label?: string | null;
+    /** What it adds to every model call (F483): the engine's `declaration_tokens`. */
+    tokens?: number;
 };
 
 function group(tools: AvailableTool[]): Capability[] {
@@ -55,7 +59,7 @@ function group(tools: AvailableTool[]): Capability[] {
                 toolDetails: [],
                 toolType: "custom",
             };
-            groups[key].toolDetails.push({ name: t.name, description: t.description || "" });
+            groups[key].toolDetails.push({ name: t.name, description: t.description || "", tokens: t.tokens });
             continue;
         }
         if (t.source === "custom_http") {
@@ -66,7 +70,7 @@ function group(tools: AvailableTool[]): Capability[] {
                 label: t.label || t.name,
                 description: t.description,
                 tools: [t.name],
-                toolDetails: [{ name: t.name, description: t.description || "" }],
+                toolDetails: [{ name: t.name, description: t.description || "", tokens: t.tokens }],
                 toolType: "custom",
             };
             continue;
@@ -85,10 +89,28 @@ function group(tools: AvailableTool[]): Capability[] {
                 t.type === "mcp_external" ? "mcp" : t.type === "mcp_native" ? "native" : "custom",
         };
         groups[source].tools.push(t.name);
-        groups[source].toolDetails.push({ name: t.name, description: t.description || "" });
+        groups[source].toolDetails.push({ name: t.name, description: t.description || "", tokens: t.tokens });
     }
 
     return Object.values(groups);
+}
+
+/** The tools the editor's context line counts (F483): connected servers' and the workspace's own. */
+export function sizedTools(caps: Capability[]): SizedTool[] {
+    return caps.flatMap((cap) => cap.toolType === "native" ? [] : cap.toolDetails.map((t) => ({
+        name: t.name,
+        tokens: t.tokens ?? 0,
+        server: cap.toolType === "mcp" ? cap.id : undefined,
+    })));
+}
+
+/** An agent's tool list with each whole group (`group:<id>`) it holds expanded to the group's tools. */
+export function selectedToolNames(caps: Capability[], tools: string[]): Set<string> {
+    const out = new Set(tools);
+    for (const cap of caps) {
+        if (cap.id.startsWith("group:") && out.has(cap.id)) cap.toolDetails.forEach((t) => out.add(t.name));
+    }
+    return out;
 }
 
 export function useCapabilities() {

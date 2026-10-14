@@ -1,9 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Bot, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square, PanelRightOpen, Image as ImageIcon } from 'lucide-react';
+import { AlertTriangle, Bot, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square, PanelRightOpen, Image as ImageIcon } from 'lucide-react';
 import { Button, Checkbox, Combobox, Drawer, ErrorNote, Input, Label, MarkdownEditor, Modal, SearchInput, Section, Select, Spinner, Switch } from '@/components/ui';
 import Link from 'next/link';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
+import { toolContext } from '@/lib/toolTokens';
+import { selectedToolNames, sizedTools } from './hooks/useCapabilities';
 import { vaultMentions } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
 import { useDispatch } from 'react-redux';
@@ -1100,6 +1102,22 @@ export const AgentsTab = ({
                                                             })}
                                                         </div>
                                                         </div>
+                                                        {/* What these tools add to every model call, and the warning past
+                                                            the budget "every tool" is held to at run time (F483). */}
+                                                        {(() => {
+                                                            const context = toolContext(
+                                                                sizedTools(availableCapabilities),
+                                                                selectedToolNames(availableCapabilities, draftAgent.tools),
+                                                                draftAgent.tools.includes('all'),
+                                                            );
+                                                            if (!context.text) return null;
+                                                            return (
+                                                                <p className={cn('flex items-start gap-1.5 text-xs', context.warn ? 'text-warning' : 'text-text-faint')}>
+                                                                    {context.warn && <AlertTriangle className="mt-px size-3.5 shrink-0" aria-hidden />}
+                                                                    <span>{context.text}</span>
+                                                                </p>
+                                                            );
+                                                        })()}
                                                     </>);
                                                 })()}
                                             </div>
