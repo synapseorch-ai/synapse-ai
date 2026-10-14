@@ -2693,6 +2693,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if users:
             return {"error": agent_refusal(agent.get("name") or agent_id, users)}
         await _delete_agent(agent_id)
+        # Its memory goes with it, as the route's delete takes it (F297, F469).
+        from core import agent_memory
+        await agent_memory.wipe(agent_id)
         _emit(events, "agent", "deleted", agent_id, agent.get("name"))
         return {
             "status": "deleted",

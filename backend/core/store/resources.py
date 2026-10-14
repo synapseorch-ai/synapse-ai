@@ -37,6 +37,46 @@ class CrossTenantWrite(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# What a delete does, where a host says (F469)
+#
+# Self-hosted deletes rows, and its screens list every workflow row. A host that
+# keeps them — cloud, whose runs name their workflow and whose audit trail
+# records the delete — turns `set_delete_keeps_rows` on: a workflow deleted
+# through the engine (the AI builder's delete, `finish_build`'s clean-up) is then
+# kept as a record, `is_active` false, as the host's own route keeps it, and the
+# engine already reads that as deleted everywhere (F423). The observer is told
+# after each delete — `(kind, id, document)`, the document as it was — so the host
+# can record it. Both are off until a host installs them.
+# ---------------------------------------------------------------------------
+
+_delete_keeps_rows = False
+_deleted_observer = None
+
+
+def set_delete_keeps_rows(keep: bool) -> None:
+    """Whether a workflow's delete keeps its row, retired (F469)."""
+    global _delete_keeps_rows
+    _delete_keeps_rows = bool(keep)
+
+
+def set_deleted_observer(observer) -> None:
+    """Install the coroutine told `(kind, id, document)` after each delete. ``None`` removes it."""
+    global _deleted_observer
+    _deleted_observer = observer
+
+
+async def _tell_deleted(kind: str, id_: str, document: dict | None) -> None:
+    """After the delete committed. A host that could not record it does not undo it, so it is logged."""
+    if _deleted_observer is None:
+        return
+    try:
+        await _deleted_observer(kind, id_, document)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(f"the host was not told of {kind} {id_}'s delete: {exc}")
+
+
+# ---------------------------------------------------------------------------
 # Row shapes
 #
 # Shared with core/store/importer.py so that an install imported from JSON and
@@ -284,8 +324,40 @@ async def save_orchestration(item: dict) -> None:
 
 
 async def delete_orchestration(orch_id: str) -> bool:
+    """Delete a workflow — or, where the host keeps rows, retire it (F469). Whether one was."""
     from core.store.models import OrchestrationDB
-    return await _delete(OrchestrationDB, OrchestrationDB.id, orch_id)
+
+    document = await get_orchestration(orch_id) if _deleted_observer is not None else None
+    if _delete_keeps_rows:
+        deleted = await _retire(orch_id)
+    else:
+        deleted = await _delete(OrchestrationDB, OrchestrationDB.id, orch_id)
+    if deleted:
+        await _tell_deleted("orchestration", orch_id, document)
+    return deleted
+
+
+async def _retire(orch_id: str) -> bool:
+    """Mark a workflow deleted and keep its row: `is_active` false. One already retired is not."""
+    from sqlalchemy import update
+
+    from core.store import cache, session
+    from core.store.models import OrchestrationDB
+
+    if not orch_id:
+        return False
+    async with session() as s:
+        result = await s.execute(
+            update(OrchestrationDB)
+            .where(
+                OrchestrationDB.id == orch_id,
+                OrchestrationDB.tenant_id == get_tenant(),
+                OrchestrationDB.is_active.isnot(False),
+            )
+            .values(is_active=False)
+        )
+    cache.invalidate(OrchestrationDB.__tablename__)
+    return bool(result.rowcount)
 
 
 async def replace_orchestrations(items: list[dict]) -> None:
@@ -319,8 +391,14 @@ async def save_agent(item: dict) -> None:
 
 
 async def delete_agent(agent_id: str) -> bool:
+    """Delete an agent; the host is told (F469). Agents have no row to keep."""
     from core.store.models import AgentDB
-    return await _delete(AgentDB, AgentDB.id, agent_id)
+
+    document = await get_agent(agent_id) if _deleted_observer is not None else None
+    deleted = await _delete(AgentDB, AgentDB.id, agent_id)
+    if deleted:
+        await _tell_deleted("agent", agent_id, document)
+    return deleted
 
 
 async def replace_agents(items: list[dict]) -> None:
