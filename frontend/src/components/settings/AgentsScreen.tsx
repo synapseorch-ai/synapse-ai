@@ -173,7 +173,14 @@ export function AgentsScreen() {
     const confirmDeleteAgent = async () => {
         if (!confirmDelete) return;
         try {
-            await fetch(`/api/agents/${confirmDelete}`, { method: "DELETE" });
+            const res = await fetch(`/api/agents/${confirmDelete}`, { method: "DELETE" });
+            // Refused while something uses it (F467): the server's sentence names
+            // each, and the agent stays.
+            if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                show(typeof err?.detail === "string" ? err.detail : `Delete failed (HTTP ${res.status})`, "danger");
+                return;
+            }
             dispatch(removeAgent(confirmDelete));
             // Clear the editor if it was showing the agent that just went away.
             if (selectedAgentId === confirmDelete) {
