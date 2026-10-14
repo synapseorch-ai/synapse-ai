@@ -184,6 +184,12 @@ const StatusWord = ({ status, lastError }: { status?: string; lastError?: string
 /** The old toasts led with an emoji for their tone; the kit's toast carries the tone itself. */
 const TONE_OF: Record<string, ToastTone> = { '✅': 'success', '⚠️': 'warning', '❌': 'danger' };
 
+/** The server's reason for a refused request: FastAPI's `detail`, else `fallback` (F500). */
+const reasonOf = async (res: Response, fallback: string): Promise<string> => {
+    const body = await res.json().catch(() => null);
+    return typeof body?.detail === 'string' && body.detail ? body.detail : fallback;
+};
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export const MessagingTab = () => {
@@ -367,13 +373,16 @@ export const MessagingTab = () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
-            if (!res.ok) throw new Error('Save failed');
+            if (!res.ok) throw new Error(await reasonOf(res, 'Save failed'));
             const saved = await res.json();
 
             // Enable. It answers with the channel as it now stands: a token the
             // platform refused is `error` with the reason, not "started" (F207).
+            // A refused enable is no start either (F500): it said "started" before.
             const enableRes = await fetch(`/api/messaging/channels/${saved.id}/enable`, { method: 'POST' });
-            const started: Channel | null = enableRes.ok ? await enableRes.json().catch(() => null) : null;
+            const started: Channel | null = enableRes.ok
+                ? await enableRes.json().catch(() => null)
+                : { ...saved, status: 'error', last_error: await reasonOf(enableRes, `the server answered ${enableRes.status}`) };
 
             await fetchChannels();
             setSelectedId(saved.id);
@@ -405,17 +414,35 @@ export const MessagingTab = () => {
         }
     };
 
+    /** Start or Stop from the list. A refusal says why, and a start the platform refused says its
+     *  reason (F500): before, both were silent, and the open channel's header kept its old status. */
     const toggleEnable = async (ch: Channel) => {
         if (!ch.id) return;
-        const endpoint = ch.status === 'running' ? 'disable' : 'enable';
-        await fetch(`/api/messaging/channels/${ch.id}/${endpoint}`, { method: 'POST' });
-        await fetchChannels();
+        const stopping = ch.status === 'running';
+        try {
+            const res = await fetch(`/api/messaging/channels/${ch.id}/${stopping ? 'disable' : 'enable'}`, { method: 'POST' });
+            if (!res.ok) throw new Error(await reasonOf(res, `the server answered ${res.status}`));
+            // Enable answers with the channel as it now stands, as Save & connect reads it (F207).
+            const now: Channel | null = stopping ? null : await res.json().catch(() => null);
+            if (now?.status === 'error') showToast(`⚠️ ${ch.name} did not start: ${now.last_error || 'unknown error'}`);
+        } catch (e: any) {
+            showToast(`❌ Could not ${stopping ? 'stop' : 'start'} ${ch.name}: ${e.message}`);
+        }
+        const list = await fetchChannels();
+        const fresh = list.find(c => c.id === ch.id);
+        if (fresh) setDraft(d => (d && d.id === ch.id ? { ...d, status: fresh.status, last_error: fresh.last_error } : d));
     };
 
     const deleteChannel = async (id: string) => {
         const ch = channels.find(c => c.id === id);
         if (!ch || !ch.id) return;
-        await fetch(`/api/messaging/channels/${ch.id}`, { method: 'DELETE' });
+        try {
+            const res = await fetch(`/api/messaging/channels/${ch.id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error(await reasonOf(res, `the server answered ${res.status}`));
+        } catch (e: any) {
+            showToast(`❌ Could not delete ${ch.name}: ${e.message}`);
+            return;
+        }
         const list = await fetchChannels();
         // The open one went: the first that is left opens in its place.
         if (selectedId === ch.id) {

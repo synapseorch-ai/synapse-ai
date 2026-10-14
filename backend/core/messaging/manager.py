@@ -97,7 +97,12 @@ class MessagingManager:
 
         try:
             AdapterClass = _import_adapter(platform)
-            adapter = AdapterClass(ch, self)
+            try:
+                adapter = AdapterClass(ch, self)
+            except KeyError as missing:
+                # Each adapter reads its credentials by name as it is built: one never
+                # saved is said in words, not as the KeyError's own text (F513).
+                raise ValueError(_missing_credential(missing)) from missing
             # Each adapter checks its credentials inside start() (Telegram's
             # getMe, Discord's login, Slack's auth.test), so a bad token lands
             # in the except below as the channel's error (F207).
@@ -385,6 +390,12 @@ class MessagingManager:
 
     def get_whatsapp_adapter(self, channel_id: str):
         return self._whatsapp_adapters.get(channel_id)
+
+
+def _missing_credential(missing: KeyError) -> str:
+    """"No bot token is saved for this channel." for an adapter built without `bot_token`."""
+    key = str(missing.args[0]) if missing.args else "credential"
+    return f"No {key.replace('_', ' ')} is saved for this channel."
 
 
 def _reason(exc: BaseException | None) -> str:

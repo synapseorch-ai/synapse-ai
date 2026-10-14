@@ -169,6 +169,25 @@ class TestABadTokenIsAnError:
         assert stored["status"] == "error"
         assert "Improper token" in (stored["last_error"] or "")
 
+    @pytest.mark.parametrize(("platform", "credentials", "said"), [
+        ("discord", {}, "No bot token is saved for this channel."),
+        ("telegram", {}, "No bot token is saved for this channel."),
+        ("teams", {"app_id": "app-1"}, "No app password is saved for this channel."),
+    ])
+    async def test_a_missing_credential_is_said_in_words(self, manager, platform, credentials, said):
+        """F513: the adapters read their credentials by name as they are built, and the reason
+        was the KeyError's own text — "Saved, but it did not start: 'bot_token'"."""
+        ch = await channel_store.save_channel({
+            "name": "No token", "platform": platform, "credentials": credentials,
+        })
+
+        await manager.start_channel(ch["id"])
+        stored = await _settled(ch["id"], lambda c: c["status"] != "running")
+
+        assert stored["status"] == "error"
+        assert stored["last_error"] == said
+        assert ch["id"] not in manager._adapters
+
     async def test_a_polling_task_that_dies_later_marks_the_channel(self, manager, monkeypatch):
         from telegram.ext import Application
 

@@ -10252,6 +10252,63 @@ async def check_channelplatform(browser) -> str:
         raise AssertionError("the Telegram token was carried into the Discord channel")
     return "the switched channel saved in place: one channel, same id, no token carried across"
 
+
+async def _status_saying(page, text: str, seconds: float = 8) -> str:
+    """The first toast (`role="status"`) that says `text` within `seconds`, or every one that showed instead."""
+    seen: list[str] = []
+    end = time.time() + seconds
+    while time.time() < end:
+        for said in await page.get_by_role("status").all_inner_texts():
+            said = " ".join(said.split())
+            if text in said:
+                return said
+            if said and said not in seen:
+                seen.append(said)
+        await asyncio.sleep(0.2)
+    raise AssertionError(f"no toast said {text!r}; seen {seen}")
+
+
+@check
+async def check_channelfeedback(browser) -> str:
+    """Channels say why a channel did not start, stop or go (F500, F513). Before: Start and Stop were silent (a
+    refusal, or a token the platform refused, showed nowhere but the list's dot), Delete was silent, Save &
+    connect said "Channel saved and started" when its start was refused, and a missing token read as the
+    KeyError's own text, "'bot_token'"."""
+    name = f"Smoke feedback {int(time.time())}"
+    made = api("/api/messaging/channels", "POST", {"name": name, "platform": "discord", "mode": "polling", "credentials": {}})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    said: list[str] = []
+    try:
+        await page.goto(f"{APP}/channels", wait_until="domcontentloaded")
+        await page.locator(f'[data-channel-row="{made["id"]}"] button').first.click(timeout=30_000)
+        await page.get_by_role("heading", name=name).wait_for(timeout=10_000)
+        # A start the platform refuses — here no token is saved: the real backend answers `error` with its reason.
+        await page.get_by_role("button", name=f"Start {name}").click()
+        said.append(await _status_saying(page, f"{name} did not start: No bot token is saved for this channel."))
+        await page.get_by_text("No bot token is saved for this channel.", exact=True).wait_for(timeout=5_000)
+        # A refused start, from the row and from Save & connect.
+        await page.route("**/api/messaging/channels/*/enable",
+                         _answer({"detail": "Messaging is not enabled."}, status=503, methods=("POST",)))
+        await page.get_by_role("button", name=f"Start {name}").click()
+        said.append(await _status_saying(page, f"Could not start {name}: Messaging is not enabled."))
+        await page.get_by_role("button", name="Save & connect").click()
+        said.append(await _status_saying(page, "Saved, but it did not start: Messaging is not enabled."))
+        # A refused delete.
+        await page.route(f"**/api/messaging/channels/{made['id']}",
+                         _answer({"detail": "Channel not found"}, status=404, methods=("DELETE",)))
+        await page.get_by_role("button", name=f"Delete {name}").click()
+        await page.get_by_role("dialog").get_by_role("button", name="Delete").click()
+        said.append(await _status_saying(page, f"Could not delete {name}: Channel not found"))
+        if await page.get_by_text("Channel saved and started").count():
+            raise AssertionError("a refused start still said \"Channel saved and started\"")
+    finally:
+        await ctx.close()
+        for c in api("/api/messaging/channels"):
+            if c["name"] == name:
+                api(f"/api/messaging/channels/{c['id']}", "DELETE")
+    return "; ".join(said)
+
 # ── the Phone tab (VOX1c) ────────────────────────────────────────────────────
 
 #: A number as the channel list serves it (the Channels tab must not show it), and the Phone tab's reads.
