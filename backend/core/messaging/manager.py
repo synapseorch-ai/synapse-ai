@@ -284,6 +284,10 @@ class MessagingManager:
             # workspace's key or account (F133), and anything else is ours.
             logger.error("[Manager] run_agent error (agent=%s): %s", agent_id, e)
             final_response = FAILED_REPLY
+        finally:
+            # A channel turn never parks: what it claimed on a board is open again (BOARD1a).
+            from core.boards import resolve as _board_resolve
+            await _board_resolve.release(f"session:{session_id}", settings=None, why="the channel turn ended")
         return strip_labels(final_response)
 
     async def _run_orchestrator(

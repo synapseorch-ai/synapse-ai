@@ -275,6 +275,11 @@ _DEFAULTS = {
         "knowledge_rerank_base_url": "",
         "knowledge_rerank_key": "",
         "knowledge_contextual_model": "",
+        # Boards (BOARD1a, D280): off by default. The same keys and values as core/boards/config.py DEFAULTS
+        # (a test holds them equal).
+        "boards_enabled": False,
+        "boards_max_open_cards": 2000,
+        "boards_max_shared": 0,
         # A `cohere.`, `voyage.` or `jina.` rerank model's own key (B2a, D163).
         "cohere_key": "",
         "voyage_key": "",

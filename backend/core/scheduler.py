@@ -6,6 +6,7 @@ Restart-proof: next_run_at is persisted so overdue schedules are handled on star
 import asyncio
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -14,6 +15,7 @@ from core.store import schedules as schedule_store
 logger = logging.getLogger(__name__)
 
 _TICK_INTERVAL = 30  # seconds between scheduler ticks
+_BOARD_SWEEP_INTERVAL = 3600  # seconds between board sweeps (BOARD1a)
 
 #: How long a scheduled run's tool call waits for a person before it expires
 #: unrun (F268) — as long as a parked AI-builder run waits (`PARKED_BUILDER_TTL`).
@@ -144,6 +146,8 @@ class ScheduleManager:
         self._loop_task: asyncio.Task | None = None
         self._running = False
         self._manual_runs: set[asyncio.Task] = set()
+        #: When the boards were last swept (monotonic); the first tick sweeps.
+        self._boards_swept = float("-inf")
 
     async def start(self, server_module) -> None:
         """Called from server lifespan. Evaluates overdue schedules and starts the loop."""
@@ -212,6 +216,24 @@ class ScheduleManager:
             await api_approvals.expire_parked()
         except Exception as e:  # noqa: BLE001 — a failed sweep is retried next tick
             logger.warning("[Scheduler] API approval expiry sweep failed: %s", e)
+        try:
+            await self._sweep_boards()
+        except Exception as e:  # noqa: BLE001 — a failed sweep is retried next hour
+            logger.warning("[Scheduler] board sweep failed: %s", e)
+
+    async def _sweep_boards(self) -> None:
+        """Hourly, while Boards are on: closed cards archive after 90 days, and change history past 30 days
+        goes (BOARD1a, C6). No query while they are off."""
+        from core.boards.config import boards_enabled
+        from core.store import boards as board_store
+
+        now = time.monotonic()
+        if now - self._boards_swept < _BOARD_SWEEP_INTERVAL or not boards_enabled():
+            return
+        self._boards_swept = now
+        archived, dropped = await board_store.sweep()
+        if archived or dropped:
+            logger.info("[Scheduler] boards: %d cards archived, %d old history rows dropped", archived, dropped)
 
     async def _expire_parked_approvals(self) -> None:
         """A scheduled run's tool call nobody answered in `APPROVAL_TTL` expires unrun (F268).
@@ -458,23 +480,36 @@ class ScheduleManager:
         from core.react_engine import run_agent_step
 
         latest_progress: dict | None = None
-        async for event in run_agent_step(
-            message=message,
-            agent_id=s.get("target_id"),
-            session_id=_session_of(s["id"]),
-            server_module=self._server_module,
-            source="schedule",
-            run_id=run_id,
-            resume_state=resume_state,
-            progress_events=True,
-        ):
-            if event.get("type") == "_step_progress":
-                # Engine state for a resume, never an event.
-                latest_progress = {k: v for k, v in event.items() if k != "type"}
-                continue
-            if event.get("type") == "human_input_required" and event.get("kind") == "tool_approval":
-                await self._park(s, run_id, event, message=message, progress=latest_progress)
-            yield event
+        parked = False
+        try:
+            async for event in run_agent_step(
+                message=message,
+                agent_id=s.get("target_id"),
+                session_id=_session_of(s["id"]),
+                server_module=self._server_module,
+                source="schedule",
+                run_id=run_id,
+                resume_state=resume_state,
+                progress_events=True,
+                # The schedule's own board, whose cards tell this firing what to do; the firing holds its
+                # claims (BOARD1a).
+                board_scope={"kind": "schedule", "id": s["id"], "holder": run_id},
+            ):
+                if event.get("type") == "_step_progress":
+                    # Engine state for a resume, never an event.
+                    latest_progress = {k: v for k, v in event.items() if k != "type"}
+                    continue
+                if event.get("type") == "human_input_required":
+                    parked = True
+                if event.get("type") == "human_input_required" and event.get("kind") == "tool_approval":
+                    await self._park(s, run_id, event, message=message, progress=latest_progress)
+                yield event
+        finally:
+            if not parked:
+                # The firing is over: what it claimed is open for the next one. A parked firing keeps
+                # its claims until they lapse.
+                from core.boards import resolve as _board_resolve
+                await _board_resolve.release(run_id, settings=None, why="the scheduled run ended")
 
     async def _park(self, s: dict, run_id: str, event: dict, *, message: str, progress: dict | None) -> None:
         """Keep the call and the turn's snapshot, and ask in the bell."""

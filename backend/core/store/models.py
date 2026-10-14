@@ -968,3 +968,135 @@ class KnowledgeEvalRunDB(Base):
         Index("idx_knowledge_eval_runs_tenant_kb", "tenant_id", "kb_id", "created_at"),
         Index("idx_knowledge_eval_runs_tenant_set", "tenant_id", "set_id", "created_at"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Boards — cards of shared work (BOARD1a, D280; MEMORY 20 §5)
+# ---------------------------------------------------------------------------
+#
+# Agents in chats, workflows and schedules read, claim and resolve cards here;
+# people add them and undo what was done. Read and written only through
+# `core/store/boards.py`. A board belongs to a workflow (lasting across its
+# runs), a schedule, a run (a team's internal task list), or is a named shared
+# board with an access list. Cloud mirrors the four tables column for column,
+# plus `org_id` and FORCE RLS. The CHECK values are spelled out here, as the
+# Knowledge tables' are; `test_boards_store.py` keeps them equal to the tuples
+# in `core/store/boards.py`.
+
+
+class BoardDB(Base):
+    """One board. `scope_id` is the workflow, schedule or run it belongs to; a shared board has none and a
+    name instead. One board per (scope, scope_id): the unique key makes a second create return the first."""
+
+    __tablename__ = "boards"
+
+    tenant_id = _tenant_column()
+    id = Column(String(255), nullable=False)                  # brd_…
+    scope = Column(String(16), nullable=False)
+    scope_id = Column(String(255), nullable=False, default="")
+    name = Column(String(255), nullable=False, default="")
+    description = Column(Text, nullable=False, default="")
+    created_by = Column(JSONType)                             # {person} | {agent, run, session}
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id", name="boards_pkey"),
+        UniqueConstraint("tenant_id", "scope", "scope_id", "name", name="uq_boards_tenant_scope_name"),
+        CheckConstraint("scope IN ('shared', 'workflow', 'schedule', 'run')", name="ck_boards_scope"),
+    )
+
+
+class BoardAccessDB(Base):
+    """Who may use a shared board: an agent, a workflow (every agent step in it) or a schedule (the agent it
+    runs). `add` adds cards; `work` reads, claims and updates them. Nothing listed, nothing allowed."""
+
+    __tablename__ = "board_access"
+
+    tenant_id = _tenant_column()
+    board_id = Column(String(255), nullable=False)
+    principal_kind = Column(String(16), nullable=False)
+    principal_id = Column(String(255), nullable=False)
+    access = Column(String(8), nullable=False)
+    created_by = Column(JSONType)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "board_id", "principal_kind", "principal_id", name="board_access_pkey"),
+        CheckConstraint("principal_kind IN ('agent', 'workflow', 'schedule')", name="ck_board_access_principal_kind"),
+        CheckConstraint("access IN ('add', 'work')", name="ck_board_access_access"),
+        Index("idx_board_access_tenant_principal", "tenant_id", "principal_kind", "principal_id"),
+    )
+
+
+class BoardCardDB(Base):
+    """A card: a task (work, claimed and closed with a result) or a note (information for others).
+
+    `version` counts content changes and is what an update names (compare-and-set); a claim never bumps it.
+    A claim is a lease: `status` reads `claimed` until `claim_expires_at`, and after it the card reads as
+    open again, with nothing to sweep. `event_seq` numbers the card's history rows, bumped in the same
+    UPDATE that changes the card. `tainted`: written by a turn that had read content nobody typed (F279).
+    """
+
+    __tablename__ = "board_cards"
+
+    tenant_id = _tenant_column()
+    id = Column(String(255), nullable=False)                  # card_…
+    board_id = Column(String(255), nullable=False)
+    kind = Column(String(8), nullable=False, default="task")
+    title = Column(String(500), nullable=False)
+    body = Column(Text, nullable=False, default="")
+    status = Column(String(16), nullable=False, default="open")
+    outcome = Column(String(16))                              # succeeded | failed, a closed task's
+    result = Column(Text, nullable=False, default="")
+    key = Column(String(255))                                 # the caller's id for the thing (a bug's id)
+    version = Column(Integer, nullable=False, default=1)
+    holder_agent = Column(String(255))
+    holder_key = Column(String(255))                          # run/step, session:<id>, or a firing's run id
+    holder_label = Column(String(500))
+    claim_expires_at = Column(DateTime(timezone=True))
+    created_by = Column(JSONType)                             # {agent, agent_name, run, session, person, source}
+    by_person = Column(Boolean, nullable=False, default=False)
+    run_id = Column(String(255))                              # the run that added it
+    tainted = Column(Boolean, nullable=False, default=False)
+    event_seq = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+    closed_at = Column(DateTime(timezone=True))
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "id", name="board_cards_pkey"),
+        # NULL keys never collide, on either dialect: an unkeyed card is just a card.
+        UniqueConstraint("tenant_id", "board_id", "key", name="uq_board_cards_tenant_board_key"),
+        CheckConstraint("kind IN ('task', 'note')", name="ck_board_cards_kind"),
+        CheckConstraint("status IN ('open', 'claimed', 'done', 'archived')", name="ck_board_cards_status"),
+        CheckConstraint("outcome IS NULL OR outcome IN ('succeeded', 'failed')", name="ck_board_cards_outcome"),
+        Index("idx_board_cards_tenant_board_status", "tenant_id", "board_id", "status", "created_at"),
+        Index("idx_board_cards_tenant_holder", "tenant_id", "holder_key"),
+    )
+
+
+class BoardCardEventDB(Base):
+    """A card's history, append-only: its creation, every change (the changed fields before and after, for
+    undo), claims and releases, and comments. Renewing a claim writes nothing here."""
+
+    __tablename__ = "board_card_events"
+
+    tenant_id = _tenant_column()
+    card_id = Column(String(255), nullable=False)
+    seq = Column(Integer, nullable=False)
+    board_id = Column(String(255), nullable=False)
+    kind = Column(String(16), nullable=False)
+    by = Column(JSONType)
+    before = Column(JSONType)
+    after = Column(JSONType)
+    comment = Column(Text, nullable=False, default="")                # a comment's words
+    tainted = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("tenant_id", "card_id", "seq", name="board_card_events_pkey"),
+        CheckConstraint("kind IN ('created', 'edited', 'claimed', 'released', 'closed', 'reopened', 'comment', "
+                        "'undo', 'archived')", name="ck_board_card_events_kind"),
+        Index("idx_board_card_events_tenant_board", "tenant_id", "board_id", "created_at"),
+    )

@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 from core.agent_memory import MEMORY_TOOL_NAMES as _MEMORY_TOOL_NAMES
+from core.boards import TOOL_NAMES as _BOARD_TOOL_NAMES
 
 #: The engine's own tools that reach no data: the task list and loading one of
 #: the agent's selected skills (which is its author's prompt text, the same
@@ -46,8 +47,9 @@ from core.agent_memory import MEMORY_TOOL_NAMES as _MEMORY_TOOL_NAMES
 ENGINE_TOOLS: frozenset[str] = frozenset(("update_tasks", "load_skill"))
 
 #: Never on a visitor's list, whatever the owner ticks: the agent's memory —
-#: every memory tool, including the ones added since (read_session, F272).
-NEVER_FOR_VISITORS: frozenset[str] = frozenset(_MEMORY_TOOL_NAMES)
+#: every memory tool, including the ones added since (read_session, F272) —
+#: and the boards, the workspace's shared work (C4: a visitor's turn has none).
+NEVER_FOR_VISITORS: frozenset[str] = frozenset(_MEMORY_TOOL_NAMES) | frozenset(_BOARD_TOOL_NAMES)
 
 #: How many names one list may hold — a bound on a stored document, not a policy.
 MAX_TOOLS = 200

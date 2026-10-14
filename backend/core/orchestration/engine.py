@@ -839,6 +839,14 @@ class OrchestrationEngine:
                 run.run_id, run.status,
                 f"Stopped: the run that called it {verb}" + (f" — {why}" if why else ""))
 
+        # A finished run's board claims are open again: any a step's own end did not
+        # give back (a step stopped while it waited for a person). Here, the line every
+        # path passes, fleet included; every depth releases its own run's. Nothing while
+        # Boards are off, and never the run's failure (BOARD1a).
+        if run.status in ("completed", "failed", "cancelled"):
+            from core.boards import resolve as _board_resolve
+            await _board_resolve.release(run.run_id, prefix=True, settings=None, why=f"the run {run.status}")
+
         if owed_turn:
             try:
                 await self._save_owed_turn(run, owed_turn)

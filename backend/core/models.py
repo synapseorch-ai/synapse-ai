@@ -77,6 +77,13 @@ MAX_OUTPUT_TOKENS = 262_144
 AGENT_KNOWLEDGE_MAX = 10
 
 
+class AgentBoards(BaseModel):
+    """An agent's Boards section (BOARD1a, D280). The board of the workflow or schedule it runs in is on unless
+    turned off, once Boards are on (C2); its shared boards come from each board's own access list."""
+
+    own: bool = True
+
+
 class Agent(BaseModel):
     id: str
     name: str = Field(max_length=AGENT_NAME_MAX)
@@ -90,6 +97,8 @@ class Agent(BaseModel):
     # Knowledge is on, the engine offers it `search_knowledge` / `read_knowledge`
     # over the active ones (core/knowledge/tools.py). Ids, in the owner's order.
     knowledge: list[str] = []
+    # Boards (D280): read while Boards are on (core/boards/resolve.py). None reads as `own: true`.
+    boards: AgentBoards | None = None
     # The native task list (`update_tasks`), on unless turned off; and the whole
     # default tool set, kept unless skipped. The engine read both all along and
     # this model dropped both, so the editor's Planning switch re-ticked after
@@ -302,6 +311,12 @@ class Settings(BaseModel):
     knowledge_rerank_base_url: str = ""  # a TEI or Infinity server, for a `tei.` rerank model
     knowledge_rerank_key: str = ""  # its key, if it takes one
     knowledge_contextual_model: str = ""  # writes Contextual Retrieval's contexts; blank = `model`
+    # Boards — cards of shared work (BOARD1a, D280). Off by default: then no board tool, digest or query
+    # reaches any turn. The open-card cap is per board; shared boards per workspace, 0 = no limit. Read by
+    # core/boards/config.py; cloud's provider overlays the plan's.
+    boards_enabled: bool = False
+    boards_max_open_cards: int = 2000
+    boards_max_shared: int = 0
     cohere_key: str = ""  # a `cohere.` rerank model's key
     voyage_key: str = ""  # a `voyage.` rerank model's key
     jina_key: str = ""  # a `jina.` rerank model's key

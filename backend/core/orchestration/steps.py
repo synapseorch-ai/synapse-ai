@@ -237,6 +237,9 @@ class AgentStepExecutor:
         # first write. A branch may drop only what it wrote; a sibling's or an
         # earlier step's task it can mark cancelled, not remove by leaving out.
         own_tasks: list[dict] = []
+        # A board claim is this step's (BOARD1a): released when the step ends, kept while it waits for a person.
+        board_holder = f"{run.run_id}/{step.id}"
+        parked = False
         try:
             async for event in run_agent_step(
                 message=prompt,
@@ -268,7 +271,11 @@ class AgentStepExecutor:
                 # So a `remember` in a workflow always asks (F279; Naveen,
                 # 2026-09-27: "every step asks"), and the run pauses for it.
                 untrusted_message=True,
+                # The workflow's own board (lasting across its runs), and this step as its claims' holder.
+                board_scope={"kind": "workflow", "id": run.orchestration_id, "holder": board_holder},
             ):
+                if event.get("type") == "human_input_required":
+                    parked = True
                 if event.get("type") == "tasks_updated" and not event.get("delegate_from"):
                     # Task state lives on the run, not in a tool's process
                     # memory: checkpointing here is what makes the plan survive
@@ -366,6 +373,9 @@ class AgentStepExecutor:
         finally:
             agent_log.run_end(_log_status)
             agent_log.close()
+            if not parked:
+                from core.boards import resolve as _board_resolve
+                await _board_resolve.release(board_holder, settings=None, why="the step ended")
 
         if no_answer is not None:
             # A turn that ended without an answer fails the step with why, as a

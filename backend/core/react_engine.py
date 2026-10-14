@@ -911,6 +911,7 @@ async def run_agent_step(
     inbox=None,                           # core.helpers.Inbox: a root chat turn's, read between model calls (SUB1a)
     background: bool = False,             # its helpers may work in the background (the app's chat only, S4)
     automated: dict | None = None,        # a follow-up nobody typed: the helper result it answers (SUB1a)
+    board_scope=None,                     # core.boards.BoardScope (or its dict): the workflow step or schedule it runs in (BOARD1a)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1237,6 +1238,47 @@ async def run_agent_step(
         _log.debug(f"📚 knowledge for agent '{agent_id_for_session}': "
                    f"{', '.join(kb.id for kb in _knowledge_bases)}")
 
+    # ── BOARDS: cards of shared work, from where this turn runs (BOARD1a, D280) ──
+    # Decided in code (core/boards/resolve.py): the workflow's or schedule's own
+    # board (`board_scope`, from the caller) plus up to three shared boards whose
+    # access lists name this agent or where it runs. Nothing, and no query, while
+    # Boards are off, on a visitor's turn (C4), for a caller with its own tools
+    # (the builder), or in a nested turn (a helper, S1; a delegate's member). The
+    # tools' words are constant (the cached prefix); the open cards are the tail's
+    # digest, read again before every model call. Not grantable to a helper: the
+    # helper's tools were taken from `all_tools` above.
+    from core.boards import TOOL_NAMES as _BOARD_TOOL_NAMES
+    from core.boards import resolve as _board_resolve
+    from core.boards import tools as _board_tools_mod
+    _turn_boards = await _board_resolve.turn_boards(
+        agent=active_agent, agent_id=agent_id_for_session, source=source, run_id=run_id,
+        session_id=session_id, board_scope=board_scope, settings=current_settings,
+        tools_override=tools_override, persist_turn=persist_turn, visitor=_visitor_mod.current())
+    _board_names: frozenset = frozenset()
+    if _turn_boards is not None:
+        _board_tools = _board_tools_mod.build_tools(_turn_boards)
+        _board_names = frozenset(t.name for t in _board_tools)
+        # A same-named MCP tool is hidden: the names mean boards for this turn.
+        _board_shadow = set(_BOARD_TOOL_NAMES)
+        all_tools = [t for t in all_tools if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) not in _board_shadow]
+        ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") not in _board_shadow]
+        for _b_tool in _board_tools:
+            all_tools.append(_b_tool)
+            tool_schema_map[_b_tool.name] = _b_tool.inputSchema
+            ollama_tools.append({"type": "function", "function": {
+                "name": _b_tool.name,
+                "description": _b_tool.description,
+                "parameters": _b_tool.inputSchema,
+            }})
+        tools_json = str([
+            {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+        _log.debug(f"📌 boards for agent '{agent_id_for_session}': "
+                   f"{', '.join(b.label for b in _turn_boards.boards)}")
+
     # ── VISITOR: a stranger's turn holds only what its owner ticked (F280) ──
     # Applied last, over everything assembled above — the agent's own tools,
     # the defaults its type carries, the delegate and subtask tools — so
@@ -1288,6 +1330,8 @@ async def run_agent_step(
     # The knowledge tools this turn holds: all of them for a member, those a
     # visitor's owner ticked for a visitor. Only these reach the handler.
     _knowledge_offered = frozenset(n for n in _kn_names if n in tool_schema_map)
+    # And the board tools it holds (none for a visitor: resolution gave it no boards).
+    _boards_offered = frozenset(n for n in _board_names if n in tool_schema_map)
 
     # ── The caller's own tools (VOX1a): after the visitor narrowing, because the
     # surface grants them; handled in the dispatch loop beside update_tasks. ──
@@ -1644,6 +1688,7 @@ async def run_agent_step(
     if _memory_enabled:
         always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
     always_allowed |= _kn_names  # injected via the agent's knowledge bases, same reason
+    always_allowed |= _board_names  # injected via the turn's boards, same reason
     if _visitor is not None:
         # The default file tools are admitted here by the agent's *type*, not by
         # what it was offered. For a visitor the guard admits what was offered
@@ -1847,6 +1892,18 @@ async def run_agent_step(
             # agent's memory; it refreshes in place after remember/forget.
             if _memory_enabled:
                 tail_parts.append(render_index_block(_memory_index_text))
+            # The boards' open cards, read again for every model call: other agents
+            # and people change them while this turn works (BOARD1a). A card written
+            # after untrusted content marks this turn as having read it (F279).
+            if _boards_offered:
+                try:
+                    await _board_tools_mod.renew(_turn_boards)
+                    _board_digest = await _board_tools_mod.digest(_turn_boards)
+                    tail_parts.append(_board_digest.text)
+                    if _board_digest.tainted:
+                        _memory_tainted = True
+                except Exception as _bd_exc:  # noqa: BLE001 — a board never fails a turn
+                    _log.warning(f"board digest not read this turn: {_bd_exc}")
             if browser_action_history or _browser_snapshot:
                 tail_parts.append(_render_browser_state(browser_action_history, _browser_snapshot))
             tail_parts.append(build_volatile_tail(session_id, _get_session_state, turns_remaining, max_turns))
@@ -2528,6 +2585,22 @@ async def run_agent_step(
                     tools_used_summary.append(f"{tool_name}: {_kn_result.preview}")
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _kn_result.preview}
                     _log.debug(f"📚 {tool_name}: {_kn_result.preview}")
+                    continue
+
+                # ── BOARD tools: handled in-engine, access in code (core/boards/tools.py) ──
+                # Only the ones this turn was offered; any other call of the name goes
+                # on to the guard like any unknown tool. What it writes is marked if this
+                # turn read content nobody typed, and a marked card it is shown marks
+                # this turn (F279, C4).
+                if tool_name in _boards_offered:
+                    _b_out = await _board_tools_mod.run_tool(tool_name, tool_args, _turn_boards, tainted=_memory_tainted)
+                    if _b_out.tainted:
+                        _memory_tainted = True
+                    current_context_text += (
+                        f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{_b_out.observation}\n")
+                    tools_used_summary.append(f"{tool_name}: {_b_out.preview}")
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _b_out.preview}
+                    _log.debug(f"📌 {tool_name}: {_b_out.preview}")
                     continue
 
                 # ── SESSION_HISTORY: this conversation's earlier turns (F242) ──
@@ -3629,6 +3702,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         )
         _inbox.add(getattr(request, "_inbox_seed", None) or [])
         _inbox.open()
+    # Whether the turn parked on a question: its board claims are kept for the resume (BOARD1a).
+    _parked = False
     try:
         agent_max_turns = active_agent.get("max_turns") or None
         async for event in run_agent_step(
@@ -3652,6 +3727,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             background=_inbox is not None and not _automated,
             automated=_automated,
         ):
+            if event.get("type") == "human_input_required":
+                _parked = True
             if _inbox is not None and event.get("type") == "human_input_required":
                 # Parked: what its helpers sent and the turn has not answered stays
                 # with the question, for the resume to read (`_event_stream` parks it).
@@ -3673,5 +3750,11 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         if _inbox is not None and _inbox.is_open:
             # Stopped, failed or left: nothing it read was answered, so all of it goes back.
             _helpers.redeliver(_inbox.conversation, _inbox.close())
+        if not _parked:
+            # The turn is over: what it claimed on a board is open for others again. A parked
+            # turn keeps its claims until they lapse (BOARD1a). Nothing while Boards are off.
+            from core.boards import resolve as _board_resolve
+            await _board_resolve.release(f"session:{session_id}", agent=active_agent.get("id"), settings=None,
+                                  why="the chat turn ended")
         _agent_log.run_end(_log_status)
         _agent_log.close()
