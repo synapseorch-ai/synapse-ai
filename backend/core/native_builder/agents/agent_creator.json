@@ -19,7 +19,8 @@
         "list_custom_tools",
         "list_skills",
         "create_skill",
-        "attach_skills"
+        "attach_skills",
+        "prepare_connection"
     ],
     "repos": [],
     "db_configs": [],

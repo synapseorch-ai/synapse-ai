@@ -1393,6 +1393,22 @@ BUILDER_TOOL_SCHEMAS = [
 # expose them as first-class tools that any agent can declare.
 BUILDER_TOOL_NAMES = {t["function"]["name"] for t in BUILDER_TOOL_SCHEMAS}
 
+#: Builder tools defined in their own modules (BWA1, D274): name → `handler(args, server_module, events)`.
+#: Each registers itself once, at import, through `register_builder_tool`, so a new tool never touches this file.
+_REGISTERED: dict[str, Any] = {}
+
+
+def register_builder_tool(schema: dict, handler: Any) -> None:
+    """Add a builder tool that lives in another module. Its schema joins `BUILDER_TOOL_SCHEMAS` (offered to an agent
+    that names it, as any builder tool is) and `_dispatch` hands its calls to `handler`, which may `_emit`."""
+    name = schema["function"]["name"]
+    if name in BUILDER_TOOL_NAMES and name not in _REGISTERED:
+        raise ValueError(f"builder tool {name!r} already exists")
+    if name not in _REGISTERED:
+        BUILDER_TOOL_SCHEMAS.append(schema)
+        BUILDER_TOOL_NAMES.add(name)
+    _REGISTERED[name] = handler
+
 
 # ─── Tool server capability ───────────────────────────────────────────────────
 #
@@ -1555,6 +1571,8 @@ READS_EVERY_SESSION: frozenset[str] = frozenset({
 
 
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
+    if tool_name in _REGISTERED:  # a tool from its own module (`register_builder_tool`)
+        return await _REGISTERED[tool_name](args, server_module, events)
     from core.routes.agents import load_user_agents
     from core.routes.orchestrations import load_orchestrations
     from core.store.resources import (
@@ -3332,3 +3350,9 @@ def _fill_step_defaults(steps: list) -> list:
     return result
 
 
+# The builder tools that live in their own modules register themselves on import (BWA1, D274). Last, so every name
+# they import from here exists.
+import importlib as _importlib  # noqa: E402
+
+for _module in ("core.builder_connect",):
+    _importlib.import_module(_module)

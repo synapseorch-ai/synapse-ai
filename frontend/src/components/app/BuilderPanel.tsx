@@ -22,6 +22,7 @@ import {
     AgentTurn,
     Composer,
     composerPillClass,
+    ConnectCard,
     PillAvatar,
     PlanCard,
     QuestionCard,
@@ -33,6 +34,7 @@ import {
 import { loadRunEstimate } from '@/lib/estimate';
 import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
+import { selfHostedConnector } from '@/components/app/builderConnector';
 import {
     AttachButton,
     AttachmentChips,
@@ -308,6 +310,17 @@ export function BuilderPanel() {
                                     <CheckCircle2 size={14} className={cn('shrink-0', gone ? 'text-text-faint' : 'text-success')} aria-hidden />
                                     <span className="truncate">{message.content}</span>
                                 </div>
+                            );
+                        }
+                        if (message.kind === 'connect' && message.connect) {
+                            return (
+                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    <ConnectCard
+                                        spec={message.connect}
+                                        connector={selfHostedConnector}
+                                        onConnected={(text) => void send(text, [])}
+                                    />
+                                </AgentTurn>
                             );
                         }
                         if (message.kind === 'human_prompt') {

@@ -19,7 +19,25 @@ export type BuilderMessageKind =
     | 'human_prompt'
     | 'tool_call'
     | 'tool_result'
-    | 'routing';
+    | 'routing'
+    | 'connect';
+
+/**
+ * A Connect card the builder put up (BWA1, `prepare_connection`): what to
+ * connect, and where the person's key or sign-in goes. Never a secret; the
+ * card sends what the person types straight to the host's own routes.
+ */
+export interface ConnectSpec {
+    id: string;
+    kind: 'app' | 'mcp_server' | 'provider_key' | 'tool_secret' | 'settings';
+    title: string;
+    why?: string;
+    app?: { slug: string; name?: string; auth?: 'oauth' | 'bearer' | 'none' | string; url?: string; token_hint?: string };
+    server?: { name: string; label?: string; url: string };
+    provider?: { id: string; label?: string };
+    tool?: { id: string; name: string; header: string };
+    screen?: { id: string; label?: string };
+}
 
 /** What the builder changed, as the dispatcher reported it. */
 export interface SavedResource {
@@ -45,6 +63,8 @@ export interface BuilderMessage {
     toolPreview?: string;
     routingDecision?: string;
     saved?: SavedResource;
+    /** A `connect` message's card. */
+    connect?: ConnectSpec;
     /**
      * A `human_prompt`'s step: which of the builder's questions it is (its plan,
      * a change, or a clarifying question), so the panel can draw a plan as a
@@ -227,6 +247,14 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                 role: 'assistant', content: String(summary), kind: 'text', key: `summary-${event.run_id ?? seq}`,
             });
         }
+
+        // A Connect card (BWA1): where a key or a sign-in goes instead of the chat.
+        // Keyed on the card's own id, so a replay redraws it rather than adding one.
+        case 'connection_needed':
+            return append(state, {
+                role: 'assistant', content: String(event.title ?? 'Connect'), kind: 'connect',
+                key: `connect-${event.id ?? seq}`, connect: event as ConnectSpec,
+            });
 
         // The builder's door (BWA1, D274): a message or an answer it would not keep
         // (a card number, a password), or a key it took out of one. Said as the

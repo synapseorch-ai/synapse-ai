@@ -13,6 +13,7 @@ export { AgentTestPanel, type AgentTestPanelProps } from './AgentTestPanel';
 export { Composer, composerPillClass, PillAvatar, type ComposerProps } from './Composer';
 export { AgentAvatar, AgentTurn, RunChip, Suggestions, UserBubble } from './messages';
 export { APPROVE_WORD, PlanCard, QUESTION_FOLD, QuestionCard } from './cards';
+export { ConnectCard, type ConnectResult, type Connector } from './ConnectCard';
 export { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from './switch';
 export {
     BUILDER_QUESTION_STEPS,

@@ -21,7 +21,8 @@
         "list_schedules",
         "list_variables",
         "list_recent_runs",
-        "get_run_summary"
+        "get_run_summary",
+        "prepare_connection"
     ],
     "repos": [],
     "db_configs": [],

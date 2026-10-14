@@ -32,7 +32,8 @@
         "delete_agent",
         "delete_orchestration",
         "delete_custom_tool",
-        "delete_schedule"
+        "delete_schedule",
+        "prepare_connection"
     ],
     "repos": [],
     "db_configs": [],

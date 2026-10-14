@@ -116,3 +116,19 @@ class TestTheAnswerDoors:
         from core.orchestration.answers import _through_door
         answer = {"answer": f"card {VISA}"}
         assert _through_door("run_abc", answer, "What's your card?") is answer
+
+
+class TestTheConnectCardReachesThePanel:
+    async def test_the_reporters_card_is_an_event_on_the_panels_stream(self, client, builder, fake_llm):
+        from test_builder_routes import tool_call
+        fake_llm.script([
+            route("answer"),
+            tool_call("prepare_connection", kind="provider_key", title="Add your OpenAI key",
+                      why="So agents can use GPT models.", provider="openai"),
+            "Use the card above to add your OpenAI key.",
+        ])
+        events = await stream(client, "/api/builder/chat", {"message": "Where do I put my OpenAI key?"})
+        cards = [e for e in events if e["type"] == "connection_needed"]
+        assert len(cards) == 1
+        assert cards[0]["kind"] == "provider_key" and cards[0]["provider"]["id"] == "openai"
+        assert cards[0]["title"] == "Add your OpenAI key"

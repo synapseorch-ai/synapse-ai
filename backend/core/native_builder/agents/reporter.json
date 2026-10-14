@@ -18,7 +18,8 @@
         "list_server_tools",
         "get_tools_detail",
         "list_recent_runs",
-        "get_run_summary"
+        "get_run_summary",
+        "prepare_connection"
     ],
     "repos": [],
     "db_configs": [],
