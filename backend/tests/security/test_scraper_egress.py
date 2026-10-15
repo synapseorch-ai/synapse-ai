@@ -325,3 +325,38 @@ async def test_session_all_steps_succeed(fake_crawler):
     }))
     assert payload["success"] is True
     assert payload["steps_completed"] == 2
+
+
+# ── The host's egress proxy (F580) ───────────────────────────────────────────────────────────────────────────────
+#
+# Cloud's worker hands HTTP(S)_PROXY to this process (I1's Smokescreen, which refuses any address that is not
+# public), but Chromium reads no proxy variables: every scrape left the worker directly. The browser now takes the
+# environment's proxy explicitly, NO_PROXY unread, as Knowledge's fetch does.
+
+def _proxy_env(monkeypatch, **values):
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+def _server(config):
+    proxy = getattr(config, "proxy_config", None)
+    return getattr(proxy, "server", None) or (proxy.get("server") if isinstance(proxy, dict) else None)
+
+
+def test_the_browser_goes_through_the_hosts_egress_proxy(monkeypatch):
+    _proxy_env(monkeypatch, HTTPS_PROXY="http://egress-proxy:4750", HTTP_PROXY="http://egress-proxy:4750",
+               NO_PROXY="localhost,postgres,example.com")
+    assert _server(web_scraper.browser_config()) == "http://egress-proxy:4750"
+
+
+def test_no_proxy_never_lets_a_page_skip_it(monkeypatch):
+    """NO_PROXY names the platform's own hosts; an agent's page is never one, so the browser keeps the proxy."""
+    _proxy_env(monkeypatch, https_proxy="http://egress-proxy:4750", no_proxy="*")
+    assert _server(web_scraper.browser_config()) == "http://egress-proxy:4750"
+
+
+def test_with_no_proxy_set_self_hosted_is_unchanged(monkeypatch):
+    _proxy_env(monkeypatch)
+    assert _server(web_scraper.browser_config()) is None

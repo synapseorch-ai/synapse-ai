@@ -104,21 +104,40 @@ _crawler: AsyncWebCrawler | None = None
 _crawler_lock = asyncio.Lock()
 
 
+def _egress_proxy() -> str | None:
+    """The proxy every page this browser loads goes through: the environment's HTTPS proxy, else its HTTP one, or
+    None (F580). Chromium reads no proxy variables, so a host that routes egress through a proxy (cloud's I1:
+    Smokescreen, which refuses any address that is not public) passed them to this process and nothing used them:
+    every `scrape_url` left the worker directly. `NO_PROXY` is not read: it names the platform's own hosts, never a
+    page an agent asks for (Knowledge's fetch takes its proxies the same way). The in-browser guard below stays the
+    first layer either way."""
+    import urllib.request
+
+    found = urllib.request.getproxies_environment()
+    return found.get("https") or found.get("http") or None
+
+
+def browser_config() -> BrowserConfig:
+    proxy = _egress_proxy()
+    return BrowserConfig(
+        headless=True,
+        browser_type="chromium",
+        enable_stealth=True,
+        verbose=False,
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        **({"proxy_config": {"server": proxy}} if proxy else {}),
+    )
+
+
 async def get_crawler() -> AsyncWebCrawler:
     global _crawler
     async with _crawler_lock:
         if _crawler is None:
-            config = BrowserConfig(
-                headless=True,
-                browser_type="chromium",
-                enable_stealth=True,
-                verbose=False,
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-            )
+            config = browser_config()
             _crawler = AsyncWebCrawler(config=config)
             _crawler.crawler_strategy.set_hook(
                 "on_page_context_created", _attach_egress_guard
