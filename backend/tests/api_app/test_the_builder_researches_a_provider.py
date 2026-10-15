@@ -26,7 +26,8 @@ from test_builder_routes import route, stream, tool_call
     ("com.notion/mcp", "Notion", None, True),
     ("io.github.github/github-mcp-server", "GitHub", None, True),
     ("io.github.someone/github-tools", "GitHub", None, False),
-    ("com.shippo/mcp", "Shippo", "goshippo.com", False),                       # not its domain
+    ("com.shippo/shippo-mcp", "Shippo", "goshippo.com", True),                 # named for it; its site is goshippo.com
+    ("io.stripe/mcp", "Stripe", "stripe.com", False),                          # whoever holds stripe.io
     ("stripe", "Stripe", None, False),                                          # no namespace at all
 ])
 def test_a_server_is_the_providers_own_only_by_its_namespace(name, provider, domain, own):
@@ -93,19 +94,50 @@ async def test_the_catalog_is_read_through_the_hosts_own_list():
     assert "no Apps catalog" in (await find_in_catalog({"query": "notion"}, None, []))["note"]
 
 
-async def test_the_findings_reach_the_card_cleaned():
-    events: list[dict] = []
-    got = await report_findings({"goal": "book a flight", "options": [
-        {"provider": "Duffel", "how": "API", "needs": "An account and a test token",
-         "sources": ["https://duffel.com/docs", "javascript:alert(1)"]},
-        {"provider": "IRCTC", "how": "partners", "detail": "Booking is for approved partners only"},
-        {"how": "api"},
-    ]}, None, events)
+async def test_a_verdict_stands_only_on_what_the_run_read():
+    """BWA1's live run: gpt-4.1-mini reported "public API" for three providers from memory, citing pages it never
+    read. A verdict needs its evidence from this run: `api`/`none` a page of the provider's that was read, `mcp` the
+    provider's own server in the Registry. Anything else reaches the card as `unclear`, with no unread source."""
+    from core.builder_tools import _current_run
+
+    token = _current_run.set("run_research_1")
+    try:
+        events: list[dict] = []
+        await read_web_page({"url": "https://duffel.com/docs/api"},
+                            _server(_Session({"success": True, "markdown": "Duffel API: test mode"})), [])
+        got = await report_findings({"goal": "book a flight", "options": [
+            {"provider": "Duffel", "how": "API", "sources": ["https://duffel.com/docs/api", "javascript:alert(1)"]},
+            {"provider": "IRCTC", "how": "none", "sources": ["https://www.irctc.co.in/partners"]},
+            {"provider": "Amadeus", "how": "mcp"},
+            {"how": "api"},
+        ]}, None, events)
+    finally:
+        _current_run.reset(token)
     (card,) = events
     assert card["type"] == "research_findings" and got["status"] == "reported"
     assert [(o["provider"], o["how"], o["sources"]) for o in card["options"]] == [
-        ("Duffel", "api", ["https://duffel.com/docs"]), ("IRCTC", "unclear", [])]
+        ("Duffel", "api", ["https://duffel.com/docs/api"]),   # read this run
+        ("IRCTC", "unclear", []),                              # cited, never read
+        ("Amadeus", "unclear", [])]                            # no own server seen
     assert "error" in await report_findings({"options": []}, None, [])
+
+
+async def test_the_providers_own_server_in_the_registry_is_evidence_for_mcp(monkeypatch):
+    import core.safe_fetch as sf
+    from core.builder_tools import _current_run
+
+    async def fake(url):
+        return json.dumps(REGISTRY_ANSWER).encode()
+
+    monkeypatch.setattr(sf, "fetch_bytes", fake)
+    token = _current_run.set("run_research_2")
+    try:
+        await search_mcp_registry({"provider": "Stripe", "domain": "stripe.com"}, None, [])
+        events: list[dict] = []
+        await report_findings({"options": [{"provider": "Stripe", "how": "mcp"}]}, None, events)
+    finally:
+        _current_run.reset(token)
+    assert events[0]["options"][0]["how"] == "mcp"
 
 
 class _Session:
@@ -145,10 +177,23 @@ async def test_a_page_is_read_capped_and_marked_as_the_pages_own_words():
     assert "error" in await read_web_page({"url": "file:///etc/passwd"}, _server(session), [])
 
 
+async def test_a_web_reader_that_cannot_run_is_said_once_with_what_to_do_instead():
+    """BWA1's live run: the scraper's browser was missing and the model called the web nine more times."""
+    session = _Session({"error": "BrowserType.launch: Executable doesn't exist at /x/chrome-headless-shell"})
+
+    async def failing(name, args):
+        from types import SimpleNamespace
+        return SimpleNamespace(content=[SimpleNamespace(text="BrowserType.launch: Executable doesn't exist at /x")])
+
+    session.call_tool = failing
+    got = await read_web_page({"url": "https://docs.goshippo.com/"}, _server(session), [])
+    assert "Do not call search_the_web or read_web_page again" in got["error"]
+
+
 async def test_with_no_web_reader_the_research_says_the_web_was_not_checked():
     from types import SimpleNamespace
     got = await search_the_web({"query": "Duffel API"}, SimpleNamespace(tool_router={}, agent_sessions={}), [])
-    assert got["results"] == [] and "not running" in got["note"]
+    assert got["results"] == [] and "cannot be read here" in got["note"]
 
 
 def test_the_researcher_holds_the_three_sources_and_nothing_that_writes():
