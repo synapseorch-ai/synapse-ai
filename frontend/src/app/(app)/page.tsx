@@ -2516,7 +2516,7 @@ export default function Home() {
       const automated = msg.data.automated as Automated;
       return (
         <div key={idx} className="pl-10">
-          <HelperNote name={automated.name || 'Helper'} status={automated.status} text={msg.content} />
+          <HelperNote name={automated.name || 'Helper'} />
         </div>
       );
     }

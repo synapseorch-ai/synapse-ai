@@ -122,13 +122,24 @@ export function foldHelpers(lanes: HelperLaneData[], event: Wire): HelperLaneDat
                 return { ...lane, streaming: `${lane.streaming ?? ''}${inner.text ?? ''}` };
             case 'answer_reset':
                 return { ...lane, streaming: '' };
-            case 'thinking':
-            case 'status':
-                return { ...lane, activity: inner.message ? String(inner.message) : lane.activity };
+            case 'llm_thought':
+            case 'llm_reasoning': {
+                // What it is thinking, in its own words, as the line says while it works; a tool call's JSON is
+                // not a thought.
+                const said = firstLine(String(inner.thought ?? inner.reasoning ?? ''));
+                return said ? { ...lane, activity: said } : lane;
+            }
             default:
                 return lane;
         }
     });
+}
+
+/** A thought's first line, short enough for one line; nothing for a tool call's JSON. */
+function firstLine(text: string): string {
+    const line = text.trim().split('\n').find((l) => l.trim())?.trim() ?? '';
+    if (!line || line.startsWith('{') || line.startsWith('[')) return '';
+    return line.length > 120 ? `${line.slice(0, 117)}…` : line;
 }
 
 /** "1 min 40 s", "12 s". */

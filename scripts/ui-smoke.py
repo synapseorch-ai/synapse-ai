@@ -10843,11 +10843,16 @@ async def check_helperlane(browser) -> str:
         await _stream_open(page, "events")
         frames = "".join(_frame(e, f"t1-{i + 1}") for i, e in enumerate(_helper_frames("subtask_lane", "30-day check")))
         await page.evaluate(f"() => window.__streams.events.push({json.dumps(frames)})")
-        lane = page.get_by_role("region", name="Helper: 30-day check")
+        lane = page.get_by_role("region", name="Helper: 30-day check", exact=True)
         await lane.wait_for(timeout=10_000)
+        if "working" not in (await lane.inner_text()).lower():
+            raise AssertionError(f"the helper's line does not say it is working: {await lane.inner_text()!r}")
+        if "shipped day 12" in await lane.inner_text():
+            raise AssertionError("the helper's calls show before its line is opened (Naveen: closed, like Tools used)")
+        await lane.locator("button[aria-expanded]").first.click()
         text = await lane.inner_text()
-        if "Working" not in text or "lookup_order" not in text or "shipped day 12" not in text:
-            raise AssertionError(f"the working lane does not show its call: {text!r}")
+        if "lookup_order" not in text or "shipped day 12" not in text:
+            raise AssertionError(f"the opened line does not show its call: {text!r}")
         await lane.get_by_role("button", name="Stop the helper 30-day check").click()
         for _ in range(30):
             calls = await page.evaluate("() => window.__calls")
@@ -10869,15 +10874,16 @@ async def check_helperlane(browser) -> str:
         await page.evaluate(f"() => window.__streams.events.push({json.dumps(tail)})")
         if not await _on_screen(page, "I checked one before you stopped it."):
             raise AssertionError("the answer after the stopped helper never showed")
-        kept = page.get_by_role("region", name="Helper: 30-day check")
-        if "Stopped" not in await kept.inner_text():
-            raise AssertionError("the lane does not say it was stopped")
-        await kept.get_by_role("button", name="View its work").click()
+        kept = page.get_by_role("region", name="Helper: 30-day check", exact=True)
+        if "stopped" not in (await kept.inner_text()).lower():
+            raise AssertionError("the helper's line does not say it was stopped")
         if "What it was asked" not in await kept.inner_text():
-            raise AssertionError("View its work does not open what the helper did")
+            await kept.locator("button[aria-expanded]").first.click()
+        if "What it was asked" not in await kept.inner_text():
+            raise AssertionError("opening the helper's line does not show what it did")
     finally:
         await ctx.close()
-    return "a helper's lane shows its calls live, its Stop asks for that helper alone, and View its work opens"
+    return "a helper is one closed line that opens on its calls, and its Stop asks for that helper alone"
 
 
 @check
@@ -10897,9 +10903,8 @@ async def check_helperfollowup(browser) -> str:
     try:
         note = page.get_by_role("region", name="From your helper: 30-day check")
         await note.wait_for(timeout=15_000)
-        said = await note.inner_text()
-        if "Automated: posted when the helper finished" not in said:
-            raise AssertionError(f"the follow-up is not marked automated: {said!r}")
+        if "From your helper · 30-day check" not in await note.inner_text():
+            raise AssertionError("the follow-up does not say which helper it is from")
         if not await _on_screen(page, "Three orders are late"):
             raise AssertionError("the agent's follow-up answer is not shown")
         if "3 of the 12 are late." in await page.evaluate("() => document.body.innerText"):
@@ -10908,7 +10913,7 @@ async def check_helperfollowup(browser) -> str:
             raise AssertionError("a helper's result offers Edit as if the person had written it")
     finally:
         await ctx.close()
-    return "a background helper's result is drawn under \"From your helper\", automated, never as the person's"
+    return "a background helper's result is drawn under \"From your helper\", never as the person's message"
 
 
 @check
@@ -10930,8 +10935,9 @@ window.fetch = function (input, init) {
 """
     ctx, page = await _chat_page(browser, "uismoke-helper-save", history, extra_init=posts)
     try:
-        region = page.get_by_role("region", name="Helper: Order checker")
+        region = page.get_by_role("region", name="Helper: Order checker", exact=True)
         await region.wait_for(timeout=15_000)
+        await region.locator("button[aria-expanded]").first.click()
         await region.get_by_role("button", name="Save as agent").click()
         await page.wait_for_url("**/agents**", timeout=20_000)
         await page.wait_for_function(

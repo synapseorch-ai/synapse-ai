@@ -170,7 +170,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         steps: [
             'Click the agent’s name at the foot of the message box and pick who to talk to; switching agents starts a new conversation.',
             'Type your message and press Enter; Shift+Enter adds a line, and “Stop” halts the agent.',
-            'An agent that can send helpers shows each one as it works, with its own “Stop”; “View its work” opens what it did, and “Save as agent” opens a new agent made from it, saved only when you click “Save”. One sent to work in the background posts its result here when it finishes, marked “From your helper”.',
+            'An agent that can send helpers shows each one as a line beside its answer, with its own “Stop” while it works; open the line to see what it did, and “Save as agent” there opens a new agent made from it, saved only when you click “Save”. One sent to work in the background posts its result here when it finishes, marked “From your helper”.',
             'Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.',
             'Click + for a new chat, or the history button to reopen or delete an earlier one.',
         ],
