@@ -36,7 +36,7 @@ export function AgentBoards({ agentId, own, onOwn, disabled }: {
     const summary = `Own board ${own ? 'on' : 'off'}${used ? ` · ${used} shared` : ''}`;
 
     return (
-        <Section title="Boards · optional" description="The boards it reads and works." summary={summary}>
+        <Section title="Boards" description="The boards it reads and works." summary={summary}>
             <div className="space-y-4">
                 <div className="flex items-start justify-between gap-6">
                     <div>

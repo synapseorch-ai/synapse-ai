@@ -10450,7 +10450,7 @@ async def check_scheduleboard(browser) -> str:
         await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
         await page.get_by_role("button", name=f"Open Board smoke {stamp}").click(timeout=30_000)
         dialog = page.get_by_role("dialog")
-        fold = dialog.get_by_role("button", name=re.compile(r"^Board · optional"))
+        fold = dialog.get_by_role("button", name=re.compile(r"^Board(?!s)"))
         await fold.get_by_text("1 open").wait_for(timeout=10_000)
         if await fold.get_attribute("aria-expanded") != "false":
             raise AssertionError("the schedule's board is open before anyone opens it")
@@ -10491,7 +10491,7 @@ async def check_agentboards(browser) -> str:
         await page.locator('aside[aria-label="Your agents"]').get_by_text(
             f"Boards agent {stamp}", exact=True).click(timeout=30_000)
         section = page.locator("#setup-boards")
-        fold = section.get_by_role("button", name=re.compile(r"^Boards · optional"))
+        fold = section.get_by_role("button", name=re.compile(r"^Boards"))
         await fold.get_by_text("Own board on · 2 shared").wait_for(timeout=10_000)
         if await fold.get_attribute("aria-expanded") != "false":
             raise AssertionError("the agent's Boards section is open before anyone opens it")

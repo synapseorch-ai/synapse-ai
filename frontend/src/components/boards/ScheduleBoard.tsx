@@ -4,7 +4,8 @@
  * A scheduled agent's board, in its schedule's drawer (C7; BOARD1b): the cards its next firing reads first. A
  * schedule that runs a workflow has none of its own: its cards are on that workflow's board.
  *
- * Folded until opened, so a schedule reads as simple as before (Naveen, 2026-10-16: optional, not to scare anyone).
+ * Folded until opened, so a schedule reads as simple as before (Naveen, 2026-10-16: optional, not to scare anyone;
+ * the fold says so, not the title).
  * The folded head says how many cards wait, since a person's card there is an instruction the next run reads.
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -37,7 +38,7 @@ export function ScheduleBoard({ scheduleId, workflowId }: {
     if (workflowId) {
         const href = host.linkTo?.('workflow', workflowId);
         return (
-            <Section key={scheduleId} variant="plain" title="Board · optional"
+            <Section key={scheduleId} variant="plain" title="Board"
                 description="This schedule runs a workflow, so its cards are on the workflow's board.">
                 <p className="text-sm text-text-muted">
                     {href ? <><a className="text-text underline-offset-2 hover:underline" href={href}>Open the workflow</a>, then Board.</>
@@ -47,7 +48,7 @@ export function ScheduleBoard({ scheduleId, workflowId }: {
         );
     }
     return (
-        <Section key={scheduleId} variant="plain" title="Board · optional"
+        <Section key={scheduleId} variant="plain" title="Board"
             description="Notes and tasks its agent reads first at each run."
             summary={waiting ? `${waiting} open` : undefined}>
             <BoardView boardRef={{ scope: 'schedule', scopeId: scheduleId }} layout="panel"
