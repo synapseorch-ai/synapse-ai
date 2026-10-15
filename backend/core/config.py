@@ -280,6 +280,8 @@ _DEFAULTS = {
         "boards_enabled": False,
         "boards_max_open_cards": 2000,
         "boards_max_shared": 0,
+        # Teams (TEAM1a, D283): the most members at once, whatever an agent asks for. Equal to core/team.py DEFAULTS.
+        "team_at_once_ceiling": 10,
         # A `cohere.`, `voyage.` or `jina.` rerank model's own key (B2a, D163).
         "cohere_key": "",
         "voyage_key": "",

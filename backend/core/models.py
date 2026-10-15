@@ -2,7 +2,7 @@
 Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from core.images import checked_images
@@ -84,6 +84,19 @@ class AgentBoards(BaseModel):
     own: bool = True
 
 
+class AgentTeam(BaseModel):
+    """How a Team agent's members work (TEAM1a, D283, Q1). Stored on a `delegate` agent; absent, or
+    `one_at_a_time`, is today's delegate (D204). `team`: in parallel, up to `at_once` at a time (capped by
+    the install's `team_at_once_ceiling`, Q2a), talking with the lead while they work, a shared task list;
+    `task_budget` counts each assignment and each helper (Q8); `spend_limit_usd` is checked before every
+    model call the team makes (lead, members, helpers). Read by core/team.py."""
+
+    mode: Literal["one_at_a_time", "team"] = "one_at_a_time"
+    at_once: int = Field(default=3, ge=1, le=50)
+    task_budget: int = Field(default=6, ge=1, le=50)
+    spend_limit_usd: float | None = Field(default=None, gt=0)
+
+
 class Agent(BaseModel):
     id: str
     name: str = Field(max_length=AGENT_NAME_MAX)
@@ -124,6 +137,8 @@ class Agent(BaseModel):
     # still given room past its thinking (core/reasoning.py).
     max_output_tokens: int | None = Field(default=None, ge=MIN_OUTPUT_TOKENS, le=MAX_OUTPUT_TOKENS)
     delegate_agent_ids: list[str] = []  # for delegate-type agents; empty = allow all
+    # A delegate's "How members work" (Team, TEAM1a): None = one at a time, as every delegate did.
+    team: AgentTeam | None = None
     # What this agent may do with the tools it holds, by behaviour rather than
     # by name: {"destructive"|"open_world"|"undeclared": "allow"|"confirm"|"deny"}.
     # An absent category inherits the deployment's `tool_policy_defaults`, which
@@ -317,6 +332,9 @@ class Settings(BaseModel):
     boards_enabled: bool = False
     boards_max_open_cards: int = 2000
     boards_max_shared: int = 0
+    # Teams (TEAM1a, D283, Q2a): the most members a Team agent may have working at once, whatever it asks for.
+    # Read by core/team.py; cloud's provider overlays the plan's.
+    team_at_once_ceiling: int = 10
     cohere_key: str = ""  # a `cohere.` rerank model's key
     voyage_key: str = ""  # a `voyage.` rerank model's key
     jina_key: str = ""  # a `jina.` rerank model's key

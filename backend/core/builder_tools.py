@@ -1821,6 +1821,14 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 return phantom
         if "tool_policy" in fields:
             fields["tool_policy"] = _agent_policy(fields["tool_policy"])
+        if fields.get("team") is not None:
+            # A Team's "How members work" (TEAM1a): checked as the agent editor's save checks it.
+            from pydantic import ValidationError
+            from core.models import AgentTeam
+            try:
+                fields["team"] = AgentTeam(**fields["team"]).model_dump()
+            except (TypeError, ValidationError) as exc:
+                return {"error": f"Not saved: the team settings are not valid ({exc})."}
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
