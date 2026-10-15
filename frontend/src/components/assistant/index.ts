@@ -19,6 +19,7 @@ export { HelperLane, HelperLanes, HelperNote } from './HelperLane';
 export {
     agentFromHelper,
     foldHelpers,
+    foldLaneEvent,
     helperDuration,
     HELPER_TOOL,
     helperStatusLine,
@@ -28,6 +29,7 @@ export {
     type HelperCall,
     type HelperLaneData,
     type HelperStatus,
+    type LaneWork,
 } from './helpers';
 export { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from './switch';
 export {

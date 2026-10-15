@@ -103,36 +103,44 @@ export function foldHelpers(lanes: HelperLaneData[], event: Wire): HelperLaneDat
         }));
     }
     if (event?.type !== 'helper_event') return lanes;
-    const inner: Wire = event.event || {};
-    return update(lanes, String(event.helper_id), (lane) => {
-        switch (inner.type) {
-            case 'tool_execution':
-                return { ...lane, calls: [...lane.calls, { tool: String(inner.tool_name || ''), args: inner.args ?? null, result: '' }],
-                         activity: undefined };
-            case 'tool_result': {
-                const calls = [...lane.calls];
-                const at = calls.findLastIndex((c) => c.tool === inner.tool_name && !c.result && !c.refused);
-                if (at !== -1) {
-                    calls[at] = { ...calls[at], result: String(inner.preview ?? ''),
-                                  ...(inner.refused ? { refused: true, reason: String(inner.reason ?? '') } : {}) };
-                }
-                return { ...lane, calls };
+    return update(lanes, String(event.helper_id), (lane) => foldLaneEvent(lane, event.event || {}));
+}
+
+/** What a lane keeps of the work it shows: a helper's, or a team member's (TEAM1b). */
+export type LaneWork = { calls: HelperCall[]; streaming?: string; activity?: string };
+
+/**
+ * A lane after one of its agent's own events, unwrapped: a call, its result, its answer as it is written, what it
+ * is thinking. A helper's lane and a team member's fold their work the same way.
+ */
+export function foldLaneEvent<L extends LaneWork>(lane: L, inner: Wire): L {
+    switch (inner.type) {
+        case 'tool_execution':
+            return { ...lane, calls: [...lane.calls, { tool: String(inner.tool_name || ''), args: inner.args ?? null, result: '' }],
+                     activity: undefined };
+        case 'tool_result': {
+            const calls = [...lane.calls];
+            const at = calls.findLastIndex((c) => c.tool === inner.tool_name && !c.result && !c.refused);
+            if (at !== -1) {
+                calls[at] = { ...calls[at], result: String(inner.preview ?? ''),
+                              ...(inner.refused ? { refused: true, reason: String(inner.reason ?? '') } : {}) };
             }
-            case 'answer_delta':
-                return { ...lane, streaming: `${lane.streaming ?? ''}${inner.text ?? ''}` };
-            case 'answer_reset':
-                return { ...lane, streaming: '' };
-            case 'llm_thought':
-            case 'llm_reasoning': {
-                // What it is thinking, in its own words, as the line says while it works; a tool call's JSON is
-                // not a thought.
-                const said = firstLine(String(inner.thought ?? inner.reasoning ?? ''));
-                return said ? { ...lane, activity: said } : lane;
-            }
-            default:
-                return lane;
+            return { ...lane, calls };
         }
-    });
+        case 'answer_delta':
+            return { ...lane, streaming: `${lane.streaming ?? ''}${inner.text ?? ''}` };
+        case 'answer_reset':
+            return { ...lane, streaming: '' };
+        case 'llm_thought':
+        case 'llm_reasoning': {
+            // What it is thinking, in its own words, as the line says while it works; a tool call's JSON is
+            // not a thought.
+            const said = firstLine(String(inner.thought ?? inner.reasoning ?? ''));
+            return said ? { ...lane, activity: said } : lane;
+        }
+        default:
+            return lane;
+    }
 }
 
 /** A thought's first line, short enough for one line; nothing for a tool call's JSON. */
