@@ -158,6 +158,10 @@ class ModelWait:
 
     `deltas=True` also yields the call's streamed text, as private
     `_model_delta` / `_model_restart` events (see the module docstring).
+
+    `side` is something else the caller streams while it waits — a Team's
+    members (TEAM1a): an object with an `asyncio.Event` `wake` and a `drain()`
+    that returns the events since its last look, yielded as they come.
     """
 
     def __init__(
@@ -169,6 +173,7 @@ class ModelWait:
         heartbeat: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         deltas: bool = False,
+        side: Any = None,
     ) -> None:
         self._awaitable = awaitable
         self._clock = clock
@@ -176,6 +181,7 @@ class ModelWait:
         self._extra = extra or {}
         self._heartbeat = heartbeat
         self._deltas = deltas
+        self._side = side
         self.result: Any = None
 
     def _event(self, kind: str, message: str) -> dict[str, Any]:
@@ -199,6 +205,8 @@ class ModelWait:
         started = self._clock()
         quiet_since = loop.time()
         wake: asyncio.Future | None = None
+        side_wake: asyncio.Future | None = None
+        side = self._side
         try:
             while True:
                 waiting: set[asyncio.Future] = {task}
@@ -206,6 +214,10 @@ class ModelWait:
                     if wake is None or wake.done():
                         wake = asyncio.ensure_future(sink.wake.wait())
                     waiting.add(wake)
+                if side is not None:
+                    if side_wake is None or side_wake.done():
+                        side_wake = asyncio.ensure_future(side.wake.wait())
+                    waiting.add(side_wake)
                 timeout = max(0.0, every - (loop.time() - quiet_since))
                 done, _ = await asyncio.wait(waiting, timeout=timeout,
                                              return_when=asyncio.FIRST_COMPLETED)
@@ -217,6 +229,9 @@ class ModelWait:
                         # Text arriving is the call alive: no heartbeat over it.
                         quiet_since = loop.time()
                     for event in streamed:
+                        yield event
+                if side is not None:
+                    for event in side.drain():
                         yield event
                 if task in done:
                     self.result = task.result()
@@ -232,6 +247,8 @@ class ModelWait:
                 sink.closed = True
             if wake is not None and not wake.done():
                 wake.cancel()
+            if side_wake is not None and not side_wake.done():
+                side_wake.cancel()
             if not task.done():
                 task.cancel()
                 with contextlib.suppress(BaseException):

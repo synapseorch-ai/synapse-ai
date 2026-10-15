@@ -1048,3 +1048,34 @@ async def sweep(*, now: datetime | None = None) -> tuple[int, int]:
             BoardCardEventDB.tenant_id == tenant, BoardCardEventDB.created_at < now - HISTORY_FOR,
             BoardCardEventDB.kind.notin_(("created", "comment", "undo"))))
     return int(archived.rowcount or 0), int(dropped.rowcount or 0)
+
+
+#: A team's run board left by a turn that never finished (a crash, a restart) goes after this long idle (TEAM1a).
+RUN_BOARD_IDLE = timedelta(hours=24)
+
+
+async def sweep_run_boards(*, now: datetime | None = None) -> int:
+    """Delete `run` boards (a team's task list, TEAM1a) whose last change is older than `RUN_BOARD_IDLE`.
+
+    A team deletes its own board when its turn ends; a parked turn keeps it. This is for the ones nothing came
+    back to. Run by a team when it makes its board, never while Boards are off and no team works. How many.
+    """
+    from core.store import session
+    from core.store.models import BoardCardDB, BoardDB
+
+    now = now or _now()
+    cutoff = now - RUN_BOARD_IDLE
+    tenant = get_tenant()
+    async with session() as s:
+        boards = (await s.execute(select(BoardDB.id).where(
+            BoardDB.tenant_id == tenant, BoardDB.scope == "run", BoardDB.updated_at < cutoff))).scalars().all()
+        stale = []
+        for board_id in boards:
+            latest = (await s.execute(select(func.max(BoardCardDB.updated_at)).where(
+                BoardCardDB.tenant_id == tenant, BoardCardDB.board_id == board_id))).scalar()
+            if latest is None or _aware(latest) < cutoff:
+                stale.append(board_id)
+    for board_id in stale:
+        await delete_board(board_id)
+    return len(stale)
+

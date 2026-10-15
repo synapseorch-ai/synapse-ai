@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from core import chat_turns
 from core.models import ChatRequest, ChatResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbeat  # noqa: F401 — re-export for backwards compat
 
 router = APIRouter()
@@ -218,16 +218,17 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         async def _save_stopped(agent_id=agent.get("id"), session_id=request.session_id,
                                 message=request.message or ""):
             from core.session import (_save_conversation_turn, helpers_from_events, image_notes,
-                                      thinking_from_events, turn_calls, tools_from_calls)
+                                      members_from_events, thinking_from_events, turn_calls, tools_from_calls)
             calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
             reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)
             helpers = helpers_from_events(helper_events, resumed=latest_progress or resume_state)
+            members = members_from_events(helper_events, resumed=latest_progress or resume_state)
             await _save_conversation_turn(session_id=session_id or "default", agent_id=agent_id,
                                           user=message, assistant=chat_turns.STOPPED_ANSWER,
                                           tools=tools_from_calls(calls), calls=calls,
                                           images=image_notes(getattr(request, "images", None)),
                                           reasoning=reasoning, thoughts=thoughts, helpers=helpers,
-                                          automated=automated)
+                                          automated=automated, members=members)
         turn.on_stop = _save_stopped
 
     # Route builder agents to the dedicated builder stream
@@ -282,7 +283,7 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 events_since_progress.append(event)
             elif etype in ("llm_reasoning", "llm_thought"):
                 thinking_events.append(event)
-            elif etype in ("helper_started", "helper_finished"):
+            elif etype in ("helper_started", "helper_finished", "member_started", "member_finished"):
                 helper_events.append(event)
 
             if etype == "status":
@@ -405,6 +406,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 # The helpers it sent (SUB1a): each one started, what it does
                 # (wrapped, from the engine's allowlist), and its record.
                 "helper_started", "helper_event", "helper_finished",
+                # A Team's members (TEAM1a): each one started, what it does (wrapped), its
+                # record; and the team's task list.
+                "member_started", "member_event", "member_finished", "team_tasks",
             ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 
@@ -540,6 +544,35 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
     except chat_turns.TurnAlreadyRunning:
         raise HTTPException(status_code=409, detail=TURN_RUNNING)
     return _sse(_read(turn))
+
+
+class MemberMessage(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@router.post("/chat/{session_id}/members/{member_id}/stop")
+async def stop_member(session_id: str, member_id: str):
+    """Stop one member of a Team working in this conversation (TEAM1a, Q5): its lane's Stop.
+
+    It ends at its next turn and its lead reads that it was stopped; the rest of the team
+    works on. Answers `stopped` false when nothing was working — it may have just finished.
+    """
+    from core import team
+
+    working = team.find(session_id)
+    stopped = bool(working is not None and working.stop_member(member_id))
+    return {"status": "stopping", "session_id": session_id, "member_id": member_id, "stopped": stopped}
+
+
+@router.post("/chat/{session_id}/members/{member_id}/message")
+async def message_member(session_id: str, member_id: str, body: MemberMessage):
+    """The person's message to one working member (TEAM1a, Q5): read between its steps, as the
+    person's own words. `delivered` false when that member is not working."""
+    from core import team
+
+    working = team.find(session_id)
+    delivered = bool(working is not None and working.message_from_person(member_id, body.text))
+    return {"session_id": session_id, "member_id": member_id, "delivered": delivered}
 
 
 @router.post("/chat/{session_id}/helpers/{helper_id}/stop")

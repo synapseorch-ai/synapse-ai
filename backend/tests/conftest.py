@@ -246,11 +246,11 @@ async def _isolate_helpers(_isolate_chat_turns):
     import asyncio
     import contextlib
 
-    from core import chat_turns, helpers
+    from core import chat_turns, helpers, team
 
     def clear():
         for registry in (helpers._LIVE, helpers._OPEN, helpers._CHANGED, helpers._BACKGROUND, helpers._LOCKS,
-                         helpers._QUEUED, helpers._COURIERS, chat_turns._FREE):
+                         helpers._QUEUED, helpers._COURIERS, chat_turns._FREE, team._LIVE):
             registry.clear()
         helpers._DELIVERED.clear()
         helpers.uninstall()  # a host one test installed (SUB1b) never reaches the next

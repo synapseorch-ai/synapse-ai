@@ -92,6 +92,11 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("helpers"):
             # The helpers the turn sent (SUB1a): each one's brief, calls and answer.
             turn["helpers"] = [dict(h) for h in assistant["helpers"]]
+        if assistant.get("members"):
+            # A Team's members (TEAM1a), and its task list.
+            turn["members"] = [dict(m) for m in assistant["members"]]
+        if assistant.get("team"):
+            turn["team"] = dict(assistant["team"])
         if user.get("automated"):
             # A question nobody typed: a helper's result posted back (SUB1a) — drawn as the helper's.
             turn["automated"] = dict(user["automated"])
@@ -210,6 +215,27 @@ def helpers_from_events(events: list[dict], resumed: dict | None = None) -> list
         elif event.get("type") == "helper_finished" and isinstance(event.get("record"), dict):
             kept[event.get("helper_id")] = dict(event["record"])
     return list(kept.values())
+
+
+def members_from_events(events: list[dict], resumed: dict | None = None) -> list[dict]:
+    """A Team's member records for a turn saved from outside the engine (a Stop, TEAM1a): those its snapshot
+    held, then each `member_finished` since; a member the Stop cut short is kept as stopped."""
+    kept = {m.get("id"): {k: v for k, v in m.items() if k in _MEMBER_RECORD}
+            for m in ((resumed or {}).get("team") or {}).get("members") or [] if isinstance(m, dict)}
+    for event in events:
+        if event.get("type") == "member_started" and event.get("member_id") not in kept:
+            kept[event["member_id"]] = {"id": event["member_id"], "agent_id": event.get("agent_id") or "",
+                                        "name": event.get("member_name") or "", "task": event.get("task") or "",
+                                        "card_id": event.get("card_id") or "", "model": event.get("model") or "",
+                                        "status": "cancelled", "calls": [], "answer": ""}
+        elif event.get("type") == "member_finished" and isinstance(event.get("record"), dict):
+            kept[event.get("member_id")] = dict(event["record"])
+    return list(kept.values())
+
+
+#: What a member's record holds (core.team.Member.record), and nothing of its resume state.
+_MEMBER_RECORD = frozenset({"id", "agent_id", "name", "task", "card_id", "model", "status", "seconds", "calls",
+                            "answer", "error"})
 
 
 def panel_text(items: list | None) -> list[str]:
@@ -367,6 +393,8 @@ async def _save_conversation_turn(
     helpers: list[dict] | None = None,
     automated: dict | None = None,
     inbox_read: list[str] | None = None,
+    members: list[dict] | None = None,
+    team: dict | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
@@ -398,6 +426,12 @@ async def _save_conversation_turn(
         answer["helpers"] = [dict(h) for h in helpers]
     if inbox_read:
         answer["inbox_read"] = list(inbox_read)
+    if members:
+        # A Team's members (TEAM1a): each one's task, calls and answer — its lane, reopened.
+        answer["members"] = [dict(m) for m in members]
+    if team:
+        # Its task list, how many tasks it used, and whether the lead answered alone.
+        answer["team"] = dict(team)
     await store.append_turn(
         session_id,
         _agent(agent_id),

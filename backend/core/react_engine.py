@@ -668,6 +668,53 @@ async def _inject_repo_context(agent_data, system_template):
         return system_template
 
 
+async def _eligible_members(active_agent: dict) -> dict:
+    """The agents a delegate (or a Team's lead) may hand work to, by id: its chosen ones, or every agent.
+
+    Never itself, another delegate (no chains, and members never lead, TEAM1a's depth 1), the builder, or
+    anything that is not workspace content: the builder's sub-agents are `conversational` with a `system`
+    marker, so a type check alone handed them customer work.
+    """
+    from core.routes.agents import load_user_agents
+
+    agents = await load_user_agents()
+    own_id = active_agent.get("id", "")
+    delegate_agent_ids = active_agent.get("delegate_agent_ids") or []
+    eligible: dict = {}
+    for a in agents:
+        aid = a.get("id", "")
+        atype = a.get("type", "")
+        if not aid or aid == own_id or atype in ("builder", "delegate") or a.get("system"):
+            continue
+        # If specific agents are selected, filter to those
+        if delegate_agent_ids and aid not in delegate_agent_ids:
+            continue
+        eligible[aid] = a
+    return eligible
+
+
+def _offer_engine_tools(all_tools: list, ollama_tools: list, tool_schema_map: dict, tools: list):
+    """Offer tools the engine itself answers (a team's, TEAM1a): a same-named tool the agent holds is hidden,
+    since the name means the engine's for this turn. New lists; the declarations re-rendered."""
+    names = {t.name for t in tools}
+    all_tools = [t for t in all_tools
+                 if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) not in names]
+    ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") not in names]
+    tool_schema_map = {n: v for n, v in tool_schema_map.items() if n not in names}
+    for tool in tools:
+        all_tools.append(tool)
+        tool_schema_map[tool.name] = tool.inputSchema
+        ollama_tools.append({"type": "function", "function": {
+            "name": tool.name, "description": tool.description, "parameters": tool.inputSchema}})
+    tools_json = str([
+        {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+         "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+         "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+        for t in all_tools
+    ])
+    return all_tools, ollama_tools, tool_schema_map, tools_json
+
+
 async def _build_delegate_context(
     active_agent: dict,
     all_tools: list,
@@ -679,27 +726,10 @@ async def _build_delegate_context(
 
     Returns a dict of agent_id -> agent_data for all eligible sub-agents.
     """
-    from core.routes.agents import load_user_agents
     from core.tools import VirtualTool
 
-    agents = await load_user_agents()
     own_id = active_agent.get("id", "")
-    delegate_agent_ids = active_agent.get("delegate_agent_ids") or []
-
-    # Build the eligible agents map
-    eligible: dict = {}
-    for a in agents:
-        aid = a.get("id", "")
-        atype = a.get("type", "")
-        # Skip self, other delegates (no infinite loops), and anything that is
-        # not workspace content: the builder's sub-agents are `conversational`
-        # with a `system` marker, so a type check alone handed them customer work.
-        if not aid or aid == own_id or atype in ("builder", "delegate") or a.get("system"):
-            continue
-        # If specific agents are selected, filter to those
-        if delegate_agent_ids and aid not in delegate_agent_ids:
-            continue
-        eligible[aid] = a
+    eligible = await _eligible_members(active_agent)
 
     if not eligible:
         _log.warning(f"⚠ Delegate agent '{own_id}' has no eligible sub-agents")
@@ -968,6 +998,7 @@ async def run_agent_step(
     background: bool = False,             # its helpers may work in the background (the app's chat only, S4)
     automated: dict | None = None,        # a follow-up nobody typed: the helper result it answers (SUB1a)
     board_scope=None,                     # core.boards.BoardScope (or its dict): the workflow step or schedule it runs in (BOARD1a)
+    team_seat=None,                       # core.team.Seat: this turn is a member's, working for its team's lead (TEAM1a)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1086,9 +1117,39 @@ async def run_agent_step(
     allowed_tools = narrow_allowed_tools(allowed_tools_override, active_agent.get("tools", ["all"]))
     agent_type = active_agent.get("type", "conversational")
 
+    # ── TEAM: a delegate whose members work as a team (TEAM1a, D283) ──
+    # In the app's chat, a member's channel and OAI1: never a workflow step (one at a time
+    # until TEAM1e), a visitor's turn or a phone call (the lead alone, Q9), or a member's
+    # own turn (depth 1). Its lead holds assign/message/wait/forward instead of
+    # delegate_to_agent, and its own tools (Q1b); see core/team.py.
+    from core import team as _team_mod
+    _team = None
+    if (agent_type == "delegate" and tools_override is None and team_seat is None
+            and not str(source or "").startswith("orchestration") and _visitor_mod.current() is None):
+        _team_cfg = _team_mod.config_of(active_agent, settings=current_settings)
+        if _team_cfg is not None:
+            _team_roster = await _eligible_members(active_agent)
+            if _team_roster:
+                _team = _team_mod.Team(
+                    lead=active_agent, members=_team_roster, config=_team_cfg, session_id=session_id,
+                    source=source, run_id=run_id, server_module=server_module, lead_model=current_model,
+                    should_stop=should_stop, can_park=bool(progress_events and _chat_approval.approvals_answerable()),
+                    state=(resume_state or {}).get("team"))
+                all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
+                    all_tools, ollama_tools, tool_schema_map, _team_mod.lead_tools(_team))
+                agent_system_template = agent_system_template + "\n\n" + _team_mod.lead_prompt(_team)
+    if team_seat is not None and tools_override is None:
+        # A member's own: message, wait and its own card (TEAM1a).
+        all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
+            all_tools, ollama_tools, tool_schema_map, _team_mod.member_tools(team_seat.team, team_seat.member))
+        agent_system_template = agent_system_template + "\n\n" + _team_mod.member_prompt(
+            team_seat.team, team_seat.member)
+    _team_tool_names = (frozenset(_team_mod.LEAD_TOOLS) if _team is not None
+                        else frozenset(_team_mod.MEMBER_TOOLS) if team_seat is not None else frozenset())
+
     # ── DELEGATE AGENT: inject synthetic delegate_to_agent tool + agent context ──
     _delegate_agents_map: dict = {}  # agent_id -> agent dict (populated only for delegates)
-    if agent_type == "delegate" and tools_override is None:
+    if agent_type == "delegate" and tools_override is None and _team is None:
         _delegate_agents_map = await _build_delegate_context(
             active_agent, all_tools, tool_schema_map, ollama_tools
         )
@@ -1652,6 +1713,9 @@ async def run_agent_step(
             if _turn_helpers:
                 # The helpers it sent, kept with the turn (SUB1a).
                 snap["helpers"] = list(_turn_helpers)
+            if _team is not None:
+                # Its team: members, their records, the task list and the inbox (TEAM1a).
+                snap["team"] = _team.state()
         kn_state = _kturn.to_state()
         if kn_state:
             # The turn's [K#] labels (a delegate's included), so a resumed answer
@@ -1692,6 +1756,9 @@ async def run_agent_step(
     _kturn = knowledge_turn if knowledge_turn is not None else KnowledgeTurn()
     if (resume_state or {}).get("knowledge"):
         _kturn.merge(KnowledgeTurn.from_state(resume_state["knowledge"]))
+    if _team is not None:
+        # One root turn's labels: its members' searches continue the lead's [K#] count, as a delegate's do.
+        _team.knowledge_turn = _kturn
 
     # ── Mid-node resume: seed the loop from a prior interrupted attempt ──────
     # The orchestration executor checkpoints a _step_progress snapshot after
@@ -1748,6 +1815,7 @@ async def run_agent_step(
         always_allowed |= set(MEMORY_TOOL_NAMES)  # injected via the memory flag, same reason
     always_allowed |= _kn_names  # injected via the agent's knowledge bases, same reason
     always_allowed |= _board_names  # injected via the turn's boards, same reason
+    always_allowed |= _team_tool_names  # a team's lead's or member's (TEAM1a), same reason
     if _visitor is not None:
         # The default file tools are admitted here by the agent's *type*, not by
         # what it was offered. For a visitor the guard admits what was offered
@@ -1834,6 +1902,21 @@ async def run_agent_step(
         _spawn_results = [(r.name, r.result_for_parent()) if isinstance(r, _helpers.Helper) else r
                           for r in results]
 
+    # ── A team's turn (TEAM1a) ──────────────────────────────────────────────
+    _forward_answer: str | None = None   # `forward`: a member's answer, word for word, is this turn's
+    _team_nudged = False                 # a final answer while members work is asked about once
+
+    def _team_park(member, at_turn: int):
+        """Park the turn on a member's question (F286's shape, a list of one until TEAM1c)."""
+        _team.parking = True
+        approval = dict(member.approval or {})
+        yield {"type": "_step_progress", **_snapshot(at_turn),
+               "delegate_pending": {"agent_id": member.agent_id, "task": member.task, "member_id": member.id,
+                                    "progress": member.progress or {}, "approval": approval}}
+        yield {**(member.asked or {"type": "human_input_required", "kind": "tool_approval", **approval}),
+               "delegate_from": agent_id_for_session, "delegate_agent_name": member.name,
+               "member_id": member.id}
+
     def _in_background(args: dict) -> bool:
         """A spawn that asks for the background, where this turn may run one (the app's chat, S4)."""
         return bool(_background_offered and isinstance(args, dict) and args.get("background") is True)
@@ -1907,7 +1990,7 @@ async def run_agent_step(
     if _left_note and _visitor is None:
         yield {"type": "status", "message": _left_note}
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient() as client, _team_mod.guard(_team):
         for turn in range(start_turn, max_turns):
             _log.info(f"\n{'#'*60}\n### TURN {turn + 1}/{max_turns} ###\n{'#'*60}\n")
 
@@ -1919,6 +2002,20 @@ async def run_agent_step(
             if should_stop is not None and await should_stop():
                 _log.debug(f"RUN_AGENT: 🛑 cancelled by request before turn {turn + 1}")
                 raise asyncio.CancelledError("cancelled by request")
+
+            if _team is not None:
+                # What its members did since the lead last looked (TEAM1a).
+                for _e in _team.drain():
+                    yield _e
+                if _team.parked is not None and not _team.live_members() and _replay_call is None:
+                    # A member waits on a person and nobody else works: the turn parks on its
+                    # question, today's single delegate_pending (Q6's interim, until TEAM1c).
+                    await _team.settle()
+                    for _e in _team.drain():
+                        yield _e
+                    for _e in _team_park(_team.parked, turn):
+                        yield _e
+                    return
 
             yield {"type": "thinking", "message": "Analyzing your request..."}
 
@@ -1953,6 +2050,10 @@ async def run_agent_step(
                     "Current task list for this run (keep statuses true with "
                     f"{TASK_TOOL_NAME} as you work):\n{render_tasks(_tasks)}"
                 )
+            # A team's task list (TEAM1a), as a lead's own plan is shown: from what its turn
+            # wrote, never a board read per call.
+            if _team is not None and _team.tasks:
+                tail_parts.append(_team.render_tasks())
             # The memory index is the one eager piece of a memory-enabled
             # agent's memory; it refreshes in place after remember/forget.
             if _memory_enabled:
@@ -2012,7 +2113,7 @@ async def run_agent_step(
                     run_id=run_id,
                     # Kept verbatim at the head, whichever stage runs (F244).
                     pinned_request=user_message,
-                ), label="Compacting context")
+                ), label="Compacting context", side=_team)
                 async for _wait_event in _compact_wait.events():
                     yield _wait_event
                 _compact_ctx, _compact_hist, _compact_path, _compact_stats = _compact_wait.result
@@ -2048,6 +2149,18 @@ async def run_agent_step(
                     yield {"type": "helper_results_read",
                            "items": [{"helper_id": i.get("helper_id"), "name": i.get("name"),
                                       "status": i.get("status")} for i in _arrived]}
+            # The team's inbox (TEAM1a): a lead's, or a member's own. An item marks this turn as
+            # having read content nobody typed only when its writer had (Naveen, TEAM1a: per item).
+            _team_inbox = (_team.inbox if _team is not None
+                           else team_seat.member.inbox if team_seat is not None else None)
+            if _team_inbox is not None:
+                _team_arrived = _team_inbox.drain()
+                if _team_arrived:
+                    current_context_text += _team_mod.render_inbox(_team_arrived, for_lead=_team is not None)
+                    active_prompt = current_context_text
+                    if any(i.get("tainted") for i in _team_arrived):
+                        _memory_tainted = True
+                    _team_inbox.settle()
 
             # Safety guard: truncate if too long
             total_prompt_chars = len(active_prompt) + len(volatile_tail) + len(active_sys_prompt) + len(memory_context)
@@ -2131,7 +2244,7 @@ async def run_agent_step(
                         images_for_turn=images,
                         tool_name_for_log=last_tool_logged,
                         prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
-                    ), deltas=stream_answer)
+                    ), deltas=stream_answer, side=_team)
                     _answer_filter = AnswerFilter() if stream_answer else None
                     _answer_turn = turn + 1
                     async for _wait_event in _wait.events():
@@ -2357,6 +2470,30 @@ async def run_agent_step(
                     await _save_failed_turn()
                     raise _no_answer("\n\n".join(reasoning_blocks), _llm_result.stop_reason)
 
+                # A lead with members still working is asked once (TEAM1a): an answer now stops
+                # them. One waiting on a person's approval parks the turn instead.
+                if _team is not None:
+                    _working = [m.name for m in _team.live_members()]
+                    if _working and not _team_nudged and turn + 1 < max_turns:
+                        _team_nudged = True
+                        current_context_text += (
+                            f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
+                            f"\nSystem: {', '.join(_working)} {'is' if len(_working) == 1 else 'are'} still "
+                            "working. Call wait for their results, or give your final answer again to answer now: "
+                            "they are then stopped.\n")
+                        for _e in _unstream("not_done"):
+                            yield _e
+                        continue
+                    if not _working and _team.parked is not None:
+                        for _e in _unstream("not_done"):
+                            yield _e
+                        await _team.settle()
+                        for _e in _team.drain():
+                            yield _e
+                        for _e in _team_park(_team.parked, turn):
+                            yield _e
+                        return
+
                 # Final response: strip any leftover reasoning so it never
                 # reaches the user or the session history.
                 final_response = action_text
@@ -2473,6 +2610,58 @@ async def run_agent_step(
                     yield {"type": "tasks_updated", "tasks": [dict(t) for t in _tasks], "turn": turn + 1}
                     yield {"type": "tool_result", "tool_name": TASK_TOOL_NAME, "preview": _board[:500]}
                     _log.debug(f"📋 Task list updated — {_summary}")
+                    continue
+
+                # ── A team's tools (TEAM1a): the engine answers, before the guard ────
+                if _team is not None and tool_name == "delegate_to_agent" and _delegate_resume \
+                        and _delegate_resume.get("arguments") == {"agent_id": tool_args.get("agent_id"),
+                                                                   "task": tool_args.get("task")}:
+                    # A person answered a member's question (Q6's interim): that member carries on.
+                    _resumed_member = _team.resume_member(None, tool_args.get("agent_id"), tool_args.get("task"),
+                                                          _delegate_resume.get("resume_state"))
+                    _delegate_resume = None
+                    _t_obs = (f"The person answered {_resumed_member.name}'s question; it carries on, and its "
+                              "result arrives in your team inbox." if _resumed_member is not None
+                              else "That member's question was already settled.")
+                    current_context_text += f"\n[Turn {turn + 1} — Observation] {_t_obs}\n"
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _t_obs}
+                    continue
+                if tool_name in _team_tool_names:
+                    _t_obs = ""
+                    try:
+                        if _team is not None and tool_name == _team_mod.ASSIGN:
+                            _t_obs = await _team.assign(tool_args, tainted=_memory_tainted)
+                        elif _team is not None and tool_name == _team_mod.MESSAGE:
+                            _t_obs = _team.message_from_lead(tool_args, tainted=_memory_tainted)
+                        elif _team is not None and tool_name == _team_mod.WAIT:
+                            async for _w in _team.wait_for_lead(tool_args.get("seconds")):
+                                if isinstance(_w, str):
+                                    _t_obs = _w
+                                else:
+                                    yield _w
+                        elif _team is not None and tool_name == _team_mod.FORWARD:
+                            _forward_answer = _team.forward(tool_args)
+                            _t_obs = "Forwarded as the answer."
+                        elif team_seat is not None and tool_name == _team_mod.MESSAGE:
+                            _t_obs = team_seat.team.message_from_member(team_seat.member, tool_args,
+                                                                        tainted=_memory_tainted)
+                        elif team_seat is not None and tool_name == _team_mod.WAIT:
+                            _t_obs = await team_seat.team.wait_for_member(team_seat.member, tool_args.get("seconds"))
+                        elif team_seat is not None and tool_name == _team_mod.BOARD_UPDATE:
+                            _t_obs = await team_seat.team.board_update(team_seat.member, tool_args,
+                                                                       tainted=_memory_tainted)
+                    except _team_mod.Refused as _t_refused:
+                        _t_obs = f"Refused: {_t_refused}"
+                        _open_refusal = str(_t_refused)
+                    current_context_text += f"\n[Turn {turn + 1} — Observation] {tool_name}: {_t_obs}\n"
+                    tools_used_summary.append(f"{tool_name}: {_t_obs[:200]}")
+                    if _team is not None:
+                        for _e in _team.drain():
+                            yield _e
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _t_obs[:500],
+                           **({"refused": True, "reason": _open_refusal} if _open_refusal else {})}
+                    if _forward_answer is not None:
+                        break
                     continue
 
                 # ── The caller's own tools (VOX1a): its handler answers ──────────
@@ -3253,6 +3442,11 @@ async def run_agent_step(
                         pass
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
             _close_call()
+            if _forward_answer is not None:
+                # A member's answer, word for word, is this turn's (TEAM1a): the loss in a
+                # lead's rewrite is what forwarding is for.
+                final_response = _forward_answer
+                break
             if not _repeat_stop:
                 _check_round(_turn_calls[_round_from:])
             if _repeat_stop:
@@ -3281,6 +3475,12 @@ async def run_agent_step(
         else:
             _ran_out = True
 
+    if _team is not None:
+        # What its members did as the team ended (their records, the closed list): the
+        # guard around the loop stopped them and cleaned up (TEAM1a).
+        for _e in _team.drain():
+            yield _e
+        yield {"type": "team_tasks", "tasks": _team.task_list(), "ended": True}
     if not final_response and not _ran_out:
         # Out of the loop with no answer, and not by spending its turns: the
         # model gave none (F305). Only a real exhaustion says it ran out.
@@ -3352,6 +3552,8 @@ async def run_agent_step(
                 helpers=_turn_helpers,
                 automated=automated,
                 inbox_read=_inbox_read,
+                members=_team.records() if _team is not None else None,
+                team=_team.summary() if _team is not None else None,
             )
             if inbox is not None:
                 inbox.settle()
@@ -3370,6 +3572,13 @@ async def run_agent_step(
             final_event.update(helpers=[dict(h) for h in _turn_helpers], inbox_read=_read_here)
     if _unanswered is not None:
         final_event["no_answer"] = _unanswered
+    if _team is not None:
+        # The team's list and whether the lead answered alone (the cost line, Q1b); its members' records.
+        final_event["team"] = _team.summary()
+        final_event["members"] = _team.records()
+    if not persist_turn:
+        # Whether this hand-off read content nobody typed: its lead marks what it wrote from it (TEAM1a, F279).
+        final_event["tainted"] = bool(_memory_tainted)
     if stream_answer:
         # Whether what streamed is the answer, word for word: a caller that
         # spoke or showed it need not say `response` again. An answer the loop
