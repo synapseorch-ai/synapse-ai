@@ -16,7 +16,7 @@ import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { Button, IconButton, Markdown, PageFrameHeader } from '@/components/ui';
 import {
   AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, HelperLanes, HelperNote, PillAvatar, RunChip, UserBubble,
-  agentFromHelper, foldHelpers, isHelperEvent, laneFromRecord, type HelperLaneData,
+  agentFromHelper, foldHelpers, isHelperEvent, laneFromRecord, toolsUsedBesideLanes, type HelperLaneData,
 } from '@/components/assistant';
 import { StepIcon } from '@/components/run';
 
@@ -260,7 +260,9 @@ function AgentStepResult({ msg, onCollectDataSubmit }: {
 // way is a quiet chip under it, and its Sources are chips too (M2c).
 function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }) {
   const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
-  const calls = (msg.toolCalls ?? (Array.isArray(msg.data?.calls) ? msg.data.calls : [])) as SavedCall[];
+  const saved = (msg.toolCalls ?? (Array.isArray(msg.data?.calls) ? msg.data.calls : [])) as SavedCall[];
+  // A helper's send is its lane, drawn above (F572).
+  const calls = toolsUsedBesideLanes(saved, msg.helpers?.length ?? 0);
   return (
     <div data-answer className="flex min-w-0 max-w-full flex-col gap-2.5">
       {msg.intent && (

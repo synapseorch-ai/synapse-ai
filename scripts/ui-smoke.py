@@ -11204,6 +11204,64 @@ async def check_helperstogether(browser) -> str:
 
 
 @check
+async def check_helpertoolsrow(browser) -> str:
+    """A helper is its lane, not a `spawn_subtask` row too (F572): the tools-used row leaves out each send that
+    drew a lane, reopened and live; a refused send stays, as "not run".
+
+    SUB1b's dev shots read the lane, then "1 tool · spawn_subtask", which said nothing the lane did not.
+    """
+    lane = {"id": "subtask_row", "name": "Capital", "task": "find the capital", "tools": [], "mode": "wait",
+            "status": "completed", "seconds": 3, "calls": [], "answer": "Paris."}
+    calls = [{"tool": "spawn_subtask", "args": {"task": "find the capital"}, "result": "Paris."},
+             {"tool": "lookup_order", "args": {"order": "HP-2041"}, "result": "shipped day 12"},
+             {"tool": "spawn_subtask", "args": {"task": "again"}, "result": "", "refused": True,
+              "reason": "a helper with that brief is already running"}]
+    history = {"turns": [{"user": "what is the capital?", "assistant": "Paris, and HP-2041 shipped.", "tools": [],
+                          "timestamp": "", "helpers": [lane], "calls": calls}],
+               "pending_approval": None, "running": None}
+    ctx, page = await _chat_page(browser, "uismoke-helper-tools-row", history)
+    try:
+        if not await _on_screen(page, "Paris, and HP-2041 shipped."):
+            raise AssertionError("the reopened answer never showed")
+        row = page.get_by_role("button", name=re.compile(r"Tools used"))
+        label = (await row.first.inner_text()).strip()
+        if "Tools used · 2" not in label or "1 not run" not in label:
+            raise AssertionError(f"the reopened row does not count the lookup and the refused send alone: {label!r}")
+        await row.first.click()
+        await page.get_by_text("lookup_order", exact=True).first.wait_for(timeout=5_000)
+        text = await page.evaluate("() => document.body.innerText")
+        if text.count("spawn_subtask") != 1 or "already running" not in text:
+            raise AssertionError("the reopened row lists the send its lane shows, or drops the refused one")
+    finally:
+        await ctx.close()
+
+    history = {"turns": [], "pending_approval": None,
+               "running": {"turn_id": "t1", "message": "what is the capital?", "started_at": 0, "cursor": "t1-0"}}
+    ctx, page = await _chat_page(browser, "uismoke-helper-tools-live", history)
+    try:
+        await _stream_open(page, "events")
+        record = {**lane, "calls": []}
+        events = [{"type": "tool_execution", "tool_name": "spawn_subtask", "args": {"task": "find the capital"}},
+                  {"type": "helper_started", "helper_id": "subtask_row", "helper_name": "Capital",
+                   "task": "find the capital", "tools": [], "mode": "wait"},
+                  {"type": "helper_finished", "helper_id": "subtask_row", "helper_name": "Capital",
+                   "status": "completed", "seconds": 3, "record": record},
+                  {"type": "tool_result", "tool_name": "spawn_subtask", "preview": "Paris."},
+                  {"type": "response", "content": "The capital is Paris."}, {"type": "done"}]
+        frames = "".join(_frame(e, f"t1-{i + 1}") for i, e in enumerate(events))
+        await page.evaluate(f"() => window.__streams.events.push({json.dumps(frames)})")
+        if not await _on_screen(page, "The capital is Paris."):
+            raise AssertionError("the live answer never showed")
+        await page.get_by_role("region", name="Helper: Capital", exact=True).wait_for(timeout=10_000)
+        text = await page.evaluate("() => document.body.innerText")
+        if "spawn_subtask" in text or "Tools used" in text:
+            raise AssertionError("the live turn lists its helper's send beside the helper's lane")
+    finally:
+        await ctx.close()
+    return "a helper is its lane alone: no spawn_subtask in Tools used, reopened or live; a refused send stays"
+
+
+@check
 async def check_helpersave(browser) -> str:
     """"Save as agent" opens the agent editor with the helper made into a new agent, and saves nothing (S9)."""
     lane = {"id": "subtask_save", "name": "Order checker", "task": "Check each order against the 30-day rule.",

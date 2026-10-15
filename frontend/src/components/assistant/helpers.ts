@@ -176,3 +176,27 @@ export function helperStatusLine(lane: HelperLaneData): string {
 export function agentFromHelper(lane: HelperLaneData): { name: string; system_prompt: string; tools: string[]; model: string | null } {
     return { name: lane.name, system_prompt: lane.task, tools: [...lane.tools], model: lane.model || null };
 }
+
+/** The tool that sends a helper. Its lane says what the call did, so the tools-used row leaves it out (F572). */
+export const HELPER_TOOL = 'spawn_subtask';
+
+/**
+ * The calls a tools-used row lists beside a turn's helper lanes (F572): the same calls, less one
+ * `spawn_subtask` for each lane drawn. A refused send stays — it has no lane, and "not run" is
+ * news (F570) — and with no lanes nothing is left out. Each product's call names its tool as
+ * `tool` (self-hosted's saved call) or `name` (cloud's); the saved calls themselves keep every
+ * send, for the run log and History.
+ */
+export function toolsUsedBesideLanes<T extends { tool?: string; name?: string; refused?: boolean }>(
+    calls: T[],
+    lanes: number,
+): T[] {
+    let left = lanes;
+    return calls.filter((call) => {
+        if (left > 0 && (call.tool ?? call.name) === HELPER_TOOL && !call.refused) {
+            left -= 1;
+            return false;
+        }
+        return true;
+    });
+}
