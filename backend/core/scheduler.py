@@ -36,10 +36,12 @@ async def schedule_question_settled(pending: dict, *, how: str, why: str) -> Non
     the schedule firing again, a message typed into its conversation, or the
     expiry sweep.
     """
+    from core.chat_approval import questions_of
     from core.notifications import hub
     from core import schedule_logger
 
-    hub.resolve_approval(pending.get("approval_id"), how)
+    for q in questions_of(pending):   # each of a team's questions is its own item (TEAM1c)
+        hub.resolve_approval(q.get("approval_id"), how, question_id=q.get("question_id"))
     sched = pending.get("schedule") or {}
     if not sched.get("run_id"):
         return
@@ -529,21 +531,30 @@ class ScheduleManager:
         from core.session import _clip_args
         from core.store import sessions as _sessions
 
+        from core.chat_approval import to_ring
+
         name = s.get("name") or s["id"]
         expires_at = (_utc_now() + APPROVAL_TTL).isoformat()
         pending = parked_payload(event, message=message, progress=progress)
         pending["schedule"] = {"id": s["id"], "name": name, "run_id": run_id, "expires_at": expires_at}
         await _sessions.set_pending_approval(_session_of(s["id"]), s.get("target_id") or "default", pending)
-        hub.publish(
-            "tool_approval", f"{name} needs approval",
-            body=f"The agent wants to run {event.get('tool_name')} — {tool_policy.explain(event.get('category'))}.",
-            data={"schedule_id": s["id"], "schedule_run_id": run_id, "approval_id": event.get("approval_id"),
-                  "tool_name": event.get("tool_name"), "tool_args": _clip_args(event.get("tool_args") or {}),
-                  "category": event.get("category"), "expires_at": expires_at},
-        )
+        # One item per question (TEAM1c): a team's members each ask their own; one still waiting from an
+        # earlier pause of this turn keeps the item it has.
+        for q in to_ring(pending):
+            who = q.get("member_name")
+            hub.publish(
+                "tool_approval", f"{name}: {who} needs approval" if who else f"{name} needs approval",
+                body=(f"{'It' if not who else who} wants to run {q.get('tool_name')} — "
+                      f"{tool_policy.explain(q.get('category'))}.") if who else
+                     f"The agent wants to run {q.get('tool_name')} — {tool_policy.explain(q.get('category'))}.",
+                data={"schedule_id": s["id"], "schedule_run_id": run_id, "approval_id": q.get("approval_id"),
+                      "question_id": q.get("question_id"), "member_name": who,
+                      "tool_name": q.get("tool_name"), "tool_args": _clip_args(q.get("tool_args") or {}),
+                      "category": q.get("category"), "expires_at": expires_at},
+            )
 
     async def answer_approval(self, schedule_id: str, *, approve: bool, reason: str = "",
-                              approval_id: str | None = None):
+                              approval_id: str | None = None, question_id: str | None = None):
         """Answer a scheduled run's parked tool call and carry the run on (F268).
 
         Returns the chat turn driving the resumed turn. Raises `LookupError`
@@ -551,13 +562,15 @@ class ScheduleManager:
         `chat_turns.TurnAlreadyRunning` while another turn holds its conversation.
         """
         from core import chat_turns
+        from core.chat_approval import find_question
         from core.store import sessions as _sessions
 
         session_id = _session_of(schedule_id)
         waiting = [(agent_id, pending) for agent_id, pending in await _sessions.pending_approvals(session_id)
                    if pending.get("schedule")]
-        if approval_id is not None:
-            waiting = [(a, p) for a, p in waiting if p.get("approval_id") == approval_id]
+        if approval_id is not None or question_id is not None:
+            waiting = [(a, p) for a, p in waiting
+                       if find_question(p, question=question_id, approval_id=approval_id) is not None]
         if len(waiting) != 1:
             raise LookupError("This schedule is not waiting on that approval.")
         agent_id = waiting[0][0]
@@ -565,15 +578,18 @@ class ScheduleManager:
         # own approve does: two answers cannot both resume it.
         with chat_turns.claim(session_id, agent_key=agent_id) as turn:
             pending = await _sessions.take_pending_approval(session_id, agent_id)
-            if not pending or (approval_id is not None and pending.get("approval_id") != approval_id):
+            asked = find_question(pending, question=question_id, approval_id=approval_id) if pending else None
+            if asked is None:
                 if pending:
                     await _sessions.set_pending_approval(session_id, agent_id, pending)
                 raise LookupError("This schedule is not waiting on that approval.")
             turn.message = pending.get("message") or ""
-            turn.start(self.resumed_turn(pending, agent_id, approve=approve, reason=reason))
+            turn.start(self.resumed_turn(pending, agent_id, approve=approve, reason=reason, verdicts=[
+                {"question_id": asked["question_id"], "approve": approve, "reason": reason}]))
         return turn
 
-    async def resumed_turn(self, pending: dict, agent_id: str, *, approve: bool, reason: str = ""):
+    async def resumed_turn(self, pending: dict, agent_id: str, *, approve: bool, reason: str = "",
+                           verdicts: list[dict] | None = None):
         """The scheduled turn picked up from its snapshot with the person's answer.
 
         Under the schedule's own source and run id — the remember gate, the
@@ -582,26 +598,34 @@ class ScheduleManager:
         conversation on the chat page).
         """
         from core.agent_logger import AgentLogger
-        from core.chat_approval import resume_state_for
+        from core.chat_approval import questions_of, resume_state_for, settle_resumed
         from core.notifications import hub
+        from core.store import sessions as _sessions
 
         sched = pending.get("schedule") or {}
         s = await schedule_store.get(sched.get("id") or "") or {}
         s = {**s, "id": sched.get("id") or s.get("id") or "", "name": sched.get("name") or s.get("name") or "",
              "target_type": "agent", "target_id": agent_id}
         run_id = sched.get("run_id") or ""
-        how = "allowed" if approve else "refused"
-        hub.resolve_approval(pending.get("approval_id"), how)
+        asked = {q["question_id"]: q for q in questions_of(pending)}
+        verdicts = verdicts or [{"question_id": next(iter(asked), None), "approve": approve, "reason": reason}]
+        for verdict in verdicts:
+            q = asked.get(verdict.get("question_id")) or {}
+            hub.resolve_approval(q.get("approval_id"), "allowed" if verdict.get("approve") else "refused",
+                                 question_id=q.get("question_id"))
         message = pending.get("message") or ""
-        said = (f"A person allowed `{pending.get('tool_name')}`." if approve else
-                f"A person refused `{pending.get('tool_name')}`" + (f": {reason}." if reason else "."))
+        said = " ".join(
+            (f"A person allowed `{q.get('tool_name')}`." if v.get("approve") else
+             f"A person refused `{q.get('tool_name')}`" + (f": {v['reason']}." if v.get("reason") else "."))
+            for v in verdicts for q in [asked.get(v.get("question_id")) or {}])
         sched_log = self._schedule_logger(s, continues=run_id, note=said)
         agent_log = AgentLogger(agent_id=agent_id, agent_name=s["name"], session_id=_session_of(s["id"]),
                                 source="schedule", user_message=message)
         status, final_response = "completed", ""
         try:
             async for event in self._agent_turn_events(
-                s, run_id, message=message, resume_state=resume_state_for(pending, approve=approve, reason=reason),
+                s, run_id, message=message,
+                resume_state=resume_state_for(pending, approve=approve, reason=reason, verdicts=verdicts),
             ):
                 agent_log.log_event(event)
                 sched_log.log_event(event)
@@ -621,6 +645,10 @@ class ScheduleManager:
             sched_log.close()
             agent_log.run_end("completed" if status != "error" else "failed")
             agent_log.close()
+            # A team's other questions (TEAM1c): asked again if it paused again, else no longer asked.
+            again = await _sessions.get_pending_approval(_session_of(s["id"]), agent_id) if status == "paused" else None
+            settle_resumed(pending, again, lambda q: hub.resolve_approval(
+                q.get("approval_id"), "expired", question_id=q.get("question_id")))
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
         if status == "completed":
             hub.publish("run_completed", f"{s['name']} completed", body=final_response[:500],

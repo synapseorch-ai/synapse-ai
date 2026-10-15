@@ -263,6 +263,41 @@ async def take_helper_stops(redis_client, session_id: str) -> list[str]:
     return [m.decode() if isinstance(m, bytes) else str(m) for m in members]
 
 
+def _member_answer_key(session_id: str) -> str:
+    return f"synapse:member-answer:chat:{session_id}"
+
+
+async def publish_member_answer(redis_client, session_id: str, verdict: dict, ttl: int = 3600) -> bool:
+    """Hold a person's answer to one of a team's questions for the turn working in this chat session
+    (TEAM1c): `{question_id, approve, reason}`. Each question's first answer is kept (False: one was).
+
+    A team's members run inside the lead's job, in whichever worker has it; the job's watcher takes
+    these while its team works, and a paused turn's taker takes those for its questions.
+    """
+    key = _member_answer_key(session_id)
+    kept = await redis_client.hsetnx(key, str(verdict.get("question_id") or ""), json.dumps(verdict))
+    await redis_client.expire(key, ttl)
+    return bool(kept)
+
+
+async def take_member_answer(redis_client, session_id: str, question_id: str) -> dict | None:
+    """The answer held for this question, taken — by this caller only: two takers never both get it."""
+    key = _member_answer_key(session_id)
+    raw = await redis_client.hget(key, question_id)
+    if raw is None or not await redis_client.hdel(key, question_id):
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+async def held_member_answers(redis_client, session_id: str) -> list[str]:
+    """The question ids an answer is held for in this chat session (not taken)."""
+    keys = await redis_client.hkeys(_member_answer_key(session_id))
+    return [k.decode() if isinstance(k, bytes) else str(k) for k in keys or []]
+
+
 async def publish_chat_cancellation(redis_client, session_id: str, ttl: int = 3600) -> None:
     """Signal a worker to cancel the turn running for this chat session.
 

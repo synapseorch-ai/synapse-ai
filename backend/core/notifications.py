@@ -287,10 +287,15 @@ class NotificationHub:
         so the bell stops showing them as actionable."""
         self._resolve_where({"kind": "human_input", "run_id": run_id}, how)
 
-    def resolve_approval(self, approval_id: str | None, how: str) -> None:
+    def resolve_approval(self, approval_id: str | None, how: str, *, question_id: str | None = None) -> None:
         """Mark a scheduled run's tool-approval item resolved (F268): `allowed`,
         `refused`, or `expired` when nobody answered or a newer run replaced it.
-        Its Approve / Refuse go away on every open bell."""
+        Its Approve / Refuse go away on every open bell. A team's question is its
+        own item (TEAM1c): `question_id` resolves that one, never another member's
+        asking the same call."""
+        if question_id and question_id != approval_id:
+            self._resolve_where({"kind": "tool_approval", "question_id": question_id}, how)
+            return
         if not approval_id:
             return
         self._resolve_where({"kind": "tool_approval", "approval_id": approval_id}, how)
@@ -415,6 +420,8 @@ def _matches(item: dict, match: dict) -> bool:
         return False
     if match["kind"] == "human_input":
         return item.get("run_id") == match["run_id"]
+    if "question_id" in match:
+        return (item.get("data") or {}).get("question_id") == match["question_id"]
     return (item.get("data") or {}).get("approval_id") == match["approval_id"]
 
 

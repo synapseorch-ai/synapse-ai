@@ -73,7 +73,7 @@ async def park(*, session_id: str, agent: dict, event: dict, message: str, progr
     visitor scope as `VisitorScope.to_dict()`, so the resumed turn keeps it.
     """
     from core import tool_policy
-    from core.chat_approval import parked_payload
+    from core.chat_approval import parked_payload, to_ring
     from core.notifications import hub
     from core.session import _clip_args
     from core.store import sessions as _sessions
@@ -99,15 +99,40 @@ async def park(*, session_id: str, agent: dict, event: dict, message: str, progr
         body = (f"An app talking to {name} asked something that needs {event.get('tool_name')} — "
                 f"{tool_policy.explain(event.get('category'))}.")
     await _sessions.set_pending_approval(session_id, agent["id"], pending)
-    hub.publish("tool_approval", f"{name} needs approval", body=body, data=data)
+    if not pending.get("questions"):
+        hub.publish("tool_approval", f"{name} needs approval", body=body, data=data)
+        return event.get("approval_id") or ""
+    # A team's members, each its own item (TEAM1c); one an earlier pause of this turn asked keeps its item.
+    for q in to_ring(pending):
+        who = q.get("member_name") or name
+        hub.publish("tool_approval", f"{name}: {who} needs approval",
+                    body=(f"An app talking to {name} asked something {who} needs {q.get('tool_name')} for — "
+                          f"{tool_policy.explain(q.get('category'))}."),
+                    data={**data, "approval_id": q.get("approval_id"), "question_id": q.get("question_id"),
+                          "member_name": q.get("member_name"), "tool_name": q.get("tool_name"),
+                          "tool_args": _clip_args(q.get("tool_args") or {}), "category": q.get("category")})
     return event.get("approval_id") or ""
 
 
-async def _settle(session_id: str, agent_id: str, pending: dict, how: str) -> None:
+def _resolve(pending: dict, how: str, question_ids: list[str] | None = None) -> None:
+    """Resolve the bell items of `pending`'s questions (`question_ids` only, when given)."""
+    from core.chat_approval import questions_of
     from core.notifications import hub
+
+    for q in questions_of(pending):
+        if question_ids is None or q.get("question_id") in question_ids:
+            hub.resolve_approval(q.get("approval_id"), how, question_id=q.get("question_id"))
+
+
+async def _settle(session_id: str, agent_id: str, pending: dict, how: str,
+                  verdicts: list[dict] | None = None) -> None:
     from core.store import sessions as _sessions
 
-    hub.resolve_approval(pending.get("approval_id"), how)
+    if verdicts is None:
+        _resolve(pending, how)
+    else:
+        for verdict in verdicts:
+            _resolve(pending, "allowed" if verdict.get("approve") else "refused", [verdict.get("question_id")])
     door = door_for(session_id)
     if door is not None and door.keeps_conversation:
         return
@@ -117,41 +142,112 @@ async def _settle(session_id: str, agent_id: str, pending: dict, how: str) -> No
         log.warning("could not remove settled API conversation %s: %s", session_id, exc)
 
 
-async def answer(session_id: str, *, approve: bool, reason: str = "", approval_id: str | None = None):
+async def answer(session_id: str, *, approve: bool, reason: str = "", approval_id: str | None = None,
+                 question_id: str | None = None):
     """Answer the call `session_id` waits on and carry its turn on, in the background.
 
     Returns the chat turn driving it, or None when a phone call still on the
-    line took the answer to say itself (F474). Raises `LookupError` when that
-    conversation is not waiting on that call (or it expired), and
-    `chat_turns.TurnAlreadyRunning` while another answer is being acted on.
+    line took the answer to say itself (F474), or a team at work here took it
+    (TEAM1c). Raises `LookupError` when that conversation is not waiting on that
+    call (or it expired), and `chat_turns.TurnAlreadyRunning` while another
+    answer is being acted on.
+
+    A team's question is named by `question_id` (TEAM1c, Q6): answered while its
+    turn runs again after an earlier answer, it reaches that member now, or is
+    held for the turn and taken up with it when it pauses.
     """
-    from core import chat_turns
+    from core import chat_turns, team
+    from core.chat_approval import find_question, take_answers
     from core.store import sessions as _sessions
 
     door = door_for(session_id)
     if door is None:
         raise LookupError("This is not an API turn's question.")
+    verdict = {"question_id": question_id, "approve": approve, "reason": reason}
+    if question_id:
+        working = team.find(session_id)
+        if working is not None and working.answer(question_id, approve=approve, reason=reason):
+            _resolve_where_asked(session_id, question_id, approve)
+            return None
     waiting = [(a, p) for a, p in await _sessions.pending_approvals(session_id) if p.get("api_turn")]
-    if approval_id is not None:
-        waiting = [(a, p) for a, p in waiting if p.get("approval_id") == approval_id]
+    if approval_id is not None or question_id is not None:
+        waiting = [(a, p) for a, p in waiting
+                   if find_question(p, question=question_id, approval_id=approval_id) is not None]
     if len(waiting) != 1:
+        if question_id and chat_turns.busy(session_id) is not None:
+            return _hold(session_id, verdict)
         raise LookupError("Nothing is waiting on that approval any more.")
     agent_id = waiting[0][0]
-    with chat_turns.claim(session_id, agent_key=agent_id) as turn:
-        pending = await _sessions.take_pending_approval(session_id, agent_id)
-        if not pending or (approval_id is not None and pending.get("approval_id") != approval_id):
-            if pending:
-                await _sessions.set_pending_approval(session_id, agent_id, pending)
-            raise LookupError("Nothing is waiting on that approval any more.")
-        if _expired(pending):
-            await _settle(session_id, agent_id, pending, "expired")
-            raise LookupError("That approval expired: " + EXPIRED + ".")
-        if door.name == "voice" and _to_the_live_call(session_id, pending, approve=approve, reason=reason):
-            await _settle(session_id, agent_id, pending, "allowed" if approve else "refused")
-            return None
-        turn.message = pending.get("message") or ""
-        turn.start(_resumed(session_id, agent_id, pending, approve=approve, reason=reason))
+    try:
+        with chat_turns.claim(session_id, agent_key=agent_id) as turn:
+            pending = await _sessions.take_pending_approval(session_id, agent_id)
+            asked = find_question(pending, question=question_id, approval_id=approval_id) if pending else None
+            if asked is None:
+                if pending:
+                    await _sessions.set_pending_approval(session_id, agent_id, pending)
+                raise LookupError("Nothing is waiting on that approval any more.")
+            if _expired(pending):
+                await _settle(session_id, agent_id, pending, "expired")
+                raise LookupError("That approval expired: " + EXPIRED + ".")
+            if door.name == "voice" and _to_the_live_call(session_id, pending, approve=approve, reason=reason):
+                await _settle(session_id, agent_id, pending, "allowed" if approve else "refused")
+                return None
+            others = [q["question_id"] for q in pending.get("questions") or []
+                      if q["question_id"] != asked["question_id"]]
+            verdicts = [{**verdict, "question_id": asked["question_id"]},
+                        *take_answers(session_id, agent_id, others)]
+            turn.message = pending.get("message") or ""
+            # A team's answers go with it (TEAM1c); one question's resume is called as it always was.
+            more = {"verdicts": verdicts} if pending.get("questions") else {}
+            turn.start(_resumed(session_id, agent_id, pending, approve=approve, reason=reason, **more))
+    except chat_turns.TurnAlreadyRunning:
+        if not question_id:
+            raise
+        return _hold(session_id, verdict)
     return turn
+
+
+#: Answers held for a team's turn that was starting or pausing (TEAM1c), each awaiting that turn's end.
+_HELD: set = set()
+
+
+def _hold(session_id: str, verdict: dict):
+    """Hold a team question's answer for the turn at work here; once that turn has ended, still held, it
+    answers the turn's paused question. None: nothing more to drive now."""
+    import asyncio
+
+    from core import chat_turns
+    from core.chat_approval import post_answer, take_answers
+
+    agent_key = next(iter(_agents_working(session_id)), "default")
+    if post_answer(session_id, agent_key, verdict) == "applied":
+        _resolve_where_asked(session_id, verdict["question_id"], bool(verdict.get("approve")))
+        return None
+
+    async def when_free():
+        try:
+            await asyncio.wait_for(chat_turns.until_free(session_id), timeout=3600)
+            if take_answers(session_id, agent_key, [verdict["question_id"]]):
+                await answer(session_id, approve=bool(verdict.get("approve")),
+                             reason=str(verdict.get("reason") or ""), question_id=verdict["question_id"])
+        except Exception as exc:  # noqa: BLE001 — nothing asks it any more, or the resume could not start
+            log.info("held answer for %s not used: %s", session_id, exc)
+
+    task = asyncio.create_task(when_free(), name=f"held-api-answer-{session_id}")
+    _HELD.add(task)
+    task.add_done_callback(_HELD.discard)
+    return None
+
+
+def _agents_working(session_id: str) -> list[str]:
+    from core import team
+    working = team.find(session_id)
+    return [working.agent_key] if working is not None else []
+
+
+def _resolve_where_asked(session_id: str, question_id: str, approved: bool) -> None:
+    from core.notifications import hub
+    hub.resolve_approval(None, "allowed" if approved else "refused", question_id=question_id)
 
 
 def voice_answer(pending: dict, *, approve: bool, reason: str) -> dict:
@@ -191,21 +287,32 @@ def _expired(pending: dict) -> bool:
         return False
 
 
-async def _resumed(session_id: str, agent_id: str, pending: dict, *, approve: bool, reason: str):
+async def _resumed(session_id: str, agent_id: str, pending: dict, *, approve: bool, reason: str,
+                   verdicts: list[dict] | None = None):
     """The turn picked up from its snapshot with the person's answer; what it ends with goes to the bell."""
     import contextlib
 
     import core.server as _server
     from core import visitor as _visitor
-    from core.chat_approval import resume_state_for
+    from core.chat_approval import resume_state_for, settle_resumed
     from core.models import ChatRequest
     from core.notifications import hub
     from core.react_engine import run_react_loop
+    from core.store import sessions as _sessions
 
     meta = pending.get("api_turn") or {}
     door = DOORS.get(meta.get("door") or "openai") or DOORS["openai"]
     name = meta.get("agent_name") or agent_id
-    await _settle(session_id, agent_id, pending, "allowed" if approve else "refused")
+    await _settle(session_id, agent_id, pending, "allowed" if approve else "refused", verdicts=verdicts)
+    if pending.get("questions"):
+        # A team's other questions stay asked while the turn runs again (TEAM1c); at its end, those it no
+        # longer asks are settled — answered ones keep their answer.
+        async def _rest():
+            again = await _sessions.get_pending_approval(session_id, agent_id)
+            settle_resumed(pending, again, lambda q: hub.resolve_approval(
+                q.get("approval_id"), "expired", question_id=q.get("question_id")))
+    else:
+        _rest = None
     request = ChatRequest(message=pending.get("message") or "", session_id=session_id, agent_id=agent_id)
     latest_progress: dict | None = None
     answer_text = ""
@@ -218,7 +325,7 @@ async def _resumed(session_id: str, agent_id: str, pending: dict, *, approve: bo
         with (_visitor.scope(scope) if scope is not None else contextlib.nullcontext()):
             async for event in run_react_loop(
                 request, _server, progress_events=True,
-                resume_state=resume_state_for(pending, approve=approve, reason=reason),
+                resume_state=resume_state_for(pending, approve=approve, reason=reason, verdicts=verdicts),
                 history_override=None if door.keeps_conversation else (meta.get("history") or []),
                 caller_system=meta.get("caller_system"),
                 save_turn=door.keeps_conversation, log_source=door.log_source,
@@ -234,6 +341,8 @@ async def _resumed(session_id: str, agent_id: str, pending: dict, *, approve: bo
                                resume={"history": meta.get("history"), "caller_system": meta.get("caller_system")},
                                hours=24, door=door.name,
                                caller={"number": meta.get("caller"), "visitor": meta.get("visitor")})
+                    if _rest is not None:
+                        await _rest()
                     return
                 if kind == "final" and not event.get("orch_step_id"):
                     answer_text = event.get("response", "")
@@ -243,7 +352,11 @@ async def _resumed(session_id: str, agent_id: str, pending: dict, *, approve: bo
         hub.publish("run_failed", f"{name} could not finish",
                     body="It failed after the approval was answered. Its log has the details.",
                     data=done)
+        if _rest is not None:
+            await _rest()
         return
+    if _rest is not None:
+        await _rest()
     if door.name == "voice":
         title = f"{name} finished after your answer — call {meta.get('caller') or 'the caller'} back"
     else:

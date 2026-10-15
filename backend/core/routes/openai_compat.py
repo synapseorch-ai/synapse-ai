@@ -531,6 +531,8 @@ class ApprovalAnswer(BaseModel):
     approve: bool
     reason: str = ""
     approval_id: str | None = None
+    #: Which of a team's questions (TEAM1c): each member's bell item names its own.
+    question_id: str | None = None
 
 
 @approvals_router.post("/api/openai/approvals/{session_id}", include_in_schema=False)
@@ -548,7 +550,7 @@ async def answer_openai_approval(session_id: str, body: ApprovalAnswer):
 
     try:
         await api_approvals.answer(session_id, approve=body.approve, reason=body.reason,
-                                   approval_id=body.approval_id)
+                                   approval_id=body.approval_id, question_id=body.question_id)
     except LookupError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except chat_turns.TurnAlreadyRunning:

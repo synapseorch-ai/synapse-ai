@@ -576,6 +576,7 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
                     driver.cancel()
                     return
                 await _stop_asked_helpers(redis, session_id)
+                await _hand_over_answers(redis, session_id)
             except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
                 pass
             with contextlib.suppress(asyncio.TimeoutError):
@@ -615,6 +616,31 @@ async def _stop_asked_helpers(redis, session_id: str) -> None:
         found = helpers.find(helper_id, session_id)
         if found is not None:
             found.stop_requested = True
+
+
+async def _hand_over_answers(redis, session_id: str) -> None:
+    """Hand a person's answers to this turn's team, given in another process while it works (TEAM1c).
+
+    Only while the team works and is not pausing: an answer taken as it pauses goes back,
+    for whoever takes the paused turn up (the host, after the row is written) — an answer
+    is acted on once, by whoever takes it.
+    """
+    from core import team
+
+    working = team.find(session_id)
+    if working is None or working.parking or working.ended:
+        return
+    from core.scale.pubsub import held_member_answers, publish_member_answer, take_member_answer
+
+    for question in await held_member_answers(redis, session_id):
+        if question not in {q["question_id"] for q in working.questions()}:
+            continue   # not this turn's (yet): left for its taker
+        verdict = await take_member_answer(redis, session_id, question)
+        if verdict is None:
+            continue
+        if not working.answer(question, approve=bool(verdict.get("approve")),
+                              reason=str(verdict.get("reason") or "")):
+            await publish_member_answer(redis, session_id, verdict)
 
 
 #: What a background helper a restart cut short says, in place of the result it never had (SUB1a's words).

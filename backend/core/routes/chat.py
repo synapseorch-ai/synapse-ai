@@ -469,6 +469,13 @@ class ApprovalDecision(BaseModel):
     #: The question this answers. A card left open in another tab must not
     #: answer a newer question asked after it (F247) — as v1's approve does.
     approval_id: str | None = None
+    #: Which of a team's questions (TEAM1c): each member's has its own id, and two members may ask the
+    #: same call. Not needed while the call's `approval_id` names one question.
+    question_id: str | None = None
+
+
+#: The answers this process holds for a turn that was starting or pausing, each awaiting that turn's end.
+_HELD_ANSWERS: set[asyncio.Task] = set()
 
 
 @router.post("/chat/{session_id}/approve")
@@ -488,62 +495,121 @@ async def approve_chat_tool(session_id: str, decision: ApprovalDecision):
     An approval is spent on the exact call it was given for — `approval_id` is
     derived from the tool *and its arguments* — so allowing `ls` does not also
     allow `rm`.
+
+    A team's question (TEAM1c, Q6) is answered by its `question_id`, live or paused:
+
+    * a team working here whose member waits on it: that member carries on now, the
+      others untouched — a JSON reply (`live`), the turn's own stream shows the rest;
+    * a paused turn asking it: the turn resumes with that member, and any other answer
+      held for its questions — the resumed stream, as for any question;
+    * a turn starting or pausing here: the answer is held (`sent`), for the team as it
+      starts, or taken up with the paused turn as soon as that turn ends.
     """
+    agent_key = decision.agent_id or "default"
+    verdict = {"question_id": decision.question_id, "approve": decision.approve, "reason": decision.reason}
+    if decision.question_id:
+        from core import team
+        working = team.find(session_id)
+        if working is not None and working.agent_key == agent_key and working.answer(
+                decision.question_id, approve=decision.approve, reason=decision.reason):
+            return _answered_live(session_id, decision, "allowed" if decision.approve else "refused")
+    try:
+        return _sse(_read(await _resume_parked(session_id, agent_key, decision)))
+    except chat_turns.TurnAlreadyRunning:
+        if not decision.question_id:
+            raise HTTPException(status_code=409, detail=TURN_RUNNING)
+        from core.chat_approval import post_answer
+        if post_answer(session_id, agent_key, verdict) == "applied":
+            return _answered_live(session_id, decision, "allowed" if decision.approve else "refused")
+        held = asyncio.create_task(_answer_when_free(session_id, agent_key, decision),
+                                   name=f"held-answer-{session_id}")
+        _HELD_ANSWERS.add(held)
+        held.add_done_callback(_HELD_ANSWERS.discard)
+        return _answered_live(session_id, decision, "sent")
+
+
+def _answered_live(session_id: str, decision: ApprovalDecision, status: str) -> JSONResponse:
+    return JSONResponse({"status": status, "live": True, "session_id": session_id,
+                         "question_id": decision.question_id})
+
+
+async def _answer_when_free(session_id: str, agent_key: str, decision: ApprovalDecision) -> None:
+    """A held answer, once the turn it waited for has ended: still held, it answers that turn's paused
+    question — unless the team took it as it started, or the turn ended without asking it."""
+    from core.chat_approval import take_answers
+    try:
+        await asyncio.wait_for(chat_turns.until_free(session_id), timeout=3600)
+        if not take_answers(session_id, agent_key, [decision.question_id or ""]):
+            return
+        turn = await _resume_parked(session_id, agent_key, decision)
+        await turn.wait()
+    except HTTPException:
+        pass   # nothing asks it any more: it was moved past, or the turn ended without pausing on it
+    except Exception as exc:  # noqa: BLE001 — a held answer never fails the request that held it
+        print(f"WARNING held answer for {session_id}: {exc}")
+
+
+async def _resume_parked(session_id: str, agent_key: str, decision: ApprovalDecision) -> chat_turns.ChatTurn:
+    """Take the paused turn's question this answers and resume the turn, server-owned (F49). Raises 409 when
+    nothing here waits on it, `TurnAlreadyRunning` while a turn holds the conversation."""
+    from core.chat_approval import find_question, take_answers
     from core.store import sessions as _sessions
     import core.server as _server
 
-    agent_key = decision.agent_id or "default"
     # The conversation is claimed before the question is spent: answering while
     # another turn runs here is refused with the question still open, rather
     # than cleared and then refused.
-    try:
-        with chat_turns.claim(session_id, agent_key=agent_key) as turn:
-            # Taken in one write, so what a helper keeps with the question (SUB1a) is either
-            # in what this took or never written into it (`add_to_parked`). Cleared before
-            # the turn runs, not after: a resume that crashed with the row still set would
-            # re-open a question the person has already answered.
-            pending = await _sessions.take_pending_approval(session_id, agent_key)
-            if not pending:
-                raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
-            if decision.approval_id is not None and decision.approval_id != pending.get("approval_id"):
-                # Not this question's answer: it stays as it was.
-                await _sessions.set_pending_approval(session_id, agent_key, pending)
-                raise HTTPException(status_code=409,
-                                    detail="That approval is not the one this conversation is waiting on.")
+    with chat_turns.claim(session_id, agent_key=agent_key) as turn:
+        # Taken in one write, so what a helper keeps with the question (SUB1a) is either
+        # in what this took or never written into it (`add_to_parked`). Cleared before
+        # the turn runs, not after: a resume that crashed with the row still set would
+        # re-open a question the person has already answered.
+        pending = await _sessions.take_pending_approval(session_id, agent_key)
+        if not pending:
+            raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
+        asked = find_question(pending, question=decision.question_id, approval_id=decision.approval_id)
+        if asked is None:
+            # Not this question's answer: it stays as it was.
+            await _sessions.set_pending_approval(session_id, agent_key, pending)
+            raise HTTPException(status_code=409,
+                                detail="That approval is not the one this conversation is waiting on.")
+        # This answer, and any other held for this turn's questions while it paused (TEAM1c).
+        others = [q["question_id"] for q in pending.get("questions") or [] if q["question_id"] != asked["question_id"]]
+        verdicts = [{"question_id": asked["question_id"], "approve": decision.approve, "reason": decision.reason},
+                    *take_answers(session_id, agent_key, others)]
 
-            if pending.get("schedule"):
-                # A scheduled run's call, answered from its conversation: the
-                # same resume the bell's Approve runs — the schedule's run, log
-                # and source — not a chat turn that forgets it was one (F268).
-                manager = getattr(_server, "schedule_manager", None)
-                if manager is None:
-                    from core.scheduler import ScheduleManager
-                    manager = ScheduleManager()
-                    manager._server_module = _server
-                turn.message = pending.get("message") or ""
-                turn.start(manager.resumed_turn(pending, agent_key, approve=decision.approve,
-                                                reason=decision.reason))
-                return _sse(_read(turn))
+        if pending.get("schedule"):
+            # A scheduled run's call, answered from its conversation: the
+            # same resume the bell's Approve runs — the schedule's run, log
+            # and source — not a chat turn that forgets it was one (F268).
+            manager = getattr(_server, "schedule_manager", None)
+            if manager is None:
+                from core.scheduler import ScheduleManager
+                manager = ScheduleManager()
+                manager._server_module = _server
+            turn.message = pending.get("message") or ""
+            turn.start(manager.resumed_turn(pending, agent_key, approve=decision.approve,
+                                            reason=decision.reason, verdicts=verdicts))
+            return turn
 
-            from core.chat_approval import resume_state_for
-            resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason)
+        from core.chat_approval import resume_state_for
+        resume_state = resume_state_for(pending, approve=decision.approve, reason=decision.reason,
+                                        verdicts=verdicts)
 
-            resumed = ChatRequest(
-                message=pending.get("message") or "",
-                session_id=session_id,
-                agent_id=None if agent_key == "default" else agent_key,
-            )
-            # The app's chat, resumed: its inbox comes back with what was kept (SUB1a). A follow-up's
-            # question is still automated, and a helper's words never read the vault (no @[path]).
-            resumed._app_chat = True
-            resumed._automated = pending.get("automated") or None
-            turn.message = resumed.message
-            turn.automated = resumed._automated
-            turn.start(_event_stream(resumed, _server, resume_state,
-                                     expand_mentions=not resumed._automated))
-    except chat_turns.TurnAlreadyRunning:
-        raise HTTPException(status_code=409, detail=TURN_RUNNING)
-    return _sse(_read(turn))
+        resumed = ChatRequest(
+            message=pending.get("message") or "",
+            session_id=session_id,
+            agent_id=None if agent_key == "default" else agent_key,
+        )
+        # The app's chat, resumed: its inbox comes back with what was kept (SUB1a). A follow-up's
+        # question is still automated, and a helper's words never read the vault (no @[path]).
+        resumed._app_chat = True
+        resumed._automated = pending.get("automated") or None
+        turn.message = resumed.message
+        turn.automated = resumed._automated
+        turn.start(_event_stream(resumed, _server, resume_state,
+                                 expand_mentions=not resumed._automated))
+        return turn
 
 
 class MemberMessage(BaseModel):

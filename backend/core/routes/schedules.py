@@ -199,6 +199,8 @@ class ApprovalAnswer(BaseModel):
     reason: str = ""
     #: The question this answers: a bell item left open must not answer a newer one.
     approval_id: str | None = None
+    #: Which of a team's questions (TEAM1c): each member's has its own bell item and id.
+    question_id: str | None = None
 
 
 @router.post("/api/schedules/{schedule_id}/approve")
@@ -213,6 +215,16 @@ async def answer_schedule_approval(schedule_id: str, body: ApprovalAnswer, reque
     from core.routes.chat import TURN_RUNNING
 
     mgr = _get_manager(request)
+    if body.question_id:
+        # A team member's question (TEAM1c): answered as chat answers it — now, if its team is at work
+        # again after an earlier answer, or by resuming the run's paused turn.
+        from core.routes.chat import ApprovalDecision, approve_chat_tool
+        from core.scheduler import _session_of
+        s = await schedule_store.get(schedule_id) or {}
+        await approve_chat_tool(_session_of(schedule_id), ApprovalDecision(
+            approve=body.approve, reason=body.reason, agent_id=s.get("target_id") or None,
+            approval_id=body.approval_id, question_id=body.question_id))
+        return {"status": "allowed" if body.approve else "refused", "schedule_id": schedule_id}
     try:
         await mgr.answer_approval(schedule_id, approve=body.approve, reason=body.reason,
                                   approval_id=body.approval_id)

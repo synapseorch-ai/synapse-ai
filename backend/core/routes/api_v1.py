@@ -108,6 +108,8 @@ class V1ApprovalRequest(BaseModel):
     # is not the call the conversation is waiting on, the answer is refused.
     approval_id: str | None = None
     agent: str | None = None          # the conversation's agent (the one waiting, if omitted)
+    # Which of a team's questions (TEAM1c): `awaiting_approval.questions` names each one's id.
+    question_id: str | None = None
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -149,7 +151,7 @@ async def _agent_or_error(agent_identifier: str | None) -> dict:
     raise HTTPException(status_code=400, detail="No agents configured")
 
 
-async def _waiting_agent(session_id: str, approval_id: str | None) -> dict:
+async def _waiting_agent(session_id: str, approval_id: str | None, question_id: str | None = None) -> dict:
     """The agent whose tool call this conversation is waiting on (F211).
 
     The approve used to fall back to the workspace's first agent when none was
@@ -160,11 +162,13 @@ async def _waiting_agent(session_id: str, approval_id: str | None) -> dict:
     from core.store import sessions as _sessions
 
     agents = {a["id"]: a for a in await _api_agents()}
+    from core.chat_approval import find_question
+
     waiting = [(agent_id, pending) for agent_id, pending in await _sessions.pending_approvals(session_id)
                if agent_id in agents]
-    if approval_id is not None and len(waiting) > 1:
+    if (approval_id is not None or question_id is not None) and len(waiting) > 1:
         waiting = [(agent_id, pending) for agent_id, pending in waiting
-                   if pending.get("approval_id") == approval_id]
+                   if find_question(pending, question=question_id, approval_id=approval_id) is not None]
         if not waiting:
             raise HTTPException(status_code=409, detail="That approval is not the one this conversation is waiting on.")
     if not waiting:
@@ -215,7 +219,7 @@ def _pause_of(event: dict) -> dict | None:
     if event.get("type") != "human_input_required":
         return None
     if event.get("kind") == "tool_approval":
-        return {
+        pause = {
             "status": "awaiting_approval",
             "prompt": event.get("prompt") or "",
             "pending_call": {
@@ -225,6 +229,11 @@ def _pause_of(event: dict) -> dict | None:
                 "approval_id": event.get("approval_id") or "",
             },
         }
+        if event.get("questions"):
+            # A team's members each asked (TEAM1c): every question, each answered by its `question_id`.
+            pause["questions"] = [{k: q.get(k) for k in ("question_id", "approval_id", "member_name", "tool_name",
+                                                           "tool_args", "category")} for q in event["questions"]]
+        return pause
     return {"status": "paused", "prompt": event.get("prompt") or "", "run_id": event.get("run_id")}
 
 
@@ -543,29 +552,41 @@ async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
     the question still open. Naming the call (`approval_id`) makes an answer to
     an older question a 409 rather than an answer to this one.
     """
-    from core import chat_turns
-    from core.chat_approval import resume_state_for
+    from core import chat_turns, team
+    from core.chat_approval import find_question, resume_state_for, take_answers
     from core.models import ChatRequest
     from core.routes.chat import TURN_RUNNING
     from core.store import sessions as _sessions
     import core.server as _server
 
+    if body.question_id:
+        # A team at work here whose member waits on it (TEAM1c): that member carries on now.
+        working = team.find(session_id)
+        if working is not None and working.answer(body.question_id, approve=body.approve, reason=body.reason):
+            return {"status": "allowed" if body.approve else "refused", "live": True,
+                    "session_id": session_id, "question_id": body.question_id}
     agent = (await _agent_or_error(body.agent) if body.agent is not None
-             else await _waiting_agent(session_id, body.approval_id))
+             else await _waiting_agent(session_id, body.approval_id, body.question_id))
     try:
         with chat_turns.claim(session_id, agent_key=agent["id"]) as turn:
             pending = await _sessions.get_pending_approval(session_id, agent["id"])
             if not pending:
                 raise HTTPException(status_code=409, detail="This conversation is not waiting on an approval.")
-            if body.approval_id is not None and body.approval_id != pending.get("approval_id"):
+            asked = find_question(pending, question=body.question_id, approval_id=body.approval_id)
+            if asked is None:
                 raise HTTPException(status_code=409, detail="That approval is not the one this conversation is waiting on.")
             await _sessions.set_pending_approval(session_id, agent["id"], None)
+            others = [q["question_id"] for q in pending.get("questions") or []
+                      if q["question_id"] != asked["question_id"]]
+            verdicts = [{"question_id": asked["question_id"], "approve": body.approve, "reason": body.reason},
+                        *take_answers(session_id, agent["id"], others)]
 
             resumed = ChatRequest(message=pending.get("message") or "", session_id=session_id,
                                   agent_id=agent["id"])
             turn.message = resumed.message
             turn.start(_v1_turn_events(resumed, agent, _server,
-                                       resume_state_for(pending, approve=body.approve, reason=body.reason)))
+                                       resume_state_for(pending, approve=body.approve, reason=body.reason,
+                                                        verdicts=verdicts)))
     except chat_turns.TurnAlreadyRunning:
         raise HTTPException(status_code=409, detail=TURN_RUNNING)
 
