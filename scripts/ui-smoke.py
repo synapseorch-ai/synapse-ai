@@ -10359,6 +10359,138 @@ async def check_scheduledrawer(browser) -> str:
     return "the drawer shows the schedule's fields, Esc closes it, and New schedule unfolds the guide"
 
 
+# ── Boards (BOARD1b, D282) ─────────────────────────────────────────────────────
+# Each seeds through the API (Boards switched on, its own board, workflow, schedule or agent) and removes what it made.
+
+
+def _boards_on() -> None:
+    api("/api/settings", "POST", {"boards_enabled": True})
+
+
+@check
+async def check_boards(browser) -> str:
+    """Knowledge › Boards (C7): a shared board opens with its access list; a person's card is added, reads as an
+    instruction, opens with its history, and its add is taken back with Undo (archived, found by a search)."""
+    _boards_on()
+    name = f"Smoke board {int(time.time())}"
+    made = api("/api/boards", "POST", {"name": name})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/boards?board={made['id']}", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name=name).wait_for(timeout=30_000)
+        await page.get_by_role("heading", name="Who can use this board").wait_for(timeout=5_000)
+        await page.get_by_role("button", name="Add a card").click()
+        await page.get_by_label("Title").fill("Smoke card")
+        await page.get_by_role("button", name="Add", exact=True).click()
+        row = page.get_by_role("button", name=re.compile("Smoke card"))
+        await row.wait_for(timeout=10_000)
+        if "From " not in (await row.inner_text()):
+            raise AssertionError("a person's card does not say it is a person's")
+        await row.click()
+        await page.get_by_text(re.compile("added it")).wait_for(timeout=10_000)
+        await page.get_by_role("button", name=re.compile(r"^Undo change \d+")).first.click()
+        await page.get_by_text("Archived", exact=True).first.wait_for(timeout=10_000)
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/boards/{made['id']}", "DELETE")
+        except Exception:
+            pass
+    return "a shared board opens with its list; a person's card is added, opened, and its add taken back"
+
+
+@check
+async def check_workflowboard(browser) -> str:
+    """A workflow's board beside its canvas (C7, 4B): the top bar's Board opens it in the card, and a person's card
+    there is the next run's instruction."""
+    _boards_on()
+    oid = f"orch_uismoke_board_{int(time.time())}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"Smoke board workflow {oid[-6:]}", "description": "", "entry_step_id": "p",
+        "trigger": "manual", "steps": [{"id": "p", "name": "Say", "type": "print", "print_content": "hi",
+                                        "output_key": "o", "next_step_id": None}]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile(r"^Board")).click(timeout=30_000)
+        card = page.get_by_role("region", name="This workflow's board")
+        await card.get_by_text("No cards yet").wait_for(timeout=10_000)
+        await card.get_by_role("button", name="Add a card").click()
+        await card.get_by_label("Title").fill("Skip the test supplier")
+        await card.get_by_role("button", name="Add", exact=True).click()
+        await card.get_by_role("button", name=re.compile("Skip the test supplier")).wait_for(timeout=10_000)
+        await page.get_by_role("button", name=re.compile(r"^Board · 1")).wait_for(timeout=40_000)
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/orchestrations/{oid}", "DELETE")
+        except Exception:
+            pass
+    return "Board opens the workflow's board in the card, and a person's card lands there"
+
+
+@check
+async def check_scheduleboard(browser) -> str:
+    """A scheduled agent's board in its schedule's drawer (C7)."""
+    _boards_on()
+    stamp = int(time.time())
+    aid = f"agent_uismoke_sboard_{stamp}"
+    api("/api/agents", "POST", _agent(aid, f"Board smoke {stamp}"))
+    sched = api("/api/schedules", "POST", {"name": f"Board smoke {stamp}", "target_type": "agent", "target_id": aid,
+                                          "prompt": "check", "schedule_type": "interval", "interval_seconds": 86400,
+                                          "enabled": False})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=f"Open Board smoke {stamp}").click(timeout=30_000)
+        dialog = page.get_by_role("dialog")
+        await dialog.get_by_role("heading", name="Board", exact=True).wait_for(timeout=10_000)
+        await dialog.get_by_text("No cards yet").wait_for(timeout=10_000)
+    finally:
+        await ctx.close()
+        for path in (f"/api/schedules/{sched.get('id')}", f"/api/agents/{aid}"):
+            try:
+                api(path, "DELETE")
+            except Exception:
+                pass
+    return "a schedule that runs an agent shows its board in its drawer"
+
+
+@check
+async def check_agentboards(browser) -> str:
+    """The agent editor's Boards section (C2): its own board's switch, on unless turned off, and the shared boards
+    whose lists name it, read-only."""
+    _boards_on()
+    stamp = int(time.time())
+    aid = f"agent_uismoke_aboards_{stamp}"
+    api("/api/agents", "POST", _agent(aid, f"Boards agent {stamp}"))
+    made = api("/api/boards", "POST", {"name": f"Smoke shared {stamp}"})
+    api(f"/api/boards/{made['id']}/access", "PUT", {"entries": [{"kind": "agent", "id": aid, "access": "work"}]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
+        await page.locator('aside[aria-label="Your agents"]').get_by_role(
+            "button", name=re.compile(f"Boards agent {stamp}")).click(timeout=30_000)
+        section = page.locator("#setup-boards").locator("xpath=..")
+        switch = page.get_by_role("switch", name="The board of the workflow or schedule it runs in")
+        await switch.wait_for(timeout=10_000)
+        if await switch.get_attribute("aria-checked") != "true":
+            raise AssertionError("an agent's own board does not read as on")
+        await section.get_by_text(f"Smoke shared {stamp}").wait_for(timeout=10_000)
+    finally:
+        await ctx.close()
+        for path in (f"/api/boards/{made['id']}", f"/api/agents/{aid}"):
+            try:
+                api(path, "DELETE")
+            except Exception:
+                pass
+    return "the agent's Boards section shows its own board on and the shared board that names it"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
