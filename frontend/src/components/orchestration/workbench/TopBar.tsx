@@ -6,7 +6,7 @@
  */
 import { useState } from 'react';
 import * as RPopover from '@radix-ui/react-popover';
-import { AlertTriangle, ArrowLeft, ChevronDown, Clock, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, ChevronDown, ClipboardList, Clock, MoreHorizontal, Play, Save, SlidersHorizontal, Square } from 'lucide-react';
 import {
     Button, Hint, Mark, Menu, MenuItem, MenuLabel, MenuSeparator, PageHeaderSlot, Spinner, Textarea, buttonStyles,
 } from '@/components/ui';
@@ -22,7 +22,7 @@ export function TopBar({
     issues, onIssue,
     onChangeWithAI,
     phase, onRun, onStop, blocked, runInput, lastRun,
-    menu, onOpenSettings, settingsOpen,
+    menu, onOpenSettings, settingsOpen, board,
     phone, compact, insetRight,
 }: {
     name: string;
@@ -49,6 +49,8 @@ export function TopBar({
     menu: WorkbenchMenuItem[];
     onOpenSettings: () => void;
     settingsOpen: boolean;
+    /** The workflow's board (BOARD1b): its live cards, whether the card shows it, and opening it. */
+    board?: { count: number; open: boolean; onOpen: () => void };
     phone: boolean;
     /** Less room: labels give way to icons. */
     compact: boolean;
@@ -173,6 +175,22 @@ export function TopBar({
                         {!compact && 'Workflow settings'}
                     </button>
                 )}
+                {board && !phone && (
+                    <button
+                        type="button"
+                        onClick={board.onOpen}
+                        aria-pressed={board.open}
+                        aria-label={compact ? `Board, ${board.count} open` : undefined}
+                        title="This workflow's board"
+                        className={cn(
+                            buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: compact }),
+                            board.open && 'bg-surface-2 text-text',
+                        )}
+                    >
+                        <ClipboardList className="size-3.5" aria-hidden />
+                        {!compact && <>Board <span className="tabular-nums text-text-faint">· {board.count}</span></>}
+                    </button>
+                )}
                 {lastRun && !phone && (
                     <button
                         type="button"
@@ -230,6 +248,7 @@ export function TopBar({
                     }
                 >
                     <MenuItem icon={SlidersHorizontal} onSelect={onOpenSettings}>Workflow settings</MenuItem>
+                    {phone && board && <MenuItem icon={ClipboardList} onSelect={board.onOpen}>Board · {board.count}</MenuItem>}
                     {phone && onChangeWithAI && !readOnly && <MenuItem icon={MarkIcon} onSelect={onChangeWithAI}>Change with AI</MenuItem>}
                     {phone && lastRun && (
                         <MenuItem icon={Clock} onSelect={() => lastRun.onShow(!lastRun.shown)}>

@@ -131,7 +131,8 @@ function summary(kb: KnowledgeBase): string {
     return parts.join(' · ');
 }
 
-export function KnowledgeScreen() {
+/** `tabs`: the hub's tab bar (Knowledge · Boards), as the product's frame draws it; this screen draws its own frame. */
+export function KnowledgeScreen({ tabs }: { tabs?: React.ReactNode } = {}) {
     const enabled = useKnowledgeEnabled();
     const { canEdit, offHint } = useKnowledgeHost();
     const [bases, setBases] = useState<KnowledgeBase[] | null>(null);
@@ -176,11 +177,11 @@ export function KnowledgeScreen() {
     };
 
     if (enabled === null) {
-        return <Screen eyebrow="Build" title="Knowledge" width="wide"><div className="flex justify-center py-12"><Spinner /></div></Screen>;
+        return <Screen eyebrow="Build" title="Knowledge" width="wide" tabs={tabs}><div className="flex justify-center py-12"><Spinner /></div></Screen>;
     }
     if (!enabled) {
         return (
-            <Screen eyebrow="Build" title="Knowledge" description="Agents that answer from your documents, with sources." width="wide">
+            <Screen eyebrow="Build" title="Knowledge" description="Agents that answer from your documents, with sources." width="wide" tabs={tabs}>
                 <EmptyState title="Knowledge is off in this workspace">
                     {offHint ?? 'Knowledge is not switched on here yet.'}
                 </EmptyState>
@@ -194,6 +195,7 @@ export function KnowledgeScreen() {
             title="Knowledge"
             description="Vault folders made searchable. Every file in a knowledge base's folder is read and indexed."
             width="wide"
+            tabs={tabs}
             actions={canEdit && <Button onClick={() => setCreating(true)}><Plus className="size-4" aria-hidden />New knowledge base</Button>}
         >
             {error && <ErrorNote className="mb-4">{error}</ErrorNote>}

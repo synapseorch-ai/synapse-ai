@@ -17,6 +17,9 @@ import { AgentTest, toolNamesOf, type AgentStatus } from './AgentTest';
 import { AgentMemory } from './AgentMemory';
 import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type ToolPolicy } from './ToolPolicy';
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
+import { AgentBoards } from '@/components/boards/AgentBoards';
+import { useNavFlags } from '@/components/app/NavFlags';
+import { OssBoardsHost } from '@/lib/boardsHost';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
 import { cn } from '@/lib/cn';
 import { providerLabel } from '@/lib/models';
@@ -84,6 +87,7 @@ export const AgentsTab = ({
     const [repos, setRepos] = useState<any[]>([]);
     const [allSkills, setAllSkills] = useState<any[]>([]);
     const knowledgeOn = useKnowledgeEnabled();
+    const boardsOn = !!useNavFlags().boards_enabled;
     const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
     const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string }[]>([]);
@@ -1269,6 +1273,19 @@ export const AgentsTab = ({
                                                 />
                                             )}
                                         </SetupSection>
+
+                                        {/* Boards (BOARD1b): its own board's switch, and the shared boards that name it */}
+                                        {boardsOn && draftAgent.type !== 'orchestrator' && (
+                                            <SetupSection id="setup-boards" title="Boards">
+                                                <OssBoardsHost>
+                                                    <AgentBoards
+                                                        agentId={isNew ? null : (draftAgent.id || null)}
+                                                        own={draftAgent.boards?.own !== false}
+                                                        onOwn={own => setDraftAgent({ ...draftAgent, boards: { ...(draftAgent.boards || {}), own } })}
+                                                    />
+                                                </OssBoardsHost>
+                                            </SetupSection>
+                                        )}
 
                                         <SetupSection id="setup-limits" title="Limits">
                                             <div className="grid gap-x-6 gap-y-4 @xl:grid-cols-2">

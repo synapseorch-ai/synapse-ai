@@ -12,14 +12,14 @@
  * component would fail — and the symptom is a 200 with a 404 body.
  */
 import {
-    Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
+    Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, ClipboardList, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
     FlaskConical, FolderGit2, FolderOpen, Gauge, Globe, Key, LayoutDashboard, LayoutGrid, LayoutTemplate, LifeBuoy, Library,
     MessageSquare, MessagesSquare, Phone, Radio, ScrollText, Shield, Target, Workflow, Wrench,
     type LucideIcon,
 } from 'lucide-react';
 
 /** A settings flag from GET /api/settings that gates a nav entry. */
-export type NavFlag = 'messaging_enabled' | 'coding_agent_enabled' | 'knowledge_enabled';
+export type NavFlag = 'messaging_enabled' | 'coding_agent_enabled' | 'knowledge_enabled' | 'boards_enabled';
 
 export type NavEntry = {
     /** Legacy settings tab id, where one exists — also the SettingsView `initialTab`, and the help topic's key. */
@@ -147,6 +147,11 @@ export const HUB_NAV: NavHubGroup[] = [
                     id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: Library,
                     blurb: 'Vault folders made searchable, so agents answer from your documents with sources.',
                     flag: 'knowledge_enabled',
+                }, {
+                    // Beside Knowledge, not the Vault, which stands on its own (C7, BOARD1b).
+                    id: 'boards', label: 'Boards', href: '/boards', icon: ClipboardList,
+                    blurb: 'Shared work agents read, claim and close: each workflow\'s, each schedule\'s and shared boards.',
+                    flag: 'boards_enabled',
                 }],
             },
             {

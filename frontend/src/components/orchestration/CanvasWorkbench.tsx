@@ -72,6 +72,11 @@ export interface CanvasWorkbenchProps {
     renderSettings: (close: () => void) => React.ReactNode;
     /** Open the settings when the workflow opens: a link that came for them (a run's "Raise the cap", CAP1). */
     settingsAtOpen?: boolean;
+    /**
+     * The workflow's board, while Boards are on (BOARD1b): its live card count for the bar's "Board" button, and
+     * the board in the card (`BoardPanel` from `components/boards`). Absent: no button.
+     */
+    board?: { count: number; render: (close: () => void) => React.ReactNode };
     /** The step toolbar's actions, the same ones the panel and ⌘D use. */
     stepActions: {
         duplicate: (stepId: string) => void;
@@ -161,7 +166,7 @@ function subscribeCoarse(onChange: () => void) {
 
 function Workbench({
     orchestration, onChange, agents, knowledgeEnabled = false, selectedStepId, onSelectStep,
-    renderStep, renderSettings, settingsAtOpen = false, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
+    renderStep, renderSettings, settingsAtOpen = false, board, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
     insetRight = 0, run, runStrip, runDrawer, lastRun,
 }: CanvasWorkbenchProps) {
     // The canvas is the page: the shell hides the page header and folds the menu (D204).
@@ -189,14 +194,17 @@ function Workbench({
     // ── The card: a step's setup, or the workflow's settings ──────────────
     const selectedStep = orchestration.steps.find((s) => s.id === selectedStepId) ?? null;
     const [settingsOpen, setSettingsOpen] = useState(settingsAtOpen);
+    const [boardOpen, setBoardOpen] = useState(false);
     // Selecting a step shows its setup; the settings give way (adjusted while
     // rendering, not in an effect).
     const [seenSelection, setSeenSelection] = useState(selectedStepId);
     if (seenSelection !== selectedStepId) {
         setSeenSelection(selectedStepId);
         if (selectedStepId && settingsOpen) setSettingsOpen(false);
+        if (selectedStepId && boardOpen) setBoardOpen(false);
     }
-    const view: 'step' | 'settings' | null = selectedStep ? 'step' : settingsOpen ? 'settings' : null;
+    const view: 'step' | 'settings' | 'board' | null =
+        selectedStep ? 'step' : settingsOpen ? 'settings' : boardOpen && board ? 'board' : null;
     const cardOpen = view !== null;
     const sheetBox = useElementBox(sheetRef, cardOpen && phone);
     const dockBox = useElementBox(dockRef);
@@ -303,6 +311,7 @@ function Workbench({
     const closeCard = useCallback(() => {
         const was = selectedStepId;
         setSettingsOpen(false);
+        setBoardOpen(false);
         if (was) {
             onSelectStep(null);
             // Back to the step it was about, as a click on the pane would leave it.
@@ -315,7 +324,14 @@ function Workbench({
 
     const openSettings = useCallback(() => {
         onSelectStep(null);
+        setBoardOpen(false);
         setSettingsOpen(true);
+    }, [onSelectStep]);
+
+    const openBoard = useCallback(() => {
+        onSelectStep(null);
+        setSettingsOpen(false);
+        setBoardOpen(true);
     }, [onSelectStep]);
 
     // Esc closes the card: after an open menu, list or dialog has taken its own
@@ -434,6 +450,7 @@ function Workbench({
                     onNodeClick={graph.onNodeClick}
                     onPaneClick={() => {
                         setSettingsOpen(false);
+                        setBoardOpen(false);
                         graph.onPaneClick();
                     }}
                     onDelete={graph.onDelete}
@@ -515,6 +532,7 @@ function Workbench({
                 menu={menu}
                 onOpenSettings={openSettings}
                 settingsOpen={view === 'settings'}
+                board={board ? { count: board.count, open: view === 'board', onOpen: openBoard } : undefined}
                 phone={phone}
                 compact={tier !== 'full'}
                 insetRight={localInset}
@@ -533,7 +551,9 @@ function Workbench({
                     onClose={closeCard}
                     sheetRef={sheetRef}
                 >
-                    {view === 'step' && selectedStep ? renderStep(selectedStep) : renderSettings(() => setSettingsOpen(false))}
+                    {view === 'step' && selectedStep ? renderStep(selectedStep)
+                        : view === 'board' && board ? board.render(() => setBoardOpen(false))
+                            : renderSettings(() => setSettingsOpen(false))}
                 </SetupCard>
             )}
 

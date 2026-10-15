@@ -16,8 +16,9 @@ import { SettingsNav } from '@/components/app/SettingsNav';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
 import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
+import { BOARDS_SWITCHED_EVENT } from '@/components/boards/board';
 import { HOSTED_KEY_NAMES } from '@/lib/models';
-import { GeneralTab } from './settings/GeneralTab';
+import { GeneralTab, type BoardsSettings } from './settings/GeneralTab';
 import type { ToolPolicy } from './settings/ToolPolicy';
 import { PersonalDetailsTab } from './settings/PersonalDetailsTab';
 import { VariablesTab } from './settings/VariablesTab';
@@ -69,6 +70,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [allowDbWrite, setAllowDbWrite] = useState(false);
     // Knowledge's switch (F367); null until read, and not saved until then, so a failed read never turns it off.
     const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
+    // Boards' switch and caps (BOARD1b): as Knowledge's, null until read and not saved until then.
+    const [boards, setBoards] = useState<BoardsSettings | null>(null);
     const [toolPolicyDefaults, setToolPolicyDefaults] = useState<ToolPolicy>({});
     const [bashAllowedDirs, setBashAllowedDirs] = useState<string[]>([]);
 
@@ -259,6 +262,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             embed_code: embedCode,
             bash_allowed_dirs: bashAllowedDirs,
             ...(knowledgeEnabled === null ? {} : { knowledge_enabled: knowledgeEnabled }),
+            ...(boards === null ? {} : {
+                boards_enabled: boards.enabled, boards_max_open_cards: boards.maxOpenCards, boards_max_shared: boards.maxShared,
+            }),
             ...knowledgeModels,
         };
 
@@ -270,6 +276,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             });
             if (!response.ok) throw new Error('Failed to update settings');
             if (knowledgeEnabled !== null) window.dispatchEvent(new Event(KNOWLEDGE_SWITCHED_EVENT));
+            if (boards !== null) window.dispatchEvent(new Event(BOARDS_SWITCHED_EVENT));
             // The answer serves no key either: note what is now saved, and empty
             // the fields a new key was typed into, which read "Saved" from here.
             const saved = await response.json().catch(() => null);
@@ -490,6 +497,11 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setAutoCompactThreshold(data.auto_compact_threshold || 50000);
                 setAllowDbWrite(data.allow_db_write || false);
                 setKnowledgeEnabled(!!data.knowledge_enabled);
+                setBoards({
+                    enabled: !!data.boards_enabled,
+                    maxOpenCards: Number(data.boards_max_open_cards) || 2000,
+                    maxShared: Number(data.boards_max_shared) || 0,
+                });
                 setToolPolicyDefaults(data.tool_policy_defaults || {});
                 setEmbedCode(data.embed_code || false);
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
@@ -597,6 +609,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         setAllowDbWrite={setAllowDbWrite}
                         knowledgeEnabled={knowledgeEnabled}
                         setKnowledgeEnabled={setKnowledgeEnabled}
+                        boards={boards}
+                        setBoards={setBoards}
                         toolPolicyDefaults={toolPolicyDefaults}
                         setToolPolicyDefaults={setToolPolicyDefaults}
                         embedCode={embedCode}

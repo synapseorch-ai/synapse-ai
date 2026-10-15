@@ -44,6 +44,32 @@
   ],
   "guide": "/guides/start/how-it-fits"
  },
+ "boards": {
+  "title": "Boards",
+  "summary": "Cards of shared work that agents read, claim and close. Each workflow and each scheduled agent has its own board, kept across runs; a shared board is used by what its list names.",
+  "steps": [
+   "If it says Boards are off, turn on “Boards” in Settings → General and click “Save changes”.",
+   "A workflow’s or a schedule’s board starts at its first card: its agents add cards as they work, or you add one.",
+   "Click “New shared board” for work between workflows and schedules, then name who may use it under “Who can use this board”.",
+   "An agent’s own board is on unless its Boards section turns it off; its shared boards come from each board’s list, at most 3."
+  ],
+  "guide": "/guides/start/workflows",
+  "where": {
+   "label": "Boards",
+   "href": "/boards"
+  }
+ },
+ "boards.board": {
+  "title": "Working on a board",
+  "summary": "A board’s open cards come first — a workflow’s current run before earlier runs — then what is done. Click a card to read it, change it, close it or take a change back.",
+  "steps": [
+   "Click “Add a card” for a task (work to do) or a note (something to know). Your card is an instruction the next run reads first, marked in amber.",
+   "“From content” marks a card written after an agent read outside content; agents that read it are treated the same way.",
+   "Open a card for its comments and history; “Undo” takes back any change, an agent’s or yours, for 30 days.",
+   "Search finds cards by title, text or key, archived ones too."
+  ],
+  "guide": "/guides/start/workflows"
+ },
  "chat": {
   "title": "Chat",
   "summary": "Talk to one agent at a time and watch it work: its thinking, the tools it calls and what they return. Conversations are kept for you to pick up again.",
@@ -292,6 +318,16 @@
    "label": "Workflows",
    "href": "/workflows"
   }
+ },
+ "orchestrations.board": {
+  "title": "A workflow’s board",
+  "summary": "What this workflow’s agents leave for each other and for its next run, opened from “Board” in the canvas’s top bar.",
+  "steps": [
+   "This run’s cards come first, then earlier runs’. Only this workflow’s agents see the board.",
+   "Click “Add a card” to tell the next run something; it reads your card first.",
+   "Every board, shared ones too, is in Knowledge → Boards."
+  ],
+  "guide": "/guides/start/workflows"
  },
  "orchestrations.editor": {
   "title": "Editing a workflow",

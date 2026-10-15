@@ -6,6 +6,10 @@ import {
     Button, Combobox, ConfirmDialog, EmptyState, LinkButton, Mark, MenuItem, MenuSeparator, Modal, RowMenu,
 } from '@/components/ui';
 import { AppScreen } from '@/components/app/AppScreen';
+import { useNavFlags } from '@/components/app/NavFlags';
+import { BoardPanel } from '@/components/boards/BoardPanel';
+import { boardsApi } from '@/components/boards/board';
+import { OssBoardsHost, ossBoardsHost } from '@/lib/boardsHost';
 import { useRouter } from 'next/navigation';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
@@ -255,6 +259,21 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // Knowledge (R1): its Retrieve and Ingest steps are offered only while it is
     // on, and their pickers list the workspace's knowledge bases.
     const knowledgeEnabled = useKnowledgeEnabled() === true;
+    // Its board (BOARD1b): the top bar's "Board · N" while Boards are on, for a saved workflow. Read on opening it
+    // and every half minute, as agents write.
+    const boardsOn = !!useNavFlags().boards_enabled;
+    const boardWorkflowId = boardsOn && draft && orchestrations.some(o => o.id === draft.id) ? draft.id : null;
+    const [boardCount, setBoardCount] = useState<number | null>(null);
+    useEffect(() => {
+        if (!boardWorkflowId) { setBoardCount(null); return; }
+        let live = true;
+        const read = () => boardsApi(ossBoardsHost.request).open({ scope: 'workflow', scopeId: boardWorkflowId })
+            .then(p => { if (live) setBoardCount(p.board.open + p.board.claimed); })
+            .catch(() => { if (live) setBoardCount(null); });
+        read();
+        const t = window.setInterval(read, 30_000);
+        return () => { live = false; window.clearInterval(t); };
+    }, [boardWorkflowId]);
     const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseOption[] | undefined>(undefined);
     useEffect(() => {
         if (!knowledgeEnabled) return;
@@ -1877,6 +1896,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 />
                             )}
                             settingsAtOpen={!!openSettings && draft.id === initialOrchId}
+                            board={boardWorkflowId && boardCount !== null ? {
+                                count: boardCount,
+                                render: (close) => (
+                                    <OssBoardsHost><BoardPanel workflowId={boardWorkflowId} name={draft.name} onClose={close} /></OssBoardsHost>
+                                ),
+                            } : undefined}
                             renderSettings={(close) => (
                                 <WorkflowSettingsPanel name={draft.name} onClose={close}>
                                     <SettingsSection title="Description">

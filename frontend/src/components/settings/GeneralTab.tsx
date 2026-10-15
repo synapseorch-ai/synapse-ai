@@ -44,6 +44,8 @@ interface DbForm {
     dbName: string;
 }
 
+export type BoardsSettings = { enabled: boolean; maxOpenCards: number; maxShared: number };
+
 interface GeneralTabProps {
     agentName: string;
     setAgentName: (v: string) => void;
@@ -60,6 +62,9 @@ interface GeneralTabProps {
     /** Knowledge's switch (`knowledge_enabled`, F367); null until the settings are read. */
     knowledgeEnabled: boolean | null;
     setKnowledgeEnabled: (v: boolean) => void;
+    /** Boards' switch and caps (`boards_enabled`, `boards_max_open_cards`, `boards_max_shared`; BOARD1b); null until read. */
+    boards: BoardsSettings | null;
+    setBoards: (v: BoardsSettings) => void;
     toolPolicyDefaults: ToolPolicy;
     setToolPolicyDefaults: (v: ToolPolicy) => void;
     embedCode: boolean;
@@ -87,6 +92,7 @@ export function GeneralTab({
     autoCompactThreshold, setAutoCompactThreshold,
     allowDbWrite, setAllowDbWrite,
     knowledgeEnabled, setKnowledgeEnabled,
+    boards, setBoards,
     toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
@@ -250,6 +256,33 @@ export function GeneralTab({
                     onChange={() => setKnowledgeEnabled(!knowledgeEnabled)}>
                     Makes Vault folders searchable, so agents and workflows answer from your documents and cite them. Once it is saved, choose an embedding model in Settings → Models.
                 </SwitchRow>
+            </Section>
+
+            <Section {...S} title="Boards">
+                <div className="space-y-4">
+                    <SwitchRow label="Boards" checked={!!boards?.enabled} disabled={boards === null}
+                        onChange={() => boards && setBoards({ ...boards, enabled: !boards.enabled })}>
+                        Cards of shared work that agents read, claim and close. Each workflow and each scheduled agent gets its own board, kept across runs, and shared boards are used by what their lists name. An agent&apos;s Boards section turns its own board off.
+                    </SwitchRow>
+                    {boards?.enabled && (
+                        <div className={`grid gap-4 sm:grid-cols-2 ${FORM}`}>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="gen-boards-open" className={FIELD_LABEL}>Open cards per board</Label>
+                                <Input id="gen-boards-open" type="number" min={1} className="w-40 font-medium tabular-nums"
+                                    value={boards.maxOpenCards}
+                                    onChange={(e) => setBoards({ ...boards, maxOpenCards: Math.max(1, parseInt(e.target.value) || 1) })} />
+                                <p className="text-xs text-text-faint">At the limit an agent is told to close some cards first.</p>
+                            </div>
+                            <div className="space-y-1.5">
+                                <Label htmlFor="gen-boards-shared" className={FIELD_LABEL}>Shared boards</Label>
+                                <Input id="gen-boards-shared" type="number" min={0} className="w-40 font-medium tabular-nums"
+                                    value={boards.maxShared}
+                                    onChange={(e) => setBoards({ ...boards, maxShared: Math.max(0, parseInt(e.target.value) || 0) })} />
+                                <p className="text-xs text-text-faint">0 means no limit.</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
             </Section>
 
             <Section {...S} title="Large response handling">

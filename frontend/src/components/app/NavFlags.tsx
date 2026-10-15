@@ -1,6 +1,6 @@
 'use client';
 /*
- * Which flagged pages to offer: Knowledge, Channels, Repos and DB Configs show
+ * Which flagged pages to offer: Knowledge, Boards, Channels, Repos and DB Configs show
  * only while their /api/settings switch is on.
  *
  * Read once for the shell and shared by everything that lists pages — the
@@ -10,6 +10,7 @@
  */
 import { createContext, useContext, useEffect, useState } from 'react';
 
+import { BOARDS_SWITCHED_EVENT } from '@/components/boards/board';
 import { AUTH_CHANGED_EVENT } from '@/lib/auth';
 import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
 import type { NavFlag } from '@/lib/nav';
@@ -30,6 +31,7 @@ export function NavFlagsProvider({ children }: { children: React.ReactNode }) {
                         messaging_enabled: !!data?.messaging_enabled,
                         coding_agent_enabled: !!data?.coding_agent_enabled,
                         knowledge_enabled: !!data?.knowledge_enabled,
+                        boards_enabled: !!data?.boards_enabled,
                     });
                 }
             })
@@ -37,10 +39,12 @@ export function NavFlagsProvider({ children }: { children: React.ReactNode }) {
         read();
         window.addEventListener(AUTH_CHANGED_EVENT, read);
         window.addEventListener(KNOWLEDGE_SWITCHED_EVENT, read);
+        window.addEventListener(BOARDS_SWITCHED_EVENT, read);
         return () => {
             live = false;
             window.removeEventListener(AUTH_CHANGED_EVENT, read);
             window.removeEventListener(KNOWLEDGE_SWITCHED_EVENT, read);
+            window.removeEventListener(BOARDS_SWITCHED_EVENT, read);
         };
     }, []);
     return <NavFlagsContext.Provider value={flags}>{children}</NavFlagsContext.Provider>;

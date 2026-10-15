@@ -17,6 +17,9 @@ import { Bot, Edit2, Play, Plus, RefreshCw, Trash2, Workflow } from 'lucide-reac
 
 import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
 import { AppScreen } from '@/components/app/AppScreen';
+import { useNavFlags } from '@/components/app/NavFlags';
+import { ScheduleBoard } from '@/components/boards/ScheduleBoard';
+import { OssBoardsHost } from '@/lib/boardsHost';
 import { useNotifications } from '@/components/notifications/NotificationProvider';
 import { cronWords, lastScheduledRun, ScheduleList, scheduleRow } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
@@ -98,6 +101,8 @@ export const SchedulesTab = () => {
     const [saving, setSaving] = useState(false);
     const [runningIds, setRunningIds] = useState<Set<string>>(new Set());
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+    const boardsOn = !!useNavFlags().boards_enabled;
+    const savedSchedule = editingId ? schedules.find(s => s.id === editingId) ?? null : null;
     const [selectedPresetIdx, setSelectedPresetIdx] = useState(0);
     const [cronHour, setCronHour] = useState(9);
     const { toast, show, dismiss } = useToast();
@@ -608,6 +613,17 @@ export const SchedulesTab = () => {
                         />
                         <span className="text-xs text-text-faint">{form.enabled ? 'Schedule will run automatically' : 'Schedule is paused'}</span>
                     </div>
+
+                    {/* Its board (BOARD1b): what the next firing reads first. A saved schedule's, as it runs now. */}
+                    {editingId && boardsOn && savedSchedule && (
+                        <section className="grid gap-3 border-t border-border pt-5" aria-labelledby="sched-board">
+                            <h3 id="sched-board" className="text-sm font-semibold text-text">Board</h3>
+                            <OssBoardsHost>
+                                <ScheduleBoard scheduleId={editingId}
+                                    workflowId={savedSchedule.target_type === 'orchestration' ? savedSchedule.target_id : null} />
+                            </OssBoardsHost>
+                        </section>
+                    )}
                 </div>
             </Drawer>
 
