@@ -11,9 +11,11 @@
  *
  * The buttons answer the same question the composer does, through the same
  * request: Build it sends "approve", the word the question itself asks for.
- * Nothing about the builder changed for this; `plan.ts` reads its words.
+ * Nothing about the builder changed for this; `plan.ts` reads its words. A
+ * plan that names something missing here also offers Find who can, which sends
+ * `RESEARCH_WORDS` and has the builder look for a provider instead (BWA1).
  */
-import { AlertTriangle, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Search } from 'lucide-react';
 import * as React from 'react';
 
 import { EstimateLine, useRunEstimate, type EstimateLoader } from '@/components/orchestration/estimate';
@@ -42,6 +44,13 @@ export const QUESTION_FOLD = 600;
 
 /** What the plan card's first button sends: the word the question asks for. */
 export const APPROVE_WORD = 'approve';
+
+/**
+ * What "Find who can" sends when the plan names something missing here: the
+ * builder looks for a provider instead of building (BWA1). Its branch matches
+ * these exact words in code, so keep them in step with `step_review_research`.
+ */
+export const RESEARCH_WORDS = 'find who can';
 
 function Header({ open, title }: { open: boolean; title?: string }) {
     return (
@@ -223,6 +232,22 @@ export function PlanCard({
                                 Missing here
                             </span>
                             <Markdown className="text-[13px] leading-relaxed">{plan.needs}</Markdown>
+                            {open && (
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    size="sm"
+                                    disabled={sent}
+                                    className="mt-1 self-start"
+                                    onClick={() => {
+                                        setSent(true);
+                                        onAnswer(RESEARCH_WORDS);
+                                    }}
+                                >
+                                    <Search className="size-4" aria-hidden />
+                                    Find who can
+                                </Button>
+                            )}
                         </div>
                     )}
                     {plan.openQuestions && (

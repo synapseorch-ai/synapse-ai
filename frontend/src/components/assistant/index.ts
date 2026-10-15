@@ -12,7 +12,7 @@ export { AgentIntro } from './AgentIntro';
 export { AgentTestPanel, type AgentTestPanelProps } from './AgentTestPanel';
 export { Composer, composerPillClass, PillAvatar, type ComposerProps } from './Composer';
 export { AgentAvatar, AgentTurn, RunChip, Suggestions, UserBubble } from './messages';
-export { APPROVE_WORD, PlanCard, QUESTION_FOLD, QuestionCard } from './cards';
+export { APPROVE_WORD, PlanCard, QUESTION_FOLD, QuestionCard, RESEARCH_WORDS } from './cards';
 export { ConnectCard, type ConnectResult, type Connector } from './ConnectCard';
 export { FindingsCard } from './FindingsCard';
 export { HelperLane, HelperLanes, HelperNote } from './HelperLane';

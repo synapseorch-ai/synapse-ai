@@ -255,6 +255,67 @@ async def builder():
     await seed_native_builder()
 
 
+@pytest.mark.parametrize("answer, researches", [
+    ("find who can", True), ("  Find who can ", True),
+    ("approve", False), ("find who can, and also add a step", False), (None, False)])
+def test_find_who_can_on_the_plan_goes_to_research_by_the_words_alone(answer, researches):
+    """Naveen (2026-10-16): the plan card's "Missing here" offers "Find who can", sending the goal to research. The
+    card answers with fixed words, as "Build it" answers `approve`, and the branch is decided in code: a small model
+    named research's own route 6 to 9 times in 12, too few for a button. Any other answer reads as it did."""
+    from core.native_builder import bundled_definitions
+    from core.orchestration.steps import _eval_state_expr
+
+    steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+    assert steps["step_human_review"]["next_step_id"] == "step_review_research"
+    branch = steps["step_review_research"]
+    assert branch["type"] == "if_else"
+    feedback = {} if answer is None else {"feedback": answer}
+    value, error = _eval_state_expr(branch["if_condition"], {"review_feedback": feedback}, default=False)
+    assert error is None
+    assert (branch["if_true_step_id"] if value else branch["if_false_step_id"]) == (
+        "step_research" if researches else "step_approval_route")
+
+
+def test_the_cards_words_are_the_words_the_branch_matches():
+    """The synced card sends `RESEARCH_WORDS`; the branch matches them in code. Changed on one side only, the button
+    would send the plan to be revised instead."""
+    import re
+    from pathlib import Path
+
+    from core.native_builder import bundled_definitions
+
+    card = Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/cards.tsx"
+    if not card.exists():
+        pytest.skip("no frontend in this checkout")
+    words = re.search(r"export const RESEARCH_WORDS = '([^']+)';", card.read_text()).group(1)
+    branch = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_review_research")
+    assert f'"{words}"' in branch["if_condition"]
+
+
+async def test_a_plan_answered_find_who_can_is_researched_and_builds_nothing(client, builder, fake_llm):
+    fake_llm.script([
+        route("create"),                                                   # step_intent
+        "Requirements: buy a shipping label for each retainer kit.",       # step_understand
+        route("draft"),                                                    # step_clarify_route
+        "## Plan\nBuy a label with `shippo_buy_label` for each kit.",      # step_draft_plan
+        tool_call("check_plan"),                                           # step_check_plan
+    ])
+    events = await stream(client, "/api/builder/chat", {"message": "Buy shipping labels for our retainer kits"})
+    run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
+
+    fake_llm.reset()
+    fake_llm.script([
+        "Shippo has a public API with a test mode.\nShippo — api — an account and a key — https://docs.goshippo.com",
+        tool_call("report_findings", goal="buy shipping labels", options=[
+            {"provider": "Shippo", "how": "api", "sources": ["https://docs.goshippo.com"]}]),
+    ])
+    after = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "find who can"}})
+    steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
+    assert "Research a Provider" in steps and "Route: Approved or Revise" not in steps, steps
+    assert [e["options"][0]["provider"] for e in after if e["type"] == "research_findings"] == ["Shippo"]
+    assert not [e for e in after if e["type"] == "resource_saved"], "research builds nothing"
+
+
 async def test_a_goal_with_no_tool_is_researched_and_ends_in_findings(client, builder, fake_llm):
     fake_llm.script([
         route("research"),
