@@ -643,6 +643,18 @@ async def _hand_over_answers(redis, session_id: str) -> None:
             await publish_member_answer(redis, session_id, verdict)
 
 
+async def _take_held_answers(redis, session_id: str, questions: list[str]) -> list[dict]:
+    """The answers held in Redis for these questions, each taken by this turn alone (TEAM1c)."""
+    from core.scale.pubsub import take_member_answer
+
+    taken = []
+    for question in questions:
+        verdict = await take_member_answer(redis, session_id, question)
+        if verdict is not None:
+            taken.append(verdict)
+    return taken
+
+
 #: What a background helper a restart cut short says, in place of the result it never had (SUB1a's words).
 HELPER_CUT_SHORT = "It stopped when the server restarted, before it finished."
 
@@ -1150,10 +1162,14 @@ async def run_agent_chat_job(
         # `_cancel_guarded` shape `WorkerEngineAdapter` uses for runs, keyed on
         # the session because a chat turn has no run id.
         from core import turn_usage
+        from core.chat_approval import held_reader
         meter = turn_usage.start() if report_usage else None
+        # A team's answers given in another process, read just before it pauses (TEAM1c).
+        held = held_reader.set(lambda questions: _take_held_answers(redis, session_id, questions))
         try:
             cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume)
         finally:
+            held_reader.reset(held)
             if meter is not None:
                 turn_usage.stop(meter)
         if meter is not None:

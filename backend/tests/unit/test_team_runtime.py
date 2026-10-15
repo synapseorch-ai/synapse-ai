@@ -684,6 +684,28 @@ class TestApprovalsInParallel:
             "Ben": "completed", "Cara": "completed"}
         assert server.session.calls == ["danger"] and not _of(events, "human_input_required")
 
+    async def test_an_answer_held_on_the_fleet_is_taken_before_the_turn_pauses(self, server, llm, team3):
+        """On the fleet the job's watcher looks every 2 s: an answer given in between is read as the turn is about
+        to pause, and that member carries on instead of the turn pausing."""
+        from core.chat_approval import held_reader
+        asked: list = []
+
+        async def reader(questions):
+            asked.append(list(questions))
+            return [{"question_id": questions[0], "approve": True}] if len(asked) == 1 else []
+
+        llm.on("PLAN IT", [assign("Ben", "CHANGE B"), tool_call("wait", seconds=10), tool_call("wait", seconds=10),
+                           "all done"])
+        llm.on("CHANGE B", [tool_call("danger", item="b"), "changed B"])
+        token = held_reader.set(reader)
+        try:
+            events = await _turn(server, progress_events=True)
+        finally:
+            held_reader.reset(token)
+        assert asked and asked[0][0].startswith(next(f["member_id"] for f in _of(events, "member_started")))
+        assert server.session.calls == ["danger"] and not _of(events, "human_input_required")
+        assert [(a["member_name"], a["approved"]) for a in _of(events, "member_answered")] == [("Ben", True)]
+
     async def test_a_turn_that_ends_without_pausing_ends_its_waiting_members_as_not_run(self, server, llm, team3):
         llm.on("PLAN IT", [assign("Ben", "CHANGE B"), tool_call("wait", seconds=10)])
         llm.on("CHANGE B", [tool_call("danger"), "unused"])

@@ -1022,6 +1022,23 @@ class Team:
         return self.resume_member(member.id, member.agent_id, member.task, inner, approved=approve,
                                   live=True) is not None
 
+    async def take_held(self) -> None:
+        """Before the turn pauses: take the answers held elsewhere for its waiting members (the fleet's, read
+        between its watcher's looks), so a member answered a moment ago carries on instead (TEAM1c)."""
+        from core.chat_approval import held_reader
+        reader = held_reader.get()
+        waiting = [m.question_id for m in self.waiting() if m.question_id]
+        if reader is None or not waiting:
+            return
+        try:
+            held = await reader(waiting)
+        except Exception as exc:  # noqa: BLE001 — a reader's failure leaves them asked, as before
+            _log.warning(f"team answers not read before pausing: {exc}")
+            return
+        for verdict in held:
+            self.answer(str(verdict.get("question_id") or ""), approve=bool(verdict.get("approve")),
+                        reason=str(verdict.get("reason") or ""))
+
     def still_asking(self) -> None:
         """Each member still waiting goes out with its question again, for a page following a resumed turn."""
         for member in self.waiting():

@@ -295,6 +295,12 @@ _ANSWERS: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = {}
 ANSWER_KEPT_SECONDS = 3600
 
 
+#: Where a turn running on the fleet reads the answers held for it in another process (TEAM1c): set by the
+#: fleet's chat job for its turn, `await reader(question_ids)` → the answers taken. None in-process, where an
+#: answer reaches a working team directly.
+held_reader: ContextVar[Any] = ContextVar("synapse_held_answers", default=None)
+
+
 def _box_key(session_id: str, agent_key: str) -> tuple[str, str, str]:
     from core.tenancy import get_tenant
     return (get_tenant() or "", session_id or "", agent_key or "default")
