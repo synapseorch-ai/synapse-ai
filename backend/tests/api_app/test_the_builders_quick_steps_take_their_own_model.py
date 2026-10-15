@@ -55,12 +55,12 @@ def test_no_role_or_a_role_not_mapped_leaves_the_runs_model(roles):
 
 def test_the_builders_quick_steps_are_its_routing_and_its_one_call_look_ups():
     """Every routing evaluator, and the tool steps that only write one call's arguments (F492's plan check, the
-    how-to, connect and can't-do look-ups): never a step that plans, writes or answers."""
+    how-to, connect and can't-do look-ups, the findings card): never a step that plans, writes or answers."""
     steps = bundled_definitions()["orchestration"]["steps"]
     quick = {s["id"] for s in steps if s.get("model_role") == "quick"}
     evaluators = {s["id"] for s in steps if s["type"] == "evaluator"}
     assert evaluators <= quick and "step_intent" in quick
-    assert quick - evaluators == {"step_check_plan", "step_howto", "step_connect", "step_cantdo"}
+    assert quick - evaluators == {"step_check_plan", "step_howto", "step_connect", "step_cantdo", "step_findings"}
     assert all(s["type"] in ("evaluator", "tool") for s in steps if s["id"] in quick)
 
 

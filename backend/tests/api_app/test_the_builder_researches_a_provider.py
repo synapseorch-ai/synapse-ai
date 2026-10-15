@@ -198,8 +198,9 @@ async def test_with_no_web_reader_the_research_says_the_web_was_not_checked():
 
 def test_the_researcher_holds_the_three_sources_and_nothing_that_writes():
     researcher = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_researcher")
-    assert {"find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page",
-            "report_findings"} <= set(researcher["tools"])
+    assert {"find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page"} <= set(researcher["tools"])
+    # The card is a step of its own after the Researcher (the model forgot it in 2 of 4 live runs), never its tool.
+    assert "report_findings" not in researcher["tools"]
     writes = {"create_agent", "update_agent", "create_http_tool", "create_schedule", "delete_agent", "prepare_connection"}
     assert not writes & set(researcher["tools"])
 
@@ -212,13 +213,15 @@ async def builder():
 async def test_a_goal_with_no_tool_is_researched_and_ends_in_findings(client, builder, fake_llm):
     fake_llm.script([
         route("research"),
+        "Shippo has a public API with a test mode; the next step is a plan for you to approve.\n"
+        "Shippo — api — an account and an API key — https://docs.goshippo.com",
         tool_call("report_findings", goal="buy shipping labels", options=[
             {"provider": "Shippo", "how": "api", "needs": "An account and an API key",
              "sources": ["https://docs.goshippo.com"]}]),
-        "Shippo has a public API with a test mode; the next step is a plan for you to approve.",
     ])
     events = await stream(client, "/api/builder/chat", {"message": "Automate buying shipping labels for our kits"})
-    assert "Research a Provider" in [e.get("step_name") for e in events if e["type"] == "step_start"]
+    steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+    assert "Research a Provider" in steps and "Make the Findings Card" in steps
     cards = [e for e in events if e["type"] == "research_findings"]
     assert len(cards) == 1 and cards[0]["options"][0]["provider"] == "Shippo"
     assert not [e for e in events if e["type"] == "resource_saved"], "research builds nothing"
