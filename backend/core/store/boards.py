@@ -632,6 +632,21 @@ async def digest_cards(board_ids: list[str], *, run_id: str | None, per_board: i
     return out
 
 
+async def held_cards(holder: Holder, *, now: datetime | None = None) -> list[Card]:
+    """The cards `holder` holds now, oldest first: what a turn near its end is told it still holds (F582). Asked
+    only by a turn that has claimed something, on its last calls."""
+    from core.store import session
+    from core.store.models import BoardCardDB
+
+    now = now or _now()
+    async with session() as s:
+        rows = (await s.execute(
+            select(BoardCardDB).where(BoardCardDB.tenant_id == get_tenant(), BoardCardDB.status == "claimed",
+                                      BoardCardDB.holder_key == holder.key, BoardCardDB.holder_agent == holder.agent)
+            .order_by(BoardCardDB.created_at, BoardCardDB.id))).scalars().all()
+    return [_card(row, now) for row in rows]
+
+
 async def live_count(board_id: str) -> int:
     """Open and claimed cards on a board: what its cap counts."""
     from core.store import session

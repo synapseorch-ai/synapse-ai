@@ -441,6 +441,41 @@ class TestTaint:
 # ── a finished turn's claims ────────────────────────────────────────────────────
 
 
+class TestHeldAtTheEnd:
+    """F582 (b): a turn still holding a claim near its end is told so, while it can still close it and then on its
+    final call, so its answer does not say a card it left claimed is closed (BOARD1b's dev pass: "I closed the
+    card" with the claim still held, released silently)."""
+
+    async def test_the_last_call_that_may_close_it_and_the_final_call_name_the_card(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", key="BUG-201", by=PERSON)
+        # Three calls: 3, 2 and 1 turns left; the claim is made on the first.
+        await _turn(fake_llm, [tool_call("board_claim", card_id=card.id), tool_call("board_list"), "I closed BUG-201"],
+                    _agent(id="fixer", max_turns=3), max_turns=3, **_wf())
+        tails = [str(c["volatile_tail"]) for c in fake_llm.calls]
+        assert len(tails) == 3
+        assert "You still hold" not in tails[0]
+        assert f"You still hold {card.id} (key BUG-201)" in tails[1] and "board_update" in tails[1]
+        assert f"You still hold {card.id} (key BUG-201)" in tails[2] and "do not say it is closed" in tails[2]
+
+    async def test_a_card_closed_in_time_is_not_named_again(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", key="BUG-201", by=PERSON)
+        await _turn(fake_llm, [tool_call("board_claim", card_id=card.id),
+                               tool_call("board_update", card_id=card.id, version=1, status="done",
+                                         result="Fixed the postcode check"),
+                               "Closed BUG-201"], _agent(id="fixer", max_turns=3), max_turns=3, **_wf())
+        assert "You still hold" not in str(fake_llm.calls[2]["volatile_tail"])
+        assert (await store.get_card(card.id)).status == "done"
+
+    async def test_nothing_is_said_while_turns_remain(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        await _turn(fake_llm, [tool_call("board_claim", card_id=card.id), tool_call("board_list"), "still on it"],
+                    _agent(id="fixer"), **_wf())
+        assert all("You still hold" not in str(c["volatile_tail"]) for c in fake_llm.calls)
+
+
 class TestRelease:
     async def test_a_workflow_steps_claims_go_when_it_ends(self, boards_on, fake_llm):
         from core.models_orchestration import Orchestration

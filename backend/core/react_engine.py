@@ -2118,7 +2118,7 @@ async def run_agent_step(
             if _boards_offered:
                 try:
                     await _board_tools_mod.renew(_turn_boards)
-                    _board_digest = await _board_tools_mod.digest(_turn_boards)
+                    _board_digest = await _board_tools_mod.digest(_turn_boards, turns_left=turns_remaining)
                     tail_parts.append(_board_digest.text)
                     if _board_digest.tainted:
                         _memory_tainted = True

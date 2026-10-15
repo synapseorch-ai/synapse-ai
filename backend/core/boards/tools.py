@@ -163,14 +163,33 @@ def _allocate(rows: store.DigestRows, boards: list[TurnBoard]) -> dict[str, int]
     return share
 
 
-async def digest(turn: TurnBoards) -> Digest:
+def _held(cards: list[store.Card], turns_left: int) -> str:
+    """What a turn near its end is told of the claims it still holds (F582): close them while a call can still
+    call tools; on the final call, that they go back unclosed, so the answer does not say otherwise."""
+    named = "; ".join(f"{c.id}{f' (key {c.key})' if c.key else ''} \"{c.title[:80]}\"" for c in cards)
+    if turns_left >= 2:
+        return (f"You still hold {named}. Close it on this call with board_update (status done with its result, "
+                "or failed with why): your next call is your last and calls no tools. A card still claimed when "
+                "this turn ends goes back to Open, unclosed.")
+    return (f"You still hold {named}, and can no longer close it: it goes back to Open, unclosed, when this turn "
+            "ends. Say so in your answer; do not say it is closed.")
+
+
+async def digest(turn: TurnBoards, *, turns_left: int | None = None) -> Digest:
     """The boards' open cards for the next model call: at most `DIGEST_LINES` across boards, the own board first,
-    this run's cards first and marked. One query (and one more while its own board is still to be made)."""
+    this run's cards first and marked. One query (and one more while its own board is still to be made).
+
+    On a turn's last two calls (`turns_left` 2, then 1), a turn that has claimed something is told which cards it
+    still holds, first (F582): one more query, only then."""
     await turn.refresh()
     work = [b for b in turn.work() if b.board_id]
     rows = await store.digest_cards([b.board_id for b in work], run_id=turn.run_id, per_board=DIGEST_LINES)
     share = _allocate(rows, work)
     lines = [_HEADER]
+    if turn.holding and turns_left is not None and 1 <= turns_left <= 2:
+        held = await store.held_cards(turn.holder)
+        if held:
+            lines.append(_held(held, turns_left))
     tainted = False
     for board in turn.work():
         cards = rows.cards.get(board.board_id, []) if board.board_id else []
