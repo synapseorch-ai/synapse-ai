@@ -64,6 +64,9 @@ def _get() -> dict | None:
                     description="Jobs that ran out of retries and were dead-lettered"),
                 "webhook_deliveries": meter.create_counter(
                     "synapse.webhook.deliveries", unit="{delivery}", description="Webhook deliveries"),
+                "builder_web_searches": meter.create_counter(
+                    "synapse.builder.web_searches", unit="{search}",
+                    description="The AI builder's web searches, by how they went"),
                 "runs_active": meter.create_up_down_counter(
                     "synapse.runs.active", unit="{run}", description="Runs working in this process"),
             }
@@ -161,6 +164,13 @@ def job_dead_lettered(job_name: str) -> None:
 
 def webhook(success: bool) -> None:
     _add("webhook_deliveries", 1, {"outcome": "success" if success else "failed"})
+
+
+def builder_web_search(outcome: str) -> None:
+    """One web search by the AI builder's Researcher: `results`, `empty`, `blocked` (the search engine refused it as
+    automated) or `failed` (the page could not be read). Cloud searches from addresses search engines often refuse,
+    so R1's counts choose its fallback (BWA1, D274)."""
+    _add("builder_web_searches", 1, {"outcome": outcome})
 
 
 def set_queue_depth(queue: str, depth: int) -> None:

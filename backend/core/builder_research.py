@@ -18,11 +18,14 @@ pages it rests on, as the findings card shows them. Nothing here connects, books
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 from core.builder_tools import register_builder_tool
+
+logger = logging.getLogger(__name__)
 
 REGISTRY = "https://registry.modelcontextprotocol.io/v0/servers"
 #: How many Registry entries a search reads, and hands back.
@@ -347,6 +350,7 @@ async def search_the_web(args: dict, server_module: Any, events: list[dict]) -> 
     page = await _scrape(server_module, {"url": SEARCH_URL + quote_plus(query), "include_links": True,
                                          "remove_overlays": True})
     if page.get("error"):
+        _searched("failed")
         return {"results": [], "note": page["error"]}
     results, seen = [], set()
     for link in page.get("links") or []:
@@ -355,9 +359,31 @@ async def search_the_web(args: dict, server_module: Any, events: list[dict]) -> 
             seen.add(url)
             results.append({"title": str(link.get("text") or "")[:120], "url": url})
     if not results:
+        if any(mark in str(page.get("markdown") or "").lower() for mark in _REFUSED):
+            _searched("blocked")
+            return {"results": [], "note": _REFUSED_NOTE}
+        _searched("empty")
         return {"results": [], "note": "The search page gave no results (it may have been blocked). Read the "
                                        "provider's own site with read_web_page if you know its address."}
+    _searched("results")
     return {"results": results[:8]}
+
+
+#: What a search page says when it refuses a search as automated: DuckDuckGo's own check, or anyone's CAPTCHA.
+_REFUSED = ("bots use duckduckgo too", "confirm this search was made by a human", "captcha", "unusual traffic")
+_REFUSED_NOTE = ("The search page refused this search as automated. Read the provider's own site with read_web_page "
+                 "if you know its address.")
+
+
+def _searched(outcome: str) -> None:
+    """Count one search by how it went, and log one that found nothing (Naveen, 2026-10-16): cloud searches from
+    addresses search engines often refuse, dev from a home connection, so R1's counts choose cloud's fallback. Never
+    the words searched for: they are the person's."""
+    from core.telemetry import metrics
+
+    metrics.builder_web_search(outcome)
+    if outcome != "results":
+        logger.warning("builder research: a web search found nothing (%s)", outcome)
 
 
 READ_SCHEMA = {

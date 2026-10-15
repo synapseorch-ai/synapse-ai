@@ -80,6 +80,15 @@ def test_a_user_typed_model_is_measured_by_its_provider(metered):
     assert buckets == {"own-key:openai", "synapse.nova-pro"}
 
 
+def test_the_builders_web_searches_are_counted_by_outcome_alone(metered):
+    from core.telemetry import metrics
+    for outcome in ("results", "blocked", "blocked"):
+        metrics.builder_web_search(outcome)
+    points = _points(metered)["synapse.builder.web_searches"]
+    assert sorted(p["outcome"] for p in points) == ["blocked", "results"]
+    assert all(set(p) <= A.METRIC_ATTRIBUTES for p in points)
+
+
 def test_an_unreviewed_instrument_and_an_undeclared_dimension_are_dropped(metered):
     from opentelemetry import metrics as otel_metrics
     meter = otel_metrics.get_meter("some.library")

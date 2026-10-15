@@ -193,6 +193,48 @@ async def test_a_web_reader_that_cannot_run_is_said_once_with_what_to_do_instead
     assert "Do not call search_the_web or read_web_page again" in got["error"]
 
 
+DDG_REFUSED = ("Unfortunately, bots use DuckDuckGo too. Please complete the following challenge to confirm this "
+               "search was made by a human.")
+
+
+@pytest.mark.parametrize("answer, outcome", [
+    ({"success": True, "markdown": "results", "links": [
+        {"href": "//duckduckgo.com/l/?uddg=https%3A%2F%2Fduffel.com%2Fdocs", "text": "Duffel docs"}]}, "results"),
+    ({"success": True, "markdown": DDG_REFUSED, "links": []}, "blocked"),
+    ({"success": True, "markdown": "No results.", "links": [{"href": "/html/?q=next", "text": "Next"}]}, "empty"),
+    ({"error": "Crawl failed: net::ERR_CONNECTION_RESET"}, "failed"),
+])
+async def test_every_web_search_is_counted_by_how_it_went_never_by_what_it_asked(monkeypatch, caplog, answer,
+                                                                                  outcome):
+    """Naveen (2026-10-16): cloud's searches come from AWS addresses, which search engines often refuse as automated,
+    and dev searches from a home connection. So each search is counted by how it went, and the ones that found
+    nothing are logged; R1's counts choose cloud's fallback. Never the words searched for: they are the person's."""
+    from core.telemetry import metrics
+
+    counted: list[str] = []
+    monkeypatch.setattr(metrics, "builder_web_search", counted.append)
+    with caplog.at_level("WARNING", logger="core.builder_research"):
+        got = await search_the_web({"query": "Duffel flights API sandbox"}, _server(_Session(answer)), [])
+    assert counted == [outcome]
+    logged = [r.getMessage() for r in caplog.records if r.name == "core.builder_research"]
+    assert len(logged) == (0 if outcome == "results" else 1)
+    assert not any("Duffel" in line or "sandbox" in line for line in logged)
+    if outcome == "blocked":
+        assert got["results"] == [] and "refused this search" in got["note"]
+
+
+async def test_a_web_reader_that_is_not_running_counts_as_a_failed_search(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.telemetry import metrics
+
+    counted: list[str] = []
+    monkeypatch.setattr(metrics, "builder_web_search", counted.append)
+    await search_the_web({"query": "Duffel API"}, SimpleNamespace(tool_router={}, agent_sessions={}), [])
+    await search_the_web({"query": " "}, SimpleNamespace(tool_router={}, agent_sessions={}), [])
+    assert counted == ["failed"], "no words, no search"
+
+
 async def test_with_no_web_reader_the_research_says_the_web_was_not_checked():
     from types import SimpleNamespace
     got = await search_the_web({"query": "Duffel API"}, SimpleNamespace(tool_router={}, agent_sessions={}), [])
