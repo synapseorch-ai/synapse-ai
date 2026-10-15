@@ -400,6 +400,21 @@ function thoughtLine(text: string, proseOnly = false): string | null {
 /** Why a card was not run when a new message moved past it — the server's words (`chat_approval.MOVED_ON`). */
 const MOVED_ON = 'you sent a new message instead';
 
+/** One of a team's questions (TEAM1c): each member asks on its own, answered by its own id. */
+type TeamQuestion = {
+  question_id: string;
+  approval_id: string;
+  member_id: string | null;
+  member_name: string | null;
+  tool_name: string;
+  tool_args: Record<string, unknown>;
+  category: string;
+  prompt?: string;
+};
+
+/** A person's answer to one member's question, from its lane or the card. */
+type MemberAnswer = { approve: boolean; reason: string; approval_id?: string; question_id: string };
+
 /** A tool call the conversation stopped to ask about — the card, without the loop's state. */
 type ParkedApproval = {
   kind: 'tool_approval';
@@ -409,6 +424,8 @@ type ParkedApproval = {
   approval_id: string;
   message: string;
   prompt: string;
+  /** Every question it asks: one, or a team's members' (TEAM1c). The fields above are the first's. */
+  questions?: TeamQuestion[];
 };
 
 /** A turn still being written. A turn is saved when it ends, so it is not in `turns` yet. */
@@ -1102,6 +1119,11 @@ export default function Home() {
           data: {
             kind: 'tool_approval', tool_name: parked.tool_name, tool_args: parked.tool_args,
             category: parked.category, approval_id: parked.approval_id,
+            // A team's: whose question the first is, and every one, each answered by its own id (TEAM1c).
+            ...(parked.questions?.[0]?.member_id ? {
+              question_id: parked.questions[0].question_id, member_id: parked.questions[0].member_id,
+              delegate_agent_name: parked.questions[0].member_name, questions: parked.questions,
+            } : {}),
           },
         });
       }
@@ -1662,7 +1684,7 @@ export default function Home() {
    * turn-boundary snapshot — so this streams into the transcript exactly as
    * the first half did, rather than starting a new exchange.
    */
-  const handleToolApproval = async (approve: boolean, reason: string, approvalId?: string) => {
+  const handleToolApproval = async (approve: boolean, reason: string, approvalId?: string, questionId?: string) => {
     if (isLoading) return;
     // The question the card belongs to — what the turn will be saved under.
     const question = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
@@ -1687,7 +1709,8 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         // Naming the question: a card left open in another tab must not answer
         // one asked after it (F247).
-        body: JSON.stringify({ approve, reason, agent_id: currentAgentId, approval_id: approvalId }),
+        body: JSON.stringify({ approve, reason, agent_id: currentAgentId, approval_id: approvalId,
+                               question_id: questionId }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(`Request failed: ${response.status}`);
@@ -1711,6 +1734,32 @@ export default function Home() {
       setStreamingActivity(null);
       setIsThinking(false);
       setThinkingPreview(null);
+    }
+  };
+
+  /**
+   * Answer one team member's question (TEAM1c, Q6). While the turn is still being written,
+   * the answer reaches that member at once — or is held for the turn as it starts or pauses —
+   * and this turn's own stream shows the rest (`member_answered`). Once the turn has paused,
+   * the answer resumes it, as any approval does.
+   */
+  const answerMember = async (answer: MemberAnswer): Promise<'answered' | 'sent' | 'failed'> => {
+    if (!isLoading) {
+      await handleToolApproval(answer.approve, answer.reason, answer.approval_id, answer.question_id);
+      return 'answered';
+    }
+    try {
+      const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ approve: answer.approve, reason: answer.reason, agent_id: currentAgentId,
+                               approval_id: answer.approval_id, question_id: answer.question_id }),
+      });
+      if (!response.ok) return 'failed';
+      const said = (await response.json()) as { status?: string };
+      return said.status === 'sent' ? 'sent' : 'answered';
+    } catch {
+      return 'failed';
     }
   };
 
@@ -2199,6 +2248,12 @@ export default function Home() {
             tool_args: data.tool_args,
             category: data.category,
             approval_id: data.approval_id,
+            // A team member's (TEAM1c): which member asked, and every question the turn paused on.
+            delegate_from: data.delegate_from,
+            delegate_agent_name: data.delegate_agent_name,
+            member_id: data.member_id,
+            question_id: data.question_id,
+            questions: data.questions,
           },
         }]);
         break;
@@ -2494,7 +2549,10 @@ export default function Home() {
         <ToolApprovalCard
           key={idx}
           msg={msg}
-          onDecide={(approve, reason) => handleToolApproval(approve, reason, msg.data?.approval_id)}
+          onDecide={(approve, reason) => (msg.data?.question_id
+            ? void answerMember({ approve, reason, approval_id: msg.data?.approval_id,
+                                  question_id: msg.data.question_id })
+            : handleToolApproval(approve, reason, msg.data?.approval_id))}
           disabled={isLoading}
           movedPast={messages.slice(idx + 1).some(m => m.role === 'user')}
         />
