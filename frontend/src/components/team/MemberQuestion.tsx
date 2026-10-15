@@ -12,11 +12,12 @@ import { Button } from '@/components/ui';
 
 import type { MemberQuestionData } from './team';
 
+/** A person's answer to one member's question, from its lane or the chat's card (TEAM1c's ids). */
 export type MemberAnswer = {
     approve: boolean;
     reason: string;
-    approval_id: string;
-    member_id: string;
+    approval_id?: string;
+    member_id?: string;
     question_id: string;
 };
 

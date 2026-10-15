@@ -1,4 +1,5 @@
 import type { HelperLaneData } from '@/components/assistant/helpers';
+import type { TeamState } from '@/components/team/team';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { KnowledgeCitation } from '@/lib/knowledge';
@@ -84,6 +85,8 @@ export interface Message {
     toolCalls?: { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string }[];
     // The helpers its turn sent (SUB1a): each one's lane, live or as saved.
     helpers?: HelperLaneData[];
+    // A Team agent's turn (TEAM1b): its task list, notes and members' lanes, live or as saved.
+    team?: TeamState;
 }
 
 export interface SystemStatus {

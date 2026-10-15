@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useRef, useEffect, useCallback, useId } from 'react';
-import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square } from 'lucide-react';
+import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
+import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square, Users } from 'lucide-react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Command } from 'cmdk';
 
@@ -19,6 +19,10 @@ import {
   agentFromHelper, foldHelpers, isHelperEvent, laneFromRecord, toolsUsedBesideLanes, type HelperLaneData,
 } from '@/components/assistant';
 import { StepIcon } from '@/components/run';
+import {
+  LEAD_TOOLS, TeamView, answeredHere, emptyTeam, foldTeam, hasTeam, isTeamEvent, personNote, teamFromTurn,
+  teamSummaryLine, workingMembers, type MemberAnswer, type MemberLaneData, type TeamState,
+} from '@/components/team';
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -262,7 +266,11 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
   const anchor = `src-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
   const saved = (msg.toolCalls ?? (Array.isArray(msg.data?.calls) ? msg.data.calls : [])) as SavedCall[];
   // A helper's send is its lane, drawn above (F572).
-  const calls = toolsUsedBesideLanes(saved, msg.helpers?.length ?? 0);
+  const besideHelpers = toolsUsedBesideLanes(saved, msg.helpers?.length ?? 0);
+  // A Team agent's assign, message, wait and forward: its task list and lanes show what each did (TEAM1b).
+  const calls = hasTeam(msg.team)
+    ? besideHelpers.filter(c => !(LEAD_TOOLS as readonly string[]).includes(c.tool)) : besideHelpers;
+  const teamLine = teamSummaryLine(msg.team);
   return (
     <div data-answer className="flex min-w-0 max-w-full flex-col gap-2.5">
       {msg.intent && (
@@ -292,6 +300,13 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
             </li>
           ))}
         </ul>
+      )}
+      {teamLine && (
+        // How a Team agent's turn went (Q1b): it answered alone, or what its members took.
+        <p className="inline-flex items-center gap-1.5 text-xs text-text-faint" aria-label="This turn's team">
+          <Users className="h-3.5 w-3.5 shrink-0" aria-hidden />
+          {teamLine}
+        </p>
       )}
     </div>
   );
@@ -377,6 +392,9 @@ type SessionTurn = {
   unresolved_citations?: string[];
   /** The helpers the turn sent, each one's record (SUB1a): their lanes, reopened. */
   helpers?: Record<string, unknown>[];
+  /** A Team agent's members, each one's record, and its task list and summary (TEAM1b). */
+  members?: Record<string, unknown>[];
+  team?: Record<string, unknown>;
   /** Set when nobody typed the question: a helper's result posted back (SUB1a). */
   automated?: Automated;
 };
@@ -413,9 +431,6 @@ type TeamQuestion = {
   category: string;
   prompt?: string;
 };
-
-/** A person's answer to one member's question, from its lane or the card. */
-type MemberAnswer = { approve: boolean; reason: string; approval_id?: string; question_id: string };
 
 /** A tool call the conversation stopped to ask about — the card, without the loop's state. */
 type ParkedApproval = {
@@ -873,7 +888,7 @@ export default function Home() {
   // What the empty chat says about the agent (M2c): its description, tools and
   // knowledge, from the agents list; its knowledge named from the bases list,
   // read only when it has any.
-  const [agentDetails, setAgentDetails] = useState<Record<string, { description?: string | null; tools?: string[]; knowledge?: string[] }>>({});
+  const [agentDetails, setAgentDetails] = useState<Record<string, { description?: string | null; tools?: string[]; knowledge?: string[]; taskBudget?: number | null }>>({});
   const [kbNames, setKbNames] = useState<Record<string, string> | null>(null);
   useEffect(() => {
     let live = true;
@@ -881,8 +896,11 @@ export default function Home() {
       .then(r => (r.ok ? r.json() : null))
       .then(list => {
         if (!live || !Array.isArray(list)) return;
-        setAgentDetails(Object.fromEntries(list.map((a: { id: string; description?: string | null; tools?: string[]; knowledge?: string[] }) =>
-          [a.id, { description: a.description, tools: a.tools ?? [], knowledge: a.knowledge ?? [] }])));
+        setAgentDetails(Object.fromEntries(list.map((a: { id: string; description?: string | null; tools?: string[]; knowledge?: string[];
+                                                          team?: { mode?: string; task_budget?: number } | null }) =>
+          [a.id, { description: a.description, tools: a.tools ?? [], knowledge: a.knowledge ?? [],
+                   // A Team agent's task budget, for its task list's "3 of 6 tasks" (TEAM1b).
+                   taskBudget: a.team?.mode === 'team' ? a.team.task_budget ?? null : null }])));
       })
       .catch(() => {});
     return () => { live = false; };
@@ -929,6 +947,14 @@ export default function Home() {
   const [backgroundLanes, setBackgroundLanes] = useState<Record<string, HelperLaneData>>({});
   const followedHelpersRef = useRef<Set<string>>(new Set());
   const [stoppingHelpers, setStoppingHelpers] = useState<Set<string>>(new Set());
+  // A Team agent's turn (TEAM1b): its task list, notes and members' lanes as they work, given to the answer.
+  const liveTeamRef = useRef<TeamState>(emptyTeam());
+  const [liveTeam, setLiveTeam] = useState<TeamState>(emptyTeam());
+  const [stoppingMembers, setStoppingMembers] = useState<Set<string>>(new Set());
+  // Whom the composer writes to while a team works: the lead, or one member's id.
+  const [sendTo, setSendTo] = useState<string>('lead');
+  // What became of the person's last words to the team, under the composer.
+  const [teamSendNote, setTeamSendNote] = useState<string | null>(null);
   // The turn on screen is a helper's follow-up: there is no question of the person's to retry.
   const automatedTurnRef = useRef(false);
   /** The answer's Sources (`knowledge_citations`, B1b), drawn under the answer that follows;
@@ -1112,6 +1138,8 @@ export default function Home() {
             ? { citations: t.citations ?? [], unresolvedCitations: t.unresolved_citations ?? [] } : {}),
           // Its helpers' lanes, as live (SUB1a).
           ...(t.helpers?.length ? { helpers: t.helpers.map(laneFromRecord) } : {}),
+          // Its team, each member as one line that opens (TEAM1b).
+          ...(teamFromTurn(t) ? { team: teamFromTurn(t) as TeamState } : {}),
         });
       }
       if (parked) {
@@ -1437,6 +1465,113 @@ export default function Home() {
   const helperNote = (helpers: HelperLaneData[]): Message[] =>
     helpers.length > 0 ? [{ role: 'assistant', msgType: 'note', content: '', helpers }] : [];
 
+  /** The team on screen after a change, kept in the ref the stream folds into. */
+  const putTeam = (team: TeamState) => {
+    liveTeamRef.current = team;
+    setLiveTeam(team);
+  };
+
+  /** This turn's team, taken for the message it belongs with (TEAM1b); null when the lead worked alone. */
+  const takeLiveTeam = (): TeamState | null => {
+    const team = liveTeamRef.current;
+    putTeam(emptyTeam());
+    setStoppingMembers(new Set());
+    setSendTo('lead');
+    return hasTeam(team) ? team : null;
+  };
+
+  /** A team with no answer to sit with (a turn that paused or stopped): its lanes on a line of their own. */
+  const teamNote = (team: TeamState | null, helpers: HelperLaneData[] = []): Message[] =>
+    team ? [{ role: 'assistant', msgType: 'note', content: '', team, ...(helpers.length ? { helpers } : {}) }]
+      : helperNote(helpers);
+
+  /** A member's Stop: that member alone; its lead reads that it was stopped, and the rest work on. */
+  const stopMember = async (member: MemberLaneData) => {
+    setStoppingMembers(prev => new Set(prev).add(member.id));
+    try {
+      await fetch(`/api/chat/${encodeURIComponent(sessionId)}/members/${encodeURIComponent(member.id)}/stop`,
+                  { method: 'POST' });
+    } catch {
+      // The lane says how it ended either way.
+    }
+  };
+
+  /** The person's words to one working member, read between its steps; false when nobody read them. */
+  const messageMember = async (member: MemberLaneData, text: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/members/${encodeURIComponent(member.id)}/message`,
+                              { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ text }) });
+      const delivered = res.ok && (await res.json()).delivered === true;
+      if (delivered) putTeam(personNote(liveTeamRef.current, member.name, text));
+      return delivered;
+    } catch {
+      return false;
+    }
+  };
+
+  /** The person's words to the lead while its members work, read before its next model call. */
+  const messageLead = async (text: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/lead/message`,
+                              { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ text }) });
+      const delivered = res.ok && (await res.json()).delivered === true;
+      if (delivered) putTeam(personNote(liveTeamRef.current, 'the lead', text));
+      return delivered;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * A paused team's question answered (TEAM1b): the team comes back on screen as live, the answered member's
+   * lane says so, and the question's card stays answered rather than asked again below. The answer itself
+   * resumes the turn (`answerMember`).
+   */
+  const resumeTeamOnScreen = (answer: MemberAnswer) => {
+    const memberId = answer.member_id ?? answer.question_id.split(':')[0];
+    const at = messages.findLastIndex(m => m.msgType === 'note' && m.team?.members.some(x => x.id === memberId));
+    if (at === -1) return;
+    putTeam(answeredHere(messages[at].team as TeamState, memberId, answer.approve));
+    setMessages(prev => prev
+      .map((m, i) => (i === at ? { ...m, team: undefined }
+        : m.msgType === 'human_input_required' && m.data?.approval_id === answer.approval_id
+          ? { ...m, data: { ...m.data, answered_in_lane: true } } : m))
+      .filter((m, i) => !(i === at && !m.helpers?.length)));
+  };
+
+  /** A team at work: the composer writes to its lead or a member, and Stop stops the whole team. */
+  const teamAtWork = isLoading && hasTeam(liveTeam) && !liveTeam.ended;
+  const teamTargets = useMemo(() => (teamAtWork ? workingMembers(liveTeam) : []), [teamAtWork, liveTeam]);
+  useEffect(() => {
+    // A member that finished is no longer one to write to.
+    if (sendTo !== 'lead' && !teamTargets.some(m => m.id === sendTo)) setSendTo('lead');
+  }, [sendTo, teamTargets]);
+  useEffect(() => { if (!teamAtWork) setTeamSendNote(null); }, [teamAtWork]);
+
+  /** The composer's words to the team at work: to the lead, or the member picked in "To". */
+  const sendToTeam = async () => {
+    const text = input.trim();
+    if (!text) return;
+    const member = teamTargets.find(m => m.id === sendTo);
+    const delivered = member ? await messageMember(member, text) : await messageLead(text);
+    const who = member ? member.name : 'the lead';
+    if (delivered) setInput('');
+    setTeamSendNote(delivered ? `Sent to ${who}. It reads it before its next step.`
+                              : `${member ? member.name : 'The team'} had already finished; not sent.`);
+  };
+
+  /** The questions a paused team's lanes answer here: the ones the turn paused on, while nothing runs. */
+  const parkedMemberQuestions = (): Set<string> => {
+    const last = messages[messages.length - 1];
+    if (isLoading || !last || last.msgType !== 'human_input_required' || !last.data?.member_id) return new Set();
+    // TEAM1c's list of every question the turn paused on, or the one it carries.
+    const listed = Array.isArray(last.data.questions) ? (last.data.questions as TeamQuestion[]) : [];
+    return new Set(listed.length ? listed.map(q => q.question_id)
+      : [String(last.data.question_id ?? `${last.data.member_id}:${last.data.approval_id ?? ''}`)]);
+  };
+
   /** A lane's Stop: that helper alone, whether its agent waits for it or it works in the background. */
   const stopHelper = async (helper: HelperLaneData) => {
     setStoppingHelpers(prev => new Set(prev).add(helper.id));
@@ -1747,6 +1882,7 @@ export default function Home() {
    */
   const answerMember = async (answer: MemberAnswer): Promise<'answered' | 'sent' | 'failed'> => {
     if (!isLoading) {
+      resumeTeamOnScreen(answer);
       await handleToolApproval(answer.approve, answer.reason, answer.approval_id, answer.question_id);
       return 'answered';
     }
@@ -1814,6 +1950,9 @@ export default function Home() {
     liveCallsRef.current = [];
     liveHelpersRef.current = [];
     setLiveHelpers([]);
+    putTeam(emptyTeam());
+    setStoppingMembers(new Set());
+    setSendTo('lead');
     automatedTurnRef.current = false;
     sourcesRef.current = null;
     stepSourcesRef.current = {};
@@ -1907,6 +2046,15 @@ export default function Home() {
       liveHelpersRef.current = foldHelpers(liveHelpersRef.current, data);
       setLiveHelpers(liveHelpersRef.current);
       return { done: false };
+    }
+    if (isTeamEvent(data)) {
+      // A Team agent's members and task list (TEAM1b): their lanes, never the lead's activity line or answer.
+      putTeam(foldTeam(liveTeamRef.current, data));
+      return { done: false };
+    }
+    if (data.type === 'tool_execution' && hasTeam(liveTeamRef.current)) {
+      // The lead's message to a member is a note as well as its call.
+      putTeam(foldTeam(liveTeamRef.current, data));
     }
     switch (data.type) {
 
@@ -2058,10 +2206,14 @@ export default function Home() {
         const sources = sourcesRef.current;
         sourcesRef.current = null;
         const helpers = takeLiveHelpers();
+        const answered = foldTeam(liveTeamRef.current, data);
+        takeLiveTeam();
+        const team = answered.summary || hasTeam(answered) ? answered : null;
         setMessages(prev => [...answerOnce(prev, data.content as string), {
           role: 'assistant',
           content: data.content as string,
           ...(helpers.length > 0 ? { helpers } : {}),
+          ...(team ? { team } : {}),
           intent: data.intent,
           data: data.data,
           tool: data.tool_name,
@@ -2110,10 +2262,14 @@ export default function Home() {
           const sources = sourcesRef.current;
           sourcesRef.current = null;
           const helpers = takeLiveHelpers();
+          const answered = foldTeam(liveTeamRef.current, data);
+          takeLiveTeam();
+          const team = answered.summary || hasTeam(answered) ? answered : null;
           setMessages(prev => [...answerOnce(prev, data.response as string), {
             role: 'assistant',
             content: data.response as string,
             ...(helpers.length > 0 ? { helpers } : {}),
+            ...(team ? { team } : {}),
             intent: data.intent,
             data: data.data,
             tool: data.tool_name,
@@ -2232,7 +2388,10 @@ export default function Home() {
         // question (F209), offering to re-run a turn that was only waiting.
         turnAnsweredRef.current = true;
         setStreamingActivity(null);
-        setMessages(prev => [...prev, ...helperNote(takeLiveHelpers()), {
+        // A member's question (TEAM1b): drawn in its lane, which the team's note keeps on screen.
+        if (data.member_id) putTeam(foldTeam(liveTeamRef.current, data));
+        const kept = teamNote(takeLiveTeam(), takeLiveHelpers());
+        setMessages(prev => [...prev, ...kept, {
           role: 'assistant',
           content: (data.prompt as string) || (data.content as string) || 'Please provide input to continue.',
           msgType: 'human_input_required',
@@ -2256,6 +2415,8 @@ export default function Home() {
             member_id: data.member_id,
             question_id: data.question_id,
             questions: data.questions,
+            // Its lane answers it (TEAM1b): the member's name, beside TEAM1c's ids.
+            member_name: data.delegate_agent_name,
           },
         }]);
         break;
@@ -2331,7 +2492,8 @@ export default function Home() {
       case 'done': {
         // A turn that ended with no answer (stopped, failed) keeps its helpers' lanes.
         const helpers = takeLiveHelpers();
-        if (helpers.length > 0) setMessages(prev => [...prev, ...helperNote(helpers)]);
+        const team = takeLiveTeam();
+        if (team || helpers.length > 0) setMessages(prev => [...prev, ...teamNote(team, helpers)]);
         return { done: true };
       }
 
@@ -2492,6 +2654,27 @@ export default function Home() {
     />
   ) : null;
 
+  /**
+   * A message's team (TEAM1b): its task list and each member as one line that opens. A turn paused on a
+   * member's question keeps its lanes open, with the question answerable in that member's lane.
+   */
+  const teamOf = (msg: Message) => {
+    if (!hasTeam(msg.team)) return null;
+    const parked = parkedMemberQuestions();
+    const waiting = msg.team.members.some(m => m.question && !m.question.answered);
+    const answerable = msg.team.members.some(m => m.question && !m.question.answered
+      && parked.has(m.question.questionId));
+    return (
+      <TeamView
+        state={msg.team}
+        budget={currentDetails?.taskBudget}
+        compact={!waiting}
+        onAnswer={answerable ? (answer) => { void answerMember(answer); } : undefined}
+        className="mb-2"
+      />
+    );
+  };
+
   const renderMessage = (msg: Message, idx: number) => {
     // ── Orchestration start / complete banners ──
     if (msg.msgType === 'orchestration_start') {
@@ -2531,8 +2714,8 @@ export default function Home() {
     }
 
     // ── A quiet line: something the loop did, not something anyone said ──
-    if (msg.msgType === 'note' && msg.helpers?.length) {
-      return <div key={idx} className="pl-10">{lanesOf(msg)}</div>;
+    if (msg.msgType === 'note' && (msg.helpers?.length || hasTeam(msg.team))) {
+      return <div key={idx} className="pl-10">{teamOf(msg)}{lanesOf(msg)}</div>;
     }
     if (msg.msgType === 'note') {
       return (
@@ -2547,6 +2730,10 @@ export default function Home() {
     // Not a form: the answer is yes or no, and the interesting part is *what*
     // is being asked, so the call and its arguments are the content.
     if (msg.msgType === 'human_input_required' && msg.data?.kind === 'tool_approval') {
+      // A team member's question sits in that member's lane (TEAM1b): the card would ask it twice.
+      const inLane = msg.data?.member_id && (msg.data?.answered_in_lane || messages.slice(0, idx).some(m => m.team?.members.some(
+        x => x.id === msg.data?.member_id && x.question?.approvalId === msg.data?.approval_id)));
+      if (inLane) return null;
       return (
         <ToolApprovalCard
           key={idx}
@@ -2636,6 +2823,7 @@ export default function Home() {
     // ── The agent's answer ──
     return (
       <AgentTurn key={idx} className="group" avatar={<AgentAvatar><Bot className="h-4 w-4" aria-hidden /></AgentAvatar>} aside={<CopyAnswer text={msg.content} />}>
+        {teamOf(msg)}
         {lanesOf(msg)}
         <AssistantBubble msg={msg} agentName={agentName} />
         {/* Dynamic UI based on Intent - Rendered Outside the answer */}
@@ -2856,6 +3044,17 @@ export default function Home() {
                     and the activity in words beside it. */}
                 {isLoading && (
                   <AgentTurn working>
+                    {hasTeam(liveTeam) && (
+                      <TeamView
+                        state={liveTeam}
+                        budget={currentDetails?.taskBudget}
+                        onStop={stopMember}
+                        onMessage={messageMember}
+                        onAnswer={(answer) => { void answerMember(answer); }}
+                        stopping={stoppingMembers}
+                        className="mb-3"
+                      />
+                    )}
                     {liveHelpers.length > 0 && (
                       <HelperLanes helpers={liveHelpers} onStop={stopHelper} stopping={stoppingHelpers} className="mb-2" />
                     )}
@@ -2958,13 +3157,18 @@ export default function Home() {
               onChange={setInput}
               // Typing ahead is allowed; sending a second turn on top of a running
               // one is not — `handleSubmit` returns early, and the draft is kept.
-              onSend={() => handleSubmit({ preventDefault() {} } as unknown as React.FormEvent)}
-              canSend={Boolean(input.trim()) || attachedImages.length > 0}
-              sendLabel={editingIndex !== null ? 'Resend' : 'Send'}
+              onSend={() => (teamAtWork ? void sendToTeam()
+                : handleSubmit({ preventDefault() {} } as unknown as React.FormEvent))}
+              canSend={teamAtWork ? Boolean(input.trim()) : Boolean(input.trim()) || attachedImages.length > 0}
+              sendLabel={teamAtWork ? `Send to ${teamTargets.find(m => m.id === sendTo)?.name ?? 'the lead'}`
+                : editingIndex !== null ? 'Resend' : 'Send'}
               busy={isLoading}
+              sendWhileBusy={teamAtWork}
               onStop={handleStop}
-              stopLabel="Stop the agent"
-              placeholder={isLoading ? 'Agent is working — type your next message…' : `Message ${agentName}…`}
+              stopLabel={teamAtWork ? 'Stop the team' : 'Stop the agent'}
+              placeholder={teamAtWork ? `Write to ${teamTargets.find(m => m.id === sendTo)?.name ?? 'the lead'} while the team works…`
+                : isLoading ? 'Agent is working — type your next message…' : `Message ${agentName}…`}
+              note={teamAtWork ? teamSendNote : undefined}
               label={`Message ${agentName}`}
               autoFocus
               textareaRef={textareaRef}
@@ -2972,7 +3176,21 @@ export default function Home() {
               dropHandlers={attachments.dropHandlers}
               pasteHandlers={attachments.pasteHandlers}
               top={<AttachmentChips images={attachedImages} onRemove={attachments.remove} />}
-              pill={(
+              pill={teamAtWork ? (
+                // While a team works, whom the words go to (TEAM1b, Q5): its lead or a member still working.
+                <label className="flex min-w-0 items-center gap-1.5 text-xs text-text-muted">
+                  To
+                  <select
+                    value={sendTo}
+                    onChange={e => setSendTo(e.target.value)}
+                    aria-label="Send to"
+                    className="h-7 min-w-0 max-w-48 truncate rounded-md border border-border bg-surface px-1.5 text-xs text-text"
+                  >
+                    <option value="lead">The lead</option>
+                    {teamTargets.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                  </select>
+                </label>
+              ) : (
                 // Native-builder machinery agents (ids `agent_native_builder…`) are not listed.
                 <AgentPicker
                   agents={systemStatus?.agents

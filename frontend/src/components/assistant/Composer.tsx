@@ -38,6 +38,8 @@ export interface ComposerProps {
     sendPending?: boolean;
     /** A turn is streaming: the button is Stop. */
     busy?: boolean;
+    /** While busy, Send stays beside Stop: what is sent goes to the work under way (a team's lead or a member). */
+    sendWhileBusy?: boolean;
     onStop?: () => void;
     /** Stop's accessible name and tooltip. */
     stopLabel: string;
@@ -77,7 +79,7 @@ export interface ComposerProps {
 const MAX_HEIGHT = 200;
 
 export function Composer({
-    value, onChange, onSend, canSend, sendLabel, sendTitle, sendPending = false, busy = false, onStop,
+    value, onChange, onSend, canSend, sendLabel, sendTitle, sendPending = false, busy = false, sendWhileBusy = false, onStop,
     stopLabel, stopTitle, placeholder, label, labelText, id, disabled = false, autoFocus = false, onEscape,
     textareaRef, dropHandlers, pasteHandlers, top, pill, attach, model, hint, showHint = true, note,
     density = 'page', rows = 2, className,
@@ -148,20 +150,7 @@ export function Composer({
                     {attach}
                     <span className="min-w-0 flex-1" />
                     {model && <div data-composer-model className="flex min-w-0 shrink items-center justify-end gap-1 text-xs text-text-faint">{model}</div>}
-                    {busy ? (
-                        <button
-                            type="button"
-                            onClick={onStop}
-                            aria-label={stopLabel}
-                            title={stopTitle ?? stopLabel}
-                            className={cn(
-                                'ml-1 flex size-8 shrink-0 items-center justify-center rounded-full border border-border-strong bg-surface text-text',
-                                'transition-colors hover:bg-surface-2',
-                            )}
-                        >
-                            <Square className="size-3 fill-current" aria-hidden />
-                        </button>
-                    ) : (
+                    {(!busy || sendWhileBusy) && (
                         <button
                             type="submit"
                             disabled={!canSend || disabled || sendPending}
@@ -173,6 +162,20 @@ export function Composer({
                             )}
                         >
                             {sendPending ? <Spinner size={16} /> : <ArrowUp className="size-4" aria-hidden />}
+                        </button>
+                    )}
+                    {busy && (
+                        <button
+                            type="button"
+                            onClick={onStop}
+                            aria-label={stopLabel}
+                            title={stopTitle ?? stopLabel}
+                            className={cn(
+                                'ml-1 flex size-8 shrink-0 items-center justify-center rounded-full border border-border-strong bg-surface text-text',
+                                'transition-colors hover:bg-surface-2',
+                            )}
+                        >
+                            <Square className="size-3 fill-current" aria-hidden />
                         </button>
                     )}
                 </div>

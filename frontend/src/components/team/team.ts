@@ -194,26 +194,35 @@ function foldMemberEvent(lane: MemberLaneData, inner: Wire): MemberLaneData {
     return next;
 }
 
-/** The team after one event. Events of a member not seen starting are ignored; any other event is. */
+function startedLane(event: Wire): MemberLaneData {
+    return {
+        id: String(event.member_id), agentId: String(event.agent_id ?? ''), name: String(event.member_name || 'Member'),
+        task: String(event.task ?? ''), cardId: event.card_id ? String(event.card_id) : undefined,
+        model: event.model ? String(event.model) : undefined,
+        status: 'running', calls: [], answer: '', streaming: '', helpers: [],
+    };
+}
+
+/** The team after one event; an event that is not a team's leaves it as it was. */
 export function foldTeam(state: TeamState, event: Wire): TeamState {
     switch (event?.type) {
         case 'member_started': {
             const id = String(event.member_id ?? '');
-            if (!id || state.members.some((m) => m.id === id)) return state;
-            return {
-                ...state,
-                members: [...state.members, {
-                    id, agentId: String(event.agent_id ?? ''), name: String(event.member_name || 'Member'),
-                    task: String(event.task ?? ''), cardId: event.card_id ? String(event.card_id) : undefined,
-                    model: event.model ? String(event.model) : undefined,
-                    status: 'running', calls: [], answer: '', streaming: '', helpers: [],
-                }],
-            };
+            if (!id) return state;
+            if (state.members.some((m) => m.id === id)) {
+                // Seen working first (a resumed turn): what it was asked arrives now.
+                return update(state, id, (lane) => ({ ...lane, task: lane.task || String(event.task ?? ''),
+                                                      agentId: lane.agentId || String(event.agent_id ?? '') }));
+            }
+            return { ...state, members: [...state.members, startedLane(event)] };
         }
         case 'member_event': {
             const inner: Wire = event.event || {};
             const id = String(event.member_id ?? '');
-            let next = update(state, id, (lane) => foldMemberEvent(lane, inner));
+            // A member first seen working: a resumed turn does not start its members again.
+            let next = id && !state.members.some((m) => m.id === id)
+                ? { ...state, members: [...state.members, startedLane({ ...event, task: '' })] } : state;
+            next = update(next, id, (lane) => foldMemberEvent(lane, inner));
             if (inner.type === 'tool_execution' && inner.tool_name === 'message' && inner.args) {
                 const from = String(event.member_name || 'A member');
                 const to = String(inner.args.to ?? '');
