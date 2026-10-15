@@ -219,7 +219,7 @@ export function BoardView({ boardRef, layout = 'page', onDeleted, onChanged }: {
             )}
 
             <div className="@container">
-                <div className={cn('grid items-start gap-3', layout === 'page' ? '@xl:grid-cols-2 @3xl:grid-cols-4' : '@xl:grid-cols-2')}>
+                <div className={cn('grid gap-3', layout === 'page' ? 'items-stretch @xl:grid-cols-2 @3xl:grid-cols-4' : 'items-start @xl:grid-cols-2')}>
                     {COLUMNS.map(column => {
                         const cards = columns[column];
                         const allowed = dragging ? dropAction(dragging, column) !== null : false;
@@ -233,6 +233,7 @@ export function BoardView({ boardRef, layout = 'page', onDeleted, onChanged }: {
                                 onDrop={e => { e.preventDefault(); if (allowed) drop(column); }}
                                 className={cn(
                                     'flex min-h-24 flex-col gap-2 rounded-lg bg-surface-2 p-2 transition-colors',
+                                    layout === 'page' && '@3xl:min-h-[28rem]',
                                     over === column && 'ring-2 ring-accent',
                                     refused && 'opacity-60',
                                 )}
@@ -274,7 +275,7 @@ export function BoardView({ boardRef, layout = 'page', onDeleted, onChanged }: {
             )}
 
             {layout === 'page' && (
-                <Drawer open={openCard !== null} onClose={() => setOpenCard(null)} width="md"
+                <Drawer open={openCard !== null} onClose={() => setOpenCard(null)} width="lg"
                     title={opened ? (opened.kind === 'note' ? 'Note' : 'Task') : 'Card'}>
                     {panel(false)}
                 </Drawer>
