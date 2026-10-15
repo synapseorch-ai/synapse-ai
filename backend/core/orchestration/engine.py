@@ -235,6 +235,10 @@ class OrchestrationEngine:
         #: (F261). Stamped on the run, so whatever finishes it after a pause
         #: saves the turn, in-process or on the fleet.
         self.conversation_turn: dict | None = None
+        #: The caller saves the conversation's turn itself (the fleet's chat job, `save_here=False`, F475): a
+        #: resumed run takes its owed turn off without saving it, so the turn has one writer and keeps the job's
+        #: calls and reasoning (F486). An answer given anywhere else leaves this False and saves as F261 did.
+        self.caller_saves_turn = False
         #: Agents (and their tool sets) resolved for this run, keyed by agent id
         #: — see core/orchestration/resolved.py. Nothing in it changes while a
         #: run is in flight, so it is never invalidated, only discarded with
@@ -847,7 +851,7 @@ class OrchestrationEngine:
             from core.boards import resolve as _board_resolve
             await _board_resolve.release(run.run_id, prefix=True, settings=None, why=f"the run {run.status}")
 
-        if owed_turn:
+        if owed_turn and not self.caller_saves_turn:
             try:
                 await self._save_owed_turn(run, owed_turn)
             except Exception as exc:
@@ -1002,6 +1006,7 @@ class OrchestrationEngine:
     async def resume(
         cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None,
         *, depth: int = 0, caller: dict | None = None, run_cap: RunCap | None = None,
+        caller_saves_turn: bool = False,
     ) -> AsyncGenerator[dict, None]:
         """Resume a paused orchestration after human input.
 
@@ -1040,6 +1045,7 @@ class OrchestrationEngine:
         engine = cls(orch, server_module, depth=depth)
         engine.images = list(images or [])
         engine.caller = caller
+        engine.caller_saves_turn = caller_saves_turn
         if depth:
             engine.run_cap = run_cap
         async for event in engine.resume_paused(run, human_response):

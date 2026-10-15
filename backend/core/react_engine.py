@@ -3471,7 +3471,8 @@ async def run_orchestrator_agent(
         yield {"type": "error", "message": f"Orchestration error: {e}"}
 
 
-async def _resume_workflow_run(resume_state: dict, server_module, images: list[str] | None = None):
+async def _resume_workflow_run(resume_state: dict, server_module, images: list[str] | None = None, *,
+                               caller_saves: bool = False):
     """Carry on the run a chat's approval answered (F290), yielding its events.
 
     Only while it is still waiting on a person and nothing is running it — an
@@ -3496,7 +3497,8 @@ async def _resume_workflow_run(resume_state: dict, server_module, images: list[s
     answer = {"approve": bool(call.get("approved")), "reason": call.get("reason") or ""}
     async for event in stream_engine_events(
         # The answer's images join the run's own, which it kept (F395).
-        OrchestrationEngine.resume(run_id, answer, server_module, images=images), run_id,
+        OrchestrationEngine.resume(run_id, answer, server_module, images=images, caller_saves_turn=caller_saves),
+        run_id,
     ):
         yield event
 
@@ -3639,7 +3641,9 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             # that run carries on. Starting the workflow again left it paused
             # for ever and asked the same question in a second run.
             source = _resume_workflow_run(resume_state, server_module,
-                                          images=getattr(request, "images", None) or None)
+                                          images=getattr(request, "images", None) or None,
+                                          # Its caller saves the turn (F475): the run's end saves none (F486).
+                                          caller_saves=not save_here)
         else:
             source = run_orchestrator_agent(
                 active_agent, user_message, server_module, session_id=session_id,
