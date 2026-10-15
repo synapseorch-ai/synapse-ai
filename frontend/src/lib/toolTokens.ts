@@ -25,6 +25,8 @@ export type SizedTool = {
   tokens: number;
   /** The connected server it comes from; absent for the workspace's own tools. */
   server?: string;
+  /** How many tools it stands for: 1, or a server's tools past the list a product stores (F524). */
+  count?: number;
 };
 
 export type ToolContext = {
@@ -60,7 +62,7 @@ export function toolContext(tools: SizedTool[], selected: ReadonlySet<string>, e
   const bySize = [...reached.entries()].sort((a, b) => size(b[1]) - size(a[1]) || a[0].localeCompare(b[0]));
   for (const [server, list] of bySize) {
     if (reachedTotal <= ALL_TOOLS_TOKEN_BUDGET) break;
-    leftOut.push({ server, tokens: size(list), tools: list.length });
+    leftOut.push({ server, tokens: size(list), tools: list.reduce((n, t) => n + (t.count ?? 1), 0) });
     reachedTotal -= size(list);
   }
   const dropped = new Set(leftOut.map((x) => x.server));

@@ -50,6 +50,12 @@ class ResourceProvider(Protocol):
     #: on the Protocol, which cannot express "may be absent".
     #:
     #: async def report_mcp_status(self, server_name: str, status: str) -> None
+    #:
+    #: Optional too, for the same reason: the tools a connect listed, live, as
+    #: ``{"name", "description", "inputSchema"}``, for a host that stores a
+    #: server's tool list and would otherwise count a stale one (F524).
+    #:
+    #: async def report_mcp_tools(self, server_name: str, tools: list[dict]) -> None
 
 
 _provider: ResourceProvider | None = None
@@ -226,3 +232,20 @@ async def report_mcp_status(server_name: str, status: str) -> None:
             f"'{server_name}': {exc}",
             flush=True,
         )
+
+
+async def report_mcp_tools(server_name: str, tools: list[dict]) -> None:
+    """Hand the host the tools a connect listed from one MCP server, live (F524).
+
+    A host that stores a server's tool list (cloud's, from discovery) counted and offered the list it saw when
+    the server was added, while every run was offered what the server lists now: acme's was 37 tools stored and
+    236 live. Self-hosted lists live everywhere and stores none, so without a provider this does nothing.
+
+    Never raises, as `report_mcp_status` does not: a stale count is a courtesy problem, a failed build a real one.
+    """
+    try:
+        report = getattr(_provider, "report_mcp_tools", None) if _provider is not None else None
+        if report is not None:
+            await report(server_name, tools)
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        print(f"[context] could not record MCP tools for '{server_name}': {exc}", flush=True)

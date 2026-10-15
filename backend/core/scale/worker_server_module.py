@@ -364,7 +364,7 @@ class WorkerServerModule:
         from datetime import timedelta
         from core.config import MCP_SESSION_READ_TIMEOUT
         from core.mcp_oauth import can_refresh, refresh_and_persist
-        from core.scale.context import report_mcp_status
+        from core.scale.context import report_mcp_status, report_mcp_tools
 
         _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
@@ -475,6 +475,13 @@ class WorkerServerModule:
             # after the person has already fixed it. `report_mcp_status` skips
             # a write when nothing moved, so the common case costs a read.
             await report_mcp_status(server_name, "connected")
+            # And what it lists now, for a host that stores the list and counts it
+            # in the agent editor: it went stale silently (F524).
+            await report_mcp_tools(server_name, [
+                {"name": str(tool.name), "description": str(getattr(tool, "description", None) or ""),
+                 "inputSchema": getattr(tool, "inputSchema", None) or {}}
+                for tool in tools_result.tools
+            ])
             _log.debug(
                 f"[worker_server_module] Connected user MCP '{server_name}' "
                 f"in {time.monotonic() - started:.1f}s"

@@ -180,3 +180,55 @@ class TestReportingNeverBreaksAJob:
         await context.report_mcp_status("vercel", "reauth_needed")
 
         assert "could not record MCP status" in capsys.readouterr().out
+
+
+class TestTheLiveToolListIsReported:
+    """F524: a run lists a connected server's tools live, and that list went nowhere — a host that stores a
+    server's tools (cloud's discovery) kept counting the list it saw when the server was added. The connect hands
+    the live list to the host now, beside its status."""
+
+    async def test_a_connect_reports_the_tools_it_listed(self, reported, monkeypatch):
+        tools: list[tuple[str, list[dict]]] = []
+
+        async def fake_tools(server_name, listed):
+            tools.append((server_name, listed))
+
+        monkeypatch.setattr(context, "report_mcp_tools", fake_tools)
+        _oauth(monkeypatch, can=True, refresh_result=None)
+        module = await _connect([_oauth_cfg(url="https://good.example.com/mcp")], monkeypatch)
+
+        assert tools == [("vercel", [{"name": "do_thing", "description": "", "inputSchema": {}}])]
+        await module.close()
+
+    async def test_a_server_that_did_not_connect_reports_no_list(self, reported, monkeypatch):
+        tools: list = []
+
+        async def fake_tools(server_name, listed):
+            tools.append(server_name)
+
+        monkeypatch.setattr(context, "report_mcp_tools", fake_tools)
+        _oauth(monkeypatch, can=True, refresh_result=None)
+        module = await _connect([_oauth_cfg()], monkeypatch)
+
+        assert tools == []
+        await module.close()
+
+    async def test_without_a_host_nothing_is_stored(self, monkeypatch):
+        """Self-hosted lists its servers' tools live everywhere and stores none: nothing to keep fresh."""
+        monkeypatch.setattr(context, "_provider", None)
+        await context.report_mcp_tools("vercel", [{"name": "x", "description": "", "inputSchema": {}}])
+
+    async def test_a_host_without_the_method_or_that_raises_never_breaks_the_build(self, monkeypatch, capsys):
+        class _Old:
+            async def resolve_mcp_servers(self): return []
+
+        monkeypatch.setattr(context, "_provider", _Old())
+        await context.report_mcp_tools("vercel", [])
+
+        class _Angry(_Old):
+            async def report_mcp_tools(self, server_name, tools):
+                raise RuntimeError("postgres is away")
+
+        monkeypatch.setattr(context, "_provider", _Angry())
+        await context.report_mcp_tools("vercel", [])
+        assert "could not record MCP tools" in capsys.readouterr().out
