@@ -718,6 +718,12 @@ class Team:
             return False
         return member.inbox.put({"kind": "person_message", "text": text.strip()})
 
+    def message_lead_from_person(self, text: str) -> bool:
+        """The person's words to the lead while its members work (TEAM1b): read at its next step as theirs."""
+        if not text.strip():
+            return False
+        return self.inbox.put({"kind": "person_message", "text": text.strip()})
+
     async def wait_for_lead(self, seconds: Any) -> AsyncIterator[dict | str]:
         """Idle until something reaches the lead's inbox, or the seconds pass; members' events meanwhile. Ends
         with what the lead reads (a str)."""

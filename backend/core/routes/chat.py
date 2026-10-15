@@ -332,7 +332,13 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                     yield f"data: {json.dumps({'type': 'agent_step_result', 'orch_step_id': event.get('orch_step_id'), 'step_name': event.get('step_name', ''), 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
                 else:
                     # Top-level final (single agent or orchestration summary) → response + done
-                    yield f"data: {json.dumps({'type': 'response', 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}, default=str)}\n\n"
+                    answer = {'type': 'response', 'content': event.get('response', ''), 'intent': event.get('intent', 'chat'), 'data': event.get('data'), 'tool_name': event.get('tool_name')}
+                    # A Team agent's summary and its members' records (TEAM1b): the page's task list,
+                    # its kept lanes and "answered alone". Only here: a widget or OAI1 never reads them.
+                    for key in ("team", "members"):
+                        if event.get(key) is not None:
+                            answer[key] = event[key]
+                    yield f"data: {json.dumps(answer, default=str)}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
             elif etype == "error":
@@ -639,6 +645,17 @@ async def message_member(session_id: str, member_id: str, body: MemberMessage):
     working = team.find(session_id)
     delivered = bool(working is not None and working.message_from_person(member_id, body.text))
     return {"session_id": session_id, "member_id": member_id, "delivered": delivered}
+
+
+@router.post("/chat/{session_id}/lead/message")
+async def message_lead(session_id: str, body: MemberMessage):
+    """The person's message to a working team's lead (TEAM1b, "To: the lead"): read before its next model
+    call, as the person's own words. `delivered` false when no team works in this conversation."""
+    from core import team
+
+    working = team.find(session_id)
+    delivered = bool(working is not None and working.message_lead_from_person(body.text))
+    return {"session_id": session_id, "delivered": delivered}
 
 
 @router.post("/chat/{session_id}/helpers/{helper_id}/stop")

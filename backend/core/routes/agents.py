@@ -381,7 +381,8 @@ async def get_agent_types():
     types = [
         {"value": "conversational", "label": "Conversational", "description": "General-purpose agent with configurable tools."},
         {"value": "orchestrator", "label": "Orchestrator", "description": "Runs a workflow — deployed from Workflows."},
-        {"value": "delegate", "label": "Delegate", "description": "Routes queries to sub-agents dynamically. Usable standalone or as an agent step in workflows."},
+        # Stored as `delegate` (TEAM0 Q1, Q11): its members work one at a time or as a team.
+        {"value": "delegate", "label": "Team", "description": "A lead that sends work to its members, one at a time or as a team, and answers with what they found. Usable in chat or as a workflow's Agent step."},
     ]
     if s.get("coding_agent_enabled"):
         types.insert(2, {"value": "code", "label": "Code", "description": "Automatically includes search_codebase for semantic code search."})
