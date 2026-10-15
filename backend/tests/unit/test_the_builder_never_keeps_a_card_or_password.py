@@ -139,6 +139,23 @@ def test_a_pasted_key_is_masked_on_an_ordinary_message_and_the_rest_still_runs()
                                "final": False, "kept": checked.text}
 
 
+def test_any_providers_live_or_test_key_is_masked():
+    """Shaped like Stripe's, from any provider (F576): BWA1's after pass saw a Shippo test key reach a run."""
+    shippo = "shippo_" + "test_" + "4f9c2a" * 7
+    other = "acme_" + "live_" + "Zq81" * 5
+    checked = check(f"We'll use the {shippo} credentials, and {other} for the other one")
+    assert shippo not in checked.text and other not in checked.text and checked.removed == 2
+
+
+@pytest.mark.parametrize("text", [
+    "rename user_test_integrationsuite to user_test_smoke",   # snake_case names: no digits in the tail
+    "the run_live_dashboardpanel view",
+    "order 1Z999AA10123456784 is late",                        # a tracking number has no _live_/_test_
+])
+def test_names_that_only_look_like_a_providers_key_are_left_alone(text):
+    assert check(text).removed == 0
+
+
 def test_an_ordinary_message_passes_unchanged_with_nothing_to_say():
     checked = check("What's the last schedule that ran?")
     assert (checked.text, checked.refused, checked.removed, checked.event()) == (
@@ -164,6 +181,13 @@ def test_a_lone_secret_in_reply_to_a_password_question_is_refused():
 def test_a_lone_secret_in_reply_to_a_key_question_is_masked():
     custom = "dbk_live_" + "X" * 6 + "_9z"
     answer, removed = check_answer({"answer": custom}, question="Please paste your API key here.")
+    assert answer == {"answer": CREDENTIAL_MARK} and removed == 1
+
+
+def test_a_lone_secret_in_reply_to_an_authentication_question_is_masked():
+    """The builder asked about authentication, not "a key", and the reply was the key (BWA1's chg-09, F576)."""
+    custom = "xr" + "-" + "9Kq2v7" + "-" + "Lm4tP0"
+    answer, removed = check_answer({"answer": custom}, question="Can you confirm the Xero authentication details?")
     assert answer == {"answer": CREDENTIAL_MARK} and removed == 1
 
 

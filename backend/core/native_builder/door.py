@@ -41,9 +41,9 @@ REFUSALS: dict[str, str] = {
 }
 
 MASKED_NOTICE = (
-    "I took a key out of your message before reading it (it shows as ‹credential removed›). Keys never go in this "
-    "chat: if it was real, rotate it, then add the new one on the provider's settings screen, where it is stored "
-    "encrypted."
+    "I took a key out of your message before reading it (it shows as ‹credential removed›). Please don't paste keys "
+    "in this chat again: if it was real, rotate it at the provider, then add the new one on its settings screen "
+    "here, where it is stored encrypted."
 )
 
 #: What a conversation keeps, and the panel shows, in place of a message the door refused.
@@ -178,7 +178,8 @@ def check(text: str) -> Checked:
 #: A question that asks the person for a secret. Its answer is read in that light: a lone secret-looking word in
 #: reply to "what's the portal's password?" is the password, though it says no "password" itself.
 _ASKS_PASSWORD = re.compile(r"(?i)\b(?:pass(?:word|wd|code|phrase)|pwd|log\s*in\s+details|credentials)\b")
-_ASKS_KEY = re.compile(r"(?i)\b(?:api[\s_-]?key|key|token|secret|bearer|access\s+code|client\s+secret)\b")
+_ASKS_KEY = re.compile(r"(?i)\b(?:api[\s_-]?key|key|token|secret|bearer|access\s+code|client\s+secret|"
+                       r"authenticat\w*)\b")
 _LONE_WORD = re.compile(r"^\s*[\"'`]?(?P<value>[^\s\"'`]{6,200})[\"'`]?\s*[.!]?\s*$")
 
 

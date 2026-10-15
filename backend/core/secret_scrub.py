@@ -23,6 +23,10 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     # OpenAI's and Anthropic's keys (`sk-…`, `sk-proj-…`, `sk-ant-…`); Stripe's.
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}"),
+    # Any provider's key shaped like Stripe's, `<name>_live_…` / `<name>_test_…` (Shippo's, and others): the tail
+    # mixes letters and digits, so a snake_case name never matches (F576, BWA1). Shapes only: a key with no
+    # shape we know stays the person's to keep out of chat (Naveen's call, 2026-10-15).
+    re.compile(r"\b[a-z][a-z0-9]{1,15}_(?:live|test)_(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{16,}"),
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}"),
