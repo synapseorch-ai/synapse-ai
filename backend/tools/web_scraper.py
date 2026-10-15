@@ -184,6 +184,27 @@ def _score_links(links: list[dict]) -> list[dict]:
     return sorted(scored, key=lambda x: x["score"], reverse=True)
 
 
+#: How long a `wait_for` waits before the page is taken as it is (F569, SUB1b's number; fixed by BWA1).
+WAIT_FOR_TIMEOUT_MS = 10_000
+
+
+async def _arun(crawler, url: str, config: CrawlerRunConfig):
+    """`crawler.arun`, and when its `wait_for` never appeared, the page as it was rather than a failure (F569).
+
+    gpt-4.1-mini waits for `title`, `head` or a selector that is not there, unprompted; crawl4ai then failed the
+    call after its whole page timeout, and a 1-credit turn billed 4-5. One more fetch without the wait, which says
+    so in `wait_missed`. Any other failure is left as it is."""
+    result = await crawler.arun(url=url, config=config)
+    wait = getattr(config, "wait_for", None)
+    if wait and not result.success and "Wait condition failed" in (result.error_message or ""):
+        result = await crawler.arun(url=url, config=config.clone(wait_for=None, wait_for_timeout=None)
+                                    if hasattr(config, "clone") else _build_run_config())
+        # The result's own dict, so a pydantic CrawlResult carries it too.
+        result.__dict__["wait_missed"] = (f"'{wait}' did not appear within {WAIT_FOR_TIMEOUT_MS // 1000} s; "
+                                          "this is the page as it was")
+    return result
+
+
 def _build_run_config(
     *,
     wait_for: str | None = None,
@@ -210,6 +231,8 @@ def _build_run_config(
     )
     if wait_for:
         kwargs["wait_for"] = wait_for
+        # Not crawl4ai's 60 s page timeout: a wait for something that never appears held every call that long (F569).
+        kwargs["wait_for_timeout"] = WAIT_FOR_TIMEOUT_MS
     if js_code is not None:
         kwargs["js_code"] = js_code
     if headers:
@@ -591,7 +614,7 @@ async def _handle_scrape_url(args: dict) -> list[types.TextContent]:
     )
 
     with _stderr_stdout():
-        result = await crawler.arun(url=url, config=run_config)
+        result = await _arun(crawler, url, run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -600,6 +623,8 @@ async def _handle_scrape_url(args: dict) -> list[types.TextContent]:
         return _err("Page returned no extractable content. Try adding a wait_for selector or js_code to handle dynamic loading.")
 
     response: dict = {"success": True, "url": url, "markdown": _truncate(markdown)}
+    if getattr(result, "wait_missed", None):
+        response["wait_missed"] = result.wait_missed
 
     if args.get("include_links", False):
         all_links = result.links.get("internal", []) + result.links.get("external", [])
@@ -631,7 +656,7 @@ async def _handle_scrape_structured(args: dict) -> list[types.TextContent]:
     )
 
     with _stderr_stdout():
-        result = await crawler.arun(url=url, config=run_config)
+        result = await _arun(crawler, url, run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -664,7 +689,7 @@ async def _handle_crawl_multiple(args: dict) -> list[types.TextContent]:
             return {"url": url, "success": False, "error": blocked}
         try:
             with _stderr_stdout():
-                r = await crawler.arun(url=url, config=run_config)
+                r = await _arun(crawler, url, run_config)
             item: dict = {"url": url, "success": r.success}
             if r.success:
                 item["markdown"] = _truncate(r.markdown or "")
@@ -705,7 +730,7 @@ async def _handle_extract_links(args: dict) -> list[types.TextContent]:
     run_config = _build_run_config(wait_for=args.get("wait_for"))
 
     with _stderr_stdout():
-        result = await crawler.arun(url=url, config=run_config)
+        result = await _arun(crawler, url, run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -741,7 +766,7 @@ async def _handle_screenshot_url(args: dict) -> list[types.TextContent]:
     )
 
     with _stderr_stdout():
-        result = await crawler.arun(url=url, config=run_config)
+        result = await _arun(crawler, url, run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
     if not result.screenshot:
@@ -797,7 +822,7 @@ async def _handle_scrape_with_session(args: dict) -> list[types.TextContent]:
                 headers=global_headers,
             )
             with _stderr_stdout():
-                r = await crawler.arun(url=step_url, config=run_config)
+                r = await _arun(crawler, step_url, run_config)
             step_result: dict = {"step": i, "url": step_url, "success": r.success}
             if r.success and step.get("extract", True):
                 step_result["markdown"] = _truncate(r.markdown or "")
@@ -848,7 +873,7 @@ async def _handle_search_page(args: dict) -> list[types.TextContent]:
     )
 
     with _stderr_stdout():
-        result = await crawler.arun(url=url, config=run_config)
+        result = await _arun(crawler, url, run_config)
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 

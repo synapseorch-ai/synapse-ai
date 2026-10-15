@@ -360,3 +360,44 @@ def test_no_proxy_never_lets_a_page_skip_it(monkeypatch):
 def test_with_no_proxy_set_self_hosted_is_unchanged(monkeypatch):
     _proxy_env(monkeypatch)
     assert _server(web_scraper.browser_config()) is None
+
+
+# ── A wait for an element that never appears (F569, SUB1b's number; fixed by BWA1) ──────────────────────────────
+#
+# `wait_for` on something that never appears (`title`, `head`, a missing selector) held every call for crawl4ai's
+# full 60 s page timeout and then failed it; gpt-4.1-mini reaches for it unprompted, so a 1-credit turn billed 4-5.
+# The wait now gives up after WAIT_FOR_TIMEOUT_MS, and the page comes back as it was, saying the wait missed.
+
+class _Crawler:
+    def __init__(self):
+        self.calls = []
+
+    async def arun(self, url, config):
+        self.calls.append(getattr(config, "wait_for", None))
+        if getattr(config, "wait_for", None):
+            return SimpleNamespace(success=False, error_message="Wait condition failed: Timeout 10000ms exceeded")
+        return SimpleNamespace(success=True, error_message=None, markdown="the page")
+
+
+def test_a_wait_gives_up_quickly():
+    config = web_scraper._build_run_config(wait_for="css:.never-there")
+    assert config.wait_for_timeout == web_scraper.WAIT_FOR_TIMEOUT_MS <= 10_000
+
+
+async def test_a_wait_that_misses_returns_the_page_as_it_was():
+    crawler = _Crawler()
+    result = await web_scraper._arun(crawler, "https://example.com/", web_scraper._build_run_config(wait_for="title"))
+    assert result.success and result.markdown == "the page"
+    assert crawler.calls == ["title", None], "one more fetch, without the wait"
+    assert "title" in result.wait_missed
+
+
+async def test_any_other_failure_is_left_as_it_is():
+    class Broken(_Crawler):
+        async def arun(self, url, config):
+            self.calls.append(1)
+            return SimpleNamespace(success=False, error_message="net::ERR_NAME_NOT_RESOLVED")
+
+    crawler = Broken()
+    result = await web_scraper._arun(crawler, "https://nowhere.invalid/", web_scraper._build_run_config(wait_for="h1"))
+    assert not result.success and crawler.calls == [1]
