@@ -776,6 +776,7 @@ async def run_agent_chat_job(
     helper: dict | None = None,
     chat_turn: str | None = None,
     caller_tools: list[str] | None = None,
+    board_scope: dict | None = None,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
@@ -800,6 +801,10 @@ async def run_agent_chat_job(
 
     `caller_tools` is a phone call's too (F531): the call's own tools by name (`end_call`, `transfer_call`), offered
     to the agent — a workflow agent's steps included — without acting here; the call acts on their relayed call.
+
+    `board_scope` is a scheduled agent's firing (BOARD1b): its schedule's board, its claims held under the
+    firing (`run_react_loop`). Cloud's worker builds it from the firing it runs; nothing enqueues it. A helper's
+    job never reads it: a helper gets no board.
 
     `keep_parked` is a phone call's (F486): the question the call parked waits while the caller talks on — it
     is answered from the bell, and said on the call (F474) — so a new turn does not move past it, and a second
@@ -1046,6 +1051,7 @@ async def run_agent_chat_job(
                 # appends (F475).
                 save_turn=save_turn, log_source=log_source, save_here=False,
                 extra_tools=_fleet_caller_tools(caller_tools),
+                board_scope=board_scope,
             )):
                 etype = event.get("type")
 

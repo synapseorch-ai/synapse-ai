@@ -3850,7 +3850,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                          expand_mentions: bool = False, stream_answer: bool = False,
                          history_override: list | None = None, caller_system: str | None = None,
                          save_turn: bool = True, log_source: str = "chat", extra_tools=None,
-                         save_here: bool = True):
+                         save_here: bool = True, board_scope=None):
     """Async generator that runs the ReAct loop and yields structured events.
 
     `save_here=False` is for a caller that saves the turn itself (the fleet's
@@ -3868,6 +3868,11 @@ async def run_react_loop(request, server_module, should_stop=None, *,
     so it is the history instead of the stored one; a client's system message
     is added after the agent's own prompt; the turn is not saved as a Chat
     conversation; and the agent's log names where it came from.
+
+    `board_scope` is a scheduled agent's firing when a host runs it here (cloud's fleet chat job, BOARD1b):
+    `{"kind": "schedule", "id": <schedule>, "holder": <the firing's key>}`. The turn gets that schedule's board
+    as the scheduler's own call gives it, and its claims are held, and released, under the firing. Without it a
+    chat turn has shared boards only, held under `session:<id>`.
 
     `stream_answer` (U72) also yields the answer while the model writes it — the
     in-process hook every streaming caller uses (chat, the OpenAI-compatible
@@ -4071,6 +4076,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             # Not from a follow-up: a helper's result never sends another helper away.
             background=_inbox is not None and not _automated,
             automated=_automated,
+            board_scope=board_scope,
         ):
             if event.get("type") == "human_input_required":
                 _parked = True
@@ -4103,7 +4109,10 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             # The turn is over: what it claimed on a board is open for others again. A parked
             # turn keeps its claims until they lapse (BOARD1a). Nothing while Boards are off.
             from core.boards import resolve as _board_resolve
-            await _board_resolve.release(f"session:{session_id}", agent=active_agent.get("id"), settings=None,
-                                  why="the chat turn ended")
+            _scope = _board_resolve.BoardScope.of(board_scope)
+            # A schedule's firing on the fleet's chat job holds its claims under the firing (BOARD1b).
+            await _board_resolve.release(_scope.holder if _scope and _scope.holder else f"session:{session_id}",
+                                         agent=active_agent.get("id"), settings=None,
+                                         why="the scheduled run ended" if _scope else "the chat turn ended")
         _agent_log.run_end(_log_status)
         _agent_log.close()
