@@ -82,7 +82,7 @@ export { Segmented } from "./segmented";
 export { Switch } from "./switch";
 export { Combobox, type ComboboxOption } from "./combobox";
 export { StatusBadge, normaliseStatus, type RunStatus } from "./status";
-export { Toast, toastLook, useToast, type ToastTone } from "./toast";
+export { InToastStack, Toast, ToastStack, toastLook, useToast, type ToastTone } from "./toast";
 export { Hint, TooltipProvider } from "./tooltip";
 export { usePersisted } from "./use-persisted";
 

@@ -6,7 +6,7 @@ import { LogIn, PauseCircle, X } from 'lucide-react';
 import { readWithStallTimeout } from '@/lib/sse';
 import { plainText } from '@/lib/plainText';
 import { voiceItemHref } from '@/components/phone/phone';
-import { toastLook, useIsCanvasMode } from '@/components/ui';
+import { InToastStack, ToastStack, toastLook } from '@/components/ui';
 
 export type RunNotification = {
     id: number;
@@ -67,7 +67,6 @@ export const NOTIFICATION_EVENT = 'synapse-notification';
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
     const router = useRouter();
-    const canvas = useIsCanvasMode();
     const [notifications, setNotifications] = useState<RunNotification[]>([]);
     const [seenId, setSeenId] = useState(0);
     const [toasts, setToasts] = useState<Toast[]>([]);
@@ -262,15 +261,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
             setBrowserNotificationsEnabled, openRun, openItem,
             waiting, openWaiting, closeWaiting,
         }}>
+            {/* Every toast in the app stacks in one host, the kit's (F520): this provider's own
+                notifications and the signed-out line, and a page's `Toast`, which once drew a
+                second box in the same corner, over or under these. */}
+            <ToastStack>
             {children}
-            {/* Toast host — app-wide, stacked bottom-right, high enough to clear
-                a composer's Send at the bottom of chat. On an open
-                canvas that corner and the bottom row are the canvas's (zoom, the
-                dock, the run strip with its Answer), so toasts come down from the
-                top, centred under its bar (M3a: on a phone a toast covered Answer). */}
-            <div className={canvas
-                ? 'fixed left-1/2 top-[104px] z-[9999] flex -translate-x-1/2 flex-col items-center gap-2 pointer-events-none md:top-[70px]'
-                : 'fixed bottom-20 right-6 z-[9999] flex flex-col gap-2 items-end pointer-events-none'}>
+            <InToastStack>
                 {signedOut && (
                     <div
                         role="status"
@@ -313,7 +309,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                     </div>
                     );
                 })}
-            </div>
+            </InToastStack>
+            </ToastStack>
         </NotificationContext.Provider>
     );
 }

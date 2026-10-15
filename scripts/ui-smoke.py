@@ -11045,6 +11045,61 @@ async def check_widgetconfirm(browser) -> str:
 
 
 @check
+async def check_onetoaststack(browser) -> str:
+    """A page's toast and a live notification's stack in one host, never one box over the other (F520).
+
+    The kit `Toast` (bottom-20 right-5) and the notifications' stack (bottom-20 right-6) were two hosts in one
+    corner: BF5's F518 check showed the page's red reason and the bell's toast drawn together, one cut off.
+    """
+    live = {"id": 900102, "ts": time.time(), "kind": "run_failed", "title": "Smoke flow failed",
+            "body": "", "run_id": "run_smoke_stack", "data": {}, "resolved": False}
+    tool = {"name": "uismoke_toast", "generalName": "Smoke toast", "description": "toast", "tool_type": "http",
+            "url": "", "method": "GET", "inputSchema": {"type": "object", "properties": {}}}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+
+    async def listing(route):
+        await route.fulfill(json={"notifications": [], "last_id": 0})
+
+    async def stream(route):
+        await route.fulfill(status=200, headers={"Content-Type": "text/event-stream"},
+                            body=f"data: {json.dumps(live)}\n\n")
+
+    async def tools(route):
+        if route.request.method != "GET":
+            return await route.continue_()
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps([tool]))
+    await ctx.route("**/api/notifications?after=0*", listing)
+    await ctx.route("**/api/notifications/stream*", stream)
+    await ctx.route("**/api/tools/custom", tools)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/tools", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name=re.compile(r"Editing: uismoke_toast")).wait_for(timeout=20_000)
+        await page.get_by_text("Smoke flow failed").first.wait_for(timeout=10_000)
+        await page.get_by_role("button", name="Save", exact=True).first.click()
+        await page.get_by_text("Name and URL are required").first.wait_for(timeout=5_000)
+        boxes = await page.evaluate("""() => ['Smoke flow failed', 'Name and URL are required'].map(t => {
+            const el = [...document.querySelectorAll('[role=status]')].find(e => e.innerText.includes(t));
+            if (!el) return null;
+            const r = el.getBoundingClientRect();
+            return {host: !!el.closest('[data-toast-stack]'), top: r.top, bottom: r.bottom, left: r.left,
+                    right: r.right};
+        })""")
+        if None in boxes:
+            raise AssertionError(f"a toast is missing while the other shows: {boxes}")
+        notice, mine = boxes
+        if not (notice["host"] and mine["host"]):
+            raise AssertionError(f"the two toasts are not in one host: {boxes}")
+        apart = (notice["bottom"] <= mine["top"] or mine["bottom"] <= notice["top"]
+                 or notice["right"] <= mine["left"] or mine["right"] <= notice["left"])
+        if not apart:
+            raise AssertionError(f"the page's toast and the notification overlap: {boxes}")
+    finally:
+        await ctx.close()
+    return "a page's toast and a live notification stack in one host and never overlap"
+
+
+@check
 async def check_persontoast(browser) -> str:
     """A run that needs someone toasts on the person wash, not as a warning (M2h-2, UX1: amber is a person)."""
     live = {"id": 900101, "ts": time.time(), "kind": "human_input", "title": "Smoke flow needs your input",
