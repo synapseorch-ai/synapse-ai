@@ -1309,6 +1309,35 @@ BUILDER_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "update_schedule",
+            "description": (
+                "Change a schedule in place: its time (cron_expression, or interval_value + interval_unit), the "
+                "message each run starts with (prompt), its name, or what it runs (target_type + target_id). Give "
+                "only what changes. It keeps its id, its history and whether it is on. Use this to move a "
+                "schedule's time — never delete it and create another. To pause or resume it, use "
+                "set_schedule_enabled."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "description": {"type": "string"},
+                    "prompt": {"type": "string", "description": "The message each scheduled run starts with"},
+                    "target_type": {"type": "string", "enum": ["agent", "orchestration"]},
+                    "target_id": {"type": "string"},
+                    "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
+                    "interval_value": {"type": "integer"},
+                    "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
+                    "cron_expression": {"type": "string", "description": "Standard 5-field cron, in UTC"},
+                },
+                "required": ["schedule_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "delete_schedule",
             "description": "Delete a schedule. Destructive: requires confirm=true.",
             "parameters": {
@@ -2725,6 +2754,50 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "name": schedule.get("name"),
             "enabled": schedule["enabled"],
         }
+
+    elif tool_name == "update_schedule":
+        # F578: the builder could only delete a schedule and create another to move its time, which lost its id
+        # and history and left the new one paused (F155). Patched as the routes' PATCH does; never its enabled
+        # state, which stays a person's to turn on (set_schedule_enabled when they ask).
+        from pydantic import ValidationError
+
+        from core.models_schedule import ScheduleInvalid, ScheduleUpdate, validate_timing
+        from core.scheduler import _iso, _utc_now, compute_next_run
+        from core.store import schedules as schedule_store
+
+        schedule_id = str(args.get("schedule_id") or "")
+        schedule = await schedule_store.get(schedule_id)
+        if schedule is None:
+            return {"error": f"Schedule '{schedule_id}' not found"}
+        try:
+            patch = ScheduleUpdate.model_validate({
+                k: v for k, v in args.items()
+                if k in ScheduleUpdate.model_fields and k != "enabled" and v is not None
+            }).model_dump(exclude_none=True)
+        except ValidationError as exc:
+            return {"error": f"Invalid schedule: {exc.errors()[0]['msg']}"}
+        if not patch:
+            return {"error": "Nothing to change: give the time, prompt, name or target that changes."}
+        patched = {**schedule, **patch}
+        if {"target_type", "target_id"} & patch.keys():
+            if patched.get("target_type") == "agent":
+                target = await _load_agent(str(patched.get("target_id") or ""))
+                if target is None or target.get("system"):
+                    return {"error": f"Agent '{patched.get('target_id')}' not found"}
+            elif await _visible_orchestration(str(patched.get("target_id") or "")) is None:
+                return {"error": f"Orchestration '{patched.get('target_id')}' not found"}
+        if {"schedule_type", "interval_value", "interval_unit", "cron_expression"} & patch.keys():
+            try:
+                validate_timing(patched)
+                patched["next_run_at"] = _iso(compute_next_run(patched, _utc_now()))
+            except ScheduleInvalid as exc:
+                return {"error": f"Invalid schedule: {exc}"}
+            except Exception as exc:
+                return {"error": f"Could not work out when that would next run: {exc}"}
+        await schedule_store.save(patched)
+        _emit(events, "schedule", "updated", schedule_id, patched.get("name"), patched)
+        return {"status": "updated", "id": schedule_id, "name": patched.get("name"),
+                "changed": sorted(patch), "enabled": patched.get("enabled"), "next_run_at": patched.get("next_run_at")}
 
     elif tool_name == "delete_schedule":
         refused = _require_confirm(args, f"delete the schedule '{args.get('schedule_id')}'")
