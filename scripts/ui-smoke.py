@@ -10369,8 +10369,8 @@ def _boards_on() -> None:
 
 @check
 async def check_boards(browser) -> str:
-    """Knowledge › Boards (C7): a shared board opens with its access list; a person's card is added, reads as an
-    instruction, opens with its history, and its add is taken back with Undo (archived, found by a search)."""
+    """Knowledge › Boards (C7): a shared board opens as columns of stickies with its access list; a person's task is
+    added under Open, reads as a person's, opens in its drawer with its history, and its add is taken back with Undo."""
     _boards_on()
     name = f"Smoke board {int(time.time())}"
     made = api("/api/boards", "POST", {"name": name})
@@ -10380,17 +10380,18 @@ async def check_boards(browser) -> str:
         await page.goto(f"{APP}/boards?board={made['id']}", wait_until="domcontentloaded")
         await page.get_by_role("heading", name=name).wait_for(timeout=30_000)
         await page.get_by_role("heading", name="Who can use this board").wait_for(timeout=5_000)
-        await page.get_by_role("button", name="Add a card").click()
+        await page.get_by_role("button", name="Add a task").click()
         await page.get_by_label("Title").fill("Smoke card")
         await page.get_by_role("button", name="Add", exact=True).click()
-        row = page.get_by_role("button", name=re.compile("Smoke card"))
-        await row.wait_for(timeout=10_000)
-        if "From " not in (await row.inner_text()):
-            raise AssertionError("a person's card does not say it is a person's")
-        await row.click()
-        await page.get_by_text(re.compile("added it")).wait_for(timeout=10_000)
-        await page.get_by_role("button", name=re.compile(r"^Undo change \d+")).first.click()
-        await page.get_by_text("Archived", exact=True).first.wait_for(timeout=10_000)
+        sticky = page.locator("[data-board-card]", has_text="Smoke card")
+        await sticky.wait_for(timeout=10_000)
+        if "From " not in (await sticky.inner_text()):
+            raise AssertionError("a person's sticky does not say it is a person's")
+        await sticky.click()
+        drawer = page.get_by_role("dialog")
+        await drawer.get_by_text(re.compile("added it")).wait_for(timeout=10_000)
+        await drawer.get_by_role("button", name=re.compile(r"^Undo change \d+")).first.click()
+        await drawer.get_by_text("Archived", exact=True).first.wait_for(timeout=10_000)
     finally:
         await ctx.close()
         try:
@@ -10417,10 +10418,10 @@ async def check_workflowboard(browser) -> str:
         await page.get_by_role("button", name=re.compile(r"^Board")).click(timeout=30_000)
         card = page.get_by_role("region", name="This workflow's board")
         await card.get_by_text("No cards yet").wait_for(timeout=10_000)
-        await card.get_by_role("button", name="Add a card").click()
+        await card.get_by_role("button", name="Add a task").click()
         await card.get_by_label("Title").fill("Skip the test supplier")
         await card.get_by_role("button", name="Add", exact=True).click()
-        await card.get_by_role("button", name=re.compile("Skip the test supplier")).wait_for(timeout=10_000)
+        await card.locator("[data-board-card]", has_text="Skip the test supplier").wait_for(timeout=10_000)
         await page.get_by_role("button", name=re.compile(r"^Board · 1")).wait_for(timeout=40_000)
     finally:
         await ctx.close()

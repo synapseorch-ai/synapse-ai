@@ -6,6 +6,6 @@ export { BoardPanel } from './BoardPanel';
 export { BoardView, runLine } from './BoardView';
 export { BoardsScreen } from './BoardsScreen';
 export { ScheduleBoard } from './ScheduleBoard';
-export { CardPanel, CardRow, FromContent } from './Card';
+export { CardPanel, FromContent, Sticky } from './Card';
 export * from './board';
 export { BoardsHostProvider, DEFAULT_BOARDS_HOST, useBoardsHost, type BoardsHost, type Principal } from './host';

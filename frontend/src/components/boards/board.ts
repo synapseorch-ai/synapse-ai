@@ -269,3 +269,43 @@ export function sharedQuota(list: Pick<BoardsList, 'shared_used' | 'shared_limit
     if (!list.shared_limit) return null;
     return `${list.shared_used} of ${list.shared_limit} on your plan`;
 }
+
+// ── the board's columns, and what dragging a sticky does (Naveen at BOARD1b's screens) ──────────────────────────
+
+export type Column = 'notes' | 'open' | 'claimed' | 'done';
+
+export const COLUMN_TITLE: Record<Column, string> = { notes: 'Notes', open: 'Open', claimed: 'Claimed', done: 'Done' };
+
+/** A board's stickies by column: notes (things to know), open and claimed tasks, then what is closed (archived
+ *  ones too on a search). Each keeps the order the routes gave. */
+export function columnsOf(page: Pick<BoardPage, 'cards' | 'done' | 'archived'>): Record<Column, Card[]> {
+    return {
+        notes: page.cards.filter(c => c.kind === 'note'),
+        open: page.cards.filter(c => c.kind === 'task' && c.status === 'open'),
+        claimed: page.cards.filter(c => c.kind === 'task' && c.status === 'claimed'),
+        done: [...page.done, ...page.archived],
+    };
+}
+
+/**
+ * What dropping `card` on `column` does, or null when it may not go there. A task dropped on Done is finished (the
+ * board asks for its result, or why it failed); a note dropped on Done is closed as no longer true; a closed task
+ * goes back to Open and a closed note back to Notes. Claimed is the agents' column: a person never drops there.
+ * Archived cards come back only through their history's Undo.
+ */
+export function dropAction(card: Card, column: Column): 'finish' | 'close' | 'reopen' | null {
+    const live = card.status === 'open' || card.status === 'claimed';
+    if (column === 'done') return live ? (card.kind === 'task' ? 'finish' : 'close') : null;
+    if (card.status !== 'done') return null;
+    if (column === 'open' && card.kind === 'task') return 'reopen';
+    if (column === 'notes' && card.kind === 'note') return 'reopen';
+    return null;
+}
+
+/** "4 min left" while a claim is in force; '' otherwise (the sticky's short form of `heldFor`). */
+export function timeLeft(card: Card, now: number): string {
+    if (card.status !== 'claimed' || !card.claim_expires_at) return '';
+    const left = Date.parse(card.claim_expires_at) - now;
+    if (!Number.isFinite(left) || left <= 0) return '';
+    return `${Math.max(1, Math.round(left / 60_000))} min left`;
+}

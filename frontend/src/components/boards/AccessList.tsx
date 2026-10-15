@@ -6,7 +6,7 @@
  * takes its own board plus up to three shared ones, so the store refuses a fourth and its sentence shows here.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, X } from 'lucide-react';
+import { X } from 'lucide-react';
 
 import { Button, Combobox, ErrorNote, IconButton, Select, type ComboboxOption } from '@/components/ui';
 
@@ -76,7 +76,8 @@ export function AccessList({ entries, canEdit, onSave }: {
                         </span>
                         {canEdit ? (
                             <>
-                                <Select aria-label={`What ${e.name} may do`} value={e.access} options={ACCESS_OPTIONS}
+                                <Select aria-label={`What ${e.name} may do`} value={e.access} options={ACCESS_OPTIONS} size="sm"
+                                    className="w-52 shrink-0"
                                     onChange={(v: string) => setDraft(d => d.map((x, j) => j === i ? { ...x, access: v as Access } : x))} />
                                 <IconButton label={`Remove ${e.name}`} icon={X} size="sm"
                                     onClick={() => setDraft(d => d.filter((_, j) => j !== i))} />
@@ -91,7 +92,7 @@ export function AccessList({ entries, canEdit, onSave }: {
                         <Combobox aria-label="Add an agent, workflow or schedule" placeholder="Add an agent, workflow or schedule"
                             options={options} value={pick} onChange={(v: string) => { setPick(v); add(v); }} />
                     </div>
-                    <Button size="sm" disabled={busy || !dirty} onClick={save}><Plus className="size-3.5" aria-hidden />Save the list</Button>
+                    {dirty && <Button size="sm" disabled={busy} onClick={save}>Save the list</Button>}
                 </div>
             )}
             {error && <ErrorNote>{error}</ErrorNote>}

@@ -6,17 +6,19 @@
  * written after outside content says so (BOARD1b, D282).
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, CheckCircle2, CircleDot, RotateCcw, StickyNote, XCircle } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, RotateCcw, XCircle } from 'lucide-react';
 
 import { Badge, Button, ErrorNote, Field, Hint, Input, Spinner, Textarea } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import {
-    FROM_CONTENT_HINT, actorName, dayAndTime, eventLine, heldFor, holderName, provenance, statusLabel,
+    FROM_CONTENT_HINT, actorName, dayAndTime, eventLine, heldFor, holderName, provenance, statusLabel, timeLeft,
     type BoardsApi, type Card, type CardPage,
 } from './board';
 
-export function FromContent() {
+export function FromContent({ plain = false }: { plain?: boolean } = {}) {
+    // Inside a sticky (itself a button) a focusable hint would be a control inside a control: the words ride `title`.
+    if (plain) return <span title={FROM_CONTENT_HINT}><Badge size="sm" tone="neutral">From content</Badge></span>;
     return (
         <Hint content={FROM_CONTENT_HINT}>
             <span tabIndex={0} className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-accent">
@@ -26,42 +28,65 @@ export function FromContent() {
     );
 }
 
-/** One card in a list: a 36px-and-up row that opens it. */
-export function CardRow({ card, currentRunId, now, onOpen }: {
+/**
+ * One card as a sticky (Naveen at BOARD1b's screens): a raised paper tile that opens the card, and, where a person
+ * may move it, drags between columns. Colour only for meaning: a note is a folded-corner tile on a warmer paper; a
+ * person's sticky has an amber strip across its top, like tape; a claimed one a cyan dot, its holder and time left.
+ */
+export function Sticky({ card, currentRunId, now, dim, draggable, onOpen }: {
     card: Card;
     currentRunId?: string | null;
     now: number;
+    /** Another run's, while "This run" is picked: shown faded rather than moved. */
+    dim?: boolean;
+    draggable?: boolean;
     onOpen: (card: Card) => void;
 }) {
-    const held = heldFor(card, now);
+    const note = card.kind === 'note';
     const closed = card.status === 'done' || card.status === 'archived';
+    const left = timeLeft(card, now);
     return (
-        <li>
+        <li className={cn('list-none transition-opacity', dim && 'opacity-40 hover:opacity-100')}>
             <button
                 type="button"
+                draggable={draggable}
+                onDragStart={draggable ? e => { e.dataTransfer.setData('text/x-board-card', card.id); e.dataTransfer.effectAllowed = 'move'; } : undefined}
                 onClick={() => onOpen(card)}
+                data-board-card={card.id}
                 className={cn(
-                    'group flex w-full min-h-9 items-start gap-2.5 rounded-md border border-transparent px-2.5 py-2 text-left',
-                    'hover:border-border hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent',
-                    card.by_person && 'border-l-2 border-l-person pl-2',
+                    'relative block w-full overflow-hidden rounded-md border border-border px-3 pb-2.5 pt-3 text-left shadow-sm',
+                    'transition-[box-shadow,transform] hover:-translate-y-px hover:shadow-md focus-visible:outline-2 focus-visible:outline-accent',
+                    note ? 'bg-[color-mix(in_oklab,var(--color-surface)_93%,#b8a27a)]' : 'bg-surface',
+                    draggable && 'cursor-grab active:cursor-grabbing',
+                    closed && 'shadow-none',
                 )}
             >
-                <span className="mt-0.5 shrink-0 text-text-faint" aria-hidden>
-                    {card.kind === 'note' ? <StickyNote className="size-3.5" />
-                        : closed ? (card.outcome === 'failed' ? <XCircle className="size-3.5 text-danger" /> : <CheckCircle2 className="size-3.5 text-success" />)
-                            : <CircleDot className={cn('size-3.5', card.status === 'claimed' && 'text-machine')} />}
+                {card.by_person && <span aria-hidden className="absolute inset-x-4 top-0 h-1.5 rounded-b-sm bg-person" />}
+                {note && (
+                    <span aria-hidden className="absolute right-0 top-0 size-3.5 bg-[linear-gradient(225deg,var(--color-surface-2)_50%,var(--color-border-strong)_50%)]" />
+                )}
+                <span className={cn('block text-sm font-medium leading-snug text-text', closed && 'text-text-muted line-through decoration-text-faint/60')}>
+                    {closed && card.kind === 'task' && (card.outcome === 'failed'
+                        ? <XCircle className="mr-1 inline size-3.5 align-[-2px] text-danger" aria-hidden />
+                        : <CheckCircle2 className="mr-1 inline size-3.5 align-[-2px] text-success" aria-hidden />)}
+                    {card.title}
                 </span>
-                <span className="min-w-0 flex-1">
-                    <span className={cn('block truncate text-sm font-medium text-text', closed && 'text-text-muted')}>{card.title}</span>
-                    {card.body && <span className="block truncate text-xs text-text-muted">{card.body}</span>}
-                    <span className={cn('mt-0.5 block truncate text-xs', card.by_person ? 'text-person-ink' : 'text-text-faint')}>
-                        {card.status === 'claimed' ? `Claimed by ${holderName(card)}${held ? ` · ${held}` : ''}` : provenance(card, currentRunId)}
-                    </span>
-                </span>
-                <span className="flex shrink-0 items-center gap-1.5">
-                    {card.tainted && <FromContent />}
-                    {card.kind === 'note' && <Badge size="sm" tone="neutral">Note</Badge>}
-                    {closed && <Badge size="sm" tone={card.outcome === 'failed' ? 'danger' : 'neutral'}>{statusLabel(card)}</Badge>}
+                {card.body && !closed && <span className="mt-1 line-clamp-3 block text-xs leading-relaxed text-text-muted">{card.body}</span>}
+                {closed && card.result && <span className="mt-1 line-clamp-2 block text-xs text-text-muted">{card.result}</span>}
+                <span className="mt-2 flex flex-wrap items-center gap-1.5">
+                    {card.status === 'claimed' ? (
+                        <span className="inline-flex items-center gap-1.5 text-xs text-text-muted">
+                            <span aria-hidden className="size-1.5 rounded-full bg-machine" />
+                            {holderName(card)}{left ? ` · ${left}` : ''}
+                        </span>
+                    ) : (
+                        <span className={cn('text-xs', card.by_person ? 'text-person-ink' : 'text-text-faint')}>
+                            {provenance(card, currentRunId)}
+                        </span>
+                    )}
+                    {card.tainted && <FromContent plain />}
+                    {card.status === 'archived' && <Badge size="sm" tone="neutral">Archived</Badge>}
+                    {card.key && <span className="font-mono text-2xs text-text-faint">{card.key}</span>}
                 </span>
             </button>
         </li>
@@ -69,12 +94,14 @@ export function CardRow({ card, currentRunId, now, onOpen }: {
 }
 
 /** A card opened: read it, change it against the version read, close or reopen it, comment, and undo. */
-export function CardPanel({ cardId, api, canEdit, currentRunId, onBack, onChanged }: {
+export function CardPanel({ cardId, api, canEdit, currentRunId, onBack, onChanged, showBack = true }: {
     cardId: string;
     api: BoardsApi;
     canEdit: boolean;
     currentRunId?: string | null;
     onBack: () => void;
+    /** "Back to the board" above the card: in place (a canvas card, a drawer); not in the hub's own drawer. */
+    showBack?: boolean;
     /** Something on the card changed: the board reads its list again. */
     onChanged: () => void;
 }) {
@@ -116,7 +143,7 @@ export function CardPanel({ cardId, api, canEdit, currentRunId, onBack, onChange
     if (!page) {
         return (
             <div className="space-y-3">
-                <BackLink onBack={onBack} />
+                {showBack && <BackLink onBack={onBack} />}
                 {error ? <ErrorNote>{error}</ErrorNote> : <div className="flex justify-center py-8"><Spinner /></div>}
             </div>
         );
@@ -128,7 +155,7 @@ export function CardPanel({ cardId, api, canEdit, currentRunId, onBack, onChange
 
     return (
         <div className="space-y-5">
-            <BackLink onBack={onBack} />
+            {showBack && <BackLink onBack={onBack} />}
             <header className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-1.5">
                     <Badge size="sm" tone="neutral">{task ? 'Task' : 'Note'}</Badge>
