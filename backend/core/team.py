@@ -22,9 +22,10 @@ and a phone call run the lead alone, Q9):
 * **Seen and kept.** A member's events go out wrapped (`member_event`), between `member_started` and
   `member_finished` (its record), as a helper's do, so nothing that streams an agent's own events (OAI1,
   a call, a widget) reads them as the lead's. The task list goes out as `team_tasks`.
-* **Approvals (until TEAM1c).** A member that needs a person's approval waits alone; the others keep
-  working; the turn parks on that one question (today's `delegate_pending`, a list of one) once no other
-  member is working. A second member asking meanwhile is refused that call and tells the lead.
+* **Approvals (TEAM1c, Q6).** Each member asks on its own: a member that needs a person's approval waits
+  alone and the others keep working. Its question is one of a list, each with its own id
+  (`chat_approval.question_id`), answered in its lane while the turn runs (`Team.answer`) or after the
+  turn has paused, which it does only once nobody is left working. An answer resumes only that member.
 * **At its end** the open cards close as failed, the holders are released, the list is kept with the
   turn (`team`), and the run board is deleted (Naveen, TEAM1a). A parked turn keeps its board.
 """
@@ -204,6 +205,9 @@ def render_inbox(items: list[dict], *, for_lead: bool) -> str:
         elif kind == "waiting_for_person":
             lines.append(f"{item.get('member')} is waiting for a person's approval to run {item.get('tool')}. "
                          "The others carry on; this turn pauses for the person once nobody else is working.")
+        elif kind == "person_answered":
+            lines.append(f"The person {'allowed' if item.get('approved') else 'refused'} {item.get('member')}'s "
+                         f"call to {item.get('tool')}; it carries on, and its result arrives here.")
         else:  # a guard's notice
             lines.append(f"Notice: {item.get('text') or ''}")
     return "\n".join(lines) + "\n"
@@ -236,6 +240,7 @@ class Member:
     progress: dict = field(default_factory=dict)
     approval: dict | None = None
     asked: dict | None = None
+    asked_at: float = 0.0       # when it began waiting on a person: questions are listed in the order asked
     resume_state: dict | None = None
     task_handle: asyncio.Task | None = None
 
@@ -252,6 +257,21 @@ class Member:
     def tag(self, event: dict) -> dict:
         return {"type": "member_event", "member_id": self.id, "member_name": self.name, "event": event}
 
+    @property
+    def question_id(self) -> str | None:
+        """Its question's own id while it waits on a person (TEAM1c), else None."""
+        if self.status != "waiting_for_person" or not self.approval:
+            return None
+        from core.chat_approval import question_id
+        return question_id(self.id, self.approval.get("approval_id"))
+
+    def question(self) -> dict:
+        """Its question as a parked turn lists it (TEAM1c)."""
+        approval = self.approval or {}
+        return {"question_id": self.question_id, "approval_id": approval.get("approval_id"),
+                "member_id": self.id, "member_name": self.name, "tool_name": approval.get("tool_name"),
+                "tool_args": approval.get("tool_args") or {}, "category": approval.get("category")}
+
     def record(self) -> dict:
         from core.session import _clip
 
@@ -265,7 +285,7 @@ class Member:
     def state(self) -> dict:
         kept = self.record()
         kept.update(card_version=self.card_version, tainted=self.tainted, messages_sent=self.messages_sent,
-                    progress=self.progress, approval=self.approval, asked=self.asked,
+                    progress=self.progress, approval=self.approval, asked=self.asked, asked_at=self.asked_at,
                     inbox=self.inbox.park() if self.inbox is not None and self.status == "waiting_for_person"
                     else None)
         return kept
@@ -316,11 +336,13 @@ class Team:
     def __init__(self, *, lead: dict, members: dict[str, dict], config: TeamConfig, session_id: str,
                  source: str, run_id: str | None, server_module, lead_model: str,
                  should_stop: Callable[[], Awaitable[bool]] | None, can_park: bool, knowledge_turn=None,
-                 state: dict | None = None):
+                 state: dict | None = None, agent_key: str = "default"):
         self.lead = lead
         self.roster = members
         self.config = config
         self.session_id = session_id
+        #: The conversation's agent key (its turns' row): answers reach this team by it (TEAM1c).
+        self.agent_key = agent_key
         self.source = source
         self.run_id = run_id
         self.server_module = server_module
@@ -341,13 +363,15 @@ class Team:
                        answer=kept.get("answer") or "", error=kept.get("error") or "",
                        tainted=bool(kept.get("tainted")), messages_sent=int(kept.get("messages_sent") or 0),
                        progress=dict(kept.get("progress") or {}), approval=kept.get("approval"),
-                       asked=kept.get("asked"))
+                       asked=kept.get("asked"), asked_at=float(kept.get("asked_at") or 0.0))
             m.inbox = new_inbox(kept.get("inbox"))
             self.members[m.id] = m
-        self.parked_id: str | None = state.get("parked_id")
+        # A turn parked before TEAM1c named its one waiting member `parked_id`: its status says the same.
         self.inbox = new_inbox(state.get("inbox"))
         self.tasks: dict[str, dict] = {t["card_id"]: dict(t) for t in state.get("tasks") or []}
         self.progress_mark: int = int(state.get("progress_mark") or 0)
+        #: The questions an earlier pause of this turn already asked (TEAM1c): a host asks again only the new ones.
+        self.paused_on: set[str] = set(state.get("paused_on") or [])
         self._events: list[dict] = []
         self.events_wake = asyncio.Event()
         self.ended = False
@@ -386,20 +410,34 @@ class Team:
     def running(self) -> list[Member]:
         return [m for m in self.members.values() if m.status == "running"]
 
-    @property
-    def parked(self) -> Member | None:
-        return self.members.get(self.parked_id) if self.parked_id else None
+    def waiting(self) -> list[Member]:
+        """The members waiting on a person, in the order they asked (TEAM1c)."""
+        return sorted((m for m in self.members.values() if m.status == "waiting_for_person"),
+                      key=lambda m: m.asked_at)
+
+    def questions(self) -> list[dict]:
+        """The waiting members' questions, as a pause lists them: one an earlier pause asked is `asked_before`."""
+        return [{**q, "asked_before": q["question_id"] in self.paused_on} for q in (m.question() for m in self.waiting())]
+
+    def note_paused(self) -> None:
+        self.paused_on |= {m.question_id for m in self.waiting() if m.question_id}
 
     def register(self) -> "Team":
         _LIVE[(get_tenant() or "", self.session_id)] = self
+        # Answers that arrived while this turn was starting, or while its last one paused (TEAM1c).
+        from core.chat_approval import take_answers
+        for verdict in take_answers(self.session_id, self.agent_key):
+            self.answer(verdict.get("question_id") or "", approve=bool(verdict.get("approve")),
+                        reason=str(verdict.get("reason") or ""))
         return self
 
     def state(self) -> dict:
         """What a parked turn keeps, to pick the team up again."""
         return {"key": self.key, "board_id": self.board_id, "tasks_used": self.tasks_used,
-                "members": [m.state() for m in self.members.values()], "parked_id": self.parked_id,
+                "members": [m.state() for m in self.members.values()],
                 "inbox": {"pending": list(self.inbox._pending), "in_flight": list(self.inbox._in_flight)},
                 "tasks": list(self.tasks.values()), "progress_mark": self.progress_mark, "stall": self.stall,
+                "paused_on": sorted(self.paused_on),
                 "spent_usd": self.spent_usd}
 
     def records(self) -> list[dict]:
@@ -688,10 +726,10 @@ class Team:
                 yield "Something arrived: it is in your team inbox below."
                 return
             if not self.live_members():
-                parked = self.parked
+                waiting = [m.name for m in self.waiting()]
                 yield (f"No member is working, so nothing more will arrive. "
-                       + (f"{parked.name} waits for a person's approval; this turn pauses for it after your "
-                          "next step. " if parked else "")
+                       + (f"{', '.join(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a person's "
+                          "approval; this turn pauses for it after your next step. " if waiting else "")
                        + "Assign more work, or give your final answer.")
                 return
             elapsed = time.monotonic() - started
@@ -789,6 +827,10 @@ class Team:
             started.append(member)
         return started
 
+    def start_queued(self) -> None:
+        """Start whoever may start now, from the lead's own task (its next step)."""
+        self._admit()
+
     def helpers_working(self) -> int:
         from core import helpers as _helpers
         return len(_helpers.live(_helpers.cap_key(self.session_id, workflow_step=False)))
@@ -850,7 +892,9 @@ class Team:
                         member.progress = {k: v for k, v in event.items() if k != "type"}
                         continue
                     if kind == "human_input_required" and event.get("kind") == "tool_approval":
-                        asked = event
+                        from core.chat_approval import question_id
+                        # Its own id goes with the question its lane draws (TEAM1c).
+                        event = asked = {**event, "question_id": question_id(member.id, event.get("approval_id"))}
                     elif kind == "final":
                         member.answer = event.get("response") or ""
                         member.tainted = member.tainted or bool(event.get("tainted"))
@@ -868,17 +912,16 @@ class Team:
                     break
                 approval = {"approval_id": asked.get("approval_id"), "tool_name": asked.get("tool_name"),
                             "tool_args": asked.get("tool_args") or {}, "category": asked.get("category")}
-                if self.can_park and self.parked_id is None:
-                    # It waits alone; the turn parks on its question once nobody else is working (Q6, interim).
+                if self.can_park:
+                    # It waits alone, its question one of the team's list; the others carry on, and the turn
+                    # parks on every waiting question once nobody else is working (Q6, TEAM1c).
                     member.status, member.approval, member.asked = "waiting_for_person", approval, asked
-                    self.parked_id = member.id
+                    member.asked_at = time.time()
                     self.inbox.put({"kind": "waiting_for_person", "member": member.name, "member_id": member.id,
                                     "tool": approval["tool_name"]})
                     return
-                reason = ("nobody can give an approval here" if not self.can_park else
-                          f"{self.parked.name} is already waiting for a person's approval, and a team waits on one "
-                          f"question at a time; tell the lead you need {approval['tool_name']}")
-                resume = resume_state_for({**approval, "progress": member.progress}, approve=False, reason=reason)
+                resume = resume_state_for({**approval, "progress": member.progress}, approve=False,
+                                          reason="nobody can give an approval here")
         except asyncio.CancelledError:
             member.status = "cancelled"
             raise
@@ -933,20 +976,57 @@ class Team:
         if self._closing:
             await asyncio.gather(*list(self._closing), return_exceptions=True)
 
-    # ── a parked member picked up again ──
-    def resume_member(self, member_id: str | None, agent_id: str, task: str, inner: dict | None) -> Member | None:
-        member = self.members.get(member_id or "") or next(
-            (m for m in self.members.values() if m.status == "waiting_for_person" and m.agent_id == agent_id
-             and m.task == task), None)
-        if member is None:
+    # ── a waiting member picked up again ──
+    def resume_member(self, member_id: str | None, agent_id: str, task: str, inner: dict | None, *,
+                      approved: bool | None = None, live: bool = False) -> Member | None:
+        """A waiting member carries on with its own resume state: after its parked turn was answered (the lead's
+        replay, F286's shape) or while the turn runs (`answer`). None when it waits no longer."""
+        member = self.members.get(member_id or "")
+        if member is None and not member_id:
+            # A turn parked before TEAM1c named no member: the one this agent and task asked for.
+            member = next((m for m in self.members.values() if m.status == "waiting_for_person"
+                           and m.agent_id == agent_id and m.task == task), None)
+        if member is None or member.status != "waiting_for_person":
             return None
-        if self.parked_id == member.id:
-            self.parked_id = None
-        member.status, member.approval, member.asked = "queued", None, None
+        asked_id, tool = member.question_id, (member.approval or {}).get("tool_name")
+        member.status, member.approval, member.asked, member.asked_at = "queued", None, None, 0.0
         member.resume_state = inner
         member.started_at = 0.0
-        self._admit()
+        if approved is None:
+            approved = bool(((inner or {}).get("pending_call") or {}).get("approved"))
+        self._emit({"type": "member_answered", "member_id": member.id, "member_name": member.name,
+                    "question_id": asked_id, "approved": approved})
+        if live:
+            # Answered while the lead works: it reads so between its steps (a parked turn's replay says it
+            # itself). The member is started from the lead's own task — its `wait`, or its next step — never
+            # from the answer's caller (a route, a job's watcher), whose context is not the turn's.
+            self.inbox.put({"kind": "person_answered", "member": member.name, "member_id": member.id,
+                            "tool": tool, "approved": approved})
+        else:
+            self._admit()
         return member
+
+    def answer(self, question_id: str, *, approve: bool, reason: str = "") -> bool:
+        """A person's answer to one waiting member's question while this turn runs (TEAM1c, Q6): that member
+        carries on — its call run, or refused, as itself — and the others are untouched. False when no member
+        waits on that question here, or the turn is pausing or over: the answer then waits for whoever takes
+        the paused turn up (`chat_approval.post_answer`)."""
+        if self.parking or self.ended:
+            return False
+        member = next((m for m in self.waiting() if m.question_id == question_id), None)
+        if member is None:
+            return False
+        from core.chat_approval import member_resume_state
+        inner = member_resume_state({"approval": member.approval, "progress": member.progress},
+                                    approve=approve, reason=reason)
+        return self.resume_member(member.id, member.agent_id, member.task, inner, approved=approve,
+                                  live=True) is not None
+
+    def still_asking(self) -> None:
+        """Each member still waiting goes out with its question again, for a page following a resumed turn."""
+        for member in self.waiting():
+            if member.asked:
+                self._emit(member.tag(member.asked))
 
     def stop_member(self, member_id: str) -> bool:
         member = self.members.get(member_id)
@@ -979,6 +1059,12 @@ class Team:
         for member in self.members.values():
             if member.status == "queued":
                 member.status = "cancelled"
+            elif member.status == "waiting_for_person" and not parked:
+                # Its question goes unanswered with the turn (TEAM1c): never run, and its record says so.
+                member.status, member.ended_at = "cancelled", time.time()
+                member.error = "Not run: the team's turn ended before a person answered."
+                self._emit({"type": "member_finished", "member_id": member.id, "member_name": member.name,
+                            "status": member.status, "seconds": member.seconds, "record": member.record()})
         if _LIVE.get((get_tenant() or "", self.session_id)) is self:
             _LIVE.pop((get_tenant() or "", self.session_id), None)
         if parked or not self.board_id:

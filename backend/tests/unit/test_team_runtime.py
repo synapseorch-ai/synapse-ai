@@ -463,7 +463,7 @@ class TestTaintTravelsPerItem:
 
 
 class TestApprovalsOneAtATime:
-    """Until TEAM1c: a member waits alone; the turn parks on its question once nobody else works."""
+    """A member waits alone; the turn parks on its question once nobody else works (TEAM1a, kept by TEAM1c)."""
 
     async def test_the_turn_parks_on_the_members_question_after_the_others_finish(self, server, llm, team):
         llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Ana", "CHECK A")), tool_call("wait", seconds=10),
@@ -496,28 +496,218 @@ class TestApprovalsOneAtATime:
         assert _of(events, "member_finished")[-1]["record"]["answer"] == "changed it"
         assert _of(events, "final")[-1]["response"] == "all changed"
 
-    async def test_a_second_member_asking_meanwhile_is_refused_and_says_so(self, server, llm, team):
-        from core.store import resources
-        ana = await resources.get_agent(ANA)
-        await S.seed_agents([{**ana, "tools": ["lookup", "danger"], "tool_policy": {"destructive": "confirm"}},
-                             *(a for a in team if a["id"] != ANA)])
-        gate = asyncio.Event()
 
-        def first(_kw):
-            return tool_call("danger")
+CARA = "cara_t1c"
 
-        async def second(_kw):
-            await asyncio.sleep(0.2)
-            return tool_call("danger", item="second")
 
-        llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Ana", "CHANGE A")), tool_call("wait", seconds=10),
+@pytest.fixture
+async def team3():
+    """Ana and Ben may each change things, on a person's approval; Cara only looks things up."""
+    agents = [S.make_agent(id=ANA, name="Ana", tools=["lookup", "danger"], skip_default_tools=True,
+                           tool_policy={"destructive": "confirm"}),
+              S.make_agent(id=BEN, name="Ben", tools=["lookup", "danger"], skip_default_tools=True,
+                           tool_policy={"destructive": "confirm"}),
+              S.make_agent(id=CARA, name="Cara", tools=["lookup"], skip_default_tools=True),
+              _lead(delegate_agent_ids=[ANA, BEN, CARA])]
+    await S.seed_agents(agents)
+    return agents
+
+
+def _parked(events, message="PLAN IT"):
+    from core.chat_approval import parked_payload
+    card = _of(events, "human_input_required")[-1]
+    snap = {k: v for k, v in _of(events, "_step_progress")[-1].items() if k != "type"}
+    return parked_payload(card, message=message, progress=snap)
+
+
+def _by_member(pending):
+    return {q["member_name"]: q for q in pending["questions"]}
+
+
+async def _two_asked(server, llm):
+    """Ana and Ben both ask at once while Cara works; the turn parks once Cara is done."""
+    llm.on("PLAN IT", [both(assign("Ana", "CHANGE A"), assign("Ben", "CHANGE B"), assign("Cara", "CHECK C")),
+                       tool_call("wait", seconds=10), tool_call("wait", seconds=10), tool_call("wait", seconds=10),
+                       "should not answer yet"])
+    llm.on("CHANGE A", [tool_call("danger", item="a"), "changed A"])
+    llm.on("CHANGE B", [tool_call("danger", item="b"), "changed B"])
+    llm.on("CHECK C", [tool_call("lookup", item="c"), "C looks fine"])
+    return await _turn(server, progress_events=True)
+
+
+class TestApprovalsInParallel:
+    """Each member asks on its own (Q6, TEAM1c): its question is one of a list, an answer resumes only it."""
+
+    async def test_two_members_asking_at_once_both_wait_and_the_turn_parks_on_both(self, server, llm, team3):
+        events = await _two_asked(server, llm)
+
+        assert not [e for e in _wrapped(events, "tool_result") if e.get("refused")]   # nobody is refused
+        assert {f["member_name"]: f["status"] for f in _of(events, "member_finished")} == {"Cara": "completed"}
+        pending = _parked(events)
+        asked = _by_member(pending)
+        assert set(asked) == {"Ana", "Ben"}
+        assert asked["Ana"]["question_id"] != asked["Ben"]["question_id"]
+        assert asked["Ana"]["tool_args"] == {"item": "a"} and asked["Ben"]["tool_args"] == {"item": "b"}
+        # Each lane's own question carries its id, as the list does.
+        lane = {e["member_name"]: e["event"] for e in _of(events, "member_event")
+                if e["event"].get("type") == "human_input_required"}
+        assert lane["Ana"]["question_id"] == asked["Ana"]["question_id"]
+        assert server.session.calls == ["lookup"] and not _of(events, "final")
+
+    async def test_the_same_call_asked_by_two_members_is_two_questions(self, server, llm, team3):
+        llm.on("PLAN IT", [both(assign("Ana", "CHANGE A"), assign("Ben", "CHANGE B")),
                            tool_call("wait", seconds=10), tool_call("wait", seconds=10), "unused"])
-        llm.on("CHANGE B", [first, "b"]).on("CHANGE A", [second, "I need danger; told the lead"])
+        llm.on("CHANGE A", [tool_call("danger"), "a"]).on("CHANGE B", [tool_call("danger"), "b"])
+        pending = _parked(await _turn(server, progress_events=True))
+        ids = [q["question_id"] for q in pending["questions"]]
+        assert len(ids) == 2 and len(set(ids)) == 2
+        assert len({q["approval_id"] for q in pending["questions"]}) == 1
+
+    @pytest.mark.parametrize("first, second", [("Ben", "Ana"), ("Ana", "Ben")])
+    async def test_answered_in_either_order_each_resumes_alone_then_the_other(self, server, llm, team3,
+                                                                              first, second):
+        from core.chat_approval import resume_state_for
+        pending = _parked(await _two_asked(server, llm))
+        asked = _by_member(pending)
+
+        # The first answered (allowed): it runs its call as itself; the other still waits, asked again.
+        llm._scripts.clear()
+        llm.on("PLAN IT", [tool_call("wait", seconds=10), tool_call("wait", seconds=10), "unused"])
+        llm.on(f"CHANGE {first[0]}", [f"changed {first[0]}"])
+        events = await _turn(server, progress_events=True,
+                             resume_state=resume_state_for(pending, approve=True,
+                                                           question=asked[first]["question_id"]))
+        assert server.session.calls == ["lookup", "danger"]
+        answered = _of(events, "member_answered")
+        assert [(a["member_name"], a["approved"]) for a in answered] == [(first, True)]
+        assert {f["member_name"]: f["status"] for f in _of(events, "member_finished")} == {first: "completed"}
+        again = [e for e in _wrapped(events, "human_input_required", second)]
+        assert again and again[0]["question_id"] == asked[second]["question_id"]
+        repark = _parked(events)
+        assert [q["member_name"] for q in repark["questions"]] == [second]
+        assert repark["questions"][0]["question_id"] == asked[second]["question_id"]
+
+        # The other refused: its call is not run, and the team finishes.
+        llm._scripts.clear()
+        llm.on("PLAN IT", [tool_call("wait", seconds=10), "all done"])
+        llm.on(f"CHANGE {second[0]}", [f"did not change {second[0]}"])
+        events = await _turn(server, progress_events=True,
+                             resume_state=resume_state_for(repark, approve=False, reason="not today",
+                                                           question=asked[second]["question_id"]))
+        assert server.session.calls == ["lookup", "danger"]
+        assert [(a["member_name"], a["approved"]) for a in _of(events, "member_answered")] == [(second, False)]
+        refused = [e for e in _wrapped(events, "tool_result", second) if e.get("refused")]
+        assert refused and "not today" in str(refused[0].get("reason") or refused[0].get("preview"))
+        assert _of(events, "final")[-1]["response"] == "all done"
+
+    async def test_two_answers_together_resume_both(self, server, llm, team3):
+        from core.chat_approval import resume_state_for
+        pending = _parked(await _two_asked(server, llm))
+        asked = _by_member(pending)
+        llm._scripts.clear()
+        llm.on("PLAN IT", [tool_call("wait", seconds=10), tool_call("wait", seconds=10), "both done"])
+        llm.on("CHANGE A", ["changed A"]).on("CHANGE B", ["kept B"])
+        events = await _turn(server, progress_events=True, resume_state=resume_state_for(
+            pending, approve=True, verdicts=[
+                {"question_id": asked["Ben"]["question_id"], "approve": False, "reason": "no"},
+                {"question_id": asked["Ana"]["question_id"], "approve": True}]))
+        assert sorted((a["member_name"], a["approved"]) for a in _of(events, "member_answered")) == [
+            ("Ana", True), ("Ben", False)]
+        assert server.session.calls == ["lookup", "danger"]
+        assert _of(events, "final")[-1]["response"] == "both done"
+
+    async def test_an_answer_while_the_turn_runs_resumes_that_member_and_nothing_parks(self, server, llm, team3):
+        """Ben asks while Cara works; the person answers in Ben's lane before Cara is done."""
+        from core import team as team_mod
+        from core.chat_approval import post_answer
+        said: list[str] = []
+
+        async def cara_works(_kw):
+            for _ in range(100):
+                working = team_mod.find("s_team")
+                waiting = working.waiting() if working is not None else []
+                if waiting:
+                    said.append(post_answer("s_team", LEAD, {"question_id": waiting[0].question_id,
+                                                             "approve": True}))
+                    return "C looks fine"
+                await asyncio.sleep(0.02)
+            return "nobody asked"
+
+        llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Cara", "CHECK C")),
+                           tool_call("wait", seconds=10), tool_call("wait", seconds=10),
+                           tool_call("wait", seconds=10), "all done"])
+        llm.on("CHANGE B", [tool_call("danger", item="b"), "changed B"]).on("CHECK C", [cara_works])
         events = await _turn(server, progress_events=True)
-        refused = [e for e in _wrapped(events, "tool_result", "Ana") if e.get("refused")]
-        assert refused and "already waiting for a person's approval" in refused[0]["reason"]
-        assert _of(events, "human_input_required")[-1]["delegate_agent_name"] == "Ben"
-        del gate
+
+        assert said == ["applied"]
+        assert server.session.calls == ["danger"]
+        assert {f["member_name"]: f["status"] for f in _of(events, "member_finished")} == {
+            "Ben": "completed", "Cara": "completed"}
+        assert [(a["member_name"], a["approved"]) for a in _of(events, "member_answered")] == [("Ben", True)]
+        assert not _of(events, "human_input_required")
+        assert any("allowed Ben's call" in p for p in _lead_prompts(llm))
+
+    async def test_a_member_answered_from_outside_the_turn_works_in_the_turns_own_context(self, server, llm,
+                                                                                         team3):
+        """An answer arrives on a route's task, whose context is not the turn's: the member still works in its
+        team's (its calls are counted against it, its tenant and meter are the turn's)."""
+        import contextvars
+        from core import team as team_mod
+        from core.chat_approval import post_answer
+        seen: list = []
+
+        async def cara_works(_kw):
+            for _ in range(100):
+                working = team_mod.find("s_team")
+                if working is not None and working.waiting():
+                    question = working.waiting()[0].question_id
+                    route = asyncio.get_running_loop().create_task(
+                        asyncio.sleep(0, result=post_answer("s_team", LEAD, {"question_id": question,
+                                                                             "approve": True})),
+                        context=contextvars.Context())
+                    seen.append(await route)
+                    return "C looks fine"
+                await asyncio.sleep(0.02)
+            return "nobody asked"
+
+        def ben_after(_kw):
+            seen.append(team_mod.current.get() is team_mod.find("s_team"))
+            return "changed B"
+
+        llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Cara", "CHECK C")),
+                           tool_call("wait", seconds=10), tool_call("wait", seconds=10),
+                           tool_call("wait", seconds=10), "all done"])
+        llm.on("CHANGE B", [tool_call("danger", item="b"), ben_after]).on("CHECK C", [cara_works])
+        events = await _turn(server, progress_events=True)
+        assert seen == ["applied", True]
+        assert {f["member_name"]: f["status"] for f in _of(events, "member_finished")} == {
+            "Ben": "completed", "Cara": "completed"}
+        assert server.session.calls == ["danger"] and not _of(events, "human_input_required")
+
+    async def test_a_turn_that_ends_without_pausing_ends_its_waiting_members_as_not_run(self, server, llm, team3):
+        llm.on("PLAN IT", [assign("Ben", "CHANGE B"), tool_call("wait", seconds=10)])
+        llm.on("CHANGE B", [tool_call("danger"), "unused"])
+        events = await _turn(server, progress_events=True, max_turns=2)
+        ended = {f["member_name"]: f for f in _of(events, "member_finished")}
+        assert ended["Ben"]["status"] == "cancelled"
+        assert "before a person answered" in ended["Ben"]["record"]["error"]
+        assert server.session.calls == [] and not _of(events, "human_input_required")
+
+    async def test_a_turn_parked_before_the_list_resumes(self, server, llm, team3):
+        """A TEAM1a row: one `delegate_pending`, no `team_pending` or `questions`, the team's `parked_id`."""
+        from core.chat_approval import resume_state_for
+        llm.on("PLAN IT", [assign("Ben", "CHANGE B"), tool_call("wait", seconds=10), "unused"])
+        llm.on("CHANGE B", [tool_call("danger"), "changed it"])
+        pending = _parked(await _turn(server, progress_events=True))
+        pending.pop("questions")
+        pending["progress"].pop("team_pending")
+        ben = next(m for m in pending["progress"]["team"]["members"] if m["name"] == "Ben")
+        pending["progress"]["team"]["parked_id"] = ben["id"]
+        llm._scripts.clear()
+        llm.on("PLAN IT", [tool_call("wait", seconds=10), "all changed"]).on("CHANGE B", ["changed it"])
+        events = await _turn(server, progress_events=True, resume_state=resume_state_for(pending, approve=True))
+        assert server.session.calls == ["danger"]
+        assert _of(events, "final")[-1]["response"] == "all changed"
 
 
 class TestNothingGoesBackAsAHelpersResult:

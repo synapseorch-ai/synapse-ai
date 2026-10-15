@@ -1134,7 +1134,7 @@ async def run_agent_step(
                     lead=active_agent, members=_team_roster, config=_team_cfg, session_id=session_id,
                     source=source, run_id=run_id, server_module=server_module, lead_model=current_model,
                     should_stop=should_stop, can_park=bool(progress_events and _chat_approval.approvals_answerable()),
-                    state=(resume_state or {}).get("team"))
+                    state=(resume_state or {}).get("team"), agent_key=agent_id or "default")
                 all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
                     all_tools, ollama_tools, tool_schema_map, _team_mod.lead_tools(_team))
                 agent_system_template = agent_system_template + "\n\n" + _team_mod.lead_prompt(_team)
@@ -1917,16 +1917,25 @@ async def run_agent_step(
     _forward_answer: str | None = None   # `forward`: a member's answer, word for word, is this turn's
     _team_nudged = False                 # a final answer while members work is asked about once
 
-    def _team_park(member, at_turn: int):
-        """Park the turn on a member's question (F286's shape, a list of one until TEAM1c)."""
+    def _team_park(waiting, at_turn: int):
+        """Park the turn on every waiting member's question (TEAM1c, Q6): a list, each its own id.
+
+        `delegate_pending` is the first, as one delegate's question is parked (F286), for every reader that
+        knows one; `team_pending` lists them all, each its member's call (its snapshot is the team's). The
+        card's own fields are the first question's, and `questions` lists every one."""
         _team.parking = True
-        approval = dict(member.approval or {})
+        questions = _team.questions()
+        _team.note_paused()
+        first = waiting[0]
+        entries = [{"question_id": m.question_id, "agent_id": m.agent_id, "task": m.task, "member_id": m.id,
+                    "approval": dict(m.approval or {})} for m in waiting]
         yield {"type": "_step_progress", **_snapshot(at_turn),
-               "delegate_pending": {"agent_id": member.agent_id, "task": member.task, "member_id": member.id,
-                                    "progress": member.progress or {}, "approval": approval}}
-        yield {**(member.asked or {"type": "human_input_required", "kind": "tool_approval", **approval}),
-               "delegate_from": agent_id_for_session, "delegate_agent_name": member.name,
-               "member_id": member.id}
+               "delegate_pending": {**entries[0], "progress": first.progress or {}},
+               "team_pending": entries}
+        approval = dict(first.approval or {})
+        yield {**(first.asked or {"type": "human_input_required", "kind": "tool_approval", **approval}),
+               "delegate_from": agent_id_for_session, "delegate_agent_name": first.name,
+               "member_id": first.id, "question_id": first.question_id, "questions": questions}
 
     def _in_background(args: dict) -> bool:
         """A spawn that asks for the background, where this turn may run one (the app's chat, S4)."""
@@ -2046,15 +2055,17 @@ async def run_agent_step(
                 # What its members did since the lead last looked (TEAM1a).
                 for _e in _team.drain():
                     yield _e
-                if _team.parked is not None and not _team.live_members() and _replay_call is None:
-                    # A member waits on a person and nobody else works: the turn parks on its
-                    # question, today's single delegate_pending (Q6's interim, until TEAM1c).
+                if _team.waiting() and not _team.live_members() and _replay_call is None:
+                    # Members wait on a person and nobody else works: the turn parks on every
+                    # waiting question (Q6, TEAM1c).
                     await _team.settle()
                     for _e in _team.drain():
                         yield _e
-                    for _e in _team_park(_team.parked, turn):
+                    for _e in _team_park(_team.waiting(), turn):
                         yield _e
                     return
+                # A member a person answered while the lead worked starts here, in the lead's task (TEAM1c).
+                _team.start_queued()
                 # The stall counter: a lead step with no task moving (Q4).
                 _team.lead_step()
 
@@ -2537,13 +2548,13 @@ async def run_agent_step(
                         for _e in _unstream("not_done"):
                             yield _e
                         continue
-                    if not _working and _team.parked is not None:
+                    if not _working and _team.waiting():
                         for _e in _unstream("not_done"):
                             yield _e
                         await _team.settle()
                         for _e in _team.drain():
                             yield _e
-                        for _e in _team_park(_team.parked, turn):
+                        for _e in _team_park(_team.waiting(), turn):
                             yield _e
                         return
 
@@ -2669,13 +2680,23 @@ async def run_agent_step(
                 if _team is not None and tool_name == "delegate_to_agent" and _delegate_resume \
                         and _delegate_resume.get("arguments") == {"agent_id": tool_args.get("agent_id"),
                                                                    "task": tool_args.get("task")}:
-                    # A person answered a member's question (Q6's interim): that member carries on.
-                    _resumed_member = _team.resume_member(None, tool_args.get("agent_id"), tool_args.get("task"),
-                                                          _delegate_resume.get("resume_state"))
+                    # A person answered members' questions on the parked turn (Q6, TEAM1c): those carry
+                    # on, by their own ids; the others still wait, and are asked again on this stream.
+                    _resumed_member = _team.resume_member(_delegate_resume.get("member_id"), tool_args.get("agent_id"),
+                                                          tool_args.get("task"), _delegate_resume.get("resume_state"))
+                    _resumed = [_resumed_member] if _resumed_member is not None else []
+                    for _ans in (resume_state or {}).get("team_answers") or []:
+                        _also = _team.resume_member(_ans.get("member_id"), "", "", _ans.get("resume_state"),
+                                                    approved=bool(_ans.get("approved")))
+                        if _also is not None:
+                            _resumed.append(_also)
                     _delegate_resume = None
-                    _t_obs = (f"The person answered {_resumed_member.name}'s question; it carries on, and its "
-                              "result arrives in your team inbox." if _resumed_member is not None
-                              else "That member's question was already settled.")
+                    _team.still_asking()
+                    _t_obs = (f"The person answered {', '.join(m.name for m in _resumed)}'s "
+                              f"question{'s' if len(_resumed) > 1 else ''}; "
+                              f"{'it carries' if len(_resumed) == 1 else 'they carry'} on, and "
+                              f"{'its result arrives' if len(_resumed) == 1 else 'their results arrive'} in your "
+                              "team inbox." if _resumed else "That member's question was already settled.")
                     current_context_text += f"\n[Turn {turn + 1} — Observation] {_t_obs}\n"
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _t_obs}
                     continue

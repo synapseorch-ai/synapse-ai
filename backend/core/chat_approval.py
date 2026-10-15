@@ -72,7 +72,58 @@ def parked_payload(event: dict, *, message: str, progress: dict | None,
     if automated:
         # A helper's follow-up asked it (SUB1a): its question is still nobody's words when it is saved.
         payload["automated"] = dict(automated)
+    if event.get("questions"):
+        # A team's members, each asking on its own (TEAM1c, Q6): the fields above are the first question's.
+        payload["questions"] = [dict(q) for q in event["questions"]]
     return payload
+
+
+def question_id(member_id: str | None, approval_id: str | None) -> str:
+    """One question's own id (TEAM1c): a member's call, so two members asking the same call are two questions.
+    A question no member asked (an agent's own, a one-at-a-time delegate's) is its call's `approval_id`."""
+    return f"{member_id}:{approval_id}" if member_id else str(approval_id or "")
+
+
+def questions_of(pending: dict | None) -> list[dict[str, Any]]:
+    """What a parked turn asks, as a list (TEAM1c): a team's every waiting member, or the one call a turn
+    parked before there were lists — read as a list of one, so a row saved before them answers as it did."""
+    if not pending:
+        return []
+    if pending.get("questions"):
+        return [dict(q) for q in pending["questions"]]
+    return [{"question_id": question_id(None, pending.get("approval_id")),
+             "approval_id": pending.get("approval_id"), "member_id": None, "member_name": None,
+             "tool_name": pending.get("tool_name"), "tool_args": pending.get("tool_args") or {},
+             "category": pending.get("category")}]
+
+
+def to_ring(pending: dict | None) -> list[dict[str, Any]]:
+    """The questions a pause asks in the bell (TEAM1c): those no earlier pause of the turn asked — a
+    question still waiting after a partial answer keeps the item it already has."""
+    return [q for q in questions_of(pending) if not q.get("asked_before")]
+
+
+def settle_resumed(before: dict | None, after: dict | None, resolve) -> None:
+    """After a resumed turn: the bell items of `before`'s questions it no longer asks are settled —
+    `expired`, since an answered one's was resolved with its answer and stays so. `after` is what
+    the turn paused on again, or None when it ended. `resolve(question)` settles one."""
+    still = {q.get("question_id") for q in questions_of(after)}
+    for q in questions_of(before):
+        if q.get("question_id") not in still:
+            resolve(q)
+
+
+def find_question(pending: dict | None, *, question: str | None = None,
+                  approval_id: str | None = None) -> dict[str, Any] | None:
+    """The question an answer names: by its own id, else by its call's `approval_id` when that names exactly one
+    (two members may ask the same call: then the answer must name the question). None when it names none."""
+    asked = questions_of(pending)
+    if question:
+        return next((q for q in asked if q.get("question_id") == question), None)
+    if approval_id is None:
+        return asked[0] if len(asked) == 1 else None
+    found = [q for q in asked if q.get("approval_id") == approval_id]
+    return found[0] if len(found) == 1 else None
 
 
 def approval_prompt(tool_name: str | None, category: str | None) -> str:
@@ -103,10 +154,14 @@ def public_view(pending: dict | None) -> dict[str, Any] | None:
         "approval_id": pending.get("approval_id"),
         "message": pending.get("message") or "",
         "prompt": approval_prompt(pending.get("tool_name"), pending.get("category")),
+        # Every question it asks, each answered by its own id (TEAM1c); a member's names its lane.
+        "questions": [{**q, "prompt": approval_prompt(q.get("tool_name"), q.get("category"))}
+                      for q in questions_of(pending)],
     }
 
 
-def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[str, Any]:
+def resume_state_for(pending: dict, *, approve: bool, reason: str = "", question: str | None = None,
+                     verdicts: list[dict] | None = None) -> dict[str, Any]:
     """Turn a parked call and a person's answer into a state the loop resumes from.
 
     The turn is picked up from its snapshot rather than started again, which is
@@ -116,9 +171,19 @@ def resume_state_for(pending: dict, *, approve: bool, reason: str = "") -> dict[
 
     The verdict is recorded against `approval_id`, which is derived from the
     tool *and its arguments* — so allowing `ls` does not also allow `rm`.
+
+    A team's parked turn (TEAM1c) is answered per question: `question` names the
+    one answered (its first when None), or `verdicts` lists several answered
+    together (`{question_id, approve, reason}`, an answer and those that reached
+    the mailbox while it paused). Only those members carry on; the others stay
+    waiting, answerable while the turn runs again.
     """
     progress = dict(pending.get("progress") or {})
     delegated = progress.pop("delegate_pending", None)
+    team_pending = progress.pop("team_pending", None)
+    if team_pending:
+        return _team_resume_state(progress, team_pending, verdicts or [
+            {"question_id": question or team_pending[0].get("question_id"), "approve": approve, "reason": reason}])
     if delegated:
         return _delegated_resume_state(progress, delegated, approve=approve, reason=reason)
     approval_id = pending.get("approval_id")
@@ -167,13 +232,105 @@ def _delegated_resume_state(progress: dict, delegated: dict, *, approve: bool, r
     }, approve=approve, reason=reason)
     arguments = {"agent_id": delegated.get("agent_id"), "task": delegated.get("task")}
     lead_key = _approval_id("delegate_to_agent", arguments)
+    delegate = {"arguments": arguments, "resume_state": inner}
+    if delegated.get("member_id"):
+        # A team's member (TEAM1c): the replay resumes that member, never another asking the same agent.
+        delegate["member_id"] = delegated["member_id"]
     return {
         **progress,
         "approved_calls": sorted(set(progress.get("approved_calls") or []) | {lead_key}),
         "pending_call": {"approval_id": lead_key, "tool": "delegate_to_agent", "arguments": arguments,
                          "approved": True, "reason": ""},
-        "delegate": {"arguments": arguments, "resume_state": inner},
+        "delegate": delegate,
     }
+
+
+def member_resume_state(member: dict, *, approve: bool, reason: str = "") -> dict[str, Any]:
+    """A waiting team member's own resume state from a person's answer: its call run, or refused, as itself."""
+    approval = member.get("approval") or {}
+    return resume_state_for({**approval, "progress": member.get("progress") or {}}, approve=approve, reason=reason)
+
+
+def _team_resume_state(progress: dict, team_pending: list[dict], verdicts: list[dict]) -> dict[str, Any]:
+    """The lead's resume state when a team's turn parked on several members' questions (TEAM1c, Q6).
+
+    The first answered member is the lead's replayed `delegate_to_agent`, as one delegate's
+    question is (F286); the others answered with it are `team_answers`, each its member's own
+    resume state, started when the replay runs. Unanswered members stay waiting in the team's
+    snapshot. A member's snapshot is read from the team's (`progress["team"]`), kept once.
+    """
+    by_question = {e.get("question_id"): e for e in team_pending}
+    kept = {m.get("id"): m for m in ((progress.get("team") or {}).get("members") or [])}
+    answered = []
+    for verdict in verdicts:
+        entry = by_question.get(verdict.get("question_id"))
+        if entry is not None and entry not in (a[0] for a in answered):
+            answered.append((entry, verdict))
+    if not answered:
+        raise KeyError("none of these answers is a question this turn asks")
+    (first, first_verdict), rest = answered[0], answered[1:]
+    member = kept.get(first.get("member_id")) or {}
+    state = _delegated_resume_state(progress, {**first, "progress": member.get("progress") or {}},
+                                    approve=bool(first_verdict.get("approve")),
+                                    reason=str(first_verdict.get("reason") or ""))
+    state["team_answers"] = [
+        {"member_id": entry.get("member_id"), "question_id": entry.get("question_id"),
+         "approved": bool(verdict.get("approve")),
+         "resume_state": member_resume_state(kept.get(entry.get("member_id")) or {"approval": entry.get("approval")},
+                                             approve=bool(verdict.get("approve")),
+                                             reason=str(verdict.get("reason") or ""))}
+        for entry, verdict in rest]
+    state["delegate"]["approved"] = bool(first_verdict.get("approve"))
+    state["delegate"]["question_id"] = first.get("question_id")
+    return state
+
+
+# ── answers to a team's questions while its turn runs (TEAM1c) ──────────────
+
+#: Answers this process holds for a team's questions it could not hand over yet — its turn was
+#: starting, or pausing — by (tenant, session, agent key), each question's first answer. The team
+#: takes them when it starts (`Team.register`), and a paused turn's taker takes those for its
+#: questions; each is taken once. Kept an hour at most: a question none of them asks is gone.
+_ANSWERS: dict[tuple[str, str, str], dict[str, dict[str, Any]]] = {}
+ANSWER_KEPT_SECONDS = 3600
+
+
+def _box_key(session_id: str, agent_key: str) -> tuple[str, str, str]:
+    from core.tenancy import get_tenant
+    return (get_tenant() or "", session_id or "", agent_key or "default")
+
+
+def post_answer(session_id: str, agent_key: str, verdict: dict[str, Any]) -> str:
+    """A person's answer to one of a team's questions (`{question_id, approve, reason}`), given while no
+    paused turn holds it: "applied" when the team working in this process took it now — that member
+    carries on — else "held", for the team as it starts or the paused turn's taker."""
+    import time as _time
+    from core import team as _team
+
+    working = _team.find(session_id)
+    if (working is not None and working.agent_key == (agent_key or "default")
+            and working.answer(str(verdict.get("question_id") or ""), approve=bool(verdict.get("approve")),
+                               reason=str(verdict.get("reason") or ""))):
+        return "applied"
+    now = _time.time()
+    for key in [k for k, box in _ANSWERS.items()
+                if all(now - v.get("at", now) > ANSWER_KEPT_SECONDS for v in box.values())]:
+        _ANSWERS.pop(key, None)
+    box = _ANSWERS.setdefault(_box_key(session_id, agent_key), {})
+    box.setdefault(str(verdict.get("question_id") or ""), {**verdict, "at": now})
+    return "held"
+
+
+def take_answers(session_id: str, agent_key: str, question_ids: list[str] | None = None) -> list[dict[str, Any]]:
+    """The answers held for this conversation (those for `question_ids` only, when given), taken: each is
+    acted on by whoever takes it, and only them."""
+    key = _box_key(session_id, agent_key)
+    box = _ANSWERS.get(key) or {}
+    wanted = list(box) if question_ids is None else [q for q in question_ids if q in box]
+    taken = [{k: v for k, v in box.pop(q).items() if k != "at"} for q in wanted]
+    if not box:
+        _ANSWERS.pop(key, None)
+    return taken
 
 
 # ── a question nobody answered (F247) ───────────────────────────────────────
@@ -196,24 +353,31 @@ def moved_past_turn(pending: dict, *, why: str) -> list[dict[str, Any]]:
     """
     from core.session import _now, call_record, tools_from_calls, turn_calls
 
+    asked = questions_of(pending)
     tool = pending.get("tool_name") or "a tool"
     calls = turn_calls(pending.get("progress") or {})
-    gated = call_record(tool, pending.get("tool_args") or {}, f"Not run — {why}.")
-    # Marked as every call not run is (U68, F306), so its record says so too.
-    gated.update(refused=True, reason=why)
-    calls.append(gated)
+    for q in asked:
+        gated = call_record(q.get("tool_name") or "a tool", q.get("tool_args") or {}, f"Not run — {why}.")
+        # Marked as every call not run is (U68, F306), so its record says so too.
+        gated.update(refused=True, reason=why)
+        calls.append(gated)
     card = public_view(pending) or {}
     card.pop("message", None)
+    questions = card.pop("questions", None) or []
     question: dict[str, Any] = {"role": "user", "content": pending.get("message") or ""}
     if pending.get("automated"):
         question["automated"] = dict(pending["automated"])
-    return [
-        question,
-        {"role": "assistant",
-         "content": f"This turn stopped to ask permission to run `{tool}`. It was not run: {why}.",
-         "tools": tools_from_calls(calls), "calls": calls, "timestamp": _now(),
-         "approval": {**card, "outcome": "expired", "why": why}},
-    ]
+    answer: dict[str, Any] = {
+        "role": "assistant",
+        "content": f"This turn stopped to ask permission to run `{tool}`. It was not run: {why}.",
+        "tools": tools_from_calls(calls), "calls": calls, "timestamp": _now(),
+        "approval": {**card, "outcome": "expired", "why": why}}
+    if len(asked) > 1:
+        # A team's members asked several (TEAM1c): each card is drawn in its own lane, marked expired.
+        names = ", ".join(f"`{q.get('tool_name')}`" for q in asked)
+        answer["content"] = f"This turn stopped to ask permission to run {names}. None was run: {why}."
+        answer["approvals"] = [{**q, "outcome": "expired", "why": why} for q in questions]
+    return [question, answer]
 
 
 async def settle_moved_past(session_id: str, agent_key: str, *, save_as: str | None,
