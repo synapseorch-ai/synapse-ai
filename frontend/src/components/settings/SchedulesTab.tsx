@@ -614,15 +614,12 @@ export const SchedulesTab = () => {
                         <span className="text-xs text-text-faint">{form.enabled ? 'Schedule will run automatically' : 'Schedule is paused'}</span>
                     </div>
 
-                    {/* Its board (BOARD1b): what the next firing reads first. A saved schedule's, as it runs now. */}
+                    {/* Its board (BOARD1b): what the next firing reads first. A saved schedule's, as it runs now; folded. */}
                     {editingId && boardsOn && savedSchedule && (
-                        <section className="grid gap-3 border-t border-border pt-5" aria-labelledby="sched-board">
-                            <h3 id="sched-board" className="text-sm font-semibold text-text">Board</h3>
-                            <OssBoardsHost>
-                                <ScheduleBoard scheduleId={editingId}
-                                    workflowId={savedSchedule.target_type === 'orchestration' ? savedSchedule.target_id : null} />
-                            </OssBoardsHost>
-                        </section>
+                        <OssBoardsHost>
+                            <ScheduleBoard scheduleId={editingId}
+                                workflowId={savedSchedule.target_type === 'orchestration' ? savedSchedule.target_id : null} />
+                        </OssBoardsHost>
                     )}
                 </div>
             </Drawer>

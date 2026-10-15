@@ -1274,9 +1274,10 @@ export const AgentsTab = ({
                                             )}
                                         </SetupSection>
 
-                                        {/* Boards (BOARD1b): its own board's switch, and the shared boards that name it */}
+                                        {/* Boards (BOARD1b): its own board's switch, and the shared boards that name it; folded, its
+                                            fold the section's head (no second title above it). */}
                                         {boardsOn && draftAgent.type !== 'orchestrator' && (
-                                            <SetupSection id="setup-boards" title="Boards">
+                                            <section id="setup-boards" aria-label="Boards" className="border-b border-border py-6 last:border-b-0">
                                                 <OssBoardsHost>
                                                     <AgentBoards
                                                         agentId={isNew ? null : (draftAgent.id || null)}
@@ -1284,7 +1285,7 @@ export const AgentsTab = ({
                                                         onOwn={own => setDraftAgent({ ...draftAgent, boards: { ...(draftAgent.boards || {}), own } })}
                                                     />
                                                 </OssBoardsHost>
-                                            </SetupSection>
+                                            </section>
                                         )}
 
                                         <SetupSection id="setup-limits" title="Limits">

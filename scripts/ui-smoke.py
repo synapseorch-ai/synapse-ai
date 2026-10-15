@@ -10434,7 +10434,8 @@ async def check_workflowboard(browser) -> str:
 
 @check
 async def check_scheduleboard(browser) -> str:
-    """A scheduled agent's board in its schedule's drawer (C7)."""
+    """A scheduled agent's board in its schedule's drawer (C7), folded until opened (Naveen, 2026-10-16: optional),
+    its folded head counting the cards that wait."""
     _boards_on()
     stamp = int(time.time())
     aid = f"agent_uismoke_sboard_{stamp}"
@@ -10442,14 +10443,21 @@ async def check_scheduleboard(browser) -> str:
     sched = api("/api/schedules", "POST", {"name": f"Board smoke {stamp}", "target_type": "agent", "target_id": aid,
                                           "prompt": "check", "schedule_type": "interval", "interval_value": 1, "interval_unit": "days",
                                           "enabled": False})
+    api(f"/api/boards/scoped/schedule/{sched.get('id')}/cards", "POST", {"title": f"Smoke ask {stamp}", "kind": "task"})
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/schedules", wait_until="domcontentloaded")
         await page.get_by_role("button", name=f"Open Board smoke {stamp}").click(timeout=30_000)
         dialog = page.get_by_role("dialog")
-        await dialog.get_by_role("heading", name="Board", exact=True).wait_for(timeout=10_000)
-        await dialog.get_by_text("No cards yet").wait_for(timeout=10_000)
+        fold = dialog.get_by_role("button", name=re.compile(r"^Board · optional"))
+        await fold.get_by_text("1 open").wait_for(timeout=10_000)
+        if await fold.get_attribute("aria-expanded") != "false":
+            raise AssertionError("the schedule's board is open before anyone opens it")
+        if await dialog.get_by_text(f"Smoke ask {stamp}").count():
+            raise AssertionError("a folded board still shows its cards")
+        await fold.click()
+        await dialog.get_by_text(f"Smoke ask {stamp}").wait_for(timeout=10_000)
     finally:
         await ctx.close()
         for path in (f"/api/schedules/{sched.get('id')}", f"/api/agents/{aid}"):
@@ -10457,13 +10465,13 @@ async def check_scheduleboard(browser) -> str:
                 api(path, "DELETE")
             except Exception:
                 pass
-    return "a schedule that runs an agent shows its board in its drawer"
+    return "a schedule that runs an agent shows its board in its drawer, folded, counting the card that waits"
 
 
 @check
 async def check_agentboards(browser) -> str:
-    """The agent editor's Boards section (C2): its own board's switch, on unless turned off, and the shared boards
-    whose lists name it, read-only."""
+    """The agent editor's Boards section (C2): folded until opened, its folded row saying what is set (Naveen,
+    2026-10-16); inside, its own board's switch, on unless turned off, and the shared boards whose lists name it."""
     _boards_on()
     stamp = int(time.time())
     aid = f"agent_uismoke_aboards_{stamp}"
@@ -10476,8 +10484,13 @@ async def check_agentboards(browser) -> str:
         await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
         await page.locator('aside[aria-label="Your agents"]').get_by_text(
             f"Boards agent {stamp}", exact=True).click(timeout=30_000)
-        section = page.locator("#setup-boards").locator("xpath=..")
-        switch = page.get_by_role("switch", name="The board of the workflow or schedule it runs in")
+        section = page.locator("#setup-boards")
+        fold = section.get_by_role("button", name=re.compile(r"^Boards · optional"))
+        await fold.get_by_text("Own board on · 1 shared").wait_for(timeout=10_000)
+        if await fold.get_attribute("aria-expanded") != "false":
+            raise AssertionError("the agent's Boards section is open before anyone opens it")
+        await fold.click()
+        switch = section.get_by_role("switch", name="The board of the workflow or schedule it runs in")
         await switch.wait_for(timeout=10_000)
         if await switch.get_attribute("aria-checked") != "true":
             raise AssertionError("an agent's own board does not read as on")
@@ -10489,7 +10502,7 @@ async def check_agentboards(browser) -> str:
                 api(path, "DELETE")
             except Exception:
                 pass
-    return "the agent's Boards section shows its own board on and the shared board that names it"
+    return "the agent's Boards section is folded, says what is set, and shows its own board on and the shared board that names it"
 
 
 async def main() -> int:
