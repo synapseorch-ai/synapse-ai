@@ -476,6 +476,56 @@ class TestHeldAtTheEnd:
         assert all("You still hold" not in str(c["volatile_tail"]) for c in fake_llm.calls)
 
 
+class TestLeftOpenIsSaid:
+    """F582 (a): a turn that ends still holding a claim says so where its run is read — a step_warning naming each
+    card, before the answer — instead of the engine releasing it with only the card's history knowing."""
+
+    async def _run(self, fake_llm, script, run_id):
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+
+        await S.seed_agents([_agent(id="fixer", name="Bug fixer")])
+        orch = S.make_orchestration(id="wf_left", entry_step_id="w", steps=[
+            {"id": "w", "name": "Work", "type": "agent", "agent_id": "fixer", "prompt_template": "go",
+             "output_key": "r", "max_turns": 4, "next_step_id": None}])
+        await S.seed_orchestrations([orch])
+        fake_llm.script(script)
+        return [e async for e in OrchestrationEngine(Orchestration.model_validate(orch), _server()).run(
+            "go", run_id=run_id)]
+
+    async def test_a_step_that_leaves_its_claim_warns_on_the_run(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_left")
+        card, _ = await store.add_card(board.id, title="Fix login", key="BUG-201", by=PERSON)
+        events = await self._run(fake_llm, [tool_call("board_claim", card_id=card.id), "I closed BUG-201"], "run_left")
+        warnings = [e for e in events if e.get("type") == "step_warning"]
+        assert len(warnings) == 1 and warnings[0].get("orch_step_id") == "w"
+        said = warnings[0]["message"]
+        assert "Bug fixer" in said and card.id in said and "BUG-201" in said and "without closing it" in said
+        assert (await store.get_card(card.id)).status == "open"
+
+    async def test_a_step_that_closes_its_card_warns_of_nothing(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_left")
+        card, _ = await store.add_card(board.id, title="Fix login", key="BUG-201", by=PERSON)
+        events = await self._run(fake_llm, [tool_call("board_claim", card_id=card.id),
+                                            tool_call("board_update", card_id=card.id, version=1, status="done",
+                                                      result="Fixed"), "Closed BUG-201"], "run_closed")
+        assert not [e for e in events if e.get("type") == "step_warning"]
+
+    async def test_in_chat_it_comes_before_the_answer(self, boards_on, fake_llm):
+        from core.models import ChatRequest
+        from core.react_engine import run_react_loop
+
+        bugs = await _shared("Bugs", ("agent", "desk", "work"))
+        card, _ = await store.add_card(bugs.id, title="Fix login", by=PERSON)
+        await S.seed_agents([_agent(id="desk")])
+        fake_llm.script([tool_call("board_claim", card_id=card.id), "done"])
+        server = types.SimpleNamespace(agent_sessions={"x": object()}, memory_store=None, tool_router={})
+        kinds = [e.get("type") for e in [e async for e in run_react_loop(
+            ChatRequest(message="go", session_id="s_left", agent_id="desk"), server, history_override=[],
+            save_turn=False)]]
+        assert "step_warning" in kinds and kinds.index("step_warning") < kinds.index("final")
+
+
 class TestRelease:
     async def test_a_workflow_steps_claims_go_when_it_ends(self, boards_on, fake_llm):
         from core.models_orchestration import Orchestration

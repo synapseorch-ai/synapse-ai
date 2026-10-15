@@ -369,6 +369,26 @@ async def _run(name: str, args: dict[str, Any], turn: TurnBoards, *, tainted: bo
     return _refused(f"there is no board tool {name}.")
 
 
+async def left_open(turn: TurnBoards) -> str | None:
+    """What a turn that answers still holding claims says where its run is read (F582): "Bug fixer left
+    card_… (key BUG-201) "Fix login" claimed without closing it; it goes back to Open as the turn ends." None
+    when it holds nothing — asked only by a turn that has claimed — and never raises: a missed warning leaves
+    the card's history, which records the release."""
+    if not turn.holding:
+        return None
+    try:
+        held = await store.held_cards(turn.holder)
+    except Exception as exc:  # noqa: BLE001 — a board never fails a turn
+        logger.warning("held claims of %s not read: %s", turn.holder.key, exc)
+        return None
+    if not held:
+        return None
+    who = turn.actor.agent_name or turn.actor.agent or "The agent"
+    named = "; ".join(f"{c.id}{f' (key {c.key})' if c.key else ''} \"{c.title[:80]}\"" for c in held)
+    it = "it" if len(held) == 1 else "them"
+    return f"{who} left {named} claimed without closing {it}; {it} {'goes' if len(held) == 1 else 'go'} back to Open as the turn ends."
+
+
 async def renew(turn: TurnBoards) -> None:
     """Keep this turn's claims: once a third of the lease has passed since it last did, one UPDATE renews them.
     Nothing while it holds none."""

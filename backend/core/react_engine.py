@@ -3645,6 +3645,12 @@ async def run_agent_step(
 
     if _kn_citations is not None:
         yield _kn_citations
+    # A turn answering while it still holds a claim says so before its answer (F582): its end releases the
+    # claim, and the run's reader, not only the card's history, should know the card was left unclosed.
+    if _turn_boards is not None and _turn_boards.holding:
+        _left_open = await _board_tools_mod.left_open(_turn_boards)
+        if _left_open:
+            yield {"type": "step_warning", "message": _left_open}
     final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
                    "tool_name": tool_name}
     if not (not is_orchestrator and persist_turn and not _workflow_step and save_turn):
