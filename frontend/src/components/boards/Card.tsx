@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, CheckCircle2, RotateCcw, SquareCheck, StickyNote, XCircle } from 'lucide-react';
 
 import { Badge, Button, ErrorNote, Field, Hint, Input, Segmented, Spinner, Textarea, tileHue } from '@/components/ui';
+import { when } from '@/components/run/model';
 import { cn } from '@/lib/cn';
 
 import {
@@ -92,22 +93,25 @@ export function Sticky({ card, currentRunId, now, dim, draggable, onOpen }: {
                 )}
             >
                 <span className={cn('line-clamp-3 block text-sm leading-snug text-text', closed && 'text-text-muted')}>{card.title}</span>
-                <span className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                <span className="mt-2 flex min-w-0 items-center gap-1.5 text-xs">
                     {note
                         ? <StickyNote className="size-3.5 shrink-0 text-text-faint" aria-label="Note" />
-                        : <SquareCheck className="size-3.5 shrink-0 text-accent" aria-label="Task" />}
-                    {card.key && <span className="shrink-0 font-mono text-2xs text-text-faint">{card.key}</span>}
-                    {card.tainted && <FromContent plain />}
+                        : closed
+                            ? (card.outcome === 'failed'
+                                ? <XCircle className="size-3.5 shrink-0 text-danger" aria-label="Failed" />
+                                : <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-label="Done" />)
+                            : <SquareCheck className="size-3.5 shrink-0 text-accent" aria-label="Task" />}
+                    <span className={cn('min-w-0 truncate font-medium', owner.person ? 'text-person-ink' : 'text-text-muted')}>{owner.name}</span>
+                </span>
+                <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    {card.created_at && <span className="text-2xs text-text-faint">{when(card.created_at, { now })}</span>}
                     {card.status === 'claimed' && (
                         <span className="inline-flex shrink-0 items-center gap-1 text-2xs text-text-muted">
                             <span aria-hidden className="size-1.5 rounded-full bg-machine" />{left || 'claimed'}
                         </span>
                     )}
-                    {closed && card.kind === 'task' && (card.outcome === 'failed'
-                        ? <XCircle className="size-3.5 shrink-0 text-danger" aria-label="Failed" />
-                        : <CheckCircle2 className="size-3.5 shrink-0 text-success" aria-label="Done" />)}
+                    {card.tainted && <FromContent plain />}
                     {card.status === 'archived' && <Badge size="sm" tone="neutral">Archived</Badge>}
-                    <span className="ml-auto"><Avatar name={owner.name} person={owner.person} /></span>
                 </span>
             </button>
         </li>
