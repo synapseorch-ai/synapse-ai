@@ -72,6 +72,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
     // Boards' switch and caps (BOARD1b): as Knowledge's, null until read and not saved until then.
     const [boards, setBoards] = useState<BoardsSettings | null>(null);
+    // The install's ceiling on a Team agent's members at once (TEAM1b): null until read, not saved until then.
+    const [teamCeiling, setTeamCeiling] = useState<number | null>(null);
     const [toolPolicyDefaults, setToolPolicyDefaults] = useState<ToolPolicy>({});
     const [bashAllowedDirs, setBashAllowedDirs] = useState<string[]>([]);
 
@@ -265,6 +267,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             ...(boards === null ? {} : {
                 boards_enabled: boards.enabled, boards_max_open_cards: boards.maxOpenCards, boards_max_shared: boards.maxShared,
             }),
+            ...(teamCeiling === null ? {} : { team_at_once_ceiling: teamCeiling }),
             ...knowledgeModels,
         };
 
@@ -502,6 +505,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                     maxOpenCards: Number(data.boards_max_open_cards) || 2000,
                     maxShared: Number(data.boards_max_shared) || 0,
                 });
+                setTeamCeiling(Math.max(1, Number(data.team_at_once_ceiling) || 10));
                 setToolPolicyDefaults(data.tool_policy_defaults || {});
                 setEmbedCode(data.embed_code || false);
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
@@ -611,6 +615,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         setKnowledgeEnabled={setKnowledgeEnabled}
                         boards={boards}
                         setBoards={setBoards}
+                        teamCeiling={teamCeiling}
+                        setTeamCeiling={setTeamCeiling}
                         toolPolicyDefaults={toolPolicyDefaults}
                         setToolPolicyDefaults={setToolPolicyDefaults}
                         embedCode={embedCode}

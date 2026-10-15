@@ -235,7 +235,7 @@ export function KitchenSink() {
                 options={[
                   { value: "conversational", label: "Conversational", hint: "Multi-turn chat." },
                   { value: "analysis", label: "Analysis", hint: "One-shot reasoning." },
-                  { value: "delegate", label: "Delegate", disabled: true },
+                  { value: "delegate", label: "Team", disabled: true },
                 ]}
               />
             </Field>

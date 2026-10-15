@@ -65,6 +65,9 @@ interface GeneralTabProps {
     /** Boards' switch and caps (`boards_enabled`, `boards_max_open_cards`, `boards_max_shared`; BOARD1b); null until read. */
     boards: BoardsSettings | null;
     setBoards: (v: BoardsSettings) => void;
+    /** The most members a Team agent may run at once on this install (`team_at_once_ceiling`; TEAM1b); null until read. */
+    teamCeiling: number | null;
+    setTeamCeiling: (v: number) => void;
     toolPolicyDefaults: ToolPolicy;
     setToolPolicyDefaults: (v: ToolPolicy) => void;
     embedCode: boolean;
@@ -93,6 +96,7 @@ export function GeneralTab({
     allowDbWrite, setAllowDbWrite,
     knowledgeEnabled, setKnowledgeEnabled,
     boards, setBoards,
+    teamCeiling, setTeamCeiling,
     toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
@@ -282,6 +286,20 @@ export function GeneralTab({
                             </div>
                         </div>
                     )}
+                </div>
+            </Section>
+
+            <Section {...S} title="Agent teams">
+                <div className={`space-y-1.5 ${FORM}`}>
+                    <Label htmlFor="gen-team-at-once" className={FIELD_LABEL}>Members working at once, most</Label>
+                    <Input id="gen-team-at-once" type="number" min={1} max={50} className="w-40 font-medium tabular-nums"
+                        value={teamCeiling ?? ''} disabled={teamCeiling === null}
+                        onChange={(e) => setTeamCeiling(Math.min(50, Math.max(1, parseInt(e.target.value) || 1)))} />
+                    <p className="text-xs text-text-faint">
+                        The most members any Team agent here runs side by side. Each Team agent sets its own number up
+                        to this; extra members wait for a free slot. More at once costs no more, but providers&apos; rate
+                        limits slow a large team down.
+                    </p>
                 </div>
             </Section>
 

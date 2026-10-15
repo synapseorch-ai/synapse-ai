@@ -92,7 +92,7 @@ function NumberField({ id, label, hint, value, min, max, onCommit, optional = fa
     );
 }
 
-export function TeamSetup({ block, onChange, ceiling, ceilingNote, disabled = false, className }: {
+export function TeamSetup({ block, onChange, ceiling, ceilingNote, members, disabled = false, className }: {
     /** The agent's `team` block; null for one that has none (one at a time). */
     block: Partial<TeamBlock> | null | undefined;
     onChange: (block: TeamBlock) => void;
@@ -100,6 +100,8 @@ export function TeamSetup({ block, onChange, ceiling, ceilingNote, disabled = fa
     ceiling: number;
     /** Where that ceiling comes from, e.g. "This install allows up to 10 (Settings → General)". */
     ceilingNote?: React.ReactNode;
+    /** The product's member picker, drawn under "How members work" (its candidate rules are the product's). */
+    members?: React.ReactNode;
     disabled?: boolean;
     className?: string;
 }) {
@@ -130,6 +132,8 @@ export function TeamSetup({ block, onChange, ceiling, ceilingNote, disabled = fa
                     })}
                 </div>
             </fieldset>
+
+            {members}
 
             {mode === 'team' && (
                 <>

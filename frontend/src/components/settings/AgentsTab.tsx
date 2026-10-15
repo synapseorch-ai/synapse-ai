@@ -18,6 +18,7 @@ import { AgentMemory } from './AgentMemory';
 import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type ToolPolicy } from './ToolPolicy';
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
 import { AgentBoards } from '@/components/boards/AgentBoards';
+import { TeamSetup, newTeamBlock } from '@/components/team';
 import { useNavFlags } from '@/components/app/NavFlags';
 import { OssBoardsHost } from '@/lib/boardsHost';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
@@ -106,6 +107,8 @@ export const AgentsTab = ({
     // publish this agent — both read-only here, both needed to say what a
     // choice will actually do before it is saved.
     const [policyDefaults, setPolicyDefaults] = useState<ToolPolicy>({});
+    // The most members any Team agent here may run at once (Settings → General; TEAM1b, Q2a).
+    const [teamCeiling, setTeamCeiling] = useState<number>(10);
     const [widgets, setWidgets] = useState<any[]>([]);
     const [isSaving, setIsSaving] = useState(false);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'error' } | null>(null);
@@ -290,7 +293,11 @@ export const AgentsTab = ({
             .catch(err => console.error("Failed to fetch agent types", err));
         fetch('/api/settings')
             .then(res => res.json())
-            .then(data => setPolicyDefaults(data?.tool_policy_defaults || {}))
+            .then(data => {
+                setPolicyDefaults(data?.tool_policy_defaults || {});
+                const ceiling = Number(data?.team_at_once_ceiling);
+                if (Number.isFinite(ceiling) && ceiling >= 1) setTeamCeiling(Math.floor(ceiling));
+            })
             .catch(err => console.error("Failed to fetch settings", err));
         fetch('/api/widgets')
             .then(res => res.json())
@@ -686,6 +693,8 @@ export const AgentsTab = ({
                                                                 type: newType,
                                                                 tools: cleanedTools,
                                                                 max_turns: draftAgent.max_turns ?? defaultMaxTurns,
+                                                                // A new Team agent starts as a team (Q1); one that has its block keeps it.
+                                                                ...(newType === 'delegate' && !draftAgent.team ? { team: newTeamBlock() } : {}),
                                                             });
                                                         }}
                                                     />
@@ -836,13 +845,19 @@ export const AgentsTab = ({
 
                                         </SetupSection>
 
-                                        <SetupSection id="setup-tools" title="Tools">
-                                            {draftAgent.type === 'delegate' ? (
-                                                /* ── Delegate Agent: Sub-Agent Selector ── */
+                                        {draftAgent.type === 'delegate' && (
+                                            /* ── A Team agent (stored `delegate`): its members and how they work (TEAM1b; Q1, Q2a, Q11) ── */
+                                            <SetupSection id="setup-members" title="Members">
+                                                <TeamSetup
+                                                    block={draftAgent.team}
+                                                    onChange={team => setDraftAgent({ ...draftAgent, team })}
+                                                    ceiling={teamCeiling}
+                                                    ceilingNote={`Up to ${teamCeiling} on this install (Settings → General). Others wait for a free slot.`}
+                                                    members={(
                                                 <div className="space-y-3">
-                                                    <Label className="block">Sub-Agents (Delegation Targets)</Label>
+                                                    <Label className="block">Members</Label>
                                                     <p className="-mt-1 text-xs text-text-faint">
-                                                        Select which agents this delegate can route tasks to. Leave all unchecked to allow delegation to any agent.
+                                                        The agents this Team agent can hand work to. Each works with its own tools and approvals. Leave all unticked to allow any agent.
                                                     </p>
                                                     {(() => {
                                                         const otherAgents = agents.filter((a: any) =>
@@ -879,7 +894,7 @@ export const AgentsTab = ({
                                                                     />
                                                                     <span className="block min-w-0 flex-1">
                                                                         <span className="block text-sm font-medium text-text">All Agents</span>
-                                                                        <span className="block text-xs text-text-faint">Allow delegation to any available agent</span>
+                                                                        <span className="block text-xs text-text-faint">Any agent here can be a member</span>
                                                                     </span>
                                                                     {allSelected && <span className="rounded-md bg-success-subtle px-1.5 py-0.5 text-2xs font-medium text-success">ACTIVE</span>}
                                                                 </label>
@@ -911,7 +926,7 @@ export const AgentsTab = ({
                                                                                         <span className="block truncate text-sm font-medium text-text">{a.name}</span>
                                                                                         <span className="block truncate text-xs text-text-faint">{a.description}</span>
                                                                                     </span>
-                                                                                    <span className="shrink-0 rounded-md bg-surface-2 px-1 text-2xs capitalize text-text-faint">{a.type}</span>
+                                                                                    <span className="shrink-0 rounded-md bg-surface-2 px-1 text-2xs text-text-faint">{typeLabel(a.type)}</span>
                                                                                 </span>
                                                                             </label>
                                                                         );
@@ -921,7 +936,12 @@ export const AgentsTab = ({
                                                         );
                                                     })()}
                                                 </div>
-                                            ) : (
+                                                    )}
+                                                />
+                                            </SetupSection>
+                                        )}
+
+                                        <SetupSection id="setup-tools" title="Tools">
                                             <div className="space-y-3">
                                                 <Label className="sr-only">Capabilities (Tools)</Label>
                                                 {unknownTools.length > 0 && (
@@ -1127,7 +1147,6 @@ export const AgentsTab = ({
                                                     </>);
                                                 })()}
                                             </div>
-                                            )}
 
                                             {draftAgent.type === 'code' && (
                                                 <div className="space-y-1">

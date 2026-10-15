@@ -281,7 +281,7 @@ function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: a
         return (
             <Empty icon={Workflow}>
                 Nothing references this agent yet — no workflow step, schedule, messaging
-                channel or delegating agent.
+                channel or Team agent.
             </Empty>
         );
     }
@@ -311,7 +311,7 @@ function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: a
             />
             <Section
                 icon={Bot}
-                title="Delegating agents"
+                title="Team agents it is a member of"
                 rows={delegators.map((a: any) => ({
                     key: a.id,
                     primary: a.name || a.id,
