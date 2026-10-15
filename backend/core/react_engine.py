@@ -3430,8 +3430,12 @@ async def run_orchestrator_agent(
     images: list[str] | None = None,
     image_refs: list[str] | None = None,
     history: list | None = None,
+    caller_tools: list | None = None,
 ):
     """Run an Orchestrator agent's orchestration, yielding the engine's events.
+
+    `caller_tools` are the caller's own tools for this turn (a phone call's `end_call`, F531): the run's agent
+    steps hold them, as a plain agent on the call does.
 
     The one routing every entry point uses — chat, a messaging channel, an agent
     schedule. Only chat used to have it; a channel and a schedule called
@@ -3474,6 +3478,7 @@ async def run_orchestrator_agent(
             return
         orch = Orchestration.model_validate(orch_data)
         engine = OrchestrationEngine(orch, server_module)
+        engine.caller_tools = list(caller_tools or [])
         engine.images = list(images or [])
         # The host's names for them, kept on the run for after a pause (F395).
         engine.image_refs = list(image_refs) if image_refs else None
@@ -3516,7 +3521,7 @@ async def run_orchestrator_agent(
 
 
 async def _resume_workflow_run(resume_state: dict, server_module, images: list[str] | None = None, *,
-                               caller_saves: bool = False):
+                               caller_saves: bool = False, caller_tools: list | None = None):
     """Carry on the run a chat's approval answered (F290), yielding its events.
 
     Only while it is still waiting on a person and nothing is running it — an
@@ -3541,7 +3546,8 @@ async def _resume_workflow_run(resume_state: dict, server_module, images: list[s
     answer = {"approve": bool(call.get("approved")), "reason": call.get("reason") or ""}
     async for event in stream_engine_events(
         # The answer's images join the run's own, which it kept (F395).
-        OrchestrationEngine.resume(run_id, answer, server_module, images=images, caller_saves_turn=caller_saves),
+        OrchestrationEngine.resume(run_id, answer, server_module, images=images, caller_saves_turn=caller_saves,
+                                   caller_tools=caller_tools),
         run_id,
     ):
         yield event
@@ -3580,7 +3586,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
     `save_turn` still decides whether the turn belongs to a conversation at all.
 
     `extra_tools` are the caller's own tools for this turn (a phone call's,
-    VOX1a); see `run_agent_step`. A workflow agent's run does not get them.
+    VOX1a); see `run_agent_step`. A workflow agent's run hands them to its
+    agent steps (F531).
 
     `history_override`, `caller_system`, `save_turn` and `log_source` are the
     OpenAI-compatible endpoint's (OAI1): the request carries the conversation,
@@ -3687,7 +3694,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             source = _resume_workflow_run(resume_state, server_module,
                                           images=getattr(request, "images", None) or None,
                                           # Its caller saves the turn (F475): the run's end saves none (F486).
-                                          caller_saves=not save_here)
+                                          caller_saves=not save_here, caller_tools=extra_tools)
         else:
             source = run_orchestrator_agent(
                 active_agent, user_message, server_module, session_id=session_id,
@@ -3695,6 +3702,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                 images=getattr(request, "images", None) or None,
                 image_refs=getattr(request, "_image_refs", None),
                 run_id=getattr(request, "_workflow_run_id", None),
+                caller_tools=extra_tools,
             )
         async for event in source:
             if stream_answer and event.get("type") == "final" and not event.get("orch_step_id"):

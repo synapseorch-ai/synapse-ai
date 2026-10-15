@@ -912,6 +912,19 @@ class TestTheVoiceTools:
         await socket.inbox.put(None)
         await asyncio.wait_for(task, 5)
 
+    async def test_a_goodbye_relayed_from_a_turn_run_elsewhere_closes_as_any_other(self, saved):
+        """F531 (VOX1f, call 7): a workflow agent's turns run on the fleet, where the call's own tools cannot act on
+        the call, so its "Bye." got a goodbye and the line stayed open. The fleet offers the tools without acting;
+        their call reaches the call relayed, as every event of the turn does, and the call closes as it would for
+        an agent here: the closing question first (VOX1d), then the goodbye."""
+        relayed = [{"type": "tool_execution", "tool_name": "end_call", "args": {"goodbye": "Goodbye!"}},
+                   {"type": "tool_result", "tool_name": "end_call", "preview": "Ending the call"}]
+        host = ScriptedHost(list(relayed), list(relayed))
+        socket = FakeSocket()
+        await _drive(_call(host, socket), socket, _prompt("Bye."), 0.1, _prompt("No."), hang_up=False)
+        assert socket.said == [(call_mod.CLOSING_QUESTION, True), ("Goodbye!", True)]
+        assert socket.ended == [{"ended": "agent"}]
+
     async def test_transfer_is_offered_only_with_a_number(self, saved):
         host = ScriptedHost([{"type": "tool_execution", "tool_name": "transfer_call"},
                              ("tool", "transfer_call", {"reason": "billing"}), {"type": "tool_result"},

@@ -300,6 +300,8 @@ class AgentStepExecutor:
                 # mid-transcript will not see them again.
                 images=(getattr(engine, "images", None) or None) if step.pass_images else None,
                 should_stop=getattr(engine, "cancel_hook", None),
+                # The caller's own tools (a phone call's, F531), as a plain agent on the call holds them.
+                extra_tools=getattr(engine, "caller_tools", None) or None,
                 # The run's roles (BWA1's MODEL_ROLES_KEY), for a helper model that names one (SUB1a).
                 model_roles=run.shared_state.get("_model_roles"),
                 # A step's prompt is built from the run, not typed by a person: an
@@ -497,6 +499,7 @@ class AgentStepExecutor:
         from core.run_ids import new_child_run_id
 
         sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
+        sub_engine.caller_tools = list(getattr(engine, "caller_tools", None) or [])
         sub_engine.caller = engine.caller_for(run, step)
         # What the run may spend is its root's: the child's own cap is for when
         # it runs on its own (CAP1).

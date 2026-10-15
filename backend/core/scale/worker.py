@@ -741,6 +741,14 @@ async def _visitor_turn(visitor: dict | None, events):
 # Job: run an agent chat turn
 # ---------------------------------------------------------------------------
 
+def _fleet_caller_tools(names: list[str] | None) -> list | None:
+    """A phone call's own tools for its turn on the fleet (F531), declared to act on nothing."""
+    if not names:
+        return None
+    from core.messaging.voice import tools as voice_tools
+    return voice_tools.for_the_fleet(names) or None
+
+
 @_for_the_jobs_tenant
 async def run_agent_chat_job(
     ctx: dict,
@@ -767,6 +775,7 @@ async def run_agent_chat_job(
     inbox_seed: list | None = None,
     helper: dict | None = None,
     chat_turn: str | None = None,
+    caller_tools: list[str] | None = None,
 ) -> dict:
     """Run a single agent chat turn, publish events, persist session.
 
@@ -788,6 +797,9 @@ async def run_agent_chat_job(
       (`_run_background_helper`).
     * `chat_turn` tags every event this job publishes, so two turns on one
       conversation's stream never read as one (`ChatEventPublisher`).
+
+    `caller_tools` is a phone call's too (F531): the call's own tools by name (`end_call`, `transfer_call`), offered
+    to the agent — a workflow agent's steps included — without acting here; the call acts on their relayed call.
 
     `keep_parked` is a phone call's (F486): the question the call parked waits while the caller talks on — it
     is answered from the bell, and said on the call (F474) — so a new turn does not move past it, and a second
@@ -1033,6 +1045,7 @@ async def run_agent_chat_job(
                 # was written over by the job's whole list, and is a second pair now that a save
                 # appends (F475).
                 save_turn=save_turn, log_source=log_source, save_here=False,
+                extra_tools=_fleet_caller_tools(caller_tools),
             )):
                 etype = event.get("type")
 

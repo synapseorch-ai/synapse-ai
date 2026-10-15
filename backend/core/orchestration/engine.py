@@ -239,6 +239,10 @@ class OrchestrationEngine:
         #: resumed run takes its owed turn off without saving it, so the turn has one writer and keeps the job's
         #: calls and reasoning (F486). An answer given anywhere else leaves this False and saves as F261 did.
         self.caller_saves_turn = False
+        #: The caller's own tools for this turn (a phone call's `end_call`/`transfer_call`, F531): `(tool, handler)`
+        #: pairs every agent step holds, as a plain agent on the call does. Never on the run: a resume is handed them
+        #: again by whoever carries it on.
+        self.caller_tools: list = []
         #: Agents (and their tool sets) resolved for this run, keyed by agent id
         #: — see core/orchestration/resolved.py. Nothing in it changes while a
         #: run is in flight, so it is never invalidated, only discarded with
@@ -1006,7 +1010,7 @@ class OrchestrationEngine:
     async def resume(
         cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None,
         *, depth: int = 0, caller: dict | None = None, run_cap: RunCap | None = None,
-        caller_saves_turn: bool = False,
+        caller_saves_turn: bool = False, caller_tools: list | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Resume a paused orchestration after human input.
 
@@ -1046,6 +1050,7 @@ class OrchestrationEngine:
         engine.images = list(images or [])
         engine.caller = caller
         engine.caller_saves_turn = caller_saves_turn
+        engine.caller_tools = list(caller_tools or [])
         if depth:
             engine.run_cap = run_cap
         async for event in engine.resume_paused(run, human_response):

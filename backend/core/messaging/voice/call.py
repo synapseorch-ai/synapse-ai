@@ -170,6 +170,7 @@ class _Turn:
         self.repeat_stopped = False    # the engine's repeat guard ended it
         self.after_closing = False     # the caller's reply to CLOSING_QUESTION: an end_call now ends the call
         self.after_question = False    # the caller's reply to a question the agent asked (F529)
+        self.relayed_action: tuple | None = None  # the call's tool, called by a turn run elsewhere (F531)
         self.answer: dict | None = None  # an approval's answer this turn carries on (F474), not the caller's words
         self.refused_tool = ""         # the refused call, which the resumed turn reports and never runs
 
@@ -511,6 +512,9 @@ class VoiceCall:
                 elif kind == "tool_execution":
                     turn.in_tool = True
                     turn.events_since.append(event)
+                    # A call of the call's own tool, relayed from a turn run elsewhere (F531): acted on as its handler
+                    # here would act, once its result says it ran.
+                    turn.relayed_action = voice_tools.action_from(event) or turn.relayed_action
                     name = str(event.get("tool_name") or "")
                     turn.tools.append(name)
                     if name == turn.refused_tool:
@@ -525,6 +529,8 @@ class VoiceCall:
                         turn.late = None
                     if turn.stop_after_tool:
                         break
+                    if self.pending_action is None and turn.relayed_action is not None:
+                        self.pending_action = turn.relayed_action
                     if self.pending_action is not None:
                         break  # a goodbye or a hand-off ends the turn here: no model call to word it
                 elif kind == "repeat_stopped":
