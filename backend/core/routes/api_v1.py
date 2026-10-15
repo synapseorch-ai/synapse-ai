@@ -404,23 +404,13 @@ async def _v1_turn_events(chat_request, agent: dict, _server, resume_state: dict
         yield {"type": "error", "message": "An internal error occurred. Check server logs for details."}
 
 
-#: What v1 says for each kind of model failure (F275) — our words, never the
-#: provider's (D118). The first sentence is the one every v1 error has said.
-_MODEL_FAILURE = {
-    "quota_exhausted": "The model provider refused it: its credit or quota is exhausted. Top up or raise "
-                       "the limit with the provider; retrying will not help until then.",
-    "provider_refused": "The model provider refused it — for example a key it does not accept or a model "
-                        "it does not serve. Check the agent's model and the workspace's model settings.",
-    "rate_limited": "The model provider is limiting requests right now. Try again shortly.",
-    "provider_unavailable": "The model provider could not be reached or failed. Try again shortly.",
-    "model_no_answer": "The model answered with nothing usable (empty, blocked, or only reasoning).",
-}
-
-
 def _model_failure(code: str | None) -> str:
+    """What v1 says for a model failure (F275): the first sentence every v1 error has said, then its kind's."""
+    from core.model_failures import MODEL_FAILURE
+
     said = "The agent encountered an error processing your request."
-    if code in _MODEL_FAILURE:
-        said += " " + _MODEL_FAILURE[code]
+    if code in MODEL_FAILURE:
+        said += " " + MODEL_FAILURE[code]
     return said
 
 

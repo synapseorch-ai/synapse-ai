@@ -322,9 +322,13 @@ async def generate_cases(suite_id: str, payload: GenerateIn):
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     rubric = await evals_store.get_rubric(orch.get("rubric_id") or "")
-    cases = await generate.propose(
-        orch, rubric, load_settings(), count=payload.count, steer=payload.steer
-    )
+    try:
+        cases = await generate.propose(
+            orch, rubric, load_settings(), count=payload.count, steer=payload.steer
+        )
+    except generate.CasesNotWritten as exc:
+        # The model call failed: said, never an empty answer (F512).
+        raise HTTPException(status_code=502, detail=str(exc)) from None
     return {"cases": cases, "saved": False}
 
 

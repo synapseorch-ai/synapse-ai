@@ -105,9 +105,22 @@ def parse_cases(text: str, limit: int) -> list[dict]:
     return out
 
 
+class CasesNotWritten(Exception):
+    """The model call behind "Suggest cases" failed (F512): `str()` says why, for the screen; `code` is its kind
+    (`LLMError.code`, or `timeout`). An empty list is only ever a reply that held no case."""
+
+    def __init__(self, sentence: str, code: str):
+        super().__init__(sentence)
+        self.code = code
+
+
 async def propose(orch: dict, rubric: dict | None, settings: dict,
                   count: int = 5, steer: str = "") -> list[dict]:
-    """Candidate cases for a person to edit and accept. Saves nothing."""
+    """Candidate cases for a person to edit and accept. Saves nothing.
+
+    Raises `CasesNotWritten` when the model call fails or times out: an empty wallet, a refused key and a timeout
+    each read as "No usable cases came back." until F512.
+    """
     from core.llm_providers import detect_mode_from_model, generate_response
 
     count = max(1, min(count, MAX_CASES))
@@ -130,9 +143,16 @@ async def propose(orch: dict, rubric: dict | None, settings: dict,
         )
     except asyncio.TimeoutError:
         _log.warning("case generation timed out")
-        return []
+        raise CasesNotWritten(
+            f"Could not suggest cases: the model did not answer within {TIMEOUT_SECONDS:g} seconds. Try again.",
+            "timeout",
+        ) from None
     except Exception as exc:
+        from core.llm_providers import LLMError
+        from core.model_failures import failure_sentence
+
         _log.warning(f"case generation failed: {exc}")
-        return []
+        code = exc.code if isinstance(exc, LLMError) else "model_error"
+        raise CasesNotWritten(f"Could not suggest cases. {failure_sentence(exc)}", code) from exc
 
     return parse_cases(text if isinstance(text, str) else "", count)

@@ -793,14 +793,18 @@ function SetDetail({
                 method: "POST", headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ count: 5 }),
             });
-            if (!res.ok) throw new Error();
+            if (!res.ok) {
+                // A failed model call says why: an empty wallet, a refused key, a timeout (F512).
+                const body = await res.json().catch(() => null);
+                throw new Error(typeof body?.detail === "string" ? body.detail : "");
+            }
             const body = await res.json();
             if (!body.cases.length) {
                 onToast("The model did not return any usable cases.", "warning");
             }
             setProposed(body.cases);
-        } catch {
-            onToast("Could not generate cases.", "danger");
+        } catch (e) {
+            onToast((e instanceof Error && e.message) || "Could not generate cases.", "danger");
         } finally {
             setBusy(false);
         }

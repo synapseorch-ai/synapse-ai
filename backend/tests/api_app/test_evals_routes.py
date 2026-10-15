@@ -209,3 +209,22 @@ class TestDeletingAGoldenSet:
         assert await evals_store.get_suite(suite["id"]) is None
         assert [r["id"] for r in await store.suite_runs_for(suite["id"])] == ["esr_done"]
         assert (await client.delete(f"/api/evals/suites/{suite['id']}")).status_code == 404
+
+
+class TestSuggestingCasesThatFailed:
+    """F512: the route answered 200 with no cases when the model call failed; it says why now."""
+
+    async def test_a_failed_model_call_is_a_502_that_says_why(self, client, monkeypatch):
+        import core.llm_providers as llm
+        from core.llm_providers import LLMError
+
+        async def refused(*_a, **_k):
+            raise LLMError("Model gateway refused the call: The model wallet is empty. Add balance under "
+                           "Settings, Billing to continue.", provider="gateway", status=402)
+        monkeypatch.setattr(llm, "generate_response", refused)
+        await S.seed_orchestrations([S.make_orchestration(id="orch_gen", entry_step_id="p")])
+        suite = (await client.post("/api/evals/suites", json={"name": "Gen", "orchestration_id": "orch_gen",
+                                                              "cases": []})).json()
+        res = await client.post(f"/api/evals/suites/{suite['id']}/generate", json={"count": 3})
+        assert res.status_code == 502
+        assert "The model wallet is empty." in res.json()["detail"]

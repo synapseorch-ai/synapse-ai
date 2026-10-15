@@ -350,3 +350,70 @@ class TestCaseGenerationProposesAndSavesNothing:
             5,
         )
         assert "Sources" in prompt and "At least three" in prompt
+
+
+class TestASuggestionThatFailedSaysWhy:
+    """F512: a model call that failed answered "No usable cases came back." — an empty wallet, a refused key and
+    a timeout all read as a model with nothing to suggest. A failure now says what it was; only a reply that holds
+    no case is an empty list."""
+
+    ORCH = {"name": "Brief", "description": "d", "steps": []}
+
+    @staticmethod
+    def _failing(monkeypatch, exc=None, delay=0.0):
+        import core.llm_providers as llm
+
+        async def fake(*_a, **_k):
+            if delay:
+                await asyncio.sleep(delay)
+            if exc is not None:
+                raise exc
+            return '[{"input": "x"}]'
+        monkeypatch.setattr(llm, "generate_response", fake)
+
+    async def test_the_platform_wallet_says_so_in_its_own_words(self, monkeypatch):
+        from core.llm_providers import LLMError
+        said = "The model wallet is empty. Add balance under Settings, Billing to continue."
+        self._failing(monkeypatch, LLMError(f"Model gateway refused the call: {said}", provider="gateway",
+                                            status=402))
+        with pytest.raises(generate.CasesNotWritten) as caught:
+            await generate.propose(self.ORCH, None, {"model": "synapse.nova-pro"})
+        assert caught.value.code == "quota_exhausted"
+        assert said in str(caught.value) and "Model gateway" not in str(caught.value)
+
+    async def test_a_providers_refusal_is_said_in_our_words(self, monkeypatch):
+        from core.llm_providers import LLMError
+        from core.model_failures import MODEL_FAILURE
+        self._failing(monkeypatch, LLMError("HTTP 429: insufficient_quota sk-proj-abc", provider="openai"))
+        with pytest.raises(generate.CasesNotWritten) as caught:
+            await generate.propose(self.ORCH, None, {"model": "gpt-4.1-mini"})
+        assert caught.value.code == "quota_exhausted"
+        assert MODEL_FAILURE["quota_exhausted"] in str(caught.value) and "sk-proj" not in str(caught.value)
+
+    async def test_an_answer_with_nothing_in_it_is_a_failure_too(self, monkeypatch):
+        from core.llm_providers import EmptyAnswer
+        from core.model_failures import MODEL_FAILURE
+        self._failing(monkeypatch, EmptyAnswer("empty"))
+        with pytest.raises(generate.CasesNotWritten) as caught:
+            await generate.propose(self.ORCH, None, {"model": "gpt-4.1-mini"})
+        assert MODEL_FAILURE["model_no_answer"] in str(caught.value)
+
+    async def test_a_model_that_never_answers_says_it_timed_out(self, monkeypatch):
+        monkeypatch.setattr(generate, "TIMEOUT_SECONDS", 0.05)
+        self._failing(monkeypatch, delay=5)
+        with pytest.raises(generate.CasesNotWritten) as caught:
+            await generate.propose(self.ORCH, None, {"model": "gpt-4.1-mini"})
+        assert caught.value.code == "timeout" and "did not answer" in str(caught.value)
+
+    async def test_a_reply_with_no_case_in_it_is_still_an_empty_list(self, monkeypatch):
+        import core.llm_providers as llm
+
+        async def prose(*_a, **_k):
+            return "I could not think of any."
+        monkeypatch.setattr(llm, "generate_response", prose)
+        assert await generate.propose(self.ORCH, None, {"model": "gpt-4.1-mini"}) == []
+
+    async def test_a_reply_with_cases_is_read_as_before(self, monkeypatch):
+        self._failing(monkeypatch)
+        assert await generate.propose(self.ORCH, None, {"model": "gpt-4.1-mini"}) == [
+            {"name": "", "input": "x", "notes": ""}]

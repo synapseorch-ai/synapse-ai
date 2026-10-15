@@ -2795,7 +2795,9 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
         detail = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
         if detail is None:
             raise
-        raise LLMError(f"Model gateway refused the call: {detail.group(1)}",
+        from core.model_failures import GATEWAY_REFUSED
+
+        raise LLMError(f"{GATEWAY_REFUSED}{detail.group(1)}",
                        provider="gateway", status=e.status, code=e.code) from e
 
 
