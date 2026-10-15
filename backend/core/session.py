@@ -539,8 +539,11 @@ async def render_session_history(session_id: str, agent_id: str | None, turn: An
         return f"There is no turn {number}; this conversation has {len(turns)}."
     entry = turns[number - 1]
     images = f" {_image_placeholder(entry['images'])}" if entry.get("images") else ""
-    asked = "Question" if not entry.get("automated") else \
-        f"Automated (the result of your helper '{entry['automated'].get('name')}', not the person's words)"
+    if entry.get("automated"):
+        from core.helpers import automated_said
+        asked = automated_said(entry["automated"])
+    else:
+        asked = "Question"
     parts = [f"Turn {number} · {_when(entry)}",
              f"{asked}: {_clip(entry.get('user'), 2_000)}{images}",
              f"Answer: {_clip(entry.get('assistant'), 3_000)}"]

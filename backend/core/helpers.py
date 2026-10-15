@@ -75,6 +75,9 @@ SESSION_PREFIX = "helperc_"
 MAX_LIVE = 3
 #: An answer kept with the turn, and a call's result, as a saved turn clips them.
 ANSWER_CHARS = 4_000
+#: How long a result waits for others to go back with it, so helpers that finish close together come back as one
+#: follow-up, not one each (Naveen, SUB1a's live check: three helpers, three follow-ups). None with an inbox open.
+SETTLE_SECONDS = 2.0
 
 #: A helper's events that are shown, wrapped: what its lane draws. Nothing else of its turn leaves the engine —
 #: never `_log_llm_call` (its whole prompt), `_step_progress` (its state) or `final` (which would end its parent's
@@ -627,22 +630,67 @@ def result_item(helper: Helper) -> dict:
             "text": helper.result_for_parent(), "session_id": helper.session_id, "at": time.time()}
 
 
-def automated_mark(item: dict) -> dict:
-    """What a follow-up's question carries: whose result it is, never the person's words."""
-    return {"kind": "helper_result", "helper_id": item.get("helper_id"), "name": item.get("name"),
-            "status": item.get("status"), "session_id": item.get("session_id")}
+def automated_mark(items: dict | list[dict]) -> dict:
+    """What a follow-up's question carries: whose results it holds, never the person's words.
+
+    One result, or several that came back together. `helper_id`, `name` and `status` are the first's, so a
+    reader of one reads either; several add `helper_ids`, `names` and `statuses`, which say every result the
+    question holds (`mark_ids`). Saved whole at every save site: never trimmed.
+    """
+    items = [items] if isinstance(items, dict) else list(items)
+    first = items[0] if items else {}
+    mark = {"kind": "helper_result", "helper_id": first.get("helper_id"), "name": first.get("name"),
+            "status": first.get("status"), "session_id": first.get("session_id")}
+    if len(items) > 1:
+        mark.update(helper_ids=[i.get("helper_id") for i in items], names=[i.get("name") for i in items],
+                    statuses=[i.get("status") for i in items])
+    return mark
+
+
+def mark_ids(mark: dict | None) -> list:
+    """The helpers whose results a follow-up's question holds."""
+    mark = mark or {}
+    return list(mark.get("helper_ids") or [mark.get("helper_id")])
+
+
+def _whose(mark: dict) -> str:
+    """"your helper 'A'", or "your helpers 'A' and 'B'"."""
+    names = [f"'{n}'" for n in (mark.get("names") or [mark.get("name")])]
+    if len(names) == 1:
+        return f"your helper {names[0]}"
+    return f"your helpers {', '.join(names[:-1])} and {names[-1]}"
+
+
+def follow_up_text(items: dict | list[dict]) -> str:
+    """A follow-up's question: one result's text, or each of several under whose it is."""
+    items = [items] if isinstance(items, dict) else list(items)
+    if len(items) == 1:
+        return str(items[0].get("text") or "")
+    return "\n\n".join(
+        f"From your helper '{i.get('name')}' (it {_STATUS_WORDS.get(str(i.get('status')), 'finished')}):\n"
+        f"{i.get('text') or ''}" for i in items)
 
 
 def automated_opening(mark: dict, text: str) -> str:
     """How a follow-up's transcript starts, in place of "User Request:"."""
+    if mark.get("names"):
+        return (f"Automated input, not from the person: {_whose(mark)} came back. "
+                f"Tell the person what they found, as part of this conversation.\nTheir results:\n{text}\n")
     status = _STATUS_WORDS.get(str(mark.get("status")), "finished")
-    return (f"Automated input, not from the person: your helper '{mark.get('name')}' {status}. "
+    return (f"Automated input, not from the person: {_whose(mark)} {status}. "
             f"Tell the person what it found, as part of this conversation.\nIts result:\n{text}\n")
 
 
 def automated_history(mark: dict, text: str) -> str:
     """An automated question as a later turn's history reads it."""
-    return f"[Automated: the result of your helper '{mark.get('name')}', not something the person said]\n{text}"
+    results = "results" if mark.get("names") else "result"
+    return f"[Automated: the {results} of {_whose(mark)}, not something the person said]\n{text}"
+
+
+def automated_said(mark: dict) -> str:
+    """An automated question as `session_history` names it."""
+    results = "results" if mark.get("names") else "result"
+    return f"Automated (the {results} of {_whose(mark)}, not the person's words)"
 
 
 # ── in the background ────────────────────────────────────────────────────────
@@ -655,6 +703,9 @@ _DELIVERING: set[asyncio.Task] = set()
 _DELIVERED: set[str] = set()
 #: One delivery at a time per conversation.
 _LOCKS: dict[tuple, asyncio.Lock] = {}
+#: Results on their way back in this process, by conversation, and the one task taking each conversation's.
+_QUEUED: dict[tuple, list[dict]] = {}
+_COURIERS: dict[tuple, asyncio.Task] = {}
 
 
 def _detached() -> contextvars.Context:
@@ -828,7 +879,8 @@ async def report(helper: Helper, *, said: str | None = None) -> None:
 
 
 def redeliver(conversation: Conversation, items: list[dict]) -> None:
-    """Send results back, each exactly once, in tasks of their own (the caller may be ending)."""
+    """Send results back, each exactly once, in a task of their own (the caller may be ending): in this process
+    by the conversation's courier, which takes those that finish close together back as one."""
     if not items:
         return
     if _HOST is not None:
@@ -837,11 +889,26 @@ def redeliver(conversation: Conversation, items: list[dict]) -> None:
         _DELIVERING.add(task)
         task.add_done_callback(_delivered)
         return
-    for item in items:
-        task = asyncio.create_task(deliver(conversation, item), name=f"helper-deliver-{item.get('helper_id')}",
-                                   context=_detached())
-        _DELIVERING.add(task)
-        task.add_done_callback(_delivered)
+    _QUEUED.setdefault(conversation.key, []).extend(dict(i) for i in items)
+    if conversation.key in _COURIERS:
+        return  # the conversation's courier takes them with the rest
+    task = asyncio.create_task(_courier(conversation), name=f"helper-deliver-{conversation.session_id}",
+                               context=_detached())
+    _COURIERS[conversation.key] = task
+    _DELIVERING.add(task)
+    task.add_done_callback(_delivered)
+
+
+async def _courier(conversation: Conversation) -> None:
+    """Take a conversation's results back, those that finish close together as one (`SETTLE_SECONDS`)."""
+    key = conversation.key
+    try:
+        while _QUEUED.get(key):
+            if key not in _OPEN:
+                await asyncio.sleep(SETTLE_SECONDS)
+            await deliver(conversation, _QUEUED.pop(key, []), more=lambda: _QUEUED.pop(key, []))
+    finally:
+        _COURIERS.pop(key, None)
 
 
 def _delivered(task: asyncio.Task) -> None:
@@ -859,7 +926,7 @@ async def already_delivered(conversation: Conversation, helper_id: str) -> bool:
         return True
     row = await store.get(conversation.session_id, conversation.agent_id)
     for message in (row or {}).get("messages") or []:
-        if (message.get("automated") or {}).get("helper_id") == helper_id:
+        if message.get("automated") and helper_id in mark_ids(message["automated"]):
             return True
         if helper_id in (message.get("inbox_read") or []):
             return True
@@ -885,56 +952,72 @@ async def _until_changed(conversation: Conversation, timeout: float = 5.0) -> No
             wait.cancel()
 
 
-async def deliver(conversation: Conversation, item: dict) -> str:
-    """Send one result back, exactly once: an open inbox, else a parked question, else one follow-up turn.
+async def deliver(conversation: Conversation, items: dict | list[dict], *, more=None) -> str:
+    """Send results back, each exactly once: an open inbox, else a parked question, else one follow-up turn
+    holding them all. `more()` hands over results that arrived while this waited, to go with them.
 
-    Returns where it went (`inbox`, `parked`, `follow_up`), or `already`.
+    Returns where they went (`inbox`, `parked`, `follow_up`), or `already`.
     """
     from core import chat_turns
     from core.store import sessions as store
 
-    helper_id = str(item.get("helper_id"))
+    items = [dict(items)] if isinstance(items, dict) else [dict(i) for i in items]
     lock = _LOCKS.setdefault(conversation.key, asyncio.Lock())
     async with lock:
         while True:
-            if await already_delivered(conversation, helper_id):
+            if more is not None:
+                items.extend(dict(i) for i in more())
+            waiting, seen = [], set()
+            for item in items:
+                helper_id = str(item.get("helper_id"))
+                if helper_id not in seen and not await already_delivered(conversation, helper_id):
+                    waiting.append(item)
+                seen.add(helper_id)
+            items = waiting
+            if not items:
                 return "already"
             inbox = _OPEN.get(conversation.key)
-            if inbox is not None and inbox.put(item):
+            if inbox is not None and inbox.put(items[0]):
+                for item in items[1:]:
+                    inbox.put(item)
                 return "inbox"
             if chat_turns.busy(conversation.session_id) is not None:
-                # A turn holds it: one that opens an inbox takes the result, else wait until it ends.
+                # A turn holds it: one that opens an inbox takes the results, else wait until it ends.
                 await _until_changed(conversation)
                 continue
-            if await store.add_to_parked(conversation.session_id, conversation.agent_key, item):
-                _DELIVERED.add(helper_id)
-                return "parked"
+            parked = False
+            while items and await store.add_to_parked(conversation.session_id, conversation.agent_key, items[0]):
+                _DELIVERED.add(str(items.pop(0).get("helper_id")))
+                parked = True
+            if parked:
+                if not items:
+                    return "parked"
+                continue  # the question was answered meanwhile: the rest go another way
             try:
-                start_follow_up(conversation, item)
+                start_follow_up(conversation, items)
             except chat_turns.TurnAlreadyRunning:
                 continue  # a turn started meanwhile: look again
-            _DELIVERED.add(helper_id)
+            _DELIVERED.update(str(i.get("helper_id")) for i in items)
             return "follow_up"
 
 
-def start_follow_up(conversation: Conversation, item: dict) -> None:
-    """Start the agent's one follow-up turn on the conversation, its question the result. Raises
+def start_follow_up(conversation: Conversation, items: dict | list[dict]) -> None:
+    """Start the agent's one follow-up turn on the conversation, its question the results. Raises
     `TurnAlreadyRunning`, from the claim. In a member's messaging channel, its answer is sent to the same chat."""
     from core import chat_turns
 
-    mark = automated_mark(item)
+    mark, text = automated_mark(items), follow_up_text(items)
     if conversation.reply_to:
-        with chat_turns.claim(conversation.session_id, message=str(item.get("text") or ""),
-                              agent_key=conversation.agent_key) as turn:
+        with chat_turns.claim(conversation.session_id, message=text, agent_key=conversation.agent_key) as turn:
             turn.automated = mark
-            turn.start(_in_the_channel(conversation, item, mark), context=_detached())
+            turn.start(_in_the_channel(conversation, text, mark), context=_detached())
         return
 
     import core.server as _server
     from core.models import ChatRequest
     from core.routes.chat import _event_stream
 
-    request = ChatRequest(message=str(item.get("text") or ""), session_id=conversation.session_id,
+    request = ChatRequest(message=text, session_id=conversation.session_id,
                           agent_id=None if conversation.agent_key == "default" else conversation.agent_key)
     request._app_chat = True
     request._automated = mark
@@ -943,14 +1026,14 @@ def start_follow_up(conversation: Conversation, item: dict) -> None:
         turn.start(_event_stream(request, _server, None, expand_mentions=False))
 
 
-async def _in_the_channel(conversation: Conversation, item: dict, mark: dict) -> AsyncIterator[str]:
+async def _in_the_channel(conversation: Conversation, text: str, mark: dict) -> AsyncIterator[str]:
     """A follow-up in a member's messaging channel: the agent's turn, its answer sent to the chat (SUB1b).
 
     Held by the conversation's claim, so a second result waits for it; yields nothing for the turn's log.
     """
     from core.messaging.manager import follow_up_in_channel
 
-    await follow_up_in_channel(conversation, str(item.get("text") or ""), mark)
+    await follow_up_in_channel(conversation, text, mark)
     return
     yield  # an async generator: what `chat_turns` drives
 

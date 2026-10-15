@@ -139,17 +139,20 @@ export function HelperLanes({ helpers, ...rest }: {
 
 /**
  * Over a message nobody typed: a background helper's result, posted when it
- * finished (S2). Just who it is from; the agent's reply below says what it found.
+ * finished (S2), or the results of several that finished together. Just who it
+ * is from; the agent's reply below says what they found.
  */
-export function HelperNote({ name, className }: {
-    name: string;
+export function HelperNote({ names, className }: {
+    names: string[];
     className?: string;
 }) {
+    const who = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0] ?? 'Helper';
+    const from = names.length > 1 ? 'From your helpers' : 'From your helper';
     return (
-        <section aria-label={`From your helper: ${name}`} className={className}>
+        <section aria-label={`${from}: ${who}`} className={className}>
             <span className="inline-flex h-6 items-center gap-1.5 rounded-md bg-machine-subtle px-2 text-xs font-medium text-accent-ink">
                 <Bot aria-hidden className="size-3.5" />
-                From your helper · {name}
+                {from} · {who}
             </span>
         </section>
     );

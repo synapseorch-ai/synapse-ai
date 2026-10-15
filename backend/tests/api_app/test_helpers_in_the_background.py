@@ -315,6 +315,100 @@ class TestTheFollowUpIsNeverThePersons:
         assert not _offered_background(llm.calls_for(AUTOMATED)[0])
 
 
+def _result(helper_id, name, text, status="completed"):
+    return {"kind": "helper_result", "helper_id": helper_id, "name": name, "status": status, "text": text,
+            "session_id": f"helperc_{helper_id}"}
+
+
+class TestResultsThatFinishTogetherComeBackTogether:
+    """Naveen, SUB1a's live check: three helpers that finished seconds apart posted three follow-ups. Results
+    that finish close together come back as one follow-up holding them all, each still exactly once."""
+
+    async def test_two_results_close_together_are_one_follow_up(self, agent, tools, llm, monkeypatch):
+        monkeypatch.setattr(helpers, "SETTLE_SECONDS", 0.5, raising=False)
+        llm.on(AUTOMATED, ["SKU-11 has 41 in stock; SKU-12 is out, 120 on order."], raw=True)
+        conversation = helpers.Conversation(session_id="s_bg_together", agent_key=agent["id"], agent_id=agent["id"])
+        helpers.redeliver(conversation, [_result("subtask_a", "Stock: 11", "SKU-11: 41 in stock.")])
+        await asyncio.sleep(0.2)
+        helpers.redeliver(conversation, [_result("subtask_b", "Stock: 12", "SKU-12: out, 120 on order.",
+                                                 status="timed_out")])
+        turns = await eventually(lambda: _turns("s_bg_together", agent["id"]), what="the follow-up")
+        await asyncio.sleep(1.0)
+        turns = await _turns("s_bg_together", agent["id"])
+        assert len(turns) == 1, "one follow-up for both"
+        mark = turns[0]["automated"]
+        assert mark["helper_ids"] == ["subtask_a", "subtask_b"] and mark["names"] == ["Stock: 11", "Stock: 12"]
+        assert mark["statuses"] == ["completed", "timed_out"]
+        assert mark["helper_id"] == "subtask_a" and mark["name"] == "Stock: 11", "a reader of one still reads it"
+        assert "SKU-11: 41 in stock." in turns[0]["user"] and "SKU-12: out, 120 on order." in turns[0]["user"]
+        assert len(llm.calls_for(AUTOMATED)) == 1
+        prompt = llm.calls_for(AUTOMATED)[0]["prompt_msg"]
+        assert prompt.startswith(f"{AUTOMATED}: your helpers 'Stock: 11' and 'Stock: 12' came back")
+        assert "ran out of time" in prompt, "each result says how its helper ended"
+
+    async def test_one_arriving_while_the_conversation_is_busy_joins_the_one_waiting(self, agent, tools, llm,
+                                                                                      monkeypatch):
+        monkeypatch.setattr(helpers, "SETTLE_SECONDS", 0.1, raising=False)
+        llm.on(AUTOMATED, ["Both are done."], raw=True)
+        conversation = helpers.Conversation(session_id="s_bg_busy", agent_key=agent["id"], agent_id=agent["id"])
+        with chat_turns.claim("s_bg_busy", agent_key=agent["id"]):
+            helpers.redeliver(conversation, [_result("subtask_c", "First", "the first result")])
+            await asyncio.sleep(0.5)  # settled, and waiting for the conversation
+            helpers.redeliver(conversation, [_result("subtask_d", "Second", "the second result")])
+            await asyncio.sleep(0.3)
+            assert not llm.calls_for(AUTOMATED)
+        await eventually(lambda: _turns("s_bg_busy", agent["id"]), what="the follow-up")
+        await asyncio.sleep(0.5)
+        turns = await _turns("s_bg_busy", agent["id"])
+        assert len(turns) == 1 and turns[0]["automated"]["helper_ids"] == ["subtask_c", "subtask_d"]
+
+    async def test_each_result_of_a_combined_follow_up_arrives_once(self, agent, tools, llm):
+        llm.on(AUTOMATED, ["Both are done."], raw=True)
+        conversation = helpers.Conversation(session_id="s_bg_once", agent_key=agent["id"], agent_id=agent["id"])
+        first, second = _result("subtask_e", "E", "e's result"), _result("subtask_f", "F", "f's result")
+        assert await helpers.deliver(conversation, [first, second, first]) == "follow_up"
+        await eventually(lambda: _turns("s_bg_once", agent["id"]), what="the follow-up")
+        assert (await _turns("s_bg_once", agent["id"]))[0]["automated"]["helper_ids"] == ["subtask_e", "subtask_f"]
+        helpers._DELIVERED.clear()  # as after a restart: the conversation itself says they arrived
+        assert await helpers.deliver(conversation, second) == "already"
+        assert await helpers.deliver(conversation, [first, second]) == "already"
+
+    async def test_one_result_alone_keeps_its_mark_as_it_was(self, agent, tools, llm):
+        llm.on(AUTOMATED, ["Done."], raw=True)
+        conversation = helpers.Conversation(session_id="s_bg_alone", agent_key=agent["id"], agent_id=agent["id"])
+        await helpers.deliver(conversation, _result("subtask_g", "G", "g's result"))
+        turns = await eventually(lambda: _turns("s_bg_alone", agent["id"]), what="the follow-up")
+        assert turns[0]["automated"] == {"kind": "helper_result", "helper_id": "subtask_g", "name": "G",
+                                         "status": "completed", "session_id": "helperc_subtask_g"}
+        assert turns[0]["user"] == "g's result"
+        assert llm.calls_for(AUTOMATED)[0]["prompt_msg"].startswith(f"{AUTOMATED}: your helper 'G' finished.")
+
+    async def test_a_parked_question_keeps_them_all(self, agent, tools, llm):
+        await store.set_pending_approval("s_bg_park_both", agent["id"], {
+            "tool_name": "danger", "tool_args": {}, "approval_id": "ap1", "message": "Do it", "progress": {}})
+        conversation = helpers.Conversation(session_id="s_bg_park_both", agent_key=agent["id"], agent_id=agent["id"])
+        both = [_result("subtask_h", "H", "h's result"), _result("subtask_i", "I", "i's result")]
+        assert await helpers.deliver(conversation, both) == "parked"
+        kept = await _parked_inbox("s_bg_park_both", agent["id"])
+        assert [i["helper_id"] for i in kept] == ["subtask_h", "subtask_i"]
+        assert not await _turns("s_bg_park_both", agent["id"]) and not llm.calls_for(AUTOMATED)
+
+    async def test_it_is_read_back_as_every_helpers(self, client, agent, tools, llm):
+        from core.session import get_recent_history_messages, render_session_history
+
+        llm.on(AUTOMATED, ["Both are done."], raw=True)
+        conversation = helpers.Conversation(session_id="s_bg_read", agent_key=agent["id"], agent_id=agent["id"])
+        await helpers.deliver(conversation, [_result("subtask_j", "J", "j's result"),
+                                             _result("subtask_k", "K", "k's result")])
+        await eventually(lambda: _turns("s_bg_read", agent["id"]), what="the follow-up")
+        said = await get_recent_history_messages("s_bg_read", agent_id=agent["id"])
+        assert said[0]["content"].startswith("[Automated: the results of your helpers 'J' and 'K', not something")
+        listed = await render_session_history("s_bg_read", agent["id"], turn=1)
+        assert "Automated (the results of your helpers 'J' and 'K', not the person's words)" in listed
+        history = (await client.get(f"/api/sessions/s_bg_read/history?agent_id={agent['id']}")).json()
+        assert history["turns"][0]["automated"]["names"] == ["J", "K"]
+
+
 class TestABackgroundHelpersLimits:
     async def test_a_person_stops_it_and_no_follow_up_comes(self, client, agent, tools, llm):
         async def helper_works(_kw):

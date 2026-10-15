@@ -416,7 +416,14 @@ type ParkedApproval = {
 type RunningTurn = { turn_id: string; message: string; started_at: number; cursor: string; automated?: Automated };
 
 /** A question nobody typed: a background helper's result, posted back (SUB1a). */
-type Automated = { kind: string; helper_id?: string; name?: string; status?: string; session_id?: string | null };
+type Automated = {
+  kind: string; helper_id?: string; name?: string; status?: string; session_id?: string | null;
+  /** Several helpers' results, come back together as one follow-up: every one of them (SUB1a). */
+  helper_ids?: string[]; names?: string[]; statuses?: string[];
+};
+/** Whether a follow-up's question holds this helper's result. */
+const holdsHelper = (automated: Automated | undefined, helperId: string) =>
+  !!automated && (automated.helper_ids ?? [automated.helper_id]).includes(helperId);
 
 type StepState = {
   thoughts: string[];
@@ -1470,8 +1477,8 @@ export default function Home() {
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/history${query}`).catch(() => null);
       if (!res?.ok) continue;
       const data = await res.json();
-      const posted = (data.running?.automated?.helper_id === lane.id)
-        || (data.turns ?? []).some((t: SessionTurn) => t.automated?.helper_id === lane.id);
+      const posted = holdsHelper(data.running?.automated, lane.id)
+        || (data.turns ?? []).some((t: SessionTurn) => holdsHelper(t.automated, lane.id));
       if (posted) {
         await reopenConversation(sid, agentId, epoch, since);
         return;
@@ -2530,7 +2537,7 @@ export default function Home() {
       const automated = msg.data.automated as Automated;
       return (
         <div key={idx} className="pl-10">
-          <HelperNote name={automated.name || 'Helper'} />
+          <HelperNote names={automated.names?.length ? automated.names : [automated.name || 'Helper']} />
         </div>
       );
     }

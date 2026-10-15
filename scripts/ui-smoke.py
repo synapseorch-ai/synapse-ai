@@ -10972,6 +10972,37 @@ async def check_helperfollowup(browser) -> str:
 
 
 @check
+async def check_helperstogether(browser) -> str:
+    """Helpers that finish close together come back as one follow-up, which names them all (SUB1a, Naveen)."""
+    lanes = [{"id": hid, "name": name, "task": "check stock", "tools": ["lookup_order"], "mode": "background",
+              "status": "completed", "seconds": 4, "calls": [], "answer": "fine", "session_id": f"helperc_{hid}"}
+             for hid, name in (("subtask_s11", "Stock: 11"), ("subtask_s12", "Stock: 12"))]
+    history = {"turns": [
+        {"user": "how are the new SKUs?", "assistant": "I've sent two helpers.", "tools": [], "timestamp": "",
+         "helpers": lanes},
+        {"user": "From your helper 'Stock: 11' (it finished):\n41 in stock.\n\nFrom your helper 'Stock: 12' "
+                 "(it finished):\nout, 120 on order.",
+         "assistant": "SKU-11 has 41 in stock; SKU-12 is out, with 120 on order.", "tools": [], "timestamp": "",
+         "automated": {"kind": "helper_result", "helper_id": "subtask_s11", "name": "Stock: 11",
+                       "status": "completed", "helper_ids": ["subtask_s11", "subtask_s12"],
+                       "names": ["Stock: 11", "Stock: 12"], "statuses": ["completed", "completed"]}},
+    ], "pending_approval": None, "running": None}
+    ctx, page = await _chat_page(browser, "uismoke-helpers-together", history)
+    try:
+        note = page.get_by_role("region", name="From your helpers: Stock: 11 and Stock: 12")
+        await note.wait_for(timeout=15_000)
+        if "From your helpers · Stock: 11 and Stock: 12" not in await note.inner_text():
+            raise AssertionError(f"the follow-up does not name both helpers: {await note.inner_text()!r}")
+        if not await _on_screen(page, "SKU-11 has 41 in stock; SKU-12 is out"):
+            raise AssertionError("the agent's one reply to both is not shown")
+        if "out, 120 on order." in await page.evaluate("() => document.body.innerText"):
+            raise AssertionError("the helpers' results were drawn as a message, not under their note")
+    finally:
+        await ctx.close()
+    return "two helpers' results that came back together are one follow-up, \"From your helpers · A and B\""
+
+
+@check
 async def check_helpersave(browser) -> str:
     """"Save as agent" opens the agent editor with the helper made into a new agent, and saves nothing (S9)."""
     lane = {"id": "subtask_save", "name": "Order checker", "task": "Check each order against the 30-day rule.",
