@@ -256,6 +256,26 @@ async def mark_last_answer(session_id: str, agent_id: str, *, question: str, **f
         return True
 
 
+async def cut_answer(session_id: str, agent_id: str, *, chat_turn: str, heard: str, **fields) -> bool:
+    """The answer a fleet job saved for `chat_turn`, as the caller heard it (F486): cut at `heard` as
+    `cut_last_answer` cuts, marked interrupted, with `fields` noted. Found by its turn, never by being last: the
+    job of the turn after it may have saved first. False when no answer carries that turn."""
+    async with _writing(session_id, agent_id) as s:
+        row = await _row(s, session_id, agent_id, for_update=True)
+        if row is None:
+            return False
+        messages = list(row.messages or [])
+        for index in range(len(messages) - 1, -1, -1):
+            entry = messages[index]
+            if entry.get("role") == "assistant" and entry.get("chat_turn") == chat_turn:
+                cut = {**entry, **fields, "interrupted": True,
+                       "content": cut_at_heard(str(entry.get("content") or ""), heard)}
+                # Reassigned, not mutated (see append_turn).
+                row.messages = messages[:index] + [cut] + messages[index + 1:]
+                return True
+        return False
+
+
 async def set_pending_approval(session_id: str, agent_id: str, pending: dict | None) -> None:
     """Park (or clear) the tool call this conversation is waiting on.
 

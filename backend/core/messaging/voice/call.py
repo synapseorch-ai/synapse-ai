@@ -635,10 +635,10 @@ class VoiceCall:
         turn.filler_said.append(line)
         await self._say(line, last=True)
 
-    async def _note_turn(self, turn: _Turn) -> None:
-        """On the turn's saved answer, the filler it said (VOX1c) and the approval it answers (F474): the call's
-        log shows the one, and reads the other as the approval's answer, not the caller asking again. Never
-        fails a turn."""
+    @staticmethod
+    def _turn_notes(turn: _Turn) -> dict:
+        """What the call notes on a turn's saved answer: the filler it said (VOX1c) and the approval it answers
+        (F474)."""
         fields: dict = {}
         if turn.filler_said:
             fields["filler"] = list(turn.filler_said)
@@ -646,6 +646,13 @@ class VoiceCall:
             # Not `approval`: that key is a question nobody answered (F247), drawn as its card.
             fields["answered_approval"] = {"id": turn.answer.get("approval_id"),
                                            "approved": bool(turn.answer.get("approved"))}
+        return fields
+
+    async def _note_turn(self, turn: _Turn) -> None:
+        """On the turn's saved answer, the filler it said (VOX1c) and the approval it answers (F474): the call's
+        log shows the one, and reads the other as the approval's answer, not the caller asking again. Never
+        fails a turn."""
+        fields = self._turn_notes(turn)
         if not fields:
             return
         # A caller who hangs up as the answer ends stops the turn here; the note is finished either way.
@@ -668,11 +675,22 @@ class VoiceCall:
     async def _keep_unsaid_answer(self, turn: _Turn) -> None:
         """An answer's turn stopped before the caller heard any of it. One that already acted is kept, as any
         turn that acted is; one stopped before it began is said again at the next quiet moment, or resumed
-        behind when the call is over."""
+        behind when the call is over. One the host's own job carried on is that job's (F486): never twice."""
+        if await self._host_keeps(turn, heard=""):
+            return
         if any(name not in _NO_FILLER for name in turn.tools):
             await self._save_cut(turn, heard="")
         else:
             self._answers.insert(0, turn.answer)
+
+    async def _host_keeps(self, turn: _Turn, *, heard: str) -> bool:
+        """Whether the host's own job keeps this cut turn (F486: a workflow agent's, on the fleet), and is handed
+        it. Never fails a turn: a host that cannot say leaves the cut to the call."""
+        try:
+            return bool(await self.host.cut_turn(self, heard=heard, fields=self._turn_notes(turn)))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("a voice host could not take a cut turn: %s", exc)
+            return False
 
     async def _ask_a_person(self, turn: _Turn, event: dict) -> None:
         """V16: a confirm tool parks in the bell; the call carries on without it."""
@@ -805,6 +823,8 @@ class VoiceCall:
         are kept with their results, as a chat's Stop keeps them: kept by name alone, the next turn's model saw
         no result and ran the tool again (F477).
         """
+        if await self._host_keeps(turn, heard=heard):
+            return
         from core.session import _save_conversation_turn, turn_calls
         from core.store import sessions as _sessions
         said = _sessions.cut_at_heard(turn.since_reset, heard) if heard.strip() else ""

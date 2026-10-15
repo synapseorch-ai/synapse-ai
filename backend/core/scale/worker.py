@@ -1183,6 +1183,9 @@ async def run_agent_chat_job(
         history.append(question)
         calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
         answer_entry = {"role": "assistant", "content": response_text}
+        if chat_turn:
+            # Which turn saved it: a phone call that cut this turn marks exactly this answer as heard (F486).
+            answer_entry["chat_turn"] = chat_turn
         if calls:
             answer_entry.update(tools=tools_from_calls(calls), calls=calls)
         reasoning, thoughts = thinking_from_events(thinking_events, resumed=resume_state)

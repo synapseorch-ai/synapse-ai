@@ -121,6 +121,13 @@ class VoiceHost:
                 async for event in events:
                     yield event
 
+    async def cut_turn(self, call: Any, *, heard: str, fields: dict) -> bool:
+        """A turn the caller cut, when the host's own job keeps it (F486): a workflow agent's turn runs on a fleet
+        whose job saves it whatever the call does (V14), so the host marks that saved answer as heard (`heard`, the
+        clause that was playing) with the turn's notes (`fields`), and the call saves no copy. False: this host's
+        turns run in the call, and the call saves the cut itself."""
+        return False
+
     async def resume_after_call(self, call: Any, answer: dict) -> None:
         """An answer the call took but could not say (the caller hung up first, F474): resumed behind, as an
         answer after the call is, and the bell asks for a call-back."""

@@ -512,6 +512,41 @@ class TestACutTurnKeepsWhatItDid:
         assert saved["marks"][0] == ("Check the prices of a phone case, a charger and a watch?",
                                      {"filler": [call_mod.DEFAULT_FILLER]}), "the log shows it once, where it was said"
 
+    async def test_a_turn_its_hosts_job_keeps_is_left_to_the_host(self, saved):
+        """F486 (VOX1f, call 7): a workflow agent's turn runs on the fleet, whose job saves it whatever the call does
+        (V14). The call saved a cut copy too, so a cut turn was in the conversation twice. A host that keeps its own
+        turns is handed the cut (what was heard, and the turn's notes) and the call saves nothing."""
+        class KeepsItsTurns(ScriptedHost):
+            def __init__(self, *scripts):
+                super().__init__(*scripts)
+                self.cut: list = []
+
+            async def cut_turn(self, call, *, heard, fields):
+                self.cut.append((heard, fields))
+                return True
+
+        host = KeepsItsTurns([], [_final("The charger is cheapest.")])
+        socket = FakeSocket()
+        _, task = await self._split(host, socket)
+        await _until(lambda: "cheapest" in socket.words())
+        await socket.inbox.put(None)
+        await asyncio.wait_for(task, 5)
+        assert all(t[0] != "Check the prices of a phone case, a charger and a watch?" for t in saved["turns"])
+        assert host.cut == [("", {"filler": [call_mod.DEFAULT_FILLER]})]
+
+    async def test_an_unsaid_answer_its_hosts_job_carries_is_not_said_again(self, saved):
+        """F486: an approval's answer cut before the caller heard any of it is said again at the next quiet moment
+        (F474) — unless its host's job already carried it on, which would answer the approval twice."""
+        class KeepsItsTurns(ScriptedHost):
+            async def cut_turn(self, call, *, heard, fields):
+                return True
+
+        call = _call(KeepsItsTurns(), FakeSocket())
+        turn = call_mod._Turn("weather?")
+        turn.answer = {"approval_id": "ap_1", "approved": True, "message": "weather?"}
+        await call._keep_unsaid_answer(turn)
+        assert call._answers == []
+
     async def test_a_new_request_after_an_answer_gets_its_own_filler(self, saved):
         """Once a request: a request the caller makes after hearing an answer is a new one."""
         tool = [{"type": "tool_execution", "tool_name": "shop_search_products", "args": {"query": "x"}},
