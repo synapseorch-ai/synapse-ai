@@ -26,7 +26,7 @@ from core.session import (
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
 from core.answer_filter import AnswerFilter, strip_copied_digest
-from core.tool_call_shapes import bare_objects, calls_in, is_pseudo_format
+from core.tool_call_shapes import calls_in, is_pseudo_format, leading_objects, parallel_calls
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
@@ -348,12 +348,19 @@ def _approval_id(tool_name: str, tool_args: dict) -> str:
     return _h.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _arguments_only(text: str, schemas: dict) -> bool:
-    """Whether `text` is only JSON objects that are an offered tool's arguments with its name left off (F551):
-    every object's keys fit exactly one offered tool's input properties. A structured answer rarely does."""
-    objects = bare_objects(strip_reasoning(text or ""))
-    if not objects or not schemas:
-        return False
+def _opens_with_arguments(text: str, schemas: dict) -> str:
+    """Whether `text` opens with JSON objects that are an offered tool's arguments with its name left off: "alone"
+    when that is all it is (F551), "then_words" when words follow them (F558, words that say the call was done), ""
+    otherwise. Every object's keys must fit exactly one offered tool's input properties; a structured answer rarely
+    does."""
+    objects, rest = leading_objects(strip_reasoning(text or ""))
+    if objects and schemas and _each_fits_one_tool(objects, schemas):
+        return "then_words" if rest else "alone"
+    return ""
+
+
+def _each_fits_one_tool(objects: list[dict], schemas: dict) -> bool:
+    """Whether every object's keys fit exactly one offered tool's input properties."""
     properties = []
     for schema in schemas.values():
         # An input schema, or (a caller's own tool list) an OpenAI-format tool whose function holds it.
@@ -363,6 +370,17 @@ def _arguments_only(text: str, schemas: dict) -> bool:
         if isinstance(props, dict) and props:
             properties.append(set(props))
     return all(sum(1 for props in properties if set(obj) <= props) == 1 for obj in objects)
+
+
+def _unwrap_parallel(calls: list[dict], offered) -> list[dict]:
+    """Each engine-shaped call of OpenAI's `multi_tool_use.parallel` as the calls it holds (F558): gpt-4.1-mini wrote
+    `{"tool": "multi_tool_use.parallel", "arguments": {"tool_uses": [...]}}`, and the guard refused a tool no agent
+    has, so none ran. Never when the agent offers a tool by that name, or the call holds none."""
+    unwrapped = []
+    for call in calls:
+        held = [] if call.get("tool") in offered else parallel_calls(call)
+        unwrapped.extend(held or [call])
+    return unwrapped
 
 
 def _offered_name(name: str, offered) -> str:
@@ -2228,7 +2246,7 @@ async def run_agent_step(
             # Parse every tool call the LLM emitted in this response and execute
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
-            tool_calls = parse_all_tool_calls(action_text)
+            tool_calls = _unwrap_parallel(parse_all_tool_calls(action_text), tool_schema_map)
             if tool_calls:
                 # What streamed before the call was narration: the engine keeps
                 # it as reasoning, so a stream takes it back.
@@ -2236,11 +2254,12 @@ async def run_agent_step(
                     yield _e
 
             if not tool_calls:
-                # A reply of argument objects alone names no tool and says nothing to a
-                # person (F551): asked again once, as a call that did not parse is, and
-                # never the answer. Only in chat, and only when every object is shaped
-                # like one offered tool's arguments: a structured answer is a JSON answer.
-                _bare = not _workflow_step and _arguments_only(action_text, tool_schema_map)
+                # A reply that opens with argument objects names no tool (F551), and the
+                # words after them, if any, say a call ran that never did (F558): asked
+                # again once, as a call that did not parse is, and never the answer. Not
+                # in a workflow step, and only when every object is shaped like one
+                # offered tool's arguments: a structured answer is a JSON answer.
+                _bare = "" if _workflow_step else _opens_with_arguments(action_text, tool_schema_map)
                 if _bare and not (_parse_retries < MAX_PARSE_RETRIES and turn + 1 < max_turns):
                     for _e in _unstream("error"):
                         yield _e
@@ -2261,7 +2280,12 @@ async def run_agent_step(
                         + ("\nSystem: that reply was only JSON shaped like a tool's arguments, with no tool "
                            "named, so nothing ran. To call a tool, write the whole call: "
                            '{"tool": "<name>", "arguments": {...}}. If you already have the answer, give it '
-                           "to the person in plain words.\n" if _bare else
+                           "to the person in plain words.\n" if _bare == "alone" else
+                           "\nSystem: that reply opened with JSON shaped like a tool's arguments, with no tool "
+                           "named, so that call did not run and what the reply says after it has not happened. "
+                           'To call a tool, write the whole call: {"tool": "<name>", "arguments": {...}}. If '
+                           "you already have the answer, give it to the person in plain words.\n"
+                           if _bare == "then_words" else
                            "\nSystem: that looked like a tool call but it could not be parsed as "
                            "JSON. Emit the whole call again as one valid JSON object: "
                            '{"tool": "<name>", "arguments": {...}}. If you did not mean to call a '

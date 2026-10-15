@@ -71,24 +71,40 @@ def calls_in(obj: Any) -> list[dict]:
     return []
 
 
-def bare_objects(text: str) -> list[dict]:
-    """The JSON objects `text` is made of, when it is nothing but JSON objects and none of them a call; [] otherwise.
-    For F551: gpt-4.1-mini answered with its calls' arguments alone — `{"order":"HP-2041"}` twice. Whether such a
-    reply is arguments (not an answer) or a structured answer is the engine's to say, from the tools it offered."""
+def leading_objects(text: str) -> tuple[list[dict], str]:
+    """The JSON objects `text` opens with, none of them a call, and what follows them; ([], text) otherwise.
+    For F558: gpt-4.1-mini opened a reply with one call's arguments and went on to say the call was done."""
     import json
 
     decoder = json.JSONDecoder()
     rest, found = text.strip(), []
-    while rest:
+    while rest.startswith("{"):
         try:
             obj, end = decoder.raw_decode(rest)
         except ValueError:
-            return []
+            break
         if not isinstance(obj, dict) or not obj or calls_in(obj):
-            return []
+            return [], text
         found.append(obj)
         rest = rest[end:].lstrip()
-    return found
+    return (found, rest) if found else ([], text)
+
+
+def bare_objects(text: str) -> list[dict]:
+    """The JSON objects `text` is made of, when it is nothing but JSON objects and none of them a call; [] otherwise.
+    For F551: gpt-4.1-mini answered with its calls' arguments alone — `{"order":"HP-2041"}` twice. Whether such a
+    reply is arguments (not an answer) or a structured answer is the engine's to say, from the tools it offered."""
+    found, rest = leading_objects(text)
+    return found if not rest else []
+
+
+def parallel_calls(call: Any) -> list[dict]:
+    """The calls an engine-shaped call of OpenAI's `multi_tool_use.parallel` holds — `{"tool":
+    "multi_tool_use.parallel", "arguments": {"tool_uses": [...]}}`, as gpt-4.1-mini wrote it (F558); [] for any other
+    call. Whether to run them in its place is the engine's to say: an agent may offer a tool by that name."""
+    if not is_engine_call(call) or call.get("tool") != _PARALLEL:
+        return []
+    return calls_in(call.get("arguments"))
 
 
 def is_pseudo_format(obj: Any) -> bool:
