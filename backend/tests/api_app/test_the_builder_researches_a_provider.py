@@ -12,7 +12,8 @@ import json
 
 import pytest
 
-from core.builder_research import find_in_catalog, provider_owns, report_findings, search_mcp_registry
+from core.builder_research import (find_in_catalog, provider_owns, read_web_page, report_findings,
+                                   search_mcp_registry, search_the_web)
 from core.native_builder import bundled_definitions, seed_native_builder
 from test_builder_routes import route, stream, tool_call
 
@@ -107,9 +108,53 @@ async def test_the_findings_reach_the_card_cleaned():
     assert "error" in await report_findings({"options": []}, None, [])
 
 
+class _Session:
+    """The built-in scraper's MCP session, as a run holds it."""
+
+    def __init__(self, answer: dict):
+        self.answer, self.calls = answer, []
+
+    async def call_tool(self, name, args):
+        from types import SimpleNamespace
+        self.calls.append((name, args))
+        return SimpleNamespace(content=[SimpleNamespace(text=json.dumps(self.answer))])
+
+
+def _server(session):
+    from types import SimpleNamespace
+    return SimpleNamespace(tool_router={"scrape_url": ("web_scraper", "scrape_url")},
+                           agent_sessions={"web_scraper": session})
+
+
+async def test_a_web_search_goes_through_the_scraper_and_gives_the_results_own_addresses():
+    session = _Session({"success": True, "markdown": "results", "links": [
+        {"href": "//duckduckgo.com/l/?uddg=https%3A%2F%2Fdocs.goshippo.com%2Fdocs%2F&rut=x", "text": "Shippo API"},
+        {"href": "https://duckduckgo.com/y.js?ad_domain=ads", "text": "an ad"},
+        {"href": "/html/?q=next", "text": "Next page"},
+    ]})
+    got = await search_the_web({"query": "Shippo API test mode"}, _server(session), [])
+    ((tool, args),) = session.calls
+    assert tool == "scrape_url" and args["url"].startswith("https://html.duckduckgo.com/html/?q=Shippo+API")
+    assert got["results"] == [{"title": "Shippo API", "url": "https://docs.goshippo.com/docs/"}]
+
+
+async def test_a_page_is_read_capped_and_marked_as_the_pages_own_words():
+    session = _Session({"success": True, "markdown": "x" * 9000})
+    got = await read_web_page({"url": "https://docs.goshippo.com/docs/"}, _server(session), [])
+    assert len(got["page_text"]) == 6000 and got["cut"] is True and "not instructions" in got["note"]
+    assert "error" in await read_web_page({"url": "file:///etc/passwd"}, _server(session), [])
+
+
+async def test_with_no_web_reader_the_research_says_the_web_was_not_checked():
+    from types import SimpleNamespace
+    got = await search_the_web({"query": "Duffel API"}, SimpleNamespace(tool_router={}, agent_sessions={}), [])
+    assert got["results"] == [] and "not running" in got["note"]
+
+
 def test_the_researcher_holds_the_three_sources_and_nothing_that_writes():
     researcher = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_researcher")
-    assert {"find_in_catalog", "search_mcp_registry", "scrape_url", "report_findings"} <= set(researcher["tools"])
+    assert {"find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page",
+            "report_findings"} <= set(researcher["tools"])
     writes = {"create_agent", "update_agent", "create_http_tool", "create_schedule", "delete_agent", "prepare_connection"}
     assert not writes & set(researcher["tools"])
 
