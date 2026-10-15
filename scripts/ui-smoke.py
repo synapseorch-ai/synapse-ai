@@ -10385,8 +10385,8 @@ async def check_boards(browser) -> str:
         await page.get_by_role("button", name="Add", exact=True).click()
         sticky = page.locator("[data-board-card]", has_text="Smoke card")
         await sticky.wait_for(timeout=10_000)
-        if "From " not in (await sticky.inner_text()):
-            raise AssertionError("a person's sticky does not say it is a person's")
+        if "border-l-person" not in (await sticky.get_attribute("class") or ""):
+            raise AssertionError("a person's card has no amber edge")
         await sticky.click()
         drawer = page.get_by_role("dialog")
         await drawer.get_by_text(re.compile("added it")).wait_for(timeout=10_000)
@@ -10440,7 +10440,7 @@ async def check_scheduleboard(browser) -> str:
     aid = f"agent_uismoke_sboard_{stamp}"
     api("/api/agents", "POST", _agent(aid, f"Board smoke {stamp}"))
     sched = api("/api/schedules", "POST", {"name": f"Board smoke {stamp}", "target_type": "agent", "target_id": aid,
-                                          "prompt": "check", "schedule_type": "interval", "interval_seconds": 86400,
+                                          "prompt": "check", "schedule_type": "interval", "interval_value": 1, "interval_unit": "days",
                                           "enabled": False})
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
@@ -10474,8 +10474,8 @@ async def check_agentboards(browser) -> str:
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/agents", wait_until="domcontentloaded")
-        await page.locator('aside[aria-label="Your agents"]').get_by_role(
-            "button", name=re.compile(f"Boards agent {stamp}")).click(timeout=30_000)
+        await page.locator('aside[aria-label="Your agents"]').get_by_text(
+            f"Boards agent {stamp}", exact=True).click(timeout=30_000)
         section = page.locator("#setup-boards").locator("xpath=..")
         switch = page.get_by_role("switch", name="The board of the workflow or schedule it runs in")
         await switch.wait_for(timeout=10_000)
