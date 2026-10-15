@@ -99,6 +99,10 @@ def _parse_iso(s: str) -> datetime:
     return dt
 
 
+class TargetGone(Exception):
+    """Run Now on a schedule whose target is gone: it was turned off, and this is why (F518)."""
+
+
 def gone_target_sentence(what: str, kind: str) -> str:
     """Why a schedule was turned off (F468), as the end of a sentence — cloud's notice too.
 
@@ -185,6 +189,11 @@ class ScheduleManager:
         s = await schedule_store.get(schedule_id)
         if not s:
             return None
+        # What it targets is gone: turned off and said, as an occurrence is (F468), and refused in
+        # the same words. Run Now used to go on and run the active agent for a deleted one (F518).
+        gone = await gone_target(s)
+        if gone:
+            raise TargetGone(await self._turn_off(s, gone))
         sched_log = self._schedule_logger(s)
         task = asyncio.create_task(self._run(s, sched_log))
         # A task nobody references can be collected mid-run.
@@ -349,8 +358,8 @@ class ScheduleManager:
         # the run was in flight. Only for an occurrence: Run Now is not one.
         await schedule_store.set_last_run(schedule_id, now)
 
-    async def _turn_off(self, s: dict, why: str) -> None:
-        """Turn a schedule off with why: in its log and the bell, once (F468)."""
+    async def _turn_off(self, s: dict, why: str) -> str:
+        """Turn a schedule off with why: in its log and the bell, once (F468). Returns the sentence."""
         from core.notifications import hub
 
         name = s.get("name") or s["id"]
@@ -363,6 +372,7 @@ class ScheduleManager:
         sched_log.close()
         hub.publish("schedule_skipped", f"{name} was turned off", body=sentence,
                     data={"schedule_id": s["id"], "schedule_name": name})
+        return sentence
 
     @staticmethod
     def _schedule_logger(s: dict, *, continues: str | None = None, note: str = ""):

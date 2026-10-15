@@ -82,16 +82,11 @@ async def resolve_for_run(
 
     if entry is None:
         from core.scale.context import resolve_agent
+        # No second lookup: a deleted agent must fail the step, not resolve to
+        # whichever agent sorts first. The one this had went through
+        # `_resolve_agent_by_id`, which on a self-hosted install answered a miss
+        # with the active agent and cached it under the deleted id (F518).
         agent = await resolve_agent(agent_id)
-        if agent is None:
-            # The same fallback run_agent_step applies when the provider has
-            # nothing: a deleted agent must fail the step, not resolve to
-            # whichever agent sorts first.
-            from core.react_engine import _resolve_agent_by_id
-            try:
-                agent = await _resolve_agent_by_id(agent_id)
-            except Exception:
-                agent = None
         if not agent:
             return None
         entry = ResolvedAgent(agent=agent, custom_tools=await run_custom_tools(engine))

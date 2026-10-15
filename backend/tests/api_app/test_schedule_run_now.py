@@ -47,6 +47,9 @@ async def manager(test_app, monkeypatch):
 
 
 async def _schedule(sid, enabled, next_run_at=None):
+    from tests._fakes import seed as _seed
+    # The agent it runs exists: Run Now on a deleted one is refused (F518).
+    await _seed.seed_agents([_seed.make_agent(id="a1", name="Nightly agent")])
     await schedule_store.save({
         "id": sid, "name": "Nightly", "target_type": "agent", "target_id": "a1", "prompt": "do it",
         "enabled": enabled, "schedule_type": "interval", "interval_value": 5, "interval_unit": "minutes",

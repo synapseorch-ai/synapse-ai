@@ -68,7 +68,16 @@ async def test_no_agent_id_still_means_the_active_agent_under_a_provider(provide
 
 
 @pytest.mark.asyncio
-async def test_without_a_provider_a_stale_id_falls_back(active_agent):
-    """Single-tenant installs keep the old behaviour — there is no other tenant to leak."""
-    assert (await react_engine._resolve_agent_by_id("agent_ghost"))["id"] == "agent_first"
+async def test_without_a_provider_a_stale_id_is_an_error_too(active_agent):
+    """Single-tenant installs kept the fallback here, so a channel, a schedule or a
+    step naming a deleted agent ran another one (F518): no tenant to leak, but the
+    wrong agent's prompt, tools and model all the same."""
+    with pytest.raises(react_engine.AgentGone, match="agent_ghost"):
+        await react_engine._resolve_agent_by_id("agent_ghost")
+    assert active_agent == [], "the active-agent fallback must not be consulted"
+
+
+@pytest.mark.asyncio
+async def test_without_a_provider_no_agent_id_still_means_the_active_agent(active_agent):
+    assert (await react_engine._resolve_agent_by_id(None))["id"] == "agent_first"
     assert active_agent == [1]

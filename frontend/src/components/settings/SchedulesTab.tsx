@@ -277,7 +277,10 @@ export const SchedulesTab = () => {
             if (res.ok) {
                 showToast('Schedule triggered successfully');
             } else {
-                showToast('Failed to trigger schedule', false);
+                // A 409 says why, as when what it runs was deleted and it was turned off (F518).
+                const err = await res.json().catch(() => ({}));
+                showToast(typeof err.detail === 'string' && err.detail ? err.detail : 'Failed to trigger schedule', false);
+                if (res.status === 409) void fetchAll();
             }
         } finally {
             setRunningIds(prev => { const n = new Set(prev); n.delete(id); return n; });

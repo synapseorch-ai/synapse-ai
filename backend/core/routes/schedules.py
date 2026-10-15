@@ -175,11 +175,17 @@ async def delete_schedule(schedule_id: str):
 async def run_schedule_now(schedule_id: str, request: Request):
     """Run a schedule now, as a test (fire-and-forget). Returns the run's id.
 
-    Runs a disabled schedule too, and does not move its next run (F72).
+    Runs a disabled schedule too, and does not move its next run (F72). One whose
+    target was deleted is turned off and refused, 409 with why (F518).
     """
+    from core.scheduler import TargetGone
+
     mgr = _get_manager(request)
 
-    run_id = await mgr.trigger_now(schedule_id)
+    try:
+        run_id = await mgr.trigger_now(schedule_id)
+    except TargetGone as gone:
+        raise HTTPException(status_code=409, detail=str(gone)) from None
     if run_id is None:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"status": "triggered", "schedule_id": schedule_id, "run_id": run_id}

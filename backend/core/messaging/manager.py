@@ -19,6 +19,10 @@ logger = logging.getLogger(__name__)
 #: What a channel hears when an agent's turn fails — cloud's words for the same.
 FAILED_REPLY = "⚠️ Something went wrong answering that. Please try again."
 
+#: What a channel hears when the agent it answers with was deleted (F518) — cloud's words for the same.
+AGENT_GONE_REPLY = ("The agent this chat answers with was deleted. "
+                    "Assign another in Synapse, or pick one with /agent.")
+
 # Map platform → adapter class (lazy import in _build_adapter to avoid
 # ImportError when libraries are not installed)
 PLATFORM_ADAPTER_MAP = {
@@ -255,9 +259,15 @@ class MessagingManager:
         app's chat has, and a result that arrives after it answered comes back as
         one follow-up in the same chat (`follow_up_in_channel`).
         """
-        from core.react_engine import resolve_agent_for_run, run_agent_step
+        from core.react_engine import AgentGone, resolve_agent_for_run, run_agent_step
         try:
             agent = await resolve_agent_for_run(agent_id)
+        except AgentGone:
+            # The channel's agent, or this chat's `/agent` choice, was deleted (F518): said, and nothing
+            # runs in its place. A choice naming it is forgotten, so the next message goes to the channel's own.
+            if channel_id and chat_id is not None and self.get_chat_agent(channel_id, chat_id) == agent_id:
+                self.reset_chat_agent(channel_id, chat_id)
+            return AGENT_GONE_REPLY
         except Exception:
             agent = None
         # A channel shows no Sources, so an answer goes without its [K#] labels (D161).

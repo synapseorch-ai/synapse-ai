@@ -468,7 +468,8 @@ export function explainFailure(input: FailureInput): Explained {
     if (/No agent to answer yet/.test(raw)) {
         return { kind: 'agent-none', sentence: 'There’s no agent to answer yet.', advice: 'Create one in Agents, or ask the AI builder to make one.', fixes: ['agents'] };
     }
-    if (/Agent '.+?' not found/.test(raw)) {
+    // "no longer exists" is the engine's words since F518; older runs say "not found".
+    if (/Agent '.+?' (not found|no longer exists)/.test(raw)) {
         return { kind: 'agent-missing', sentence: `${its} agent no longer exists.`, advice: 'Pick another agent for the step.', fixes: ['editor'] };
     }
 
