@@ -33,13 +33,14 @@ _HOW = ("mcp", "api", "none", "unclear")
 #: What this run's research actually found, by run: the providers whose own MCP server the Registry showed, and the
 #: hosts whose pages were read. `report_findings` keeps only verdicts these support (BWA1's live run: gpt-4.1-mini
 #: reported "public API" for three providers from memory, citing pages it never read).
-_EVIDENCE: dict[str, dict[str, set]] = {}
+_EVIDENCE: dict[str, dict] = {}
 
 
-def _evidence() -> dict[str, set]:
+def _evidence() -> dict:
+    """`own_mcp`: provider slug → a link to its own server's page; `read_hosts`: the hosts whose pages were read."""
     from core.builder_tools import _current_run
 
-    return _EVIDENCE.setdefault(_current_run.get() or "", {"own_mcp": set(), "read_hosts": set()})
+    return _EVIDENCE.setdefault(_current_run.get() or "", {"own_mcp": {}, "read_hosts": set()})
 
 
 def _host(url: str) -> str:
@@ -159,11 +160,14 @@ async def search_mcp_registry(args: dict, server_module: Any, events: list[dict]
             "remote_url": remotes[0] if remotes else None,
             "install_by_hand": not remotes,
             "website": server.get("websiteUrl"),
+            "repository": (server.get("repository") or {}).get("url"),
         })
     servers.sort(key=lambda s: (not s["providers_own"], s["install_by_hand"]))
     own = [s for s in servers if s["providers_own"]]
-    if any(not s["install_by_hand"] for s in own):
-        _evidence()["own_mcp"].add(_slug(provider))
+    reachable = [s for s in own if not s["install_by_hand"]]
+    if reachable:
+        page = reachable[0].get("website") or reachable[0].get("repository") or reachable[0]["remote_url"]
+        _evidence()["own_mcp"][_slug(provider)] = page
     note = ("The provider's own server is first." if own else
             f"None of these is {provider}'s own server (their namespace is not its domain); a third party's server "
             "is not the provider's, so say so if you offer one. Search the web for its API next.")
@@ -223,8 +227,14 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
         # in the Registry, `api` and `none` on a page of theirs that was read. Anything else is `unclear`.
         sources = [s for s in cited if _host(s) in seen["read_hosts"]]
         provider = str(raw["provider"]).strip()[:80]
-        if (how == "mcp" and _slug(provider) not in seen["own_mcp"]) or (how in ("api", "none") and not sources):
+        # A verdict about a provider rests on its own site: "USPS: no public way in" read off EasyPost's page was
+        # wrong (BWA1's browser pass; USPS has developers.usps.com).
+        own_pages = [s for s in sources if _slug(provider) and _slug(provider) in _host(s).replace(".", "").replace("-", "")]
+        if (how == "mcp" and _slug(provider) not in seen["own_mcp"]) or (how in ("api", "none") and not own_pages):
             how = "unclear"
+        if how == "mcp":
+            # Its own server, as the Registry listed it: the verdict's source.
+            sources = [seen["own_mcp"][_slug(provider)], *[x for x in sources if x != seen["own_mcp"][_slug(provider)]]]
         options.append({"provider": provider, "how": how, "detail": str(raw.get("detail") or "")[:300],
                         "needs": str(raw.get("needs") or "")[:200], "sources": sources[:5]})
     if not options:

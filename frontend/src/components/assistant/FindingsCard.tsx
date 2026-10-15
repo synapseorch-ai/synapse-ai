@@ -29,6 +29,17 @@ function host(url: string): string {
     }
 }
 
+/** One link per site: the card names a source by its host, so two pages of one site read as a repeat. */
+function bySite(urls: string[] = []): string[] {
+    const seen = new Set<string>();
+    return urls.filter((url) => {
+        const site = host(url);
+        if (seen.has(site)) return false;
+        seen.add(site);
+        return true;
+    });
+}
+
 export function FindingsCard({ findings }: { findings: ResearchFindings }) {
     return (
         <section
@@ -59,7 +70,7 @@ export function FindingsCard({ findings }: { findings: ResearchFindings }) {
                             )}
                             {option.sources && option.sources.length > 0 && (
                                 <span className="flex flex-wrap gap-x-3 gap-y-0.5">
-                                    {option.sources.map((url) => (
+                                    {bySite(option.sources).map((url) => (
                                         <a
                                             key={url}
                                             href={url}

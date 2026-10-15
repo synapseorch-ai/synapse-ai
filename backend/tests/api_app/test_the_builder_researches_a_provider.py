@@ -109,6 +109,7 @@ async def test_a_verdict_stands_only_on_what_the_run_read():
             {"provider": "Duffel", "how": "API", "sources": ["https://duffel.com/docs/api", "javascript:alert(1)"]},
             {"provider": "IRCTC", "how": "none", "sources": ["https://www.irctc.co.in/partners"]},
             {"provider": "Amadeus", "how": "mcp"},
+            {"provider": "USPS", "how": "none", "sources": ["https://duffel.com/docs/api"]},
             {"how": "api"},
         ]}, None, events)
     finally:
@@ -118,7 +119,8 @@ async def test_a_verdict_stands_only_on_what_the_run_read():
     assert [(o["provider"], o["how"], o["sources"]) for o in card["options"]] == [
         ("Duffel", "api", ["https://duffel.com/docs/api"]),   # read this run
         ("IRCTC", "unclear", []),                              # cited, never read
-        ("Amadeus", "unclear", [])]                            # no own server seen
+        ("Amadeus", "unclear", []),                            # no own server seen
+        ("USPS", "unclear", ["https://duffel.com/docs/api"])]  # read, but another company's page
     assert "error" in await report_findings({"options": []}, None, [])
 
 
@@ -138,6 +140,7 @@ async def test_the_providers_own_server_in_the_registry_is_evidence_for_mcp(monk
     finally:
         _current_run.reset(token)
     assert events[0]["options"][0]["how"] == "mcp"
+    assert events[0]["options"][0]["sources"] == ["https://mcp.stripe.com"], "its own server is the source"
 
 
 class _Session:
