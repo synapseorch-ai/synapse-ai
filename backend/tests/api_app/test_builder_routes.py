@@ -222,13 +222,14 @@ class TestSeeHowImBuilt:
 
         assert legend["name"] == "Synapse AI Builder"
         # 24 since D122: the plan-room check and its refusal (F154), and finish_build (F156); 26 since BWA1: the
-        # plan's check and where it sends the plan (F492); 29 with the how-to, connect and can't-do look-ups.
-        assert legend["step_count"] == 29
+        # plan's check and where it sends the plan (F492); 29 with the how-to, connect and can't-do look-ups; 30 with
+        # the researcher (F577).
+        assert legend["step_count"] == 30
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
-            "create", "update", "manage", "answer", "howto", "connect", "cantdo"}
+            "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
         assert {a["role"] for a in legend["agents"]} == {
-            "analyst", "agent_creator", "saver_create", "saver_update", "operator", "reporter",
+            "analyst", "agent_creator", "saver_create", "saver_update", "operator", "reporter", "researcher",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve.
@@ -257,7 +258,7 @@ class TestSeeHowImBuilt:
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 7
+        assert len(result["agent_ids"]) == 8
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])

@@ -23,6 +23,7 @@ import {
     Composer,
     composerPillClass,
     ConnectCard,
+    FindingsCard,
     PillAvatar,
     PlanCard,
     QuestionCard,
@@ -320,6 +321,13 @@ export function BuilderPanel() {
                                         connector={selfHostedConnector}
                                         onConnected={(text) => void send(text, [])}
                                     />
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'findings' && message.findings) {
+                            return (
+                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    <FindingsCard findings={message.findings} />
                                 </AgentTurn>
                             );
                         }

@@ -20,7 +20,8 @@ export type BuilderMessageKind =
     | 'tool_call'
     | 'tool_result'
     | 'routing'
-    | 'connect';
+    | 'connect'
+    | 'findings';
 
 /**
  * A Connect card the builder put up (BWA1, `prepare_connection`): what to
@@ -37,6 +38,22 @@ export interface ConnectSpec {
     provider?: { id: string; label?: string };
     tool?: { id: string; name: string; header: string };
     screen?: { id: string; label?: string };
+}
+
+/**
+ * What the builder's Researcher found for a goal the workspace has no tool for
+ * (BWA1, F577, `report_findings`): one option per provider, how it would
+ * connect here, what the person needs, and the pages it rests on.
+ */
+export interface ResearchFindings {
+    goal?: string;
+    options: {
+        provider: string;
+        how: 'mcp' | 'api' | 'none' | 'unclear';
+        detail?: string;
+        needs?: string;
+        sources?: string[];
+    }[];
 }
 
 /** What the builder changed, as the dispatcher reported it. */
@@ -72,6 +89,8 @@ export interface BuilderMessage {
      */
     stepId?: string | null;
     contextKey?: string | null;
+    /** A findings card (`kind: 'findings'`). */
+    findings?: ResearchFindings;
 }
 
 export interface BuilderState {
@@ -265,6 +284,16 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             return append(state, {
                 role: 'assistant', content: String(event.title ?? 'Connect'), kind: 'connect',
                 key: `connect-${event.id ?? seq}`, connect: event as ConnectSpec,
+            });
+
+        // What the Researcher found (BWA1, F577): a card of the options, each with
+        // its sources. One per research step; a replay redraws it.
+        case 'research_findings':
+            if (!Array.isArray(event.options) || event.options.length === 0) return state;
+            return append(state, {
+                role: 'assistant', content: String(event.goal ?? 'Who can do it'), kind: 'findings',
+                key: `findings-${event.orch_step_id ?? ''}-${seq}`,
+                findings: { goal: event.goal, options: event.options } as ResearchFindings,
             });
 
         // The builder's door (BWA1, D274): a message or an answer it would not keep
