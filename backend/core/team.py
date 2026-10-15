@@ -528,14 +528,27 @@ class Team:
         return None
 
     def _member_by_name(self, name: str) -> Member | None:
-        """The latest assignment of the member agent with this name (or id), or a run by its own id."""
+        """The member agent with this name (or id): the task it works on now, else one waiting on a person, else the
+        next it has queued, else its latest; or a run by its own id."""
         if name in self.members:
             return self.members[name]
         found = self._agent_named(name)
         if found is None:
             return None
         runs = [m for m in self.members.values() if m.agent_id == found[0]]
+        for status in ("running", "waiting_for_person", "queued"):
+            for m in runs:
+                if m.status == status:
+                    return m
         return runs[-1] if runs else None
+
+    def _busy(self, agent_id: str) -> Member | None:
+        """The task a member agent works on, or waits on a person for: its next one queues behind it (F591)."""
+        return next((m for m in self.members.values()
+                     if m.agent_id == agent_id and m.status in ("running", "waiting_for_person")), None)
+
+    def _name_one(self) -> Refused:
+        return Refused(f"Name the member: one of {', '.join(self.member_names())}.")
 
     # ── the run board ──
     async def _board(self) -> str:
@@ -563,6 +576,8 @@ class Team:
 
     # ── the lead's tools ──
     async def assign(self, args: dict, *, tainted: bool) -> str:
+        if not str(args.get("member") or "").strip():
+            raise self._name_one()
         found = self._agent_named(str(args.get("member") or ""))
         task = str(args.get("task") or "").strip()
         if found is None:
@@ -578,10 +593,6 @@ class Team:
                           "and its bounds).")
         agent_id, agent = found
         name = agent.get("name") or agent_id
-        busy = [m for m in self.live_members() if m.agent_id == agent_id]
-        if busy:
-            raise Refused(f"{name} is still working on '{busy[0].task[:120]}'. Message it, wait for it, or "
-                          "assign someone else.")
         from core.store import boards as store
         board_id = await self._board()
         card, _ = await store.add_card(board_id, title=task[:200], body=task, kind="task",
@@ -597,7 +608,12 @@ class Team:
         self.tasks_used += 1
         self.progress_mark += 1
         self._emit({"type": "team_tasks", "tasks": self.task_list()})
+        busy = self._busy(agent_id)
         started = self._admit()
+        if busy is not None and member not in started:
+            # One task at a time for one member, in the order given (F591; Naveen: queue it behind).
+            return (f"Queued for {name} (task {card.id}): it starts this after its current task "
+                    f"('{busy.task[:80]}'). Its result arrives in your team inbox; carry on, or call wait.")
         when = ("It has started." if member in started else
                 f"It starts when a slot frees ({self.config.at_once} members work at once).")
         return (f"Assigned to {name} (task {card.id}). {when} Its result arrives in your team inbox; carry on, "
@@ -605,6 +621,8 @@ class Team:
 
     def message_from_lead(self, args: dict, *, tainted: bool) -> str:
         to = str(args.get("to") or "")
+        if not to.strip():
+            raise self._name_one()
         text = str(args.get("text") or "").strip()
         if not text:
             raise Refused("Write the message in `text`.")
@@ -716,9 +734,15 @@ class Team:
         return f"Nothing arrived after {int(limit)}s. Finish with what you have, or message the lead."
 
     def forward(self, args: dict) -> str:
+        if not str(args.get("member") or "").strip():
+            raise self._name_one()
         member = self._member_by_name(str(args.get("member") or ""))
         if member is None:
             raise Refused(f"There is no member called '{args.get('member')}'.")
+        # Its latest finished answer: the member may be on its next task by now (F591).
+        done = [m for m in self.members.values() if m.agent_id == member.agent_id and m.status == "completed"
+                and m.answer]
+        member = done[-1] if done else member
         if member.status != "completed" or not member.answer:
             raise Refused(f"{member.name} has no finished answer to forward "
                           f"({_STATUS_WORDS.get(member.status, member.status)}).")
@@ -755,6 +779,8 @@ class Team:
         for member in list(self.members.values()):
             if member.status != "queued":
                 continue
+            if self._busy(member.agent_id) is not None:
+                continue   # its member is on an earlier task: this one waits behind it (F591)
             if len(self.running()) + self.helpers_working() >= self.config.at_once:
                 break
             member.status = "running"
@@ -1057,6 +1083,7 @@ def lead_prompt(team: Team) -> str:
               "run at once. Each brief says the objective, what to return, and its bounds.",
               "- `assign` returns at once. Results, questions and messages arrive in your team inbox between your "
               "steps; call `wait` to idle until something arrives. Never poll.",
+              "- A member given another task while it works does it next, after its current one.",
               "- Answer a member's question with `message`. When a member's answer is already the answer, "
               "`forward` it unchanged rather than rewriting it.",
               f"- At most {team.config.at_once} members work at once, and the team has {team.config.task_budget} "

@@ -174,6 +174,70 @@ class TestMembersWorkAtOnce:
         assert {f["member_name"] for f in _of(events, "member_finished")} == {"Ana", "Ben"}
 
 
+class TestASecondTaskForABusyMember:
+    """F591 (TEAM1a's live check, Nova Pro): a lead gave the Researcher three products one by one; the second and
+    third were refused while it worked, the lead retried 13 times, and the answer covered one. Naveen: queue it."""
+
+    async def test_it_queues_behind_the_current_task_and_both_finish_in_order(self, server, llm, team):
+        order: list[str] = []
+        gate = asyncio.Event()
+
+        async def first(_kw):
+            order.append("A1")
+            await asyncio.wait_for(gate.wait(), 3)
+            return "first done"
+
+        def second(_kw):
+            order.append("A2")
+            return "second done"
+
+        def queued(_kw):
+            gate.set()
+            return tool_call("wait", seconds=10)
+
+        llm.on("PLAN IT", [both(assign("Ana", "CHECK ONE"), assign("Ana", "CHECK TWO")), queued,
+                           tool_call("wait", seconds=10), tool_call("wait", seconds=10), "done"])
+        llm.on("CHECK ONE", [first]).on("CHECK TWO", [second])
+        events = await _turn(server, max_turns=10)
+
+        previews = [e["preview"] for e in _of(events, "tool_result") if e["tool_name"] == "assign"]
+        assert previews[0].startswith("Assigned to Ana") and "It has started." in previews[0]
+        assert previews[1].startswith("Queued for Ana") and "after its current task" in previews[1]
+        assert not [p for p in previews if p.startswith("Refused")]
+        assert order == ["A1", "A2"]                    # one at a time for one member: never side by side
+        records = [f["record"] for f in _of(events, "member_finished")]
+        assert [r["answer"] for r in records] == ["first done", "second done"]
+        tasks = _of(events, "final")[-1]["team"]["tasks"]
+        assert [t["status"] for t in tasks] == ["done", "done"]
+
+    async def test_a_message_reaches_the_task_the_member_is_working_on(self, server, llm, team):
+        from core import team as team_mod
+        gate = asyncio.Event()
+
+        async def first(_kw):
+            await asyncio.wait_for(gate.wait(), 3)
+            return tool_call("wait", seconds=2)
+
+        def lead_says(_kw):
+            gate.set()
+            return tool_call("message", to="Ana", text="also check the EU list")
+
+        llm.on("PLAN IT", [both(assign("Ana", "CHECK ONE"), assign("Ana", "CHECK TWO")), lead_says,
+                           tool_call("wait", seconds=10), tool_call("wait", seconds=10), tool_call("wait", seconds=10),
+                           "done"])
+        llm.on("CHECK ONE", [first, "one"]).on("CHECK TWO", ["two"])
+        await _turn(server, max_turns=10)
+        ones = [str(c.get("prompt_msg") or "") for c in llm.calls_for("CHECK ONE")]
+        assert any("Message from the lead: also check the EU list" in p for p in ones)
+        del team_mod
+
+    async def test_a_call_naming_no_member_says_to_name_one(self, server, llm, team):
+        llm.on("PLAN IT", [tool_call("assign", task="CHECK A"), "done"])
+        events = await _turn(server)
+        refused = next(e["preview"] for e in _of(events, "tool_result") if e["tool_name"] == "assign")
+        assert refused == "Refused: Name the member: one of Ana, Ben."
+
+
 class TestAMemberIsSeenAndKept:
     async def test_its_work_streams_wrapped_and_its_record_is_kept(self, server, llm, team):
         llm.on("PLAN IT", [assign("Ana", "CHECK A"), tool_call("wait", seconds=10), "lead answer"])
