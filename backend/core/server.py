@@ -57,6 +57,7 @@ from core.routes.schedules import router as schedules_router
 from core.routes.import_export import router as import_export_router
 from core.routes.vault import router as vault_router
 from core.routes.knowledge import router as knowledge_router
+from core.routes.boards import router as boards_router
 from core.routes.builder import router as builder_router
 from core.routes.api_keys import router as api_keys_router
 from core.routes.evals import router as evals_router
@@ -1082,6 +1083,7 @@ app.include_router(profiling_router)
 app.include_router(import_export_router)
 app.include_router(vault_router)
 app.include_router(knowledge_router)
+app.include_router(boards_router)  # Boards for people (BOARD1b, D282): 404 while off
 app.include_router(builder_router)
 app.include_router(api_keys_router)
 app.include_router(skills_router)

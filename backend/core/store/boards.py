@@ -643,6 +643,25 @@ async def live_count(board_id: str) -> int:
             BoardCardDB.status.in_(("open", "claimed"))))).scalar_one())
 
 
+async def live_counts(board_ids: list[str], *, now: datetime | None = None) -> dict[str, tuple[int, int]]:
+    """Each board's (open, claimed) cards in one query: the boards list's counts (BOARD1b). A claim that lapsed
+    counts as open, as it reads. A board with none is left out."""
+    from core.store import session
+    from core.store.models import BoardCardDB
+
+    if not board_ids:
+        return {}
+    now = now or _now()
+    held = func.sum(case((_live_now(BoardCardDB, now), 1), else_=0))
+    async with session() as s:
+        rows = (await s.execute(
+            select(BoardCardDB.board_id, func.count(), held)
+            .where(BoardCardDB.tenant_id == get_tenant(), BoardCardDB.board_id.in_(board_ids),
+                   BoardCardDB.status.in_(("open", "claimed")))
+            .group_by(BoardCardDB.board_id))).all()
+    return {board_id: (int(total) - int(claimed or 0), int(claimed or 0)) for board_id, total, claimed in rows}
+
+
 async def comments(card_id: str, *, limit: int = 20) -> list[CardEvent]:
     """A card's comments, newest first, without any a person took back."""
     events = await history(card_id, limit=500)
