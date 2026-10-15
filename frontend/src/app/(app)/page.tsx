@@ -941,6 +941,11 @@ export default function Home() {
   // it answered, so New Chat pressed before then was undone and the next
   // message went into the old conversation (F188).
   const conversationEpochRef = useRef(0);
+  // How many turns this page has started or followed, as a count. A read of the
+  // conversation that went out before one started draws nothing: the page already
+  // shows that turn live, and the read would draw it again and follow it a second
+  // time, its answer twice (F552: a message sent before the page-open read answered).
+  const turnsStartedRef = useRef(0);
   // Index of the user message being rewritten, or null. Editing one drops it
   // and everything after it — a conversation cannot fork.
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -1015,22 +1020,27 @@ export default function Home() {
    * turn is read from its start (F49). Used when the page opens on the last
    * conversation and when one is picked from History.
    */
-  const reopenConversation = async (sid: string, agentId: string | null, epoch = conversationEpochRef.current) => {
-    const running = await loadConversation(sid, agentId, epoch);
-    if (running && epoch === conversationEpochRef.current) await watchTurn(sid, running.cursor, running.message, !!running.automated);
+  const reopenConversation = async (
+    sid: string, agentId: string | null, epoch = conversationEpochRef.current, since = turnsStartedRef.current,
+  ) => {
+    const running = await loadConversation(sid, agentId, epoch, since);
+    if (running && epoch === conversationEpochRef.current && since === turnsStartedRef.current) {
+      await watchTurn(sid, running.cursor, running.message, !!running.automated);
+    }
   };
 
   /** Draw the conversation as stored; the turn still being written, if any, is returned to be followed. */
   const loadConversation = async (
-    sid: string, agentId: string | null, epoch = conversationEpochRef.current,
+    sid: string, agentId: string | null, epoch = conversationEpochRef.current, since = turnsStartedRef.current,
   ): Promise<RunningTurn | null> => {
     try {
       const url = `/api/sessions/${encodeURIComponent(sid)}/history${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
       const res = await fetch(url);
       if (!res.ok) return null;
       const data = await res.json();
-      // Another conversation was put on screen while this one loaded (F188).
-      if (epoch !== conversationEpochRef.current) return null;
+      // Another conversation was put on screen while this one loaded (F188),
+      // or a turn started here meanwhile, which the page shows live (F552).
+      if (epoch !== conversationEpochRef.current || since !== turnsStartedRef.current) return null;
       const turns: SessionTurn[] = data.turns || [];
       const parked: ParkedApproval | null = data.pending_approval ?? null;
       const running: RunningTurn | null = data.running ?? null;
@@ -1168,6 +1178,8 @@ export default function Home() {
       // Taken before anything is awaited: New Chat pressed while this runs
       // moves it, and the old conversation is then not drawn back (F188).
       const epoch = conversationEpochRef.current;
+      // And a message sent while this runs: its turn is drawn live, never again from here (F552).
+      const since = turnsStartedRef.current;
       const savedAgent = typeof window !== 'undefined' ? localStorage.getItem('synapseAgentId') : null;
       const savedSession = typeof window !== 'undefined' ? localStorage.getItem('synapseSessionId') : null;
       if (savedAgent) {
@@ -1182,7 +1194,7 @@ export default function Home() {
         }
       }
       refreshSystemStatus();
-      if (savedSession && epoch === conversationEpochRef.current) await reopenConversation(savedSession, savedAgent, epoch);
+      if (savedSession && epoch === conversationEpochRef.current) await reopenConversation(savedSession, savedAgent, epoch, since);
     };
 
     initAgent();
@@ -1454,13 +1466,14 @@ export default function Home() {
     for (let look = 0; look < 15; look++) {
       await new Promise(resolve => setTimeout(resolve, look === 0 ? 300 : 700));
       if (epoch !== conversationEpochRef.current || streamActiveRef.current) return;
+      const since = turnsStartedRef.current;
       const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/history${query}`).catch(() => null);
       if (!res?.ok) continue;
       const data = await res.json();
       const posted = (data.running?.automated?.helper_id === lane.id)
         || (data.turns ?? []).some((t: SessionTurn) => t.automated?.helper_id === lane.id);
       if (posted) {
-        await reopenConversation(sid, agentId, epoch);
+        await reopenConversation(sid, agentId, epoch, since);
         return;
       }
     }
@@ -1725,6 +1738,7 @@ export default function Home() {
    * a conversation, so both end the same way.
    */
   const inTurn = async (question: string, images: string[] | undefined, work: () => Promise<void>) => {
+    turnsStartedRef.current += 1;
     lastSentRef.current = { content: question, images };
     turnAnsweredRef.current = false;
     lastCursorRef.current = null;

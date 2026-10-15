@@ -3546,6 +3546,61 @@ async def check_chatreopen(browser) -> str:
     return "the conversation reopens, and a running turn is followed to its answer"
 
 
+#: The page-open history read held until the test releases it (F552).
+HOLD_HISTORY = r"""
+const _stubbedFetch = window.fetch;
+window.__historyGate = new Promise((release) => { window.__releaseHistory = release; });
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (/\/api\/sessions\/[^/?]+\/history/.test(url)) return window.__historyGate.then(() => _stubbedFetch(input, init));
+  return _stubbedFetch(input, init);
+};
+"""
+
+
+@check
+async def check_openrace(browser) -> str:
+    """A message sent before the page has read its conversation shows its answer once (F552).
+
+    The page-open read, answering mid-turn, found that turn running, drew the
+    conversation again and followed the turn a second time beside the stream it
+    was already reading: the answer twice, every tool and thought counted twice.
+    """
+    ctx, page = await _chat_page(browser, "uismoke-open-race", None, extra_init=HOLD_HISTORY)
+    try:
+        box = page.locator("main textarea").last
+        await box.fill("sent before the page read its conversation")
+        await box.press("Enter")
+        await _stream_open(page, "post")
+        frames = "".join(_frame(e, f"r1-{i + 1}") for i, e in enumerate([
+            {"type": "tool_execution", "tool_name": "lookup_order", "args": {"order": "HP-2041"}},
+            {"type": "tool_result", "tool_name": "lookup_order", "preview": "shipped day 12"},
+            {"type": "llm_thought", "thought": "HP-2041 shipped on day 12."},
+        ]))
+        await page.evaluate(f"() => window.__streams.post.push({json.dumps(frames)})")
+        # The read answers now, as the server would mid-turn: that turn is running.
+        await page.evaluate("""() => { window.__fakeHistory = {turns: [], pending_approval: null,
+            running: {turn_id: 'r1', message: 'sent before the page read its conversation', started_at: 0, cursor: 'r1-0'}};
+            window.__releaseHistory(); }""")
+        await asyncio.sleep(1.5)
+        tail = _frame({"type": "response", "content": "HP-2041 shipped inside 30 days."}, "r1-4") \
+            + _frame({"type": "done"}, "r1-5")
+        await page.evaluate(f"() => window.__streams.post.push({json.dumps(tail)})")
+        if not await _on_screen(page, "HP-2041 shipped inside 30 days."):
+            raise AssertionError("the turn's answer never showed")
+        await asyncio.sleep(1.0)
+        text = await page.evaluate("() => document.body.innerText")
+        calls = await page.evaluate("() => window.__calls")
+    finally:
+        await ctx.close()
+    if any("/events" in c["url"] for c in calls):
+        raise AssertionError("the page-open read followed the turn it was already reading (F552)")
+    for shown in ("HP-2041 shipped inside 30 days.", "sent before the page read its conversation"):
+        if text.count(shown) != 1:
+            raise AssertionError(f"{shown!r} is on screen {text.count(shown)} times")
+    return "a message sent before the page read its conversation is drawn once, its turn followed once"
+
+
 @check
 async def check_thoughtecho(browser) -> str:
     """The panels beside an answer do not repeat the answer.
