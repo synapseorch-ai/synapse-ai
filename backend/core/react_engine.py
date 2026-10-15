@@ -25,7 +25,7 @@ from core.session import (
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
-from core.answer_filter import AnswerFilter
+from core.answer_filter import AnswerFilter, strip_copied_digest
 from core.tool_call_shapes import calls_in, is_pseudo_format
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
@@ -3240,6 +3240,9 @@ async def run_agent_step(
     # labels live in its lead's turn. Only a turn that searched, or an agent
     # offered the tools whose answer cites labels anyway (they come back
     # unresolved); every other turn announces nothing.
+    # A digest block the model copied from its history is never the answer (F559): cut before it is cited,
+    # saved, sent or posted, as the stream already held it back.
+    final_response = strip_copied_digest(final_response)
     _kn_citations = None
     if _kturn_root and (_kturn or _knowledge_offered):
         try:

@@ -44,6 +44,35 @@ _JSON = json.JSONDecoder()
 
 Op = tuple  # ("text", str) | ("reset", reason)
 
+#: The headings the history's digest puts on each turn's calls (`core.session._digests`: F242, F426, F477), as the next
+#: turn's model reads them. A model that copies one into its own answer (Nova Pro, F559) has it cut, from the heading
+#: to the end: the block is always the history's last words, so nothing of the answer follows it.
+DIGEST_HEADINGS = ("[Tool calls you made for this answer", "[Tools you used for this answer:",
+                   "[This turn failed after these tool calls ran", "[This turn was stopped after these tool calls ran",
+                   "[This turn was cut off before it answered")
+
+
+def copied_digest_at(text: str) -> int:
+    """Where a copied digest heading starts in `text`, or -1."""
+    found = [i for i in (text.find(h) for h in DIGEST_HEADINGS) if i >= 0]
+    return min(found) if found else -1
+
+
+def strip_copied_digest(text: str) -> str:
+    """`text` without a digest block a model copied into its answer (F559)."""
+    cut = copied_digest_at(text)
+    return text if cut < 0 else text[:cut].rstrip()
+
+
+def _partial_heading_tail(text: str) -> int:
+    """Length of a suffix of `text` that could still become a digest heading."""
+    start = text.rfind("[")
+    if start < 0:
+        return 0
+    tail = text[start:]
+    return len(tail) if any(h.startswith(tail) and h != tail for h in DIGEST_HEADINGS) else 0
+
+
 
 def _partial_marker_tail(raw: str) -> int:
     """Length of a suffix of `raw` that could still become a marker."""
@@ -138,6 +167,14 @@ def _visible(raw: str, *, final: bool) -> tuple[str, bool, bool]:
         if tail:
             raw = raw[:-tail]
     text, voided = _strip_reasoning(raw)
+    # A copied digest block is never the answer (F559): cut at its heading; held while a `[…` may still become one.
+    cut = copied_digest_at(text)
+    if cut >= 0:
+        text = text[:cut]
+    elif not final:
+        hold = _partial_heading_tail(text)
+        if hold:
+            text = text[:-hold]
     i = 0
     n = len(text)
     while i < n:
