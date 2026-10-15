@@ -170,6 +170,17 @@ class TestWhoGetsBoards:
         text = _observations(fake_llm, -1)
         assert "you may add cards only" in text and "Secret customer detail" not in text
 
+    async def test_an_add_only_agent_refused_a_look_is_told_to_add_with_a_key(self, boards_on, fake_llm):
+        """F557: gpt-4.1-mini, refused a `board_list` to check for duplicates, would not add at all. The refusal
+        says what it may do: add each with a key, which is never added twice."""
+        await _shared("Bugs", ("agent", "intake", "add"))
+        await _shared("Mine", ("agent", "intake", "work"))
+        await _turn(fake_llm, [tool_call("board_list", board="Bugs"), "done"], _agent(id="intake"))
+        said = _observations(fake_llm, 1)
+        assert "may only add cards to the shared board 'Bugs'" in said
+        assert "Add each one with board_add and a key" in said and "never added twice" in said
+        assert "there is no need to check first" in str(fake_llm.calls[0]["volatile_tail"])
+
     async def test_a_visitor_a_builder_and_a_nested_turn_get_nothing(self, boards_on, fake_llm):
         await _shared("Leads", ("agent", "desk", "work"))
         agent = _agent(id="desk")

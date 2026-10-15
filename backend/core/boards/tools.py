@@ -188,7 +188,8 @@ async def digest(turn: TurnBoards) -> Digest:
         if len(shown) < len(cards) or board.board_id in rows.more:
             lines.append("  (more open cards: board_list)")
     for board in turn.add_only():
-        lines.append(f"Shared board '{board.name}': you may add cards only (board_add).")
+        lines.append(f"Shared board '{board.name}': you may add cards only (board_add). Give each card a key: a key "
+                     "already on the board is never added twice, so there is no need to check first.")
     return Digest(text="\n".join(lines), tainted=tainted)
 
 
@@ -203,6 +204,13 @@ class Outcome:
     tainted: bool = False
 
 
+def _add_only(labels: str) -> str:
+    """What an add-only agent is told when it reaches for more: what it may do instead, not only what it may not.
+    gpt-4.1-mini, refused a check for duplicates, would not add at all and asked a person (F557)."""
+    return (f"This agent may only add cards to {labels}: it cannot list or read them. Add each one with board_add "
+            "and a key; a key already on the board is never added twice, so there is no need to check first.")
+
+
 def _refused(text: str) -> Outcome:
     return Outcome(observation=f"Refused: {text}", preview=f"Refused: {text}"[:300])
 
@@ -213,7 +221,7 @@ async def _card_for(turn: TurnBoards, card_id: Any, *, work: bool = True) -> tup
     if card is None or board is None:
         raise store.NoSuchCard(f"There is no card {card_id} on your boards. board_list shows them.")
     if work and board.access != "work":
-        raise store.BadValue(f"This agent may only add cards to {board.label}.")
+        raise store.BadValue(_add_only(board.label))
     return card, board
 
 
@@ -273,13 +281,13 @@ async def _run(name: str, args: dict[str, Any], turn: TurnBoards, *, tainted: bo
         return Outcome(observation=text, preview=text.split("\n", 1)[0], tainted=card.tainted)
 
     if not turn.work():
-        return _refused("this agent may only add cards: " + ", ".join(b.label for b in turn.add_only()) + ".")
+        return _refused(_add_only(", ".join(b.label for b in turn.add_only())))
 
     if name == "board_list":
         named = args.get("board")
         boards = [turn.pick(named)] if named else turn.work()
         if any(b.access != "work" for b in boards):
-            return _refused(f"this agent may only add cards to {boards[0].label}.")
+            return _refused(_add_only(boards[0].label))
         ids = [b.board_id for b in boards if b.board_id]
         status = str(args.get("status") or "")
         statuses = {"open": ("open",), "claimed": ("claimed",), "done": ("done",),
