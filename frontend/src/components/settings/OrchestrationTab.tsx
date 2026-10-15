@@ -263,13 +263,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // and every half minute, as agents write.
     const boardsOn = !!useNavFlags().boards_enabled;
     const boardWorkflowId = boardsOn && draft && orchestrations.some(o => o.id === draft.id) ? draft.id : null;
-    const [boardCount, setBoardCount] = useState<number | null>(null);
+    // Kept with the workflow it was read for, so another workflow's count never shows while its own is read.
+    const [boardRead, setBoardRead] = useState<{ id: string; count: number | null } | null>(null);
+    const boardCount = boardRead && boardRead.id === boardWorkflowId ? boardRead.count : null;
     useEffect(() => {
-        if (!boardWorkflowId) { setBoardCount(null); return; }
+        if (!boardWorkflowId) return;
         let live = true;
         const read = () => boardsApi(ossBoardsHost.request).open({ scope: 'workflow', scopeId: boardWorkflowId })
-            .then(p => { if (live) setBoardCount(p.board.open + p.board.claimed); })
-            .catch(() => { if (live) setBoardCount(null); });
+            .then(p => { if (live) setBoardRead({ id: boardWorkflowId, count: p.board.open + p.board.claimed }); })
+            .catch(() => { if (live) setBoardRead({ id: boardWorkflowId, count: null }); });
         read();
         const t = window.setInterval(read, 30_000);
         return () => { live = false; window.clearInterval(t); };
