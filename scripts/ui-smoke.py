@@ -10156,14 +10156,51 @@ _WORD_PAGES = ["/", "/agents", "/channels", "/evals", "/knowledge", "/logs", "/r
                "/settings/scale", "/settings/support", "/settings/variables", "/settings/import_export"]
 
 
+#: Where the workspace's own words are served: what people named and described, which D209 does not rename (F516).
+_WORKSPACE_WORDS_FROM = ["/api/orchestrations", "/api/orchestrations/runs?limit=200", "/api/logs/orchestrations",
+                         "/api/logs/agents", "/api/logs/schedules", "/api/agents", "/api/schedules"]
+_WORKSPACE_WORD_KEYS = {"name", "description", "orchestration_name", "agent_name", "user_input"}
+
+
+def _strings_under(value, keys: set[str], out: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in keys and isinstance(item, str):
+                out.add(item.strip())
+            else:
+                _strings_under(item, keys, out)
+    elif isinstance(value, list):
+        for item in value:
+            _strings_under(item, keys, out)
+
+
+def _workspace_words() -> list[str]:
+    """Every name and description the workspace gave its own things, longest first."""
+    words: set[str] = set()
+    for path in _WORKSPACE_WORDS_FROM:
+        try:
+            _strings_under(api(path), _WORKSPACE_WORD_KEYS, words)
+        except (urllib.error.URLError, ValueError):
+            continue
+    return sorted((w for w in words if len(w) >= 3), key=len, reverse=True)
+
+
 @check
 async def check_oldwords(browser) -> str:
     """No page says the words D209 retired (F511): "Orchestration(s)" became "Workflow(s)" and "MCP servers" "Apps"
     in what people see, and the old words lingered on the canvas top bar, the chat's starter and run lines, Help &
     docs, Import / Export, Usage, Memory, Scale and the orchestrator agent's note. Reads the text and every
-    aria-label, placeholder and title, on each main page and on a workflow's canvas."""
+    aria-label, placeholder and title, on each main page and on a workflow's canvas.
+
+    What the workspace wrote is not the product's words (F516): a workflow named "New orchestration" before F511,
+    a run log's own lines. So the names and descriptions it gave its things are taken out first, and so is every
+    element that keeps its text verbatim (`white-space: pre…`: a log line, a file, code). The check's own fixture
+    is named that way and run once, so both are read every time.
+    """
     oid = f"orch_uismoke_words_{int(time.time())}"
-    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke words"))
+    api("/api/orchestrations", "POST", print_orchestration(oid, "New orchestration (ui-smoke words)"))
+    run_to_end(oid)
+    theirs = _workspace_words()
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     found: list[str] = []
@@ -10173,9 +10210,19 @@ async def check_oldwords(browser) -> str:
             await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
             await asyncio.sleep(SETTLE)
             text = await page.evaluate(
-                "() => [document.body.innerText, ...[...document.querySelectorAll('[aria-label],[placeholder],[title]')]"
-                ".flatMap(e => ['aria-label', 'placeholder', 'title'].map(a => e.getAttribute(a)))"
-                ".filter(Boolean)].join('\\n')")
+                """() => {
+                  const verbatim = [...document.body.querySelectorAll('*')]
+                    .filter(e => getComputedStyle(e).whiteSpace.startsWith('pre'));
+                  const shown = verbatim.map(e => e.style.display);
+                  verbatim.forEach(e => { e.style.display = 'none'; });
+                  const said = document.body.innerText;
+                  verbatim.forEach((e, i) => { e.style.display = shown[i]; });
+                  return [said, ...[...document.querySelectorAll('[aria-label],[placeholder],[title]')]
+                    .flatMap(e => ['aria-label', 'placeholder', 'title'].map(a => e.getAttribute(a)))
+                    .filter(Boolean)].join('\\n');
+                }""")
+            for word in theirs:
+                text = text.replace(word, " ")
             for m in _OLD_WORDS.finditer(text):
                 around = text[max(0, m.start() - 40): m.end() + 20].replace("\n", " ")
                 if not _KEPT_WORDS.search(around):
