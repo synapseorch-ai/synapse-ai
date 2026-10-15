@@ -275,7 +275,7 @@ async def get_orchestration(orch_id: str):
     from core.store.resources import get_orchestration as _get
     orch = await _get(orch_id)
     if not orch:
-        raise HTTPException(status_code=404, detail="Orchestration not found")
+        raise HTTPException(status_code=404, detail="Workflow not found")
     return orch
 
 
@@ -454,7 +454,7 @@ async def delete_orchestration(orch_id: str):
 
     orch = await get_orchestration(orch_id)
     if orch is None:
-        raise HTTPException(status_code=404, detail="Orchestration not found")
+        raise HTTPException(status_code=404, detail="Workflow not found")
     runners = await what_runs(orch_id)
     if runners:
         raise HTTPException(status_code=409, detail=refusal(orch.get("name") or orch_id, runners))
@@ -474,7 +474,7 @@ async def run_orchestration(orch_id: str, request: Request):
     from core.scale.context import resolve_orchestration
     orch_data = await resolve_orchestration(orch_id)
     if not orch_data:
-        raise HTTPException(status_code=404, detail="Orchestration not found")
+        raise HTTPException(status_code=404, detail="Workflow not found")
 
     body = await request.json()
     user_input = body.get("message", "")
@@ -795,5 +795,5 @@ async def deploy_as_agent(orch_id: str):
     from core.orchestration.deploy import deploy_as_agent as _deploy
     result = await _deploy(orch_id)
     if result["status"] == "not_found":
-        raise HTTPException(status_code=404, detail="Orchestration not found")
+        raise HTTPException(status_code=404, detail="Workflow not found")
     return result

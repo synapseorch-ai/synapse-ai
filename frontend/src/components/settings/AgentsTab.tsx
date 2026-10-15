@@ -594,12 +594,12 @@ export const AgentsTab = ({
                                     <div className="space-y-2">
                                         <h4 className="text-base font-semibold text-text">{draftAgent.name}</h4>
                                         <p className="max-w-[340px] text-sm leading-relaxed text-text-muted">
-                                            This is an <span className="font-semibold text-text">Orchestration Agent</span>. Its workflow, steps, and configuration are managed in the dedicated Orchestrations editor.
+                                            This agent <span className="font-semibold text-text">runs a workflow</span>. Its steps and configuration are edited in Workflows.
                                         </p>
                                     </div>
                                     <div className="flex items-center gap-2 rounded-md border border-border bg-surface-2 px-4 py-2.5 text-xs text-text-muted">
                                         <ExternalLink className="size-3.5 shrink-0" aria-hidden />
-                                        <span>Open the <strong className="text-text">Orchestrations</strong> menu to edit this agent&apos;s workflow</span>
+                                        <span>Open <strong className="text-text">Workflows</strong> to edit this agent&apos;s workflow</span>
                                     </div>
                                     <Button variant="secondary" size="sm" className="lg:hidden" onClick={() => setTestDrawer(true)}>
                                         Try {draftAgent.name}
@@ -1282,7 +1282,7 @@ export const AgentsTab = ({
                                                         value={draftAgent.max_turns ?? (draftAgent.type === 'code' ? 50 : 30)}
                                                         onChange={e => setDraftAgent({ ...draftAgent, max_turns: parseInt(e.target.value) || 30 })}
                                                     />
-                                                    <p className="mt-1 text-xs text-text-faint">Max reasoning turns per request. Orchestration steps override this value.</p>
+                                                    <p className="mt-1 text-xs text-text-faint">Max reasoning turns per request. A workflow&apos;s steps override this value.</p>
                                                 </div>
 
                                                 {/* Max response length (F263) — this agent's own cap; blank

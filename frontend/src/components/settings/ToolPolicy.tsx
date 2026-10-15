@@ -51,7 +51,7 @@ export const POLICY_CHOICES = [
 /** What each decision means, in one line, under the control. */
 export const POLICY_MEANING: Record<string, string> = {
     allow: 'The call runs.',
-    confirm: 'The run stops and a person decides. In chat that is a card in the conversation; in an orchestration the run waits for input.',
+    confirm: 'The run stops and a person decides. In chat that is a card in the conversation; in a workflow the run waits for input.',
     deny: 'The call never runs, and the model is told why.',
 };
 

@@ -70,7 +70,7 @@ export function TopBar({
                     type="button"
                     onClick={onBack}
                     aria-label="Back"
-                    title="Back to all orchestrations and runs"
+                    title="Back to all workflows and runs"
                     className={buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: true })}
                 >
                     <ArrowLeft className="size-4" aria-hidden />
@@ -84,8 +84,8 @@ export function TopBar({
                     </span>
                 ) : (
                 <input
-                    aria-label="Orchestration name"
-                    placeholder="Orchestration name"
+                    aria-label="Workflow name"
+                    placeholder="Workflow name"
                     value={name}
                     onChange={(e) => onRename(e.target.value)}
                     spellCheck={false}
@@ -333,7 +333,7 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                                 autoFocus
                                 value={runInput.value}
                                 onChange={(e) => runInput.onChange(e.target.value)}
-                                placeholder="Initial input for the orchestration..."
+                                placeholder="Initial input for the workflow..."
                                 className="field-sizing-content max-h-48 min-h-[3.25rem] resize-none"
                                 onKeyDown={(e) => {
                                     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

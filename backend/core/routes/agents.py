@@ -80,7 +80,7 @@ async def get_agents():
 
 #: What a workflow agent saved with a workflow that does not exist is told (F408).
 NO_SUCH_ORCHESTRATION = (
-    "That orchestration does not exist in this workspace: deploy one from the Orchestrations screen, "
+    "That workflow does not exist in this workspace: deploy one from Workflows, "
     "or give the agent the id of one that exists."
 )
 
@@ -116,8 +116,8 @@ async def create_agent(agent: Agent):
     if document.get("type") == "orchestrator" and not document.get("orchestration_id"):
         raise HTTPException(
             status_code=422,
-            detail="An orchestrator agent runs an orchestration: give it an orchestration_id, "
-                   "or deploy the orchestration from the Orchestrations screen.",
+            detail="An orchestrator agent runs a workflow: give it an orchestration_id, "
+                   "or deploy the workflow from Workflows.",
         )
     if document.get("type") == "orchestrator":
         await _check_orchestration_exists(document)
@@ -380,8 +380,8 @@ async def get_agent_types():
     s = load_settings()
     types = [
         {"value": "conversational", "label": "Conversational", "description": "General-purpose agent with configurable tools."},
-        {"value": "orchestrator", "label": "Orchestrator", "description": "Multi-agent orchestration — deployed from the Orchestrations tab."},
-        {"value": "delegate", "label": "Delegate", "description": "Routes queries to sub-agents dynamically. Usable standalone or as an agent step in orchestrations."},
+        {"value": "orchestrator", "label": "Orchestrator", "description": "Runs a workflow — deployed from Workflows."},
+        {"value": "delegate", "label": "Delegate", "description": "Routes queries to sub-agents dynamically. Usable standalone or as an agent step in workflows."},
     ]
     if s.get("coding_agent_enabled"):
         types.insert(2, {"value": "code", "label": "Code", "description": "Automatically includes search_codebase for semantic code search."})

@@ -25,9 +25,9 @@ export const SupportTab = () => {
     const docLinks = [
         { icon: BookOpen, label: "Getting started", description: "Installation & quick setup", href: "https://docs.synapseorch.com/getting-started/installation" },
         { icon: Cpu, label: "Agents", description: "Agent types & configuration", href: "https://docs.synapseorch.com/agents/overview" },
-        { icon: GitBranch, label: "Orchestrations", description: "Multi-agent DAG workflows", href: "https://docs.synapseorch.com/orchestrations/overview" },
+        { icon: GitBranch, label: "Workflows", description: "Multi-agent DAG workflows", href: "https://docs.synapseorch.com/orchestrations/overview" },
         { icon: Key, label: "LLM providers", description: "Connect cloud & local models", href: "https://docs.synapseorch.com/llm-providers/overview" },
-        { icon: Server, label: "MCP servers", description: "Model Context Protocol setup", href: "https://docs.synapseorch.com/mcp/overview" },
+        { icon: Server, label: "Apps", description: "Model Context Protocol setup", href: "https://docs.synapseorch.com/mcp/overview" },
         { icon: Wrench, label: "Custom tools", description: "Python & HTTP tool builder", href: "https://docs.synapseorch.com/custom-tools/overview" },
         { icon: Database, label: "Vault", description: "Persistent files & knowledge bases", href: "https://docs.synapseorch.com/vault" },
         { icon: Code, label: "API reference", description: "REST API endpoints", href: "https://docs.synapseorch.com/api/overview" },
@@ -35,9 +35,9 @@ export const SupportTab = () => {
 
     const steps = [
         { title: "Configure models", href: "/settings/models", text: "Add API keys for cloud providers or select a local model via Ollama." },
-        { title: "Add tools & servers (optional)", href: "/apps", text: "Connect MCP servers or build custom tools so your agents can interact with the outside world." },
+        { title: "Add tools & servers (optional)", href: "/apps", text: "Connect apps or build custom tools so your agents can interact with the outside world." },
         { title: "Build agents", href: "/agents", text: "Create specialized agents with specific system prompts, models, and tool capabilities." },
-        { title: "Create orchestrations", href: "/workflows", text: "Wire your agents together in a deterministic DAG to execute complex tasks efficiently." },
+        { title: "Create workflows", href: "/workflows", text: "Wire your agents together in a deterministic DAG to execute complex tasks efficiently." },
     ];
 
     const faqs = [
@@ -69,7 +69,7 @@ export const SupportTab = () => {
                         <p>Write a Python script or configure an HTTP request (like n8n) in the <Link href="/tools" className={LINK}>Tools</Link>.</p>
                     </div>
                     <div>
-                        <strong className="block font-medium text-text mb-0.5">2. MCP servers</strong>
+                        <strong className="block font-medium text-text mb-0.5">2. Apps</strong>
                         <p>Connect external tools via the Model Context Protocol in <Link href="/apps" className={LINK}>Apps</Link>. Provide the connection command/URL, and the server&apos;s tools will be auto-registered.</p>
                     </div>
                     <div className="flex gap-4">
@@ -77,17 +77,17 @@ export const SupportTab = () => {
                             Custom tools docs <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                         <a href="https://docs.synapseorch.com/mcp/overview" target="_blank" rel="noopener noreferrer" className={DOC_LINK}>
-                            MCP servers docs <ExternalLink className="h-3 w-3" aria-hidden />
+                            Apps docs <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                     </div>
                 </div>
             )
         },
         {
-            question: "What is an Orchestration and how do I build one?",
+            question: "What is a workflow and how do I build one?",
             answer: (
                 <div className="space-y-2">
-                    <p>An Orchestration is a multi-agent workflow defined as a Directed Acyclic Graph (DAG).</p>
+                    <p>A workflow is a set of steps (agents, tools, people, logic) the engine runs in order, as a graph.</p>
                     <ol className="list-decimal pl-5 space-y-1">
                         <li>First, define specialized agents in the <Link href="/agents" className={LINK}>Agents</Link>.</li>
                         <li>Then, go to <Link href="/workflows" className={LINK}>Workflows</Link>.</li>
@@ -98,7 +98,7 @@ export const SupportTab = () => {
                             Agents docs <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                         <a href="https://docs.synapseorch.com/orchestrations/overview" target="_blank" rel="noopener noreferrer" className={DOC_LINK}>
-                            Orchestrations docs <ExternalLink className="h-3 w-3" aria-hidden />
+                            Workflows docs <ExternalLink className="h-3 w-3" aria-hidden />
                         </a>
                     </div>
                 </div>
@@ -128,7 +128,7 @@ export const SupportTab = () => {
                         Monitor system activity, agent executions, and tool calls in <Link href="/logs" className={LINK}>Runs › Logs</Link>.
                     </p>
                     <p>
-                        This is crucial for debugging complex orchestrations, tracking token usage, and ensuring everything is running smoothly.
+                        This is crucial for debugging complex workflows, tracking token usage, and ensuring everything is running smoothly.
                     </p>
                 </div>
             )
@@ -178,7 +178,7 @@ export const SupportTab = () => {
                     <div>
                         <h3 className="mb-1 text-sm font-medium text-text">Join the community</h3>
                         <p className="max-w-xl text-sm text-text-muted">
-                            Have questions, need help debugging, or want to share your custom orchestrations? Join our active Discord community to connect with other builders.
+                            Have questions, need help debugging, or want to share your custom workflows? Join our active Discord community to connect with other builders.
                         </p>
                     </div>
                     <LinkButton

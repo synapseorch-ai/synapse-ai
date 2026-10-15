@@ -112,7 +112,7 @@ export function ExportView() {
         <div className="p-8 text-center border border-dashed border-border rounded-md">
           <Package className="h-8 w-8 mx-auto text-text-faint mb-3" />
           <p className="text-text text-sm font-medium">Export your configurations</p>
-          <p className="text-text-muted text-sm mt-1">Select orchestrations, agents, MCP servers, and tools to export as a portable bundle</p>
+          <p className="text-text-muted text-sm mt-1">Select workflows, agents, apps and tools to export as a portable bundle</p>
           <Button onClick={loadData} loading={loading} className="mt-4 mx-auto">
             {!loading && <Package className="h-4 w-4" />}
             {loading ? "Loading…" : "Load export data"}
@@ -142,14 +142,14 @@ export function ExportView() {
       )}
 
       <div className="space-y-3">
-        <SectionTable title="Orchestrations" icon={Workflow} items={data.orchestrations} selected={selOrch} locked={new Set()} getId={o => o.id} getLabel={o => o.name} getDesc={o => o.description} onToggle={toggleOrch} />
+        <SectionTable title="Workflows" icon={Workflow} items={data.orchestrations} selected={selOrch} locked={new Set()} getId={o => o.id} getLabel={o => o.name} getDesc={o => o.description} onToggle={toggleOrch} />
         <SectionTable title="Agents" icon={Bot} items={data.agents} selected={selAgent} locked={lockedAgent} getId={a => a.id} getLabel={a => a.name} getDesc={a => a.description} onToggle={toggleAgent} />
-        <SectionTable title="MCP Servers" icon={Server} items={data.mcp_servers} selected={selMcp} locked={lockedMcp} getId={m => m.name} getLabel={m => m.label || m.name} onToggle={toggleMcp} />
+        <SectionTable title="Apps" icon={Server} items={data.mcp_servers} selected={selMcp} locked={lockedMcp} getId={m => m.name} getLabel={m => m.label || m.name} onToggle={toggleMcp} />
         <SectionTable title="Custom Tools" icon={Wrench} items={data.custom_tools} selected={selTool} locked={lockedTool} getId={t => t.name} getLabel={t => t.generalName || t.name} getDesc={t => t.description} onToggle={toggleTool} />
       </div>
 
       {(data.orchestrations.length + data.agents.length + data.mcp_servers.length + data.custom_tools.length) === 0 && (
-        <p className="text-text-faint text-sm text-center py-4">Nothing to export yet — add orchestrations, agents, MCP servers, or tools first.</p>
+        <p className="text-text-faint text-sm text-center py-4">Nothing to export yet — add workflows, agents, apps or tools first.</p>
       )}
 
       {total > 0 && (
@@ -168,9 +168,9 @@ export function ExportView() {
             <div className="flex items-center justify-between gap-4">
               <p className="text-sm text-text-muted">
                 <span className="text-text font-semibold">{total}</span> item{total !== 1 ? "s" : ""} selected
-                {selOrch.size > 0 && ` · ${selOrch.size} orchestration${selOrch.size !== 1 ? "s" : ""}`}
+                {selOrch.size > 0 && ` · ${selOrch.size} workflow${selOrch.size !== 1 ? "s" : ""}`}
                 {selAgent.size > 0 && ` · ${selAgent.size} agent${selAgent.size !== 1 ? "s" : ""}`}
-                {selMcp.size > 0 && ` · ${selMcp.size} MCP server${selMcp.size !== 1 ? "s" : ""}`}
+                {selMcp.size > 0 && ` · ${selMcp.size} app${selMcp.size !== 1 ? "s" : ""}`}
                 {selTool.size > 0 && ` · ${selTool.size} tool${selTool.size !== 1 ? "s" : ""}`}
               </p>
               <Button onClick={handleExport} loading={exporting} className="shrink-0">

@@ -253,7 +253,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
                             <table className="w-full text-sm">
                                 <thead>
                                     <tr className="border-b border-border text-left">
-                                        <th className={cn(TH, 'w-[55%]')}>Top orchestration runs by savings</th>
+                                        <th className={cn(TH, 'w-[55%]')}>Top workflow runs by savings</th>
                                         <th className={cn(TH, 'text-right')}>Cache reads</th>
                                         <th className={cn(TH, 'pr-0 text-right')}>Saved</th>
                                     </tr>
@@ -280,7 +280,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
 type SessionKind = 'system' | 'schedule' | 'orch' | 'chat';
 const KIND: Record<SessionKind, { icon: typeof Zap; word: string; legend: string }> = {
     chat: { icon: Zap, word: 'chat', legend: 'Chat' },
-    orch: { icon: Activity, word: 'orch', legend: 'Orchestration' },
+    orch: { icon: Activity, word: 'orch', legend: 'Workflow' },
     schedule: { icon: Clock, word: 'schedule', legend: 'Schedule' },
     system: { icon: Wand2, word: 'system', legend: 'System prompt' },
 };
@@ -1026,7 +1026,7 @@ export function UsageTab() {
                                 className="w-44"
                                 options={[
                                     { value: 'all', label: 'All sessions' },
-                                    { value: 'orchestrations', label: 'Orchestrations' },
+                                    { value: 'orchestrations', label: 'Workflows' },
                                     { value: 'agents', label: 'Agents' },
                                     { value: 'schedules', label: 'Schedules' },
                                 ]}

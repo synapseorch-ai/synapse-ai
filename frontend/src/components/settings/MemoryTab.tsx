@@ -18,16 +18,16 @@ const ITEMS: { id: ClearItem; icon: React.ElementType; label: string; descriptio
     {
         id: 'orchestration_history',
         icon: Activity,
-        label: 'Orchestration run history',
-        description: 'Past orchestration run logs and checkpoints',
-        detail: 'All orchestration execution logs and run state files',
+        label: 'Workflow run history',
+        description: 'Past workflow run logs and checkpoints',
+        detail: 'All workflow logs and run state files',
     },
     {
         id: 'agent_logs',
         icon: Bot,
         label: 'Agent logs',
         description: 'Per-run debug logs for individual agent executions',
-        detail: 'All agent run log files from chat and orchestration sources',
+        detail: 'All agent run log files from chat and workflows',
     },
     {
         // What agents with memory saved (F270): it could not be removed at all

@@ -77,7 +77,7 @@ export function HowImBuilt({
             onClose={onClose}
             size="lg"
             title="How I'm built"
-            description="I am an ordinary SynapseOrch orchestration. Every step type you see here is available on your canvas."
+            description="I am an ordinary SynapseOrch workflow. Every step type you see here is available on your canvas."
             footer={
                 <div className="flex w-full items-center justify-between gap-3">
                     <p className="text-xs text-text-faint">
@@ -98,7 +98,7 @@ export function HowImBuilt({
                 {legend && (
                     <div
                         role="group"
-                        aria-label={`The ${legend.name} orchestration on the canvas`}
+                        aria-label={`The ${legend.name} workflow on the canvas`}
                         className="h-80 overflow-hidden rounded-md border border-border bg-bg"
                     >
                         <ReactFlowProvider>

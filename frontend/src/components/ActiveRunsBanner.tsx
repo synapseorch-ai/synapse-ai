@@ -69,7 +69,7 @@ export function ActiveRunsBanner({ pollMs = 10000 }: { pollMs?: number }) {
         <div className="border-b border-border bg-surface px-4 py-1.5">
             <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2">
                 <span className="flex items-center gap-1 text-xs text-text-faint">
-                    <Radio size={11} className="text-machine" aria-hidden /> Orchestrations
+                    <Radio size={11} className="text-machine" aria-hidden /> Workflows
                 </span>
                 {runs.map(run => (
                     <button

@@ -56,7 +56,7 @@ export function DescriptionField({ draft, onChange, readOnly }: {
 }) {
     return (
         <Input
-            aria-label="Orchestration description"
+            aria-label="Workflow description"
             value={draft.description}
             onChange={(e) => onChange({ ...draft, description: e.target.value })}
             placeholder="Description..."

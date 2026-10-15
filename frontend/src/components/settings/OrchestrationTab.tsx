@@ -146,7 +146,7 @@ const settleActivity = (log: RunLogState): RunLogState => (log.liveActivity === 
 
 const EMPTY_ORCHESTRATION: Orchestration = {
     id: '',
-    name: 'New Orchestration',
+    name: 'New workflow',
     description: '',
     steps: [],
     entry_step_id: '',
@@ -496,7 +496,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
             // setting draft to null, which would silently re-render the landing
             // page and look like the click did nothing. The runs API filters
             // these out, so this is a backstop (e.g. deleted mid-session).
-            showToast('That run\'s orchestration no longer exists', 'error');
+            showToast('That run\'s workflow no longer exists', 'error');
             return;
         }
         setSelectedOrchId(runInfo.orchestration_id);
@@ -788,7 +788,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                 if (errorCount > 0) {
                     showToast(`Saved, with ${errorCount} configuration error${errorCount !== 1 ? 's' : ''} still to fix`, 'warning');
                 } else {
-                    showToast('Orchestration saved', 'success');
+                    showToast('Workflow saved', 'success');
                 }
             } else {
                 const err = await res.json().catch(() => null);
@@ -1624,7 +1624,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                 showToast(`Deploy failed: ${err.detail || 'Unknown error'}`, 'error');
             }
         } catch {
-            showToast('Failed to deploy orchestration as agent', 'error');
+            showToast('Failed to deploy the workflow as an agent', 'error');
         }
     };
 
@@ -1678,7 +1678,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
 
             <ConfirmationModal
                 isOpen={builderSavedOrch !== null}
-                title="The builder changed this orchestration"
+                title="The builder changed this workflow"
                 message="You have unsaved edits open. Load the builder's version and lose them, or keep editing yours?"
                 confirmText="Load the builder's version"
                 onConfirm={() => {
@@ -1913,15 +1913,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     trigger="icon"
                                     value={selectedOrchId || undefined}
                                     onChange={(id: string) => guardLeave(() => selectOrchestration(id || null))}
-                                    placeholder="Select orchestration…"
-                                    searchPlaceholder="Search orchestrations…"
-                                    aria-label="Orchestration"
+                                    placeholder="Select workflow…"
+                                    searchPlaceholder="Search workflows…"
+                                    aria-label="Workflow"
                                     size="sm"
                                     options={orchestrations.map(o => ({ value: o.id, label: o.name }))}
                                 />
                             }
                             menu={[
-                                { id: 'new', label: 'New orchestration', icon: Plus, onSelect: () => guardLeave(createNew), separatorBefore: true },
+                                { id: 'new', label: 'New workflow', icon: Plus, onSelect: () => guardLeave(createNew), separatorBefore: true },
                                 { id: 'deploy', label: 'Deploy as Agent', icon: Bot, onSelect: handleDeploy },
                                 { id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: handleDuplicate, disabled: saving },
                                 { id: 'delete', label: 'Delete', icon: Trash, onSelect: handleDelete, danger: true, separatorBefore: true },

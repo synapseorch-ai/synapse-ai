@@ -148,7 +148,7 @@ export function ExamplesView({ onLoadBundle, showHeading = true }: ExamplesViewP
         <div>
           <h2 className="text-section text-text">Example Packs</h2>
           <p className="mt-1 text-sm text-text-muted">
-            Curated collections of agents, orchestrations, and MCP servers. Select a pack to preview what will be imported before committing.
+            Curated collections of agents, workflows and apps. Select a pack to preview what will be imported before committing.
           </p>
         </div>
       )}

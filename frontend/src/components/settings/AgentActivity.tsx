@@ -280,7 +280,7 @@ function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: a
     if (nothing) {
         return (
             <Empty icon={Workflow}>
-                Nothing references this agent yet — no orchestration step, schedule, messaging
+                Nothing references this agent yet — no workflow step, schedule, messaging
                 channel or delegating agent.
             </Empty>
         );
@@ -293,7 +293,7 @@ function UsedByTab({ agentId, channels, agents }: { agentId: string; channels: a
             </p>
             <Section
                 icon={Workflow}
-                title="Orchestrations"
+                title="Workflows"
                 rows={orchestrations.map((o: any) => ({
                     key: o.id,
                     primary: o.name || o.id,

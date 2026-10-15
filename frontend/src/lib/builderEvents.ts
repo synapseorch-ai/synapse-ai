@@ -112,7 +112,7 @@ export function refusedAnswer(state: BuilderState): boolean {
  * not have to guess. Everything else is presentation.
  */
 function bannerText(saved: SavedResource): string {
-    const noun = saved.kind === 'orchestration' ? 'Orchestration' : saved.kind[0].toUpperCase() + saved.kind.slice(1);
+    const noun = saved.kind === 'orchestration' ? 'Workflow' : saved.kind[0].toUpperCase() + saved.kind.slice(1);
     const count = saved.resource?.count as number | undefined;
     if (saved.kind === 'tool' && typeof count === 'number') {
         return `Imported ${count} tool${count === 1 ? '' : 's'} into ${saved.name}`;

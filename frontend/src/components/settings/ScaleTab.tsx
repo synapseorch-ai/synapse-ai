@@ -314,7 +314,7 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
                             <div className="border border-border p-3 rounded-md">
                                 <p className="text-text font-medium mb-1"><span className="font-code">synapseorchai/synapse-ai</span>  <span className="text-text-faint font-normal">(your existing install)</span></p>
                                 <p className="text-text-muted">→ Hosts the UI and settings</p>
-                                <p className="text-text-muted">→ Manages orchestrations, agents, tools</p>
+                                <p className="text-text-muted">→ Manages workflows, agents, tools</p>
                                 <p className="text-text-muted">→ Enqueues jobs to Redis when V2 API is called</p>
                                 <p className="text-text-muted">→ Streams SSE events back to clients from Redis</p>
                             </div>
@@ -322,7 +322,7 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
                                 <p className="text-text font-medium mb-1"><span className="font-code">synapseorchai/synapse-ai-worker</span>  <span className="text-text-faint font-normal">(scale out ×N)</span></p>
                                 <p className="text-text-muted">→ Pulls jobs from Redis ARQ queue</p>
                                 <p className="text-text-muted">→ Reads definitions from Postgres</p>
-                                <p className="text-text-muted">→ Executes orchestrations and agent chat</p>
+                                <p className="text-text-muted">→ Runs workflows and agent chat</p>
                                 <p className="text-text-muted">→ Publishes step events back to Redis Streams</p>
                                 <p className="text-text-muted">→ Health endpoint on <span className="font-code">:9000/health</span></p>
                             </div>
@@ -349,7 +349,7 @@ const ScaleDocsDrawer = ({ open, onClose }: { open: boolean; onClose: () => void
                                 <span className="text-success font-medium shrink-0 mt-0.5">✓ Required</span>
                                 <div>
                                     <p className="text-text font-medium">Postgres</p>
-                                    <p className="text-text-muted mt-0.5">Orchestrations, agents and tools live here, and workers write run state here. This instance reads and writes the same database, so there is nothing to push. Any Postgres 14+ works.</p>
+                                    <p className="text-text-muted mt-0.5">Workflows, agents and tools live here, and workers write run state here. This instance reads and writes the same database, so there is nothing to push. Any Postgres 14+ works.</p>
                                 </div>
                             </div>
                             <div className="flex items-start gap-3 p-3 border border-border rounded-md">
@@ -852,7 +852,7 @@ export function ScaleTab() {
                                 <button onClick={() => setSearchRunDetail(null)} className="text-text-faint hover:text-text text-xs shrink-0 rounded-sm">✕</button>
                             </div>
                             <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs">
-                                <DetailRow label="Orchestration">
+                                <DetailRow label="Workflow">
                                     <span className="text-text truncate">{searchRunDetail.orchestration_id || '—'}</span>
                                 </DetailRow>
                                 <DetailRow label="Worker">
@@ -946,7 +946,7 @@ export function ScaleTab() {
                         <div role="table" aria-label="Recent runs" className="min-w-[640px] text-[13px]">
                             <div role="rowgroup">
                                 <div role="row" className={cn(RUN_GRID, 'border-b border-border px-2.5 pb-2 text-xs text-text-faint')}>
-                                    {['Run ID', 'Status', 'Orchestration', 'Started', 'Duration', 'Cost'].map(h => (
+                                    {['Run ID', 'Status', 'Workflow', 'Started', 'Duration', 'Cost'].map(h => (
                                         <span role="columnheader" key={h} className={h === 'Cost' || h === 'Duration' ? 'text-right' : undefined}>{h}</span>
                                     ))}
                                 </div>
@@ -1135,7 +1135,7 @@ export function ScaleTab() {
             </Section>
 
             <Section variant="plain" title="Postgres" defaultOpen={expandedConfigs.postgres}
-                description="Workers read orchestrations, agents and tools from the same database this instance writes."
+                description="Workers read workflows, agents and tools from the same database this instance writes."
             >
                 <div className={`${FORM} space-y-5`}>
                     <div className="space-y-1.5">

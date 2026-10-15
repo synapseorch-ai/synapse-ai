@@ -2531,14 +2531,14 @@ async def check_workflowsettings(browser) -> str:
         await page.get_by_role("button", name="Workflow settings", exact=True).click()
         await asyncio.sleep(0.6)
         panel = page.get_by_role("region", name="Workflow settings")
-        for role, name in [("textbox", "Orchestration description"),
+        for role, name in [("textbox", "Workflow description"),
                            ("spinbutton", "Max Total Turns"), ("spinbutton", "Timeout (minutes)"),
                            ("checkbox", re.compile(r"^Stop on a state type mismatch")), ("combobox", "Result"),
                            ("combobox", "Score runs against"), ("button", "Add key")]:
             # The checkbox's label holds its explanation too, so its name starts with the words.
             if not await panel.get_by_role(role, name=name, exact=isinstance(name, str)).count():
                 problems.append(f"no {role} {name!r}")
-        await panel.get_by_role("textbox", name="Orchestration description").fill("smoke described")
+        await panel.get_by_role("textbox", name="Workflow description").fill("smoke described")
         await panel.get_by_role("spinbutton", name="Max Total Turns").fill("77")
         await page.get_by_role("button", name=re.compile(r"^Save")).first.click()
         await asyncio.sleep(1.2)
@@ -2727,7 +2727,7 @@ async def check_canvasleave(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await page.locator("input[aria-label='Orchestration name']").fill("ui-smoke leave, edited")
+        await page.locator("input[aria-label='Workflow name']").fill("ui-smoke leave, edited")
         await page.get_by_role("button", name="Back", exact=True).click()
         await asyncio.sleep(0.6)
         if not await ask.count():
@@ -2735,7 +2735,7 @@ async def check_canvasleave(browser) -> str:
         else:
             await ask.get_by_role("button", name="Cancel").click()
             await asyncio.sleep(0.4)
-            if await page.locator("input[aria-label='Orchestration name']").input_value() != "ui-smoke leave, edited":
+            if await page.locator("input[aria-label='Workflow name']").input_value() != "ui-smoke leave, edited":
                 problems.append("Cancel did not keep the edit")
         await page.click('nav[aria-label="Primary"] a[href="/agents"]')
         await asyncio.sleep(0.6)
@@ -3101,7 +3101,7 @@ async def check_ctrls(browser) -> str:
                 if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's')
                     setTimeout(() => { window.__saveKey = e.defaultPrevented; });
             }, true); }""")
-        name = page.get_by_role("textbox", name="Orchestration name", exact=True)
+        name = page.get_by_role("textbox", name="Workflow name", exact=True)
         await name.click()
         await page.keyboard.press("End")
         await page.keyboard.type(" renamed")
@@ -5490,7 +5490,7 @@ async def check_phonetoolbar(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        names = ["Back", "Orchestration", "Save", "Run now", "More actions", "Add step", "Undo (Ctrl+Z)",
+        names = ["Back", "Workflow", "Save", "Run now", "More actions", "Add step", "Undo (Ctrl+Z)",
                  "Fit view"]
         reach = await page.evaluate(TOOLBAR_REACH, names)
         bad = {k: v for k, v in reach.items() if v != "ok"}
@@ -5499,7 +5499,7 @@ async def check_phonetoolbar(browser) -> str:
         await page.get_by_role("button", name="More actions").click()
         items = await page.get_by_role("menuitem").all_inner_texts()
         # Last run is in ⋯ on a phone since M3a-2 (D204's bar; the toggle reads "Show last run" until pressed).
-        want = ["Workflow settings", "Change with AI", "Show last run", "New orchestration", "Deploy as Agent",
+        want = ["Workflow settings", "Change with AI", "Show last run", "New workflow", "Deploy as Agent",
                 "Duplicate", "Delete"]
         if [i.strip() for i in items] != want:
             raise AssertionError(f"the ⋯ menu holds {items}, not {want}")
@@ -5541,7 +5541,7 @@ async def check_duplicateurl(browser) -> str:
         await page.reload(wait_until="domcontentloaded")
         await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        shown = await page.get_by_role("button", name="Orchestration", exact=True).inner_text()
+        shown = await page.get_by_role("button", name="Workflow", exact=True).inner_text()
         if "(Copy)" not in shown:
             raise AssertionError(f"reloaded after Duplicate, the editor shows {shown!r}, not the copy")
         return "after Duplicate the address names the copy, and a reload reopens it"
@@ -7850,7 +7850,7 @@ LIGHT_STATES = (
      lambda p: p.get_by_title("View full response").first.click(), "— full response"),
     ("Recent Runs' Resume", "/workflows?id=orch_smoke_c", [], _SMOKE_RUN_ROUTES,
      lambda p: p.get_by_role("button", name=re.compile(r"^Recent Runs")).first.click(), "Resume"),
-    ("usage", "/usage", [], _SMOKE_USAGE, None, "Top orchestration runs by savings"),
+    ("usage", "/usage", [], _SMOKE_USAGE, None, "Top workflow runs by savings"),
     ("usage compaction row", "/usage", [], _SMOKE_USAGE + [("**/api/usage/logs*", _answer({"logs": [
         {"timestamp": _NOW, "model": "anthropic.claude-3-haiku", "provider": "bedrock",
          "session_id": "sess_smoke_usage", "agent_id": "agent_smoke", "source": "chat", "input_tokens": 500,
@@ -8475,9 +8475,9 @@ async def check_cmdk(browser) -> str:
         await page.keyboard.type("new workflow")
         await asyncio.sleep(0.4)
         await page.keyboard.press("Enter")
-        name = page.locator("input[aria-label='Orchestration name']")
+        name = page.locator("input[aria-label='Workflow name']")
         await name.wait_for(timeout=15_000)
-        if await name.input_value() != "New Orchestration" or "new=" in page.url:
+        if await name.input_value() != "New workflow" or "new=" in page.url:
             bad.append(f"New workflow did not open a blank draft ({await name.input_value()!r}, {page.url})")
         await page.get_by_role("button", name=re.compile(r"^Jump to")).click()
         await palette.wait_for(timeout=5_000)
@@ -10142,6 +10142,50 @@ async def check_evalfields(browser) -> str:
             except Exception:
                 pass
     return "weight 2.5, scale 1-10, baseline 7 and a case's notes saved and read back; min at max refused in words"
+
+
+#: The words D209 retired from what people see (F511): Orchestrations → Workflows, MCP servers → Apps.
+_OLD_WORDS = re.compile(r"\borchestrations?\b|\bMCP servers?\b", re.I)
+#: Kept on purpose (F511's K list, Naveen's OK): the protocol where a person connects or debugs one.
+_KEPT_WORDS = re.compile(r"(filesystem|Google Workspace|outside|SynapseOrch) MCP server|MCP servers registry|"
+                         r"Remove MCP server", re.I)
+#: Every main page but Apps and Tools (servers added by endpoint, K1), API keys (the API's own nouns, K2) and
+#: Templates, whose packs carry their own names and descriptions ("Simple Orchestration Pack": content, F515).
+_WORD_PAGES = ["/", "/agents", "/channels", "/evals", "/knowledge", "/logs", "/runs", "/schedules", "/skills",
+               "/usage", "/vault", "/widgets", "/workflows", "/settings/general", "/settings/memory",
+               "/settings/scale", "/settings/support", "/settings/variables", "/settings/import_export"]
+
+
+@check
+async def check_oldwords(browser) -> str:
+    """No page says the words D209 retired (F511): "Orchestration(s)" became "Workflow(s)" and "MCP servers" "Apps"
+    in what people see, and the old words lingered on the canvas top bar, the chat's starter and run lines, Help &
+    docs, Import / Export, Usage, Memory, Scale and the orchestrator agent's note. Reads the text and every
+    aria-label, placeholder and title, on each main page and on a workflow's canvas."""
+    oid = f"orch_uismoke_words_{int(time.time())}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, "ui-smoke words"))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    found: list[str] = []
+    pages = _WORD_PAGES + [f"/workflows?id={oid}"]
+    try:
+        for path in pages:
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            text = await page.evaluate(
+                "() => [document.body.innerText, ...[...document.querySelectorAll('[aria-label],[placeholder],[title]')]"
+                ".flatMap(e => ['aria-label', 'placeholder', 'title'].map(a => e.getAttribute(a)))"
+                ".filter(Boolean)].join('\\n')")
+            for m in _OLD_WORDS.finditer(text):
+                around = text[max(0, m.start() - 40): m.end() + 20].replace("\n", " ")
+                if not _KEPT_WORDS.search(around):
+                    found.append(f"{path}: …{around.strip()}…")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if found:
+        raise AssertionError(f"{len(found)} retired words: " + " | ".join(found[:8]))
+    return f"no retired word on {len(pages)} pages (text, labels, placeholders, titles)"
 
 
 @check

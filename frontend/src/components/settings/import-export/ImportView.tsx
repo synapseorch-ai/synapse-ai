@@ -406,7 +406,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
               <div className="flex-1 min-w-0">
                 <p className="text-text text-sm font-semibold">Models Used in This Bundle</p>
                 <p className="text-accent-ink text-xs mt-0.5">
-                  {allModels.length} model{allModels.length !== 1 ? "s" : ""} found across agents &amp; orchestration steps.
+                  {allModels.length} model{allModels.length !== 1 ? "s" : ""} found across agents &amp; workflow steps.
                 </p>
               </div>
               <button
@@ -440,7 +440,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
                 <div>
                   <p className="text-sm font-semibold text-text">Use default model for everything</p>
                   <p className="text-xs text-text-muted mt-0.5">
-                    Strips all model &amp; provider overrides from agents and orchestration steps — they will use your global default model instead.
+                    Strips all model &amp; provider overrides from agents and workflow steps — they will use your global default model instead.
                   </p>
                 </div>
               </div>
@@ -456,14 +456,14 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           <div className="flex items-start gap-3 p-3.5 border border-border bg-surface-2 rounded-md">
             <Cpu className="h-3.5 w-3.5 text-text-faint flex-shrink-0 mt-0.5" />
             <p className="text-text-faint text-xs leading-relaxed">
-              No explicit model overrides found — agents &amp; orchestration steps will use your global default model.
+              No explicit model overrides found — agents &amp; workflow steps will use your global default model.
             </p>
           </div>
         )}
 
         <div className="border border-border divide-y divide-border">
           <SectionTable
-            title="Orchestrations" icon={Workflow}
+            title="Workflows" icon={Workflow}
             items={bundle.orchestrations || []}
             selected={selOrch} locked={new Set()}
             getId={o => o.id} getLabel={o => o.name} getDesc={o => o.description}
@@ -488,7 +488,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             }}
           />
           <SectionTable
-            title="MCP Servers" icon={Server}
+            title="Apps" icon={Server}
             items={bundle.mcp_servers || []}
             selected={selMcp} locked={lockedMcp}
             getId={m => m.name} getLabel={m => m.label || m.name}
@@ -548,14 +548,14 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           <AlertCircle className="h-4 w-4 text-accent-ink flex-shrink-0 mt-0.5" />
           <div>
             <p className="text-text text-sm font-semibold">Secret Values Required</p>
-            <p className="text-text-muted text-xs mt-1">MCP server env vars and custom tool headers were redacted during export. Enter the actual values before importing.</p>
+            <p className="text-text-muted text-xs mt-1">App env vars and custom tool headers were redacted during export. Enter the actual values before importing.</p>
           </div>
         </div>
 
         {relevantMcpWithTokens.length > 0 && (
           <div className="space-y-3">
             <h4 className="text-[10px] uppercase font-semibold tracking-wider text-text-faint flex items-center gap-2">
-              <Server className="h-3 w-3" /> Remote MCP Server Tokens
+              <Server className="h-3 w-3" /> Remote app tokens
             </h4>
             {relevantMcpWithTokens.map(m => (
               <div key={m.name} className="border border-border">
@@ -584,7 +584,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
         {relevantMcp.length > 0 && (
           <div className="space-y-3">
             <h4 className="text-[10px] uppercase font-semibold tracking-wider text-text-faint flex items-center gap-2">
-              <Server className="h-3 w-3" /> MCP Server Environment Variables
+              <Server className="h-3 w-3" /> App environment variables
             </h4>
             {relevantMcp.map(m => (
               <div key={m.name} className="border border-border">
@@ -666,9 +666,9 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
     const all = Object.values(results).flat();
     const importedCount = all.filter(r => r.status === "imported" || r.status === "replaced" || r.status === "connected").length;
     const groups = [
-      { key: "orchestrations", label: "Orchestrations", icon: Workflow },
+      { key: "orchestrations", label: "Workflows", icon: Workflow },
       { key: "agents", label: "Agents", icon: Bot },
-      { key: "mcp_servers", label: "MCP Servers", icon: Server },
+      { key: "mcp_servers", label: "Apps", icon: Server },
       { key: "custom_tools", label: "Custom Tools", icon: Wrench },
     ] as const;
 
@@ -680,7 +680,7 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
             <p className="text-success text-sm font-semibold">Import Complete</p>
             <p className="text-success text-xs mt-0.5">
               {importedCount} item{importedCount !== 1 ? "s" : ""} imported.
-              {all.some(r => r.status === "skipped_existing") && " Some MCP servers were skipped (already exist)."}
+              {all.some(r => r.status === "skipped_existing") && " Some apps were skipped (already there)."}
               {useDefaultModels && " · All model overrides were reset to default."}
             </p>
           </div>
@@ -769,8 +769,8 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
             <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />
             <p className="text-text-faint text-xs leading-relaxed">
-              Some MCP servers could not connect automatically. Go to the{" "}
-              <span className="text-text font-semibold">MCP Servers</span> tab and click{" "}
+              Some apps could not connect automatically. Go to{" "}
+              <span className="text-text font-semibold">Apps</span> and click{" "}
               <span className="text-text font-semibold">Retry</span> to connect them.
             </p>
           </div>

@@ -62,7 +62,7 @@ export const VariablesTab = () => {
         <Section variant="plain" collapsible={false} title="Global variables">
             <div className={`${FORM} space-y-4`}>
                 <p className="text-sm text-text-muted">
-                    Use them anywhere a value is not yet known: <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">{'{{ global.api_base }}'}</code> in a tool&apos;s URL, headers or body, in an agent&apos;s system prompt, or in an orchestration step&apos;s prompt.
+                    Use them anywhere a value is not yet known: <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">{'{{ global.api_base }}'}</code> in a tool&apos;s URL, headers or body, in an agent&apos;s system prompt, or in a workflow step&apos;s prompt.
                 </p>
 
             {loading ? (

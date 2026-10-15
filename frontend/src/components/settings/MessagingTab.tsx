@@ -611,7 +611,7 @@ export const MessagingTab = () => {
                         <div className="grid gap-4">
                             <Field
                                 label="Run notifications"
-                                hint="Mirror orchestration notifications (needs input, completed, failed) to this channel's notify chat."
+                                hint="Mirror workflow notifications (needs input, completed, failed) to this channel's notify chat."
                             >
                                 <Select
                                     value={notifyChannelId || '__off__'}

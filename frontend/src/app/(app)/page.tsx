@@ -654,8 +654,8 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
   const PILLS = [
     { label: 'Build an agent', path: '/agents', icon: Bot },
     { label: 'Add a tool', path: '/tools', icon: Wrench },
-    { label: 'Orchestrate agents', path: '/workflows', icon: Network },
-    { label: 'Connect MCP', path: '/apps', icon: Server },
+    { label: 'Build workflows', path: '/workflows', icon: Network },
+    { label: 'Connect apps', path: '/apps', icon: Server },
     { label: 'Schedule a task', path: '/schedules', icon: CalendarClock },
   ];
 
@@ -700,7 +700,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
                 <Sparkles className="h-4 w-4 shrink-0 text-accent-ink" aria-hidden />
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-semibold text-text">Get started in seconds</p>
-                  <p className="break-words text-[13px] text-text-muted">Pre-built agents, orchestrations &amp; MCP servers — ready to explore</p>
+                  <p className="break-words text-[13px] text-text-muted">Pre-built agents, workflows &amp; apps — ready to explore</p>
                 </div>
               </div>
               <button
@@ -716,7 +716,7 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
             {/* Bottom row: teaser pills + CTA */}
             <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
               <div className="flex flex-wrap items-center justify-center gap-1.5 sm:justify-start">
-                {['Web research agent', 'Multi-step orchestration', 'MCP Servers'].map(label => (
+                {['Web research agent', 'Multi-step workflow', 'Apps'].map(label => (
                   <span key={label} className="rounded-full border border-border bg-surface px-2.5 py-0.5 text-xs text-text-muted">
                     {label}
                   </span>
@@ -2081,10 +2081,10 @@ export default function Home() {
 
       // ── Orchestration lifecycle ────────────────────────────────────────────
       case 'orchestration_start':
-        setStreamingActivity(`🚀 Starting orchestration`);
+        setStreamingActivity(`🚀 Starting workflow`);
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `🚀 ${(data.orchestration_name as string) || 'Orchestration'} started`,
+          content: `🚀 ${(data.orchestration_name as string) || 'Workflow'} started`,
           msgType: 'orchestration_start',
         }]);
         break;
@@ -2154,10 +2154,10 @@ export default function Home() {
         break;
 
       case 'orchestration_complete':
-        setStreamingActivity(`Orchestration ${data.status as string}`);
+        setStreamingActivity(`Workflow ${data.status as string}`);
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `✅ Orchestration ${(data.status as string) || 'complete'}`,
+          content: `✅ Workflow ${(data.status as string) || 'complete'}`,
           msgType: 'orchestration_complete',
         }]);
         // No state here, ever (U67). The run's answer arrives as its own
@@ -2166,10 +2166,10 @@ export default function Home() {
         break;
 
       case 'orchestration_error':
-        setStreamingActivity(`Orchestration error`);
+        setStreamingActivity(`Workflow error`);
         setMessages(prev => [...prev, {
           role: 'assistant',
-          content: `❌ Orchestration error: ${(data.error as string) || 'Unknown error'}`,
+          content: `❌ Workflow error: ${(data.error as string) || 'Unknown error'}`,
           msgType: 'orchestration_complete',
         }]);
         break;
@@ -2359,7 +2359,7 @@ export default function Home() {
     setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
     setDraftAnswer('');
-    setStreamingActivity('Resuming orchestration...');
+    setStreamingActivity('Resuming workflow...');
     setIsThinking(false);
     pendingThoughtsRef.current = [];
     pendingReasoningRef.current = [];
@@ -2411,7 +2411,7 @@ export default function Home() {
       }
     } catch (err) {
       console.error('[HumanInput] Resume failed:', err);
-      setMessages(prev => [...prev, { role: 'assistant', content: 'Error resuming orchestration.' }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Error resuming the workflow.' }]);
     } finally {
       setIsLoading(false);
       setStreamingActivity(null);

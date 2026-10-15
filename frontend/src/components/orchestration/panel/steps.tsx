@@ -324,7 +324,7 @@ function EvaluatorSection({ step, update, otherSteps, availableModels }: StepSec
                             <StepTargetSelect
                                 aria-label={`Target for route ${label}`}
                                 value={targetId}
-                                noneLabel="End orchestration"
+                                noneLabel="End workflow"
                                 onChange={(target) =>
                                     update({ route_map: { ...(step.route_map || {}), [label]: target ?? null } })
                                 }
@@ -896,7 +896,7 @@ function SwitchSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                         <StepTargetSelect
                             aria-label={`Target for case ${caseVal}`}
                             value={targetId}
-                            noneLabel="End orchestration"
+                            noneLabel="End workflow"
                             onChange={(target) => update({ switch_cases: { ...(step.switch_cases || {}), [caseVal]: target ?? null } })}
                             otherSteps={otherSteps}
                         />
@@ -1206,7 +1206,7 @@ function IngestSection({ step, update, stateKeys, knowledgeBases }: StepSectionP
 }
 
 function EndSection() {
-    return <p className="text-xs text-text-faint">This node terminates the orchestration. No configuration needed.</p>;
+    return <p className="text-xs text-text-faint">This step ends the workflow. No configuration needed.</p>;
 }
 
 export const STEP_SECTIONS: Record<StepType, React.FC<StepSectionProps>> = {

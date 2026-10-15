@@ -137,7 +137,7 @@ async def _score_one(run_id: str, suite_run_id: str | None = None) -> dict | Non
 
     orch = await get_orchestration(run.orchestration_id)
     if not orch:
-        raise HTTPException(status_code=404, detail="Orchestration not found")
+        raise HTTPException(status_code=404, detail="Workflow not found")
     return await scoring.score_run(run, orch, load_settings(), suite_run_id=suite_run_id)
 
 
@@ -147,7 +147,7 @@ async def score_run_now(run_id: str):
     if record is None:
         raise HTTPException(
             status_code=400,
-            detail="Not scored — the orchestration has no rubric, the run has "
+            detail="Not scored — the workflow has no rubric, the run has "
                    "not finished, or the judge did not return a usable verdict.",
         )
     return record
@@ -319,7 +319,7 @@ async def generate_cases(suite_id: str, payload: GenerateIn):
         raise HTTPException(status_code=404, detail="Set not found")
     orch = await get_orchestration(suite.get("orchestration_id") or "")
     if not orch:
-        raise HTTPException(status_code=404, detail="Orchestration not found")
+        raise HTTPException(status_code=404, detail="Workflow not found")
 
     rubric = await evals_store.get_rubric(orch.get("rubric_id") or "")
     cases = await generate.propose(
