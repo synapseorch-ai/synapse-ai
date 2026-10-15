@@ -49,6 +49,7 @@ import { Spinner } from "@/components/ui";
 import { DEGRADED, getQueryTrace, type SearchTrace } from "@/lib/knowledge";
 
 import type { Task } from "./model";
+import { emptyTeam, foldTeam, isTeamEvent, type TeamState } from "@/components/team/team";
 
 // The OSS BottomPanel's log-entry union, kept shape-for-shape so the renderer
 // below can stay a faithful port.
@@ -127,10 +128,15 @@ export type RunLogState = {
    * anything terminal clears it.
    */
   liveActivity: string | null;
+  /**
+   * A Team agent step's members (TEAM1b): its task list and one lane per member,
+   * folded as chat folds them. Empty until a step runs a team (TEAM1e feeds it).
+   */
+  team: TeamState;
 };
 
 export function emptyRunLog(): RunLogState {
-  return { entries: [], tasks: [], pending: new Map(), liveActivity: null };
+  return { entries: [], tasks: [], pending: new Map(), liveActivity: null, team: emptyTeam() };
 }
 
 function append(entries: LogEntry[], entry: LogEntry): LogEntry[] {
@@ -215,6 +221,10 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
     if (NESTED_STEP_EVENTS.has(data.type)) return applyNestedStepEvent(state, data, where);
     // Its thoughts and calls name the child's step too, not only the caller.
     data = { ...data, step_name: where };
+  }
+  if (isTeamEvent(data)) {
+    // A member's own work is its lane's, never a log line of the step's.
+    return { ...state, team: foldTeam(state.team ?? emptyTeam(), data) };
   }
   const { entries, pending } = state;
   const add = (entry: LogEntry): RunLogState => ({ ...state, entries: append(entries, entry) });

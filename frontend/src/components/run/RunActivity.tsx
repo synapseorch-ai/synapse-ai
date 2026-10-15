@@ -23,6 +23,8 @@ import * as React from 'react';
 import { Button, ErrorNote, Markdown, Modal, Spinner } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
+import { TeamView } from '@/components/team';
+
 import { useRunHost } from './host';
 import { isLive } from './model';
 import { applyRunEvent, emptyRunLog, LogLine, type RunLogState, type StepResultEntry } from './RunLogView';
@@ -152,7 +154,11 @@ export function RunActivity({
                         <span className="truncate" translate="no">{summary}</span>
                     </span>
                 </RCollapsible.Trigger>
-                <RCollapsible.Content>{content}</RCollapsible.Content>
+                <RCollapsible.Content>
+                    {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
+                    <TeamView state={state.team} compact={!following} className="mb-3" />
+                    {content}
+                </RCollapsible.Content>
             </RCollapsible.Root>
 
             <Modal

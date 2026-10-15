@@ -15,6 +15,7 @@ import { ArrowDown, X } from 'lucide-react';
 import { IconButton, Spinner } from '@/components/ui';
 import { LogLine, NestedRuns, TaskChecklist, type NestedRun, type RunLogState, type StepResultEntry } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
+import { TeamView } from '@/components/team';
 import type { RunDrawerView } from './RunStrip';
 
 /** The runs nested directly under this run — one per run of a nested step (F251). */
@@ -145,6 +146,9 @@ export function RunDrawer({
                         {log.tasks.length > 0 && (
                             <TaskChecklist tasks={log.tasks} className="rounded-md border border-border bg-surface-2/40 px-3 py-2" />
                         )}
+
+                        {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
+                        {log.team && <TeamView state={log.team} compact={runStatus !== 'running'} />}
 
                         {runId && (
                             <NestedRunsOf
