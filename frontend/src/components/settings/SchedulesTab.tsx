@@ -17,6 +17,7 @@ import { Bot, Edit2, Play, Plus, RefreshCw, Trash2, Workflow } from 'lucide-reac
 
 import { RESOURCE_SAVED_EVENT } from '@/components/app/BuilderProvider';
 import { AppScreen } from '@/components/app/AppScreen';
+import { useNotifications } from '@/components/notifications/NotificationProvider';
 import { cronWords, lastScheduledRun, ScheduleList, scheduleRow } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import {
@@ -100,6 +101,8 @@ export const SchedulesTab = () => {
     const [selectedPresetIdx, setSelectedPresetIdx] = useState(0);
     const [cronHour, setCronHour] = useState(9);
     const { toast, show, dismiss } = useToast();
+    // The app-wide stack, where the bell's own toasts land (F520).
+    const { toast: notify } = useNotifications();
 
     const showToast = useCallback((msg: string, ok = true) => show(msg, ok ? 'success' : 'danger'), [show]);
 
@@ -276,11 +279,16 @@ export const SchedulesTab = () => {
             const res = await fetch(`/api/schedules/${id}/run`, { method: 'POST' });
             if (res.ok) {
                 showToast('Schedule triggered successfully');
+            } else if (res.status === 409) {
+                // Why, as when what it runs was deleted and it was turned off (F518). In the bell's stack, not
+                // the page's toast: the bell toasts "… was turned off" at the same moment, and the page's toast
+                // is a separate host in the same corner, so the two drew over each other (F520).
+                const err = await res.json().catch(() => ({}));
+                notify(typeof err.detail === 'string' && err.detail ? err.detail : 'Failed to trigger schedule', 'error');
+                void fetchAll();
             } else {
-                // A 409 says why, as when what it runs was deleted and it was turned off (F518).
                 const err = await res.json().catch(() => ({}));
                 showToast(typeof err.detail === 'string' && err.detail ? err.detail : 'Failed to trigger schedule', false);
-                if (res.status === 409) void fetchAll();
             }
         } finally {
             setRunningIds(prev => { const n = new Set(prev); n.delete(id); return n; });

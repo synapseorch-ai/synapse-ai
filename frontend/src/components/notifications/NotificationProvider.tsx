@@ -300,7 +300,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
                         className={`pointer-events-auto flex items-center gap-2 px-4 py-2.5 rounded-lg border shadow-elevated text-sm max-w-sm animate-in ${look.chip}`}
                     >
                         <Icon size={15} className={`shrink-0 ${look.mark}`} aria-hidden />
-                        <span className="flex-1 min-w-0 truncate">{t.message}</span>
+                        {/* Wraps, up to three lines, rather than cutting a reason off mid-sentence: a refusal
+                            toasted here says why (F518's Run now); the bell's own titles are one line anyway. */}
+                        <span className="flex-1 min-w-0 line-clamp-3 break-words">{t.message}</span>
                         <button
                             onClick={() => setToasts(prev => prev.filter(x => x.key !== t.key))}
                             aria-label="Dismiss this notification"
