@@ -63,6 +63,21 @@ WAIT_DEFAULT_SECONDS = 30
 #: An answer and a result kept with the turn, as a saved turn clips them.
 ANSWER_CHARS = 4_000
 
+# ── the guards, in code (Q4, Q8) ──
+#: Messages one member may send in one assignment.
+MESSAGE_BUDGET = 6
+#: Messages two members may exchange while the task list does not move; then "take it to the lead".
+PAIR_CAP = 3
+#: Lead steps with no task moving before it is told to re-plan or finish, and before `assign` is refused.
+STALL_NOTICE_AT, STALL_STOP_AT = 3, 6
+#: How long everyone must stay waiting before the lead is told: a reply assigning several starts them one by one.
+EVERYONE_WAITING_SETTLE = 1.0
+#: A model call's output allowance when its agent sets no maximum (CE1's high prior, Q8), and the
+#: characters a token is reckoned at for the call's known input.
+OUTPUT_ALLOWANCE, CHARS_PER_TOKEN = 1_600, 4
+#: What `assign` (and a helper) reads at the task budget (Q8's words).
+BUDGET_USED = "the team's budget of {n} tasks is used; finish with what you have."
+
 #: What a member's lane shows of its turn, wrapped (the same as a helper's, plus its own helpers).
 SHOWN = frozenset({
     "status", "thinking", "tool_execution", "tool_result", "llm_reasoning", "llm_thought",
@@ -149,6 +164,21 @@ def _inbox_class():
             return left
 
     return TeamInbox
+
+
+def note_cost(model: str, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
+              cache_write_tokens: int = 0) -> None:
+    """Count one model call toward the team whose turn made it (lead, member or helper), if any. Never raises."""
+    team = current.get()
+    if team is None:
+        return
+    try:
+        from core.usage_tracker import calculate_cost
+        team.spent_usd += calculate_cost(model, int(input_tokens or 0), int(output_tokens or 0),
+                                         cache_read_tokens=int(cache_read_tokens or 0),
+                                         cache_write_tokens=int(cache_write_tokens or 0))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def new_inbox(state: dict | None = None):
@@ -325,6 +355,15 @@ class Team:
         self.parking = False
         #: A finished member's card being closed: the end waits for it before the board goes.
         self._closing: set[asyncio.Future] = set()
+        # The guards (Q4, Q8).
+        self.stall: int = int(state.get("stall") or 0)
+        self._stall_mark: int = self.progress_mark
+        self._pairs: dict[frozenset, tuple[int, int]] = {}
+        self._all_waiting_said = False
+        #: What the team's model calls cost so far (lead, members, helpers), and what one more of the
+        #: lead's would: kept back so the lead can always finish (Q8).
+        self.spent_usd: float = float(state.get("spent_usd") or 0.0)
+        self.lead_reserve: float = 0.0
 
     # ── what the lead's turn reads ──
     @property
@@ -360,7 +399,8 @@ class Team:
         return {"key": self.key, "board_id": self.board_id, "tasks_used": self.tasks_used,
                 "members": [m.state() for m in self.members.values()], "parked_id": self.parked_id,
                 "inbox": {"pending": list(self.inbox._pending), "in_flight": list(self.inbox._in_flight)},
-                "tasks": list(self.tasks.values()), "progress_mark": self.progress_mark}
+                "tasks": list(self.tasks.values()), "progress_mark": self.progress_mark, "stall": self.stall,
+                "spent_usd": self.spent_usd}
 
     def records(self) -> list[dict]:
         return [m.record() for m in self.members.values() if m.status != "queued" or m.started_at]
@@ -378,7 +418,90 @@ class Team:
 
     def summary(self) -> dict:
         return {"tasks": self.task_list(), "tasks_used": self.tasks_used,
-                "answered_alone": self.tasks_used == 0}
+                "answered_alone": self.tasks_used == 0, "spent_usd": round(self.spent_usd, 6)}
+
+    # ── the guards ──
+    def lead_step(self) -> None:
+        """Before each of the lead's model calls: the stall counter (Q4, Magentic-One's)."""
+        if not self.members:
+            return
+        if self.progress_mark == self._stall_mark:
+            self.stall += 1
+        else:
+            self.stall, self._stall_mark = 0, self.progress_mark
+        if self.stall == STALL_NOTICE_AT:
+            self.inbox.put({"kind": "guard_notice", "text": (
+                f"No task has moved in your last {STALL_NOTICE_AT} steps. Re-plan (message a member, or assign the "
+                "work differently) or finish with what you have.")})
+        elif self.stall == STALL_STOP_AT:
+            self.inbox.put({"kind": "guard_notice", "text": (
+                f"No task has moved in your last {STALL_STOP_AT} steps, so no more work can be assigned. Finish now "
+                "with what you have.")})
+
+    def take_helper(self) -> str | None:
+        """A helper sent from inside the team counts as a task, and as one at work (Q2a, Q8). Its refusal, or None."""
+        if self.tasks_used >= self.config.task_budget:
+            return "No helper was started: " + BUDGET_USED.format(n=self.config.task_budget)
+        if not self.room_for_helper():
+            return (f"No helper was started: {self.config.at_once} of the team are already working, the most at "
+                    "once. Wait for their results or do it yourself.")
+        self.tasks_used += 1
+        return None
+
+    def _all_waiting(self) -> list[Member]:
+        live = self.live_members()
+        return live if live and all(m.waiting for m in live) else []
+
+    def _everyone_waiting(self) -> None:
+        """When every working member waits for a message, the lead is woken to say something (Q4) — once
+        they have stayed so a moment, since a reply that assigns several starts them one after another."""
+        if not self._all_waiting():
+            self._all_waiting_said = False
+            return
+        if not self._all_waiting_said:
+            asyncio.get_running_loop().call_later(EVERYONE_WAITING_SETTLE, self._tell_everyone_waiting)
+
+    def _tell_everyone_waiting(self) -> None:
+        live = self._all_waiting()
+        if not live or self._all_waiting_said or self.ended:
+            return
+        self._all_waiting_said = True
+        self.inbox.put({"kind": "guard_notice", "text": (
+            f"Everyone is waiting: {', '.join(m.name for m in live)} "
+            f"{'is' if len(live) == 1 else 'are all'} waiting for a message. Answer their questions, tell "
+            "them what to do, or give your answer.")})
+
+    # ── money, before every model call (Q8) ──
+    def allowance(self, model: str, input_chars: int, max_output: int | None) -> float:
+        from core.usage_tracker import calculate_cost
+        try:
+            return calculate_cost(model, max(0, int(input_chars)) // CHARS_PER_TOKEN,
+                                  int(max_output or OUTPUT_ALLOWANCE))
+        except Exception:  # noqa: BLE001 — an unpriced model costs nothing here
+            return 0.0
+
+    def may_call(self, model: str, input_chars: int, max_output: int | None, *, lead: bool) -> bool:
+        """Whether the next call fits the team's limit: spent so far plus its allowance (and, for anyone but the
+        lead, one more of the lead's, so the lead can always finish)."""
+        limit = self.config.spend_limit_usd
+        need = self.allowance(model, input_chars, max_output)
+        if lead:
+            self.lead_reserve = need
+        if not limit:
+            return True
+        return self.spent_usd + need + (0.0 if lead else self.lead_reserve) <= limit
+
+    def spend_stop_answer(self, *, lead: bool) -> str:
+        limit = f"${self.config.spend_limit_usd:g}"
+        if not lead:
+            return (f"I stopped before finishing: another step would pass the team's spend limit ({limit}). "
+                    "What I found so far is in my calls above.")
+        found = [m for m in self.members.values() if m.status == "completed" and m.answer]
+        lines = [f"I stopped here: another step would pass this team's spend limit ({limit})."]
+        if found:
+            lines.append("What the members found:")
+            lines += [f"**{m.name}**: {m.answer}" for m in found]
+        return "\n\n".join(lines)
 
     def _task_changed(self, card) -> None:
         entry = self.tasks.get(card.id)
@@ -445,6 +568,11 @@ class Team:
         if found is None:
             raise Refused(f"There is no member called '{args.get('member')}'. Members: "
                           f"{', '.join(self.member_names())}.")
+        if self.tasks_used >= self.config.task_budget:
+            raise Refused(BUDGET_USED.format(n=self.config.task_budget))
+        if self.stall >= STALL_STOP_AT:
+            raise Refused("No task has moved for a while, so no more work can be assigned. Finish now with what "
+                          "you have.")
         if not task:
             raise Refused("Say what the member should do: `task` is its brief (the objective, what to return, "
                           "and its bounds).")
@@ -494,6 +622,9 @@ class Team:
         text = str(args.get("text") or "").strip()
         if not text:
             raise Refused("Write the message in `text`.")
+        if member.messages_sent >= MESSAGE_BUDGET:
+            raise Refused(f"You have sent your {MESSAGE_BUDGET} messages. Finish your task, and put what you have "
+                          "and what you still need in your final answer.")
         if to.lower() in ("lead", "the lead", str(self.lead.get("name") or "").lower(), str(self.lead.get("id"))):
             self.inbox.put({"kind": "member_message", "from": member.name, "member_id": member.id, "text": text,
                             "tainted": tainted})
@@ -504,6 +635,14 @@ class Team:
             raise Refused(f"Send it to 'lead' or to another member: {', '.join(self.member_names())}.")
         if not other.live:
             raise Refused(f"{other.name} is not working now: nothing will read it. Take it to the lead.")
+        pair = frozenset((member.agent_id, other.agent_id))
+        mark, count = self._pairs.get(pair, (self.progress_mark, 0))
+        if mark != self.progress_mark:
+            count = 0
+        if count >= PAIR_CAP:
+            raise Refused(f"You and {other.name} have exchanged {PAIR_CAP} messages while the task list has not "
+                          "moved: take it to the lead.")
+        self._pairs[pair] = (self.progress_mark, count + 1)
         other.inbox.put({"kind": "member_message", "from": member.name, "member_id": member.id, "text": text,
                          "tainted": tainted})
         member.messages_sent += 1
@@ -539,7 +678,10 @@ class Team:
                 return
             elapsed = time.monotonic() - started
             if elapsed >= limit:
-                working = ", ".join(m.name for m in self.live_members())
+                # How long each has worked, which a patient lead's waits differ by: the repeat guard (F476) is
+                # for a call that learns nothing new, and the stall counter is the one for a team (Q4).
+                working = ", ".join(f"{m.name} ({int(m.seconds)}s in)" if m.started_at else f"{m.name} (queued)"
+                                    for m in self.live_members())
                 yield f"Nothing arrived after {int(elapsed)}s. Still working: {working}."
                 return
             self._admit()
@@ -562,11 +704,13 @@ class Team:
         if member.inbox.has_pending():
             return "Something arrived: it is below."
         member.waiting = True
+        self._everyone_waiting()
         try:
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(member.inbox.wake.wait(), timeout=limit)
         finally:
             member.waiting = False
+            self._everyone_waiting()
         if member.inbox.has_pending():
             return "Something arrived: it is below."
         return f"Nothing arrived after {int(limit)}s. Finish with what you have, or message the lead."

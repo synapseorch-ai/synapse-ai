@@ -4174,6 +4174,9 @@ async def generate_response_ex(
     # The turn's own count, for a caller that reports usage (the OpenAI endpoint).
     from core import turn_usage
     turn_usage.add(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    # And to a team's spend, for its check before every model call (TEAM1a, Q8).
+    from core import team as _team
+    _team.note_cost(current_model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
 
     # ── All of it was thinking (F305) ────────────────────────────────────────
     # Each provider checks its reply for emptiness before the split above, so

@@ -1138,6 +1138,10 @@ async def run_agent_step(
                 all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
                     all_tools, ollama_tools, tool_schema_map, _team_mod.lead_tools(_team))
                 agent_system_template = agent_system_template + "\n\n" + _team_mod.lead_prompt(_team)
+                if _team_cfg.spend_limit_usd:
+                    # The rate card the check before every call prices from (Q8); loaded on a first call otherwise.
+                    from core.usage_tracker import _ensure_pricing
+                    await _ensure_pricing()
     if team_seat is not None and tools_override is None:
         # A member's own: message, wait and its own card (TEAM1a).
         all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
@@ -1880,16 +1884,23 @@ async def run_agent_step(
         results: list = []
         # This conversation's helpers working in other processes count too (a fleet's background ones, SUB1b).
         _elsewhere = await _helpers.elsewhere(_helper_cap)
+        _team_now = _team_mod.current.get()
         for args in group:
             helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
                                     available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
                                     roles=model_roles, settings=current_settings)
             if args.get("background"):
                 helper.note = _helpers.RAN_AS_A_WAIT
-            if _helpers.reserve(_helper_cap, helper, elsewhere=_elsewhere):
+            # Inside a team, a helper is a task and one of those at work (TEAM1a, Q2a, Q8).
+            _team_refusal = _team_now.take_helper() if _team_now is not None else None
+            if _team_refusal:
+                results.append((helper.name, _team_refusal))
+            elif _helpers.reserve(_helper_cap, helper, elsewhere=_elsewhere):
                 made.append(helper)
                 results.append(helper)
             else:
+                if _team_now is not None:
+                    _team_now.tasks_used -= 1   # not started: not one of the team's tasks
                 results.append((helper.name, _helpers.AT_CAP.format(n=_helpers.MAX_LIVE)))
         if made:
             yield {"type": "thinking", "message": f"Sending {len(made)} helper{'s' if len(made) > 1 else ''}..."}
@@ -1927,7 +1938,13 @@ async def run_agent_step(
         helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
                                 available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
                                 roles=model_roles, settings=current_settings, mode="background")
+        _team_now = _team_mod.current.get()
+        if _team_now is not None and (_team_refusal := _team_now.take_helper()):
+            _spawn_results = [(helper.name, _team_refusal)]
+            return
         if not _helpers.reserve(_helper_cap, helper, elsewhere=await _helpers.elsewhere(_helper_cap)):
+            if _team_now is not None:
+                _team_now.tasks_used -= 1   # not started: not one of the team's tasks
             _spawn_results = [(helper.name, _helpers.AT_CAP.format(n=_helpers.MAX_LIVE))]
             return
         try:
@@ -2016,6 +2033,8 @@ async def run_agent_step(
                     for _e in _team_park(_team.parked, turn):
                         yield _e
                     return
+                # The stall counter: a lead step with no task moving (Q4).
+                _team.lead_step()
 
             yield {"type": "thinking", "message": "Analyzing your request..."}
 
@@ -2226,6 +2245,17 @@ async def run_agent_step(
                 _llm_duration = 0.0
                 yield {"type": "tool_approval_replay", "tool_name": _replayed["tool"],
                        "turn": turn + 1}
+            elif ((_team_now := _team_mod.current.get()) is not None and not _team_now.may_call(
+                    current_model,
+                    len(full_prompt) + len(active_sys_prompt) + len(json.dumps(active_history, default=str)),
+                    active_agent.get("max_output_tokens"), lead=_team is not None)):
+                # A team's money, checked before every model call (TEAM1a, Q8): this agent stops in its own
+                # words — a member's go to its lead, which can always afford one more step to finish.
+                final_response = _team_now.spend_stop_answer(lead=_team is not None)
+                _unanswered = {"why": "spend_limit", "limit_usd": _team_now.config.spend_limit_usd}
+                yield {"type": "status", "message": f"Stopped at the team's spend limit "
+                                                    f"(${_team_now.config.spend_limit_usd:g})."}
+                break
             else:
                 _log.debug(f"🔄 Calling LLM...")
                 _llm_start = time.time()

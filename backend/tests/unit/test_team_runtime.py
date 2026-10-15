@@ -82,11 +82,12 @@ async def team():
     return agents
 
 
-async def _turn(server, *, agent_id=LEAD, message="PLAN IT", session_id="s_team", **kw):
+async def _turn(server, *, agent_id=LEAD, message="PLAN IT", session_id="s_team", max_turns=8, **kw):
     from core.react_engine import run_agent_step
 
     return [ev async for ev in run_agent_step(
-        message=message, agent_id=agent_id, session_id=session_id, server_module=server, max_turns=8, **kw)]
+        message=message, agent_id=agent_id, session_id=session_id, server_module=server, max_turns=max_turns,
+        **kw)]
 
 
 def _of(events, kind):
