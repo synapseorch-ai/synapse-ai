@@ -215,6 +215,41 @@ class TestAccessLists:
         mine = (await on.get("/api/boards/for/agent/desk")).json()["boards"]
         assert [(b["name"], b["access"]) for b in mine] == [("Bugs", "work")]
 
+    async def test_the_agent_reads_the_boards_that_reach_it_through_what_runs_it(self, on, world):
+        """F583: a shared board reaches an agent through its own name and through the schedule or workflow it runs
+        in (C8). The agent's section read only its own name, so an agent its schedule gave a board read "None"."""
+        fix_step = [{"id": "fix", "name": "Fix", "type": "agent", "agent_id": "desk", "next_step_id": None}]
+        await S.seed_orchestrations([
+            S.make_orchestration(id="wf_review", name="Monday supplier review"),
+            S.make_orchestration(id="wf_triage", name="Invoice triage"),
+            S.make_orchestration(id="wf_fix", name="Fix a bug", entry_step_id="fix", steps=fix_step),
+            S.make_orchestration(id="wf_old", name="Old fixer", entry_step_id="fix", steps=fix_step, is_active=False)])
+        for name, entries in (("Direct", [("agent", "desk", "work")]),
+                              ("Intake", [("schedule", "sch_daily", "add")]),
+                              ("Fixes", [("workflow", "wf_fix", "work")]),
+                              ("Elsewhere", [("workflow", "wf_triage", "work")]),
+                              ("Old", [("workflow", "wf_old", "work")]),
+                              ("Both", [("schedule", "sch_daily", "add"), ("workflow", "wf_fix", "work")])):
+            board = await store.create_shared_board(name)
+            await store.set_access(board.id, entries)
+        resp = await on.get("/api/boards/for/agent/desk")
+        assert resp.status_code == 200, resp.text
+        mine = {b["name"]: (b["access"], [t["name"] for t in b["through"]], b["in_use"]) for b in resp.json()["boards"]}
+        assert mine == {"Direct": ("work", [], True),
+                        "Intake": ("add", ["Daily stockist check"], True),
+                        "Fixes": ("work", ["Fix a bug"], True),
+                        "Both": ("work", ["Daily stockist check", "Fix a bug"], True)}
+
+    async def test_a_board_through_a_schedule_past_the_turns_three_is_not_used(self, on, world):
+        """A turn takes the oldest three of the boards its agent and its schedule are named on together (C8)."""
+        for name in ("A", "B", "C"):
+            board = await store.create_shared_board(name)
+            await store.set_access(board.id, [("agent", "desk", "work")])
+        late = await store.create_shared_board("Late")
+        await store.set_access(late.id, [("schedule", "sch_daily", "add")])
+        mine = {b["name"]: b["in_use"] for b in (await on.get("/api/boards/for/agent/desk")).json()["boards"]}
+        assert mine == {"A": True, "B": True, "C": True, "Late": False}
+
     async def test_an_unknown_principal_is_refused(self, on, world):
         board = (await on.post("/api/boards", json={"name": "Bugs"})).json()
         resp = await on.put(f"/api/boards/{board['id']}/access",

@@ -197,7 +197,11 @@ async def add_scoped_card(kind: Literal["workflow", "schedule"], scope_id: str, 
 async def boards_for(kind: Literal["agent", "workflow", "schedule"], principal_id: str):
     from core.boards import service
 
-    return {"boards": await service.boards_for(kind, principal_id, await _directory())}
+    runs_it = None
+    if kind == "agent":
+        from core.orchestration.dependents import what_runs_agent
+        runs_it = await what_runs_agent(principal_id)
+    return {"boards": await service.boards_for(kind, principal_id, await _directory(), runs_it=runs_it)}
 
 
 @router.get("/api/boards/cards/{card_id}")

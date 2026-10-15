@@ -129,6 +129,20 @@ def refusal(name: str, dependents: list[Dependent]) -> str:
 _PHONE_PLATFORM = "twilio_voice"
 
 
+async def what_runs_agent(agent_id: str) -> list[tuple[str, str]]:
+    """What a turn of `agent_id` can run in, as `(kind, id)`: the schedules that run it directly, then the live
+    workflows whose steps run it. The boards it gets reach it through these as well as through its own name (C8),
+    so its Boards section lists them (F583); the same rules as `what_uses_agent`'s."""
+    from core.store import schedules as schedule_store
+    from core.store.resources import load_orchestrations
+
+    found = [("schedule", s["id"]) for s in await schedule_store.load()
+             if s.get("target_type") == "agent" and s.get("target_id") == agent_id and s.get("id")]
+    found += [("workflow", o["id"]) for o in await load_orchestrations()
+              if o.get("id") and not _gone(o) and _calls(o, agent_id)]
+    return found
+
+
 async def what_uses_agent(agent_id: str) -> list[Dependent]:
     """What uses agent `agent_id` in this tenant, so that deleting it never leaves them pointing at nothing (F467).
 

@@ -10478,6 +10478,12 @@ async def check_agentboards(browser) -> str:
     api("/api/agents", "POST", _agent(aid, f"Boards agent {stamp}"))
     made = api("/api/boards", "POST", {"name": f"Smoke shared {stamp}"})
     api(f"/api/boards/{made['id']}/access", "PUT", {"entries": [{"kind": "agent", "id": aid, "access": "work"}]})
+    # F583: a board its schedule is named on reaches it too, and says so.
+    sched = api("/api/schedules", "POST", {"name": f"Smoke intake {stamp}", "target_type": "agent", "target_id": aid,
+                                          "prompt": "check", "schedule_type": "interval", "interval_value": 1,
+                                          "interval_unit": "days", "enabled": False})
+    via = api("/api/boards", "POST", {"name": f"Smoke via schedule {stamp}"})
+    api(f"/api/boards/{via['id']}/access", "PUT", {"entries": [{"kind": "schedule", "id": sched["id"], "access": "add"}]})
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
@@ -10486,7 +10492,7 @@ async def check_agentboards(browser) -> str:
             f"Boards agent {stamp}", exact=True).click(timeout=30_000)
         section = page.locator("#setup-boards")
         fold = section.get_by_role("button", name=re.compile(r"^Boards · optional"))
-        await fold.get_by_text("Own board on · 1 shared").wait_for(timeout=10_000)
+        await fold.get_by_text("Own board on · 2 shared").wait_for(timeout=10_000)
         if await fold.get_attribute("aria-expanded") != "false":
             raise AssertionError("the agent's Boards section is open before anyone opens it")
         await fold.click()
@@ -10495,14 +10501,19 @@ async def check_agentboards(browser) -> str:
         if await switch.get_attribute("aria-checked") != "true":
             raise AssertionError("an agent's own board does not read as on")
         await section.get_by_text(f"Smoke shared {stamp}").wait_for(timeout=10_000)
+        await section.get_by_text(f"Smoke via schedule {stamp}").wait_for(timeout=10_000)
+        await section.get_by_text(f"Through the schedule ‘Smoke intake {stamp}’").wait_for(timeout=10_000)
     finally:
         await ctx.close()
-        for path in (f"/api/boards/{made['id']}", f"/api/agents/{aid}"):
+        # The schedule first: an agent a schedule runs is not deleted (F467).
+        for path in (f"/api/schedules/{sched.get('id')}", f"/api/boards/{via['id']}", f"/api/boards/{made['id']}",
+                     f"/api/agents/{aid}"):
             try:
                 api(path, "DELETE")
             except Exception:
                 pass
-    return "the agent's Boards section is folded, says what is set, and shows its own board on and the shared board that names it"
+    return ("the agent's Boards section is folded, says what is set, and shows its own board on, the shared board that "
+            "names it and the one its schedule brings, saying so")
 
 
 async def main() -> int:

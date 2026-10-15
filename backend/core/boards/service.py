@@ -177,14 +177,37 @@ async def card_view(card_id: str) -> dict[str, Any]:
             "history": history}
 
 
-async def boards_for(kind: str, principal_id: str, directory: Directory) -> list[dict[str, Any]]:
+async def boards_for(kind: str, principal_id: str, directory: Directory, *,
+                     runs_it: list[tuple[str, str]] | None = None) -> list[dict[str, Any]]:
     """The shared boards whose access lists name this agent, workflow or schedule, with its access on each, in
-    the order its turns take them (the oldest three)."""
+    the order its turns take them (the oldest three); `through` is empty for these.
+
+    An agent's turn also gets the boards of the schedule or workflow it runs in (C8). With `runs_it` — the
+    `(kind, id)` the host found running the agent — each such board follows, once, naming what it comes through
+    (F583): its access the stronger of theirs, and in use when it is among the oldest three of some turn's."""
     if kind not in PRINCIPAL_NOUN:
         raise store.BadValue(f"Unknown kind {kind!r}: an agent, a workflow or a schedule.")
     rows = await store.shared_boards_for([(kind, principal_id)])
-    return [{**_board_out(board, directory), "access": access,
-             "in_use": i < store.SHARED_PER_PRINCIPAL} for i, (board, access) in enumerate(rows)]
+    out = [{**_board_out(board, directory), "access": access, "through": [],
+            "in_use": i < store.SHARED_PER_PRINCIPAL} for i, (board, access) in enumerate(rows)]
+    if kind != "agent" or not runs_it:
+        return out
+    named = {board.id for board, _ in rows}
+    reached: dict[str, dict[str, Any]] = {}
+    for run_kind, run_id in runs_it:
+        # What one turn of the agent in this schedule or workflow gets: the two lists together, the oldest three.
+        turn = await store.shared_boards_for([(kind, principal_id), (run_kind, run_id)])
+        for i, (board, access) in enumerate(turn):
+            if board.id in named:
+                continue
+            entry = reached.setdefault(board.id, {**_board_out(board, directory), "access": access,
+                                                  "through": [], "in_use": False})
+            entry["through"].append({"kind": run_kind, "id": run_id,
+                                     "name": directory.name_of(run_kind, run_id) or run_id})
+            if access == "work":
+                entry["access"] = "work"
+            entry["in_use"] = entry["in_use"] or i < store.SHARED_PER_PRINCIPAL
+    return out + list(reached.values())
 
 
 # ── what a person writes ───────────────────────────────────────────────────────

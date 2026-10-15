@@ -89,7 +89,18 @@ export type BoardsList = { boards: BoardSummary[]; shared_used: number; shared_l
 
 export type CardPage = { card: Card; comments: CardEvent[]; history: CardEvent[] };
 
-export type BoardFor = BoardSummary & { access: Access; in_use: boolean };
+/** What a board reaches an agent through, when not its own name: a schedule or a workflow that runs it (F583). */
+export type Through = { kind: 'workflow' | 'schedule'; id: string; name: string };
+
+export type BoardFor = BoardSummary & { access: Access; in_use: boolean; through?: Through[] };
+
+/** "Through the schedule 'Daily check' and the workflow 'Fix a bug'"; empty for a board that names it itself. */
+export function throughLine(through: Through[] | undefined): string {
+    const parts = (through ?? []).map(t => `the ${t.kind} ‘${t.name}’`);
+    if (!parts.length) return '';
+    const joined = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+    return `Through ${joined}`;
+}
 
 /** A board's place: one of the list's, or a workflow's or a schedule's own (made at its first card). */
 export type BoardRef = { id: string } | { scope: 'workflow' | 'schedule'; scopeId: string };
