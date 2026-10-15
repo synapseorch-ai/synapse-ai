@@ -11468,5 +11468,351 @@ async def check_helperswitch(browser) -> str:
             pass
     return "Can send helpers turns helpers on beside every tool and shows Helper model; the grid has no helper row"
 
+
+# ── a Team agent's screens (TEAM1b, D286) ────────────────────────────────────
+
+#: A team's member and lead routes answered as the backend does when the member or lead read the words.
+TEAM_ROUTES_STUB = r"""
+const _teamFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  if (/\/api\/chat\/[^/?]+\/(members\/[^/?]+\/(stop|message)|lead\/message)$/.test(url)) {
+    window.__calls.push({url: url, method: method, body: (init && init.body) || ''});
+    return Promise.resolve(new Response(JSON.stringify({stopped: true, delivered: true}), {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  if (/\/api\/chat\/[^/?]+\/approve$/.test(url)) {
+    window.__calls.push({url: url, method: method, body: (init && init.body) || ''});
+    return _sse('approve');
+  }
+  return _teamFetch(input, init);
+};
+"""
+
+ANA = {"member_id": "m_ana", "member_name": "Supplier analyst"}
+BEN = {"member_id": "m_ben", "member_name": "Invoice clerk"}
+TEAM_SUMMARY = {"tasks": [
+    {"card_id": "c_ana", "title": "Late deliveries in week 41", "member": "Supplier analyst", "member_id": "m_ana",
+     "status": "done", "result": "2 late"},
+    {"card_id": "c_ben", "title": "Invoice mismatches", "member": "Invoice clerk", "member_id": "m_ben",
+     "status": "done", "result": "1 mismatch"}], "tasks_used": 2, "answered_alone": False, "spent_usd": 0.0312}
+ANA_RECORD = {"id": "m_ana", "agent_id": "analyst", "name": "Supplier analyst", "task": "Late deliveries in week 41",
+              "card_id": "c_ana", "model": "synapse.nova-pro", "status": "completed", "seconds": 41,
+              "calls": [{"tool": "late_deliveries", "args": {"week": 41}, "result": "2 late"}],
+              "answer": "Two suppliers were late: Fenwick Paper and Corda Inks."}
+BEN_RECORD = {"id": "m_ben", "agent_id": "clerk", "name": "Invoice clerk", "task": "Invoice mismatches",
+              "card_id": "c_ben", "model": "synapse.nova-pro", "status": "completed", "seconds": 52,
+              "calls": [{"tool": "match_invoices", "args": {"week": 41}, "result": "48 matched"}],
+              "answer": "INV-7731 is billed for 120 reams; 100 were received."}
+HOLD = {"type": "human_input_required", "kind": "tool_approval", "tool_name": "hold_payment",
+        "tool_args": {"invoice": "INV-7731"}, "category": "destructive", "approval_id": "appr_ben",
+        "prompt": "Hold payment on INV-7731?",
+        "fields": [{"name": "approve", "type": "boolean"}, {"name": "reason", "type": "text"}]}
+
+
+def _team_frames() -> list[dict]:
+    """A lead with two members at work: the task list, their calls, a stream, a message each way."""
+    wrap = lambda who, ev: {"type": "member_event", **who, "event": ev}  # noqa: E731
+    return [
+        {"type": "tool_execution", "tool_name": "assign", "args": {"member": "Supplier analyst", "task": "Late deliveries"}},
+        {"type": "member_started", **ANA, "agent_id": "analyst", "task": "Late deliveries in week 41",
+         "card_id": "c_ana", "model": "synapse.nova-pro"},
+        {"type": "member_started", **BEN, "agent_id": "clerk", "task": "Invoice mismatches",
+         "card_id": "c_ben", "model": "synapse.nova-pro"},
+        {"type": "team_tasks", "tasks": [
+            {"card_id": "c_ana", "title": "Late deliveries in week 41", "member": "Supplier analyst",
+             "member_id": "m_ana", "status": "claimed", "result": ""},
+            {"card_id": "c_ben", "title": "Invoice mismatches", "member": "Invoice clerk", "member_id": "m_ben",
+             "status": "claimed", "result": ""}]},
+        wrap(ANA, {"type": "tool_execution", "tool_name": "late_deliveries", "args": {"week": 41}}),
+        wrap(ANA, {"type": "tool_result", "tool_name": "late_deliveries", "preview": "2 late"}),
+        wrap(ANA, {"type": "answer_delta", "text": "Two suppliers were late"}),
+        wrap(BEN, {"type": "tool_execution", "tool_name": "message",
+                   "args": {"to": "lead", "text": "Count back-orders as open?"}}),
+        {"type": "tool_execution", "tool_name": "message", "args": {"to": "Invoice clerk", "text": "Yes, separately."}},
+    ]
+
+
+async def _push(page, stream: str, events: list[dict], start: int = 1) -> int:
+    frames = "".join(_frame(e, f"t1-{start + i}") for i, e in enumerate(events))
+    await page.evaluate(f"() => window.__streams[{json.dumps(stream)}].push({json.dumps(frames)})")
+    return start + len(events)
+
+
+async def _called(page, pattern: str, tries: int = 30) -> dict | None:
+    for _ in range(tries):
+        calls = await page.evaluate("() => window.__calls")
+        hit = next((c for c in calls if re.search(pattern, c["url"])), None)
+        if hit:
+            return hit
+        await asyncio.sleep(0.1)
+    return None
+
+
+@check
+async def check_teameditor(browser) -> str:
+    """A delegate reads as a Team agent: Members, how they work, its own tools; an old one is not rewritten (TEAM1b).
+
+    "Sub-Agents (Delegation Targets)" became Members (Q11); a Team agent gets "How members work", the
+    number at once under this install's ceiling, a task budget and an optional spend limit (Q1, Q2a, Q8),
+    and the Tools grid the editor used to hide (Q1b). A delegate saved before teams has no `team` block:
+    it opens as "One at a time" and is not made dirty by opening (D204).
+    """
+    stamp = int(time.time())
+    lead, member = f"agent_uismoke_team_{stamp}", f"agent_uismoke_member_{stamp}"
+    name = f"Team {str(stamp)[-6:]}"
+    api("/api/agents", "POST", _agent(member, f"Member {str(stamp)[-6:]}"))
+    api("/api/agents", "POST", {**_agent(lead, name), "type": "delegate", "delegate_agent_ids": [member]})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents?id={lead}", wait_until="domcontentloaded")
+        await page.wait_for_function(
+            "(n) => [...document.querySelectorAll('input')].some(i => i.value === n)", arg=name, timeout=30_000)
+        await asyncio.sleep(1.0)
+        text = await page.evaluate("() => document.body.innerText")
+        if "Sub-Agents" in text or "Delegation Targets" in text:
+            raise AssertionError("the editor still says Sub-Agents (Delegation Targets)")
+        members = page.locator('section[aria-labelledby="setup-members"]')
+        if not await members.count():
+            raise AssertionError("a Team agent has no Members section")
+        if not await page.locator('section[aria-labelledby="setup-tools"]').count():
+            raise AssertionError("a Team agent's own tool picker is hidden (Q1b)")
+        one = members.get_by_role("radio", name=re.compile("One at a time"))
+        if not await one.is_checked():
+            raise AssertionError("a delegate saved before teams does not read as one at a time")
+        if await page.get_by_role("button", name="Save agent").count():
+            raise AssertionError("opening an old delegate made it dirty")
+        if await members.get_by_label("Members working at once").count():
+            raise AssertionError("one at a time shows the team's numbers")
+
+        await members.get_by_role("radio", name=re.compile("As a team")).check()
+        at_once = members.get_by_label("Members working at once")
+        await at_once.wait_for(timeout=5_000)
+        hint = await members.inner_text()
+        if "on this install" not in hint:
+            raise AssertionError(f"the at-once field does not say where its ceiling comes from: {hint!r}")
+        await members.get_by_label("Spend limit per turn").fill("0.5")
+        await members.get_by_label("Spend limit per turn").press("Tab")
+        await page.get_by_role("button", name="Save agent").click()
+        saved: dict = {}
+        for _ in range(40):
+            saved = next((a for a in api("/api/agents") if a.get("id") == lead), {})
+            if (saved.get("team") or {}).get("mode") == "team":
+                break
+            await asyncio.sleep(0.25)
+        else:
+            raise AssertionError(f"Save did not keep the team: {saved.get('team')}")
+        want = {"mode": "team", "at_once": 3, "task_budget": 6, "spend_limit_usd": 0.5}
+        if saved["team"] != want:
+            raise AssertionError(f"saved {saved['team']}, wanted {want}")
+        if saved.get("delegate_agent_ids") != [member]:
+            raise AssertionError(f"the members changed on save: {saved.get('delegate_agent_ids')}")
+
+        # A new agent typed Team starts as a team (Q1).
+        await page.get_by_role("button", name="New agent", exact=True).first.click()
+        await asyncio.sleep(1.0)
+        await page.get_by_role("combobox", name="Agent type").click()
+        await page.get_by_role("option", name="Team", exact=True).click()
+        await asyncio.sleep(0.5)
+        if not await page.get_by_role("radio", name=re.compile("As a team")).is_checked():
+            raise AssertionError("a new Team agent does not start as a team")
+    finally:
+        await ctx.close()
+        for aid in (lead, member):
+            try:
+                api(f"/api/agents/{aid}", "DELETE")
+            except Exception:
+                pass
+    return "a delegate reads as a Team agent with Members and its own tools; an old one opens one at a time, unchanged"
+
+
+@check
+async def check_teamlanes(browser) -> str:
+    """A live team: its task list, a lane per member side by side, Message and Stop for one member, "To" and "Stop the team" (TEAM1b, Q5, Q5a)."""
+    history = {"turns": [], "pending_approval": None,
+               "running": {"turn_id": "t1", "message": "Run the Monday supplier review", "started_at": 0,
+                           "cursor": "t1-0"}}
+    ctx, page = await _chat_page(browser, "uismoke-team-lanes", history, extra_init=TEAM_ROUTES_STUB)
+    try:
+        await _stream_open(page, "events")
+        at = await _push(page, "events", _team_frames())
+        ana = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
+        ben = page.get_by_role("region", name="Member: Invoice clerk", exact=True)
+        await ana.wait_for(timeout=10_000)
+        a, b = await ana.bounding_box(), await ben.bounding_box()
+        if not a or not b or abs(a["y"] - b["y"]) > 4:
+            raise AssertionError(f"the lanes are not side by side: {a} {b}")
+        if "Two suppliers were late" not in await ana.inner_text():
+            raise AssertionError("a member's answer does not stream in its lane")
+        if "late_deliveries" not in await ana.inner_text():
+            raise AssertionError("a member's call is not in its lane")
+        tasks = page.get_by_role("region", name="Task list", exact=True)
+        if "Invoice mismatches" not in await tasks.inner_text():
+            raise AssertionError("the task list does not show the members' tasks")
+        notes = await page.get_by_role("list", name="Team messages").inner_text()
+        if "Invoice clerk to the lead: Count back-orders as open?" not in notes or "Lead to Invoice clerk" not in notes:
+            raise AssertionError(f"the exchanges are not one-line notes: {notes!r}")
+
+        await ana.get_by_role("button", name="Stop Supplier analyst").click()
+        if not await _called(page, r"/members/m_ana/stop$"):
+            raise AssertionError("a lane's Stop did not ask for that member alone")
+        if await _called(page, r"/cancel$", tries=3):
+            raise AssertionError("a member's Stop stopped the whole team")
+
+        await ben.get_by_role("button", name="Message Invoice clerk").click()
+        await ben.get_by_label("Your message to Invoice clerk").fill("List them separately")
+        await ben.get_by_label("Your message to Invoice clerk").press("Enter")
+        sent = await _called(page, r"/members/m_ben/message$")
+        if not sent or "List them separately" not in sent["body"]:
+            raise AssertionError(f"a lane's Message did not reach that member: {sent}")
+
+        to = page.get_by_label("Send to")
+        if await to.input_value() != "lead":
+            raise AssertionError("the composer does not start addressed to the lead")
+        await page.get_by_label(re.compile("^Message ")).last.fill("Keep the note short")
+        await page.get_by_role("button", name="Send to the lead").click()
+        if not await _called(page, r"/lead/message$"):
+            raise AssertionError("To: the lead did not reach the lead")
+        if not await page.get_by_role("button", name="Stop the team").count():
+            raise AssertionError("the composer's Stop does not say it stops the team")
+
+        # A member's question while the others work: in its lane, marked, not yet answerable here (TEAM1c).
+        at = await _push(page, "events", [{"type": "member_event", **BEN, "event": HOLD}], at)
+        await asyncio.sleep(0.5)
+        if "Permission needed" not in await ben.inner_text() or "needs you" not in await ben.inner_text():
+            raise AssertionError("a member's question does not show in its lane")
+
+        ended = [{"type": "member_finished", **ANA, "status": "completed", "seconds": 41, "record": ANA_RECORD},
+                 {"type": "member_finished", **BEN, "status": "completed", "seconds": 52, "record": BEN_RECORD},
+                 {"type": "response", "content": "The Monday note is ready.", "team": TEAM_SUMMARY,
+                  "members": [ANA_RECORD, BEN_RECORD]},
+                 {"type": "done"}]
+        await _push(page, "events", ended, at)
+        if not await _on_screen(page, "The Monday note is ready."):
+            raise AssertionError("the lead's answer never showed")
+        line = await page.get_by_label("This turn's team").inner_text()
+        if "2 members" not in line or "$0.03" not in line:
+            raise AssertionError(f"the turn's team line does not say what it took: {line!r}")
+        kept = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
+        if "done · 41 s" not in await kept.inner_text():
+            raise AssertionError("a finished member is not one line saying how it ended")
+    finally:
+        await ctx.close()
+    return "a live team: tasks, lanes side by side, Stop and Message for one member, To the lead, Stop the team"
+
+
+@check
+async def check_teamkept(browser) -> str:
+    """A reopened Team agent's turn: its task list, each member one line that opens, and "answered alone" (TEAM1b)."""
+    history = {"turns": [
+        {"user": "Run the Monday supplier review", "assistant": "The Monday note is ready.",
+         "members": [ANA_RECORD, BEN_RECORD], "team": TEAM_SUMMARY,
+         "calls": [{"tool": "assign", "args": {}, "result": "Assigned"}, {"tool": "lookup", "args": {}, "result": "ok"}]},
+        {"user": "Thanks, what day is it?", "assistant": "Monday.",
+         "team": {"tasks": [], "tasks_used": 0, "answered_alone": True, "spent_usd": 0.001}, "members": []},
+    ], "pending_approval": None, "running": None}
+    ctx, page = await _chat_page(browser, "uismoke-team-kept", history)
+    try:
+        if not await _on_screen(page, "The Monday note is ready."):
+            raise AssertionError("the reopened turn never showed")
+        ana = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
+        if "Two suppliers were late" in await ana.inner_text():
+            raise AssertionError("a kept member is shown open; it should be one line")
+        await ana.get_by_role("button").first.click()
+        await asyncio.sleep(0.3)
+        if "Two suppliers were late" not in await ana.inner_text():
+            raise AssertionError("opening a kept member does not show its answer")
+        if "late_deliveries" not in await ana.inner_text():
+            raise AssertionError("opening a kept member does not show its calls")
+        if "Invoice mismatches" not in await page.get_by_role("region", name="Task list").first.inner_text():
+            raise AssertionError("a kept turn lost its task list")
+        lines = await page.get_by_label("This turn's team").all_inner_texts()
+        if not any("Answered alone" in t for t in lines):
+            raise AssertionError(f"a lead that answered alone does not say so: {lines}")
+        tools = await page.evaluate("() => document.body.innerText")
+        if "Tools used · 2" in tools:
+            raise AssertionError("the lead's assign is counted among Tools used beside its lanes")
+    finally:
+        await ctx.close()
+    return "a reopened team turn: tasks, members one line each that open, and 'answered alone'"
+
+
+@check
+async def check_teamparked(browser) -> str:
+    """A turn paused on a member's question asks it in that member's lane, once, and its answer resumes the team (TEAM1b, Q6 interim)."""
+    history = {"turns": [], "pending_approval": None,
+               "running": {"turn_id": "t1", "message": "Run the Monday supplier review", "started_at": 0,
+                           "cursor": "t1-0"}}
+    ctx, page = await _chat_page(browser, "uismoke-team-parked", history, extra_init=TEAM_ROUTES_STUB)
+    try:
+        await _stream_open(page, "events")
+        at = await _push(page, "events", _team_frames())
+        parked = {**HOLD, "member_id": "m_ben", "delegate_from": "lead", "delegate_agent_name": "Invoice clerk"}
+        await _push(page, "events", [{"type": "member_finished", **ANA, "status": "completed", "seconds": 41,
+                                      "record": ANA_RECORD}, parked, {"type": "done"}], at)
+        ben = page.get_by_role("region", name="Member: Invoice clerk", exact=True)
+        allow = ben.get_by_role("button", name="Allow once")
+        await allow.wait_for(timeout=10_000)
+        if await page.get_by_text("Permission needed").count() != 1:
+            raise AssertionError("the member's question is asked twice: in its lane and as the chat's card")
+        await allow.click()
+        sent = await _called(page, r"/approve$")
+        if not sent or '"approval_id":"appr_ben"' not in sent["body"].replace(" ", ""):
+            raise AssertionError(f"Allow once did not answer that question: {sent}")
+        await _stream_open(page, "approve")
+        resumed = [{"type": "member_event", **BEN, "event": {"type": "tool_execution", "tool_name": "hold_payment",
+                                                              "args": {"invoice": "INV-7731"}}},
+                   {"type": "member_event", **BEN, "event": {"type": "tool_result", "tool_name": "hold_payment",
+                                                              "preview": "held"}},
+                   {"type": "member_finished", **BEN, "status": "completed", "seconds": 52, "record": BEN_RECORD},
+                   {"type": "response", "content": "Payment held; the Monday note is ready.", "team": TEAM_SUMMARY,
+                    "members": [ANA_RECORD, BEN_RECORD]},
+                   {"type": "done"}]
+        await _push(page, "approve", resumed)
+        if not await _on_screen(page, "Payment held; the Monday note is ready."):
+            raise AssertionError("the resumed team's answer never showed")
+        regions = await page.get_by_role("region", name="Member: Invoice clerk", exact=True).count()
+        if regions != 1:
+            raise AssertionError(f"the resumed team drew the clerk {regions} times")
+    finally:
+        await ctx.close()
+    return "a paused member's question is asked once, in its lane, and its answer resumes the team"
+
+
+@check
+async def check_teamrun(browser) -> str:
+    """The run page draws a Team step's task list and lanes from its events (TEAM1b; fed in TEAM1e)."""
+    oid = f"orch_uismoke_teamrun_{int(time.time())}"
+    api("/api/orchestrations", "POST", human_gate_orchestration(oid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(RUNLOG_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Run now", exact=True).click()
+        for _ in range(30):
+            if await page.evaluate("() => !!window.__run.raw"):
+                break
+            await asyncio.sleep(0.1)
+        for event in _team_frames():
+            await page.evaluate(f"() => window.__run.raw({json.dumps(event)})")
+        lane = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
+        await lane.wait_for(timeout=10_000)
+        if "late_deliveries" not in await lane.inner_text():
+            raise AssertionError("the run page's lane does not show the member's call")
+        if await lane.get_by_role("button", name=re.compile("^(Stop|Message) ")).count():
+            raise AssertionError("the run page offers Message or Stop before TEAM1e gives it routes")
+        log = await page.evaluate("() => (document.querySelector('[data-run-log]') || {}).innerText || ''")
+        if "late_deliveries" in log:
+            raise AssertionError("a member's call is written into the step's log as the step's own")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    return "the run page draws a team's tasks and lanes from its events, without Message or Stop yet"
+
+
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
