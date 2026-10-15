@@ -1932,9 +1932,27 @@ async def run_agent_step(
         """A spawn that asks for the background, where this turn may run one (the app's chat, S4)."""
         return bool(_background_offered and isinstance(args, dict) and args.get("background") is True)
 
-    async def _send_to_background(args: dict):
+    # A lower model's repeat (F570): Nova Pro, told a helper started in the background, sent the
+    # identical one again in its next reply, and again — each a job, billed in cloud. A send
+    # identical to one an earlier reply of this turn started, whose ending this turn has not
+    # read, starts nothing; one more ends the turn with the engine's plain line. Copies sent
+    # in one reply, a send after reading the first one's ending, and the next turn all start.
+    _bg_sent: dict[str, dict] = {}      # send_signature -> {"ids", "name", "reply", "repeats"}
+    _bg_ended: set[str] = set()         # helper ids whose ending this turn has read
+    _bg_repeat_end: str | None = None   # set: the turn ends with this, after the reply's calls
+
+    async def _send_to_background(args: dict, *, reply: int):
         """Start one helper in the background; what the model reads lands in `_spawn_results`."""
-        nonlocal _spawn_results
+        nonlocal _spawn_results, _bg_repeat_end
+        _sig = _helpers.send_signature(args)
+        _sent = _bg_sent.get(_sig)
+        if _sent is not None and _sent["reply"] < reply and not set(_sent["ids"]) <= _bg_ended:
+            _sent["repeats"] += 1
+            _log.info(f"🔁 background helper '{_sent['name']}' sent again ({_sent['repeats']}×): not started")
+            if _sent["repeats"] >= 2:
+                _bg_repeat_end = _helpers.sent_plainly([v["name"] for v in _bg_sent.values()])
+            _spawn_results = [(_sent["name"], _helpers.ALREADY_SENT.format(name=_sent["name"]))]
+            return
         helper = _helpers.build(args, parent_agent=active_agent, parent_model=current_model,
                                 available_tools=_spawn_grantable, policy=_policy, declarations=_tool_by_name,
                                 roles=model_roles, settings=current_settings, mode="background")
@@ -1961,6 +1979,10 @@ async def run_agent_step(
             return
         yield helper.started_event()
         _turn_helpers.append(helper.record())
+        if _sent is not None and _sent["reply"] == reply:
+            _sent["ids"].append(helper.id)   # a copy asked for in the same reply
+        else:
+            _bg_sent[_sig] = {"ids": [helper.id], "name": helper.name, "reply": reply, "repeats": 0}
         withheld = f"Not given to the sub-agent: {'; '.join(helper.withheld)}.\n\n" if helper.withheld else ""
         _spawn_results = [(helper.name, (
             f"{withheld}Helper '{helper.name}' started in the background. Its result comes back to you when it "
@@ -2162,6 +2184,7 @@ async def run_agent_step(
             if inbox is not None:
                 _arrived = inbox.drain()
                 if _arrived:
+                    _bg_ended.update(str(i.get("helper_id") or "") for i in _arrived)
                     current_context_text += _helpers.render_inbox(_arrived)
                     active_prompt = current_context_text
                     _memory_tainted = True
@@ -3021,7 +3044,7 @@ async def run_agent_step(
                         # may end; the result comes back once, between this agent's model
                         # calls or as a turn of its own. No id in what the model reads, so
                         # the repeat guard still sees a repeat (F476).
-                        async for _e in _send_to_background(tool_args):
+                        async for _e in _send_to_background(tool_args, reply=turn):
                             yield _e
                     elif not _spawn_results:
                         # This call, and the spawns straight after it in this reply
@@ -3476,6 +3499,11 @@ async def run_agent_step(
                 # A member's answer, word for word, is this turn's (TEAM1a): the loss in a
                 # lead's rewrite is what forwarding is for.
                 final_response = _forward_answer
+                break
+            if _bg_repeat_end is not None:
+                # Its reply's calls ran; the helpers it keeps sending work already (F570).
+                _log.warning("🔁 background helpers sent again after being told they work — ending the turn")
+                final_response = _bg_repeat_end
                 break
             if not _repeat_stop:
                 _check_round(_turn_calls[_round_from:])

@@ -53,6 +53,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -91,6 +92,27 @@ SHOWN = frozenset({
 #: What a spawn past the cap reads. Said once: the model is told not to retry, and the call is refused in code anyway.
 AT_CAP = ("No helper was started: {n} helpers are already working here, the most at once. Don't call "
           "spawn_subtask again for this now; wait for their results or do it yourself.")
+
+#: What a later reply's send of a background helper this turn already sent reads (F570): a lower model's repeat.
+ALREADY_SENT = ("Helper '{name}' is already working on exactly this (sent earlier in this turn); its result comes "
+                "back to you, and nothing new was started. Carry on with other work, or end your turn.")
+
+
+def send_signature(args: dict) -> str:
+    """What makes two background sends the same helper (F570): its name, its task and the tools asked for."""
+    tools = args.get("tools")
+    tools = sorted(str(t) for t in tools) if isinstance(tools, list) else [str(tools or "")]
+    return json.dumps([str(args.get("name") or "").strip().casefold(), str(args.get("task") or "").strip(), tools])
+
+
+def sent_plainly(names: list[str]) -> str:
+    """The turn's answer when a model keeps sending helpers already working (F570), not the repeat guard's."""
+    shown = list(dict.fromkeys(names))
+    if len(shown) == 1:
+        return f"I've sent '{shown[0]}' to the background; its result comes back here."
+    listed = ", ".join(f"'{n}'" for n in shown[:-1]) + f" and '{shown[-1]}'"
+    return f"I've sent {listed} to the background; their results come back here."
+
 
 #: What a helper the parent asked to work in the background reads where background is not allowed (S4, S6).
 RAN_AS_A_WAIT = "(It ran while you waited: helpers work in the background only in the app's chat.)"
@@ -259,6 +281,8 @@ def build(args: dict, *, parent_agent: dict | None, parent_model: str, available
         return _tool_policy.decide(declared if declared is not None else _UndeclaredTool(tool_name), policy)
 
     task = str(args.get("task") or "")
+    # An explicit empty list is a helper with no tools (F571); only names it does not hold fall back below.
+    none_asked = isinstance(args.get("tools"), list) and not args["tools"]
     requested = args.get("tools") or []
     if not isinstance(requested, list):
         requested = [requested]
@@ -277,6 +301,8 @@ def build(args: dict, *, parent_agent: dict | None, parent_model: str, available
                 withheld.append(f"{tool_name} (it needs a person's approval — call it yourself "
                                 "and they will be asked)")
         valid = granted
+    elif none_asked:
+        valid = []
     else:
         # Nothing it asked for exists: the first few it may run outright.
         valid = [t for t in available_tools if decision(t)[0] == "allow"][:5]
