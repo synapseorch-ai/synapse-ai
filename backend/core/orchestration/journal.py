@@ -104,6 +104,9 @@ STRUCTURAL_EVENT_TYPES = frozenset({
     # A Retrieve step's trace id and an Ingest step's documents: one event per
     # execution, and the run panel's only way back to what the step found.
     "knowledge_retrieve", "knowledge_ingest",
+    # A Team step's shape (TEAM1e): who worked on what, and how it ended. A member's own events
+    # (`member_event`, its tool calls and streamed answer) are its detail, dropped past the cap.
+    "member_started", "member_finished", "team_tasks", "member_answered",
 })
 
 

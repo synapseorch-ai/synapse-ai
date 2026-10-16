@@ -676,6 +676,17 @@ async def _inject_repo_context(agent_data, system_template):
         return system_template
 
 
+def _team_home(source) -> str | None:
+    """Where a workflow step's team is found: its run and step (TEAM1e); None in chat, where it is the conversation."""
+    if not str(source or "").startswith("orchestration"):
+        return None
+    from core import team as _team_mod
+    from core.orchestration.step_usage import current_step
+
+    step = current_step()
+    return _team_mod.step_home(step["run_id"], step["step_id"]) if step else None
+
+
 async def _eligible_members(active_agent: dict) -> dict:
     """The agents a delegate (or a Team's lead) may hand work to, by id: its chosen ones, or every agent.
 
@@ -1007,6 +1018,7 @@ async def run_agent_step(
     automated: dict | None = None,        # a follow-up nobody typed: the helper result it answers (SUB1a)
     board_scope=None,                     # core.boards.BoardScope (or its dict): the workflow step or schedule it runs in (BOARD1a)
     team_seat=None,                       # core.team.Seat: this turn is a member's, working for its team's lead (TEAM1a)
+    step_limits=None,                     # core.team.StepLimits: a workflow step's time and the run's cap, for its team (TEAM1e)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1126,14 +1138,14 @@ async def run_agent_step(
     agent_type = active_agent.get("type", "conversational")
 
     # ── TEAM: a delegate whose members work as a team (TEAM1a, D283) ──
-    # In the app's chat, a member's channel and OAI1: never a workflow step (one at a time
-    # until TEAM1e), a visitor's turn or a phone call (the lead alone, Q9), or a member's
-    # own turn (depth 1). Its lead holds assign/message/wait/forward instead of
-    # delegate_to_agent, and its own tools (Q1b); see core/team.py.
+    # In the app's chat, a member's channel, OAI1 and a workflow Agent step (TEAM1e, inside
+    # the step's time and the run's cap); never a visitor's turn or a phone call (the lead
+    # alone, Q9), or a member's own turn (depth 1). Its lead holds assign/message/wait/forward
+    # instead of delegate_to_agent, and its own tools (Q1b); see core/team.py.
     from core import team as _team_mod
     _team = None
     if (agent_type == "delegate" and tools_override is None and team_seat is None
-            and not str(source or "").startswith("orchestration") and _visitor_mod.current() is None):
+            and _visitor_mod.current() is None):
         _team_cfg = _team_mod.config_of(active_agent, settings=current_settings)
         if _team_cfg is not None:
             _team_roster = await _eligible_members(active_agent)
@@ -1142,11 +1154,12 @@ async def run_agent_step(
                     lead=active_agent, members=_team_roster, config=_team_cfg, session_id=session_id,
                     source=source, run_id=run_id, server_module=server_module, lead_model=current_model,
                     should_stop=should_stop, can_park=bool(progress_events and _chat_approval.approvals_answerable()),
-                    state=(resume_state or {}).get("team"), agent_key=agent_id or "default")
+                    state=(resume_state or {}).get("team"), agent_key=agent_id or "default",
+                    home=_team_home(source), limits=step_limits)
                 all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
                     all_tools, ollama_tools, tool_schema_map, _team_mod.lead_tools(_team))
                 agent_system_template = agent_system_template + "\n\n" + _team_mod.lead_prompt(_team)
-                if _team_cfg.spend_limit_usd:
+                if _team_cfg.spend_limit_usd or (step_limits is not None and step_limits.usd_left is not None):
                     # The rate card the check before every call prices from (Q8); loaded on a first call otherwise.
                     from core.usage_tracker import _ensure_pricing
                     await _ensure_pricing()
@@ -1728,9 +1741,10 @@ async def run_agent_step(
             if _turn_helpers:
                 # The helpers it sent, kept with the turn (SUB1a).
                 snap["helpers"] = list(_turn_helpers)
-            if _team is not None:
-                # Its team: members, their records, the task list and the inbox (TEAM1a).
-                snap["team"] = _team.state()
+        if _team is not None:
+            # Its team: members, their records, the task list and the inbox (TEAM1a) — a workflow
+            # step's too, which a pause on a member's question resumes from (TEAM1e).
+            snap["team"] = _team.state()
         kn_state = _kturn.to_state()
         if kn_state:
             # The turn's [K#] labels (a delegate's included), so a resumed answer
@@ -1886,7 +1900,11 @@ async def run_agent_step(
     # Each runs on this agent's model unless it names a helper model (S5, F538),
     # starts as marked as this turn is (F279), and counts against the cap where
     # this turn runs; what each did is kept with this turn.
-    _helper_cap = _helpers.cap_key(session_id, workflow_step=_workflow_step)
+    _helper_cap = (team_seat.team.helper_key if team_seat is not None and team_seat.team.helper_key
+                   else _helpers.cap_key(session_id, workflow_step=_workflow_step))
+    if _team is not None:
+        # Its members' helpers count where the lead's do, against the team's "at once" (Q2a; a step's own, TEAM1e).
+        _team.helper_key = _helper_cap
 
     async def _send_helpers(group: list[dict]):
         """One reply's spawns side by side, yielding what they do; their results land in `_spawn_results`."""
@@ -2120,6 +2138,9 @@ async def run_agent_step(
             # wrote, never a board read per call.
             if _team is not None and _team.tasks:
                 tail_parts.append(_team.render_tasks())
+            if _team is not None:
+                # A workflow step's time left, with every call (TEAM1e, 20 Q2).
+                tail_parts.append(_team.time_line())
             # The memory index is the one eager piece of a memory-enabled
             # agent's memory; it refreshes in place after remember/forget.
             if _memory_enabled:
@@ -2300,9 +2321,8 @@ async def run_agent_step(
                 # A team's money, checked before every model call (TEAM1a, Q8): this agent stops in its own
                 # words — a member's go to its lead, which can always afford one more step to finish.
                 final_response = _team_now.spend_stop_answer(lead=_team is not None)
-                _unanswered = {"why": "spend_limit", "limit_usd": _team_now.config.spend_limit_usd}
-                yield {"type": "status", "message": f"Stopped at the team's spend limit "
-                                                    f"(${_team_now.config.spend_limit_usd:g})."}
+                _stop_line, _unanswered = _team_now.spend_stop()
+                yield {"type": "status", "message": _stop_line}
                 break
             else:
                 _log.debug(f"🔄 Calling LLM...")

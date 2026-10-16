@@ -430,11 +430,13 @@ class TestWhereATeamWorks:
         assert not tools & {"assign", "wait", "message", "forward", "delegate_to_agent"}
         assert _of(events, "final")[-1]["response"] == "the lead alone"
 
-    async def test_a_workflow_step_runs_it_one_at_a_time_until_team1e(self, server, llm, team):
+    async def test_a_workflow_step_runs_it_as_a_team(self, server, llm, team):
+        # Until TEAM1e a step ran a Team agent one at a time; Naveen's Q9 puts teams in workflow Agent steps, inside
+        # the step's limits (test_a_team_runs_in_a_workflow_step.py holds those).
         llm.on("PLAN IT", ["step answer"])
         await _turn(server, source="orchestration")
         tools = {t["function"]["name"] for t in (llm.calls_for("PLAN IT")[0].get("tools") or [])}
-        assert "assign" not in tools and "delegate_to_agent" in tools
+        assert "assign" in tools and "delegate_to_agent" not in tools
 
     async def test_a_member_never_leads(self, server, llm, team):
         llm.on("PLAN IT", [assign("Ana", "CHECK A"), tool_call("wait", seconds=10), "done"])

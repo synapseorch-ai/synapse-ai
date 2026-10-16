@@ -32,7 +32,10 @@ body steps the same way; it imports neither.
 """
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+import time
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -50,6 +53,29 @@ OWN_BUDGET = "this run's own timeout"
 
 #: The steps that run other steps inside themselves.
 CONTAINERS = (StepType.LOOP, StepType.PARALLEL)
+
+#: The step this task runs inside its `fail_after`: when its limit ends (`time.monotonic()`) and how many seconds it
+#: was given. A Team step reads it: its lead is told the time left, and near the end no more work is handed out
+#: (TEAM1e, 20 Q2).
+_DEADLINE: ContextVar[tuple[float, float] | None] = ContextVar("synapse_step_deadline", default=None)
+
+
+@contextmanager
+def deadline_scope(seconds: float | None) -> Iterator[None]:
+    """Beside a step's `fail_after(seconds)`: the deadline its work can read (`step_deadline`)."""
+    token = _DEADLINE.set((time.monotonic() + float(seconds), float(seconds)) if seconds else None)
+    try:
+        yield
+    finally:
+        try:
+            _DEADLINE.reset(token)
+        except ValueError:  # an abandoned generator closed from another task: nothing of its to put back
+            pass
+
+
+def step_deadline() -> tuple[float, float] | None:
+    """`(ends_at, seconds)` of the step running now, by `time.monotonic()`; None outside one."""
+    return _DEADLINE.get()
 
 
 @dataclass(frozen=True)

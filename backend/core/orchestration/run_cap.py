@@ -213,3 +213,36 @@ async def stop_reason(run_id: str, step_type: str, cap: RunCap | None) -> str | 
     if cap.usd is not None and spend.usd is not None and spend.usd >= cap.usd:
         return usd_sentence(cap.usd, spend.usd)
     return None
+
+
+@dataclass(frozen=True)
+class Room:
+    """What a run's cap leaves one step's own work, read as the step starts or resumes (TEAM1e).
+
+    A Team step spends inside itself — model calls, members, helpers — where `stop_reason`, read between steps,
+    never looks: its team checks these before every call and every task (20 Q8). None: not capped, or not counted.
+    """
+
+    #: Model dollars left: the cap less what the run has spent so far.
+    usd: float | None = None
+    #: Tasks left, each priced as the step itself (1 + tasks, 20 Q7): the credits the cap leaves after this step.
+    tasks: int | None = None
+    cap: RunCap | None = None
+
+
+async def room(run_id: str, step_type: str, cap: RunCap | None, *, resumed: bool = False) -> Room:
+    """What `cap` leaves the step of `step_type` about to run. `resumed`: the step is re-entered after a person's
+    answer, so its paused entry is already in the run's spend and its own price is not counted again."""
+    if cap is None:
+        return Room()
+    try:
+        spend = await _reader(run_id, step_type, cap)
+    except Exception:  # noqa: BLE001 — a lookup error must not end a run
+        _log.warning("run cap could not be read for %s; the step's team goes on unchecked", run_id, exc_info=True)
+        return Room(cap=cap)
+    usd = max(0.0, cap.usd - spend.usd) if cap.usd is not None and spend.usd is not None else None
+    tasks = None
+    if cap.credits is not None and spend.credits_after is not None and spend.step_credits:
+        after = spend.credits_after - (spend.step_credits if resumed else 0.0)
+        tasks = max(0, (_mc(cap.credits) - _mc(after)) // _mc(spend.step_credits))
+    return Room(usd=usd, tasks=tasks, cap=cap)

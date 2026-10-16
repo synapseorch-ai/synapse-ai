@@ -21,7 +21,7 @@ from .pauses import count_task, end_step, progress_key as _progress_key, take_ta
 from .step_usage import exact_window, step_scope
 from .run_error import reason_of, set_run_error
 from .run_gate import stop_reason
-from .time_limits import CONTAINERS, body_step_limit, timed_out
+from .time_limits import CONTAINERS, body_step_limit, deadline_scope, step_deadline, timed_out
 
 _log = get_logger(__name__)
 
@@ -138,13 +138,39 @@ def cut_by_the_run(engine, run: OrchestrationRun, sub_step: StepConfig, step_sta
 def _is_a_task(event: dict) -> bool:
     """A task a delegate's step ran (TEAM1d): a hand-off whose answer is back (the lead's own; a member it could not
     reach is refused before it runs, and a hand-off a person approved midway is counted when its answer is back, after
-    the resume), or a helper waited for, the lead's or a member's."""
+    the resume), or a helper waited for, the lead's or a member's.
+
+    A team's (TEAM1e): each member's task as it starts — once; the same task carried on after its question is
+    `resumed` — and each helper waited for, the lead's or, inside its `member_event`, a member's."""
     kind = event.get("type")
     if kind == "tool_result":
         return bool(event.get("handed_off")) and not event.get("delegate_from")
     if kind == "helper_finished":
         return (event.get("record") or {}).get("mode", "wait") == "wait"
+    if kind == "member_started":
+        return not event.get("resumed")
+    if kind == "member_event":
+        return (event.get("event") or {}).get("type") == "helper_finished" and _is_a_task(event["event"])
     return False
+
+
+async def team_step_limits(engine, run: OrchestrationRun, step: StepConfig, agent: dict | None, *,
+                           resumed: bool):
+    """A Team agent's step limits (TEAM1e, 20 Q2, Q8): the step's time, and what the run's cap leaves it, read as
+    the step starts or resumes. None for any other agent, whose step is checked between steps as before."""
+    from core import team as team_mod
+
+    block = (agent or {}).get("team")
+    if (agent or {}).get("type") != "delegate" or not isinstance(block, dict) or block.get("mode") != "team":
+        return None
+    deadline = step_deadline()
+    from .run_cap import room
+
+    left = await room(run.run_id, step.type.value, getattr(engine, "run_cap", None), resumed=resumed)
+    return team_mod.StepLimits(
+        deadline=deadline[0] if deadline else None, seconds=deadline[1] if deadline else None,
+        usd_left=left.usd, tasks_left=left.tasks,
+        cap_usd=left.cap.usd if left.cap else None, cap_credits=left.cap.credits if left.cap else None)
 
 
 def _no_answer_reason(step_name: str, no_answer: dict) -> str:
@@ -158,6 +184,13 @@ def _no_answer_reason(step_name: str, no_answer: dict) -> str:
         return (f"Agent step '{step_name}' stopped without an answer: it called "
                 f"{no_answer.get('tool_name')} with the same arguments {no_answer.get('count')} times "
                 "in a row and got the same result each time.")
+    if no_answer.get("why") == "run_cap":
+        # A Team step's call would have passed the run's cap (TEAM1e, Q8): CAP1's own words.
+        from .run_cap import usd_sentence
+        return usd_sentence(float(no_answer.get("limit_usd") or 0), float(no_answer.get("spent_usd") or 0))
+    if no_answer.get("why") == "spend_limit":
+        return (f"Agent step '{step_name}' stopped without an answer: another step would pass its team's spend "
+                f"limit (${float(no_answer.get('limit_usd') or 0):g}).")
     return f"Agent step '{step_name}' ran out of turns ({no_answer.get('max_turns')}) before answering."
 
 
@@ -291,6 +324,8 @@ class AgentStepExecutor:
         parked = False
         # A delegate's step counts the tasks it ran, its entry priced 1 + them (TEAM1d, 20 Q7); a plain agent's none.
         counts_tasks = (target_agent or {}).get("type") == "delegate"
+        # A Team agent works inside the step's time and the run's cap (TEAM1e).
+        limits = await team_step_limits(engine, run, step, target_agent, resumed=resume_state is not None)
         try:
             async for event in run_agent_step(
                 message=prompt,
@@ -326,6 +361,7 @@ class AgentStepExecutor:
                 untrusted_message=True,
                 # The workflow's own board (lasting across its runs), and this step as its claims' holder.
                 board_scope={"kind": "workflow", "id": run.orchestration_id, "holder": board_holder},
+                step_limits=limits,
             ):
                 if event.get("type") == "human_input_required":
                     parked = True
@@ -397,6 +433,11 @@ class AgentStepExecutor:
                     # kept with the lead's snapshot, as chat parks it.
                     if event.get("delegate_pending"):
                         run.step_progress[step.id]["delegate_pending"] = event["delegate_pending"]
+                    # A team's: every waiting member's question, and the team itself (members, task list, inbox),
+                    # which the answered members resume from and the others keep waiting in (TEAM1e).
+                    for kept in ("team_pending", "team"):
+                        if event.get(kept):
+                            run.step_progress[step.id][kept] = event[kept]
                     # The step's [K#] labels (Knowledge): a resumed step's answer
                     # still cites what it searched before the crash.
                     if event.get("knowledge"):
@@ -1833,7 +1874,7 @@ class ParallelStepExecutor:
             sub_gen = executor.execute(sub_step, run, engine)
             try:
                 # A branch's calls are its own step's, beside the others (F461).
-                with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id):
+                with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id), deadline_scope(sub_timeout):
                     async for event in sub_gen:
                         if event.get("type") == "human_input_required":
                             # When this step started, for its entry: an approval's
@@ -2242,7 +2283,7 @@ class LoopStepExecutor:
                     # transport is reaped on some later, unrelated event loop.
                     sub_gen = executor.execute(sub_step, run, engine)
                     try:
-                        with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id):
+                        with anyio.fail_after(sub_timeout), step_scope(run.run_id, sub_step.id), deadline_scope(sub_timeout):
                             async for event in sub_gen:
                                 if event.get("type") == "human_input_required":
                                     # When this step started, for its entry: an approval's

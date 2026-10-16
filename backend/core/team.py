@@ -78,6 +78,11 @@ EVERYONE_WAITING_SETTLE = 1.0
 OUTPUT_ALLOWANCE, CHARS_PER_TOKEN = 1_600, 4
 #: What `assign` (and a helper) reads at the task budget (Q8's words).
 BUDGET_USED = "the team's budget of {n} tasks is used; finish with what you have."
+#: In a workflow step (TEAM1e, 20 Q2): how near its limit no more work is handed out — the last fifth of it, and
+#: never less than half a minute — so the step ends with the lead's answer rather than cut off mid-work.
+TIME_GUARD_MIN_S, TIME_GUARD_SHARE = 30.0, 0.2
+#: What `assign` (and a helper) reads then.
+TIME_UP = "the step's time is nearly up (about {s} s left); finish with what you have."
 
 #: What a member's lane shows of its turn, wrapped (the same as a helper's, plus its own helpers).
 SHOWN = frozenset({
@@ -107,6 +112,22 @@ class TeamConfig:
     #: A host's own models' prices, USD per million tokens in and out (`team_model_prices`; cloud's `synapse.*`,
     #: which the rate card leaves out): the allowance of a call to one (F657).
     prices: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
+
+
+@dataclass(frozen=True)
+class StepLimits:
+    """A workflow step's limits its team works inside (TEAM1e, 20 Q2, Q8), read as the step starts or resumes."""
+
+    #: When the step's limit ends (`time.monotonic()`), and how many seconds it was given.
+    deadline: float | None = None
+    seconds: float | None = None
+    #: What the run's dollar cap leaves for this stretch of the step: the cap less what the run spent before it.
+    usd_left: float | None = None
+    #: The tasks the run's credit cap leaves room for, each priced as the step is (1 + tasks, 20 Q7).
+    tasks_left: int | None = None
+    #: The caps themselves, for the words.
+    cap_usd: float | None = None
+    cap_credits: float | None = None
 
 
 def _worked(member: "Member") -> float:
@@ -360,8 +381,15 @@ _LIVE: dict[tuple, "Team"] = {}
 current: contextvars.ContextVar["Team | None"] = contextvars.ContextVar("synapse_team", default=None)
 
 
-def find(session_id: str) -> "Team | None":
-    return _LIVE.get((get_tenant() or "", session_id))
+def find(home: str) -> "Team | None":
+    """The team working at `home`: a conversation's id in chat, `step_home(...)` in a workflow step."""
+    return _LIVE.get((get_tenant() or "", home))
+
+
+def step_home(run_id: str, step_id: str) -> str:
+    """Where a workflow step's team is found (TEAM1e): its run and step, as two Team steps side by side, or a
+    nested run's beside its parent's in one conversation, never share one."""
+    return f"run:{run_id}/{step_id}"
 
 
 class Refused(Exception):
@@ -374,11 +402,20 @@ class Team:
     def __init__(self, *, lead: dict, members: dict[str, dict], config: TeamConfig, session_id: str,
                  source: str, run_id: str | None, server_module, lead_model: str,
                  should_stop: Callable[[], Awaitable[bool]] | None, can_park: bool, knowledge_turn=None,
-                 state: dict | None = None, agent_key: str = "default"):
+                 state: dict | None = None, agent_key: str = "default", home: str | None = None,
+                 limits: StepLimits | None = None):
         self.lead = lead
         self.roster = members
         self.config = config
         self.session_id = session_id
+        #: Where a person's Stop, message or answer finds this team: its conversation in chat, its run and step in
+        #: a workflow (`step_home`, TEAM1e).
+        self.home = home or session_id
+        #: A workflow step's limits (TEAM1e); None in chat.
+        self.limits = limits
+        #: Where the lead's helpers count against the conversation's or step's cap, its members' too: in a workflow
+        #: step that is the lead's own step, never the session the run's steps share (set by the lead's turn).
+        self.helper_key: tuple | None = None
         #: The conversation's agent key (its turns' row): answers reach this team by it (TEAM1c).
         self.agent_key = agent_key
         self.source = source
@@ -443,6 +480,13 @@ class Team:
         self._idle_s = 0.0
         self._helpers_s = 0.0
         self._seconds_before = {m.id: _worked(m) for m in self.members.values()}
+        #: What the team had spent and used when this stretch began: a step's cap is read as it starts or resumes,
+        #: and already holds what the stretch before it spent (TEAM1e).
+        self._spent_at_entry = self.spent_usd
+        self._tasks_at_entry = self.tasks_used
+        #: Which limit stopped a call: the Team agent's own ("team") or the run's cap ("cap").
+        self._stopped_by = "team"
+        self._time_said = False
 
     # ── what the lead's turn reads ──
     @property
@@ -486,10 +530,10 @@ class Team:
         self.paused_on |= {m.question_id for m in self.waiting() if m.question_id}
 
     def register(self) -> "Team":
-        _LIVE[(get_tenant() or "", self.session_id)] = self
+        _LIVE[(get_tenant() or "", self.home)] = self
         # Answers that arrived while this turn was starting, or while its last one paused (TEAM1c).
         from core.chat_approval import take_answers
-        for verdict in take_answers(self.session_id, self.agent_key):
+        for verdict in take_answers(self.home, self.agent_key):
             self.answer(verdict.get("question_id") or "", approve=bool(verdict.get("approve")),
                         reason=str(verdict.get("reason") or ""))
         return self
@@ -543,7 +587,9 @@ class Team:
 
     # ── the guards ──
     def lead_step(self) -> None:
-        """Before each of the lead's model calls: the stall counter (Q4, Magentic-One's)."""
+        """Before each of the lead's model calls: the step's time (TEAM1e), and the stall counter (Q4,
+        Magentic-One's)."""
+        self.check_time()
         if not self.members:
             return
         if self.progress_mark == self._stall_mark:
@@ -559,10 +605,55 @@ class Team:
                 f"No task has moved in your last {STALL_STOP_AT} steps, so no more work can be assigned. Finish now "
                 "with what you have.")})
 
+    # ── a workflow step's limits (TEAM1e) ──
+    def time_left(self) -> float | None:
+        """Seconds left of the step's limit; None in chat, where a turn has no deadline of its own."""
+        if self.limits is None or self.limits.deadline is None:
+            return None
+        return max(0.0, self.limits.deadline - time.monotonic())
+
+    def near_the_end(self) -> bool:
+        left = self.time_left()
+        if left is None:
+            return False
+        return left <= max(TIME_GUARD_MIN_S, TIME_GUARD_SHARE * float(self.limits.seconds or 0.0))
+
+    def check_time(self) -> None:
+        """Near the step's end the lead is told once, and woken from a `wait`: no more work can be handed out."""
+        if self._time_said or not self.near_the_end():
+            return
+        self._time_said = True
+        self.inbox.put({"kind": "guard_notice", "text": (
+            f"This step's time is nearly up (about {int(self.time_left() or 0)} s left), so no more work can be "
+            "handed out. Finish now with what you have.")})
+
+    def time_line(self) -> str:
+        """What the lead reads of the step's time, with every model call (20 Q2)."""
+        left = self.time_left()
+        if left is None:
+            return ""
+        return (f"About {int(left)} s are left for this step (it was given {int(self.limits.seconds or 0)} s). "
+                "Plan the work to finish in time; near the end no more work can be handed out.")
+
+    def _work_refusal(self) -> str | None:
+        """Why one more task (an assignment or a helper) may not start: the task budget, the step's time, or the
+        run's credit cap (Q8; TEAM1e). None when it may."""
+        if self.tasks_used >= self.config.task_budget:
+            return BUDGET_USED.format(n=self.config.task_budget)
+        if self.near_the_end():
+            return TIME_UP.format(s=int(self.time_left() or 0))
+        room = self.limits.tasks_left if self.limits is not None else None
+        if room is not None and self.tasks_used - self._tasks_at_entry >= room:
+            from core.orchestration.run_cap import credits_words
+            return (f"the run's cap of {credits_words(self.limits.cap_credits or 0)} leaves no room for another "
+                    "task; finish with what you have.")
+        return None
+
     def take_helper(self) -> str | None:
         """A helper sent from inside the team counts as a task, and as one at work (Q2a, Q8). Its refusal, or None."""
-        if self.tasks_used >= self.config.task_budget:
-            return "No helper was started: " + BUDGET_USED.format(n=self.config.task_budget)
+        refusal = self._work_refusal()
+        if refusal:
+            return "No helper was started: " + refusal
         if not self.room_for_helper():
             return (f"No helper was started: {self.config.at_once} of the team are already working, the most at "
                     "once. Wait for their results or do it yourself.")
@@ -612,20 +703,49 @@ class Team:
         """Whether the next call fits the team's limit: spent so far plus its allowance (and, for anyone but the
         lead, one more of the lead's, so the lead can always finish)."""
         limit = self.config.spend_limit_usd
+        cap_left = self.limits.usd_left if self.limits is not None else None
+        if not limit and cap_left is None:
+            if lead:
+                self.lead_reserve = 0.0
+            return True
         need = self.allowance(model, input_chars, max_output)
         if lead:
             self.lead_reserve = need
-        if not limit:
-            return True
-        return self.spent_usd + need + (0.0 if lead else self.lead_reserve) <= limit
+        reserve = 0.0 if lead else self.lead_reserve
+        if limit and self.spent_usd + need + reserve > limit:
+            self._stopped_by = "team"
+            return False
+        # In a workflow step, the run's cap: the run's spend before this stretch is in `cap_left` (TEAM1e, Q8).
+        if cap_left is not None and (self.spent_usd - self._spent_at_entry) + need + reserve > cap_left:
+            self._stopped_by = "cap"
+            return False
+        return True
+
+    def _limit_words(self, *, lead: bool) -> str:
+        if self._stopped_by == "cap" and self.limits is not None and self.limits.cap_usd is not None:
+            from core.orchestration.run_cap import usd_words
+            return f"this run's cap of {usd_words(self.limits.cap_usd)} in model costs"
+        return f"{'this' if lead else 'the'} team's spend limit (${self.config.spend_limit_usd:g})"
+
+    def spend_stop(self) -> tuple[str, dict]:
+        """The status line, and the turn's `no_answer`, when a call would pass the team's limit or the run's cap."""
+        if self._stopped_by == "cap" and self.limits is not None and self.limits.cap_usd is not None:
+            from core.orchestration.run_cap import usd_words
+            return (f"Stopped at this run's cap of {usd_words(self.limits.cap_usd)} in model costs.",
+                    {"why": "run_cap", "limit_usd": self.limits.cap_usd,
+                     # The run's: what it had spent before this stretch (the cap less what it left), and this.
+                     "spent_usd": round(self.limits.cap_usd - (self.limits.usd_left or 0.0)
+                                        + self.spent_usd - self._spent_at_entry, 6)})
+        return (f"Stopped at the team's spend limit (${self.config.spend_limit_usd:g}).",
+                {"why": "spend_limit", "limit_usd": self.config.spend_limit_usd})
 
     def spend_stop_answer(self, *, lead: bool) -> str:
-        limit = f"${self.config.spend_limit_usd:g}"
+        limit = self._limit_words(lead=lead)
         if not lead:
-            return (f"I stopped before finishing: another step would pass the team's spend limit ({limit}). "
+            return (f"I stopped before finishing: another step would pass {limit}. "
                     "What I found so far is in my calls above.")
         found = [m for m in self.members.values() if m.status == "completed" and m.answer]
-        lines = [f"I stopped here: another step would pass this team's spend limit ({limit})."]
+        lines = [f"I stopped here: another step would pass {limit}."]
         if found:
             lines.append("What the members found:")
             lines += [f"**{m.name}**: {m.answer}" for m in found]
@@ -711,8 +831,9 @@ class Team:
         if found is None:
             raise Refused(f"There is no member called '{args.get('member')}'. Members: "
                           f"{', '.join(self.member_names())}.")
-        if self.tasks_used >= self.config.task_budget:
-            raise Refused(BUDGET_USED.format(n=self.config.task_budget))
+        refusal = self._work_refusal()
+        if refusal:
+            raise Refused(refusal)
         if self.stall >= STALL_STOP_AT:
             raise Refused("No task has moved for a while, so no more work can be assigned. Finish now with what "
                           "you have.")
@@ -818,6 +939,7 @@ class Team:
         while True:
             for event in self.drain():
                 yield event
+            self.check_time()
             if self.inbox.has_pending():
                 self.arrivals += 1
                 yield arrived(self.inbox, self.arrivals, "it is in your team inbox below")
@@ -932,7 +1054,7 @@ class Team:
 
     def helpers_working(self) -> int:
         from core import helpers as _helpers
-        return len(_helpers.live(_helpers.cap_key(self.session_id, workflow_step=False)))
+        return len(_helpers.live(self.helper_key or _helpers.cap_key(self.session_id, workflow_step=False)))
 
     def room_for_helper(self) -> bool:
         return len(self.running()) + self.helpers_working() < self.config.at_once
@@ -950,10 +1072,11 @@ class Team:
 
         agent = self.roster.get(member.agent_id) or {}
         member.model = agent.get("model") if _own_model(agent) else self.lead_model
+        resume, member.resume_state = member.resume_state, None
+        # `resumed`: the same task carried on after its question, never a task of its own (a step's 1 + tasks, TEAM1e).
         self._emit({"type": "member_started", "member_id": member.id, "member_name": member.name,
                     "agent_id": member.agent_id, "task": member.task, "card_id": member.card_id,
-                    "model": member.model})
-        resume, member.resume_state = member.resume_state, None
+                    "model": member.model, **({"resumed": True} if resume is not None else {})})
         token = current.set(self)
         if resume is not None:
             # Picked up after its question was answered: its claim may have lapsed while the turn was parked.
@@ -1188,8 +1311,8 @@ class Team:
                 member.error = "Not run: the team's turn ended before a person answered."
                 self._emit({"type": "member_finished", "member_id": member.id, "member_name": member.name,
                             "status": member.status, "seconds": member.seconds, "record": member.record()})
-        if _LIVE.get((get_tenant() or "", self.session_id)) is self:
-            _LIVE.pop((get_tenant() or "", self.session_id), None)
+        if _LIVE.get((get_tenant() or "", self.home)) is self:
+            _LIVE.pop((get_tenant() or "", self.home), None)
         if parked or not self.board_id:
             return
         from core.store import boards as store

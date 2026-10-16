@@ -23,7 +23,7 @@ from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_cap import RunCap
 from .run_gate import stop_reason
-from .time_limits import CONTAINERS, OWN_BUDGET, run_ceiling, step_time_limit, timed_out
+from .time_limits import CONTAINERS, OWN_BUDGET, deadline_scope, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
@@ -551,7 +551,7 @@ class OrchestrationEngine:
                 human_input_event: dict | None = None
                 try:
                     # The step its model calls are made for (F461).
-                    with anyio.fail_after(step_timeout), step_scope(run.run_id, step.id):
+                    with anyio.fail_after(step_timeout), step_scope(run.run_id, step.id), deadline_scope(step_timeout):
                         async for event in executor.execute(step, run, self):
                             # Feed every event to the logger
                             if logger:
