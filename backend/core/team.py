@@ -407,6 +407,14 @@ class Team:
     def live_members(self) -> list[Member]:
         return [m for m in self.members.values() if m.live]
 
+    def working(self) -> list[Member]:
+        """The members at work or about to be: running, or queued and able to start. A task queued behind its
+        member's question to a person cannot start until a person answers, so it is not work in progress: the
+        turn pauses with it (F637)."""
+        blocked = {m.agent_id for m in self.members.values() if m.status == "waiting_for_person"}
+        return [m for m in self.members.values()
+                if m.status == "running" or (m.status == "queued" and m.agent_id not in blocked)]
+
     def running(self) -> list[Member]:
         return [m for m in self.members.values() if m.status == "running"]
 
@@ -725,7 +733,7 @@ class Team:
             if self.inbox.has_pending():
                 yield "Something arrived: it is in your team inbox below."
                 return
-            if not self.live_members():
+            if not self.working():
                 waiting = [m.name for m in self.waiting()]
                 yield (f"No member is working, so nothing more will arrive. "
                        + (f"{', '.join(waiting)} {'waits' if len(waiting) == 1 else 'wait'} for a person's "
@@ -737,7 +745,7 @@ class Team:
                 # How long each has worked, which a patient lead's waits differ by: the repeat guard (F476) is
                 # for a call that learns nothing new, and the stall counter is the one for a team (Q4).
                 working = ", ".join(f"{m.name} ({int(m.seconds)}s in)" if m.started_at else f"{m.name} (queued)"
-                                    for m in self.live_members())
+                                    for m in self.working())
                 yield f"Nothing arrived after {int(elapsed)}s. Still working: {working}."
                 return
             self._admit()

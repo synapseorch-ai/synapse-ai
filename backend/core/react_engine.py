@@ -2055,9 +2055,9 @@ async def run_agent_step(
                 # What its members did since the lead last looked (TEAM1a).
                 for _e in _team.drain():
                     yield _e
-                if _team.waiting() and not _team.live_members() and _replay_call is None:
+                if _team.waiting() and not _team.working() and _replay_call is None:
                     await _team.take_held()   # one answered a moment ago, elsewhere, carries on
-                if _team.waiting() and not _team.live_members() and _replay_call is None:
+                if _team.waiting() and not _team.working() and _replay_call is None:
                     # Members wait on a person and nobody else works: the turn parks on every
                     # waiting question (Q6, TEAM1c).
                     await _team.settle()
@@ -2539,9 +2539,9 @@ async def run_agent_step(
                 # A lead with members still working is asked once (TEAM1a): an answer now stops
                 # them. One waiting on a person's approval parks the turn instead.
                 if _team is not None:
-                    if not _team.live_members() and _team.waiting():
+                    if not _team.working() and _team.waiting():
                         await _team.take_held()   # one answered a moment ago, elsewhere, carries on
-                    _working = [m.name for m in _team.live_members()]
+                    _working = [m.name for m in _team.working()]
                     if _working and not _team_nudged and turn + 1 < max_turns:
                         _team_nudged = True
                         current_context_text += (

@@ -706,6 +706,36 @@ class TestApprovalsInParallel:
         assert server.session.calls == ["danger"] and not _of(events, "human_input_required")
         assert [(a["member_name"], a["approved"]) for a in _of(events, "member_answered")] == [("Ben", True)]
 
+    async def test_a_task_queued_behind_a_member_waiting_on_a_person_pauses_with_it(self, server, llm, team3):
+        """F637 (TEAM1c's live check, gpt-4.1-mini): the lead gives Ben a second task while Ben waits on a person.
+        It queues behind him (F591), and counted as working the turn never paused: every `wait` read "Still working:
+        Ben (queued)" until the repeat guard ended the turn and dropped Ben's question. A task that cannot start
+        until a person answers is not work in progress: the turn pauses, and it runs after Ben's answered task."""
+        from core.chat_approval import resume_state_for
+
+        async def slow(_kw):
+            await asyncio.sleep(1.5)
+            return "C fine"
+
+        llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Cara", "CHECK C")), tool_call("wait", seconds=1),
+                           assign("Ben", "AND MORE B"), *[tool_call("wait", seconds=2)] * 6, "unused"])
+        llm.on("CHANGE B", [tool_call("danger", item="b"), "changed B"]).on("CHECK C", [slow])
+        first = await _turn(server, progress_events=True, max_turns=12)
+        assert not any("repeating myself" in str(e.get("response")) for e in _of(first, "final"))
+        pending = _parked(first)
+        assert [q["member_name"] for q in pending["questions"]] == ["Ben"]
+        kept = {m["task"]: m["status"] for m in pending["progress"]["team"]["members"]}
+        assert kept["AND MORE B"] == "queued" and kept["CHANGE B"] == "waiting_for_person"
+
+        llm._scripts.clear()
+        llm.on("PLAN IT", [*[tool_call("wait", seconds=5)] * 3, "both done"])
+        llm.on("CHANGE B", ["changed B"]).on("AND MORE B", ["more B done"])
+        events = await _turn(server, progress_events=True, max_turns=12, resume_state=resume_state_for(
+            pending, approve=True, question=pending["questions"][0]["question_id"]))
+        done = [(f["record"]["task"], f["status"]) for f in _of(events, "member_finished")]
+        assert done == [("CHANGE B", "completed"), ("AND MORE B", "completed")]
+        assert server.session.calls == ["danger"]
+
     async def test_a_turn_that_ends_without_pausing_ends_its_waiting_members_as_not_run(self, server, llm, team3):
         llm.on("PLAN IT", [assign("Ben", "CHANGE B"), tool_call("wait", seconds=10)])
         llm.on("CHANGE B", [tool_call("danger"), "unused"])
