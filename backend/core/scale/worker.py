@@ -54,6 +54,13 @@ TURN_RUN_STOPPED = (
     "chat turn is not run again. Send the message again if you still want it."
 )
 
+#: Why a phone call's workflow run ended at a question the call did not ask (F644): a call keeps one question
+#: waiting at a time (F486), and the caller was told this one could not be asked.
+NOT_ASKED = (
+    "Not asked: the call already had a question waiting, and asks one at a time. The caller was told "
+    "someone on the team can follow up."
+)
+
 #: How long a stopping worker spends telling a chat turn it cut (F424). ARQ
 #: drops the job's claim only after this, and the grace left after ARQ's wait
 #: is short — fifteen seconds on ECS and compose.
@@ -1252,7 +1259,12 @@ async def run_agent_chat_job(
                     session_id, agent_id or "default",
                     parked_payload(paused_on, message=message, progress=progress, automated=automated),
                 )
-            # Else a call's first question still waits (F486): this one is not asked; the call says so.
+            else:
+                # A call's first question still waits (F486): this one is not asked; the call says so. A workflow
+                # agent's run asked it, though, and left paused it waited for good, with nothing to answer it
+                # (F644): it ends here, as never asked.
+                for run_id in turn_runs:
+                    await _end_unasked(run_id, redis)
             await _save_row("paused", history)
             return _ended({"status": "paused", "session_id": session_id})
 
@@ -1987,6 +1999,34 @@ async def _told_at_the_cut(redis, job_id: str | None) -> bool:
 async def _mark_told_at_the_cut(redis, job_id: str | None) -> None:
     if redis is not None and job_id:
         await redis.set(CHAT_TOLD_KEY.format(job_id=job_id), 1, ex=CHAT_TOLD_TTL)
+
+
+async def _end_unasked(run_id: str, redis: Any) -> None:
+    """End a turn's run at a question the call did not ask (F644; Naveen: refused, and nothing charged).
+
+    Cancelled, saying why (`NOT_ASKED`), as Cancel ends a paused run (`cancel_run`): the wait is cleared, what it
+    nested stops with it, and its stream is told. The step that asked leaves no entry, so a host that prices a
+    run's entries (cloud) charges nothing for a question it refused. Never raises: the turn is told either way.
+    """
+    from core.orchestration.cancel import cancel_run
+    from core.orchestration.state import SharedState
+
+    try:
+        restored = await SharedState.restore(run_id)
+        if restored.run.status != "paused":
+            return  # answered, cancelled or still running by now: not this turn's to end
+        history = restored.run.step_history
+        for index in range(len(history) - 1, -1, -1):
+            if isinstance(history[index], dict) and history[index].get("status") == "paused":
+                del history[index]  # the newest open question: the one this turn's step asked
+                break
+        await restored.checkpoint()
+        await cancel_run(run_id, redis=redis, reason=NOT_ASKED)
+        _log.info(f"[worker] run {run_id}: ended at a question the call did not ask (F644)")
+    except FileNotFoundError:
+        return
+    except Exception as e:  # noqa: BLE001
+        _log.warning(f"[worker] run {run_id}: could not end at its unasked question: {e}")
 
 
 async def _stop_turn_run(run_id: str) -> None:
