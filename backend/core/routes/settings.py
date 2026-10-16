@@ -108,8 +108,10 @@ async def get_status():
             agents_status[a["id"]]["can_see_images"] = verdict is None
             agents_status[a["id"]]["attach_problem"] = verdict
 
-    # Resolve active agent's model
-    active_agent = next((a for a in user_agents if a["id"] == active_agent_id), None)
+    # The agent chat answers with (`agents.get_active_agent_data`): the one picked, else the workspace's first — the
+    # default agent, Synapse AI, on a new install (ASSIST1). Said, not left null, so the page knows which it is.
+    active_agent = (next((a for a in user_agents if a["id"] == active_agent_id), None)
+                    or (user_agents[0] if user_agents else None))
     resolved_model = (model_or_none(active_agent.get("model")) if active_agent else None) or default_model
 
     provider = detect_provider_from_model(resolved_model)
@@ -124,7 +126,7 @@ async def get_status():
 
     return {
         "agents": agents_status,
-        "active_agent_id": active_agent_id,
+        "active_agent_id": active_agent["id"] if active_agent else None,
         "overall": "operational",
         "model": resolved_model,
         "mode": current_settings.get("mode", "local"),

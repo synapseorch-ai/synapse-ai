@@ -57,3 +57,15 @@ async def test_chat_lists_it_and_the_agent_screens_do_not(client):
     assert "agent_synapse_ai" not in {a["id"] for a in listed}
     status = (await client.get("/api/status")).json()
     assert status["agents"]["agent_synapse_ai"]["type"] == "builder"
+
+
+async def test_status_names_the_agent_chat_answers_with_before_anyone_picks_one(client, monkeypatch):
+    """Found in ASSIST1's browser pass: with nothing picked, status said `active_agent_id: null`, so Chat could not
+    tell it was talking to Synapse AI and drew a plain chat under the settings' name. It names the agent the backend
+    answers with (`get_active_agent_data`): the one picked, else the workspace's first."""
+    from core.routes import agents
+
+    monkeypatch.setattr(agents, "active_agent_id", None)
+    await default_agent.ensure_default_agent()
+    status = (await client.get("/api/status")).json()
+    assert status["active_agent_id"] == "agent_synapse_ai"
