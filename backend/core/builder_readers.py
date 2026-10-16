@@ -44,6 +44,8 @@ TOPICS: dict[str, str] = {
                "with what answers it",
     "agent_activity": "what the agent `name` has been doing: its recent conversations (last question and answer) "
                       "and the workflows that use it, with how each one's last run went",
+    "boards": "the boards and how many cards are open on each; with `name`, that board's open cards (their ids, who "
+              "holds each) and the latest closed ones",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -304,6 +306,12 @@ async def _waiting(args: dict) -> dict:
     return await _product_read("list_waiting", {"limit": args.get("limit") or 25})
 
 
+async def _boards(args: dict) -> dict:
+    if (args.get("name") or "").strip():
+        return await _product_read("read_board", {"board": args["name"]})
+    return await _product_read("list_boards", {"limit": args.get("limit") or 50})
+
+
 async def _run(args: dict) -> dict:
     from core.orchestration.run_view import list_runs
     from core.routes.orchestrations import load_orchestrations
@@ -334,7 +342,7 @@ _SELF_HOSTED: dict[str, Reader] = {
     "schedules": _schedules, "runs": _runs, "channels": _channels, "phone": _phone, "widgets": _widgets,
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
-    "today": _today, "run": _run, "waiting": _waiting, "agent_activity": _agent_activity,
+    "today": _today, "run": _run, "waiting": _waiting, "agent_activity": _agent_activity, "boards": _boards,
 }
 
 

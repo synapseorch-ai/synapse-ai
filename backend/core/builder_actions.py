@@ -34,6 +34,16 @@ ACTIONS: dict[str, str] = {
     "answer_run": "answer the question a waiting run asks, or approve it (`run_id`, from topic `waiting`)",
     "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
     "cancel_run": "stop a run that is still going (`run_id`)",
+    "knowledge_add_pages": "add public web pages to a knowledge base (`knowledge_base`, `urls`, `kind`: page, sitemap "
+                           "or site)",
+    "knowledge_add_note": "add a note to a knowledge base (`knowledge_base`, `title`, `text`)",
+    "knowledge_retry_document": "index a failed document again (`doc_id`)",
+    "knowledge_delete_document": "delete a document from its knowledge base (`doc_id`)",
+    "board_add_card": "add a card to a board (`board`, `title`, `text`)",
+    "board_update_card": "close a card as done or failed, or reopen it (`card_id`, `status`, `result`)",
+    "board_comment": "comment on a card (`card_id`, `text`)",
+    "board_create": "make a shared board (`name`, `text`: what it is for)",
+    "board_delete": "delete a shared board (`board`)",
 }
 
 SCHEMA = {
@@ -57,6 +67,17 @@ SCHEMA = {
                 "run_id": {"type": "string"},
                 "approval_id": {"type": "string", "description": "answer_tool_call: from topic `waiting`."},
                 "question_id": {"type": "string", "description": "answer_tool_call: from topic `waiting`."},
+                "knowledge_base": {"type": "string", "description": "The knowledge base's name."},
+                "urls": {"type": "array", "items": {"type": "string"}},
+                "kind": {"type": "string", "enum": ["page", "sitemap", "site"]},
+                "doc_id": {"type": "string"},
+                "board": {"type": "string", "description": "The board's name."},
+                "card_id": {"type": "string", "description": "From topic `boards` with the board's name."},
+                "status": {"type": "string", "enum": ["open", "done", "failed"]},
+                "result": {"type": "string", "description": "board_update_card: what came of it."},
+                "name": {"type": "string"},
+                "title": {"type": "string"},
+                "text": {"type": "string"},
             },
             "required": ["action"],
         },
@@ -201,6 +222,100 @@ async def _offer(action: str, args: dict) -> dict:
                               await _button("Refuse", "answer_tool_approval", {**where, "approve": False,
                                                                                "wait_seconds": 0})])
 
+    if action.startswith("knowledge_"):
+        return await _knowledge(action, args)
+    if action.startswith("board_"):
+        return await _board(action, args)
+
+    raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _resolved(lookup):
+    """A product tool's own lookup, its refusal said as why there is no card."""
+    try:
+        return await lookup
+    except ToolRefusal as exc:
+        raise _NotOffered(str(exc)) from None
+
+
+async def _knowledge(action: str, args: dict) -> dict:
+    from core.product_tools import knowledge
+
+    if action in ("knowledge_add_pages", "knowledge_add_note"):
+        kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
+        if action == "knowledge_add_pages":
+            urls = [str(u) for u in (args.get("urls") or []) if str(u).strip()]
+            if not urls:
+                raise _NotOffered("Say which pages: their URLs.")
+            kind = args.get("kind") if args.get("kind") in ("page", "sitemap", "site") else "page"
+            title = {"page": f'Add {len(urls)} page{"s" if len(urls) != 1 else ""} to "{kb.name}"',
+                     "sitemap": f'Add the pages in {urls[0]}\'s sitemap to "{kb.name}"',
+                     "site": f'Crawl {urls[0]} into "{kb.name}"'}[kind]
+            return _card(title, detail="\n".join(urls[:10]) + "\nFetching and indexing them uses your embedding model.",
+                         buttons=[await _button("Add", "add_knowledge_pages",
+                                                {"knowledge_base": kb.id, "urls": urls, "kind": kind})])
+        text = str(args.get("text") or "").strip()
+        if not text:
+            raise _NotOffered("Say what the note says.")
+        title = str(args.get("title") or "").strip()
+        return _card(f'Add a note to "{kb.name}"', detail=(f"{title}: " if title else "") + text[:300],
+                     buttons=[await _button("Add note", "add_knowledge_note",
+                                            {"knowledge_base": kb.id, "title": title or None, "text": text})])
+    row = await _resolved(knowledge._document(str(args.get("doc_id") or "")))
+    name = getattr(row, "path", None) or getattr(row, "title", None) or row.id
+    if action == "knowledge_retry_document":
+        return _card(f'Index "{name}" again', buttons=[await _button("Retry", "retry_knowledge_document",
+                                                                      {"doc_id": row.id})])
+    if action == "knowledge_delete_document":
+        return _card(f'Delete "{name}" from its knowledge base', danger=True,
+                     detail="Its Vault file goes too. This cannot be undone.",
+                     buttons=[await _button("Delete it", "delete_knowledge_document", {"doc_id": row.id})])
+    raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _board(action: str, args: dict) -> dict:
+    from core.product_tools import boards
+    from core.store import boards as store
+
+    await _resolved(boards._on())
+    if action in ("board_add_card", "board_delete"):
+        board = await _resolved(boards._board_named(str(args.get("board") or "")))
+        if action == "board_add_card":
+            title = str(args.get("title") or "").strip()
+            if not title:
+                raise _NotOffered("Say what the card is: its title.")
+            text = str(args.get("text") or "").strip()
+            return _card(f'Add "{title}" to "{board["name"]}"', detail=text[:300],
+                         buttons=[await _button("Add card", "add_board_card",
+                                                {"board": board["id"], "title": title, "body": text})])
+        return _card(f'Delete the board "{board["name"]}"', danger=True,
+                     detail="Its cards and their history go with it. This cannot be undone.",
+                     buttons=[await _button("Delete it", "delete_board", {"board": board["id"]})])
+    if action == "board_create":
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise _NotOffered("Say what the board is called.")
+        text = str(args.get("text") or "").strip()
+        return _card(f'Make a shared board "{name}"', detail=text[:300],
+                     buttons=[await _button("Make it", "create_board", {"name": name, "description": text})])
+    card = await store.get_card(str(args.get("card_id") or ""))
+    if card is None:
+        raise _NotOffered("There is no such card. Topic `boards` with the board's name lists its cards.")
+    if action == "board_comment":
+        text = str(args.get("text") or "").strip()
+        if not text:
+            raise _NotOffered("Say what the comment says.")
+        return _card(f'Comment on "{card.title}"', detail=text[:300],
+                     buttons=[await _button("Comment", "comment_on_card", {"card_id": card.id, "text": text})])
+    if action == "board_update_card":
+        status = args.get("status") or "done"
+        if status not in ("open", "done", "failed"):
+            raise _NotOffered("status is open, done or failed.")
+        result = str(args.get("result") or "").strip()
+        verb = {"open": "Reopen", "done": "Close as done", "failed": "Close as failed"}[status]
+        call = {"card_id": card.id, "status": status, **({"result": result} if result else {})}
+        return _card(f'{verb}: "{card.title}"', detail=result[:300],
+                     buttons=[await _button(verb, "update_board_card", call)])
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
 
 
