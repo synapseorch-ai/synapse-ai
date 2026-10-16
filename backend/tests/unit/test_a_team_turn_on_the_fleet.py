@@ -115,6 +115,8 @@ async def test_the_saved_turn_keeps_its_members_and_task_list(fleet, tools, llm,
     assert [(m["name"], m["status"], m["answer"]) for m in answer["members"]] == [("Ana", "completed", "A is fine")]
     assert [c["tool"] for c in answer["members"][0]["calls"]] == ["lookup"]
     assert answer["team"]["tasks"][0]["status"] == "done" and answer["team"]["answered_alone"] is False
+    # The job's result carries the team's work meter for a host to price by (F658); the saved turn keeps none.
+    assert set(result["team_work"]) == {"lead_idle_s", "members_s", "helpers_s"} and "work" not in answer["team"]
 
 
 async def test_the_stream_still_carries_them_for_the_page(fleet, tools, llm, team, fake_redis):
@@ -150,6 +152,7 @@ async def test_a_stopped_turn_keeps_its_members_as_far_as_they_got(fleet, tools,
     result = await fleet("s_f656_stop", "PLAN IT")
 
     assert result["status"] == "cancelled"
+    assert "team_work" in result   # a stopped turn is charged for what it worked, from its last snapshot
     answer = await _answer("s_f656_stop")
     assert [m["name"] for m in answer["members"]] == ["Ana"]
     assert answer["members"][0]["status"] in ("cancelled", "failed")

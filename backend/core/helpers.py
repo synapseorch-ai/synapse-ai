@@ -495,6 +495,7 @@ async def batch(helpers: list[Helper], *, key: tuple, **run_kw) -> AsyncIterator
                 await gen.aclose()
             queue.put_nowait(done)
 
+    began = time.monotonic()
     tasks = []
     for helper in helpers:
         task = asyncio.create_task(pump(helper), name=f"helper-{helper.id}")
@@ -515,6 +516,18 @@ async def batch(helpers: list[Helper], *, key: tuple, **run_kw) -> AsyncIterator
         for task in tasks:
             with contextlib.suppress(BaseException):
                 await task
+        _note_side_by_side(helpers, time.monotonic() - began)
+
+
+def _note_side_by_side(helpers: list[Helper], waited: float) -> None:
+    """Inside a team's turn, the work these helpers did beyond the wait for them (TEAM1d, F658): their seconds
+    added together, less the time their parent waited. A host prices a team as its agents' minutes added together;
+    the wait itself is already its parent's."""
+    from core import team as _team
+
+    working = _team.current.get()
+    if working is not None:
+        working.note_helpers(sum(h.seconds for h in helpers) - waited)
 
 
 # ── where a result goes back to ──────────────────────────────────────────────

@@ -2720,11 +2720,16 @@ async def run_agent_step(
                         elif _team is not None and tool_name == _team_mod.MESSAGE:
                             _t_obs = _team.message_from_lead(tool_args, tainted=_memory_tainted)
                         elif _team is not None and tool_name == _team_mod.WAIT:
-                            async for _w in _team.wait_for_lead(tool_args.get("seconds")):
-                                if isinstance(_w, str):
-                                    _t_obs = _w
-                                else:
-                                    yield _w
+                            _idle_from = time.monotonic()
+                            try:
+                                async for _w in _team.wait_for_lead(tool_args.get("seconds")):
+                                    if isinstance(_w, str):
+                                        _t_obs = _w
+                                    else:
+                                        yield _w
+                            finally:
+                                # Time on the clock that is not the lead's work (F658).
+                                _team.note_idle(time.monotonic() - _idle_from)
                         elif _team is not None and tool_name == _team_mod.FORWARD:
                             _forward_answer = _team.forward(tool_args)
                             _t_obs = "Forwarded as the answer."
@@ -3672,7 +3677,8 @@ async def run_agent_step(
         final_event["no_answer"] = _unanswered
     if _team is not None:
         # The team's list and whether the lead answered alone (the cost line, Q1b); its members' records.
-        final_event["team"] = _team.summary()
+        # With this stretch's work meter, for a host that prices the turn by it (F658); never saved with the turn.
+        final_event["team"] = {**_team.summary(), "work": _team.work()}
         final_event["members"] = _team.records()
     if not persist_turn:
         # Whether this hand-off read content nobody typed: its lead marks what it wrote from it (TEAM1a, F279).

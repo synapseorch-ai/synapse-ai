@@ -4130,6 +4130,10 @@ async def generate_response_ex(
                 _log.warning(f"usage_tracker: log_usage (empty answer) failed: {_track_err}")
         from core import turn_usage
         turn_usage.add(*(getattr(empty, "usage", None) or ()))
+        # Billed all the same: it counts toward a team's spend (F657).
+        from core import team as _team
+        _team.note_cost(current_model, *(getattr(empty, "usage", None) or ()),
+                        charged_microusd=getattr(empty, "charged_microusd", None))
         raise
     except LLMError:
         # LLM errors must propagate — do NOT swallow them.
@@ -4178,7 +4182,8 @@ async def generate_response_ex(
     turn_usage.add(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
     # And to a team's spend, for its check before every model call (TEAM1a, Q8).
     from core import team as _team
-    _team.note_cost(current_model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+    _team.note_cost(current_model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                    charged_microusd=_charged)
 
     # ── All of it was thinking (F305) ────────────────────────────────────────
     # Each provider checks its reply for emptiness before the split above, so

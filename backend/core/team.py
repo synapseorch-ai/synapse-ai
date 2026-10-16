@@ -104,6 +104,19 @@ class TeamConfig:
     at_once: int
     task_budget: int
     spend_limit_usd: float | None
+    #: A host's own models' prices, USD per million tokens in and out (`team_model_prices`; cloud's `synapse.*`,
+    #: which the rate card leaves out): the allowance of a call to one (F657).
+    prices: Mapping[str, Any] = field(default_factory=dict, compare=False, hash=False)
+
+
+def _worked(member: "Member") -> float:
+    """What a member has worked so far: its seconds, but one waiting on a person only up to its question — the
+    wait is not work (F623's rule, as `resume_member` carries it on)."""
+    if member.status == "waiting_for_person":
+        if member.started_at:
+            return max(0.0, (member.asked_at or time.time()) - member.started_at)
+        return member.worked_before
+    return member.seconds
 
 
 def config_of(agent: Mapping[str, Any], *, settings: Mapping[str, Any] | None = None) -> TeamConfig | None:
@@ -120,8 +133,9 @@ def config_of(agent: Mapping[str, Any], *, settings: Mapping[str, Any] | None = 
     knobs = AgentTeam(**block)
     ceiling = settings.get("team_at_once_ceiling")
     ceiling = DEFAULTS["team_at_once_ceiling"] if ceiling is None else max(1, int(ceiling))
+    prices = settings.get("team_model_prices")
     return TeamConfig(at_once=min(knobs.at_once, ceiling), task_budget=knobs.task_budget,
-                      spend_limit_usd=knobs.spend_limit_usd)
+                      spend_limit_usd=knobs.spend_limit_usd, prices=dict(prices) if isinstance(prices, Mapping) else {})
 
 
 # ── the inbox ────────────────────────────────────────────────────────────────
@@ -168,12 +182,18 @@ def _inbox_class():
 
 
 def note_cost(model: str, input_tokens: int = 0, output_tokens: int = 0, cache_read_tokens: int = 0,
-              cache_write_tokens: int = 0) -> None:
-    """Count one model call toward the team whose turn made it (lead, member or helper), if any. Never raises."""
+              cache_write_tokens: int = 0, *, charged_microusd: int | None = None) -> None:
+    """Count one model call toward the team whose turn made it (lead, member or helper), if any. Never raises.
+
+    What the call cost: what a model gateway charged for it when it says (`charged_microusd`, CR1; cloud's own
+    models, which the rate card does not price), else the rate card's price (F657)."""
     team = current.get()
     if team is None:
         return
     try:
+        if charged_microusd is not None and int(charged_microusd) >= 0:
+            team.spent_usd += int(charged_microusd) / 1_000_000
+            return
         from core.usage_tracker import calculate_cost
         team.spent_usd += calculate_cost(model, int(input_tokens or 0), int(output_tokens or 0),
                                          cache_read_tokens=int(cache_read_tokens or 0),
@@ -418,6 +438,11 @@ class Team:
         #: lead's would: kept back so the lead can always finish (Q8).
         self.spent_usd: float = float(state.get("spent_usd") or 0.0)
         self.lead_reserve: float = 0.0
+        #: The work meter, for this stretch of the turn only (F658): never restored, so a resumed turn counts what it
+        #: runs after the resume. The members' seconds they had when it started are taken off theirs.
+        self._idle_s = 0.0
+        self._helpers_s = 0.0
+        self._seconds_before = {m.id: _worked(m) for m in self.members.values()}
 
     # ── what the lead's turn reads ──
     @property
@@ -476,7 +501,27 @@ class Team:
                 "inbox": {"pending": list(self.inbox._pending), "in_flight": list(self.inbox._in_flight)},
                 "tasks": list(self.tasks.values()), "progress_mark": self.progress_mark, "stall": self.stall,
                 "paused_on": sorted(self.paused_on),
-                "spent_usd": self.spent_usd}
+                "spent_usd": self.spent_usd,
+                # Read by a host as the turn parks or stops (F658); a restore starts the meter again.
+                "work": self.work()}
+
+    # ── the work meter (F658) ──
+    def note_idle(self, seconds: float) -> None:
+        """The lead idled this long inside `wait`: time on the clock that is not its work."""
+        self._idle_s += max(0.0, float(seconds or 0.0))
+
+    def note_helpers(self, seconds: float) -> None:
+        """Helpers waited for (the lead's or a member's) worked this much beyond the wait for them: work that ran
+        side by side."""
+        self._helpers_s += max(0.0, float(seconds or 0.0))
+
+    def work(self) -> dict:
+        """What this stretch of the turn worked, for a host that prices a team as its agents' minutes added
+        together (20 Q7): the lead's idle inside `wait`, the members' working seconds, and helpers' beyond their
+        wait."""
+        members = sum(max(0.0, _worked(m) - self._seconds_before.get(m.id, 0.0)) for m in self.members.values())
+        return {"lead_idle_s": round(self._idle_s, 1), "members_s": round(members, 1),
+                "helpers_s": round(self._helpers_s, 1)}
 
     def records(self) -> list[dict]:
         return [m.record() for m in self.members.values() if m.status != "queued" or m.started_at]
@@ -549,10 +594,17 @@ class Team:
 
     # ── money, before every model call (Q8) ──
     def allowance(self, model: str, input_chars: int, max_output: int | None) -> float:
+        tokens_in, tokens_out = max(0, int(input_chars)) // CHARS_PER_TOKEN, int(max_output or OUTPUT_ALLOWANCE)
+        price = self.config.prices.get(model)
+        if isinstance(price, (list, tuple)) and len(price) == 2:
+            # A host's own model (F657): its price, not the rate card's $0.
+            try:
+                return (tokens_in * float(price[0]) + tokens_out * float(price[1])) / 1_000_000
+            except (TypeError, ValueError):
+                pass
         from core.usage_tracker import calculate_cost
         try:
-            return calculate_cost(model, max(0, int(input_chars)) // CHARS_PER_TOKEN,
-                                  int(max_output or OUTPUT_ALLOWANCE))
+            return calculate_cost(model, tokens_in, tokens_out)
         except Exception:  # noqa: BLE001 — an unpriced model costs nothing here
             return 0.0
 
