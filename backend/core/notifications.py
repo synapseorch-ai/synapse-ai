@@ -242,7 +242,33 @@ class NotificationHub:
             # run emits no orchestration_start) and means any pending
             # human-input request for this run was answered.
             self._terminal_notified.discard(run_id)
-            self._resolve_human_input(run_id, "answered")
+            # A team's questions are settled one by one, below (TEAM1e): one still asked stays on the bell.
+            self._resolve_where({"kind": "human_input", "run_id": run_id, "plain": True}, "answered")
+        elif etype == "human_input_required" and event.get("questions"):
+            # A team's step asks each waiting member's question as its own item (TEAM1e, TEAM1c's shape), once:
+            # one asked again by a later pause of the step is still on the bell.
+            name = await self._orch_name(run_id)
+            open_ids = {(i.get("data") or {}).get("question_id") for i in self._items()
+                        if i.get("kind") == "human_input" and i.get("run_id") == run_id and not i.get("resolved")}
+            for q in event["questions"]:
+                if q.get("question_id") in open_ids:
+                    continue
+                from core.chat_approval import approval_prompt
+                self.publish(
+                    "human_input", f"{name}: {q.get('member_name') or 'a member'} needs approval",
+                    body=approval_prompt(q.get("tool_name"), q.get("category")),
+                    run_id=run_id,
+                    data={"step_id": event.get("orch_step_id"), "question_id": q.get("question_id"),
+                          "member_id": q.get("member_id"), "member_name": q.get("member_name"),
+                          "approval_id": q.get("approval_id"), "tool_name": q.get("tool_name")},
+                )
+        elif etype in ("member_answered", "tool_approval_resolved") and event.get("question_id"):
+            self._resolve_where({"kind": "human_input", "run_id": run_id, "question_id": event["question_id"]},
+                                "answered")
+        elif etype == "member_finished" and event.get("member_id"):
+            # A member that ends — its question unanswered with its step — asks nothing any more.
+            self._resolve_where({"kind": "human_input", "run_id": run_id, "member_id": event["member_id"]},
+                                "cancelled" if event.get("status") == "cancelled" else "answered")
         elif etype == "human_input_required":
             name = await self._orch_name(run_id)
             self.publish(
@@ -419,7 +445,17 @@ def _matches(item: dict, match: dict) -> bool:
     if item.get("resolved") or item.get("kind") != match["kind"]:
         return False
     if match["kind"] == "human_input":
-        return item.get("run_id") == match["run_id"]
+        if item.get("run_id") != match["run_id"]:
+            return False
+        data = item.get("data") or {}
+        # A team step's items, one per question (TEAM1e): settled by their question, or their member.
+        if "question_id" in match:
+            return data.get("question_id") == match["question_id"]
+        if "member_id" in match:
+            return bool(data.get("question_id")) and data.get("member_id") == match["member_id"]
+        if match.get("plain"):
+            return not data.get("question_id")
+        return True
     if "question_id" in match:
         return (item.get("data") or {}).get("question_id") == match["question_id"]
     return (item.get("data") or {}).get("approval_id") == match["approval_id"]

@@ -333,9 +333,19 @@ class WorkerEngineAdapter:
 
     @_contextlib.asynccontextmanager
     async def _cancel_watch(self):
-        """Poll for the cancel key and cancel the current task when it appears."""
+        """Poll for the cancel key and cancel the current task when it appears.
+
+        A Team step's run hears its person too (TEAM1e): an answer to one of its questions, a member's Stop or
+        Message, words to its lead — given in another process while the step works — are handed to its team at
+        each look, and its team reads the answers held for it before it pauses (TEAM1c's chat shape, by the
+        run's mailbox)."""
+        from core import team as _team
+        from core.chat_approval import held_reader
+        from core.scale.worker import _hand_over_answers, _hand_over_team_asks, _take_held_answers
+
         driver = _asyncio.current_task()
         stop = _asyncio.Event()
+        mailbox = _team.run_mailbox(self._run_id)
 
         async def watch():
             while not stop.is_set():
@@ -343,11 +353,15 @@ class WorkerEngineAdapter:
                     if await is_cancelled(self._redis, self._run_id):
                         driver.cancel()
                         return
+                    if _team.at(mailbox):
+                        await _hand_over_answers(self._redis, mailbox)
+                        await _hand_over_team_asks(self._redis, mailbox)
                 except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
                     pass
                 with _contextlib.suppress(_asyncio.TimeoutError):
                     await _asyncio.wait_for(stop.wait(), timeout=CANCEL_POLL_SECONDS)
 
+        held = held_reader.set(lambda questions: _take_held_answers(self._redis, mailbox, questions))
         watcher = _asyncio.create_task(watch())
         try:
             yield
@@ -356,6 +370,8 @@ class WorkerEngineAdapter:
             watcher.cancel()
             with _contextlib.suppress(BaseException):
                 await watcher
+            with _contextlib.suppress(ValueError):
+                held_reader.reset(held)
 
     async def _cancelled_by_request(self) -> bool:
         try:

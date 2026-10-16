@@ -97,6 +97,8 @@ class V1ResumeRequest(BaseModel):
 
     # Required, and never empty (`refuse_empty`): text, or the question's fields.
     response: dict | str
+    # Which of a team step's questions (TEAM1e): `human_input_required.questions` names each one's id.
+    question_id: str | None = None
 
 
 class V1ApprovalRequest(BaseModel):
@@ -645,10 +647,11 @@ async def _refuse_builder_run(run_id: str) -> None:
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
 
 
-async def _answer(request: Request, run_id: str, human_response):
+async def _answer(request: Request, run_id: str, human_response, question_id: str | None = None):
     """Resume a paused run once — the helper the app and a channel reply use."""
     from core.orchestration.answers import (
-        BadAnswer, EmptyAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run, refuse_empty,
+        BadAnswer, EmptyAnswer, QuestionNotAsked, RunAlreadyActive, RunNotWaiting, answer_paused_run,
+        refuse_empty,
     )
     try:
         refuse_empty(human_response)
@@ -656,10 +659,12 @@ async def _answer(request: Request, run_id: str, human_response):
         raise HTTPException(status_code=422, detail=str(exc))
     await _refuse_builder_run(run_id)
     try:
-        return await answer_paused_run(request.app.state, run_id, human_response)
+        return await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id)
     except BadAnswer as exc:
         # An email, date, phone or dropdown answer that is not one (F455).
         raise HTTPException(status_code=422, detail=str(exc))
+    except QuestionNotAsked as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except RunAlreadyActive:
         raise HTTPException(status_code=409, detail="Run is already active")
     except RunNotWaiting as exc:
@@ -735,6 +740,8 @@ async def v1_orchestration_run(
                 "prompt": human_input_event.get("prompt"),
                 "fields": human_input_event.get("fields", []),
                 "agent_context": human_input_event.get("agent_context"),
+                # A team step's questions, each answered by its `question_id` (TEAM1e).
+                **({"questions": human_input_event["questions"]} if human_input_event.get("questions") else {}),
             },
         }
 
@@ -796,7 +803,10 @@ async def v1_orchestration_resume(
     # Answered once, through the helper the app and a channel reply use: a run
     # not waiting is a 404/409, a second answer while it runs a 409, and a run
     # a worker ran goes back to the fleet.
-    answered = await _answer(request, run_id, human_response)
+    answered = await _answer(request, run_id, human_response, body.question_id)
+    if answered.live:
+        # A team's question answered while its step works: that member carries on (TEAM1e).
+        return {"status": "answered", "run_id": run_id, "delivered": answered.live}
     if answered.on_fleet:
         return {"status": "resuming", "run_id": run_id}
 
@@ -848,6 +858,8 @@ async def v1_orchestration_resume(
                 "prompt": human_input_event.get("prompt"),
                 "fields": human_input_event.get("fields", []),
                 "agent_context": human_input_event.get("agent_context"),
+                # A team step's questions, each answered by its `question_id` (TEAM1e).
+                **({"questions": human_input_event["questions"]} if human_input_event.get("questions") else {}),
             },
         }
 
@@ -873,7 +885,9 @@ async def v1_orchestration_resume_stream(
     if isinstance(human_response, str):
         human_response = {"response": human_response}
 
-    answered = await _answer(request, run_id, human_response)
+    answered = await _answer(request, run_id, human_response, body.question_id)
+    if answered.live:
+        return JSONResponse({"status": "answered", "run_id": run_id, "delivered": answered.live})
     if answered.on_fleet:
         from core.scale import event_bridge
         return StreamingResponse(

@@ -39,6 +39,33 @@ class RunNotWaiting(Exception):
         )
 
 
+class QuestionNotAsked(Exception):
+    """An answer names a question the run does not ask now (TEAM1e): answered already, or a later pause's."""
+
+    def __init__(self, question_id: str):
+        self.question_id = question_id
+        super().__init__(f"The question {question_id} is not asked now: it was answered, or the run moved on.")
+
+
+def questions_asked(run: Any) -> list[dict]:
+    """The questions `run` is paused on, each with its own id, when a team's step asks several (TEAM1e); [] for any
+    other pause, whose one question needs no id."""
+    from core.orchestration.pauses import asking_step_id
+
+    asker = asking_step_id(run.step_history or [], run.current_step_id)
+    pending = ((run.step_progress or {}).get(asker) or {}).get("pending_approval") or {}
+    return [dict(q) for q in pending.get("questions") or []]
+
+
+def check_question(run: Any, question_id: str | None) -> None:
+    """Raise `QuestionNotAsked` unless `question_id` is one `run` asks now (None names its only, or first, one)."""
+    if not question_id:
+        return
+    asked = questions_asked(run)
+    if question_id not in {q.get("question_id") for q in asked}:
+        raise QuestionNotAsked(question_id)
+
+
 class EmptyAnswer(ValueError):
     """An answer with nothing in it (F232)."""
 
@@ -82,6 +109,9 @@ class Answered:
     on_fleet: bool
     #: The in-process run's event queue, when resumed here.
     queue: Optional[asyncio.Queue] = None
+    #: An answer to one of a team's questions given while its step works (TEAM1e): nothing is resumed; the member
+    #: carries on ("applied"), or the answer waits for the team ("held"; "sent" on the fleet, read by its job).
+    live: Optional[str] = None
 
 
 async def worker_run_row(app_state: Any, run_id: str):
@@ -110,6 +140,8 @@ async def worker_run_row(app_state: Any, run_id: str):
                 OrchestrationRunDB.waiting_for_human,
                 OrchestrationRunDB.step_history,
                 OrchestrationRunDB.human_fields,
+                # A team step's questions (TEAM1e): an answer names one the run asks.
+                OrchestrationRunDB.step_progress,
             ).where(
                 OrchestrationRunDB.run_id == run_id,
                 OrchestrationRunDB.tenant_id == get_tenant(),
@@ -149,11 +181,48 @@ def _through_door(run_id: str, response: Any, question: Optional[str]) -> Any:
     return masked
 
 
-async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answered:
+def _verdict(response: Any, question_id: str) -> dict:
+    """One team question's answer, as TEAM1c's mailbox holds it."""
+    from core.orchestration.engine import OrchestrationEngine
+
+    approve, reason = OrchestrationEngine._approved(response)
+    return {"question_id": question_id, "approve": approve, "reason": reason}
+
+
+def _named(response: Any, question_id: str | None) -> Any:
+    """The answer with the question it answers, for the engine's resume (`_resume_tool_approval`)."""
+    if not question_id:
+        return response
+    return {**(response if isinstance(response, dict) else {"response": response}), "question_id": question_id}
+
+
+async def _answer_live(app_state: Any, run_id: str, response: Any, question_id: str, *, on_fleet: bool) -> Answered:
+    """A team's question answered while its step works (TEAM1e; TEAM1c's mailbox): that member carries on, or the
+    answer waits for the team — taken once, when it starts or before it pauses. Nothing is resumed."""
+    from core import team as _team
+
+    verdict = _verdict(response, question_id)
+    if on_fleet:
+        from core.scale.pubsub import publish_member_answer
+        await publish_member_answer(app_state.redis, _team.run_mailbox(run_id), verdict)
+        return Answered(on_fleet=True, live="sent")
+    from core.chat_approval import post_answer
+    return Answered(on_fleet=False, live=post_answer(_team.run_mailbox(run_id), _team.RUN_KEY, verdict))
+
+
+_WORKING = ("running", "pending", "queued")
+
+
+async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
+                            question_id: str | None = None) -> Answered:
     """Resume `run_id` with `response`, on the fleet or in this process.
 
+    `question_id` names one of a team step's questions (TEAM1e): it must be one the run asks now. Given while the
+    step works — another question of the pause was answered first — it reaches that member without a resume.
+
     Raises `RunNotWaiting` for a run that is not paused on a question,
-    `RunAlreadyActive` when this process is already running it, and
+    `RunAlreadyActive` when this process is already running it, `QuestionNotAsked`
+    for a question the paused run does not ask, and
     `human_fields.BadAnswer` for an answer to an email, date, phone or dropdown
     field that is not one (F455), before anything is queued or resumed.
     """
@@ -164,13 +233,16 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
 
     if row is not None:
         if not _waiting(row.status, row.waiting_for_human):
+            if question_id and row.status in _WORKING:
+                return await _answer_live(app_state, run_id, response, question_id, on_fleet=True)
             raise RunNotWaiting(run_id, row.status)
+        check_question(row, question_id)
         response = _through_door(run_id, response, getattr(row, "human_prompt", None))
         response = check_answer(row.human_fields, response)
         from core.orchestration.pauses import pause_ordinal
         from core.scale.config import QUEUE_NAME
 
-        resp = response if isinstance(response, dict) else {"response": response}
+        resp = _named(response if isinstance(response, dict) else {"response": response}, question_id)
         job = await app_state.arq_redis.enqueue_job(
             "resume_orchestration_job",
             run_id=run_id,
@@ -194,6 +266,9 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
     # Two pumps for one run would interleave its journal and duplicate work.
     # Checked and claimed with no `await` between (F136).
     active = _active_tasks.get(run_id)
+    if question_id and active is not None and not active.done():
+        # Its step works on (another of its questions was answered first): this one goes to its team (TEAM1e).
+        return await _answer_live(app_state, run_id, response, question_id, on_fleet=False)
     if run_id in _answering or (active is not None and not active.done()):
         raise RunAlreadyActive(run_id)
     _answering.add(run_id)
@@ -204,8 +279,9 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any) -> Answe
             raise RunNotWaiting(run_id, None)
         if not _waiting(run.status, run.waiting_for_human):
             raise RunNotWaiting(run_id, run.status)
+        check_question(run, question_id)
         response = _through_door(run_id, response, run.human_prompt)
-        response = check_answer(run.human_fields, response)
+        response = _named(check_answer(run.human_fields, response), question_id)
 
         from core.orchestration.engine import OrchestrationEngine
 

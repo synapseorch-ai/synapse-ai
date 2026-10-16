@@ -7,7 +7,8 @@ import json
 import time
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.models_orchestration import Orchestration, OrchestrationIn
 from core.react_engine import drain_queue_with_heartbeat
@@ -697,15 +698,19 @@ async def submit_human_input(run_id: str, request: Request):
     """
     body = await request.json()
     human_response = body.get("response", {})
+    # Which of a team step's questions (TEAM1e): `questions[].question_id` on the pause.
+    question_id = body.get("question_id") or None
 
     from core.orchestration.answers import (
-        BadAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run,
+        BadAnswer, QuestionNotAsked, RunAlreadyActive, RunNotWaiting, answer_paused_run,
     )
     try:
-        answered = await answer_paused_run(request.app.state, run_id, human_response)
+        answered = await answer_paused_run(request.app.state, run_id, human_response, question_id=question_id)
     except BadAnswer as exc:
         # An email, date, phone or dropdown answer that is not one (F455).
         raise HTTPException(status_code=422, detail=str(exc))
+    except QuestionNotAsked as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     except RunAlreadyActive:
         raise HTTPException(status_code=409, detail="Run is already active")
     except RunNotWaiting as exc:
@@ -716,6 +721,9 @@ async def submit_human_input(run_id: str, request: Request):
             detail=f"The run is {exc.status} and is not waiting for an answer.",
         )
 
+    if answered.live:
+        # A team's question answered while its step works: that member carries on in the run already streaming.
+        return JSONResponse({"status": "answered", "run_id": run_id, "delivered": answered.live})
     if answered.on_fleet:
         from core.scale import event_bridge
         return StreamingResponse(
@@ -736,6 +744,61 @@ async def submit_human_input(run_id: str, request: Request):
         media_type="text/event-stream",
         headers=_SSE_HEADERS,
     )
+
+
+class RunTeamMessage(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+async def _ask_runs_team(request: Request, run_id: str, ask: dict) -> bool:
+    """A person's ask for the team working in this run's step (TEAM1e; chat's routes, TEAM1a/TEAM1b): a member's
+    Stop or Message, or words to its lead. On the fleet it waits for the run's job to hand it over, in order (TEAM1d's
+    asks, by the run's mailbox); here it reaches the team at once. False when no team works for it."""
+    from core import team
+    from core.orchestration.answers import worker_run_row
+
+    mailbox = team.run_mailbox(run_id)
+    try:
+        row = await worker_run_row(request.app.state, run_id)
+    except Exception:  # noqa: BLE001 — the fleet's store is unreachable: as an in-process run
+        row = None
+    if row is not None:
+        if row.status not in ("running", "pending", "queued"):
+            return False
+        from core.scale.pubsub import publish_team_ask
+        await publish_team_ask(request.app.state.redis, mailbox, ask)
+        return True
+    working = next((t for t in team.at(mailbox) if not t.ended), None)
+    if working is None:
+        return False
+    if ask["kind"] == "stop":
+        return working.stop_member(ask["member_id"])
+    if ask["kind"] == "message":
+        return working.message_from_person(ask["member_id"], ask["text"])
+    return working.message_lead_from_person(ask["text"])
+
+
+@router.post("/api/orchestrations/runs/{run_id}/members/{member_id}/stop")
+async def stop_run_member(run_id: str, member_id: str, request: Request):
+    """Stop one member of the team working in this run's step: its line's Stop on the run page (TEAM1e, Q5). The
+    rest of the team works on; `stopped` false when nothing was working — it may have just finished."""
+    stopped = await _ask_runs_team(request, run_id, {"kind": "stop", "member_id": member_id})
+    return {"status": "stopping", "run_id": run_id, "member_id": member_id, "stopped": stopped}
+
+
+@router.post("/api/orchestrations/runs/{run_id}/members/{member_id}/message")
+async def message_run_member(run_id: str, member_id: str, body: RunTeamMessage, request: Request):
+    """The person's message to one working member of this run's team (TEAM1e, Q5): read between its steps, as the
+    person's own words."""
+    delivered = await _ask_runs_team(request, run_id, {"kind": "message", "member_id": member_id, "text": body.text})
+    return {"run_id": run_id, "member_id": member_id, "delivered": delivered}
+
+
+@router.post("/api/orchestrations/runs/{run_id}/lead/message")
+async def message_run_lead(run_id: str, body: RunTeamMessage, request: Request):
+    """The person's words to the lead of this run's team (TEAM1e; chat's "To: the lead"), read before its next call."""
+    delivered = await _ask_runs_team(request, run_id, {"kind": "lead", "text": body.text})
+    return {"run_id": run_id, "delivered": delivered}
 
 
 @router.post("/api/orchestrations/runs/{run_id}/cancel")

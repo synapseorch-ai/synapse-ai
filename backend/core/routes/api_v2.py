@@ -67,6 +67,8 @@ class V2ResumeRequest(BaseModel):
     response: dict | str
     webhook_url: str | None = None
     webhook_secret: str | None = None
+    # Which of a team step's questions (TEAM1e): the pause's `questions[].question_id`.
+    question_id: str | None = None
 
 
 class V2ChatRequest(BaseModel):
@@ -502,6 +504,8 @@ async def v2_resume_run(
                 OrchestrationRunDB.waiting_for_human,
                 OrchestrationRunDB.step_history,
                 OrchestrationRunDB.human_fields,
+                OrchestrationRunDB.step_progress,
+                OrchestrationRunDB.current_step_id,
             )
             .where(OrchestrationRunDB.run_id == run_id)
         )
@@ -510,6 +514,14 @@ async def v2_resume_run(
         raise HTTPException(404, detail=f"Run '{run_id}' not found.")
     if run_row.status in ("completed", "failed", "cancelled"):
         raise HTTPException(409, detail=f"Run '{run_id}' is already {run_row.status} and cannot be resumed.")
+    if body.question_id and run_row.status in ("running", "pending", "queued"):
+        # A team's question answered while its step works (TEAM1e): to its team, through the run's job.
+        from core import team as _team
+        from core.orchestration.answers import _verdict
+        from core.scale.pubsub import publish_member_answer
+        await publish_member_answer(request.app.state.redis, _team.run_mailbox(run_id),
+                                    _verdict(body.response, body.question_id))
+        return {"run_id": run_id, "status": "answered", "delivered": "sent"}
     # A run that is not paused on a question has nothing to answer. This used to
     # enqueue anyway, and a job for a running run carried no question to check
     # (F136) — as v1 already refused (D113).
@@ -530,6 +542,13 @@ async def v2_resume_run(
     # The answer travels as the resume job's argument.
     if isinstance(resp, str):
         resp = {"response": resp}
+    if body.question_id:
+        from core.orchestration.answers import QuestionNotAsked, check_question
+        try:
+            check_question(run_row, body.question_id)
+        except QuestionNotAsked as exc:
+            raise HTTPException(409, detail=str(exc))
+        resp = {**resp, "question_id": body.question_id}
 
     from core.orchestration.pauses import pause_ordinal
 

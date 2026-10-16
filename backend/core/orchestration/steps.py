@@ -401,6 +401,9 @@ class AgentStepExecutor:
                         "tool_args": event.get("tool_args") or {},
                         "category": event.get("category"),
                     }
+                    if event.get("questions"):
+                        # A team's: every waiting member's question, each answered by its own id (TEAM1e).
+                        progress["pending_approval"]["questions"] = [dict(q) for q in event["questions"]]
                     run.step_progress[step.id] = progress
                     try:
                         await SharedState(run).checkpoint(columns=("step_progress",))

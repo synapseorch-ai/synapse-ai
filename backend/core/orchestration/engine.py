@@ -23,6 +23,7 @@ from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_cap import RunCap
 from .run_gate import stop_reason
+from .answers import QuestionNotAsked
 from .time_limits import CONTAINERS, OWN_BUDGET, deadline_scope, run_ceiling, step_time_limit, timed_out
 from .logger import OrchestrationLogger
 
@@ -1257,12 +1258,19 @@ class OrchestrationEngine:
         # resumes from, so a delegate's question inside the step is answered as
         # the delegate's (F286).
         from core.chat_approval import resume_state_for
+        # A team's step asks several questions at once (TEAM1e, TEAM1c's shape): the answer names its own, and only
+        # that member carries on — the others stay asked, answerable while the step works and asked again when it
+        # pauses. An answer naming none answers the first, as one question always was.
+        question = human_response.get("question_id") if isinstance(human_response, dict) else None
+        asked = [e.get("question_id") for e in progress.get("team_pending") or []]
+        if question and question not in asked:
+            raise QuestionNotAsked(question)
         run.step_progress[step_id] = resume_state_for({
             "approval_id": approval_id,
             "tool_name": pending.get("tool_name"),
             "tool_args": pending.get("tool_args") or {},
             "progress": progress,
-        }, approve=approved, reason=reason)
+        }, approve=approved, reason=reason, question=question if asked else None)
 
         run.waiting_for_human = False
         run.status = "running"
@@ -1278,7 +1286,8 @@ class OrchestrationEngine:
 
         yield {"type": "tool_approval_resolved", "orch_step_id": step_id,
                "tool_name": pending.get("tool_name"), "approved": approved,
-               "step_name": step.name if step else ""}
+               "step_name": step.name if step else "",
+               **({"question_id": question} if question else {})}
 
     async def _resume_nested(
         self,

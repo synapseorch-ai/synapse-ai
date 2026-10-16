@@ -1147,6 +1147,8 @@ async def run_agent_step(
     if (agent_type == "delegate" and tools_override is None and team_seat is None
             and _visitor_mod.current() is None):
         _team_cfg = _team_mod.config_of(active_agent, settings=current_settings)
+        # A workflow step's team answers through its run (TEAM1e): the run page, the bell, v1.
+        _workflow_team = str(source or "").startswith("orchestration") and bool(run_id)
         if _team_cfg is not None:
             _team_roster = await _eligible_members(active_agent)
             if _team_roster:
@@ -1154,8 +1156,10 @@ async def run_agent_step(
                     lead=active_agent, members=_team_roster, config=_team_cfg, session_id=session_id,
                     source=source, run_id=run_id, server_module=server_module, lead_model=current_model,
                     should_stop=should_stop, can_park=bool(progress_events and _chat_approval.approvals_answerable()),
-                    state=(resume_state or {}).get("team"), agent_key=agent_id or "default",
-                    home=_team_home(source), limits=step_limits)
+                    state=(resume_state or {}).get("team"),
+                    agent_key=_team_mod.RUN_KEY if _workflow_team else (agent_id or "default"),
+                    home=_team_home(source), mailbox=_team_mod.run_mailbox(run_id) if _workflow_team else None,
+                    limits=step_limits)
                 all_tools, ollama_tools, tool_schema_map, tools_json = _offer_engine_tools(
                     all_tools, ollama_tools, tool_schema_map, _team_mod.lead_tools(_team))
                 agent_system_template = agent_system_template + "\n\n" + _team_mod.lead_prompt(_team)

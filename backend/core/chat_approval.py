@@ -313,11 +313,12 @@ def post_answer(session_id: str, agent_key: str, verdict: dict[str, Any]) -> str
     import time as _time
     from core import team as _team
 
-    working = _team.find(session_id)
-    if (working is not None and working.agent_key == (agent_key or "default")
-            and working.answer(str(verdict.get("question_id") or ""), approve=bool(verdict.get("approve")),
-                               reason=str(verdict.get("reason") or ""))):
-        return "applied"
+    # The team whose answers go here: a conversation's, or a run's (TEAM1e).
+    for working in _team.at(session_id):
+        if (working.agent_key == (agent_key or "default")
+                and working.answer(str(verdict.get("question_id") or ""), approve=bool(verdict.get("approve")),
+                                   reason=str(verdict.get("reason") or ""))):
+            return "applied"
     now = _time.time()
     for key in [k for k, box in _ANSWERS.items()
                 if all(now - v.get("at", now) > ANSWER_KEPT_SECONDS for v in box.values())]:

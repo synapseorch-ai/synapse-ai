@@ -379,6 +379,7 @@ async def resume_orchestration_job(
                 f"[worker] run {run_id}: answer for question {pause_ordinal} not applied — "
                 f"the run is {row.status}, asking {_asking_ordinal(row)}"
             )
+            await _to_the_team(redis, run_id, human_response)
             return {"status": row.status, "run_id": run_id, "applied": False}
 
         # The workflow as the run started it, not as it is saved now (F443): an
@@ -423,6 +424,7 @@ async def resume_orchestration_job(
                     f"[worker] run {run_id}: answer for question {pause_ordinal} not applied — "
                     f"another answer to it is being applied (the run is {status})"
                 )
+                await _to_the_team(redis, run_id, human_response)
                 return {"status": status, "run_id": run_id, "applied": False}
         _log.debug(f"[resume] ✅ DB status set to 'running', waiting_for_human=False")
         await _answer_claimed(ctx, run_id)
@@ -636,6 +638,24 @@ async def _stop_asked_helpers(redis, session_id: str) -> None:
             found.stop_requested = True
 
 
+async def _to_the_team(redis, run_id: str, human_response) -> None:
+    """An answer to one of a team step's questions that another answer to the same pause beat to the run (TEAM1e):
+    two people answered two members at once. It is not dropped: it goes to the run's team, which takes it while its
+    step works, or before it pauses again. An answer that names no question is the pause's own, and is dropped as
+    before (F136)."""
+    question = human_response.get("question_id") if isinstance(human_response, dict) else None
+    if not question:
+        return
+    from core import team
+    from core.orchestration.answers import _verdict
+    from core.scale.pubsub import publish_member_answer
+
+    try:
+        await publish_member_answer(redis, team.run_mailbox(run_id), _verdict(human_response, question))
+    except Exception:  # noqa: BLE001 — as before, the answer is not applied; the bell still asks
+        _log.warning(f"[worker] run {run_id}: answer to {question} not handed to its team", exc_info=True)
+
+
 async def _hand_over_answers(redis, session_id: str) -> None:
     """Hand a person's answers to this turn's team, given in another process while it works (TEAM1c).
 
@@ -645,20 +665,21 @@ async def _hand_over_answers(redis, session_id: str) -> None:
     """
     from core import team
 
-    working = team.find(session_id)
-    if working is None or working.parking or working.ended:
-        return
-    from core.scale.pubsub import held_member_answers, publish_member_answer, take_member_answer
-
-    for question in await held_member_answers(redis, session_id):
-        if question not in {q["question_id"] for q in working.questions()}:
-            continue   # not this turn's (yet): left for its taker
-        verdict = await take_member_answer(redis, session_id, question)
-        if verdict is None:
+    # The team whose answers go here: a conversation's, or a run's (`team.run_mailbox`, TEAM1e).
+    for working in team.at(session_id):
+        if working.parking or working.ended:
             continue
-        if not working.answer(question, approve=bool(verdict.get("approve")),
-                              reason=str(verdict.get("reason") or "")):
-            await publish_member_answer(redis, session_id, verdict)
+        from core.scale.pubsub import held_member_answers, publish_member_answer, take_member_answer
+
+        for question in await held_member_answers(redis, session_id):
+            if question not in {q["question_id"] for q in working.questions()}:
+                continue   # not this turn's (yet): left for its taker
+            verdict = await take_member_answer(redis, session_id, question)
+            if verdict is None:
+                continue
+            if not working.answer(question, approve=bool(verdict.get("approve")),
+                                  reason=str(verdict.get("reason") or "")):
+                await publish_member_answer(redis, session_id, verdict)
 
 
 async def _hand_over_team_asks(redis, session_id: str) -> None:
@@ -667,8 +688,9 @@ async def _hand_over_team_asks(redis, session_id: str) -> None:
     TTL, for no later turn."""
     from core import team
 
-    working = team.find(session_id)
-    if working is None or working.ended:
+    # The team whose asks go here: a conversation's, or a run's (TEAM1e).
+    working = next((t for t in team.at(session_id) if not t.ended), None)
+    if working is None:
         return
     from core.scale.pubsub import take_team_asks
 

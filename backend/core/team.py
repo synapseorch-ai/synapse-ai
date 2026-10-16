@@ -392,6 +392,27 @@ def step_home(run_id: str, step_id: str) -> str:
     return f"run:{run_id}/{step_id}"
 
 
+#: The agent key a workflow step's team answers by: a run has no conversation row per agent.
+RUN_KEY = "run"
+
+
+def run_mailbox(run_id: str) -> str:
+    """Where a person's answers and asks for a run's team go (TEAM1e): the run at the top, whose run page and bell
+    a person reads — a nested run's team is reached through it. A run works one Team step at a time (a Parallel runs
+    a delegate's branch in order, F255), so the questions a run asks are its team's."""
+    from core.orchestration.run_cap import root_of
+    return f"run:{root_of(run_id)}"
+
+
+def at(mailbox: str) -> list["Team"]:
+    """The teams working in this process whose answers and asks go to `mailbox`: a conversation's in chat, a run's
+    (`run_mailbox`) in a workflow."""
+    found = find(mailbox)   # a conversation's team is found where its answers go
+    tenant = get_tenant() or ""
+    return ([found] if found is not None else []) + [
+        t for (who, _home), t in list(_LIVE.items()) if who == tenant and t.mailbox == mailbox and t is not found]
+
+
 class Refused(Exception):
     """A team tool's refusal: its text is what the model reads."""
 
@@ -403,7 +424,7 @@ class Team:
                  source: str, run_id: str | None, server_module, lead_model: str,
                  should_stop: Callable[[], Awaitable[bool]] | None, can_park: bool, knowledge_turn=None,
                  state: dict | None = None, agent_key: str = "default", home: str | None = None,
-                 limits: StepLimits | None = None):
+                 mailbox: str | None = None, limits: StepLimits | None = None):
         self.lead = lead
         self.roster = members
         self.config = config
@@ -411,6 +432,8 @@ class Team:
         #: Where a person's Stop, message or answer finds this team: its conversation in chat, its run and step in
         #: a workflow (`step_home`, TEAM1e).
         self.home = home or session_id
+        #: Where a person's answers and asks for it go: its conversation, or its run's (`run_mailbox`).
+        self.mailbox = mailbox or session_id
         #: A workflow step's limits (TEAM1e); None in chat.
         self.limits = limits
         #: Where the lead's helpers count against the conversation's or step's cap, its members' too: in a workflow
@@ -533,7 +556,7 @@ class Team:
         _LIVE[(get_tenant() or "", self.home)] = self
         # Answers that arrived while this turn was starting, or while its last one paused (TEAM1c).
         from core.chat_approval import take_answers
-        for verdict in take_answers(self.home, self.agent_key):
+        for verdict in take_answers(self.mailbox, self.agent_key):
             self.answer(verdict.get("question_id") or "", approve=bool(verdict.get("approve")),
                         reason=str(verdict.get("reason") or ""))
         return self
@@ -1339,7 +1362,12 @@ async def guard(team: "Team | None"):
     try:
         yield
     finally:
-        current.reset(token)
+        try:
+            current.reset(token)
+        except ValueError:
+            # A workflow step stops reading its lead's stream when it pauses, and the stream is closed later from
+            # another task (TEAM1e): nothing of this turn's to put back there, and the team must still finish.
+            pass
         if not team.ended:
             await team.finish(parked=team.parking)
 

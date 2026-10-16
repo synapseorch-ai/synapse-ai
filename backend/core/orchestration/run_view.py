@@ -32,6 +32,8 @@ async def read_run(run_id: str) -> dict | None:
                 "step_id": asking_step_id(run.step_history, run.current_step_id),
                 "prompt": run.human_prompt,
                 "fields": run.human_fields or [],
+                # A team's step asks several at once, each answered by its own `question_id` (TEAM1e).
+                **({"questions": questions} if (questions := _questions(run)) else {}),
             },
         }
     body = {
@@ -47,6 +49,13 @@ async def read_run(run_id: str) -> dict | None:
     if run.status in ("completed", "failed", "cancelled"):
         body["response"] = OrchestrationEngine._build_final_response(run, await _result_key(run))
     return body
+
+
+def _questions(run) -> list[dict]:
+    from core.chat_approval import approval_prompt
+    from core.orchestration.answers import questions_asked
+
+    return [{**q, "prompt": approval_prompt(q.get("tool_name"), q.get("category"))} for q in questions_asked(run)]
 
 
 async def _result_key(run) -> str:
