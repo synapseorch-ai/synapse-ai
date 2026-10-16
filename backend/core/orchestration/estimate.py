@@ -111,6 +111,33 @@ class Span:
 #: A step's price for one execution: (low, high).
 Price = Callable[[Mapping[str, Any]], tuple[float, float]]
 
+#: An Agent step's turn limit when it sets none (`models_orchestration.StepConfig.max_turns`): a step runs its agent
+#: for the step's turns, not the agent's own.
+STEP_MAX_TURNS = 15
+#: A Team agent's task budget when its block sets none (`models.AgentTeam.task_budget`).
+TEAM_TASK_BUDGET = 6
+
+
+def tasks(step: Mapping[str, Any], agents: Mapping[str, Mapping[str, Any]]) -> tuple[int, int] | None:
+    """The member and helper tasks a delegate's Agent step runs: (fewest, most); None for any other step (TEAM1d).
+
+    A delegate's step keeps its one `agent` entry and is priced 1 + its tasks (20 Q7). A Team agent ("as a team")
+    hands out from one task per member to its task budget (Q8); a one-at-a-time delegate from one hand-off to the
+    step's turn limit, since each turn may hand off again (Naveen, TEAM1d's plan). An empty member list may reach any
+    agent, so at least one.
+    """
+    if _kind(step) != "agent":
+        return None
+    agent = agents.get(str(step.get("agent_id"))) or {}
+    if agent.get("type") != "delegate":
+        return None
+    team = agent.get("team") if isinstance(agent.get("team"), Mapping) else {}
+    if team.get("mode") == "team":
+        budget = max(1, _int(team.get("task_budget"), TEAM_TASK_BUDGET))
+        members = [m for m in agent.get("delegate_agent_ids") or [] if m]
+        return min(max(1, len(members)), budget), budget
+    return 1, max(1, _int(step.get("max_turns"), STEP_MAX_TURNS))
+
 
 def _kind(step: Mapping[str, Any]) -> str:
     kind = step.get("type") or step.get("step_type") or ""
@@ -168,12 +195,16 @@ def span(
     price: Price,
     *,
     agents: Mapping[str, Mapping[str, Any]] | None = None,
+    per_task: bool = False,
 ) -> Span:
     """The cheapest and dearest run of this definition, priced step by step.
 
     Never raises for a definition it cannot follow: a missing entry starts at
     the first step, a step that names one that does not exist ends there, and a
     container that holds itself is priced once.
+
+    `per_task`: a delegate's Agent step costs its price once plus once per task it runs (`tasks`), as cloud's
+    credits price its entry (TEAM1d, Q7). Off, every step is its one price, as before.
     """
     steps = (definition or {}).get("steps")
     if not isinstance(steps, list):
@@ -191,6 +222,8 @@ def span(
         if kind == "end":
             return 0.0, 0.0
         low, high = price(step)
+        if per_task and (counted := tasks(step, agents)) is not None:
+            low, high = low * (1 + counted[0]), high * (1 + counted[1])
         if kind == "agent" and (agents.get(str(step.get("agent_id"))) or {}).get("type") == "orchestrator":
             opened.add(NESTED)
         held = [c for c in _children(step) if c in by_id and c not in holding and c != sid]
@@ -322,21 +355,36 @@ def models(
     """
     steps = [s for s in (definition or {}).get("steps") or [] if isinstance(s, Mapping)]
     resolved: dict[str, tuple[str, ModelRate | None]] = {}
+    # A delegate's step: the models its members' tasks run on (TEAM1d, Q8). A member with no model of its own runs
+    # on its lead's (F538); a lead naming no member stands in for the agent it may reach.
+    members: dict[str, list[tuple[str, ModelRate | None]]] = {}
     for step in steps:
         model = step_model(step, agents, workspace_model)
         if model is not None and step.get("id"):
             resolved[str(step["id"])] = (model, price_model(model))
+            if tasks(step, agents) is not None:
+                lead = agents.get(str(step.get("agent_id"))) or {}
+                ids = [m for m in lead.get("delegate_agent_ids") or [] if m]
+                names = [model_or_none((agents.get(str(m)) or {}).get("model")) or model for m in ids] or [model]
+                members[str(step["id"])] = [(m, price_model(m)) for m in names]
 
+    every = [*resolved.values(), *(m for ms in members.values() for m in ms)]
     out = ModelEstimate()
-    out.models = list(dict.fromkeys(m for m, _ in resolved.values()))
-    out.unpriced = list(dict.fromkeys(m for m, r in resolved.values() if r is None))
-    for side in dict.fromkeys(r.side for _, r in resolved.values() if r is not None):
+    out.models = list(dict.fromkeys(m for m, _ in every))
+    out.unpriced = list(dict.fromkeys(m for m, r in every if r is None))
+    for side in dict.fromkeys(r.side for _, r in every if r is not None):
 
         def price(step: Mapping[str, Any], side: str = side) -> tuple[float, float]:
             model, rate = resolved.get(str(step.get("id")), (None, None))
-            if rate is None or rate.side != side:
-                return 0.0, 0.0
-            return model_cost(_kind(step), rate)
+            low, high = model_cost(_kind(step), rate) if rate is not None and rate.side == side else (0.0, 0.0)
+            counted = tasks(step, agents)
+            on_side = [model_cost("agent", r) for _, r in members.get(str(step.get("id")), [])
+                       if r is not None and r.side == side]
+            if counted is not None and on_side:
+                # The fewest tasks at the cheapest members' low (a team: one each), the most at the dearest's high.
+                low += sum(sorted(c[0] for c in on_side)[: counted[0]])
+                high += counted[1] * max(c[1] for c in on_side)
+            return low, high
 
         out.sides[side] = span(definition, price, agents=agents)
     return out
