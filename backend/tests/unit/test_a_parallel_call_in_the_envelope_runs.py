@@ -152,9 +152,20 @@ class TestArgumentsThenWordsAreNotAnAnswer:
         events = await _turn(server, fake_llm, [answer])
         assert _final(events) == answer
 
-    async def test_a_workflow_steps_output_is_left_alone(self, server, fake_llm):
-        events = await _turn(server, fake_llm, [ARGUMENTS_THEN_WORDS], source="orchestration")
-        assert "I have added 3 bugs" in _final(events)
+    async def test_a_workflow_steps_json_answer_is_left_alone(self, server, fake_llm):
+        """A step's structured answer is JSON alone, even one shaped like a tool's arguments."""
+        answer = '{"board": "Bugs", "title": "CSV export drops the last row", "key": "BUG-102"}'
+        events = await _turn(server, fake_llm, [answer], source="orchestration")
+        assert _final(events) == answer and not server.session.calls
+
+    async def test_in_a_workflow_step_they_are_asked_for_again_too(self, server, fake_llm):
+        """F730 (changed from F558's "a workflow step's output is left alone"): JSON then words is no structured
+        answer. Left alone in a step, a phone call's workflow agent said `{"city":"Chennai"}` and a forecast it
+        never fetched; here, BUG-103 was said to be on the board and never was."""
+        events = await _turn(server, fake_llm, [ARGUMENTS_THEN_WORDS, ADD_103, "BUG-103 is on the board too."],
+                             source="orchestration")
+        assert [a["key"] for _n, a in server.session.calls] == ["BUG-103"]
+        assert _final(events) == "BUG-103 is on the board too."
 
     def test_leading_objects_are_the_json_a_reply_opens_with(self):
         from core.tool_call_shapes import leading_objects

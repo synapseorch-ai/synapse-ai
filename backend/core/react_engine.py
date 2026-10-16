@@ -2482,10 +2482,15 @@ async def run_agent_step(
             if not tool_calls:
                 # A reply that opens with argument objects names no tool (F551), and the
                 # words after them, if any, say a call ran that never did (F558): asked
-                # again once, as a call that did not parse is, and never the answer. Not
-                # in a workflow step, and only when every object is shaped like one
-                # offered tool's arguments: a structured answer is a JSON answer.
-                _bare = "" if _workflow_step else _opens_with_arguments(action_text, tool_schema_map)
+                # again once, as a call that did not parse is, and never the answer. Only
+                # when every object is shaped like one offered tool's arguments. In a
+                # workflow step only with words after them: a step's structured answer is
+                # JSON alone, and JSON then words is not one — left alone, a phone call's
+                # workflow agent said `{"city":"Chennai"}` and a forecast it never fetched
+                # (F730).
+                _bare = _opens_with_arguments(action_text, tool_schema_map)
+                if _workflow_step and _bare == "alone":
+                    _bare = ""
                 if _bare and not (_parse_retries < MAX_PARSE_RETRIES and turn + 1 < max_turns):
                     for _e in _unstream("error"):
                         yield _e
