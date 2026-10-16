@@ -213,6 +213,8 @@ export interface StepNodeData {
     isEntry: boolean;
     isSelected: boolean;
     agentName?: string;
+    /** What an Agent step holds: an agent, a Team (as a team, or one at a time) or a workflow (TEAM1e). */
+    agentKind?: 'agent' | 'team' | 'one_at_a_time' | 'workflow';
     runStatus?: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
     /** Why the step failed in the run on screen, in its own words (F195). */
     runError?: string;

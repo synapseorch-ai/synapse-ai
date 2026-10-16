@@ -97,6 +97,8 @@ interface StepConfigPanelProps {
      * asked (M3a-2), so it is answered where the step is set up.
      */
     lead?: React.ReactNode;
+    /** A Team step is priced 1 credit plus 1 per member task: cloud says so in its setup (TEAM1d, TEAM1e). */
+    tasksPriced?: boolean;
 }
 
 // The engine asks the runner for the internet (`Network.INTERNET` in the
@@ -118,7 +120,7 @@ export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
     codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
-    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead,
+    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead, tasksPriced = false,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -185,6 +187,7 @@ export function StepConfigPanel({
         step, update, otherSteps, agents,
         availableModels: availableModels || [],
         availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly, knowledgeBases,
+        tasksPriced,
     };
     const TypeSection = STEP_SECTIONS[step.type];
     const isLinear = isLinearStep(step);

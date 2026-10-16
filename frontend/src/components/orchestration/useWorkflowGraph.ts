@@ -26,6 +26,7 @@ import { STEP_DRAG_TYPE } from './StepPalette';
 import { addStepToGraph, clearEdgeLink, removeStepFromGraph, withInputKey, type EdgeLink } from './graph';
 import { layoutPositions } from './layout';
 import { validateOrchestration } from './validate';
+import { agentKind } from './agentKind';
 import type { Orchestration, StepConfig, StepIssue, StepNodeData, StepType } from '@/types/orchestration';
 import type { StepTime } from '../run/model';
 
@@ -60,6 +61,7 @@ function stepsToNodes(
                 isEntry: step.id === entryStepId,
                 isSelected: step.id === selectedStepId,
                 agentName: agent?.name,
+                agentKind: step.type === 'agent' && agent ? agentKind(agent) : undefined,
                 runStatus: runStatuses?.[step.id] as StepNodeData['runStatus'],
                 runError: runErrors?.[step.id],
                 runDetail,

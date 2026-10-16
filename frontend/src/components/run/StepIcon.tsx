@@ -4,7 +4,7 @@
  */
 import {
     ArrowLeftRight, BookOpenText, Bot, Braces, Code, FileInput, FileText, GitBranch, GitFork, GitMerge,
-    RefreshCw, Scale, Square, User, Workflow, Wrench, Zap,
+    RefreshCw, Scale, Square, User, Users, Workflow, Wrench, Zap,
 } from 'lucide-react';
 
 import { cn } from '@/lib/cn';
@@ -29,8 +29,14 @@ export function typeLabel(type: string): string {
     return STEP_TYPE_META[type as StepType]?.label ?? type;
 }
 
-export function StepIcon({ type, className }: { type: string; className?: string }) {
-    const Icon = type === 'nested' ? Workflow : ICONS[STEP_TYPE_META[type as StepType]?.icon ?? ''] ?? Bot;
+/** An Agent step's icon by what it holds (TEAM1e): people for a Team, the workflow glyph for a Workflow. */
+const KIND_ICONS: Record<string, React.FC<{ className?: string }>> = {
+    team: Users, one_at_a_time: Users, workflow: Workflow,
+};
+
+export function StepIcon({ type, kind, className }: { type: string; kind?: string; className?: string }) {
+    const Icon = type === 'nested' ? Workflow
+        : (type === 'agent' && kind && KIND_ICONS[kind]) || ICONS[STEP_TYPE_META[type as StepType]?.icon ?? ''] || Bot;
     return (
         <span aria-hidden className={cn('inline-flex size-6 shrink-0 items-center justify-center rounded-md', GROUND[roleOf(type)], className)}>
             <Icon className="size-3.5" />

@@ -42,6 +42,8 @@ export interface StepSectionProps {
     readOnly?: boolean;
     /** The workspace's knowledge bases (Retrieve and Ingest); unset, ids are typed. */
     knowledgeBases?: KnowledgeBaseOption[];
+    /** A Team step is priced 1 credit plus 1 per member task (cloud, TEAM1d); self-hosted has no credits. */
+    tasksPriced?: boolean;
 }
 
 /** Neutral explainer block — replaces the per-type rainbow of tinted boxes. */

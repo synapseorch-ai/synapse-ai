@@ -11,6 +11,7 @@ import { Spinner } from '@/components/ui';
 import { StepIcon } from '../run/StepIcon';
 import { creditsText, duration, money } from '../run/model';
 import { roleOf } from './roles';
+import { KIND_WORD, type AgentKind } from './agentKind';
 
 /**
  * A connection's handle and its word. Every handle is the same quiet grey: the
@@ -95,6 +96,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const runStatus: string | undefined = data.runStatus;
     const runError: string | undefined = runStatus === 'failed' ? data.runError : undefined;
     const agentName: string | undefined = data.agentName;
+    const agentKindOf: string | undefined = step.type === 'agent' ? data.agentKind : undefined;
     const issues: StepIssue[] | undefined = data.issues;
     // The open canvas shows how the run stands in words on the step too (M3a-2).
     const runDetail = data.runDetail === true;
@@ -186,7 +188,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
 
             {/* Header: the type's icon on its role's tint (D211), the name, Start */}
             <div className="flex items-center gap-2 px-3 pb-1 pt-2.5">
-                <StepIcon type={step.type} />
+                <StepIcon type={step.type} kind={agentKindOf} />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.01em] text-text" translate="no">{step.name}</span>
                 {isEntry && (
                     <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-accent-ink">
@@ -197,7 +199,10 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
 
             {/* Body */}
             <div className="space-y-0.5 px-3 pb-2.5">
-                <div className="text-[10.5px] font-medium uppercase tracking-wider text-text-faint">{meta.label}</div>
+                <div className="text-[10.5px] font-medium uppercase tracking-wider text-text-faint">
+                    {/* An Agent step names what it holds (TEAM1e): "Agent · Team", "Agent · Workflow". */}
+                    {agentKindOf && agentKindOf !== 'agent' ? `${meta.label} · ${KIND_WORD[agentKindOf as AgentKind]}` : meta.label}
+                </div>
 
                 {summary && (
                     <div className="truncate text-xs text-text-muted" translate="no">{summary}</div>

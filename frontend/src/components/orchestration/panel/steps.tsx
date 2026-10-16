@@ -7,7 +7,7 @@
  * here, not another branch in a 400-line conditional.
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Plus, Trash2 } from 'lucide-react';
 import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea } from '@/components/ui';
 import { vaultMentions } from '@/components/VaultMention';
@@ -18,6 +18,7 @@ import {
     type KnowledgeBaseOption, type StepSectionProps,
 } from './shared';
 import { PythonEditor } from './PythonEditor';
+import { agentKind, agentOptions, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
 
 /* ── shared toggles ─────────────────────────────────────────────────────── */
@@ -184,6 +185,60 @@ function PromptHint({ showVaultHints }: { showVaultHints?: boolean }) {
     );
 }
 
+/** One line of what goes with the step's kind: a label, and what it is. */
+function KindLine({ label, children }: { label: string; children: ReactNode }) {
+    return (
+        <div className="flex gap-2">
+            <dt className="w-16 shrink-0 text-text-faint">{label}</dt>
+            <dd className="min-w-0 flex-1 text-text-muted">{children}</dd>
+        </div>
+    );
+}
+
+/**
+ * What the Agent step holds, under its picker (TEAM1e; Naveen at its plan): a Team agent's members and how they
+ * work, the step's time it works in and, in cloud, how it is priced; a workflow's own time limit. Read-only: a
+ * Team is changed on its agent. Nothing for a plain agent.
+ */
+function AgentKindNote({ step, agents, tasksPriced }: Pick<StepSectionProps, 'step' | 'agents' | 'tasksPriced'>) {
+    const agent = agents.find((a: KindAgent) => a.id === step.agent_id) as KindAgent | undefined;
+    const kind = agentKind(agent);
+    if (!agent || kind === 'agent') return null;
+    const seconds = step.timeout_seconds ?? 300;
+    if (kind === 'workflow') {
+        return (
+            <Note>
+                Runs the workflow <span className="text-text">{agent.name}</span> inside this one step. A timeout of
+                300 or blank waits on that workflow&rsquo;s own limit.
+            </Note>
+        );
+    }
+    const names = memberNames(agent, agents);
+    const team = teamSettings(agent);
+    const asATeam = kind === 'team';
+    const most = asATeam ? 1 + team.taskBudget : 1 + (step.max_turns ?? 15);
+    return (
+        <dl aria-label="The team in this step" className="space-y-1.5 rounded-md border border-border bg-surface-2/50 px-3 py-2 text-[11px] leading-relaxed">
+            <KindLine label="Members">{names.length ? names.join(', ') : 'Any agent'}</KindLine>
+            <KindLine label="Works">
+                {asATeam
+                    ? `As a team: ${team.atOnce} at once, ${team.taskBudget} tasks${team.spendLimit ? `, $${team.spendLimit} a turn` : ''}`
+                    : 'One at a time: its lead hands work to one member and waits'}
+            </KindLine>
+            {asATeam && (
+                <KindLine label="Time">
+                    The team has this step&rsquo;s {seconds} s. Its lead is told what is left, and near the end no
+                    more work is handed out.
+                </KindLine>
+            )}
+            {tasksPriced && (
+                <KindLine label="Price">1 credit, plus 1 for each member task — up to {most}.</KindLine>
+            )}
+            <p className="text-text-faint">Change the team on its agent.</p>
+        </dl>
+    );
+}
+
 function AgentSection(props: StepSectionProps) {
     const { step, update, agents, showVaultHints } = props;
     return (
@@ -194,11 +249,13 @@ function AgentSection(props: StepSectionProps) {
                     aria-label="Agent"
                     value={step.agent_id}
                     onChange={(id) => update({ agent_id: id || undefined })}
-                    options={agents.map((a: any) => ({ value: a.id, label: a.name, hint: a.type }))}
-                    placeholder="Select agent…"
+                    // Agents, Teams and Workflows, each in words (TEAM1e): never the stored type.
+                    options={agentOptions(agents)}
+                    placeholder="Select an agent, a team or a workflow…"
                     searchPlaceholder="Search agents…"
                 />
             </Field>
+            <AgentKindNote step={step} agents={agents} tasksPriced={props.tasksPriced} />
             <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
                 <MarkdownEditor
                     key={step.id}
