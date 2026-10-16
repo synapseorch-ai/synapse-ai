@@ -1297,6 +1297,15 @@ async def run_agent_chat_job(
             if not tool_calls_summary:
                 return _ended({"status": "dropped", "session_id": session_id})
 
+        # The call's own tool ended this turn (F642: its goodbye, its hand-off). The call says and saves its last
+        # words itself, as it does for a turn it runs, so this job writes none: two records of one turn, and the
+        # second one's words never spoken.
+        ending = {tool.name for tool, handler in (_fleet_caller_tools(caller_tools) or [])
+                  if getattr(handler, "ends_turn", False)}
+        if not cancelled and ending and any(call.get("tool") in ending for call in tool_calls_summary):
+            await _save_row("completed", history)
+            return _ended({"status": "completed", "session_id": session_id})
+
         # Append to message history and persist.
         #
         # A cancelled turn is persisted too, with whatever the agent had

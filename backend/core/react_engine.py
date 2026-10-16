@@ -1468,6 +1468,9 @@ async def run_agent_step(
     # ── The caller's own tools (VOX1a): after the visitor narrowing, because the
     # surface grants them; handled in the dispatch loop beside update_tasks. ──
     _extra_handlers: dict = {}
+    # A caller's tool that ends the turn as it is called (`ends_turn`: a call's goodbye or hand-off, which the
+    # caller speaks itself): its result is the turn's answer, with no model call after it (F642).
+    _caller_ended: str | None = None
     for _x_tool, _x_handler in (extra_tools or []):
         if _x_tool.name in tool_schema_map or _x_tool.name in _extra_handlers:
             continue  # never shadows a tool the agent already holds
@@ -2781,6 +2784,9 @@ async def run_agent_step(
                     current_context_text += f"\n[Turn {turn + 1} — Observation] {tool_name}: {_x_result}\n"
                     tools_used_summary.append(tool_name)
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": _x_result[:500]}
+                    if getattr(_extra_handlers[tool_name], "ends_turn", False):
+                        _caller_ended = _x_result
+                        break
                     continue
 
                 # ── LOAD_SKILL: a skill's body enters the context on demand ───────
@@ -3551,6 +3557,10 @@ async def run_agent_step(
                         pass
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
             _close_call()
+            if _caller_ended is not None:
+                # The caller's own tool ended it (F642): nothing after it is said, so nothing is written.
+                final_response = _caller_ended
+                break
             if _forward_answer is not None:
                 # A member's answer, word for word, is this turn's (TEAM1a): the loss in a
                 # lead's rewrite is what forwarding is for.

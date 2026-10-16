@@ -1,7 +1,8 @@
 """The voice tools every agent holds on a call (V17): `end_call`, and `transfer_call` where the number has a
 hand-off number. They reach the engine through `extra_tools`. Each ends the turn as it is called: the goodbye
 (the tool's own argument) or the hand-off line is spoken by `VoiceCall`, with no second model call to write it
-(it cost ~2 s on every goodbye on the first real calls).
+(it cost ~2 s on every goodbye on the first real calls). Their handlers say so (`ends_turn`), so the engine
+ends the turn there wherever it runs — on the fleet too, where nothing breaks out of the stream (F642).
 """
 from __future__ import annotations
 
@@ -57,12 +58,14 @@ def build(call: Any, *, can_transfer: bool) -> list:
         call.pending_action = action_from({"tool_name": END_CALL, "args": args})
         return _ENDED
 
+    end_call.ends_turn = True
     out = [(_declared(END_CALL), end_call)]
     if can_transfer:
         async def transfer_call(args: dict) -> str:
             call.pending_action = action_from({"tool_name": TRANSFER_CALL, "args": args})
             return _HANDED
 
+        transfer_call.ends_turn = True
         out.append((_declared(TRANSFER_CALL), transfer_call))
     return out
 
@@ -79,5 +82,6 @@ def for_the_fleet(names: list[str] | None) -> list:
         async def handler(args: dict, said=_ENDED if name == END_CALL else _HANDED) -> str:
             return said
 
+        handler.ends_turn = True
         out.append((_declared(name), handler))
     return out
