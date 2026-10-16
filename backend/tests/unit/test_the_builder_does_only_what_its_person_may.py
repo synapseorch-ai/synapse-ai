@@ -126,3 +126,21 @@ async def test_a_tool_sees_who_the_run_works_for(roles):
         builder_tools._REGISTERED["read_workspace"] = keep
     assert seen == {"user": "u7", "role": Role.APPROVER, "via": "assistant"}
     assert builder_access.current_caller() is None
+
+
+async def test_a_host_puts_its_record_of_the_person_on_the_caller(roles):
+    """Cloud's audit and its list of what waits read the person's `Principal` off the caller (MCP2's hooks)."""
+    roles["u9"] = Role.BUILDER
+    run_id = await _run_for("u9", run_id="builder_rec")
+    asked = []
+
+    async def record(user_id):
+        asked.append(user_id)
+        return {"record_of": user_id}
+
+    builder_access.set_principal_source(record)
+    try:
+        caller = await builder_access.caller_for(run_id)
+    finally:
+        builder_access.set_principal_source(None)
+    assert caller.principal == {"record_of": "u9"} and asked == ["u9"]
