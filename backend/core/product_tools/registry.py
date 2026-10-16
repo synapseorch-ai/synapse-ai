@@ -1,0 +1,216 @@
+"""The product tools, and the one door every call goes through (MCP2, D292).
+
+An entry says what it is; `invoke` enforces it. Nothing an adapter or a prompt says can widen it:
+
+* **Surface.** An `app_only` entry is offered only to the assistant, which is in the app. Acts above builder must
+  be `app_only` (Naveen, D292): members, billing, keys and settings never leave the app, whatever the caller's role.
+* **Scope.** A connection's granted scopes (read / run / build, D127) narrow what its role allows.
+* **Role.** The caller's live role must reach the entry's `min_role`. It is checked on every call, a confirmed
+  one included, so a demotion takes effect on the next call.
+* **Confirmation.** An act that needs it (`confirm.py`) answers first with a preview and a token, and is done only
+  when the same call comes back with that token.
+* **Audit.** Every act that succeeded is told to the host once (`hooks.emit`); a read never is.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Literal
+
+from core.product_tools import confirm, hooks
+from core.product_tools import page as paging
+from core.product_tools.caller import Caller
+from core.product_tools.errors import ToolRefusal
+from core.product_tools.roles import Role
+
+__all__ = ["ProductTool", "ToolRefusal", "register", "unregister", "get", "all_tools", "for_caller", "invoke"]
+
+Handler = Callable[[Caller, dict[str, Any]], Awaitable[Any]]
+Preview = Callable[[Caller, dict[str, Any]], Awaitable[Any]]
+Target = Callable[[dict[str, Any], Any], "tuple[str, str] | None"]
+ConfirmPolicy = Literal["irreversible", "every_act"]
+
+KINDS = frozenset({"read", "act"})
+SCOPES = frozenset({"read", "run", "build"})
+#: MCP clients refuse other names (Claude: ^[a-zA-Z0-9_-]{1,64}$); ours are lower snake case.
+_NAME = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
+@dataclass(frozen=True)
+class ProductTool:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    handler: Handler
+    kind: str
+    #: What the entry is about (`runs`, `workflows`, `approvals`, …); `<area>.<name>` is its default audit action.
+    area: str
+    min_role: Role = Role.VIEWER
+    scope: str = "read"
+    #: It cannot be undone (a delete). Marked destructive; MCP confirms it with a token.
+    irreversible: bool = False
+    #: Calling it twice with the same arguments does no more than once.
+    idempotent: bool = False
+    #: It reaches outside the workspace (the web, a third party's API).
+    open_world: bool = False
+    #: Its answer is a list: it takes `cursor` and `limit`, and answers through `page.page`.
+    paginated: bool = False
+    #: Offered only in the app (the assistant), never over MCP or the API.
+    app_only: bool = False
+    #: What the act would do, shown before it is confirmed. None shows the call's own arguments.
+    preview: Preview | None = None
+    #: The host's audit action, e.g. `run.started`. None is `<area>.<name>`.
+    audit_action: str | None = None
+    #: (target_type, target_id) for the audit, from the arguments and the result.
+    target: Target | None = None
+    #: Whether this host offers it right now (a feature switched off). None is always.
+    offered: Callable[[], bool] | None = field(default=None, compare=False)
+
+    def __post_init__(self) -> None:
+        if not _NAME.match(self.name):
+            raise ValueError(f"tool name {self.name!r} must be lower snake case, at most 64 characters")
+        if self.kind not in KINDS:
+            raise ValueError(f"{self.name}: kind must be one of {sorted(KINDS)}")
+        if self.scope not in SCOPES:
+            raise ValueError(f"{self.name}: scope must be one of {sorted(SCOPES)}")
+        object.__setattr__(self, "min_role", Role.parse(self.min_role))
+        if self.kind == "read":
+            if self.scope != "read":
+                raise ValueError(f"{self.name}: a read needs the read scope, nothing more")
+            if self.irreversible:
+                raise ValueError(f"{self.name}: a read cannot be irreversible")
+        if self.kind == "act" and self.min_role > Role.BUILDER and not self.app_only:
+            raise ValueError(
+                f"{self.name}: an act needing more than builder must be app_only (acts off the app are capped at "
+                "builder, D292)"
+            )
+
+    @property
+    def action(self) -> str:
+        return self.audit_action or f"{self.area}.{self.name}"
+
+    def annotations(self) -> dict[str, bool]:
+        """MCP's tool annotations, derived, never set by hand: a client treats a tool as destructive unless told."""
+        read = self.kind == "read"
+        return {
+            "readOnlyHint": read,
+            "destructiveHint": self.irreversible,
+            "idempotentHint": read or self.idempotent,
+            "openWorldHint": self.open_world,
+        }
+
+    def schema(self, *, confirm_token: bool = False) -> dict[str, Any]:
+        """The input schema an adapter offers: the entry's own, plus paging and, where asked, the token."""
+        schema = dict(self.input_schema)
+        props = dict(schema.get("properties") or {})
+        if self.paginated:
+            props.update(paging.PROPERTIES)
+        if confirm_token:
+            props[confirm.TOKEN_ARG] = {
+                "type": "string",
+                "description": "Leave out at first: the answer previews what this would do and gives a token. "
+                               "Call again with the same arguments and that token to do it.",
+            }
+        schema["type"] = schema.get("type", "object")
+        schema["properties"] = props
+        return schema
+
+    def offered_to(self, caller: Caller) -> bool:
+        if self.app_only and caller.via != "assistant":
+            return False
+        if self.offered is not None and not self.offered():
+            return False
+        return caller.granted(self.scope) and caller.role.can_act_as(self.min_role)
+
+    def needs_token(self, policy: ConfirmPolicy) -> bool:
+        return self.kind == "act" and (policy == "every_act" or self.irreversible)
+
+
+_TOOLS: dict[str, ProductTool] = {}
+
+
+def register(tool: ProductTool, *, replace: bool = False) -> ProductTool:
+    if tool.name in _TOOLS and not replace:
+        raise ValueError(f"a product tool named {tool.name!r} is already registered")
+    _TOOLS[tool.name] = tool
+    return tool
+
+
+def unregister(name: str) -> None:
+    _TOOLS.pop(name, None)
+
+
+def get(name: str) -> ProductTool | None:
+    return _TOOLS.get(name)
+
+
+def all_tools() -> list[ProductTool]:
+    return list(_TOOLS.values())
+
+
+def for_caller(caller: Caller) -> list[ProductTool]:
+    """The entries this caller may call, in registration order."""
+    return [t for t in _TOOLS.values() if t.offered_to(caller)]
+
+
+_SECRET_KEY = re.compile(r"secret|token|password|passwd|api_?key|authori[sz]ation|credential|cookie", re.I)
+_TEXT_CHARS = 200
+
+
+def _summary(value: Any, depth: int = 0) -> Any:
+    if isinstance(value, dict):
+        if depth >= 2:
+            return f"{{{len(value)} keys}}"
+        return {k: "[withheld]" if _SECRET_KEY.search(str(k)) else _summary(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, list):
+        if depth >= 2:
+            return f"[{len(value)} items]"
+        return [_summary(v, depth + 1) for v in value[:20]]
+    if isinstance(value, str) and len(value) > _TEXT_CHARS:
+        return value[:_TEXT_CHARS] + "…"
+    return value
+
+
+async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, *,
+                 confirm_policy: ConfirmPolicy = "irreversible") -> Any:
+    """Call `name` as `caller`: every rule above, then the handler. Raises `ToolRefusal` for anything refused."""
+    args = dict(args or {})
+    tool = _TOOLS.get(name)
+    if tool is None or (tool.app_only and caller.via != "assistant") or (
+            tool.offered is not None and not tool.offered()):
+        raise ToolRefusal(f"Unknown tool: {name}")
+    if not caller.granted(tool.scope):
+        raise ToolRefusal(
+            f"This connection was not granted '{tool.scope}', which {name} needs. "
+            f"Reconnect and allow '{tool.scope}' to use it."
+        )
+    if not caller.role.can_act_as(tool.min_role):
+        raise ToolRefusal(
+            f"{name} needs the {tool.min_role.label} role; you are a {caller.role.label} in this workspace."
+        )
+
+    token = args.pop(confirm.TOKEN_ARG, None)
+    if tool.needs_token(confirm_policy):
+        if not token:
+            preview = await tool.preview(caller, args) if tool.preview is not None else {"tool": name, "arguments": args}
+            return {
+                "status": "needs_confirmation",
+                "preview": preview,
+                "confirm_token": confirm.mint(caller, name, args),
+                "expires_in_seconds": confirm.TTL_SECONDS,
+                "next": f"Nothing has been done yet. Call {name} again with the same arguments and this "
+                        "confirm_token to do it.",
+            }
+        await confirm.redeem(token, caller, name, args)
+
+    result = await tool.handler(caller, args)
+
+    if tool.kind == "act":
+        target = tool.target(args, result) if tool.target is not None else None
+        await hooks.emit(hooks.AuditEvent(
+            action=tool.action, tool=name, area=tool.area, via=caller.via, user_id=caller.user_id,
+            credential_id=caller.credential_id, role=caller.role.label,
+            target_type=target[0] if target else None, target_id=target[1] if target else None,
+            args=_summary(args),
+        ))
+    return result
