@@ -563,8 +563,10 @@ class VoiceCall:
                     await self._flush(turn, buffer, final=True)
                     heard = turn.since_reset
                 else:
+                    # Said whole (a turn the fleet ran, a model that did not stream), and timed as a streamed
+                    # answer is: its first words are the turn's (F731).
                     heard = to_speech(turn.final)
-                    await self._say(heard, last=True)
+                    await self._answer_text(turn, turn.final, last=True)
                     turn.sent_any = True
                 self._agent_asked = heard.rstrip().endswith(_QUESTION_MARKS)
             elif turn.parked:
