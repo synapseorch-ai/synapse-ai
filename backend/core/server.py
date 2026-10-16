@@ -702,6 +702,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"Warning: Failed to seed native builder: {e}")
 
+        # --- An untouched old default agent becomes Synapse AI, the assistant (ASSIST1, once) ---
+        try:
+            from core.default_agent import adopt_the_assistant
+            if await adopt_the_assistant():
+                print("The default agent is now Synapse AI, the assistant.")
+        except Exception as e:
+            print(f"Warning: Failed to adopt the assistant as the default agent: {e}")
+
         # --- Sweep zombie orchestration runs (stale "running" from prior server crash) ---
         try:
             from core.scale.config import get_scale_config as _sweep_scale_cfg

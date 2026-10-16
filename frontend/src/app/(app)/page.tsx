@@ -13,6 +13,7 @@ import { HumanStepAnswer } from '@/components/HumanStepAnswer';
 import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
+import { BuilderConversation } from '@/components/app/BuilderPanel';
 import { Button, IconButton, Markdown, PageFrameHeader } from '@/components/ui';
 import {
   AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, HelperLanes, HelperNote, PillAvatar, RunChip, UserBubble,
@@ -857,6 +858,9 @@ export default function Home() {
   // silent drop every time the two disagreed. A workflow agent's comes from its
   // steps, with the reason (F313). The button, a drop and a paste share it.
   const attachRefusal = refusalOf(systemStatus, currentAgentId);
+  // The default agent is Synapse AI, the assistant (ASSIST1): a builder-typed agent talks through its own conversation.
+  const currentInfo = currentAgentId ? systemStatus?.agents?.[currentAgentId] : undefined;
+  const isAssistant = typeof currentInfo === 'object' && currentInfo !== null && currentInfo.type === 'builder';
   // Shared with the AI builder's composer — one validator, one chip strip, one
   // counter, one set of refusal messages.
   const attachments = useImageAttachments(attachRefusal);
@@ -3025,6 +3029,25 @@ export default function Home() {
         {/* Running / paused orchestrations — click through to the live run view */}
         <ActiveRunsBanner />
 
+        {/* Synapse AI, the default agent (ASSIST1, D291): its own conversation in place, the panel's, with its
+            cards; the composer's pill is still the agent picker. Any other agent is this page's chat. */}
+        {isAssistant ? (
+          <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+            <BuilderConversation
+              density="page"
+              pill={(
+                <AgentPicker
+                  agents={systemStatus?.agents
+                    ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
+                    : []}
+                  activeId={systemStatus?.active_agent_id}
+                  activeName={agentName}
+                  onPick={handleSwitchAgent}
+                />
+              )}
+            />
+          </div>
+        ) : (<>
         {/* Chat Area */}
         <div className="custom-scrollbar relative flex-1 overflow-y-auto scroll-smooth">
 
@@ -3221,6 +3244,7 @@ export default function Home() {
             />
           </div>
         </div>
+        </>)}
       </div>
     </div>
   );

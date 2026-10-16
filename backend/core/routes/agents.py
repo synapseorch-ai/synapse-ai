@@ -74,8 +74,14 @@ async def get_agents():
     Same reasoning as the orchestration list: the builder's five agents sit in
     this table too, and every screen that wanted to hide them was matching on
     an id prefix of its own.
+
+    Synapse AI, the assistant (ASSIST1), is Chat's and is left out too: the Agents screen has no prompt or tools of
+    its to edit, and a channel, a schedule or a widget cannot be answered by it.
     """
-    return await load_workspace_agents()
+    from core.default_agent import DEFAULT_AGENT_ID
+
+    return [a for a in await load_workspace_agents()
+            if not (a.get("id") == DEFAULT_AGENT_ID and a.get("type") == "builder")]
 
 
 #: What a workflow agent saved with a workflow that does not exist is told (F408).

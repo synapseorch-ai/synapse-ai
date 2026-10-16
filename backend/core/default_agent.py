@@ -1,16 +1,23 @@
 """
-The agent a new install starts with.
+The agent a new install starts with: Synapse AI, the product's assistant (ASSIST1, D291).
 
-Created once by the installer (`synapse setup --apply`), never overwritten after:
-a user who edits or deletes it keeps their choice. Its id is also how the legacy
-importer tells it apart from the user's own agents — a store holding only this
-agent and the seeded builder is still an empty one.
+Naveen: "let our builder be the default agent". It is a builder-typed agent, so Chat talks to it through the
+assistant's own conversation (`run_builder_stream_compat` for an API caller): what it reads, its cards, its plan
+reviews. It replaced an all-tools chat agent of the same name and id (`LEGACY_DEFAULT_AGENT`).
+
+Created once by the installer (`synapse setup --apply`), never overwritten after: a user who edits or deletes it
+keeps their choice. An install whose old default is exactly as the installer made it has it turned into the assistant
+once, at start-up (`adopt_the_assistant`), under the same id, so its conversations stay; an edited one is the
+person's own and is left alone. Its id is also how the legacy importer tells it apart from the user's own agents — a
+store holding only this agent and the seeded builder is still an empty one.
 """
 from __future__ import annotations
 
 DEFAULT_AGENT_ID = "agent_synapse_ai"
 
-DEFAULT_AGENT = {
+#: The default agent before ASSIST1, exactly as the installer made it: an install still holding it unchanged has it
+#: turned into the assistant (`adopt_the_assistant`).
+LEGACY_DEFAULT_AGENT = {
     "id": DEFAULT_AGENT_ID,
     "name": "Synapse AI",
     "description": "Your all-purpose AI assistant with access to every capability -- browsing, code execution, file management, and more.",
@@ -45,6 +52,35 @@ DEFAULT_AGENT = {
         "Always respect the user's filesystem and data -- ask before destructive operations."
     ),
 }
+
+
+DEFAULT_AGENT = {
+    "id": DEFAULT_AGENT_ID,
+    "name": "Synapse AI",
+    "description": "The product's assistant: ask about your workspace, have it run or answer things with a card you "
+                   "press, or describe a job and it builds the workflow.",
+    "avatar": "default",
+    "type": "builder",
+    "tools": [],
+    "repos": [],
+    "system_prompt": "",
+}
+
+#: What decides that a stored default is still the installer's own: an edit to any of these makes it the person's.
+_AS_INSTALLED = ("name", "description", "type", "tools", "repos", "system_prompt", "model", "provider")
+
+
+async def adopt_the_assistant() -> bool:
+    """Turn an untouched old default agent into the assistant, once. True when it was turned."""
+    from core.store.resources import get_agent, save_agent
+
+    stored = await get_agent(DEFAULT_AGENT_ID)
+    if not stored or stored.get("type") == "builder":
+        return False
+    if any(stored.get(k) != LEGACY_DEFAULT_AGENT.get(k) for k in _AS_INSTALLED):
+        return False
+    await save_agent({**stored, **DEFAULT_AGENT})
+    return True
 
 
 async def ensure_default_agent() -> bool:

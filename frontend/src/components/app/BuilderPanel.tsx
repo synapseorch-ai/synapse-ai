@@ -7,7 +7,7 @@
  * navigating between screens, which is the whole reason the builder moved out
  * of the orchestration editor.
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
     CheckCircle2,
     ChevronDown,
@@ -140,11 +140,22 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
     );
 }
 
-export function BuilderPanel() {
+/**
+ * The conversation itself: the messages, their cards and the composer. The panel frames it on every screen; Chat
+ * shows it in place when its agent is Synapse AI (ASSIST1, D291), so the two are one conversation, one state.
+ */
+export function BuilderConversation({ density = 'panel', active = true, pill }: {
+    density?: 'panel' | 'page';
+    /** False while the panel is still sliding in or out: nothing scrolls then. */
+    active?: boolean;
+    /** The composer's agent pill; the panel's names Synapse AI, Chat's is its agent picker. */
+    pill?: ReactNode;
+}) {
     const {
-        isOpen, entered, close, state, streaming, send, stop, newConversation, canAttach,
+        state, streaming, send, stop, canAttach,
         providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft,
     } = useBuilder();
+    const entered = active;
 
     const [input, setInput] = useState('');
     // Words handed over by `open({ prompt })` land in the composer, unsent, for
@@ -154,7 +165,6 @@ export function BuilderPanel() {
         setAdopted(draft.n);
         setInput(draft.text);
     }
-    const [how, setHow] = useState(false);
     const bottomRef = useRef<HTMLDivElement>(null);
     // The composer's field, for "Change something" and a suggestion to focus.
     const textarea = useRef<HTMLTextAreaElement>(null);
@@ -169,10 +179,6 @@ export function BuilderPanel() {
         // message or a pasted export pushed the panel's header out of sight.
         bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }, [state.messages, entered]);
-
-    // `isOpen` stays true for the length of the exit transition — the provider
-    // clears it when the card has finished leaving.
-    if (!isOpen) return null;
 
     // Working, not asking: the one composer button is Stop, as it is in chat.
     // A run parked on a question is not streaming here — the stream ends at the
@@ -217,6 +223,205 @@ export function BuilderPanel() {
 
     const ask = state.pending ? 'Answer the question above…' : 'Describe what you want to happen…';
     const fresh = state.messages.every((m) => m.key === 'welcome') && !streaming;
+    return (
+        <>
+                <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-5">
+                    {groups.map((group, i) => {
+                        if (group.type === 'activity') {
+                            return (
+                                <div key={`activity-${i}`} className="pl-10">
+                                    <ActivityGroup events={group.events} isLive={streaming && i === groups.length - 1} />
+                                </div>
+                            );
+                        }
+                        const { message } = group;
+
+                        // The greeting: the mark and what the builder does. Its examples
+                        // are suggestions under the empty composer.
+                        if (message.key === 'welcome') {
+                            return (
+                                <div key="welcome" className="flex flex-col items-center gap-2 px-2 pb-1 pt-4 text-center">
+                                    <Mark size={36} compact={false} className="text-accent" aria-hidden />
+                                    <h2 className="mt-1 text-xl font-semibold tracking-tight text-text">{BUILDER_GREETING.title}</h2>
+                                    <p className="max-w-[44ch] text-sm leading-relaxed text-text-muted">{BUILDER_GREETING.text}</p>
+                                </div>
+                            );
+                        }
+                        if (message.kind === 'banner') {
+                            const gone = message.saved?.action === 'deleted';
+                            return (
+                                <div
+                                    key={message.key}
+                                    className={cn(
+                                        'ml-10 flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]',
+                                        gone
+                                            ? 'border-border bg-surface-2 text-text-muted'
+                                            : 'border-success/40 bg-success-subtle text-text',
+                                    )}
+                                >
+                                    <CheckCircle2 size={14} className={cn('shrink-0', gone ? 'text-text-faint' : 'text-success')} aria-hidden />
+                                    <span className="truncate">{message.content}</span>
+                                </div>
+                            );
+                        }
+                        if (message.kind === 'connect' && message.connect) {
+                            return (
+                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    <ConnectCard
+                                        spec={message.connect}
+                                        connector={selfHostedConnector}
+                                        onConnected={(text) => void send(text, [])}
+                                    />
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'action' && message.action) {
+                            return (
+                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    <ActionCard spec={message.action} actor={selfHostedActor} />
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'findings' && message.findings) {
+                            return (
+                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    <FindingsCard findings={message.findings} />
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'human_prompt') {
+                            const open = message.key === openQuestionKey;
+                            const kind = questionKind(message.stepId, message.content);
+                            const onStop = open ? () => void stop() : undefined;
+                            return (
+                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    {kind === 'build' || kind === 'change' ? (
+                                        <PlanCard
+                                            prompt={message.content}
+                                            kind={kind}
+                                            open={open}
+                                            onAnswer={(text) => void send(text, [])}
+                                            onRevise={() => textarea.current?.focus()}
+                                            onStop={onStop}
+                                            estimate={loadRunEstimate}
+                                        />
+                                    ) : (
+                                        <QuestionCard content={message.content} open={open} onStop={onStop} />
+                                    )}
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.role === 'user') {
+                            return (
+                                <UserBubble key={message.key} density={density}>
+                                    <span className="whitespace-pre-wrap">{message.content}</span>
+                                </UserBubble>
+                            );
+                        }
+                        return (
+                            <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                <Markdown className="text-sm leading-relaxed">{message.content}</Markdown>
+                            </AgentTurn>
+                        );
+                    })}
+
+                    {streaming && state.status && (
+                        // Working: the mark in the avatar's slot, and what it is doing.
+                        <AgentTurn working size={20} density={density}>
+                            <span className="text-xs text-text-muted">{state.status}</span>
+                        </AgentTurn>
+                    )}
+                    <div ref={bottomRef} />
+                </div>
+
+                <div className="shrink-0 space-y-2 border-t border-border bg-bg px-3 pb-3 pt-3">
+                    <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
+                    <Composer
+                        density={density}
+                        value={input}
+                        onChange={setInput}
+                        onSend={submit}
+                        canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
+                        sendLabel={state.pending ? 'Send your answer' : 'Send'}
+                        // Only until the run has an id — after that this button is Stop.
+                        sendPending={streaming && !working}
+                        busy={working}
+                        onStop={() => void stop()}
+                        stopLabel="Stop Synapse AI"
+                        stopTitle="Stop"
+                        placeholder={ask}
+                        label="Message Synapse AI"
+                        disabled={streaming}
+                        textareaRef={textarea}
+                        dropHandlers={attachments.dropHandlers}
+                        pasteHandlers={attachments.pasteHandlers}
+                        top={<AttachmentChips images={attachments.images} onRemove={attachments.remove} />}
+                        pill={pill ?? (
+                            <span className={cn(composerPillClass, 'hover:bg-surface-2')}>
+                                <PillAvatar><Mark size={14} className="text-accent" aria-hidden /></PillAvatar>
+                                Synapse AI
+                            </span>
+                        )}
+                        attach={(
+                            <AttachButton
+                                onFiles={attachments.accept}
+                                count={attachments.images.length}
+                                disabledReason={canAttach ? '' : 'This model cannot read images'}
+                                className="rounded-md p-1.5"
+                            />
+                        )}
+                        model={(
+                            <>
+                                {sessionModel && sessionModel !== builderModel && (
+                                    <button
+                                        type="button"
+                                        onClick={() => void saveBuilderModel(sessionModel)}
+                                        className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-xs text-accent-ink transition-colors hover:bg-accent-subtle', focusRing)}
+                                    >
+                                        Set as default
+                                    </button>
+                                )}
+                                <Combobox
+                                    value={sessionModel || DEFAULT_SENTINEL}
+                                    onChange={(v) => setSessionModel(v === DEFAULT_SENTINEL ? '' : v)}
+                                    aria-label="Model for this build"
+                                    searchPlaceholder="Search models…"
+                                    size="sm"
+                                    trigger="pill"
+                                    className="max-w-[200px]"
+                                    options={modelChoices}
+                                />
+                            </>
+                        )}
+                        hint="Enter to send · Shift+Enter for a newline"
+                        showHint={state.messages.every((m) => m.role !== 'user')}
+                    />
+                    {fresh && (
+                        <Suggestions
+                            items={[...BUILDER_EXAMPLES, AGENT_BUILDER_SWITCH.suggestion]}
+                            label="Things to ask"
+                            onPick={(text) => {
+                                // The switch's chip says what it is for; the composer gets
+                                // the lead line its export goes under (SW1).
+                                setInput(text === AGENT_BUILDER_SWITCH.suggestion ? AGENT_BUILDER_SWITCH.lead : text);
+                                textarea.current?.focus();
+                            }}
+                            className="pt-1"
+                        />
+                    )}
+                </div>
+        </>
+    );
+}
+
+export function BuilderPanel() {
+    const { isOpen, entered, close, newConversation } = useBuilder();
+    const [how, setHow] = useState(false);
+
+    // `isOpen` stays true for the length of the exit transition — the provider
+    // clears it when the card has finished leaving.
+    if (!isOpen) return null;
+
     return (
         <>
             <aside
@@ -276,191 +481,7 @@ export function BuilderPanel() {
                     </div>
                 </header>
 
-                <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-5">
-                    {groups.map((group, i) => {
-                        if (group.type === 'activity') {
-                            return (
-                                <div key={`activity-${i}`} className="pl-10">
-                                    <ActivityGroup events={group.events} isLive={streaming && i === groups.length - 1} />
-                                </div>
-                            );
-                        }
-                        const { message } = group;
-
-                        // The greeting: the mark and what the builder does. Its examples
-                        // are suggestions under the empty composer.
-                        if (message.key === 'welcome') {
-                            return (
-                                <div key="welcome" className="flex flex-col items-center gap-2 px-2 pb-1 pt-4 text-center">
-                                    <Mark size={36} compact={false} className="text-accent" aria-hidden />
-                                    <h2 className="mt-1 text-xl font-semibold tracking-tight text-text">{BUILDER_GREETING.title}</h2>
-                                    <p className="max-w-[44ch] text-sm leading-relaxed text-text-muted">{BUILDER_GREETING.text}</p>
-                                </div>
-                            );
-                        }
-                        if (message.kind === 'banner') {
-                            const gone = message.saved?.action === 'deleted';
-                            return (
-                                <div
-                                    key={message.key}
-                                    className={cn(
-                                        'ml-10 flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]',
-                                        gone
-                                            ? 'border-border bg-surface-2 text-text-muted'
-                                            : 'border-success/40 bg-success-subtle text-text',
-                                    )}
-                                >
-                                    <CheckCircle2 size={14} className={cn('shrink-0', gone ? 'text-text-faint' : 'text-success')} aria-hidden />
-                                    <span className="truncate">{message.content}</span>
-                                </div>
-                            );
-                        }
-                        if (message.kind === 'connect' && message.connect) {
-                            return (
-                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
-                                    <ConnectCard
-                                        spec={message.connect}
-                                        connector={selfHostedConnector}
-                                        onConnected={(text) => void send(text, [])}
-                                    />
-                                </AgentTurn>
-                            );
-                        }
-                        if (message.kind === 'action' && message.action) {
-                            return (
-                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
-                                    <ActionCard spec={message.action} actor={selfHostedActor} />
-                                </AgentTurn>
-                            );
-                        }
-                        if (message.kind === 'findings' && message.findings) {
-                            return (
-                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
-                                    <FindingsCard findings={message.findings} />
-                                </AgentTurn>
-                            );
-                        }
-                        if (message.kind === 'human_prompt') {
-                            const open = message.key === openQuestionKey;
-                            const kind = questionKind(message.stepId, message.content);
-                            const onStop = open ? () => void stop() : undefined;
-                            return (
-                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
-                                    {kind === 'build' || kind === 'change' ? (
-                                        <PlanCard
-                                            prompt={message.content}
-                                            kind={kind}
-                                            open={open}
-                                            onAnswer={(text) => void send(text, [])}
-                                            onRevise={() => textarea.current?.focus()}
-                                            onStop={onStop}
-                                            estimate={loadRunEstimate}
-                                        />
-                                    ) : (
-                                        <QuestionCard content={message.content} open={open} onStop={onStop} />
-                                    )}
-                                </AgentTurn>
-                            );
-                        }
-                        if (message.role === 'user') {
-                            return (
-                                <UserBubble key={message.key} density="panel">
-                                    <span className="whitespace-pre-wrap">{message.content}</span>
-                                </UserBubble>
-                            );
-                        }
-                        return (
-                            <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
-                                <Markdown className="text-sm leading-relaxed">{message.content}</Markdown>
-                            </AgentTurn>
-                        );
-                    })}
-
-                    {streaming && state.status && (
-                        // Working: the mark in the avatar's slot, and what it is doing.
-                        <AgentTurn working size={20} density="panel">
-                            <span className="text-xs text-text-muted">{state.status}</span>
-                        </AgentTurn>
-                    )}
-                    <div ref={bottomRef} />
-                </div>
-
-                <div className="shrink-0 space-y-2 border-t border-border bg-bg px-3 pb-3 pt-3">
-                    <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
-                    <Composer
-                        density="panel"
-                        value={input}
-                        onChange={setInput}
-                        onSend={submit}
-                        canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
-                        sendLabel={state.pending ? 'Send your answer' : 'Send'}
-                        // Only until the run has an id — after that this button is Stop.
-                        sendPending={streaming && !working}
-                        busy={working}
-                        onStop={() => void stop()}
-                        stopLabel="Stop Synapse AI"
-                        stopTitle="Stop"
-                        placeholder={ask}
-                        label="Message Synapse AI"
-                        disabled={streaming}
-                        textareaRef={textarea}
-                        dropHandlers={attachments.dropHandlers}
-                        pasteHandlers={attachments.pasteHandlers}
-                        top={<AttachmentChips images={attachments.images} onRemove={attachments.remove} />}
-                        pill={(
-                            <span className={cn(composerPillClass, 'hover:bg-surface-2')}>
-                                <PillAvatar><Mark size={14} className="text-accent" aria-hidden /></PillAvatar>
-                                Synapse AI
-                            </span>
-                        )}
-                        attach={(
-                            <AttachButton
-                                onFiles={attachments.accept}
-                                count={attachments.images.length}
-                                disabledReason={canAttach ? '' : 'This model cannot read images'}
-                                className="rounded-md p-1.5"
-                            />
-                        )}
-                        model={(
-                            <>
-                                {sessionModel && sessionModel !== builderModel && (
-                                    <button
-                                        type="button"
-                                        onClick={() => void saveBuilderModel(sessionModel)}
-                                        className={cn('shrink-0 rounded-md px-1.5 py-0.5 text-xs text-accent-ink transition-colors hover:bg-accent-subtle', focusRing)}
-                                    >
-                                        Set as default
-                                    </button>
-                                )}
-                                <Combobox
-                                    value={sessionModel || DEFAULT_SENTINEL}
-                                    onChange={(v) => setSessionModel(v === DEFAULT_SENTINEL ? '' : v)}
-                                    aria-label="Model for this build"
-                                    searchPlaceholder="Search models…"
-                                    size="sm"
-                                    trigger="pill"
-                                    className="max-w-[200px]"
-                                    options={modelChoices}
-                                />
-                            </>
-                        )}
-                        hint="Enter to send · Shift+Enter for a newline"
-                        showHint={state.messages.every((m) => m.role !== 'user')}
-                    />
-                    {fresh && (
-                        <Suggestions
-                            items={[...BUILDER_EXAMPLES, AGENT_BUILDER_SWITCH.suggestion]}
-                            label="Things to ask"
-                            onPick={(text) => {
-                                // The switch's chip says what it is for; the composer gets
-                                // the lead line its export goes under (SW1).
-                                setInput(text === AGENT_BUILDER_SWITCH.suggestion ? AGENT_BUILDER_SWITCH.lead : text);
-                                textarea.current?.focus();
-                            }}
-                            className="pt-1"
-                        />
-                    )}
-                </div>
+                <BuilderConversation active={entered} />
             </aside>
 
             <HowImBuilt
