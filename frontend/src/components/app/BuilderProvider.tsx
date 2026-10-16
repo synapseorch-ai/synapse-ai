@@ -256,8 +256,9 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         currentOrchestrationId.current = id;
     }, []);
 
-    // Words `open({ ask })` sends once the panel is open (below `send`).
-    const [ask, setAsk] = useState<string | null>(null);
+    // Words `open({ ask })` sends once the panel is open (below `send`): held in a ref, the tick says there are some.
+    const asked = useRef<string | null>(null);
+    const [askTick, setAskTick] = useState(0);
 
     const open = useCallback((options?: OpenOptions) => {
         // An explicit answer still wins, for a caller that opens the panel about
@@ -270,7 +271,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
             const text = options.prompt;
             setDraft((cur) => ({ text, n: (cur?.n ?? 0) + 1 }));
         }
-        if (options?.ask?.trim()) setAsk(options.ask.trim());
+        if (options?.ask?.trim()) { asked.current = options.ask.trim(); setAskTick((n) => n + 1); }
         // Cancel a close still in flight. `OrchestrationTab`'s "Build with AI"
         // stays clickable while the panel is leaving, so reopening inside the
         // exit window let the stale timer unmount what had just been reopened.
@@ -555,14 +556,14 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         [consume, conversationId, reportStreamEnd, sessionModel, state.messages, state.pending, streaming],
     );
 
-    // Home's ask line: the words go as the person's message once the panel is open. While a turn is still
-    // answering they wait in the composer instead, unsent, rather than being lost.
+    // Home's ask line (ASSIST1): the words go as the person's message once the panel is open, and wait while a
+    // turn is still answering, then go.
     useEffect(() => {
-        if (!ask || !isOpen) return;
-        setAsk(null);
-        if (streaming) setDraft((cur) => ({ text: ask, n: (cur?.n ?? 0) + 1 }));
-        else void send(ask);
-    }, [ask, isOpen, streaming, send]);
+        const text = asked.current;
+        if (!text || !isOpen || streaming) return;
+        asked.current = null;
+        void send(text);
+    }, [askTick, isOpen, streaming, send]);
 
     /**
      * Stop the attached run.
