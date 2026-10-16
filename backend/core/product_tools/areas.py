@@ -15,6 +15,7 @@ AREAS: tuple[str, ...] = (
     "core.product_tools.knowledge",
     "core.product_tools.approvals",
     "core.product_tools.activity",
+    "core.product_tools.schedules",
 )
 
 _loaded_into: int | None = None

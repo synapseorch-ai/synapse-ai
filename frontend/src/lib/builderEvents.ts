@@ -21,7 +21,8 @@ export type BuilderMessageKind =
     | 'tool_result'
     | 'routing'
     | 'connect'
-    | 'findings';
+    | 'findings'
+    | 'action';
 
 /**
  * A Connect card the builder put up (BWA1, `prepare_connection`): what to
@@ -54,6 +55,32 @@ export interface ResearchFindings {
         needs?: string;
         sources?: string[];
     }[];
+}
+
+/**
+ * An action card the assistant put up (ASSIST1, `prepare_action`): what it
+ * would do, and a button per choice. Nothing has been done: each button
+ * carries a token for that one act by this person, which the host's act
+ * route redeems when it is pressed. A run's question carries the question
+ * instead, answered through the run's own door.
+ */
+export interface ActionButton {
+    label: string;
+    tool: string;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    arguments: Record<string, any>;
+    token: string;
+    expires_in_seconds?: number;
+}
+
+export interface ActionSpec {
+    id: string;
+    title: string;
+    detail?: string;
+    /** Stops or undoes something: said in the danger colour. */
+    danger?: boolean;
+    buttons: ActionButton[];
+    question?: { run_id: string; prompt?: string; step_id?: string | null };
 }
 
 /** What the builder changed, as the dispatcher reported it. */
@@ -91,6 +118,8 @@ export interface BuilderMessage {
     contextKey?: string | null;
     /** A findings card (`kind: 'findings'`). */
     findings?: ResearchFindings;
+    /** An action card (`kind: 'action'`). */
+    action?: ActionSpec;
 }
 
 export interface BuilderState {
@@ -284,6 +313,15 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             return append(state, {
                 role: 'assistant', content: String(event.title ?? 'Connect'), kind: 'connect',
                 key: `connect-${event.id ?? seq}`, connect: event as ConnectSpec,
+            });
+
+        // An action card (ASSIST1): what the assistant would do, for the person
+        // to press. Keyed on the card's own id, so a replay redraws it.
+        case 'action_needed':
+            if (!event.id || !Array.isArray(event.buttons)) return state;
+            return append(state, {
+                role: 'assistant', content: String(event.title ?? 'Action'), kind: 'action',
+                key: `action-${event.id}`, action: event as ActionSpec,
             });
 
         // What the Researcher found (BWA1, F577): a card of the options, each with

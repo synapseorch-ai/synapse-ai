@@ -37,7 +37,8 @@
         "prepare_connection",
         "read_workspace",
         "search_help",
-        "product_capabilities"
+        "product_capabilities",
+        "prepare_action"
     ],
     "repos": [],
     "db_configs": [],

@@ -1,0 +1,219 @@
+"""The assistant's action card: it shows what it would do, and the person's click does it (ASSIST1, D291, F683).
+
+Naveen: the assistant does what a person can do in the app, through the gates the app already has, and never by
+itself. `prepare_action` is a builder tool of the card kind (`builder_access`): it changes nothing.
+
+1. **What was asked is resolved to exact ids in code**: a workflow by its name (two that match are offered back
+   as a choice, never guessed between), a run that still runs or still waits, a schedule, a waiting tool call.
+2. **The person's role is checked now**, so nobody is shown a button they cannot press.
+3. **Each button carries a confirmation token** (`product_tools.confirm`) bound to that person, that product tool
+   and those exact arguments, minted through `registry.invoke` with the assistant's `every_act` policy: the act's
+   own handler does not run.
+4. **The click** posts the button to the host's act route (`routes/assistant.py`; cloud's `/assistant/act`), which
+   builds the person from the request and calls the same product tool with the token. The role is checked again
+   there, a token works once, and it does nothing for other arguments.
+
+A run's question is not a token: the card holds the question, and its answer goes to the run's own answer door, as
+on the run page, where the approver role is checked.
+"""
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+from core.builder_tools import register_builder_tool
+from core.product_tools.caller import Caller
+from core.product_tools.errors import ToolRefusal
+from core.product_tools.roles import Role
+
+ACTIONS: dict[str, str] = {
+    "run_workflow": "start a run of a workflow (`workflow`: its name; `message`: what it should work on)",
+    "run_schedule_now": "run a schedule once now (`schedule`: its name)",
+    "schedule_on": "turn a schedule on (`schedule`)",
+    "schedule_off": "turn a schedule off (`schedule`)",
+    "answer_run": "answer the question a waiting run asks, or approve it (`run_id`, from topic `waiting`)",
+    "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
+    "cancel_run": "stop a run that is still going (`run_id`)",
+}
+
+SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "prepare_action",
+        "description": (
+            "Put up a card the person presses to do something in the workspace. Nothing happens until they press "
+            "it, so use this for any action they ask for instead of saying it is done. Actions: "
+            + "; ".join(f"`{k}` — {v}" for k, v in ACTIONS.items()) + ". "
+            "After it, tell them the card is above and what pressing it does. If it answers with an error, say "
+            "that and do not claim anything was done."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": list(ACTIONS)},
+                "workflow": {"type": "string", "description": "run_workflow: the workflow's name."},
+                "message": {"type": "string", "description": "run_workflow: what the run should work on."},
+                "schedule": {"type": "string", "description": "The schedule's name."},
+                "run_id": {"type": "string"},
+                "approval_id": {"type": "string", "description": "answer_tool_call: from topic `waiting`."},
+                "question_id": {"type": "string", "description": "answer_tool_call: from topic `waiting`."},
+            },
+            "required": ["action"],
+        },
+    },
+}
+
+
+class _NotOffered(Exception):
+    """Why no card: said to the model, which says it to the person."""
+
+
+def _caller() -> Caller:
+    from core.builder_access import current_caller
+
+    return current_caller() or Caller(role=Role.OWNER, via="assistant")
+
+
+def _pick(items: list[dict], wanted: str, what: str, list_hint: str) -> dict:
+    needle = (wanted or "").strip().lower()
+    if not needle:
+        raise _NotOffered(f"Say which {what}. {list_hint}")
+    exact = [i for i in items if str(i.get("name") or "").lower() == needle or i.get("id") == wanted]
+    if len(exact) == 1:
+        return exact[0]
+    near = exact or [i for i in items if needle in str(i.get("name") or "").lower()]
+    if len(near) == 1:
+        return near[0]
+    if not near:
+        raise _NotOffered(f"No {what} is called {wanted!r}. {list_hint}")
+    names = ", ".join(f'"{i.get("name")}"' for i in near[:8])
+    raise _NotOffered(f"More than one {what} matches {wanted!r}: {names}. Ask which one they mean.")
+
+
+async def _workflow(args: dict) -> dict:
+    from core.builder_tools import _is_visible
+    from core.routes.orchestrations import load_orchestrations
+
+    flows = [o for o in await load_orchestrations() if _is_visible(o) and o.get("is_active") is not False]
+    return _pick(flows, str(args.get("workflow") or ""), "workflow", "Topic `workflows` lists them.")
+
+
+async def _schedule(args: dict) -> dict:
+    from core.store import schedules as store
+
+    return _pick(await store.load(), str(args.get("schedule") or ""), "schedule", "Topic `schedules` lists them.")
+
+
+async def _run(args: dict) -> tuple[dict, str]:
+    from core.orchestration.run_view import read_run, run_orchestration_id
+    from core.routes.orchestrations import load_orchestrations
+
+    run_id = str(args.get("run_id") or "").strip()
+    if not run_id:
+        raise _NotOffered("Say which run: its run_id (topic `runs` or `waiting` lists them).")
+    orch_id = await run_orchestration_id(run_id)  # None for the builder's own and for a deleted workflow's
+    view = await read_run(run_id) if orch_id else None
+    if view is None:
+        raise _NotOffered(f"There is no run {run_id!r} in this workspace's workflows.")
+    names = {o.get("id"): o.get("name") for o in await load_orchestrations()}
+    return view, names.get(orch_id) or orch_id
+
+
+def _card(title: str, *, detail: str = "", danger: bool = False, buttons: list[dict] | None = None,
+          question: dict | None = None) -> dict:
+    return {"type": "action_needed", "id": f"act_{uuid.uuid4().hex[:10]}", "title": title, "detail": detail,
+            "danger": danger, "buttons": buttons or [], **({"question": question} if question else {})}
+
+
+async def _button(label: str, tool: str, arguments: dict) -> dict:
+    """A button whose token confirms exactly this call, for this person: minted, never done."""
+    from core.product_tools import areas, registry
+
+    areas.ensure_loaded()
+    try:
+        preview = await registry.invoke(tool, _caller(), arguments, confirm_policy="every_act")
+    except ToolRefusal as exc:
+        raise _NotOffered(str(exc)) from None
+    return {"label": label, "tool": tool, "arguments": arguments, "token": preview["confirm_token"],
+            "expires_in_seconds": preview["expires_in_seconds"]}
+
+
+async def _offer(action: str, args: dict) -> dict:
+    if action == "run_workflow":
+        flow = await _workflow(args)
+        message = str(args.get("message") or "").strip()
+        call = {"orchestration_id": flow["id"], "message": message, "wait_seconds": 0}
+        return _card(f'Run "{flow.get("name")}"', detail=message and f"Working on: {message}",
+                     buttons=[await _button("Run it", "run_orchestration", call)])
+
+    if action == "run_schedule_now":
+        schedule = await _schedule(args)
+        return _card(f'Run "{schedule.get("name")}" now',
+                     detail="Once, now. Its next scheduled time does not move.",
+                     buttons=[await _button("Run now", "run_schedule_now", {"schedule_id": schedule["id"]})])
+
+    if action in ("schedule_on", "schedule_off"):
+        schedule, on = await _schedule(args), action == "schedule_on"
+        if bool(schedule.get("enabled")) == on:
+            raise _NotOffered(f'"{schedule.get("name")}" is already {"on" if on else "off"}.')
+        return _card(f'Turn {"on" if on else "off"} "{schedule.get("name")}"',
+                     detail="" if on else "It stops starting runs until it is turned on again.",
+                     buttons=[await _button("Turn on" if on else "Turn off", "set_schedule_enabled",
+                                            {"schedule_id": schedule["id"], "enabled": on})])
+
+    if action == "cancel_run":
+        view, name = await _run(args)
+        if view.get("status") not in ("running", "paused", "queued"):
+            raise _NotOffered(f'That run of "{name}" has already {view.get("status")}: there is nothing to stop.')
+        return _card(f'Stop the run of "{name}"', danger=True,
+                     detail="It stops where it is. What it already did stays done.",
+                     buttons=[await _button("Stop it", "cancel_run", {"run_id": view["run_id"]})])
+
+    if action == "answer_run":
+        view, name = await _run(args)
+        asked = view.get("human_input_required")
+        if view.get("status") != "paused" or not asked:
+            raise _NotOffered(f'That run of "{name}" is not waiting for an answer (it is {view.get("status")}).')
+        if not _caller().role.can_act_as(Role.APPROVER):
+            raise _NotOffered(f"Answering a run needs the approver role; you are a {_caller().role.label}.")
+        return _card(f'"{name}" is asking', detail=str(asked.get("prompt") or ""),
+                     question={"run_id": view["run_id"], **asked})
+
+    if action == "answer_tool_call":
+        from core.product_tools import approvals
+
+        waiting = [i for i in (await approvals._list_waiting(_caller(), {"kind": "tool_approval", "limit": 100}))
+                   ["items"]]
+        wanted = [i for i in waiting
+                  if (args.get("approval_id") and i.get("approval_id") == args["approval_id"])
+                  or (args.get("question_id") and i.get("question_id") == args["question_id"])]
+        if not wanted and not (args.get("approval_id") or args.get("question_id")) and len(waiting) == 1:
+            wanted = waiting
+        if len(wanted) != 1:
+            raise _NotOffered("That tool call is not waiting any more." if args.get("approval_id")
+                              else "Say which tool call: its approval_id from topic `waiting`.")
+        item = wanted[0]
+        where = {k: item[k] for k in ("session_id", "schedule_id", "approval_id", "question_id") if item.get(k)}
+        return _card(str(item.get("title") or f'Allow "{item.get("tool_name")}"?'),
+                     detail=str(item.get("detail") or ""),
+                     buttons=[await _button("Allow", "answer_tool_approval", {**where, "approve": True,
+                                                                              "wait_seconds": 0}),
+                              await _button("Refuse", "answer_tool_approval", {**where, "approve": False,
+                                                                               "wait_seconds": 0})])
+
+    raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def prepare_action(args: dict, server_module: Any, events: list[dict]) -> dict:
+    action = str(args.get("action") or "").strip()
+    try:
+        card = await _offer(action, args)
+    except _NotOffered as why:
+        return {"error": str(why)}
+    events.append(card)
+    pressed = " or ".join(f'"{b["label"]}"' for b in card["buttons"]) or "answer on it"
+    return {"card": card["title"],
+            "say": f"A card is up: {card['title']}. Nothing has been done yet; press {pressed} to do it."}
+
+
+register_builder_tool(SCHEMA, prepare_action)

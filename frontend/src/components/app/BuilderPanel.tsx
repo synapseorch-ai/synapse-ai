@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 
 import {
+    ActionCard,
     AGENT_BUILDER_SWITCH,
     AgentTurn,
     Composer,
@@ -35,6 +36,7 @@ import {
 import { loadRunEstimate } from '@/lib/estimate';
 import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
+import { selfHostedActor } from '@/components/app/assistantActor';
 import { selfHostedConnector } from '@/components/app/builderConnector';
 import {
     AttachButton,
@@ -321,6 +323,13 @@ export function BuilderPanel() {
                                         connector={selfHostedConnector}
                                         onConnected={(text) => void send(text, [])}
                                     />
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'action' && message.action) {
+                            return (
+                                <AgentTurn key={message.key} density="panel" avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                    <ActionCard spec={message.action} actor={selfHostedActor} />
                                 </AgentTurn>
                             );
                         }
