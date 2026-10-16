@@ -76,6 +76,10 @@ class TurnBoards:
     #: Whether this turn holds a claim it should renew, and when it last did.
     holding: bool = False
     renewed_at: float = field(default_factory=time.monotonic)
+    #: The version of each card this turn was shown (BOARD2, D297): `seen` by any view (a digest line, a list, a
+    #: full read, its own add), `read` by a full one. An agent never names a version; its updates use these.
+    seen: dict[str, int] = field(default_factory=dict)
+    read: dict[str, int] = field(default_factory=dict)
 
     def work(self) -> list[TurnBoard]:
         return [b for b in self.boards if b.access == "work"]

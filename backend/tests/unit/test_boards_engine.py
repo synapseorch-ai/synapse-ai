@@ -305,13 +305,25 @@ class TestTheTools:
         assert len(await store.list_cards([board.id])) == 1
         assert "Already on this workflow's board, not added again" in _observations(fake_llm, 2)
 
-    async def test_a_stale_update_is_refused_and_read_again(self, boards_on, fake_llm):
+    async def test_a_stale_update_is_refused_and_shown_the_card_as_it_is_now(self, boards_on, fake_llm, monkeypatch):
+        """A person's edit between the call that saw the card and the update (BOARD2: the engine's version, not the
+        agent's — before, the agent named a stale one)."""
+        from core.boards import tools
+
         board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
         card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
-        await store.update_card(card.id, version=1, by=PERSON, holder=None, body="someone else's edit")
+        real_run = tools._run
+
+        async def edited_meanwhile(name, args, turn, **kw):
+            if name == "board_update" and (await store.get_card(card.id)).version == 1:
+                await store.update_card(card.id, version=1, by=PERSON, holder=None, body="someone else's edit")
+            return await real_run(name, args, turn, **kw)
+
+        monkeypatch.setattr(tools, "_run", edited_meanwhile)
         await _turn(fake_llm, [tool_call("board_update", card_id=card.id, version=1, status="done", result="ok"),
                                "done"], _agent(id="fixer"), **_wf())
-        assert "changed since you read it (it is now version 2)" in _observations(fake_llm, 1)
+        said = _observations(fake_llm, 1)
+        assert f"Refused: card {card.id} changed since you saw it" in said and "someone else's edit" in said
         assert (await store.get_card(card.id)).status == "open"
 
     async def test_two_parallel_chats_claim_one_card_and_one_is_told_who_holds_it(self, boards_on, monkeypatch):
@@ -551,7 +563,8 @@ class TestAPersonsTaskBindsAScheduledTurn:
         assert len(fake_llm.calls) == 3
         said = _observations(fake_llm, 1)
         assert "A person's task on this schedule's board is still open" in said
-        assert card.id in said and "version 1" in said and "Also add BUG-204" in said and "board_update" in said
+        assert card.id in said and "Also add BUG-204" in said and "board_update" in said
+        assert "(version" not in said  # the engine keeps the version (BOARD2, D297)
         assert "Added BUG-201 to BUG-203." in said  # what it answered, so it knows what it is asked about
         assert (await store.get_card(card.id)).status == "done"
         assert [e["response"] for e in events if e["type"] == "final"] == ["Added BUG-201 to BUG-204."]
@@ -697,3 +710,197 @@ class TestRelease:
         s = {"id": "sch_rel", "name": "Rel", "target_type": "agent", "target_id": "nightly"}
         [e async for e in manager._agent_turn_events(s, "schedulerun_rel", message="clean")]
         assert (await store.get_card(card.id)).status == "open"
+
+
+# ── the engine keeps the version (BOARD2, D297) ─────────────────────────────────
+
+
+def _turn_on(board, *, agent="fixer", scope="workflow", scope_id="wf_bugs", run_id="run_1"):
+    from core.boards import resolve
+
+    return resolve.TurnBoards(
+        boards=[resolve.TurnBoard(board_id=board.id, scope=scope, scope_id=scope_id, name="", access="work",
+                                  own=True)],
+        holder=store.Holder(agent, f"{run_id}/fix", agent.title()),
+        actor=store.Actor(agent=agent, agent_name=agent.title(), run=run_id, source="orchestration"),
+        run_id=run_id, max_open=0)
+
+
+class TestTheEngineKeepsTheVersion:
+    """BOARD2 move 1 (D297): an agent never names a version. The turn remembers the version of each card it was
+    shown — a digest line, a list, a full read, its own add — and the engine makes its compare-and-set from that.
+    Naveen at BOARD2's plan (D1): status, result and a claim go against the latest version shown; a title or body
+    edit needs the turn's last full view of the card; a card it never saw may be closed or commented, not
+    rewritten. gpt-4.1-mini's update refused for a missing version was never retried (F581's capture)."""
+
+    async def test_an_update_without_a_version_closes_the_card_it_saw(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", key="BUG-12", by=PERSON)
+        await _turn(fake_llm, [tool_call("board_update", card_id=card.id, status="done",
+                                         result="Raised the session timeout."), "done"], _agent(id="fixer"), **_wf())
+        done = await store.get_card(card.id)
+        assert (done.status, done.outcome, done.result) == ("done", "succeeded", "Raised the session timeout.")
+        assert "Refused" not in _observations(fake_llm, 1)
+
+    async def test_its_schema_and_its_answers_name_no_version(self, boards_on, fake_llm):
+        from core.boards import tools
+
+        assert "version" not in tools._SCHEMAS["board_update"][1]["properties"]
+        assert "version" not in tools._SCHEMAS["board_update"][0]
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        await _turn(fake_llm, [tool_call("board_add", title="Fix logout", key="BUG-13"),
+                               tool_call("board_read", card_id=card.id),
+                               tool_call("board_claim", card_id=card.id),
+                               tool_call("board_update", card_id=card.id, status="done", result="ok"), "done"],
+                    _agent(id="fixer"), **_wf())
+        for i in range(1, 5):
+            assert "version" not in _observations(fake_llm, i).split("[Turn 1 — Observation]", 1)[-1]
+
+    async def test_a_card_changed_after_the_turn_saw_it_is_refused_with_the_fresh_card_and_a_retry_closes(self):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        turn = _turn_on(board)
+        await tools.digest(turn)                                   # the turn sees version 1
+        await store.update_card(card.id, version=1, by=PERSON, holder=None, body="Only on Safari.")
+        said = await tools.run_tool("board_update", {"card_id": card.id, "status": "done", "result": "ok"}, turn,
+                                    tainted=False)
+        assert said.observation.startswith("Refused") and "changed since you saw it" in said.observation
+        assert "Only on Safari." in said.observation              # the fresh card, in full
+        assert "version" not in said.observation
+        assert (await store.get_card(card.id)).status == "open"
+        again = await tools.run_tool("board_update", {"card_id": card.id, "status": "done", "result": "ok"}, turn,
+                                     tainted=False)
+        assert not again.observation.startswith("Refused")
+        assert (await store.get_card(card.id)).status == "done"
+
+    async def test_two_turns_that_saw_one_version_cannot_both_close_it(self):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        a, b = _turn_on(board, agent="fixer_a"), _turn_on(board, agent="fixer_b")
+        await tools.digest(a)
+        await tools.digest(b)
+        first = await tools.run_tool("board_update", {"card_id": card.id, "status": "done", "result": "A's fix"}, a,
+                                     tainted=False)
+        second = await tools.run_tool("board_update", {"card_id": card.id, "status": "done", "result": "B's fix"}, b,
+                                      tainted=False)
+        assert not first.observation.startswith("Refused") and second.observation.startswith("Refused")
+        assert "A's fix" in second.observation
+        assert (await store.get_card(card.id)).result == "A's fix"
+
+    async def test_a_title_or_body_edit_needs_a_full_read_of_the_card(self):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        turn = _turn_on(board)
+        await tools.digest(turn)                                   # seen, never read in full
+        said = await tools.run_tool("board_update", {"card_id": card.id, "body": "Steps: …"}, turn, tainted=False)
+        assert said.observation.startswith("Refused") and "board_read" in said.observation
+        assert (await store.get_card(card.id)).body == ""
+        await tools.run_tool("board_read", {"card_id": card.id}, turn, tainted=False)
+        said = await tools.run_tool("board_update", {"card_id": card.id, "body": "Steps: …"}, turn, tainted=False)
+        assert not said.observation.startswith("Refused")
+        assert (await store.get_card(card.id)).body == "Steps: …"
+
+    async def test_a_body_changed_after_its_full_read_is_not_overwritten(self):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        turn = _turn_on(board)
+        await tools.run_tool("board_read", {"card_id": card.id}, turn, tainted=False)
+        await store.update_card(card.id, version=1, by=PERSON, holder=None, body="A person's steps.")
+        await tools.digest(turn)                                   # the digest line shows the new version
+        said = await tools.run_tool("board_update", {"card_id": card.id, "body": "My steps."}, turn, tainted=False)
+        assert said.observation.startswith("Refused") and "A person's steps." in said.observation
+        assert (await store.get_card(card.id)).body == "A person's steps."
+
+    async def test_a_card_it_never_saw_may_be_closed_but_not_rewritten(self):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Fix login", by=PERSON)
+        turn = _turn_on(board)
+        said = await tools.run_tool("board_update", {"card_id": card.id, "title": "Fix SSO"}, turn, tainted=False)
+        assert said.observation.startswith("Refused")
+        said = await tools.run_tool("board_update", {"card_id": card.id, "status": "done", "result": "ok",
+                                                     "comment": "Verified."}, turn, tainted=False)
+        assert not said.observation.startswith("Refused")
+        done = await store.get_card(card.id)
+        assert (done.status, done.title) == ("done", "Fix login")
+
+    async def test_its_own_change_does_not_make_its_next_one_stale(self):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        turn = _turn_on(board)
+        added = await tools.run_tool("board_add", {"title": "Fix login", "key": "BUG-12"}, turn, tainted=False)
+        card = (await store.list_cards([board.id]))[0]
+        assert card.id in added.observation
+        for change in ({"body": "Steps: …"}, {"result": "Half done."}, {"status": "done", "result": "Done."}):
+            said = await tools.run_tool("board_update", {"card_id": card.id, **change}, turn, tainted=False)
+            assert not said.observation.startswith("Refused"), (change, said.observation)
+        assert (await store.get_card(card.id)).status == "done"
+
+
+# ── a person's open tasks are the turn's to-do list (BOARD2, D297) ──────────────
+
+
+class TestAPersonsTasksOpenTheDigest:
+    """BOARD2 move 4 (D297): on a schedule's own board — that schedule's inbox — a person's open tasks open the
+    digest as a numbered to-do list, each with how to finish it, and leave the board's ordinary lines. Naveen at the
+    plan (D2): the schedule's board only; a workflow's board, a scheduled workflow's included, is every step's, so a
+    person's card there stays a line marked "from a person"."""
+
+    SCOPE = TestAPersonsTaskBindsAScheduledTurn.SCOPE
+
+    async def _card(self, title, *, by=PERSON, **kw):
+        board = await store.get_or_create_scoped_board("schedule", "sch_intake")
+        card, _ = await store.add_card(board.id, title=title, by=by, **kw)
+        return card
+
+    async def test_a_schedules_board_opens_with_a_persons_open_tasks(self, boards_on, fake_llm):
+        ask = await self._card("Also add BUG-204: the export button is missing on Safari",
+                               body="Priority: high, before the release.")
+        mine = await self._card("Retry the import", by=store.Actor(agent="intake", source="schedule"))
+        note = await self._card("Supplier X is closed this week", kind="note")
+        await _turn(fake_llm, ["Done."], _agent(id="intake", max_turns=1), max_turns=1, **self.SCOPE)
+        tail = str(fake_llm.calls[0]["volatile_tail"])
+        todo = tail.index("A person asked you, before anything else:")
+        assert todo < tail.index("This schedule's board")
+        assert f"1) {ask.id}" in tail and "Priority: high, before the release." in tail
+        assert "board_update" in tail[todo:tail.index("This schedule's board")]
+        assert tail.count(ask.id) == 1                            # not listed twice
+        assert mine.id in tail[tail.index("This schedule's board"):]
+        assert note.id in tail[tail.index("This schedule's board"):]
+
+    async def test_a_task_it_holds_stays_on_it_and_another_holders_does_not(self, boards_on, fake_llm):
+        held = await self._card("Check the stockist map")
+        theirs = await self._card("Check the invoice PDF")
+        await store.claim(theirs.id, store.Holder(agent="other", key="schedulerun_other", label="Other"),
+                          by=store.Actor(agent="other", source="schedule"))
+        await _turn(fake_llm, [tool_call("board_claim", card_id=held.id), "Done.", "Done."], _agent(id="intake"),
+                    **self.SCOPE)
+        tail = str(fake_llm.calls[1]["volatile_tail"])
+        todo = tail[tail.index("A person asked you"):tail.index("This schedule's board")]
+        assert held.id in todo and theirs.id not in todo
+
+    async def test_a_closed_task_leaves_it(self, boards_on, fake_llm):
+        ask = await self._card("Also add BUG-204")
+        await _turn(fake_llm, [tool_call("board_update", card_id=ask.id, status="done", result="Added."), "Done."],
+                    _agent(id="intake"), **self.SCOPE)
+        assert "A person asked you" in str(fake_llm.calls[0]["volatile_tail"])
+        assert "A person asked you" not in str(fake_llm.calls[1]["volatile_tail"])
+
+    async def test_not_on_a_workflows_board(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="Also fix BUG-204", by=PERSON)
+        await _turn(fake_llm, ["Done."], _agent(id="fixer", max_turns=1), max_turns=1, **_wf())
+        tail = str(fake_llm.calls[0]["volatile_tail"])
+        assert "A person asked you" not in tail
+        assert card.id in tail and "from a person" in tail
