@@ -40,7 +40,7 @@
    "Under Build, make Workflows (with Schedules and Templates) and Agents (with Skills), keep files in the Vault, search them with Knowledge when it is on, and Chat.",
    "Under Connect, give agents Apps and Tools to call, and Channels and Widgets to meet people on.",
    "Press Ctrl+K (⌘K on a Mac), or click “Jump to…”, to go to any page or tab by name.",
-   "Click “Build with AI” in the menu to build with AI from any page; on a phone, the mark in the top bar. Settings sits at the foot."
+   "Click “Synapse AI” in the menu to ask about your workspace or build with AI from any page; on a phone, the mark in the top bar. Settings sits at the foot."
   ],
   "guide": "/guides/start/how-it-fits"
  },
@@ -293,7 +293,7 @@
   "steps": [
    "Under “Providers”, open one and paste its key; the link inside says where to get one.",
    "A provider with a model count is ready; “No key configured”, “Not running” or “Not installed” says what it needs.",
-   "Choose the “Default model”, and a “Builder model” if the AI builder should use another.",
+   "Choose the “Default model”, and a “Builder model” if Synapse AI should use another.",
    "Set “Reasoning effort” and “Max response length” for agents that set neither.",
    "Choose an “Embedding model” and, with Knowledge on, its models; then click “Save changes”."
   ],
@@ -307,7 +307,7 @@
   "title": "Workflows",
   "summary": "Your workflows, each a row: what starts it, how its last run went, and its steps by who does the work — a step that asks a person is the amber one. Open one to edit it on the canvas.",
   "steps": [
-   "Press “New workflow” for a blank canvas, “Build with AI” to describe one to the AI builder, or “Templates” to start from a ready-made one.",
+   "Press “New workflow” for a blank canvas, “Build with AI” to describe one to Synapse AI, or “Templates” to start from a ready-made one.",
    "Click a workflow’s row to open it on the canvas; its ⋯ menu duplicates it, copies its ID or deletes it.",
    "The chip says what starts it — a schedule’s time (in UTC) or Manual — and the row shows its last run’s status, time, duration and cost.",
    "Search by name or description, or sort by name, steps, last run, trigger or when it was updated.",

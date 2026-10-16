@@ -466,7 +466,7 @@ export function explainFailure(input: FailureInput): Explained {
         return { kind: 'agent-no-answer', sentence: `${its} agent finished without an answer.`, fixes: ['replay'] };
     }
     if (/No agent to answer yet/.test(raw)) {
-        return { kind: 'agent-none', sentence: 'There’s no agent to answer yet.', advice: 'Create one in Agents, or ask the AI builder to make one.', fixes: ['agents'] };
+        return { kind: 'agent-none', sentence: 'There’s no agent to answer yet.', advice: 'Create one in Agents, or ask Synapse AI to make one.', fixes: ['agents'] };
     }
     // "no longer exists" is the engine's words since F518; older runs say "not found".
     if (/Agent '.+?' (not found|no longer exists)/.test(raw)) {

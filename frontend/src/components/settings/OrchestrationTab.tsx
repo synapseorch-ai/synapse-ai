@@ -1817,7 +1817,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     title="No workflows yet"
                                     action={<LinkButton href="/templates" variant="secondary">Start from a template</LinkButton>}
                                 >
-                                    Describe one to the AI builder, start from a template, or make a blank one and wire its steps on the canvas.
+                                    Describe one to Synapse AI, start from a template, or make a blank one and wire its steps on the canvas.
                                 </EmptyState>
                             }
                         />

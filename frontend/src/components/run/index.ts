@@ -9,9 +9,11 @@ export { ComingUp, upcoming, type StartWays, type Upcoming } from './ComingUp';
 export { explainFailure, parentRunId, type Explained, type FixKind } from './failures';
 export { FailureCard, failureOf } from './FailureCard';
 export {
-    barHeights, byHandFavourite, dayBox, firstName, greeting, MAX_CARDS, rate, startDone, startSteps, statusLine, today,
+    askSuggestions, barHeights, byHandFavourite, dayBox, firstName, greeting, MAX_CARDS, rate, startDone, startSteps,
+    statusLine, today, type AskFacts,
     WEEK_BAR, WEEK_MAX, weekRuns, weekStats, type StartFacts, type StartStep, type StartStepId, type WeekStats,
 } from './home';
+export { AskLine } from './AskLine';
 export { GettingStarted, START_SUGGESTIONS, type StartSuggestion } from './GettingStarted';
 export { HomeSection } from './HomeSection';
 export { HomeStats } from './HomeStats';

@@ -1,8 +1,8 @@
 {
     "id": "orch_native_builder",
     "system": "native_builder",
-    "name": "Synapse AI Builder",
-    "description": "Designs and creates agents and orchestrations through conversation, with a human approval gate before anything is written to disk.",
+    "name": "Synapse AI",
+    "description": "The product's assistant: answers what is set up and what has happened in the workspace, puts up a card for anything a person can do with a button, and designs and creates agents and workflows through conversation, with a human approval gate before anything is written.",
     "avatar": "default",
     "entry_step_id": "step_intent",
     "state_schema": {

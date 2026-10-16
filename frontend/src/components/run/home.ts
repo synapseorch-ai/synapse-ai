@@ -193,7 +193,7 @@ export function startSteps(f: StartFacts): StartStep[] {
         {
             id: 'build', title: 'Build a workflow', done: Boolean(f.workflow),
             doneText: f.workflow ? `“${f.workflow.name}”` : undefined,
-            detail: 'Start from a template, or describe what you want and Build with AI drafts it.',
+            detail: 'Start from a template, or describe what you want and Synapse AI drafts it.',
             tip: 'A template is a finished workflow: run it as it is, then change it.',
         },
         {
@@ -218,7 +218,7 @@ export function startSteps(f: StartFacts): StartStep[] {
             id: 'own', title: 'Let it run on its own', done: f.runsOnItsOwn,
             doneText: 'It starts on its own',
             detail: 'Put it on a schedule, connect a channel, or start it from your own systems.',
-            tip: 'Ask Build with AI: “run it every weekday at 9”. It sets the schedule up for you.',
+            tip: 'Ask Synapse AI: “run it every weekday at 9”. It sets the schedule up for you.',
         },
     ];
     if (f.connect && f.connect.length) {
@@ -247,4 +247,33 @@ export function byHandFavourite(week: Pick<RunRow, 'workflowId' | 'workflowName'
     let best: { workflowId: string; name: string; count: number } | null = null;
     for (const [workflowId, c] of counts) if (c.count >= 2 && (!best || c.count > best.count)) best = { workflowId, ...c };
     return best;
+}
+
+/** What Home's ask line knows of the workspace: what waits, the newest failure today, whether something runs now. */
+export type AskFacts = {
+    waiting: number;
+    /** The workflow of the newest run that failed in the last day, if one did. */
+    failedWorkflow?: string | null;
+    running: number;
+    /** No workflow yet: Getting started's build suggestions lead instead. */
+    empty: boolean;
+    /** The hour of the day where the person is, for "overnight" before noon. */
+    hour: number | null;
+};
+
+/**
+ * The ask line's suggestions (ASSIST1, D291; Naveen: "a few short suggestions to ask it"), at most four, in the
+ * order they matter: what waits on the person, then why something failed, then the day so far. A new workspace has
+ * none: its Getting started path suggests what to build.
+ */
+export function askSuggestions(f: AskFacts): string[] {
+    if (f.empty) return [];
+    const out: string[] = [];
+    if (f.waiting > 0) out.push('What needs me?');
+    if (f.failedWorkflow) out.push(`Why did “${f.failedWorkflow}” fail?`);
+    if (f.running > 0) out.push('What’s running right now?');
+    out.push('Summarise today');
+    if (f.hour !== null && f.hour < 12) out.push('What ran overnight?');
+    else out.push('What did my agents do today?');
+    return out.slice(0, 4);
 }

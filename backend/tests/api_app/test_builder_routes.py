@@ -220,7 +220,7 @@ class TestSeeHowImBuilt:
         from the thing it describes."""
         legend = (await client.get("/api/builder/legend")).json()
 
-        assert legend["name"] == "Synapse AI Builder"
+        assert legend["name"] == "Synapse AI"
         # 24 since D122: the plan-room check and its refusal (F154), and finish_build (F156); 26 since BWA1: the
         # plan's check and where it sends the plan (F492); 29 with the how-to, connect and can't-do look-ups; 31 with
         # the researcher and the step that makes its findings card (F577); 32 with "Find who can" on the plan; 35 with the

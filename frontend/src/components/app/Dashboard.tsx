@@ -29,7 +29,7 @@ import { NOTIFICATION_EVENT, useNotifications } from '@/components/notifications
 import { ToolApprovalActions } from '@/components/notifications/ToolApproval';
 import {
     byHandFavourite, ComingUp, firstName, GettingStarted, greeting, HomeSection, HomeStats, MAX_CARDS, NeedsYou,
-    RecentRuns, RunHostProvider, RunWeek, START_SUGGESTIONS, startDone, startSteps, statusLine, today, upcoming,
+    AskLine, askSuggestions, RecentRuns, RunHostProvider, RunWeek, START_SUGGESTIONS, startDone, startSteps, statusLine, today, upcoming,
     weekRuns, weekStats, useClock, type RunRecord, type RunRow, type ToolCall, type WaitingBrief,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
@@ -244,6 +244,18 @@ export function Dashboard() {
     const unpricedCount = (summary?.by_model ?? []).filter(m => m.priced === false && m.provider !== 'ollama').length;
     const schedulesOn = schedules.filter(s => s.enabled !== false).length;
 
+    // What the ask line's suggestions follow (ASSIST1): what waits, the newest failure in the last day, what runs.
+    const dayAgo = clock.now - 86_400_000;
+    const failedToday = recent.find(r => r.status === 'failed' && Date.parse(String(r.startedAt ?? '')) >= dayAgo);
+    const askFacts = {
+        waiting: waitingCount,
+        failedWorkflow: failedToday?.workflowName ?? null,
+        running: rows.filter(r => r.status === 'running').length,
+        empty: workflows.length === 0,
+        hour: Number.isNaN(clock.now) ? null : Number(new Intl.DateTimeFormat('en-US', {
+            hour: 'numeric', hourCycle: 'h23', timeZone: clock.timeZone }).format(clock.now)),
+    };
+
     // Until mounted the clock has no "now": the lines are held empty, at their height, so nothing moves.
     const blank = ' ';
 
@@ -260,14 +272,15 @@ export function Dashboard() {
                         <MessagesSquare className="size-4" aria-hidden />
                         Open chat
                     </LinkButton>
-                    <Button onClick={() => openBuilder()}>
-                        <Mark size={20} compact={false} />
-                        Build with AI
-                    </Button>
                 </>
             }
         >
             <div className="grid gap-7">
+                {/* Synapse AI's ask line (ASSIST1): above Needs you, which stays first in what Home shows. */}
+                {loaded && runsLoaded && (
+                    <AskLine suggestions={askSuggestions(askFacts)} onAsk={(text) => openBuilder({ ask: text })} />
+                )}
+
                 {/* With nothing waiting, a new workspace's path leads; its fourth step says what Needs you is. */}
                 {(!showStart || startFolded || waitingCount > 0) && (
                     <RunHostProvider value={OSS_RUN_HOST}>

@@ -220,7 +220,7 @@ export function BuilderPanel() {
     return (
         <>
             <aside
-                aria-label="AI builder"
+                aria-label="Synapse AI"
                 onKeyDown={(e) => {
                     // Escape on the panel, not on the document: the card is not
                     // modal and does not trap focus, so a document listener
@@ -245,7 +245,7 @@ export function BuilderPanel() {
                 <header className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
                     <div className="flex items-center gap-2">
                         <Mark size={20} compact={false} className="text-accent" aria-hidden />
-                        <span className="text-sm font-semibold text-text">AI Builder</span>
+                        <span className="text-sm font-semibold text-text">Synapse AI</span>
                     </div>
                     <div className="flex items-center gap-1">
                         <button
@@ -268,7 +268,7 @@ export function BuilderPanel() {
                         <button
                             type="button"
                             onClick={close}
-                            aria-label="Close the AI builder"
+                            aria-label="Close Synapse AI"
                             className={cn('rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text', focusRing)}
                         >
                             <X size={16} aria-hidden />
@@ -398,10 +398,10 @@ export function BuilderPanel() {
                         sendPending={streaming && !working}
                         busy={working}
                         onStop={() => void stop()}
-                        stopLabel="Stop the builder"
+                        stopLabel="Stop Synapse AI"
                         stopTitle="Stop"
                         placeholder={ask}
-                        label="Message the AI builder"
+                        label="Message Synapse AI"
                         disabled={streaming}
                         textareaRef={textarea}
                         dropHandlers={attachments.dropHandlers}
@@ -410,7 +410,7 @@ export function BuilderPanel() {
                         pill={(
                             <span className={cn(composerPillClass, 'hover:bg-surface-2')}>
                                 <PillAvatar><Mark size={14} className="text-accent" aria-hidden /></PillAvatar>
-                                AI builder
+                                Synapse AI
                             </span>
                         )}
                         attach={(
@@ -450,7 +450,7 @@ export function BuilderPanel() {
                     {fresh && (
                         <Suggestions
                             items={[...BUILDER_EXAMPLES, AGENT_BUILDER_SWITCH.suggestion]}
-                            label="Things to ask for"
+                            label="Things to ask"
                             onPick={(text) => {
                                 // The switch's chip says what it is for; the composer gets
                                 // the lead line its export goes under (SW1).

@@ -437,7 +437,7 @@ export const ModelsTab = ({
                 </Field>
                 {/* `builder_model` has been writable and honoured end to end since the builder shipped;
                     the only other way to set it is "Set as default" inside the panel. */}
-                <Field label="Builder model" hint="Used by the AI builder for every step of a build, except the quick steps when you pick a model for them below. Reasoning-capable models do noticeably better here.">
+                <Field label="Builder model" hint="Used by Synapse AI for every step of a build, except the quick steps when you pick a model for them below. Reasoning-capable models do noticeably better here.">
                     <Combobox
                         value={builderModel || DEFAULT_SENTINEL}
                         onChange={(v) => setBuilderModel(v === DEFAULT_SENTINEL ? '' : v)}
@@ -450,7 +450,7 @@ export const ModelsTab = ({
                 {/* BWA1: the builder's quick steps — deciding what a message asks for, whether a plan was
                     approved — on their own model, often a small one. Empty follows the builder model.
                     Helpers set to "Quick-step model" run on it too (SUB1a), hence not the builder's alone. */}
-                <Field label="Model for quick steps" hint="Used by the AI builder to decide what you asked for and whether you approved a plan, and by an agent's helpers when its Helper model is the quick-step model. A small, fast model usually does this as well as a large one.">
+                <Field label="Model for quick steps" hint="Used by Synapse AI to decide what you asked for and whether you approved a plan, and by an agent's helpers when its Helper model is the quick-step model. A small, fast model usually does this as well as a large one.">
                     <Combobox
                         value={builderQuickModel || DEFAULT_SENTINEL}
                         onChange={(v) => setBuilderQuickModel(v === DEFAULT_SENTINEL ? '' : v)}

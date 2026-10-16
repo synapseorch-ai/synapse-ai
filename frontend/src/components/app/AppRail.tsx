@@ -269,7 +269,7 @@ export function AppRail({
                 <button
                     type="button"
                     onClick={() => openBuilder()}
-                    title="Build with AI"
+                    title="Synapse AI"
                     className={cn(
                         // The frame's own action (D223): a white card in light, teal in dark.
                         ROW, 'w-full bg-[var(--frame-action)] font-medium text-accent-ink shadow-[var(--frame-action-shadow)]',
@@ -279,7 +279,7 @@ export function AppRail({
                 >
                     {/* The mark wherever the product acts (feedback-app-shell-design). */}
                     <Mark size={20} compact={false} className="shrink-0 text-accent" aria-hidden />
-                    <RowLabel collapsed={collapsed}>Build with AI</RowLabel>
+                    <RowLabel collapsed={collapsed}>Synapse AI</RowLabel>
                     {waiting && <span className="sr-only">(waiting for your answer)</span>}
                     {(streaming || waiting) && (
                         <span

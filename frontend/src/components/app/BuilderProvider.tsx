@@ -50,13 +50,12 @@ export const EXIT_MS = 200;
 const STOP_GRACE_MS = 5000;
 
 /**
- * What the builder says before anything else, above the composer: Prototype 2's
- * words (M2c, Naveen's call), without "and what it costs" — nothing estimates a
- * plan's cost yet.
+ * What Synapse AI says before anything else, above the composer: what it answers
+ * and what it builds (ASSIST1, D291; the build half is Prototype 2's words, M2c).
  */
 export const BUILDER_GREETING = {
-    title: 'What should happen, and when?',
-    text: "Describe a job in plain words. I'll show you a plan to approve before I build anything.",
+    title: 'What can I do for you?',
+    text: "Ask about your workspace: what ran, what failed, what waits on you. Or describe a job in plain words, and I'll show you a plan to approve before I build anything.",
 } as const;
 
 /**
@@ -64,6 +63,7 @@ export const BUILDER_GREETING = {
  * one in the composer, unsent. They were bullets under the greeting.
  */
 export const BUILDER_EXAMPLES = [
+    'Summarise today',
     "Every weekday at 8, summarise yesterday's support tickets and post it to Slack",
     'Add a tool that files a ticket in our issue tracker',
     'Change the research workflow to ask me before it sends anything',
@@ -120,6 +120,8 @@ interface OpenOptions {
      * (Home's "describe what you want to automate" and its suggestions, M2a).
      */
     prompt?: string;
+    /** Words sent at once, as the person's message: Home's ask line and its chips (ASSIST1). */
+    ask?: string;
 }
 
 /** Words waiting for the composer; `n` tells one hand-over from the next with the same words. */
@@ -254,6 +256,9 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         currentOrchestrationId.current = id;
     }, []);
 
+    // Words `open({ ask })` sends once the panel is open (below `send`).
+    const [ask, setAsk] = useState<string | null>(null);
+
     const open = useCallback((options?: OpenOptions) => {
         // An explicit answer still wins, for a caller that opens the panel about
         // something other than what it is showing. Everything else comes from
@@ -265,6 +270,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
             const text = options.prompt;
             setDraft((cur) => ({ text, n: (cur?.n ?? 0) + 1 }));
         }
+        if (options?.ask?.trim()) setAsk(options.ask.trim());
         // Cancel a close still in flight. `OrchestrationTab`'s "Build with AI"
         // stays clickable while the panel is leaving, so reopening inside the
         // exit window let the stale timer unmount what had just been reopened.
@@ -548,6 +554,15 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         },
         [consume, conversationId, reportStreamEnd, sessionModel, state.messages, state.pending, streaming],
     );
+
+    // Home's ask line: the words go as the person's message once the panel is open. While a turn is still
+    // answering they wait in the composer instead, unsent, rather than being lost.
+    useEffect(() => {
+        if (!ask || !isOpen) return;
+        setAsk(null);
+        if (streaming) setDraft((cur) => ({ text: ask, n: (cur?.n ?? 0) + 1 }));
+        else void send(ask);
+    }, [ask, isOpen, streaming, send]);
 
     /**
      * Stop the attached run.

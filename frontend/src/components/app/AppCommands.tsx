@@ -116,8 +116,8 @@ export function AppCommands({
         items: [
             {
                 id: 'action:build',
-                label: 'Build with AI',
-                hint: 'Describe a job and the builder makes the workflow',
+                label: 'Ask Synapse AI',
+                hint: 'Ask about your workspace, or describe a job to build',
                 // Never under 20px, or the mark turns into its two-dot form (COMPACT_BELOW).
                 icon: <Mark size={20} compact={false} className="text-accent" aria-hidden />,
                 keywords: ['builder', 'AI', 'create'],
