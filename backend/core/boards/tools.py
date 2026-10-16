@@ -389,6 +389,32 @@ async def left_open(turn: TurnBoards) -> str | None:
     return f"{who} left {named} claimed without closing {it}; {it} {'goes' if len(held) == 1 else 'go'} back to Open as the turn ends."
 
 
+async def persons_open(turn: TurnBoards) -> str | None:
+    """What a scheduled turn that answers is told when a person's task on its schedule's board is still open, or
+    claimed by it (F581): its answer is sent back once with each card named, its version given so it can close it
+    at once. None otherwise, and never raises. Only a schedule's own board — that schedule's inbox; a workflow's
+    board is every step's, so a person's task there may be another step's (Naveen)."""
+    own = next((b for b in turn.boards if b.own and b.scope == "schedule"), None)
+    if own is None:
+        return None
+    try:
+        await turn.refresh()
+        if own.board_id is None:
+            return None
+        cards = await store.list_cards([own.board_id], statuses=("open", "claimed"), limit=DIGEST_LINES)
+    except Exception as exc:  # noqa: BLE001 — a board never fails a turn
+        logger.warning("a person's open tasks on %s not read: %s", own.label, exc)
+        return None
+    left = [c for c in cards if c.by_person and c.kind == "task" and (c.status == "open" or c.held_by(turn.holder))]
+    if not left:
+        return None
+    named = "\n".join(f"- {c.id} (version {c.version}) \"{c.title[:120]}\"" for c in left)
+    one = len(left) == 1
+    return (f"A person's {'task' if one else 'tasks'} on {own.label} {'is' if one else 'are'} still open:\n{named}\n"
+            f"Do {'it' if one else 'each'} and close {'it' if one else 'them'} with board_update (status 'done' and "
+            "the result), or close it 'failed' with the reason it cannot be done. Then give your final answer.")
+
+
 async def renew(turn: TurnBoards) -> None:
     """Keep this turn's claims: once a third of the lease has passed since it last did, one UPDATE renews them.
     Nothing while it holds none."""

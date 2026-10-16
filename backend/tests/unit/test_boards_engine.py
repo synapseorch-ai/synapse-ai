@@ -526,6 +526,95 @@ class TestLeftOpenIsSaid:
         assert "step_warning" in kinds and kinds.index("step_warning") < kinds.index("final")
 
 
+class TestAPersonsTaskBindsAScheduledTurn:
+    """F581: a scheduled agent ended its firing with a person's task on its own schedule board untouched — "Also
+    add BUG-204", first in its digest and marked from a person. gpt-4.1-mini did so in 9 of 30 firings (BOARD1b's
+    capture, `drafts/board1b/f581/`): it never misplaced the card, it ignored it, and when it did the work it closed
+    the card 2 times in 7. A final answer while a person's task on the turn's schedule board is still open, or claimed
+    by this turn, is deferred once with the card named; the next final answer is accepted (Naveen: the schedule's
+    board only — a workflow's board is every step's)."""
+
+    SCOPE = {"source": "schedule", "run_id": "schedulerun_204",
+             "board_scope": {"kind": "schedule", "id": "sch_intake", "holder": "schedulerun_204"}}
+
+    async def _ask(self, title="Also add BUG-204: the export button is missing on Safari", **kw):
+        board = await store.get_or_create_scoped_board("schedule", "sch_intake")
+        card, _ = await store.add_card(board.id, title=title, by=kw.pop("by", PERSON), **kw)
+        return card
+
+    async def test_an_answer_that_leaves_it_open_is_sent_back_once_naming_the_card(self, boards_on, fake_llm):
+        card = await self._ask()
+        events = await _turn(fake_llm, [
+            "Added BUG-201 to BUG-203.",
+            tool_call("board_update", card_id=card.id, version=1, status="done", result="Added BUG-204."),
+            "Added BUG-201 to BUG-204."], _agent(id="intake"), **self.SCOPE)
+        assert len(fake_llm.calls) == 3
+        said = _observations(fake_llm, 1)
+        assert "A person's task on this schedule's board is still open" in said
+        assert card.id in said and "version 1" in said and "Also add BUG-204" in said and "board_update" in said
+        assert "Added BUG-201 to BUG-203." in said  # what it answered, so it knows what it is asked about
+        assert (await store.get_card(card.id)).status == "done"
+        assert [e["response"] for e in events if e["type"] == "final"] == ["Added BUG-201 to BUG-204."]
+        assert any(e["type"] == "status" and "person's task" in e["message"] for e in events)
+
+    async def test_the_second_answer_is_accepted(self, boards_on, fake_llm):
+        card = await self._ask()
+        events = await _turn(fake_llm, ["Nothing to add.", "Still nothing."], _agent(id="intake"), **self.SCOPE)
+        assert len(fake_llm.calls) == 2
+        assert [e["response"] for e in events if e["type"] == "final"] == ["Still nothing."]
+        assert (await store.get_card(card.id)).status == "open"
+
+    async def test_a_card_it_claimed_and_never_closed_binds_too(self, boards_on, fake_llm):
+        card = await self._ask()
+        await _turn(fake_llm, [tool_call("board_claim", card_id=card.id), "Added BUG-204.",
+                               tool_call("board_update", card_id=card.id, version=1, status="done", result="Added."),
+                               "Added BUG-204 and closed the card."], _agent(id="intake"), **self.SCOPE)
+        assert len(fake_llm.calls) == 4 and card.id in _observations(fake_llm, 2)
+        assert (await store.get_card(card.id)).status == "done"
+
+    async def test_a_card_it_closed_does_not(self, boards_on, fake_llm):
+        card = await self._ask()
+        await _turn(fake_llm, [tool_call("board_update", card_id=card.id, version=1, status="failed",
+                                         result="BUG-204 is a duplicate of BUG-180."), "Closed it."],
+                    _agent(id="intake"), **self.SCOPE)
+        assert len(fake_llm.calls) == 2
+
+    async def test_an_agents_card_a_persons_note_and_another_holders_claim_do_not(self, boards_on, fake_llm):
+        await self._ask(title="Retry the import", by=store.Actor(agent="intake", run="schedulerun_1",
+                                                                  source="schedule"))
+        await self._ask(title="Supplier X is closed this week", kind="note")
+        held = await self._ask(title="Check the stockist map")
+        await store.claim(held.id, store.Holder(agent="other", key="schedulerun_other", label="Other"),
+                          by=store.Actor(agent="other", source="schedule"))
+        await _turn(fake_llm, ["Done."], _agent(id="intake"), **self.SCOPE)
+        assert len(fake_llm.calls) == 1
+
+    async def test_not_on_a_workflows_board(self, boards_on, fake_llm):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        await store.add_card(board.id, title="Also fix BUG-204", by=PERSON)
+        await _turn(fake_llm, ["Done."], _agent(id="fixer"), **_wf())
+        assert len(fake_llm.calls) == 1
+
+    async def test_not_on_its_last_call(self, boards_on, fake_llm):
+        await self._ask()
+        await _turn(fake_llm, ["Done."], _agent(id="intake", max_turns=1), max_turns=1, **self.SCOPE)
+        assert len(fake_llm.calls) == 1
+
+    async def test_a_firing_through_the_scheduler_is_bound(self, boards_on, fake_llm):
+        from core.scheduler import ScheduleManager
+
+        await S.seed_agents([_agent(id="intake")])
+        card = await self._ask()
+        manager = ScheduleManager()
+        manager._server_module = _server()
+        fake_llm.script(["Added BUG-201 to BUG-203.",
+                         tool_call("board_update", card_id=card.id, version=1, status="done", result="Added."),
+                         "Added all four."])
+        s = {"id": "sch_intake", "name": "Intake", "target_type": "agent", "target_id": "intake"}
+        [e async for e in manager._agent_turn_events(s, "schedulerun_today", message="today's bugs")]
+        assert (await store.get_card(card.id)).status == "done"
+
+
 class TestRelease:
     async def test_a_workflow_steps_claims_go_when_it_ends(self, boards_on, fake_llm):
         from core.models_orchestration import Orchestration
