@@ -259,6 +259,22 @@ async def _fetch_copilot_models() -> "list[str]":
         return _COPILOT_FALLBACK_MODELS
 
 
+@router.get("/api/models/rerank")
+async def get_rerank_models(refresh: bool = False):
+    """The rerank models this workspace's keys can use, per provider (BF9, D293): Knowledge's rerank pickers and
+    the reranker cards read it, as the chat pickers read `/api/models`. Knowledge's, so a 404 while it is off;
+    `refresh` asks every provider again (a key was just saved)."""
+    from dataclasses import asdict
+
+    from core.knowledge.config import knowledge_enabled
+    from core.knowledge.rerank_models import list_rerank_models
+
+    if not knowledge_enabled():
+        raise HTTPException(status_code=404, detail="Not Found")
+    listings = await list_rerank_models(load_settings(), refresh=refresh)
+    return {"providers": [asdict(listing) for listing in listings]}
+
+
 @router.get("/api/models")
 async def get_models():
     """Fetches available models dynamically from each provider's API."""

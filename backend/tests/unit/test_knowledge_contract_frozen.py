@@ -72,6 +72,8 @@ LANE_MODULES = {
     "enrich.py", "enrich_cache.py",
     # PG1 — progress you can see, embedding paced, answered vectors kept across a pause
     "progress.py", "pacing.py", "embed_cache.py",
+    # BF9 — the rerank models a workspace's keys can use
+    "rerank_models.py",
 }
 FROZEN_HEADER = "# FROZEN CONTRACT (KB0, D153)"
 
