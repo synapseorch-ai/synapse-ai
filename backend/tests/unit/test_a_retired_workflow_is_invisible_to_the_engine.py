@@ -59,7 +59,8 @@ class TestTheStoreSaysSo:
 class TestEveryReaderSkipsIt:
     async def test_it_is_never_an_mcp_tool(self):
         from core.mcp_server.workflows import workflow_map
-        await S.seed_orchestrations([S.make_orchestration(id="orch_live", name="Invoice triage")])
+        await S.seed_orchestrations([S.make_orchestration(id="orch_live", name="Invoice triage",
+                                                          offer_to_mcp=True)])
         await _insert_retired("orch_gone", "Invoice triage")
 
         named = await workflow_map(set())

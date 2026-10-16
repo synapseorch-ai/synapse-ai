@@ -65,9 +65,11 @@ RESULT_CHARS = 50_000
 INSTRUCTIONS = (
     "Synapse builds and runs AI workflows (orchestrations) made of agents, tools and human "
     "checkpoints. Look before you build: list_agents, list_orchestrations and list_tool_servers "
-    "say what exists. Each workflow is also a tool of its own (run_<name>). A run that asks a "
-    "question comes back `paused`; answer it with answer_run. Deleting is done in the Synapse "
-    "app, not here. Runs spend the workspace's model credits."
+    "say what exists. run_orchestration runs any workflow by id or name; the ones a workspace "
+    "offers to MCP clients are also tools of their own (run_<name>). A run that asks a question "
+    "comes back `paused`; answer it with answer_run, and list_waiting shows everything that waits "
+    "on a person. Deleting is done in the Synapse app, not here. Runs spend the workspace's model "
+    "credits."
 )
 
 

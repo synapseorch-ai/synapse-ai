@@ -126,7 +126,8 @@ class TestTheKeyIsTheGate:
 
 class TestTheToolList:
     async def test_builder_run_and_workflow_tools_and_no_deletes(self, mcp_app, api_key, seed_orchestration):
-        await seed_orchestration(id="orch_brief", name="Client brief", description="Drafts a brief.")
+        await seed_orchestration(id="orch_brief", name="Client brief", description="Drafts a brief.",
+                                 offer_to_mcp=True)
         async with mcp_session(mcp_app, api_key) as s:
             tools = {t.name: t for t in (await s.list_tools()).tools}
         assert {"list_agents", "create_agent", "update_orchestration", "run_orchestration",
@@ -139,8 +140,10 @@ class TestTheToolList:
     async def test_the_builders_own_orchestration_is_not_a_tool(self, mcp_app, api_key):
         from _fakes import seed
         await seed.seed_orchestrations([
-            seed.make_orchestration(id="orch_mine", name="Mine"),
-            seed.make_orchestration(id="orch_native_builder", name="AI Builder", system="native_builder"),
+            seed.make_orchestration(id="orch_mine", name="Mine", offer_to_mcp=True),
+            # Offered too, so only its being the builder's own keeps it off the list.
+            seed.make_orchestration(id="orch_native_builder", name="AI Builder", system="native_builder",
+                                    offer_to_mcp=True),
         ])
         async with mcp_session(mcp_app, api_key) as s:
             names = {t.name for t in (await s.list_tools()).tools}
@@ -347,7 +350,7 @@ class TestRuns:
             assert [r["run_id"] for r in listed] == [run["run_id"]]
 
     async def test_a_workflow_tool_runs_its_workflow(self, mcp_app, api_key, seed_orchestration):
-        await seed_orchestration(id="orch_hello", name="Say hello")
+        await seed_orchestration(id="orch_hello", name="Say hello", offer_to_mcp=True)
         async with mcp_session(mcp_app, api_key) as s:
             result = _body(await s.call_tool("run_say_hello", {"message": "go", "wait_seconds": 10}))
         assert result["status"] == "completed", result
@@ -502,7 +505,7 @@ class TestWhereRunsExecute:
                                                            fleet_runs):
         from core.orchestration.runner import _active_tasks
 
-        await seed_orchestration(id="orch_fleet", name="Fleet job")
+        await seed_orchestration(id="orch_fleet", name="Fleet job", offer_to_mcp=True)
         before = set(_active_tasks)
         async with mcp_session(mcp_app, api_key) as s:
             started = _body(await s.call_tool("run_orchestration", {
@@ -574,7 +577,7 @@ class TestAnAnsweredQuestionIsNotAskedAgain:
         its answer as lost. A new question — another pause — is asked."""
         from core.mcp_server import runs
 
-        await seed_orchestration(id="orch_fleet", name="Fleet job")
+        await seed_orchestration(id="orch_fleet", name="Fleet job", offer_to_mcp=True)
         fleet = _SlowFleet()
         runs.set_run_backend(fleet)
         try:

@@ -25,7 +25,8 @@ import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
-    DescriptionField, GuardrailsFields, SchedulesList, SettingsSection, WorkflowSettingsPanel, type WorkflowSchedule,
+    DescriptionField, GuardrailsFields, McpOfferField, SchedulesList, SettingsSection, WorkflowSettingsPanel,
+    type WorkflowSchedule,
 } from '../orchestration/WorkflowSettings';
 import { initialHumanValues, type HumanField, type HumanValues } from '../orchestration/humanFields';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
@@ -1924,6 +1925,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     </SettingsSection>
                                     <SettingsSection title="Guardrails">
                                         <GuardrailsFields draft={draft} onChange={setDraft} rubrics={rubrics} />
+                                    </SettingsSection>
+                                    <SettingsSection title="MCP clients">
+                                        <McpOfferField draft={draft} onChange={setDraft} />
                                     </SettingsSection>
                                 </WorkflowSettingsPanel>
                             )}

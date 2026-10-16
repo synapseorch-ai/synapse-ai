@@ -224,6 +224,11 @@ class Orchestration(BaseModel):
     max_run_credits: float | None = None
     max_run_usd: float | None = None
 
+    #: Offered to MCP clients as a tool of its own, `run_<name>` with its inputs (F466, MCP2, D292). Off by
+    #: default: every workflow is a tool otherwise, and a workspace's dozens fill a client's context on every
+    #: turn. Off, a client still runs it by id or name through `run_orchestration`.
+    offer_to_mcp: bool = False
+
     @field_validator("max_run_credits", "max_run_usd", mode="before")
     @classmethod
     def _a_cap_or_none(cls, value: Any, info) -> float | None:

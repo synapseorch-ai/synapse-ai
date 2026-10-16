@@ -70,10 +70,12 @@ def name_workflows(orchs: list[dict], reserved: set[str]) -> dict[str, dict]:
 
 
 async def workflow_map(reserved: set[str]) -> dict[str, dict]:
+    """The workflows offered to MCP clients as tools of their own (`offer_to_mcp`, F466), by tool name."""
     from core.builder_tools import _is_visible
     from core.routes.orchestrations import load_orchestrations
 
-    return name_workflows([o for o in await load_orchestrations() if _is_visible(o) and o.get("id")], reserved)
+    return name_workflows([o for o in await load_orchestrations()
+                           if _is_visible(o) and o.get("id") and o.get("offer_to_mcp")], reserved)
 
 
 def as_tool(name: str, orch: dict) -> types.Tool:

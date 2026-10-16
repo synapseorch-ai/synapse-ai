@@ -149,6 +149,9 @@ export interface Orchestration {
      *  The engine asks before every step; a run at its cap stops and says so. */
     max_run_credits?: number | null;
     max_run_usd?: number | null;
+    /** Offered to MCP clients (Claude, Cursor…) as a tool of its own, with its inputs (F466). Off by default:
+     *  off, a client still runs it by id or name, it is only not one more tool in its list. */
+    offer_to_mcp?: boolean;
     /** Stop a run when a step's text will not become the type its state key
      *  declares. Off by default — a type nobody was ever held to is not a
      *  thing to start failing runs over. A value that is simply of another

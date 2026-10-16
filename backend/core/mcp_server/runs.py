@@ -59,7 +59,9 @@ RUN_TOOLS: tuple[types.Tool, ...] = (
         inputSchema={
             "type": "object",
             "properties": {
-                "orchestration_id": {"type": "string", "description": "The orchestration's id (see list_orchestrations)."},
+                "orchestration_id": {"type": "string",
+                                     "description": "The orchestration's id, or its exact name (see "
+                                                    "list_orchestrations)."},
                 "message": {"type": "string", "description": "What the run should work on — its goal or input text."},
                 "inputs": {
                     "type": "object",
@@ -209,11 +211,23 @@ def _wait(args: dict, default: int) -> float:
 
 
 async def _visible_orchestration_or_refuse(orch_id: str) -> dict:
-    from core.builder_tools import _visible_orchestration
+    """The workspace's workflow with this id, or else with exactly this name (any case): a client names a
+    workflow as a person does, and only some are tools of their own (F466)."""
+    from core.builder_tools import _is_visible, _visible_orchestration
     orch = await _visible_orchestration(orch_id)
-    if orch is None:
-        raise ToolRefusal(f"Orchestration '{orch_id}' not found")
-    return orch
+    if orch is not None:
+        return orch
+    from core.routes.orchestrations import load_orchestrations
+
+    wanted = orch_id.strip().casefold()
+    named = [o for o in await load_orchestrations()
+             if _is_visible(o) and str(o.get("name") or "").strip().casefold() == wanted]
+    if len(named) == 1:
+        return named[0]
+    if named:
+        ids = ", ".join(f"{o['id']}" for o in named)
+        raise ToolRefusal(f"{len(named)} workflows are named '{orch_id}': {ids}. Run one by its id.")
+    raise ToolRefusal(f"Orchestration '{orch_id}' not found")
 
 
 async def _served_run(run_id: str) -> None:

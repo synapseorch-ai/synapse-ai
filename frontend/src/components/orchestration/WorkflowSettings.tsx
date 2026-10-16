@@ -66,6 +66,33 @@ export function DescriptionField({ draft, onChange, readOnly }: {
     );
 }
 
+/** Whether MCP clients see this workflow as a tool of its own (F466). Off by default: a workspace's
+ *  dozens of workflows, each a tool, filled a client's context on every turn. Off, it still runs by name. */
+export function McpOfferField({ draft, onChange, readOnly }: {
+    draft: Orchestration;
+    onChange: (next: Orchestration) => void;
+    readOnly?: boolean;
+}) {
+    return (
+        <label className="flex cursor-pointer items-start gap-2.5">
+            <input
+                type="checkbox"
+                className="mt-0.5 size-4 shrink-0 accent-[var(--accent)]"
+                checked={!!draft.offer_to_mcp}
+                disabled={readOnly}
+                onChange={(e) => onChange({ ...draft, offer_to_mcp: e.target.checked })}
+            />
+            <span>
+                <span className="block text-sm font-medium text-text">Offer to MCP clients</span>
+                <span className="mt-0.5 block text-xs leading-relaxed text-text-faint">
+                    Claude and other apps connected over MCP see this workflow as a tool of its own, with its
+                    inputs. Off, they can still run it by its name; it is only not one more tool in their list.
+                </span>
+            </span>
+        </label>
+    );
+}
+
 /** The keys a run's result can name: each written by a step, labelled with the
  *  steps that write it. A saved key no step writes stays listed, so the select
  *  shows what is stored rather than silently reading as the default (F249).

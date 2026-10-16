@@ -81,7 +81,7 @@ class TestARefusalByRole:
             await server._call("create_agent", {"name": "x"}, caller=_as(Role.VIEWER))
 
     async def test_an_approver_cannot_run_a_workflow_by_its_own_tool(self, test_app, seed_orchestration):
-        await seed_orchestration(id="orch_brief", name="Client brief")
+        await seed_orchestration(id="orch_brief", name="Client brief", offer_to_mcp=True)
         with pytest.raises(ToolRefusal, match="builder role.*approver"):
             await server._call("run_client_brief", {"message": "go"}, caller=_as(Role.APPROVER))
 
@@ -229,3 +229,40 @@ class TestF696AScheduledRunsCall:
     @pytest.fixture(autouse=True)
     def _armed(self, schedule, manager, executed):
         self._manager, self._executed = manager, executed
+
+
+class TestF466AWorkflowIsOfferedByItsSwitch:
+    """One tool per live workflow filled every client's context (acme: ~109 tools). Naveen (D292): a per-workflow
+    "Offer to MCP clients" switch, off by default; every workflow still runs by id or name."""
+
+    async def test_only_an_offered_workflow_is_a_tool_of_its_own(self, mcp_app, api_key):
+        from _fakes import seed as S
+
+        await S.seed_orchestrations([S.make_orchestration(id="orch_on", name="Client brief", offer_to_mcp=True),
+                                     S.make_orchestration(id="orch_off", name="Weekly digest")])
+        async with mcp_session(mcp_app, api_key) as s:
+            names = {t.name for t in (await s.list_tools()).tools}
+        assert "run_client_brief" in names and "run_weekly_digest" not in names
+
+    async def test_any_workflow_runs_by_its_name(self, mcp_app, api_key, seed_orchestration):
+        await seed_orchestration(id="orch_off", name="Weekly digest")
+        async with mcp_session(mcp_app, api_key) as s:
+            run = _body(await s.call_tool("run_orchestration", {"orchestration_id": "weekly DIGEST",
+                                                               "message": "go", "wait_seconds": 10}))
+        assert run["status"] == "completed", run
+
+    async def test_a_name_two_workflows_share_asks_for_the_id(self, mcp_app, api_key):
+        from _fakes import seed as S
+
+        await S.seed_orchestrations([S.make_orchestration(id="orch_a", name="Digest"),
+                                     S.make_orchestration(id="orch_b", name="digest")])
+        async with mcp_session(mcp_app, api_key) as s:
+            res = await s.call_tool("run_orchestration", {"orchestration_id": "Digest", "message": "go"})
+        assert res.isError and "2 workflows are named" in res.content[0].text
+        assert "orch_a" in res.content[0].text and "orch_b" in res.content[0].text
+
+    def test_the_switch_is_off_unless_saved_on(self):
+        from core.models_orchestration import Orchestration
+
+        assert Orchestration(id="o", name="n").offer_to_mcp is False
+        assert Orchestration(id="o", name="n", offer_to_mcp=True).offer_to_mcp is True
