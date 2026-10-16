@@ -154,3 +154,68 @@ class TestALeadThatWaitsPatiently:
         assert len(waits) == 3 and len(set(waits)) == 3, waits
         assert "Ana" in waits[0]
         assert [e for e in events if e.get("type") == "final"][-1]["response"] == "all checked"
+
+
+class TestAPausedTeamKeepsItsTimes:
+    """F623 (TEAM1b's live pass): a team resumed from a pause lost its members' times — the snapshot kept no
+    start or end, so every record read 0 s, and the saved turn kept that."""
+
+    async def test_a_member_that_finished_before_the_pause_keeps_its_seconds(self, server, llm, team):
+        import asyncio as _asyncio
+        from core.chat_approval import parked_payload, resume_state_for
+        from tests.unit.test_team_runtime import both
+
+        async def slow(_kw):
+            await _asyncio.sleep(0.6)
+            return "A fine"
+
+        llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Ana", "CHECK A")), tool_call("wait", seconds=10),
+                           tool_call("wait", seconds=9), "unused"])
+        async def ben_asks(_kw):
+            await _asyncio.sleep(0.6)
+            return tool_call("danger")
+
+        llm.on("CHANGE B", [ben_asks, "changed"]).on("CHECK A", [slow])
+        first = await _turn(server, progress_events=True)
+        before = {f["member_name"]: f["seconds"] for f in first if f.get("type") == "member_finished"}
+        assert before["Ana"] >= 0.5
+        card = [e for e in first if e.get("type") == "human_input_required"][-1]
+        snap = {k: v for k, v in [e for e in first if e.get("type") == "_step_progress"][-1].items() if k != "type"}
+        parked = parked_payload(card, message="PLAN IT", progress=snap)
+
+        llm._scripts.clear()
+        llm.on("PLAN IT", [tool_call("wait", seconds=10), "all changed"]).on("CHANGE B", ["changed"])
+        events = await _turn(server, progress_events=True, resume_state=resume_state_for(parked, approve=True))
+        after = {m["name"]: m["seconds"] for m in [e for e in events if e.get("type") == "final"][-1]["members"]}
+        assert after["Ana"] == before["Ana"]
+        # The one that waited on the person counts the work it did before the pause, not only after it, and
+        # not the time it waited.
+        assert 0.6 <= after["Ben"] < 3
+
+    async def test_a_member_answered_while_the_team_works_keeps_its_seconds(self, server, llm, team):
+        """The same for an answer given while the others work (TEAM1c's live answer): the member carried on,
+        but its time restarted at the answer (measured: the clerk read 0.8 s for about 2.5 s of work)."""
+        import asyncio as _asyncio
+        from core import team as team_mod
+        from tests.unit.test_team_runtime import both
+
+        async def ben_asks(_kw):
+            await _asyncio.sleep(1.0)
+            return tool_call("danger")
+
+        async def ana_answers_ben(_kw):
+            await _asyncio.sleep(1.8)
+            t = next(iter(team_mod._LIVE.values()))
+            ben = next(m for m in t.waiting() if m.name == "Ben")
+            assert t.answer(ben.question_id, approve=True)
+            await _asyncio.sleep(0.3)
+            return "A fine"
+
+        llm.on("PLAN IT", [both(assign("Ben", "CHANGE B"), assign("Ana", "CHECK A")), tool_call("wait", seconds=10),
+                           tool_call("wait", seconds=10), tool_call("wait", seconds=10), "done"])
+        llm.on("CHANGE B", [ben_asks, "changed"]).on("CHECK A", [ana_answers_ben])
+        events = await _turn(server, progress_events=True)
+        ben = next(f for f in events if f.get("type") == "member_finished" and f["member_name"] == "Ben")
+        assert ben["record"]["calls"][-1]["tool"] == "danger" and ben["status"] == "completed"
+        # It worked a second before it asked; the 0.8 s it waited on the person is not work.
+        assert 1.0 <= ben["seconds"] < 1.6, ben["seconds"]

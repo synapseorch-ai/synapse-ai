@@ -252,6 +252,7 @@ class Member:
     error: str = ""
     messages_sent: int = 0
     arrivals: int = 0           # its `wait`s that ended on news (F622)
+    worked_before: float = 0.0  # seconds it worked before its turn paused on its question (F623)
     inbox: Any = None
     progress: dict = field(default_factory=dict)
     approval: dict | None = None
@@ -300,7 +301,8 @@ class Member:
 
     def state(self) -> dict:
         kept = self.record()
-        kept.update(card_version=self.card_version, tainted=self.tainted, messages_sent=self.messages_sent,
+        kept.update(started_at=self.started_at, ended_at=self.ended_at,
+                    card_version=self.card_version, tainted=self.tainted, messages_sent=self.messages_sent,
                     progress=self.progress, approval=self.approval, asked=self.asked, asked_at=self.asked_at,
                     inbox=self.inbox.park() if self.inbox is not None and self.status == "waiting_for_person"
                     else None)
@@ -381,6 +383,16 @@ class Team:
                        progress=dict(kept.get("progress") or {}), approval=kept.get("approval"),
                        asked=kept.get("asked"), asked_at=float(kept.get("asked_at") or 0.0))
             m.inbox = new_inbox(kept.get("inbox"))
+            # Its times, as the pause kept them (F623): without them every record of a resumed team read 0 s.
+            # A snapshot from before keeps only its seconds, which are read back as a span ending now.
+            m.started_at = float(kept.get("started_at") or 0.0)
+            m.ended_at = float(kept["ended_at"]) if kept.get("ended_at") else None
+            if not m.started_at and kept.get("seconds") and m.status in ("completed", "failed", "cancelled"):
+                m.ended_at = time.time()
+                m.started_at = m.ended_at - float(kept["seconds"])
+            if m.status == "waiting_for_person":
+                # It carries on when answered: its time is what it worked, not the time it waited on the person.
+                m.worked_before = float(kept.get("seconds") or 0.0)
             self.members[m.id] = m
         # A turn parked before TEAM1c named its one waiting member `parked_id`: its status says the same.
         self.inbox = new_inbox(state.get("inbox"))
@@ -857,7 +869,7 @@ class Team:
             if len(self.running()) + self.helpers_working() >= self.config.at_once:
                 break
             member.status = "running"
-            member.started_at = time.time()
+            member.started_at = time.time() - member.worked_before
             member.task_handle = asyncio.create_task(self._drive(member), name=f"member-{member.id}")
             started.append(member)
         return started
@@ -1027,6 +1039,10 @@ class Team:
         if member is None or member.status != "waiting_for_person":
             return None
         asked_id, tool = member.question_id, (member.approval or {}).get("tool_name")
+        if member.started_at:
+            # What it worked until it asked: it carries on from there, not from zero, and the time it waited on
+            # the person is not work (F623; a paused turn's restored member, or one answered while others work).
+            member.worked_before = max(0.0, (member.asked_at or time.time()) - member.started_at)
         member.status, member.approval, member.asked, member.asked_at = "queued", None, None, 0.0
         member.resume_state = inner
         member.started_at = 0.0
