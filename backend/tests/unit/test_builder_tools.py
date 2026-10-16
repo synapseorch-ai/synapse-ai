@@ -1530,6 +1530,30 @@ class TestANestedBuildKeepsItsInnerWorkflow:
         assert (await get_orchestration(outer)).get("building_run") == "run_b2"
         assert (await get_orchestration(broken)).get("building_run") == "run_b2"
 
+    async def test_a_workflow_whose_step_runs_its_own_workflow_agent_does_not_pass(self, server):
+        """F691 (BWA1's gpt-4.1-mini batch on dev, 2026-10-16): the builder deployed a workflow, which makes a
+        workflow agent for it, then wired that agent as the workflow's own step — five times. A run would call
+        itself without end, and the pair could not be deleted (F690). The walk of what a workflow calls skipped a
+        workflow it had already seen, this one included, so the loop passed in silence."""
+        outer = await self._outer(server, "run_l", "agent_wf_self")
+        await S.seed_agents([S.make_orchestrator_agent(outer, id="agent_wf_self", name="Billing agent")])
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_l")
+        assert verdict["ok"] is False
+        assert any("step_call" in i and "itself" in i for i in verdict["issues"]), verdict
+
+    async def test_a_loop_through_an_inner_workflow_does_not_pass(self, server):
+        outer = await self._outer(server, "run_m", "agent_wf_inner_m")
+        inner = await self._skeleton(server, "run_m", "Vendor check", [
+            {"step_id": "step_back", "name": "Back out", "type": "agent", "agent_id": "agent_wf_outer_m",
+             "prompt_template": "x", "output_key": "back", "next_step_id": "step_end"},
+            {"step_id": "step_end", "name": "End", "type": "end"},
+        ])
+        await S.seed_agents([S.make_orchestrator_agent(inner, id="agent_wf_inner_m", name="Vendor check"),
+                             S.make_orchestrator_agent(outer, id="agent_wf_outer_m", name="Vendor review")])
+        verdict = await call_in_run("validate_orchestration", {"orch_id": outer}, server, "run_m")
+        assert verdict["ok"] is False
+        assert any("step_back" in i and "itself" in i for i in verdict["issues"]), verdict
+
     async def test_a_parent_whose_inner_workflow_is_gone_does_not_pass(self, server):
         await S.seed_agents([S.make_orchestrator_agent("orch_gone", id="agent_wf_gone", name="Gone")])
         outer = await self._outer(server, "run_g", "agent_wf_gone")

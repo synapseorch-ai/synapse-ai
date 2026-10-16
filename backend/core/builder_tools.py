@@ -57,21 +57,32 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
     for each call whose workflow is gone (F429).
 
     A workflow calls another only through an agent step whose agent runs it, so
-    this is what validating a parent has to validate with it.
+    this is what validating a parent has to validate with it. A step whose agent
+    runs a workflow already on the chain that reached it — this one included —
+    is a loop: every run would call itself again without end (F691).
     """
     from core.store.resources import get_orchestration
 
     called: list[dict] = []
     issues: list[str] = []
     seen = {orch.get("id")}
-    pending = [orch]
-    while pending:
-        current = pending.pop()
+
+    async def visit(current: dict, chain: tuple) -> None:
         where = "" if current is orch else f"In the inner workflow '{current.get('name')}' ({current.get('id')}): "
         for s in current.get("steps") or []:
             target = agents.get(s.get("agent_id")) or {}
             child_id = target.get("orchestration_id") if target.get("type") == "orchestrator" else None
-            if not child_id or child_id in seen:
+            if not child_id:
+                continue
+            if child_id in chain:
+                looped = "this workflow" if child_id == orch.get("id") else f"the workflow '{child_id}' that calls it"
+                issues.append(
+                    f"{where}Agent step '{s.get('id')}' uses workflow agent '{target.get('id')}', which runs "
+                    f"{looped}: every run would call itself again, without end. Point the step at the agent that "
+                    f"does the work, not at a workflow agent of this workflow."
+                )
+                continue
+            if child_id in seen:
                 continue
             seen.add(child_id)
             child = await get_orchestration(child_id)
@@ -85,7 +96,9 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
             if child.get("system"):
                 continue
             called.append(child)
-            pending.append(child)
+            await visit(child, (*chain, child_id))
+
+    await visit(orch, (orch.get("id"),))
     return called, issues
 
 
