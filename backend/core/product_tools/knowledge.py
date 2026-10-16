@@ -101,6 +101,13 @@ async def _delete_document(caller: Any, args: dict[str, Any]) -> dict:
     return {"deleted": getattr(row, "path", None) or str(args.get("doc_id"))}
 
 
+async def _preview_delete_document(caller: Any, args: dict[str, Any]) -> dict:
+    """What deleting the document removes, before the confirmation (MCP2's token)."""
+    row = await _document(str(args.get("doc_id") or ""))
+    return {"deletes": f'the document "{getattr(row, "path", None) or row.id}"',
+            "with_it": "its Vault file, so it is not indexed again"}
+
+
 _KB = {"knowledge_base": {"type": "string", "description": "The knowledge base's name (or its id)."}}
 _DOC = {"doc_id": {"type": "string", "description": "The document's id."}}
 
@@ -135,8 +142,7 @@ def entries() -> list[ProductTool]:
         ProductTool(name="delete_knowledge_document",
                     description="Delete a document from its knowledge base, with its Vault file.",
                     input_schema={"type": "object", "properties": dict(_DOC), "required": ["doc_id"]},
-                    handler=_delete_document, irreversible=True, audit_action="knowledge.document.deleted",
-                    # In the app only until MCP serves deletes behind its token (MCP2c, D292).
-                    app_only=True,
+                    handler=_delete_document, irreversible=True, preview=_preview_delete_document,
+                    audit_action="knowledge.document.deleted",
                     target=lambda a, r: ("knowledge_document", str(a.get("doc_id"))), **act),
     ]

@@ -201,6 +201,17 @@ async def _delete(caller: Any, args: dict) -> dict:
     return {"deleted": board.get("name")}
 
 
+async def _preview_delete(caller: Any, args: dict) -> dict:
+    """What deleting the board removes, or why it can't go, before the confirmation (MCP2's token)."""
+    await _on()
+    board = await _board_named(str(args.get("board") or ""))
+    if board.get("scope") != "shared" and not board.get("owner_gone"):
+        noun = "workflow" if board.get("scope") == "workflow" else "schedule"
+        raise ToolRefusal(f"This board belongs to its {noun}; close the cards you no longer want instead.")
+    return {"deletes": f'the board "{board.get("name")}"', "with_it": "its cards, their comments and history",
+            "open_cards": board.get("open") or 0}
+
+
 _BOARD = {"board": {"type": "string", "description": "The board's name (or its id)."}}
 _CARD = {"card_id": {"type": "string", "description": "The card's id, from read_board."}}
 
@@ -239,8 +250,6 @@ def entries() -> list[ProductTool]:
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
         ProductTool(name="delete_board", description="Delete a shared board with its cards and history.",
                     input_schema={"type": "object", "properties": dict(_BOARD), "required": ["board"]},
-                    handler=_delete, irreversible=True, audit_action="board.deleted",
-                    # In the app only until MCP serves deletes behind its token (MCP2c, D292).
-                    app_only=True,
+                    handler=_delete, irreversible=True, preview=_preview_delete, audit_action="board.deleted",
                     target=lambda a, r: ("board", str(a.get("board"))), **act),
     ]
