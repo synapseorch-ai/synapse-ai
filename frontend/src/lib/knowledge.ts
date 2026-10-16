@@ -11,7 +11,7 @@
  */
 import { useEffect, useState } from 'react';
 
-import type { BadgeTone } from '@/components/ui';
+import type { BadgeTone, ComboboxOption } from '@/components/ui';
 
 /** A `[K#]` label resolved to where the words are (`core.knowledge.api_models.Citation`). */
 export interface KnowledgeCitation {
@@ -502,15 +502,44 @@ export function getQueryTrace(queryId: string): Promise<SearchTrace> {
 
 export type SearchResult = { query_id: string; hits: SearchHit[]; degraded: string[]; trace: SearchTrace | null };
 
-/** Rerank models by provider prefix (backend `core/knowledge/rerankers.py` ROUTES): suggestions; any model of a
- *  listed provider works. `key` is the setting the provider needs, saved on Settings → Models. */
-export const RERANK_SUGGESTIONS: { model: string; provider: string; key: string | null }[] = [
-    { model: 'cohere.rerank-v3.5', provider: 'Cohere', key: 'cohere_key' },
-    { model: 'voyage.rerank-2.5', provider: 'Voyage AI', key: 'voyage_key' },
-    { model: 'voyage.rerank-2.5-lite', provider: 'Voyage AI', key: 'voyage_key' },
-    { model: 'jina.jina-reranker-v2-base-multilingual', provider: 'Jina AI', key: 'jina_key' },
-    { model: 'tei.reranker', provider: 'Your rerank server (TEI or Infinity)', key: 'knowledge_rerank_base_url' },
+/** Who serves a rerank model, by the prefix its id starts with (backend `core/knowledge/rerankers.py` ROUTES), and
+ *  the setting that provider needs on Settings → Models (`null`: none). */
+export type RerankRoute = { prefix: string; provider: string; key: string | null };
+
+export const RERANK_ROUTES: RerankRoute[] = [
+    { prefix: 'cohere.', provider: 'Cohere', key: 'cohere_key' },
+    { prefix: 'voyage.', provider: 'Voyage AI', key: 'voyage_key' },
+    { prefix: 'jina.', provider: 'Jina AI', key: 'jina_key' },
+    { prefix: 'tei.', provider: 'Your rerank server (TEI or Infinity)', key: 'knowledge_rerank_base_url' },
 ];
+
+/** One provider the workspace has a key for, with the rerank models that key can use, or why there are none
+ *  (`GET /api/models/rerank`, BF9, D293): what the rerank pickers offer and the reranker cards show. */
+export type RerankListing = {
+    provider: string;
+    label: string;
+    /** The setting that lights it: its key, or the rerank server's address. */
+    key: string;
+    models: { id: string; label: string }[];
+    /** Why nothing is listed: the key was refused, or the list could not be read. */
+    error: string | null;
+    /** The list stands, but something about the key is worth saying. */
+    note: string | null;
+};
+
+/** The rerank pickers' options: every listed model, under its provider. */
+export function rerankOptions(listings: readonly RerankListing[]): ComboboxOption[] {
+    return listings.flatMap(l => l.models.map(m => ({ value: m.id, label: m.label, group: l.label })));
+}
+
+/** A reranker card's status: its model count, or why it has none. */
+export function rerankStatus(listing: RerankListing | undefined, fallback: string): string {
+    if (!listing) return fallback;
+    if (listing.error) return listing.error;
+    const n = listing.models.length;
+    const count = `${n} rerank model${n === 1 ? '' : 's'}`;
+    return listing.note ? `${count} · key not checked` : count;
+}
 
 /** Why a rebuild waits, in words. */
 export const BUILD_PAUSED: Record<string, string> = {

@@ -8,6 +8,7 @@ import { modelOptions as buildModelOptions, providerLabel, withUnreachable } fro
 const DEFAULT_SENTINEL = '__default__';
 import React, { useState } from 'react';
 import { KnowledgeModels, type KnowledgeModelSettings } from './KnowledgeModels';
+import type { RerankListing } from '@/lib/knowledge';
 import { useSavedSecrets } from './SavedSecret';
 
 // Every brand mark is decoration: it sits beside the provider's own name, so an
@@ -58,6 +59,8 @@ interface ModelsTabProps {
     githubCopilotCliModels: string; setGithubCopilotCliModels: (v: string) => void;
     /** Knowledge's default models and rerank keys (B2b), shown while Knowledge is on. */
     knowledgeModels: KnowledgeModelSettings; setKnowledgeModels: (v: KnowledgeModelSettings) => void;
+    /** The rerank models the saved keys can use, per provider (BF9): the rerank picker and the reranker cards. */
+    rerankListings: RerankListing[];
     // Backward compat
     mode: string; setMode: (v: string) => void;
     localModels: string[]; cloudModels: string[];
@@ -261,7 +264,7 @@ export const ModelsTab = ({
     geminiCliModels, setGeminiCliModels,
     codexCliModels, setCodexCliModels,
     githubCopilotCliModels, setGithubCopilotCliModels,
-    knowledgeModels, setKnowledgeModels,
+    knowledgeModels, setKnowledgeModels, rerankListings,
 }: ModelsTabProps) => {
 
     const { secrets, save: saveSecret, remove: removeSecret } = useSavedSecrets();
@@ -532,6 +535,7 @@ export const ModelsTab = ({
             </Section>
 
             <KnowledgeModels part="knowledge" value={knowledgeModels} onChange={setKnowledgeModels} providers={providers}
+                rerankListings={rerankListings}
                 embeddingModel={embeddingModel} chatModel={selectedModel} />
 
             {/* The form's one save, at its foot under the last field, on the right of its column: no rule
@@ -593,6 +597,7 @@ export const ModelsTab = ({
             </Section>
 
             <KnowledgeModels part="rerankers" value={knowledgeModels} onChange={setKnowledgeModels} providers={providers}
+                rerankListings={rerankListings}
                 embeddingModel={embeddingModel} chatModel={selectedModel} onSave={onSave} isSaving={isSaving} />
         </div>
     );

@@ -15,7 +15,7 @@ import { LinkButton, Screen } from '@/components/ui';
 import { SettingsNav } from '@/components/app/SettingsNav';
 import { isSettingsEntry, navEntryFor } from '@/lib/nav';
 import { AUTH_CHANGED_EVENT, readAuthStatus } from '@/lib/auth';
-import { KNOWLEDGE_SWITCHED_EVENT } from '@/lib/knowledge';
+import { KNOWLEDGE_SWITCHED_EVENT, type RerankListing } from '@/lib/knowledge';
 import { BOARDS_SWITCHED_EVENT } from '@/components/boards/board';
 import { HOSTED_KEY_NAMES } from '@/lib/models';
 import { GeneralTab, type BoardsSettings } from './settings/GeneralTab';
@@ -154,8 +154,22 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         }
     };
 
-    const refreshModels = async () => {
+    // The rerank models the saved keys can use (BF9), read beside the chat models: a key saved or removed changes
+    // both. Knowledge's, so a 404 while it is off is no list. `force` asks every provider again (the Refresh button).
+    const [rerankListings, setRerankListings] = useState<RerankListing[]>([]);
+    const refreshRerank = async (force: boolean) => {
+        try {
+            const res = await fetch(`/api/models/rerank${force ? '?refresh=1' : ''}`);
+            const data = res.ok ? await res.json() : null;
+            setRerankListings(Array.isArray(data?.providers) ? data.providers : []);
+        } catch {
+            // ignore: the pickers keep what they had
+        }
+    };
+
+    const refreshModels = async (force = false) => {
         setLoadingModels(true);
+        void refreshRerank(force);
         try {
             const res = await fetch('/api/models');
             const data = await res.json();
@@ -684,7 +698,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         localModels={localModels} cloudModels={cloudModels}
                         filteredModels={filteredModels}
                         loadingModels={loadingModels}
-                        onRefresh={() => void refreshModels()}
+                        onRefresh={() => void refreshModels(true)}
+                        rerankListings={rerankListings}
                         awsRegion={awsRegion} setAwsRegion={setAwsRegion}
                         onSave={handleSaveSection}
                         isSaving={isSaving}

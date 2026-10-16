@@ -11,7 +11,8 @@
  *
  * - The workspace's models: which settings name the defaults, how a model list
  *   is grouped and labelled, where the rerank keys live.
- * - Which rerank models to suggest, and the key each needs.
+ * - The rerank models the workspace's keys can use (BF9), and which setting each
+ *   provider's models need.
  * - Whether web sources and Evaluate are served yet.
  * - Whether this person may change anything (cloud's viewers may not; OSS has
  *   no roles) — a control that could only be refused is not drawn.
@@ -24,10 +25,9 @@
 import { createContext, useContext, type ReactNode } from 'react';
 
 import type { ComboboxOption } from '@/components/ui';
-import { RERANK_SUGGESTIONS, type RefreshParts } from '@/lib/knowledge';
+import { RERANK_ROUTES, type RefreshParts, type RerankRoute } from '@/lib/knowledge';
 
-/** A rerank model the settings suggest by name: who serves it, and the setting it needs (`null`: none). */
-export type RerankChoice = { model: string; provider: string; key: string | null };
+export type { RerankRoute };
 
 /** The workspace as the Knowledge screens read it. */
 export type KnowledgeWorkspace = {
@@ -44,7 +44,12 @@ export type KnowledgeWorkspace = {
     /** What a base naming no Contextual Retrieval model writes contexts with: the deployment's default, else the
      *  workspace's chat model ('' when neither). A host that leaves it out shows the workspace's chat model. */
     contextual?: string;
-    /** Whether each `RerankChoice.key` is set. */
+    /** What a base naming no rerank model reranks with; '' when nothing is set. A host that leaves it out shows
+     *  none. */
+    rerank?: string;
+    /** The rerank models the workspace's keys can use, under their providers (BF9): never a name a key cannot call. */
+    rerankModels: ComboboxOption[];
+    /** Whether each `RerankRoute.key` is set. */
     keys: Record<string, boolean>;
 };
 
@@ -53,8 +58,8 @@ export type KnowledgeHost = {
     loadWorkspace: () => Promise<KnowledgeWorkspace>;
     /** Keep a set model visible when no option matches it (its provider has gone), marked as such. */
     withUnreachable: (options: ComboboxOption[], value: string | undefined) => ComboboxOption[];
-    /** Rerank models suggested by name; the first is the field's example. */
-    rerankChoices: readonly RerankChoice[];
+    /** Who serves a rerank model, by its id's prefix, and the setting it needs: a saved model's missing key. */
+    rerankRoutes: readonly RerankRoute[];
     /** Web pages as sources (S1): "Add web pages" and the Web sources list. */
     webSources: boolean;
     /** Evaluate (V1): a base's question sets and runs. */
@@ -72,14 +77,14 @@ export type KnowledgeHost = {
 };
 
 export const EMPTY_WORKSPACE: KnowledgeWorkspace = {
-    embedding: '', embeddingModels: [], chatModels: [], model: '', judge: '', keys: {},
+    embedding: '', embeddingModels: [], chatModels: [], model: '', judge: '', rerankModels: [], keys: {},
 };
 
 export const DEFAULT_KNOWLEDGE_HOST: KnowledgeHost = {
     loadWorkspace: async () => EMPTY_WORKSPACE,
     withUnreachable: (options, value) =>
         !value || options.some(o => o.value === value) ? options : [...options, { value, label: value, group: 'Not reachable' }],
-    rerankChoices: RERANK_SUGGESTIONS,
+    rerankRoutes: RERANK_ROUTES,
     webSources: true,
     evaluate: true,
     canEdit: true,

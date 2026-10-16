@@ -207,7 +207,13 @@ export function KnowledgeSettings({
         return [{ value: DEFAULT_MODEL, label: defaultLabel }, ...listed];
     }, [host, workspace, draft.enrichment.contextual_model]);
 
-    const rerankRoute = host.rerankChoices.find(r => (draft.rerank.model ?? '').startsWith(r.model.split('.')[0] + '.'));
+    const rerankOptions: ComboboxOption[] = useMemo(() => {
+        const defaultLabel = workspace?.rerank ? `Workspace default (${workspace.rerank})` : 'Workspace default (none set)';
+        const listed = host.withUnreachable(workspace?.rerankModels ?? [], draft.rerank.model || undefined);
+        return [{ value: DEFAULT_MODEL, label: defaultLabel }, ...listed];
+    }, [host, workspace, draft.rerank.model]);
+
+    const rerankRoute = host.rerankRoutes.find(r => (draft.rerank.model ?? '').startsWith(r.prefix));
     const rerankKeyMissing = !!rerankRoute?.key && workspace !== null && !workspace.keys[rerankRoute.key];
 
     const presetOptions: SelectOption<string>[] = [
@@ -278,20 +284,18 @@ export function KnowledgeSettings({
                             label="Rerank model"
                             hint={rerankKeyMissing
                                 ? <>Needs {rerankRoute?.provider}: add it on <Link href="/settings/models" className="underline">Settings → Models</Link>.</>
-                                : `Optional. Named with its provider, e.g. ${host.rerankChoices[0]?.model ?? 'cohere.rerank-v3.5'}.`}
+                                : workspace !== null && !workspace.rerankModels.length
+                                    ? <>None to pick yet: save a rerank key on <Link href="/settings/models" className="underline">Settings → Models</Link>.</>
+                                    : 'Optional. The models your rerank keys can use.'}
                         >
-                            <Input
-                                value={draft.rerank.model ?? ''}
-                                onChange={e => setIn('rerank', 'model', e.target.value.trim() || null)}
-                                placeholder="Workspace default"
-                                list="knowledge-rerank-models"
-                                autoComplete="off"
-                                spellCheck={false}
+                            <Combobox
+                                value={draft.rerank.model || DEFAULT_MODEL}
+                                onChange={v => setIn('rerank', 'model', v === DEFAULT_MODEL ? null : v)}
+                                options={rerankOptions}
+                                searchPlaceholder="Search rerank models…"
+                                aria-label="Rerank model"
                             />
                         </Field>
-                        <datalist id="knowledge-rerank-models">
-                            {host.rerankChoices.map(r => <option key={r.model} value={r.model}>{r.provider}</option>)}
-                        </datalist>
                         <Field label="With neighbouring passages">
                             <Select
                                 value={draft.retrieval.parent_expansion}
