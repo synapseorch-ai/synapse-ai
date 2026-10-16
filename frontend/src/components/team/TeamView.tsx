@@ -1,10 +1,10 @@
 "use client";
 
 /*
- * A Team agent's turn as a person reads it (Q5, Q5a, artboard 3A): the task list at the
- * top, the exchanges between the lead and its members as one-line notes, then one lane
- * per member. Live, the lanes are side by side with Message and Stop; kept, each member
- * is one line that opens (Naveen, TEAM1b).
+ * A Team agent's turn as a person reads it (Q5, Q5a): the task list at the top, the
+ * exchanges between the lead and its members as one-line notes, then each member as a
+ * line that opens — live with its time, Stop and Message; kept, as it ended (Naveen at
+ * TEAM1b's screens).
  */
 import React from 'react';
 import { Check, Circle, X } from 'lucide-react';
@@ -81,11 +81,11 @@ export function TeamNotes({ notes, className }: { notes: TeamNote[]; className?:
 }
 
 /** The whole team: tasks, notes, lanes. Nothing when the lead answered alone. */
-export function TeamView({ state, budget, compact = false, className, ...handlers }: LaneHandlers & {
+export function TeamView({ state, budget, kept = false, className, ...handlers }: LaneHandlers & {
     state: TeamState | null | undefined;
     budget?: number | null;
-    /** A kept turn: each member as one line that opens. */
-    compact?: boolean;
+    /** A kept turn: nothing to stop or write to. */
+    kept?: boolean;
     className?: string;
 }) {
     if (!hasTeam(state)) return null;
@@ -93,7 +93,7 @@ export function TeamView({ state, budget, compact = false, className, ...handler
         <div className={cn('flex min-w-0 flex-col gap-3', className)}>
             <TeamTasks state={state} budget={budget} />
             <TeamNotes notes={state.notes} />
-            <TeamLanes members={state.members} compact={compact} {...(compact ? {} : handlers)} />
+            <TeamLanes members={state.members} {...(kept ? { onAnswer: handlers.onAnswer } : handlers)} />
         </div>
     );
 }

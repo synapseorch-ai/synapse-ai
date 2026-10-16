@@ -24,6 +24,7 @@ export {
     personNote,
     questionFrom,
     taskCount,
+    teamActivity,
     teamFromTurn,
     teamSummaryLine,
     toolsBesideTeam,

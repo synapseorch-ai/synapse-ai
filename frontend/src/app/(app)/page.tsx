@@ -20,7 +20,7 @@ import {
 } from '@/components/assistant';
 import { StepIcon } from '@/components/run';
 import {
-  LEAD_TOOLS, TeamView, answeredHere, emptyTeam, foldTeam, hasTeam, isTeamEvent, personNote, teamFromTurn,
+  LEAD_TOOLS, TeamView, answeredHere, teamActivity, emptyTeam, foldTeam, hasTeam, isTeamEvent, personNote, teamFromTurn,
   teamSummaryLine, workingMembers, type MemberAnswer, type MemberLaneData, type TeamState,
 } from '@/components/team';
 
@@ -2086,7 +2086,10 @@ export default function Home() {
           .replace(/_/g, ' ')
           .replace(/\b\w/g, (l: string) => l.toUpperCase());
         const stepLabel = data.step_name ? ` · ${data.step_name}` : '';
-        setStreamingActivity(`🔧 ${delegatePrefix(data)}${toolDisplayName}${stepLabel}`);
+        // A Team agent's own moves read as what it is doing, not as tools (TEAM1b).
+        const leadMove = !data.delegate_from && !data.orch_step_id
+          && (hasTeam(liveTeamRef.current) || data.tool_name === 'assign') ? teamActivity(String(data.tool_name)) : null;
+        setStreamingActivity(leadMove ?? `🔧 ${delegatePrefix(data)}${toolDisplayName}${stepLabel}`);
         // The thought that chose this tool stays under it while it runs (U57).
         setIsThinking(Boolean(lastThoughtRef.current));
         break;
@@ -2129,7 +2132,11 @@ export default function Home() {
           setIsThinking(Boolean(lastThoughtRef.current));
           break;
         }
-        setStreamingActivity(`✓ ${delegatePrefix(data)}${resultToolName}${subtaskSuffix}`);
+        // A Team agent's own move done: it reads as what the lead does next, not as a tool's tick (TEAM1b).
+        const teamMoveDone = !data.delegate_from && !data.orch_step_id && hasTeam(liveTeamRef.current)
+          && teamActivity(rawToolName) !== null;
+        setStreamingActivity(teamMoveDone ? 'Planning its next step'
+          : `✓ ${delegatePrefix(data)}${resultToolName}${subtaskSuffix}`);
         setIsThinking(Boolean(lastThoughtRef.current));
         break;
       }
@@ -2661,14 +2668,13 @@ export default function Home() {
   const teamOf = (msg: Message) => {
     if (!hasTeam(msg.team)) return null;
     const parked = parkedMemberQuestions();
-    const waiting = msg.team.members.some(m => m.question && !m.question.answered);
     const answerable = msg.team.members.some(m => m.question && !m.question.answered
       && parked.has(m.question.questionId));
     return (
       <TeamView
         state={msg.team}
         budget={currentDetails?.taskBudget}
-        compact={!waiting}
+        kept
         onAnswer={answerable ? (answer) => { void answerMember(answer); } : undefined}
         className="mb-2"
       />

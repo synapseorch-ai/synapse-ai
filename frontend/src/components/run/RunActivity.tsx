@@ -156,7 +156,7 @@ export function RunActivity({
                 </RCollapsible.Trigger>
                 <RCollapsible.Content>
                     {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
-                    <TeamView state={state.team} compact={!following} className="mb-3" />
+                    <TeamView state={state.team} kept={!following} className="mb-3" />
                     {content}
                 </RCollapsible.Content>
             </RCollapsible.Root>

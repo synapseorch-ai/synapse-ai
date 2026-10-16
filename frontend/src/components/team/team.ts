@@ -41,6 +41,8 @@ export type MemberLaneData = {
     model?: string;
     status: MemberStatus;
     seconds?: number;
+    /** When this page saw it start (ms), for the time its line counts while it works. */
+    startedAt?: number;
     calls: HelperCall[];
     answer: string;
     streaming?: string;
@@ -203,6 +205,7 @@ function startedLane(event: Wire): MemberLaneData {
         task: String(event.task ?? ''), cardId: event.card_id ? String(event.card_id) : undefined,
         model: event.model ? String(event.model) : undefined,
         status: 'running', calls: [], answer: '', streaming: '', helpers: [],
+        startedAt: typeof event.at === 'number' ? event.at * 1000 : Date.now(),
     };
 }
 
@@ -374,6 +377,17 @@ export function taskCount(state: TeamState, budget?: number | null): string {
     const used = Math.max(state.tasks.length, state.summary?.tasksUsed ?? 0);
     if (budget) return `${used} of ${budget} task${budget === 1 ? '' : 's'}`;
     return `${used} task${used === 1 ? '' : 's'}`;
+}
+
+/** What the lead is doing, in words, when it makes one of its team moves; null for any other tool. */
+export function teamActivity(tool: string): string | null {
+    switch (tool) {
+        case 'assign': return 'Handing out the work';
+        case 'wait': return 'Waiting for its members';
+        case 'message': return 'Writing to a member';
+        case 'forward': return 'Passing a member’s answer on';
+        default: return null;
+    }
 }
 
 /** A dollar amount the way the turn's line says it. */

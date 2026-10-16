@@ -148,7 +148,7 @@ export function RunDrawer({
                         )}
 
                         {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
-                        {log.team && <TeamView state={log.team} compact={runStatus !== 'running'} />}
+                        {log.team && <TeamView state={log.team} kept={runStatus !== 'running'} />}
 
                         {runId && (
                             <NestedRunsOf

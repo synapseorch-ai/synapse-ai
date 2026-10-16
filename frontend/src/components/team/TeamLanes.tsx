@@ -1,10 +1,11 @@
 "use client";
 
 /*
- * A team's members, side by side (Q5a, artboard 3A; stacked on a phone). Each lane is one
- * member's task: what it is doing now, its calls, its answer as it writes it, a question
- * it needs the person for, and Message and Stop at its foot while it works. A kept turn
- * shows each as one line that opens to the same lane (Naveen, TEAM1b: readable history).
+ * A team's members (Q5, Q5a): one line each, the way a finished turn shows them, live too
+ * (Naveen at TEAM1b's screens: a team may have more members than fit side by side). While
+ * a member works its line says what it is doing and how long it has been at it, with Stop
+ * beside it; opened, it shows its task, its calls, its answer as it writes it and Message.
+ * A member that needs the person opens by itself, its question in its own lane.
  *
  * Props and callbacks only (this folder's rule): the product says how to stop a member,
  * write to it and answer its question.
@@ -17,7 +18,7 @@ import { Button, Markdown } from '@/components/ui';
 import { HelperLanes } from '@/components/assistant/HelperLane';
 
 import { MemberQuestion, type MemberAnswer } from './MemberQuestion';
-import { memberStatusLine, type MemberLaneData } from './team';
+import { duration, memberStatusLine, type MemberLaneData } from './team';
 
 export type LaneHandlers = {
     /** Stop one member (its lead reads that it was stopped; the rest work on). */
@@ -32,18 +33,35 @@ export type LaneHandlers = {
 
 const RUNNING_CALLS = 4;
 
-/** The lane's status dot and word, coloured only for what it means. */
-function StatusMark({ member, stopping }: { member: MemberLaneData; stopping: boolean }) {
+function isWorking(member: MemberLaneData): boolean {
+    return member.status === 'running' || member.status === 'queued' || member.status === 'waiting_for_person';
+}
+
+/** How long the member has been at it, ticking while it works; nothing once it has ended (its line says). */
+function useElapsed(member: MemberLaneData): string {
+    const ticking = isWorking(member) && member.status !== 'queued' && member.startedAt !== undefined;
+    const [now, setNow] = React.useState(() => Date.now());
+    React.useEffect(() => {
+        if (!ticking) return;
+        const tick = window.setInterval(() => setNow(Date.now()), 1000);
+        return () => window.clearInterval(tick);
+    }, [ticking]);
+    return ticking ? duration(Math.max(0, (now - (member.startedAt as number)) / 1000)) : '';
+}
+
+/** The line's status, coloured only for what it means: the machine at work, a person needed, how it ended. */
+function StatusMark({ member, stopping, elapsed }: { member: MemberLaneData; stopping: boolean; elapsed: string }) {
     const needsYou = member.status === 'waiting_for_person' && !member.question?.answered;
-    const working = member.status === 'running' || (member.status === 'waiting_for_person' && !needsYou);
+    const working = isWorking(member) && !needsYou;
     const dot = needsYou ? 'bg-person' : working ? 'bg-machine' : member.status === 'completed' ? 'bg-success'
         : member.status === 'failed' ? 'bg-danger' : 'bg-text-faint';
     const text = needsYou ? 'font-medium text-person-ink' : working ? 'text-accent-ink'
         : member.status === 'failed' ? 'text-danger' : 'text-text-muted';
+    const line = memberStatusLine(member, { stopping });
     return (
-        <span className={cn('inline-flex min-w-0 items-center gap-1.5 text-xs', text)} aria-live="polite">
+        <span className={cn('inline-flex min-w-0 items-center gap-1.5', text)} aria-live="polite">
             <span aria-hidden className={cn('size-2 shrink-0 rounded-full', dot, working && 'motion-safe:animate-pulse')} />
-            <span className="truncate">{memberStatusLine(member, { stopping })}</span>
+            <span className="truncate">{elapsed ? `${line} · ${elapsed}` : line}</span>
         </span>
     );
 }
@@ -67,7 +85,7 @@ function Calls({ member, all }: { member: MemberLaneData; all: boolean }) {
                         </span>
                     </p>
                     {all && (call.result || call.refused) && (
-                        <p className={cn('mt-0.5 whitespace-pre-wrap break-words font-sans',
+                        <p className={cn('mt-0.5 line-clamp-3 whitespace-pre-wrap break-words font-sans',
                             call.refused ? 'text-danger' : 'text-text-muted')}>
                             {call.refused ? `Not run: ${call.reason || 'refused'}` : call.result}
                         </p>
@@ -92,7 +110,7 @@ function MessageBox({ member, onMessage }: { member: MemberLaneData; onMessage: 
     };
     if (!open) {
         return (
-            <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <Button size="sm" variant="ghost" onClick={() => { setOpen(true); setSaid(null); }}
                         aria-label={`Message ${member.name}`}>
                     <MessageSquare aria-hidden className="size-3.5" /> Message
@@ -118,120 +136,80 @@ function MessageBox({ member, onMessage }: { member: MemberLaneData; onMessage: 
     );
 }
 
-/** One member's lane: full while the team works, or one line that opens to it (`compact`). */
-export function MemberLane({
-    member, compact = false, className, ...handlers
-}: LaneHandlers & {
+/** One member: a line that opens. It opens by itself when it needs the person. */
+export function MemberLane({ member, className, ...handlers }: LaneHandlers & {
     member: MemberLaneData;
-    compact?: boolean;
     className?: string;
 }) {
-    const working = member.status === 'running' || member.status === 'queued' || member.status === 'waiting_for_person';
-    const [open, setOpen] = React.useState(false);
+    const working = isWorking(member);
+    const needsYou = member.status === 'waiting_for_person' && !!member.question && !member.question.answered;
+    const [open, setOpen] = React.useState(needsYou);
+    React.useEffect(() => { if (needsYou) setOpen(true); }, [needsYou]);
     const stopping = handlers.stopping?.has(member.id) ?? false;
-    const finished = !working;
-    const showWork = !compact || open;
+    const elapsed = useElapsed(member);
     const answer = member.answer || member.streaming || '';
 
-    if (compact && !open) {
-        return (
-            <section aria-label={`Member: ${member.name}`} className={cn('min-w-0', className)}>
+    return (
+        <section aria-label={`Member: ${member.name}`} className={cn('flex w-full min-w-0 flex-col items-start gap-1.5', className)}>
+            <div className="flex min-w-0 max-w-full items-center gap-2">
                 <button
                     type="button"
-                    aria-expanded={false}
-                    onClick={() => setOpen(true)}
-                    className="inline-flex min-w-0 max-w-full items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:border-border-strong hover:text-text"
+                    aria-expanded={open}
+                    onClick={() => setOpen((v) => !v)}
+                    className={cn('inline-flex min-w-0 max-w-full items-center gap-2 rounded-lg border bg-surface px-2.5 py-1.5 text-xs text-text-muted transition-colors hover:border-border-strong hover:text-text',
+                        needsYou ? 'border-person/60' : 'border-border')}
                 >
                     <Users aria-hidden className="size-3.5 shrink-0 text-machine" />
                     <span className="shrink-0 text-text">{member.name}</span>
-                    <span className="min-w-0 truncate">· {memberStatusLine(member)}</span>
-                    <ChevronRight aria-hidden className="size-3.5 shrink-0 text-text-faint" />
+                    <StatusMark member={member} stopping={stopping} elapsed={elapsed} />
+                    <ChevronRight aria-hidden className={cn('size-3.5 shrink-0 text-text-faint transition-transform', open && 'rotate-90')} />
                 </button>
-            </section>
-        );
-    }
-
-    return (
-        <section aria-label={`Member: ${member.name}`}
-                 className={cn('flex min-w-0 flex-col rounded-xl border bg-surface',
-                     member.status === 'waiting_for_person' && !member.question?.answered ? 'border-person/60' : 'border-border',
-                     className)}>
-            <header className="flex min-w-0 items-center gap-2 border-b border-border px-3 py-2">
-                {compact ? (
-                    <button type="button" aria-expanded onClick={() => setOpen(false)}
-                            className="flex min-w-0 flex-1 items-center gap-2 text-left">
-                        <ChevronRight aria-hidden className="size-3.5 shrink-0 rotate-90 text-text-faint" />
-                        <span className="truncate text-sm font-medium text-text">{member.name}</span>
-                    </button>
-                ) : (
-                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-text">{member.name}</span>
+                {working && handlers.onStop && (
+                    <Button size="sm" variant="ghost" disabled={stopping} onClick={() => handlers.onStop?.(member)}
+                            aria-label={`Stop ${member.name}`}>
+                        <Square aria-hidden className="size-3" /> Stop
+                    </Button>
                 )}
-                <StatusMark member={member} stopping={stopping} />
-            </header>
+            </div>
 
-            {showWork && (
-                <div className="flex min-w-0 flex-1 flex-col gap-2.5 px-3 py-2.5">
-                    <p className="line-clamp-2 text-xs text-text-muted" title={member.task}>{member.task}</p>
-                    {(working || open) && <Calls member={member} all={finished} />}
+            {open && (
+                <div className="flex w-full min-w-0 flex-col gap-2.5 border-l border-border pl-3 text-xs">
+                    <div>
+                        <p className="mb-1 font-medium text-text-muted">Its task</p>
+                        <p className="whitespace-pre-wrap text-text">{member.task || '…'}</p>
+                    </div>
+                    <Calls member={member} all={!working} />
                     {member.helpers.length > 0 && <HelperLanes helpers={member.helpers} />}
                     {member.question && (
                         <MemberQuestion question={member.question} memberId={member.id} memberName={member.name}
                                         onAnswer={handlers.onAnswer} />
                     )}
                     {answer ? (
-                        <div className="max-h-72 min-w-0 overflow-auto text-sm text-text">
-                            <Markdown className="text-sm leading-relaxed">{member.answer || member.streaming || ''}</Markdown>
+                        <div className="max-h-72 min-w-0 overflow-auto">
+                            <p className="mb-1 font-medium text-text-muted">Its answer</p>
+                            <Markdown className="text-sm leading-relaxed text-text">{answer}</Markdown>
                         </div>
-                    ) : finished && member.error ? (
+                    ) : !working && member.error ? (
                         <p className="text-sm text-danger">Failed: {member.error}</p>
                     ) : null}
-                    {finished && (
-                        <div className="flex flex-wrap items-center gap-3 text-xs text-text-faint">
-                            {!compact && member.calls.length > 0 && (
-                                <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}
-                                        className="text-accent-ink underline-offset-2 hover:underline">
-                                    {open ? 'Hide its work' : 'View its work'}
-                                </button>
-                            )}
-                            {member.model && <span>Ran on {member.model}</span>}
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {working && (handlers.onMessage || handlers.onStop) && (
-                <footer className="flex min-w-0 flex-wrap items-start gap-1.5 border-t border-border px-2 py-1.5">
-                    {handlers.onMessage && member.status !== 'queued' && (
+                    {!working && member.model && <p className="text-text-faint">Ran on {member.model}</p>}
+                    {working && handlers.onMessage && member.status !== 'queued' && (
                         <MessageBox member={member} onMessage={handlers.onMessage} />
                     )}
-                    {handlers.onStop && (
-                        <Button size="sm" variant="ghost" className="ml-auto" disabled={stopping}
-                                onClick={() => handlers.onStop?.(member)} aria-label={`Stop ${member.name}`}>
-                            <Square aria-hidden className="size-3" /> Stop
-                        </Button>
-                    )}
-                </footer>
+                </div>
             )}
         </section>
     );
 }
 
-/** The lanes, in the order the members started: side by side where there is room, stacked on a phone. */
-export function TeamLanes({ members, compact = false, className, ...handlers }: LaneHandlers & {
+/** The members, one line each, in the order they started. */
+export function TeamLanes({ members, className, ...handlers }: LaneHandlers & {
     members: MemberLaneData[];
-    compact?: boolean;
     className?: string;
 }) {
     if (!members.length) return null;
-    if (compact) {
-        return (
-            <div className={cn('flex flex-col items-start gap-2', className)}>
-                {members.map((m) => <MemberLane key={m.id} member={m} compact {...handlers} />)}
-            </div>
-        );
-    }
     return (
-        <div className={cn('grid min-w-0 items-start gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr))]', className)}>
+        <div className={cn('flex min-w-0 flex-col items-start gap-2', className)}>
             {members.map((m) => <MemberLane key={m.id} member={m} {...handlers} />)}
         </div>
     );

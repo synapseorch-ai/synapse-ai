@@ -11635,7 +11635,7 @@ async def check_teameditor(browser) -> str:
 
 @check
 async def check_teamlanes(browser) -> str:
-    """A live team: its task list, a lane per member side by side, Message and Stop for one member, "To" and "Stop the team" (TEAM1b, Q5, Q5a)."""
+    """A live team: its task list, each member a line with its time that opens, Message and Stop for one member, "To" and "Stop the team", and a member that needs the person opening by itself (TEAM1b, Q5; Naveen: lines, not columns)."""
     history = {"turns": [], "pending_approval": None,
                "running": {"turn_id": "t1", "message": "Run the Monday supplier review", "started_at": 0,
                            "cursor": "t1-0"}}
@@ -11646,9 +11646,12 @@ async def check_teamlanes(browser) -> str:
         ana = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
         ben = page.get_by_role("region", name="Member: Invoice clerk", exact=True)
         await ana.wait_for(timeout=10_000)
-        a, b = await ana.bounding_box(), await ben.bounding_box()
-        if not a or not b or abs(a["y"] - b["y"]) > 4:
-            raise AssertionError(f"the lanes are not side by side: {a} {b}")
+        if "Two suppliers were late" in await ana.inner_text():
+            raise AssertionError("a working member opens by itself; it should be one line until asked")
+        if not re.search(r"\d+ s", await ana.inner_text()):
+            raise AssertionError(f"a working member's line does not count its time: {await ana.inner_text()!r}")
+        await ana.get_by_role("button", name=re.compile("^Supplier analyst")).click()
+        await asyncio.sleep(0.3)
         if "Two suppliers were late" not in await ana.inner_text():
             raise AssertionError("a member's answer does not stream in its lane")
         if "late_deliveries" not in await ana.inner_text():
@@ -11666,6 +11669,7 @@ async def check_teamlanes(browser) -> str:
         if await _called(page, r"/cancel$", tries=3):
             raise AssertionError("a member's Stop stopped the whole team")
 
+        await ben.get_by_role("button", name=re.compile("^Invoice clerk")).click()
         await ben.get_by_role("button", name="Message Invoice clerk").click()
         await ben.get_by_label("Your message to Invoice clerk").fill("List them separately")
         await ben.get_by_label("Your message to Invoice clerk").press("Enter")
@@ -11687,7 +11691,9 @@ async def check_teamlanes(browser) -> str:
         at = await _push(page, "events", [{"type": "member_event", **BEN, "event": HOLD}], at)
         await asyncio.sleep(0.5)
         if "Permission needed" not in await ben.inner_text() or "needs you" not in await ben.inner_text():
-            raise AssertionError("a member's question does not show in its lane")
+            raise AssertionError("a member's question does not show in its lane, opened")
+        if not await ben.get_by_role("button", name="Allow once").count():
+            raise AssertionError("a live member's question cannot be answered in its lane (TEAM1c)")
 
         ended = [{"type": "member_finished", **ANA, "status": "completed", "seconds": 41, "record": ANA_RECORD},
                  {"type": "member_finished", **BEN, "status": "completed", "seconds": 52, "record": BEN_RECORD},
@@ -11705,7 +11711,7 @@ async def check_teamlanes(browser) -> str:
             raise AssertionError("a finished member is not one line saying how it ended")
     finally:
         await ctx.close()
-    return "a live team: tasks, lanes side by side, Stop and Message for one member, To the lead, Stop the team"
+    return "a live team: tasks, each member a line with its time that opens, Stop and Message for one member, To the lead, Stop the team"
 
 
 @check
@@ -11806,6 +11812,8 @@ async def check_teamrun(browser) -> str:
             await page.evaluate(f"() => window.__run.raw({json.dumps(event)})")
         lane = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
         await lane.wait_for(timeout=10_000)
+        await lane.get_by_role("button", name=re.compile("^Supplier analyst")).click()
+        await asyncio.sleep(0.3)
         if "late_deliveries" not in await lane.inner_text():
             raise AssertionError("the run page's lane does not show the member's call")
         if await lane.get_by_role("button", name=re.compile("^(Stop|Message) ")).count():
