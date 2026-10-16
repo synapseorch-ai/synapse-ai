@@ -432,6 +432,11 @@ class VoiceCall:
                 await self._save_cut(stopped, heard="")
             else:
                 text = f"{stopped.text} {text}"
+                # Its words are the next turn's now: a turn run elsewhere is stopped and keeps nothing (F643).
+                try:
+                    await self.host.carry_turn(self)
+                except Exception as exc:  # noqa: BLE001 — the next turn is asked either way
+                    log.warning("a voice host could not drop a carried turn: %s", exc)
         turn = _Turn(text)
         turn.after_closing = self._closing_asked or bool(stopped and stopped.after_closing)
         turn.after_question = self._agent_asked or bool(stopped and stopped.after_question)

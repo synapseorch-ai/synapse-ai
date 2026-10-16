@@ -128,6 +128,11 @@ class VoiceHost:
         turns run in the call, and the call saves the cut itself."""
         return False
 
+    async def carry_turn(self, call: Any) -> None:
+        """The caller went on before the running turn answered, and the call asks the next turn their whole
+        question (F643): that turn answers nothing. A host whose job runs it stops it there and keeps nothing of
+        it. Here the call stopped it, and it saved nothing."""
+
     async def resume_after_call(self, call: Any, answer: dict) -> None:
         """An answer the call took but could not say (the caller hung up first, F474): resumed behind, as an
         answer after the call is, and the bell asks for a call-back."""

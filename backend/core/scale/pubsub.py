@@ -353,3 +353,23 @@ async def is_chat_cancelled(redis_client, session_id: str) -> bool:
 
 async def clear_chat_cancellation(redis_client, session_id: str) -> None:
     await redis_client.delete(_chat_cancel_key(session_id))
+
+
+def _turn_drop_key(session_id: str, chat_turn: str) -> str:
+    return f"synapse:drop:chat:{session_id}:{chat_turn}"
+
+
+async def publish_turn_drop(redis_client, session_id: str, chat_turn: str, ttl: int = 3600) -> None:
+    """Stop one turn of a conversation and keep nothing of it (F643): a phone call whose caller went on before
+    the turn answered carries its words into the next turn, so this one is not an answer to anything. Keyed on
+    the turn, not the session — a call's next turn is already running beside it, and a Stop
+    (`publish_chat_cancellation`) would stop that one too."""
+    await redis_client.set(_turn_drop_key(session_id, chat_turn), "1", ex=ttl)
+
+
+async def is_turn_dropped(redis_client, session_id: str, chat_turn: str | None) -> bool:
+    return bool(chat_turn) and bool(await redis_client.get(_turn_drop_key(session_id, chat_turn)))
+
+
+async def clear_turn_drop(redis_client, session_id: str, chat_turn: str) -> None:
+    await redis_client.delete(_turn_drop_key(session_id, chat_turn))

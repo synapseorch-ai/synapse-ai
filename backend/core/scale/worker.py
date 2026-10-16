@@ -20,7 +20,7 @@ from arq.connections import RedisSettings
 
 from core import settings_runtime
 from core.scale import mcp_pool
-from core.scale.pubsub import clear_chat_cancellation, is_chat_cancelled
+from core.scale.pubsub import clear_chat_cancellation, clear_turn_drop, is_chat_cancelled, is_turn_dropped
 from core.scale.config import QUEUE_NAME, get_scale_config
 from core.tenancy import get_tenant, tenant_scope
 from core.telemetry import queue as _tqueue
@@ -59,6 +59,13 @@ TURN_RUN_STOPPED = (
 NOT_ASKED = (
     "Not asked: the call already had a question waiting, and asks one at a time. The caller was told "
     "someone on the team can follow up."
+)
+
+#: Why a phone call's workflow run stopped when the caller went on before its turn answered (F643): the call
+#: asked the next turn their whole question, so this one answers nothing.
+CARRIED_ON = (
+    "Not needed: the caller went on talking before this answered, and the call asked their whole question "
+    "in the next turn."
 )
 
 #: How long a stopping worker spends telling a chat turn it cut (F424). ARQ
@@ -556,7 +563,7 @@ async def resume_failed_job(ctx: dict, run_id: str) -> dict:
 CHAT_CANCEL_POLL_SECONDS = 2.0
 
 
-async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
+async def _run_chat_turn_cancellably(redis, session_id: str, consume, *, chat_turn: str | None = None) -> bool:
     """Run `consume()` under a cancel watcher. True if it was stopped.
 
     Lifted from `WorkerEngineAdapter._cancel_guarded`, which does this for
@@ -572,6 +579,9 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
 
     A cancel that is not ours (an ARQ timeout, a worker shutting down) is not a
     request: it propagates, and the job is retried or abandoned as it always was.
+
+    `chat_turn`'s own drop (F643, `publish_turn_drop`) stops this turn alone; a
+    Stop stops the session's.
     """
     driver = asyncio.create_task(consume())
     stop = asyncio.Event()
@@ -579,7 +589,7 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
     async def watch():
         while not stop.is_set():
             try:
-                if await is_chat_cancelled(redis, session_id):
+                if await is_chat_cancelled(redis, session_id) or await is_turn_dropped(redis, session_id, chat_turn):
                     driver.cancel()
                     return
                 await _stop_asked_helpers(redis, session_id)
@@ -598,7 +608,7 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
         task = asyncio.current_task()
         if task is not None and hasattr(task, "uncancel"):
             task.uncancel()
-        if not await is_chat_cancelled(redis, session_id):
+        if not (await is_chat_cancelled(redis, session_id) or await is_turn_dropped(redis, session_id, chat_turn)):
             raise
         return True
     finally:
@@ -1218,7 +1228,7 @@ async def run_agent_chat_job(
         # A team's answers given in another process, read just before it pauses (TEAM1c).
         held = held_reader.set(lambda questions: _take_held_answers(redis, session_id, questions))
         try:
-            cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume)
+            cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume, chat_turn=chat_turn)
         finally:
             held_reader.reset(held)
             if meter is not None:
@@ -1274,6 +1284,18 @@ async def run_agent_chat_job(
         if workflow_waiting and not response_text and not cancelled:
             await _save_row("paused", history)
             return {"status": "paused", "session_id": session_id}
+
+        # A turn the caller went on past before it answered (F643): a phone call asked the next turn their whole
+        # question, so this one answers nothing. What its run had not finished is not priced, and nothing of it
+        # is kept — unless it acted: then it is saved as a stopped turn with its calls, as a cut keeps them (F477),
+        # so the next turn does not act again.
+        if cancelled and await is_turn_dropped(redis, session_id, chat_turn):
+            for run_id in turn_runs:
+                await _stop_turn_run(run_id, reason=CARRIED_ON, ending="cancelled")
+            with contextlib.suppress(Exception):
+                await clear_turn_drop(redis, session_id, chat_turn)
+            if not tool_calls_summary:
+                return _ended({"status": "dropped", "session_id": session_id})
 
         # Append to message history and persist.
         #
@@ -2029,7 +2051,7 @@ async def _end_unasked(run_id: str, redis: Any) -> None:
         _log.warning(f"[worker] run {run_id}: could not end at its unasked question: {e}")
 
 
-async def _stop_turn_run(run_id: str) -> None:
+async def _stop_turn_run(run_id: str, *, reason: str = TURN_RUN_STOPPED, ending: str = "failed") -> None:
     """Stop a run a cut chat turn started, and fail it with the reason (F424).
 
     A workflow agent's run is pumped in a task of its own (`spawn_engine_run`),
@@ -2039,6 +2061,9 @@ async def _stop_turn_run(run_id: str) -> None:
     stopped first, so nothing writes after the row is failed. The steps it
     finished keep their entries — a host prices those — and the step it was in
     has none.
+
+    A turn a phone call dropped (F643) ends its run `cancelled`, with its own
+    reason: nothing failed, the caller went on.
     """
     from core.orchestration.runner import _active_tasks
 
@@ -2047,17 +2072,17 @@ async def _stop_turn_run(run_id: str) -> None:
         task.cancel()
         await asyncio.wait({task}, timeout=3)
     try:
-        if await _fail_outside_a_step(run_id, TURN_RUN_STOPPED, statuses=("running",)):
-            _log.info(f"[worker] run {run_id}: stopped with the chat turn a stop cut (F424)")
+        if await _fail_outside_a_step(run_id, reason, statuses=("running",), ending=ending):
+            _log.info(f"[worker] run {run_id}: {ending} with its cut chat turn")
     except Exception as e:  # noqa: BLE001 — the turn is told either way
-        _log.warning(f"[worker] run {run_id}: could not be failed with its cut turn: {e}")
+        _log.warning(f"[worker] run {run_id}: could not be ended with its cut turn: {e}")
 
 
 #: Every run status but `completed`: what a dead job fails (F430), as its UPDATE always did.
 _NOT_COMPLETED = ("queued", "running", "paused", "failed", "cancelled")
 
 
-async def _fail_outside_a_step(run_id: str, reason: str, *, statuses: tuple[str, ...]) -> bool:
+async def _fail_outside_a_step(run_id: str, reason: str, *, statuses: tuple[str, ...], ending: str = "failed") -> bool:
     """Fail a run that stopped outside any step, with `reason` on it. False if it was not in `statuses`.
 
     The boot sweep's shape (`core/scale/heartbeat.py`): the run has no failed
@@ -2075,11 +2100,11 @@ async def _fail_outside_a_step(run_id: str, reason: str, *, statuses: tuple[str,
     run = restored.run
     if run.status not in statuses:
         return False
-    run.status = "failed"
+    run.status = ending
     run.ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     set_run_error(run, reason)
     await restored.checkpoint()
-    await settle_descendants(run_id, "failed", reason)
+    await settle_descendants(run_id, ending, reason)
     return True
 
 
