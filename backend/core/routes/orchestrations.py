@@ -515,6 +515,8 @@ async def run_orchestration(orch_id: str, request: Request):
 _PRIVATE_STATE_PREFIXES = (
     "_step_progress_", "_loop_progress_", "_parallel_progress_", "_exec_memory_",
     "_routing_", "_loop_", "_if_decision_", "_switch_decision_",
+    # A delegate's step's tasks until its entry carries them (TEAM1d, `pauses.TASKS_KEY`).
+    "_step_tasks",
 )
 
 

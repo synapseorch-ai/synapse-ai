@@ -3129,7 +3129,8 @@ async def run_agent_step(
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                         tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
-                        yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
+                        # `handed_off`: work a member did, one task on a workflow step's entry (TEAM1d).
+                        yield {"type": "tool_result", "tool_name": tool_name, "preview": preview, "handed_off": True}
                         continue
 
                     # Run the sub-agent's full ReAct loop
@@ -3227,7 +3228,7 @@ async def run_agent_step(
                     tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                     _log.debug(f"🤝 Delegate result from '{agent_name}': {preview}")
-                    yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": preview, "handed_off": True}
                     continue
 
                 # ===== NATIVE BUILDER TOOLS =====

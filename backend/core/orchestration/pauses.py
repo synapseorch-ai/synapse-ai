@@ -97,6 +97,31 @@ def innermost_container(position: str, chain: list[dict]) -> str:
     return containers[-1]
 
 
+#: A delegate's Agent step's member and helper tasks, counted in the run's state as each one's answer is back and
+#: moved onto the step's history entry when that is written (TEAM1d, 20 Q7: the entry is priced 1 + its tasks). In
+#: the run's state, so a pause, a crash or a container in between loses none.
+TASKS_KEY = "_step_tasks"
+
+
+def count_task(shared_state: dict, step_id: str) -> None:
+    """One more task for this step's execution (`TASKS_KEY`)."""
+    counts = shared_state.get(TASKS_KEY)
+    if not isinstance(counts, dict):
+        counts = shared_state[TASKS_KEY] = {}
+    counts[step_id] = int(counts.get(step_id) or 0) + 1
+
+
+def take_tasks(shared_state: dict, step_id: str) -> dict:
+    """The step's counted tasks as its entry's fields, `{"tasks": n}` or nothing, off the run's state."""
+    counts = shared_state.get(TASKS_KEY)
+    if not isinstance(counts, dict):
+        return {}
+    n = int(counts.pop(step_id, 0) or 0)
+    if not counts:
+        shared_state.pop(TASKS_KEY, None)
+    return {"tasks": n} if n > 0 else {}
+
+
 def record_pause(step_history: list, entry: dict) -> None:
     """Record a pause: a step's first question adds its entry; a later question in
     the same execution closes the first as the wait it was (F463).
@@ -119,6 +144,10 @@ def record_pause(step_history: list, entry: dict) -> None:
             continue
         if existing.get("status") == "running" and existing.get("step_type") != "human":
             worked = (existing.pop("worked_seconds", None) or 0) + (entry.get("worked_seconds") or 0)
+            # The execution's tasks go with its work to the new pause (TEAM1d); the wait is free.
+            tasks = int(existing.pop("tasks", None) or 0) + int(entry.get("tasks") or 0)
+            if tasks:
+                entry["tasks"] = tasks
             for key in ("started_at", "started_ms"):
                 if existing.get(key):
                     entry[key] = existing[key]
@@ -162,8 +191,12 @@ def end_step(step_history: list, entry: dict) -> None:
             worked = existing.pop("worked_seconds", None)
             existing.pop("resumed_ms", None)
             existing.pop("paused_ms", None)
+            # And the tasks it ran before it asked (TEAM1d): one execution, one count.
+            tasks = int(existing.get("tasks") or 0) + int(entry.get("tasks") or 0)
             existing.update(entry)
             existing.update(kept)
+            if tasks:
+                existing["tasks"] = tasks
             if worked and isinstance(existing.get("duration_seconds"), (int, float)):
                 existing["duration_seconds"] = round(existing["duration_seconds"] + worked, 2)
             if "started_ms" not in kept:

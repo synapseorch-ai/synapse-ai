@@ -404,7 +404,7 @@ class WorkerEngineAdapter:
 
         from sqlalchemy import select, update
 
-        from core.orchestration.pauses import end_step
+        from core.orchestration.pauses import end_step, take_tasks
         from core.orchestration.step_usage import exact_window
         from core.scale.models_db import OrchestrationRunDB
 
@@ -444,6 +444,8 @@ class WorkerEngineAdapter:
                     "ended_at": stamp(now),
                     **exact_window(started, now),
                     "duration_seconds": round(max(0.0, now - started), 2),
+                    # The tasks a delegate's step ran before the cancel (TEAM1d): its work, counted.
+                    **take_tasks(dict(row.shared_state or {}), step_id),
                 })
                 await session.execute(
                     update(OrchestrationRunDB)

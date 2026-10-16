@@ -17,7 +17,7 @@ from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
 from .run_error import failure_reason, reason_of, run_error, set_run_error
-from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause
+from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
 from .step_usage import exact_window, step_scope
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
@@ -647,6 +647,7 @@ class OrchestrationEngine:
                     # With its times, like every other ending: the work it did
                     # before the limit is work, and is counted as such (PL1a).
                     end_step(run.step_history, {
+                        **take_tasks(run.shared_state, step.id),
                         "step_id": step.id, "step_name": step.name,
                         "step_type": step.type.value, "status": "failed",
                         "error": f"Timed out {timeout_text}",
@@ -690,6 +691,7 @@ class OrchestrationEngine:
                 # Record step completion
                 step_duration = round(time.time() - step_start_time, 2)
                 end_step(run.step_history, {
+                    **take_tasks(run.shared_state, step.id),
                     "step_id": step.id,
                     "step_name": step.name,
                     "step_type": step.type.value,
@@ -774,6 +776,7 @@ class OrchestrationEngine:
                 safe_error = "An internal error occurred while executing this step."
                 real_error = reason_of(e)
                 end_step(run.step_history, {
+                    **take_tasks(run.shared_state, step.id),
                     "step_id": step.id,
                     "step_name": step.name,
                     "step_type": step.type.value,
@@ -1949,6 +1952,12 @@ class OrchestrationEngine:
         reads it here rather than guessing from the position.
         """
         asker = self.step_map.get(event.get("orch_step_id")) or step
+        # What the asking step ran before it asked, on its pause (TEAM1d); a resume adds the rest at its end.
+        tasks = take_tasks(run.shared_state, asker.id)
+        return {**self._paused_entry_of(run, step, asker, event, step_start_time), **tasks}
+
+    def _paused_entry_of(self, run: OrchestrationRun, step: StepConfig, asker: StepConfig, event: dict,
+                         step_start_time: float) -> dict:
         if asker is step:
             entry = {
                 "step_id": step.id,
@@ -2139,7 +2148,7 @@ class OrchestrationEngine:
             lines.append(line)
         # The run's bookkeeping is not what it made: the tool trace is kept
         # below, verbatim, and the progress keys are engine state.
-        _internal = ("_exec_memory_", "_step_progress_", "_loop_progress_", "_parallel_progress_")
+        _internal = ("_exec_memory_", "_step_progress_", "_loop_progress_", "_parallel_progress_", "_step_tasks")
         state = [(k, v) for k, v in run.shared_state.items()
                  if not str(k).startswith("__") and not str(k).startswith(_internal)]
         for key, value in state[:20]:

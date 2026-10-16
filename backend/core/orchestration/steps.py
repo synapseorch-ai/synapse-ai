@@ -17,7 +17,7 @@ from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
-from .pauses import end_step, progress_key as _progress_key
+from .pauses import count_task, end_step, progress_key as _progress_key, take_tasks
 from .step_usage import exact_window, step_scope
 from .run_error import reason_of, set_run_error
 from .run_gate import stop_reason
@@ -131,7 +131,20 @@ def cut_by_the_run(engine, run: OrchestrationRun, sub_step: StepConfig, step_sta
     }
     if sub_step.type not in CONTAINERS:
         entry["cut"] = True
+    entry.update(take_tasks(run.shared_state, sub_step.id))
     end_step(run.step_history, entry)
+
+
+def _is_a_task(event: dict) -> bool:
+    """A task a delegate's step ran (TEAM1d): a hand-off whose answer is back (the lead's own; a member it could not
+    reach is refused before it runs, and a hand-off a person approved midway is counted when its answer is back, after
+    the resume), or a helper waited for, the lead's or a member's."""
+    kind = event.get("type")
+    if kind == "tool_result":
+        return bool(event.get("handed_off")) and not event.get("delegate_from")
+    if kind == "helper_finished":
+        return (event.get("record") or {}).get("mode", "wait") == "wait"
+    return False
 
 
 def _no_answer_reason(step_name: str, no_answer: dict) -> str:
@@ -276,6 +289,8 @@ class AgentStepExecutor:
         # A board claim is this step's (BOARD1a): released when the step ends, kept while it waits for a person.
         board_holder = f"{run.run_id}/{step.id}"
         parked = False
+        # A delegate's step counts the tasks it ran, its entry priced 1 + them (TEAM1d, 20 Q7); a plain agent's none.
+        counts_tasks = (target_agent or {}).get("type") == "delegate"
         try:
             async for event in run_agent_step(
                 message=prompt,
@@ -314,6 +329,8 @@ class AgentStepExecutor:
             ):
                 if event.get("type") == "human_input_required":
                     parked = True
+                if counts_tasks and _is_a_task(event):
+                    count_task(run.shared_state, step.id)
                 if event.get("type") == "tasks_updated" and not event.get("delegate_from"):
                     # Task state lives on the run, not in a tool's process
                     # memory: checkpointing here is what makes the plan survive
@@ -1833,6 +1850,7 @@ class ParallelStepExecutor:
                 duration = round(time.time() - step_start, 2)
                 _log.debug(f"PARALLEL: ⏱ Step '{sub_step.name}' timed out {sub_after} in branch {branch_index}")
                 end_step(run.step_history, {
+                    **take_tasks(run.shared_state, sub_step.id),
                     "step_id": sub_step.id, "step_name": sub_step.name,
                     "step_type": sub_step.type.value, "status": "failed",
                     "error": f"Timed out {sub_after}",
@@ -1868,6 +1886,7 @@ class ParallelStepExecutor:
             # A step that reported an error is recorded as failed, as a loop body
             # records it (F88); it was recorded `completed`.
             end_step(run.step_history, {
+                **take_tasks(run.shared_state, sub_step.id),
                 "step_id": sub_step.id, "step_name": sub_step.name,
                 "step_type": sub_step.type.value, "status": "failed" if failed else "completed",
                 "started_at": _iso(step_start), "ended_at": _iso(time.time()), **exact_window(step_start),
@@ -2240,6 +2259,7 @@ class LoopStepExecutor:
                                       f"'{sub_step.name}' failed: {close_err}")
                         _log.debug(f"LOOP: ⏱ Step '{sub_step.name}' timed out {sub_after} (iteration {iteration})")
                         end_step(run.step_history, {
+                            **take_tasks(run.shared_state, sub_step.id),
                             "step_id": sub_step.id, "step_name": sub_step.name,
                             "step_type": sub_step.type.value, "status": "failed",
                             "error": f"Timed out {sub_after}",
@@ -2295,6 +2315,7 @@ class LoopStepExecutor:
 
                     duration = round(time.time() - step_start, 2)
                     end_step(run.step_history, {
+                        **take_tasks(run.shared_state, sub_step.id),
                         "step_id": sub_step.id, "step_name": sub_step.name,
                         "step_type": sub_step.type.value,
                         "status": "failed" if failed else "completed",
