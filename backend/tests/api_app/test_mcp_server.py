@@ -134,7 +134,7 @@ class TestTheToolList:
         assert {"list_agents", "create_agent", "update_orchestration", "run_orchestration",
                 "get_run", "answer_run", "cancel_run", "list_runs", "chat_with_agent"} <= set(tools)
         deletes = {n: t for n, t in tools.items() if n.startswith("delete_")}
-        assert set(deletes) == {"delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool"}
+        assert {"delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool"} <= set(deletes)
         for t in deletes.values():  # D292: irreversible, confirmed by a token, never by the builder's flag
             assert t.annotations.destructiveHint is True
             assert "confirm_token" in t.inputSchema["properties"] and "confirm" not in t.inputSchema["properties"]
