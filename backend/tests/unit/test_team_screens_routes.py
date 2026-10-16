@@ -122,3 +122,35 @@ class TestTheTypesName:
         types = {t["value"]: t for t in (await client.get("/api/agent-types")).json()["types"]}
         assert types["delegate"]["label"] == "Team"
         assert "sub-agent" not in types["delegate"]["description"].lower()
+
+
+class TestALeadThatWaitsPatiently:
+    """F622 (TEAM1b's live pass): `wait` said "Something arrived" in the same words every time, so a lead that
+    waited for three members' news one by one made three identical calls and the repeat guard (F476) ended its
+    turn, before it could pause on a member's question. Each arrival now names who it came from, and counts."""
+
+    async def test_three_waits_that_each_get_news_do_not_end_the_turn(self, server, llm, team):
+        import asyncio as _asyncio
+
+        async def ana(_kw):
+            await _asyncio.sleep(0.2)
+            return "A fine"
+
+        async def ben_says(_kw):
+            await _asyncio.sleep(0.6)
+            return tool_call("message", to="lead", text="Halfway")
+
+        async def ben_ends(_kw):
+            await _asyncio.sleep(0.6)
+            return "B fine"
+
+        from tests.unit.test_team_runtime import both
+        llm.on("PLAN IT", [both(assign("Ana", "CHECK A"), assign("Ben", "CHECK B")),
+                           tool_call("wait", seconds=10), tool_call("wait", seconds=10),
+                           tool_call("wait", seconds=10), "all checked"])
+        llm.on("CHECK A", [ana]).on("CHECK B", [ben_says, ben_ends])
+        events = await _turn(server)
+        waits = [e["preview"] for e in events if e.get("type") == "tool_result" and e.get("tool_name") == "wait"]
+        assert len(waits) == 3 and len(set(waits)) == 3, waits
+        assert "Ana" in waits[0]
+        assert [e for e in events if e.get("type") == "final"][-1]["response"] == "all checked"

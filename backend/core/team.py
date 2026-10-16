@@ -186,6 +186,21 @@ def new_inbox(state: dict | None = None):
     return _inbox_class()(state)
 
 
+def arrived(inbox, count: int, where: str) -> str:
+    """What a `wait` says when news came: who it is from, and how many times news has come (F622). In the same
+    words every time, three waits in a row were three identical calls, and the repeat guard (F476) ended a lead
+    that was only waiting for its members one by one."""
+    names: list[str] = []
+    for item in list(getattr(inbox, "_pending", []) or []):
+        kind = item.get("kind")
+        name = ("the person" if kind == "person_message" else "the lead" if kind == "lead_message"
+                else "a notice" if kind == "guard_notice" else str(item.get("member") or item.get("from") or ""))
+        if name and name not in names:
+            names.append(name)
+    whom = f" from {', '.join(names)}" if names else ""
+    return f"Something arrived{whom} (news {count} this turn): {where}."
+
+
 def render_inbox(items: list[dict], *, for_lead: bool) -> str:
     """The automated block a lead (or a member) reads its team's news in, in the order it arrived."""
     heading = ("Team inbox (since your last step) — automated, not from the person, unless a line says so"
@@ -236,6 +251,7 @@ class Member:
     answer: str = ""
     error: str = ""
     messages_sent: int = 0
+    arrivals: int = 0           # its `wait`s that ended on news (F622)
     inbox: Any = None
     progress: dict = field(default_factory=dict)
     approval: dict | None = None
@@ -373,6 +389,8 @@ class Team:
         #: The questions an earlier pause of this turn already asked (TEAM1c): a host asks again only the new ones.
         self.paused_on: set[str] = set(state.get("paused_on") or [])
         self._events: list[dict] = []
+        #: How many times a `wait` of the lead's ended on news (F622): each says so in its own words.
+        self.arrivals = 0
         self.events_wake = asyncio.Event()
         self.ended = False
         #: Set by the lead's turn when it parks on a member's question: the board and that member are kept.
@@ -737,7 +755,8 @@ class Team:
             for event in self.drain():
                 yield event
             if self.inbox.has_pending():
-                yield "Something arrived: it is in your team inbox below."
+                self.arrivals += 1
+                yield arrived(self.inbox, self.arrivals, "it is in your team inbox below")
                 return
             if not self.working():
                 waiting = [m.name for m in self.waiting()]
@@ -772,7 +791,8 @@ class Team:
             limit = WAIT_DEFAULT_SECONDS
         limit = max(1.0, min(limit, WAIT_MAX_SECONDS))
         if member.inbox.has_pending():
-            return "Something arrived: it is below."
+            member.arrivals += 1
+            return arrived(member.inbox, member.arrivals, "it is below")
         member.waiting = True
         self._everyone_waiting()
         try:
@@ -782,7 +802,8 @@ class Team:
             member.waiting = False
             self._everyone_waiting()
         if member.inbox.has_pending():
-            return "Something arrived: it is below."
+            member.arrivals += 1
+            return arrived(member.inbox, member.arrivals, "it is below")
         return f"Nothing arrived after {int(limit)}s. Finish with what you have, or message the lead."
 
     def forward(self, args: dict) -> str:
