@@ -142,6 +142,22 @@ class TestApprovingRunsItAsTheDelegate:
         assert _approval_id("delegate_to_agent", {"agent_id": HELPER, "task": "clean"}) in state["approved_calls"]
 
 
+class TestTheResumedDelegateSeesItsCallOnce:
+    async def test_its_prompt_holds_the_action_once(self, team, helper_tools, fake_llm):
+        """F638: the gate's snapshot ends with the action, and the replay appended it again."""
+        from core.chat_approval import resume_state_for
+        first = await _lead(fake_llm, [tool_call("delegate_to_agent", agent_id=HELPER, task="clean"),
+                                       tool_call("danger")])
+        _card, parked = _parked(first)
+        await _lead(fake_llm, ["helper: cleaned", "lead: all done"], resume_state=resume_state_for(parked, approve=True))
+        prompts = [str(c.get("prompt_msg") or "") for c in fake_llm.calls]
+        helper_prompt = next(p for p in reversed(prompts) if p.startswith("User Request: clean\n"))   # its resumed one
+        actions = [b for b in helper_prompt.split("\n[Turn ") if "— Action]" in b.split("\n", 1)[0]
+                   and '"tool": "danger"' in b]
+        assert len(actions) == 1
+        assert helper_tools == [(HELPER, "danger")]
+
+
 class TestWhereNobodyCanAnswer:
     async def test_the_lead_is_told_and_carries_on(self, team, helper_tools, fake_llm):
         from core.chat_approval import nobody_to_ask

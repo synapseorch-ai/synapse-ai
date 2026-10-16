@@ -135,6 +135,14 @@ class TestApproving:
         assert run.shared_state["tail"] == "done"       # the step after it ran too
         assert "pending_approval" not in (run.step_progress.get("work") or {})
 
+    async def test_the_resumed_step_sees_its_call_once(self, seeded, fake_llm):
+        """F638: the gate's snapshot ends with the action, and the approved call's replay appended it again."""
+        await _run(seeded, "run_ap638", fake_llm, [tool_call("danger"), "done"], [])
+        await _resume("run_ap638", {"approve": True}, fake_llm, ["all finished"], [])
+        prompt = str(fake_llm.calls[-1].get("prompt_msg") or "")
+        actions = [b for b in prompt.split("\n[Turn ") if "— Action]" in b.split("\n", 1)[0] and '"danger"' in b]
+        assert len(actions) == 1, prompt[:600]
+
     async def test_the_step_is_re_entered_not_stepped_past(self, seeded, fake_llm):
         """A human step resumes by moving on. This one has unfinished work."""
         executed = []

@@ -918,6 +918,9 @@ class Team:
                 if asked is None:
                     member.status = "completed"
                     break
+                if member.calls and member.calls[-1]["tool"] == asked.get("tool_name") and not member.calls[-1]["result"]:
+                    # The call it asks about has not run: its resumed run records it once, with its result (F638).
+                    member.calls.pop()
                 approval = {"approval_id": asked.get("approval_id"), "tool_name": asked.get("tool_name"),
                             "tool_args": asked.get("tool_args") or {}, "category": asked.get("category")}
                 if self.can_park:

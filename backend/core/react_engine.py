@@ -339,6 +339,14 @@ class _UndeclaredTool:
     trusted = True
 
 
+def _action_kept(context_text: str, turn: int) -> bool:
+    """Whether `context_text` already holds turn `turn`'s action with nothing observed after it: the gate's snapshot
+    (F312, F319) ends with the action it stopped on, so the approved call's replay must not append it again — the
+    model read the one call twice and reported it so (F638)."""
+    at = context_text.rfind(f"[Turn {turn} — Action]")
+    return at >= 0 and f"[Turn {turn} — Observation]" not in context_text[at:]
+
+
 def _approval_id(tool_name: str, tool_args: dict) -> str:
     """Identifies one call across a pause. Name plus arguments, so approving
     a `run_bash` of `ls` does not also approve the next one of `rm`."""
@@ -2576,7 +2584,7 @@ async def run_agent_step(
             # running context, tagged with the turn number for temporal clarity.
             # Reasoning blocks are intentionally NOT re-injected — they were
             # private scratch space for that single turn.
-            if action_text.strip():
+            if action_text.strip() and not (_replaying and _action_kept(current_context_text, turn + 1)):
                 current_context_text += f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
 
             # ── SPAWN_SUBTASK: helpers run where their calls are ────────────────
