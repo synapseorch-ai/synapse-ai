@@ -95,6 +95,30 @@ class TestTheDeleteRoute:
 
         assert (await client.delete("/api/agents/agent_desk")).status_code == 200
 
+    async def test_a_workflow_agent_whose_own_workflow_calls_it_is_deleted_and_then_the_workflow(self, client):
+        """F690 (BWA1, 2026-10-16; Naveen: let the cycle's delete through): the builder wired a workflow's step to
+        the workflow agent that runs that same workflow (F691). Each delete was refused because of the other — the
+        workflow because the agent runs it (F408), the agent because the workflow runs it in a step — so a person
+        could delete neither. The workflow an agent runs no longer holds that agent: the agent goes, then the
+        workflow can. Any other workflow calling it still holds it."""
+        await S.seed_orchestrations([S.make_orchestration(id="orch_loop", name="Billing", steps=[
+            {"id": "s1", "name": "Bill", "type": "agent", "agent_id": "agent_loop"}])])
+        await S.seed_agents([S.make_orchestrator_agent("orch_loop", id="agent_loop", name="Billing agent")])
+
+        assert (await client.delete("/api/orchestrations/orch_loop")).status_code == 409, "an agent still runs it"
+        assert (await client.delete("/api/agents/agent_loop")).status_code == 200
+        assert (await client.delete("/api/orchestrations/orch_loop")).status_code == 200
+
+    async def test_another_workflow_calling_a_workflow_agent_still_holds_it(self, client):
+        await S.seed_orchestrations([
+            S.make_orchestration(id="orch_own", name="Billing", steps=[{"id": "s1", "name": "End", "type": "end"}]),
+            S.make_orchestration(id="orch_other", name="Month end", steps=[
+                {"id": "s1", "name": "Bill", "type": "agent", "agent_id": "agent_wf"}])])
+        await S.seed_agents([S.make_orchestrator_agent("orch_own", id="agent_wf", name="Billing agent")])
+
+        resp = await client.delete("/api/agents/agent_wf")
+        assert resp.status_code == 409 and "the workflow 'Month end' runs it in a step" in resp.json()["detail"]
+
     async def test_one_nothing_uses_is_deleted_with_its_memory(self, client):
         await _desk()
         from core import agent_memory

@@ -162,9 +162,15 @@ async def what_uses_agent(agent_id: str) -> list[Dependent]:
               for c in await get_channels_for_agent(agent_id)]
     found += [Dependent("schedule", s.get("name") or s["id"]) for s in await schedule_store.load()
               if s.get("target_type") == "agent" and s.get("target_id") == agent_id]
+    agents = await load_agents()
+    # The workflow a workflow agent runs does not hold it (F690): its step calling the agent is a loop (F691), and
+    # with each side refusing because of the other, a person could delete neither. The agent goes first; the
+    # workflow's own delete then passes (F408), as nothing runs it.
+    own = next((a.get("orchestration_id") for a in agents
+                if a.get("id") == agent_id and a.get("type") == "orchestrator"), None)
     found += [Dependent("workflow", o.get("name") or o["id"]) for o in await load_orchestrations()
-              if not _gone(o) and _calls(o, agent_id)]
-    found += [Dependent("agent", a.get("name") or a["id"]) for a in await load_agents()
+              if not _gone(o) and _calls(o, agent_id) and not (own and o.get("id") == own)]
+    found += [Dependent("agent", a.get("name") or a["id"]) for a in agents
               if a.get("id") != agent_id and not a.get("system")
               and agent_id in (a.get("delegate_agent_ids") or [])]
     return found
