@@ -177,6 +177,32 @@ class TestConfirmPausesTheRunLikeAnAgentStep:
         assert "saved" in order[:ran], "the spent approval was saved before the call"
         assert "saved-with-approval" not in order[ran:]
 
+    async def test_an_approved_call_that_fails_ends_the_step_with_its_error_and_asks_nothing_more(
+            self, fake_llm, server, monkeypatch):
+        """F668 (BWA1's self-hosted seed, 2026-10-16): the approved call ran and failed (a 401, which a step may retry
+        with other arguments), the step's retry had the model write new arguments, the new call asked again — and
+        each resume started the step's attempts afresh, so every approval brought a failed call and another question,
+        never the error. Naveen: the person approved one call and it failed; the step ends with the tool's own
+        error."""
+        agent = S.make_agent(tools=["danger"], tool_policy={"destructive": "confirm"})
+        await S.seed_agents([agent])
+        fake_llm.script([tool_call("danger", cmd="fetch")] + [tool_call("danger", cmd="fetch again")] * 3)
+        await _run(_orch(agent_id=agent["id"]), server, run_id="run_tp_f")
+        calls_before = fake_llm.call_count
+
+        async def unauthorised(name, args, **_kw):
+            server.session.calls.append((name, args))
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text="401 Requires authentication")],
+                                         isError=True)
+
+        monkeypatch.setattr(server.session, "call_tool", unauthorised)
+        events, done = await _resume("run_tp_f", {"approve": True}, server)
+        assert server.session.calls == [("danger", {"cmd": "fetch"})], "the approved call, once"
+        assert fake_llm.call_count == calls_before, "no new arguments are asked for"
+        assert not [e for e in events if e.get("type") == "human_input_required"], "and nothing is asked again"
+        assert done and done[-1]["status"] == "failed"
+        assert "401 Requires authentication" in _said(events)
+
     async def test_refusing_fails_the_step_with_the_reason(self, fake_llm, server):
         agent = S.make_agent(tools=["danger"], tool_policy={"destructive": "confirm"})
         await S.seed_agents([agent])

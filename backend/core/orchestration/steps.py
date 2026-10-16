@@ -988,11 +988,16 @@ class ToolStepExecutor:
             except ToolCallFailed as e:
                 last_error = str(e)
                 _log.debug(f"TOOL STEP: ❌ tool reported failure turn={turn + 1}: {last_error}")
-                if not e.retryable:
+                if not e.retryable or _replaying:
                     break
             except Exception as e:
                 last_error = str(e)
                 _log.debug(f"TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}")
+                if _replaying:
+                    break
+            # A person approved one call and it failed: the step ends with its error (F668, Naveen). A retry would
+            # have the model write other arguments, ask again, and — each resume starting the attempts afresh —
+            # never end, a paid call and a new question each time.
 
         yield {
             "type": "final",
