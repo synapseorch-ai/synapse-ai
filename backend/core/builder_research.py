@@ -217,6 +217,29 @@ FINDINGS_SCHEMA = {
 }
 
 
+#: Two-part public suffixes, so `dev.tesco.co.uk`'s registrable name is "tesco".
+_TWO_PART_SUFFIXES = {"co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.in", "co.jp", "com.br", "co.nz", "com.sg",
+                      "co.za", "com.mx"}
+
+
+def _registrable_name(host: str) -> str:
+    """`learn.microsoft.com` → "microsoft"; `dev.tesco.co.uk` → "tesco"."""
+    labels = host.split(".")
+    if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
+        return labels[-3]
+    return labels[-2] if len(labels) >= 2 else host
+
+
+def _providers_own_page(provider: str, host: str) -> bool:
+    """A page is the provider's own when its host carries the provider's whole name (`docs.goshippo.com` for
+    Shippo), or when the host's registrable name is the provider name's first word — a product on its company's
+    domain (Microsoft Teams on `learn.microsoft.com`; F667, Naveen's brand-word rule)."""
+    slug, words = _slug(provider), _words(provider)
+    if slug and slug in host.replace(".", "").replace("-", ""):
+        return True
+    return bool(words) and len(words[0]) >= 3 and _slug(_registrable_name(host)) == words[0]
+
+
 async def report_findings(args: dict, server_module: Any, events: list[dict]) -> dict:
     seen = _evidence()
     options = []
@@ -232,7 +255,7 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
         provider = str(raw["provider"]).strip()[:80]
         # A verdict about a provider rests on its own site: "USPS: no public way in" read off EasyPost's page was
         # wrong (BWA1's browser pass; USPS has developers.usps.com).
-        own_pages = [s for s in sources if _slug(provider) and _slug(provider) in _host(s).replace(".", "").replace("-", "")]
+        own_pages = [s for s in sources if _providers_own_page(provider, _host(s))]
         if (how == "mcp" and _slug(provider) not in seen["own_mcp"]) or (how in ("api", "none") and not own_pages):
             how = "unclear"
         if how == "mcp":

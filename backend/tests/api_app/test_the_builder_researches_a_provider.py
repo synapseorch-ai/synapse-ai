@@ -124,6 +124,29 @@ async def test_a_verdict_stands_only_on_what_the_run_read():
     assert "error" in await report_findings({"options": []}, None, [])
 
 
+@pytest.mark.parametrize("provider, page, how", [
+    ("Microsoft Teams", "https://learn.microsoft.com/en-us/graph/api/channel-post-message", "api"),
+    ("Google Calendar", "https://developers.google.com/calendar/api", "api"),
+    ("Tesco Groceries", "https://dev.tesco.co.uk/docs", "api"),
+    ("Microsoft Teams", "https://teamsbot.io/docs", "unclear"),            # someone else's site
+    ("Common Appointment Systems", "https://learn.microsoft.com/graph", "unclear"),
+])
+async def test_a_products_page_on_its_companys_domain_is_its_own(provider, page, how):
+    """F667 (Naveen's brand-word rule, 2026-10-16): Microsoft's own Graph page did not count for "Microsoft Teams",
+    because the host must contain the provider's whole name. A page now also counts when the host's registrable name
+    is the provider name's first word."""
+    from core.builder_tools import _current_run
+
+    token = _current_run.set(f"run_brand_{provider}_{how}")
+    try:
+        await read_web_page({"url": page}, _server(_Session({"success": True, "markdown": "API docs"})), [])
+        events: list[dict] = []
+        await report_findings({"options": [{"provider": provider, "how": "api", "sources": [page]}]}, None, events)
+    finally:
+        _current_run.reset(token)
+    assert events[0]["options"][0]["how"] == how
+
+
 async def test_the_providers_own_server_in_the_registry_is_evidence_for_mcp(monkeypatch):
     import core.safe_fetch as sf
     from core.builder_tools import _current_run
