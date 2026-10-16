@@ -6466,6 +6466,107 @@ async def check_dialogfocus(browser) -> str:
         await ctx.close()
 
 
+async def _wheel_scrolls(page, scroller) -> str | None:
+    """None when the wheel over an open list scrolls it and the list fits the window; else what is wrong."""
+    try:
+        await scroller.wait_for(timeout=5_000)
+    except Exception:
+        return "its list never opened"
+    box = await scroller.bounding_box()
+    height = page.viewport_size["height"]
+    if not box:
+        return "its list has no box"
+    if box["y"] < -1 or box["y"] + box["height"] > height + 1:
+        return f"its list runs off the window ({box['y']:.0f}..{box['y'] + box['height']:.0f} of {height}px)"
+    if await scroller.evaluate("e => e.scrollHeight <= e.clientHeight"):
+        return "its list is not taller than its box, so it cannot be measured"
+    await page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    await page.mouse.wheel(0, 400)
+    await asyncio.sleep(0.5)
+    if not await scroller.evaluate("e => e.scrollTop"):
+        return "the wheel does not scroll its list"
+    return None
+
+
+#: The kitchen sink's long dropdowns (F700, F701): (what, how to open it, the element that scrolls).
+_LONG_LISTS = (
+    ("Combobox", lambda d: d.get_by_role("button", name="Long combobox").click(), "[cmdk-list]"),
+    ("Select", lambda d: d.get_by_role("combobox", name="Long select").click(), "[data-radix-select-viewport]"),
+    ("Menu", lambda d: d.get_by_role("button", name="Long menu").click(), "[role=menu]"),
+    ("template suggestions", lambda d: d.get_by_role("textbox", name="Long template").fill("{{ st"),
+     "[role=listbox][aria-label=Suggestions]"),
+)
+
+
+@check
+async def check_dropdownscroll(browser) -> str:
+    """Every kind of dropdown scrolls under the wheel inside a Modal and a Drawer, and fits the window (F700, F701).
+
+    A dialog locks the page's scroll and lets only its own content scroll. A Combobox's or a template field's list
+    is portalled out of the dialog, so the lock threw away every wheel and touch over it: the Evaluate dialog's
+    judge model could be reached only with the arrow keys. A long Menu had no height of its own and ran off the
+    screen. Measured on the kitchen sink's sixty-item lists, then on the product's own model pickers in the
+    Evaluate dialog and the Knowledge settings drawer, with sixty models.
+    """
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    many = [f"gpt-smoke-{n:02d}" for n in range(1, 61)]
+    models = _answer({"providers": {"openai": {"available": True, "models": many,
+                                                "embedding_models": ["text-embedding-3-small"]}}})
+    for pattern, handler in _SMOKE_KB_EVAL_ROUTES + _SMOKE_KB_CONTEXTUAL_ROUTES[len(_SMOKE_KB_ROUTES):]:
+        await ctx.route(pattern, handler)
+    await ctx.route("**/api/models", models)
+    page = await ctx.new_page()
+    try:
+        bad: list[str] = []
+        await page.goto(f"{APP}/kitchen-sink", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        for opener in ("Open modal", "Open drawer"):
+            for what, open_it, selector in _LONG_LISTS:
+                await page.get_by_role("button", name=opener, exact=True).click()
+                dialog = page.get_by_role("dialog")
+                await dialog.first.wait_for(timeout=5_000)
+                await asyncio.sleep(0.3)
+                await open_it(dialog.first)
+                wrong = await _wheel_scrolls(page, page.locator(selector).first)
+                if wrong:
+                    bad.append(f"{what} in {opener.removeprefix('Open ')}: {wrong}")
+                # Counted in the DOM: an open Select hides the dialog from the accessibility tree.
+                for _ in range(4):
+                    if not await page.locator("[role=dialog]").count():
+                        break
+                    await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.4)
+
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name=re.compile("^Evaluate")).wait_for(timeout=30_000)
+        await _kb_eval(page)
+        await page.get_by_role("button", name="Run", exact=True).click()
+        run = page.get_by_role("dialog", name="Run Smoke questions")
+        await run.wait_for(timeout=10_000)
+        await run.get_by_role("checkbox", name="Grade answers").click()
+        await run.get_by_role("button", name="Judge model").click()
+        wrong = await _wheel_scrolls(page, page.locator("[cmdk-list]").first)
+        if wrong:
+            bad.append(f"the Evaluate dialog's Judge model: {wrong}")
+        for _ in range(2):
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.4)
+
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Settings", exact=True).wait_for(timeout=30_000)
+        await _kb_settings_contextual(page)
+        await page.get_by_role("button", name="Context model", exact=True).click()
+        wrong = await _wheel_scrolls(page, page.locator("[cmdk-list]").first)
+        if wrong:
+            bad.append(f"the Knowledge settings drawer's Context model: {wrong}")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return ("a Combobox, a Select, a Menu and template suggestions scroll under the wheel in a Modal and a "
+                "Drawer, and so do the judge and context model pickers")
+    finally:
+        await ctx.close()
+
+
 def _png(width: int = 4, height: int = 3) -> bytes:
     """A small solid-red PNG, built here so the check needs no file on disk."""
     import struct
@@ -7382,6 +7483,66 @@ async def check_rerankers(browser) -> str:
     finally:
         await ctx.close()
     return "four reranker cards; Cohere opens to its key, the server to its address"
+
+
+#: `GET /api/models/rerank` as the pickers read it (BF9, D293): Cohere's key lists two, Voyage's was refused.
+_SMOKE_RERANK_LISTINGS = {"providers": [
+    {"provider": "cohere", "label": "Cohere", "key": "cohere_key", "error": None, "note": None,
+     "models": [{"id": "cohere.rerank-v3.5", "label": "rerank-v3.5"},
+                {"id": "cohere.rerank-multilingual-v3.0", "label": "rerank-multilingual-v3.0"}]},
+    {"provider": "voyage", "label": "Voyage AI", "key": "voyage_key", "error": "Voyage AI refused this key (401)",
+     "note": None, "models": []},
+]}
+
+
+@check
+async def check_rerankpicker(browser) -> str:
+    """The rerank pickers list what the saved keys can use, and each reranker card says so (F702, F703).
+
+    Settings → Models' Rerank model and a base's settings drawer were free text over a hard-coded list (Voyage's
+    rerank-2.5 when rerank-3 was current), so a model no key could call was saved and failed only in a search's
+    trace. Now both are pickers of `/api/models/rerank`'s models, under their providers; a refused key lists
+    nothing, says so on its card, and dims it. The list is answered in the browser."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route("**/api/settings", lambda route: route.continue_() if route.request.method != "GET" else
+                    _patch_json(route, {"knowledge_enabled": True, "cohere_key_set": True, "cohere_key_hint": "1234",
+                                        "voyage_key_set": True, "voyage_key_hint": "5678"}))
+    await ctx.route("**/api/models/rerank*", _answer(_SMOKE_RERANK_LISTINGS))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/settings/models", wait_until="domcontentloaded")
+        cohere = page.locator('[data-provider-card="Cohere"]')
+        await cohere.wait_for(timeout=30_000)
+        await page.wait_for_timeout(1500)
+        if "2 rerank models" not in await cohere.inner_text():
+            bad.append(f"the Cohere card does not count its models: {await cohere.inner_text()!r}")
+        voyage = await page.locator('[data-provider-card="Voyage AI"]').inner_text()
+        if "Voyage AI refused this key (401)" not in voyage:
+            bad.append(f"the Voyage card does not say its key was refused: {voyage!r}")
+        await page.get_by_role("button", name="Rerank model", exact=True).click()
+        offered = await page.get_by_role("option").evaluate_all("els => els.map(e => e.textContent.trim())")
+        if offered != ["None: no rerank unless a base names one", "rerank-v3.5", "rerank-multilingual-v3.0"]:
+            bad.append(f"Settings → Models' rerank picker offers {offered}")
+        await page.keyboard.press("Escape")
+
+        for pattern, handler in _SMOKE_KB_ROUTES:
+            await page.route(pattern, handler)
+        await page.goto(f"{APP}/knowledge", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Settings", exact=True).click()
+        drawer = page.get_by_role("dialog", name=re.compile("^Settings for"))
+        await drawer.wait_for(timeout=10_000)
+        await page.wait_for_timeout(1500)
+        await drawer.get_by_role("button", name="Rerank model", exact=True).click()
+        offered = await page.get_by_role("option").evaluate_all("els => els.map(e => e.textContent.trim())")
+        if offered[1:] != ["rerank-v3.5", "rerank-multilingual-v3.0"] or not offered[0].startswith("Workspace default"):
+            bad.append(f"the drawer's rerank picker offers {offered}")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return ("both rerank pickers offer the Cohere key's two models and nothing of Voyage's refused key; "
+                "the cards count and say so")
+    finally:
+        await ctx.close()
 
 
 @check

@@ -27,6 +27,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
+import { useOwnScroll } from "./own-scroll";
+
 import { controlStyles, type ControlSize } from "./control-styles";
 import type { SelectOption } from "./select";
 
@@ -74,6 +76,9 @@ export function Combobox<T extends string = string>({
 }) {
   const [open, setOpen] = React.useState(false);
   const selected = options.find((o) => o.value === value);
+  // Portalled out of any dialog it opens in: without this a Modal's or a Drawer's scroll lock threw away
+  // every wheel and swipe over it (F700, `own-scroll.ts`).
+  const ownScroll = useOwnScroll<HTMLDivElement>();
 
   // Grouped in source order. A Map preserves insertion order, so providers come
   // out in the order the caller listed them rather than alphabetically.
@@ -157,7 +162,7 @@ export function Combobox<T extends string = string>({
               />
             </div>
 
-            <Command.List className="max-h-72 min-h-0 overflow-y-auto overscroll-contain p-1">
+            <Command.List ref={ownScroll} className="max-h-72 min-h-0 overflow-y-auto overscroll-contain p-1">
               <Command.Empty className="px-2 py-6 text-center text-sm text-text-faint">
                 {emptyMessage}
               </Command.Empty>

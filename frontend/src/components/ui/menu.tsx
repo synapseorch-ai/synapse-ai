@@ -70,7 +70,7 @@ export function RowMenu({
           align="end"
           sideOffset={4}
           onCloseAutoFocus={onCloseAutoFocus}
-          className="z-50 min-w-44 overflow-hidden rounded-lg border border-border-strong bg-surface p-1 shadow-elevated"
+          className="z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-44 overflow-y-auto overscroll-contain rounded-lg border border-border-strong bg-surface p-1 shadow-elevated"
         >
           <RunAfterClose.Provider value={runAfterClose}>{children}</RunAfterClose.Provider>
         </RMenu.Content>
@@ -168,7 +168,7 @@ export function Menu({
           collisionPadding={8}
           onCloseAutoFocus={onCloseAutoFocus}
           className={cn(
-            "z-50 min-w-56 overflow-hidden rounded-lg border border-border-strong bg-surface p-1 shadow-elevated",
+            "z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-56 overflow-y-auto overscroll-contain rounded-lg border border-border-strong bg-surface p-1 shadow-elevated",
             className,
           )}
         >

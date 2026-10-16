@@ -71,6 +71,8 @@ import {
   Table,
   TableActions,
   Tag,
+  TemplateInput,
+  TemplateScope,
   Text,
   Textarea,
   TextLink,
@@ -92,6 +94,54 @@ const MODEL_OPTIONS = [
   { value: "gpt-5-mini", label: "GPT-5 mini", group: "OpenAI" },
   { value: "gemini-flash", label: "Gemini Flash", group: "Google" },
 ];
+/**
+ * Sixty of each kind of dropdown, inside the modal and the drawer below. A list
+ * opened in a dialog must still scroll under the wheel and a finger, and a long
+ * menu must scroll rather than run off the screen (F700, F701; ui-smoke's
+ * `dropdownscroll` checks each one).
+ */
+const LONG_OPTIONS = Array.from({ length: 60 }, (_, i) => {
+  const n = String(i + 1).padStart(2, "0");
+  return { value: `option-${n}`, label: `Option ${n}` };
+});
+const LONG_STATE = LONG_OPTIONS.map((o) => o.value.replace("-", "_"));
+
+function LongLists() {
+  const [pick, setPick] = React.useState<string | undefined>();
+  const [choice, setChoice] = React.useState("option-01");
+  const [prompt, setPrompt] = React.useState("");
+  return (
+    <div className="mt-4 grid gap-4 sm:grid-cols-2">
+      <Field label="Long combobox">
+        <Combobox value={pick} onChange={setPick} options={LONG_OPTIONS} aria-label="Long combobox" />
+      </Field>
+      <Field label="Long select">
+        <Select value={choice} onChange={setChoice} options={LONG_OPTIONS} aria-label="Long select" />
+      </Field>
+      <Field label="Long template">
+        <TemplateScope state={LONG_STATE}>
+          <TemplateInput
+            profile="step-prompt"
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            aria-label="Long template"
+            placeholder="Type {{ for suggestions"
+          />
+        </TemplateScope>
+      </Field>
+      <div className="self-end">
+        <Menu trigger={<Button variant="secondary">Long menu</Button>}>
+          {LONG_OPTIONS.map((o) => (
+            <MenuItem key={o.value} onSelect={() => {}}>
+              {o.label}
+            </MenuItem>
+          ))}
+        </Menu>
+      </div>
+    </div>
+  );
+}
+
 type Sample = { id: string; name: string; status: string; runs: number };
 const SAMPLE_ROWS: Sample[] = [
   { id: "a", name: "Order desk", status: "completed", runs: 128 },
@@ -517,6 +567,7 @@ export function KitchenSink() {
           <Field label="Name">
             <Input placeholder="Researcher" />
           </Field>
+          <LongLists />
         </Modal>
 
         <Drawer
@@ -529,6 +580,7 @@ export function KitchenSink() {
           <Field label="Note">
             <Input placeholder="Anything" />
           </Field>
+          <LongLists />
         </Drawer>
 
         <ConfirmDialog

@@ -29,6 +29,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
+import { useOwnScroll } from "./own-scroll";
+
 import { applyTemplate, matchMention, matchTemplate, type TemplateProfile } from "./template-complete";
 import { useTemplateSources } from "./template-context";
 
@@ -111,6 +113,8 @@ export function useSuggestions<T extends Field>({
   disabled?: boolean;
 }) {
   const listId = React.useId();
+  // Portalled out of any dialog the field sits in (F700, `own-scroll.ts`).
+  const ownScroll = useOwnScroll<HTMLUListElement>();
   const { sources, load } = useTemplateSources();
   const [cursor, setCursor] = React.useState<number | null>(null);
   const [active, setActive] = React.useState<{ key: string | null; index: number }>({ key: null, index: 0 });
@@ -243,6 +247,7 @@ export function useSuggestions<T extends Field>({
           className="z-50 w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated"
         >
           <ul
+            ref={ownScroll}
             id={listId}
             role="listbox"
             aria-label="Suggestions"

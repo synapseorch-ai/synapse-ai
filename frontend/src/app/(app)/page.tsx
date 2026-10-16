@@ -14,7 +14,7 @@ import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { BuilderConversation } from '@/components/app/BuilderPanel';
-import { Button, IconButton, Markdown, PageFrameHeader } from '@/components/ui';
+import { Button, IconButton, Markdown, PageFrameHeader, useOwnScroll } from '@/components/ui';
 import {
   AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, HelperLanes, HelperNote, PillAvatar, RunChip, UserBubble,
   agentFromHelper, foldHelpers, isHelperEvent, laneFromRecord, toolsUsedBesideLanes, type HelperLaneData,
@@ -589,6 +589,8 @@ function AgentPicker({
   onPick: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  // Scrolls itself wherever it opens (F700, `own-scroll.ts`).
+  const ownScroll = useOwnScroll<HTMLDivElement>();
   return (
     <RPopover.Root open={open} onOpenChange={setOpen}>
       {/* The composer's pill (M2c): the agent this conversation talks to.
@@ -622,7 +624,7 @@ function AgentPicker({
                 className="h-9 w-full bg-transparent text-sm text-text outline-none placeholder:text-text-faint"
               />
             </div>
-            <Command.List className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
+            <Command.List ref={ownScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1">
               <Command.Empty className="px-2 py-6 text-center text-sm text-text-faint">
                 {agents.length === 0 ? 'No agents detected.' : 'No agent matches.'}
               </Command.Empty>
