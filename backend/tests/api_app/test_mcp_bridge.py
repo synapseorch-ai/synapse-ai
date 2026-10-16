@@ -48,16 +48,19 @@ def test_the_relay_and_the_endpoint_share_one_path():
 
 
 async def test_a_stdio_client_lists_and_calls_through_the_relay(live_server, api_key, seed_orchestration):
-    await seed_orchestration(id="orch_hello", name="Say hello")
+    await seed_orchestration(id="orch_hello", name="Say hello", offer_to_mcp=True)
     params = StdioServerParameters(command=sys.executable, args=["-m", "synapse.mcp_bridge"],
                                    env=_env(live_server.url, api_key["raw"]), cwd=str(REPO))
     async with stdio_client(params) as (read, write), \
             ClientSession(read, write, read_timeout_seconds=timedelta(seconds=30)) as session:
         init = await session.initialize()
         assert "Synapse" in (init.instructions or "")
-        names = {t.name for t in (await session.list_tools()).tools}
-        assert {"list_orchestrations", "run_orchestration", "run_say_hello"} <= names
-        assert not {n for n in names if n.startswith("delete_")}
+        tools = {t.name: t for t in (await session.list_tools()).tools}
+        assert {"list_orchestrations", "run_orchestration", "run_say_hello"} <= set(tools)
+        # Deletes cross the relay as the server marks them: destructive, confirmed by a token (D292).
+        for name, tool in tools.items():
+            if name.startswith("delete_"):
+                assert tool.annotations.destructiveHint and "confirm_token" in tool.inputSchema["properties"]
         listed = await session.call_tool("list_orchestrations", {})
     assert not listed.isError
     assert "orch_hello" in listed.content[0].text
