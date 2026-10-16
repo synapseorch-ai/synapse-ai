@@ -113,7 +113,7 @@ export function TeamSetup({ block, onChange, ceiling, ceilingNote, members, disa
         <div className={cn('flex min-w-0 flex-col gap-4', className)}>
             <fieldset className="min-w-0" disabled={disabled}>
                 <legend className="mb-2 text-sm font-medium text-text">How members work</legend>
-                <div role="radiogroup" aria-label="How members work" className="grid gap-2 sm:grid-cols-2">
+                <div role="radiogroup" aria-label="How members work" className="grid gap-2 @lg:grid-cols-2">
                     {MODES.map((m) => {
                         const on = mode === m.value;
                         return (
@@ -137,7 +137,7 @@ export function TeamSetup({ block, onChange, ceiling, ceilingNote, members, disa
 
             {mode === 'team' && (
                 <>
-                    <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="grid gap-4 @md:grid-cols-2 @2xl:grid-cols-3">
                         <NumberField id="team-at-once" label="Members working at once" value={Math.min(full.at_once, ceiling)}
                                      min={1} max={ceiling} disabled={disabled}
                                      hint={ceilingNote ?? `Up to ${ceiling}. Others wait for a free slot.`}

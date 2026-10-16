@@ -75,7 +75,7 @@ export function MemberQuestion({
                             Refuse
                         </Button>
                     </div>
-                    <p className="text-xs text-text-faint">The other members keep working while this waits.</p>
+                    <p className="text-xs text-text-faint">Allowing applies to this call and these arguments only.</p>
                 </>
             ) : (
                 <p className="text-xs text-text-faint">

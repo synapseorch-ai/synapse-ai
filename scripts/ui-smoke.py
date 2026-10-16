@@ -11484,7 +11484,12 @@ window.fetch = function (input, init) {
   }
   if (/\/api\/chat\/[^/?]+\/approve$/.test(url)) {
     window.__calls.push({url: url, method: method, body: (init && init.body) || ''});
-    return _sse('approve');
+    // The answer resumes the turn: a stream this script feeds, as the chat stub's own are.
+    const body = new ReadableStream({start(c) {
+      window.__streams.approve = {push: (frame) => c.enqueue(new TextEncoder().encode(frame)),
+                                  close: () => { try { c.close(); } catch (e) {} }};
+    }});
+    return Promise.resolve(new Response(body, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
   }
   return _teamFetch(input, init);
 };
@@ -11611,7 +11616,7 @@ async def check_teameditor(browser) -> str:
             raise AssertionError(f"the members changed on save: {saved.get('delegate_agent_ids')}")
 
         # A new agent typed Team starts as a team (Q1).
-        await page.get_by_role("button", name="New agent", exact=True).first.click()
+        await page.get_by_role("button", name="Create New Agent", exact=True).click()
         await asyncio.sleep(1.0)
         await page.get_by_role("combobox", name="Agent type").click()
         await page.get_by_role("option", name="Team", exact=True).click()
@@ -11668,7 +11673,7 @@ async def check_teamlanes(browser) -> str:
         if not sent or "List them separately" not in sent["body"]:
             raise AssertionError(f"a lane's Message did not reach that member: {sent}")
 
-        to = page.get_by_label("Send to")
+        to = page.get_by_label("Send to", exact=True)
         if await to.input_value() != "lead":
             raise AssertionError("the composer does not start addressed to the lead")
         await page.get_by_label(re.compile("^Message ")).last.fill("Keep the note short")

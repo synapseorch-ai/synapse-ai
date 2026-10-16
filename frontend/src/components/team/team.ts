@@ -91,8 +91,11 @@ export type TeamState = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Wire = Record<string, any>;
 
-/** The lead's own tools in team mode: its lanes and its task list already show what each did. */
-export const LEAD_TOOLS = ['assign', 'message', 'wait', 'forward'] as const;
+/**
+ * The lead's own tools in team mode: its lanes and its task list already show what each did. `delegate_to_agent` is
+ * never offered to a lead working as a team: it is the engine resuming a member's answered question.
+ */
+export const LEAD_TOOLS = ['assign', 'message', 'wait', 'forward', 'delegate_to_agent'] as const;
 
 export function emptyTeam(): TeamState {
     return { tasks: [], members: [], notes: [], ended: false };

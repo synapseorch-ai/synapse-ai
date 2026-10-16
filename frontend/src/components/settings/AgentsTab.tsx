@@ -855,8 +855,7 @@ export const AgentsTab = ({
                                                     ceilingNote={`Up to ${teamCeiling} on this install (Settings → General). Others wait for a free slot.`}
                                                     members={(
                                                 <div className="space-y-3">
-                                                    <Label className="block">Members</Label>
-                                                    <p className="-mt-1 text-xs text-text-faint">
+                                                    <p className="text-xs text-text-faint">
                                                         The agents this Team agent can hand work to. Each works with its own tools and approvals. Leave all unticked to allow any agent.
                                                     </p>
                                                     {(() => {

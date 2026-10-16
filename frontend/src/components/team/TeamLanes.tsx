@@ -180,9 +180,7 @@ export function MemberLane({
                     )}
                     {answer ? (
                         <div className="max-h-72 min-w-0 overflow-auto text-sm text-text">
-                            {member.streaming && !member.answer
-                                ? <p className="whitespace-pre-wrap">{member.streaming}</p>
-                                : <Markdown className="text-sm leading-relaxed">{member.answer}</Markdown>}
+                            <Markdown className="text-sm leading-relaxed">{member.answer || member.streaming || ''}</Markdown>
                         </div>
                     ) : finished && member.error ? (
                         <p className="text-sm text-danger">Failed: {member.error}</p>
@@ -233,7 +231,7 @@ export function TeamLanes({ members, compact = false, className, ...handlers }: 
         );
     }
     return (
-        <div className={cn('grid min-w-0 gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr))]', className)}>
+        <div className={cn('grid min-w-0 items-start gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr))]', className)}>
             {members.map((m) => <MemberLane key={m.id} member={m} {...handlers} />)}
         </div>
     );
