@@ -147,7 +147,8 @@ def _handler(name: str):
         except ValueError:
             parsed = None
         if isinstance(parsed, dict) and "error" in parsed:
-            raise ToolRefusal(output)
+            # Its own words, once: the adapter wraps a refusal as {"error": ...} itself.
+            raise ToolRefusal(str(parsed["error"]))
         return output
 
     return handle

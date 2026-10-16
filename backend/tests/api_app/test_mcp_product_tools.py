@@ -115,8 +115,15 @@ class TestF693ABuildIsAudited:
         async with mcp_session(mcp_app, api_key) as s:
             res = await s.call_tool("update_agent", {"agent_id": "agent_nope", "fields": {"name": "x"}})
         assert res.isError
-        assert "error" in json.loads(res.content[0].text) or "not found" in res.content[0].text.lower()
         assert audited == []
+
+    async def test_a_builder_tools_refusal_reads_in_its_own_words_once(self, mcp_app, api_key):
+        """The builder's {"error": ...} came back wrapped again in a second {"error": ...} (found by ASSIST1)."""
+        async with mcp_session(mcp_app, api_key) as s:
+            res = await s.call_tool("get_agent", {"agent_id": "agent_nope"})
+        assert res.isError
+        error = json.loads(res.content[0].text)["error"]
+        assert isinstance(error, str) and not error.lstrip().startswith("{") and "agent_nope" in error
 
 
 
