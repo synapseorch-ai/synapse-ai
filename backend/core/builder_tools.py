@@ -388,7 +388,9 @@ BUILDER_TOOL_SCHEMAS = [
             "description": (
                 "Create a new agent and save it. Returns the created agent with its new ID. "
                 "Use type='conversational' for general-purpose agents, 'code' for agents that work with repos/files, "
-                "'delegate' for agents that dynamically route queries to sub-agents (set delegate_agent_ids to restrict which agents it can delegate to; empty = all agents). "
+                "'delegate' for a Team agent: a lead whose members (delegate_agent_ids; empty = any agent) do the work, "
+                "as a team in parallel (the default) or one at a time (`team`); its own tools are what its lead answers "
+                "small questions with, usually none. "
                 "Set tools=['all'] to give access to all tools, or list specific tool names."
             ),
             "parameters": {
@@ -427,7 +429,23 @@ BUILDER_TOOL_SCHEMAS = [
                     "delegate_agent_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "For delegate agents: list of agent IDs to restrict delegation to. Leave empty to allow delegation to any agent.",
+                        "description": "For a Team agent: its members' agent IDs. Leave empty to allow any agent.",
+                    },
+                    "team": {
+                        "type": "object",
+                        "description": (
+                            "For a Team agent (type 'delegate') only: how its members work. Omit it and a new Team agent "
+                            "works as a team. {\"mode\": \"team\"}: members work in parallel on what its lead assigns, "
+                            "talking while they work; \"one_at_a_time\": the lead hands work to one member and waits. "
+                            "Optional: at_once (members working at once, default 3), task_budget (tasks in all, default "
+                            "6), spend_limit_usd (per turn)."
+                        ),
+                        "properties": {
+                            "mode": {"type": "string", "enum": ["team", "one_at_a_time"]},
+                            "at_once": {"type": "integer", "minimum": 1},
+                            "task_budget": {"type": "integer", "minimum": 1},
+                            "spend_limit_usd": {"type": "number"},
+                        },
                     },
                     "tool_policy": {
                         "type": "object",
@@ -486,7 +504,23 @@ BUILDER_TOOL_SCHEMAS = [
                                 "delegate_agent_ids": {
                                     "type": "array",
                                     "items": {"type": "string"},
-                                    "description": "For delegate agents: agent IDs to restrict delegation to. Empty = allow any agent.",
+                                    "description": "For a Team agent: its members' agent IDs. Empty = allow any agent.",
+                                },
+                                "team": {
+                                    "type": "object",
+                                    "description": (
+                                        "For a Team agent (type 'delegate') only: how its members work. Omit it and a new Team agent "
+                                        "works as a team. {\"mode\": \"team\"}: members work in parallel on what its lead assigns, "
+                                        "talking while they work; \"one_at_a_time\": the lead hands work to one member and waits. "
+                                        "Optional: at_once (members working at once, default 3), task_budget (tasks in all, default "
+                                        "6), spend_limit_usd (per turn)."
+                                    ),
+                                    "properties": {
+                                        "mode": {"type": "string", "enum": ["team", "one_at_a_time"]},
+                                        "at_once": {"type": "integer", "minimum": 1},
+                                        "task_budget": {"type": "integer", "minimum": 1},
+                                        "spend_limit_usd": {"type": "number"},
+                                    },
                                 },
                                 "tool_policy": {
                                     "type": "object",
@@ -512,7 +546,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "agent_id": {"type": "string"},
                     "fields": {
                         "type": "object",
-                        "description": "Fields to update (name, description, tools, system_prompt, model, etc.)",
+                        "description": "Fields to update (name, description, tools, system_prompt, model, etc.; "
+                                       "for a Team agent, delegate_agent_ids and team: how its members work, as "
+                                       "create_agent takes it)",
                     },
                 },
                 "required": ["agent_id", "fields"],
@@ -1664,6 +1700,27 @@ READS_EVERY_SESSION: frozenset[str] = frozenset({
 })
 
 
+def _team_block(agent_type: Any, team: Any, *, new: bool) -> tuple[dict | None, str | None]:
+    """A Team agent's `team` block as the builder saves it (TEAM1e; TEAM1a's `AgentTeam`), or why not.
+
+    Only a Team agent (stored `delegate`) has one. A new one the builder makes works as a team unless the call
+    says otherwise, as a new Team agent in the editor does (20 Q1); a delegate saved before teams keeps none (D204).
+    """
+    if agent_type != "delegate":
+        if team is not None:
+            return None, ("Not saved: only a Team agent (type 'delegate') has members and a `team` block. Leave "
+                          "`team` out, or make it a Team agent with its members in delegate_agent_ids.")
+        return None, None
+    from pydantic import ValidationError
+    from core.models import AgentTeam
+    if team is None:
+        return (AgentTeam(mode="team").model_dump() if new else None), None
+    try:
+        return AgentTeam(**team).model_dump(), None
+    except (TypeError, ValidationError) as exc:
+        return None, f"Not saved: the team settings are not valid ({exc})."
+
+
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
     if tool_name in _REGISTERED:  # a tool from its own module (`register_builder_tool`)
         return await _REGISTERED[tool_name](args, server_module, events)
@@ -1698,6 +1755,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         return agent
 
     elif tool_name == "create_agent":
+        team_block, team_refusal = _team_block(args.get("type"), args.get("team"), new=True)
+        if team_refusal:
+            return {"error": team_refusal}
         if args.get("type") == "orchestrator":
             return {"error": _HOLLOW_WORKFLOW_AGENT}
         if (too_long := _long_agent_name(args.get("name"))) is not None:
@@ -1731,6 +1791,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "max_turns": None,
             "delegate_agent_ids": args.get("delegate_agent_ids", []) or [],
         }
+        if team_block is not None:
+            agent["team"] = team_block
         if (policy := _agent_policy(args.get("tool_policy"))):
             agent["tool_policy"] = policy
         await save_agent(agent)
@@ -1760,6 +1822,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if spec.get("type") == "orchestrator":
                     errors.append({"index": i, "role": spec.get("role"), "error": _HOLLOW_WORKFLOW_AGENT})
                     continue
+                team_block, team_refusal = _team_block(spec.get("type"), spec.get("team"), new=True)
+                if team_refusal:
+                    errors.append({"index": i, "role": spec.get("role"), "error": team_refusal})
+                    continue
                 if (too_long := _long_agent_name(spec["name"])) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": too_long})
                     continue
@@ -1788,6 +1854,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     "max_turns": None,
                     "delegate_agent_ids": spec.get("delegate_agent_ids", []) or [],
                 }
+                if team_block is not None:
+                    agent["team"] = team_block
                 if (policy := _agent_policy(spec.get("tool_policy"))):
                     agent["tool_policy"] = policy
                 documents.append(agent)
@@ -1822,13 +1890,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if "tool_policy" in fields:
             fields["tool_policy"] = _agent_policy(fields["tool_policy"])
         if fields.get("team") is not None:
-            # A Team's "How members work" (TEAM1a): checked as the agent editor's save checks it.
-            from pydantic import ValidationError
-            from core.models import AgentTeam
-            try:
-                fields["team"] = AgentTeam(**fields["team"]).model_dump()
-            except (TypeError, ValidationError) as exc:
-                return {"error": f"Not saved: the team settings are not valid ({exc})."}
+            # A Team's "How members work" (TEAM1a): checked as the agent editor's save checks it, and only on a
+            # Team agent (TEAM1e).
+            team_block, team_refusal = _team_block(fields.get("type", agent.get("type")), fields["team"], new=False)
+            if team_refusal:
+                return {"error": team_refusal}
+            fields["team"] = team_block
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)
