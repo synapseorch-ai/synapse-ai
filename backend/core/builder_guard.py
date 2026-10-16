@@ -184,10 +184,27 @@ def _listed_in_plan(listed: Any, plan: str) -> list[str]:
     out: list[str] = []
     for name in listed if isinstance(listed, list) else []:
         name = name.strip().strip("'\"`") if isinstance(name, str) else ""
-        if (_A_NAME.fullmatch(name) and name not in out
-                and re.search(rf"(?<![\w.\-]){re.escape(name)}(?![\w\-])", plan)):
+        if _A_NAME.fullmatch(name) and name not in out and _named(name, plan):
             out.append(name)
     return out
+
+
+#: The parts of a plan a build uses: its steps, its agents, its flow and the approval lists. A name only in the
+#: overview or the Open questions is mentioned, not used (Naveen, 2026-10-16: a redraft that moved a step to Open
+#: questions still named its tool in the overview, and "Missing here" said the build would stop there).
+_USE_SECTIONS = ("steps", "agents", "new agents", "existing agents", "asks you first", "acts without asking", "flow")
+
+
+def _used_text(plan: str) -> str:
+    """The text of a plan's using sections; the whole plan when it has no headings to tell them apart."""
+    chunks = re.split(r"^#{2,3}[ \t]+", plan, flags=re.M)
+    if len(chunks) == 1:
+        return plan
+    return "\n".join(c for c in chunks[1:] if c.lower().startswith(_USE_SECTIONS))
+
+
+def _named(name: str, text: str) -> bool:
+    return re.search(rf"(?<![\w.\-]){re.escape(name)}(?![\w\-])", text) is not None
 
 
 async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: Any = None) -> dict:
@@ -206,15 +223,20 @@ async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: 
     missing_tools = [t for t, _ in gone]
     have = {a.get("id") for a in await load_user_agents()}
     missing_agents = [a for a in names["reused_agents"] if a not in have]
+    used = _used_text(plan)
+    # What the build would call: these go back to the drafter, and stop an approved build at the saver. A tool only
+    # mentioned is named to the person, and asks for no redraft (the drafter already did what a redraft asks).
+    acting = [t for t in missing_tools if _named(t, used)] + missing_agents
+    mentioned = [t for t in missing_tools if t not in acting]
     checks += 1
     out: dict[str, Any] = {"checks": checks, "missing_tools": missing_tools, "missing_agents": missing_agents,
-                           "redraft": bool(missing_tools or missing_agents) and checks == 1, "note": ""}
+                           "redraft": bool(acting) and checks == 1, "note": ""}
     if gone:
         # `missing()`'s close cutoff: a far match ("list_schedules" for `smtp_send_mail`) would steer the drafter to
         # a tool that does something else.
-        out["nearest"] = {t: near for t, near in gone if near}
+        out["nearest"] = {t: near for t, near in gone if near and t in acting}
     if out["redraft"]:
-        out["note"] = ("Nothing in this workspace provides " + ", ".join(f"`{t}`" for t in missing_tools + missing_agents)
+        out["note"] = ("Nothing in this workspace provides " + ", ".join(f"`{t}`" for t in acting)
                        + ". Redraft using only tools and agents that exist" + (
                            " (nearest: " + "; ".join(f"`{t}` → {', '.join(f'`{c}`' for c in n)}"
                                                     for t, n in out.get("nearest", {}).items()) + ")"
@@ -222,9 +244,15 @@ async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: 
                        + ". What has no real tool here becomes an Open question, said plainly, not a step.")
     out["section"] = ""
     if not out["redraft"] and (missing_tools or missing_agents):
-        out["note"] = ("This plan uses " + ", ".join(f"`{t}`" for t in missing_tools + missing_agents)
-                       + ", which nothing in this workspace provides yet. Connect the app or service it needs, or "
-                       "tell me to leave that part out; approved as it is, the build will stop there.")
+        said = []
+        if acting:
+            said.append("This plan uses " + ", ".join(f"`{t}`" for t in acting)
+                        + ", which nothing in this workspace provides yet. Connect the app or service it needs, or "
+                        "tell me to leave that part out; approved as it is, the build will stop there.")
+        if mentioned:
+            said.append(("It also mentions " if acting else "This plan mentions ")
+                        + ", ".join(f"`{t}`" for t in mentioned) + ", which nothing here provides yet.")
+        out["note"] = " ".join(said)
         # The plan card reads it as its own section (`plan.ts`), drawn as needing the person.
         out["section"] = "## Missing here\n" + out["note"]
     return out

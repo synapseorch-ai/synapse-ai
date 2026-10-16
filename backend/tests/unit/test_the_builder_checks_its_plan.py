@@ -115,6 +115,46 @@ async def test_the_tools_the_check_step_lists_are_checked_whatever_the_plans_phr
     assert got["missing_tools"] == ["teams_post_message"] and got["redraft"] is True
 
 
+#: The redraft Naveen saw in the Find who can shots (2026-10-16): the Teams step went to Open questions, and the
+#: overview still names the tool.
+MENTIONED_PLAN = """This orchestration posts a summary to Teams once the Teams MCP server and the `teams_post_message`
+tool are connected. Until then, the posting step is noted but not implemented with a tool call.
+
+## Steps
+1. **Summary Formatting** (type: llm)
+
+## Open questions
+- When will the `teams_post_message` tool become available?
+"""
+
+
+async def test_a_tool_only_mentioned_is_named_without_saying_the_build_stops():
+    """Naveen (2026-10-16): still flag it — the person asked for it, and Find who can is the next step — but "the build
+    will stop there" only for a tool a step, an agent, the flow or the approval lists use. A mention alone asks for no
+    redraft: the drafter already did what a redraft asks."""
+    got = await check_plan(MENTIONED_PLAN, _Server(), listed=["teams_post_message"])
+    assert got["missing_tools"] == ["teams_post_message"] and got["redraft"] is False
+    assert got["section"] == "## Missing here\nThis plan mentions `teams_post_message`, which nothing here provides yet."
+
+
+async def test_a_used_tool_still_stops_the_build_and_a_mention_beside_it_is_named_too():
+    plan = MENTIONED_PLAN.replace("1. **Summary Formatting** (type: llm)",
+                                  "1. **Post** (type: tool)\n   **Tool:** `smtp_email_tool`")
+    first = await check_plan(plan, _Server(), listed=["teams_post_message"])
+    assert first["redraft"] is True and "`smtp_email_tool`" in first["note"]
+    assert "teams_post_message" not in first["note"], "only what a step uses goes back to the drafter"
+    second = await check_plan(plan, _Server(), checks=1, listed=["teams_post_message"])
+    assert second["section"] == (
+        "## Missing here\nThis plan uses `smtp_email_tool`, which nothing in this workspace provides yet. Connect the "
+        "app or service it needs, or tell me to leave that part out; approved as it is, the build will stop there. "
+        "It also mentions `teams_post_message`, which nothing here provides yet.")
+
+
+async def test_a_plan_with_no_sections_reads_every_name_as_used():
+    got = await check_plan("Post with the `teams_post_message` tool.", _Server(), checks=1)
+    assert "the build will stop there" in got["section"]
+
+
 def test_the_check_step_hands_its_model_the_plan_to_list_the_tools_from():
     from core.builder_guard import CHECK_PLAN_SCHEMA
     from core.native_builder import bundled_definitions
