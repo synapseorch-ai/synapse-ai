@@ -368,3 +368,47 @@ class TestUsage:
                                   headers=api_key["headers"])).json()
         assert body["usage"] == {"prompt_tokens": 200, "completion_tokens": 20, "total_tokens": 220,
                                  "prompt_tokens_details": {"cached_tokens": 80}}
+
+
+# ── A Team agent: the final answer only (TEAM1e, 20 Q9) ─────────────────────
+
+class TestATeamAgent:
+    """A Team agent's members work as on the app's chat, and the client reads the lead's final answer only: no
+    member's words, lines, task list or notes reach an OpenAI client (Q9)."""
+
+    async def _team(self, seed_agent, monkeypatch):
+        from _fakes import seed as S
+        from _fakes.routed_llm import RoutedLLM, install
+
+        lead = S.make_agent(id="agent_oai_lead", name="Research team", type="delegate", tools=[],
+                            skip_default_tools=True, delegate_agent_ids=["agent_oai_ana"], team={"mode": "team"})
+        # One seeding: each replaces the agents before it.
+        await S.seed_agents([S.make_agent(id="agent_oai_ana", name="Ana", tools=[], skip_default_tools=True,
+                                          max_turns=3), lead])
+        llm = install(monkeypatch, RoutedLLM())
+        llm.on("FIND THE PRICE", [tool_call("assign", member="Ana", task="CHECK THE SUPPLIER"),
+                                  tool_call("wait", seconds=10), "The price is $19 (from Ana)."])
+        llm.on("CHECK THE SUPPLIER", ["Ana's own words: the supplier lists $19."])
+        return lead, llm
+
+    async def test_the_lead_answers_and_its_members_work_unseen(self, client, api_key, seed_agent, monkeypatch):
+        lead, llm = await self._team(seed_agent, monkeypatch)
+        resp = await client.post(f"{BASE}/chat/completions",
+                                 json=_body(lead["id"], {"role": "user", "content": "FIND THE PRICE"}),
+                                 headers=api_key["headers"])
+        assert resp.status_code == 200, resp.text
+        assert llm.calls_for("CHECK THE SUPPLIER"), "the member worked"
+        message = resp.json()["choices"][0]["message"]
+        assert message == {"role": "assistant", "content": "The price is $19 (from Ana)."}
+        assert "Ana's own words" not in resp.text and "member_" not in resp.text and "team_tasks" not in resp.text
+
+    async def test_streamed_it_is_the_leads_words_alone(self, client, api_key, seed_agent, monkeypatch):
+        lead, _ = await self._team(seed_agent, monkeypatch)
+        resp = await client.post(f"{BASE}/chat/completions",
+                                 json=_body(lead["id"], {"role": "user", "content": "FIND THE PRICE"}, stream=True),
+                                 headers=api_key["headers"])
+        assert resp.status_code == 200, resp.text
+        chunks = _chunks(resp.text)
+        assert _content(chunks) == "The price is $19 (from Ana)."
+        assert chunks[-1] == "[DONE]"
+        assert "Ana's own words" not in resp.text and "member_" not in resp.text and "team_tasks" not in resp.text
