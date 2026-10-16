@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from core.images import checked_images
 from core.models_orchestration import Orchestration
+from core.builder_access import CALLER_KEY
 from core.native_builder import (
     BUILDER_RUN_PREFIX,
     NATIVE_BUILDER_ORCH_ID,
@@ -300,6 +301,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # The builder's quick steps (its routing evaluators, `model_role: "quick"`) on their own model when the
         # workspace names one (BWA1); empty leaves them on the builder model.
         OrchestrationEngine.MODEL_ROLES_KEY: _quick_roles(),
+        # Whom the run works for (ASSIST1, F681): self-hosted has one person, who may build and change anything.
+        # A host with roles writes its person and whether their role may (`builder_access`).
+        CALLER_KEY: {"user_id": None, "may_change": True},
     }
 
     return run_id, engine.run(

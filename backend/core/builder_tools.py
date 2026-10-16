@@ -1669,7 +1669,13 @@ async def execute_builder_tool_with_events(
     events: list[dict] = []
     token = _current_run.set(run_id)
     try:
-        result = await _dispatch(tool_name, args, server_module, events)
+        # Only what the run's person may do (ASSIST1, F681): a write is refused below builder, by their role now.
+        from core.builder_access import acting_for, refusal
+        refused, caller = await refusal(tool_name, run_id)
+        if refused:
+            return json.dumps({"error": refused}), []
+        with acting_for(caller):
+            result = await _dispatch(tool_name, args, server_module, events)
         return json.dumps(result, default=str), events
     except Exception as e:
         return json.dumps({"error": str(e)}), []
