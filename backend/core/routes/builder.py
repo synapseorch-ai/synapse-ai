@@ -304,6 +304,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # Whom the run works for (ASSIST1, F681): self-hosted has one person, who may build and change anything.
         # A host with roles writes its person and whether their role may (`builder_access`).
         CALLER_KEY: {"user_id": None, "may_change": True},
+        # The router's door before a build or a change (F682): read by `step_may_change`, said by `step_not_yours`.
+        "may_change": True,
+        "asker_role": "owner",
     }
 
     return run_id, engine.run(

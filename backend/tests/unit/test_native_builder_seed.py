@@ -524,9 +524,18 @@ class TestAFullPlanAndAStoppedBuild:
     def _steps():
         return {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
 
+    @staticmethod
+    def _lands(steps, label):
+        """Where a route lands past the door for a person who may change things (ASSIST1, F682)."""
+        target = steps["step_intent"]["route_map"][label]
+        if target == "step_may_change":
+            gate = steps["step_may_change"]
+            target = steps[gate["if_true_step_id"]]["switch_cases"][label]
+        return target
+
     def test_a_create_is_checked_against_the_plan_before_anything_is_paid_for(self):
         steps = self._steps()
-        assert steps["step_intent"]["route_map"]["create"] == "step_plan_room"
+        assert self._lands(steps, "create") == "step_plan_room"
         room = steps["step_plan_room"]
         assert room["type"] == "if_else"
         assert room["if_true_step_id"] == "step_understand"
@@ -539,7 +548,7 @@ class TestAFullPlanAndAStoppedBuild:
 
     def test_an_update_is_not_refused_for_orchestrations(self):
         # An update adds no orchestration; only a create is checked.
-        assert self._steps()["step_intent"]["route_map"]["update"] == "step_fetch_existing"
+        assert self._lands(self._steps(), "update") == "step_fetch_existing"
 
     def test_the_create_saver_is_followed_by_finish_build(self):
         steps = self._steps()
