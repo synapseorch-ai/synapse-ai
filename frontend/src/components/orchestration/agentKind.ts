@@ -42,10 +42,10 @@ export function memberNames(agent: KindAgent, agents: KindAgent[]): string[] {
     return ids.map((id) => agents.find((a) => a.id === id)?.name ?? id);
 }
 
-/** What the picker says beside an agent's name: its kind, and for a Team how its members work. */
-export function kindHint(agent: KindAgent): string {
+/** What the picker says beside a Team's name: how its members work. Its heading says the rest (Agents, Workflows). */
+export function kindHint(agent: KindAgent): string | undefined {
     const kind = agentKind(agent);
-    if (kind !== 'team' && kind !== 'one_at_a_time') return KIND_WORD[kind];
+    if (kind !== 'team' && kind !== 'one_at_a_time') return undefined;
     const n = (agent.delegate_agent_ids ?? []).length;
     const who = n ? `${n} member${n === 1 ? '' : 's'}` : 'any agent';
     return `Team · ${who}, ${kind === 'team' ? 'as a team' : 'one at a time'}`;

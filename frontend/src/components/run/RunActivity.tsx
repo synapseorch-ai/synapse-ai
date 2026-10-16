@@ -194,7 +194,8 @@ export function RunActivity({
                 </RCollapsible.Trigger>
                 <RCollapsible.Content>
                     {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
-                    <TeamView state={state.team} kept={!following} className="mb-3" {...teamHandlers} />
+                    {/* Paused, nothing works: a member's question is answered, nothing stopped or written to. */}
+                    <TeamView state={state.team} kept={!following || status === 'paused'} className="mb-3" {...teamHandlers} />
                     {content}
                 </RCollapsible.Content>
             </RCollapsible.Root>

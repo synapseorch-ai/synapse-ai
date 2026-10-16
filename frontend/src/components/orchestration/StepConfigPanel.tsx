@@ -30,6 +30,7 @@ import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, t
 import { STEP_SECTIONS } from './panel/steps';
 import { useAvailableTools } from './panel/use-available-tools';
 import { StepIcon } from '../run/StepIcon';
+import { agentKind } from './agentKind';
 
 interface StepConfigPanelProps {
     step: StepConfig;
@@ -213,7 +214,8 @@ export function StepConfigPanel({
 
             {/* Header: the type's icon on its role's tint (D211), the name, close */}
             <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-                <StepIcon type={step.type} className="size-7 [&_svg]:size-4" />
+                <StepIcon type={step.type} kind={step.type === 'agent' ? agentKind(agents.find((a) => a.id === step.agent_id)) : undefined}
+                    className="size-7 [&_svg]:size-4" />
                 <h3 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-text">{step.name}</h3>
                 <IconButton label="Close panel" onClick={onClose} size="sm" icon={X} />
             </div>

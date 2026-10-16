@@ -208,8 +208,8 @@ function AgentKindNote({ step, agents, tasksPriced }: Pick<StepSectionProps, 'st
     if (kind === 'workflow') {
         return (
             <Note>
-                Runs the workflow <span className="text-text">{agent.name}</span> inside this one step. A timeout of
-                300 or blank waits on that workflow&rsquo;s own limit.
+                Runs the workflow <span className="text-text">{agent.name}</span>{' '}inside this one step. A timeout
+                of 300 or blank waits on that workflow&rsquo;s own limit.
             </Note>
         );
     }
