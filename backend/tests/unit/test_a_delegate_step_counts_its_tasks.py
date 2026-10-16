@@ -167,3 +167,47 @@ async def test_a_hand_off_a_person_approved_midway_is_counted_once(fake_llm):
     run, entries = await _entries("run_t1d_e")
     assert run.status == "completed"
     assert [(e["step_type"], e["status"], e.get("tasks")) for e in entries] == [("agent", "completed", 2)]
+
+
+async def test_the_host_hears_each_task_as_it_is_counted(fake_llm):
+    """A host that prices a delegate's step 1 + tasks (cloud's credit gate) is told of each task as the step counts
+    it, under its run and step type: its gate reads only the next step's own price before each step, so a step's
+    tasks were unseen until a new job read the history again — and a run went past its allowance (F669, TEAM1e)."""
+    from core.orchestration import run_gate
+
+    heard: list[tuple[str, str]] = []
+
+    async def hook(run_id, step_type):
+        heard.append((run_id, step_type))
+
+    await _seed()
+    run_gate.set_task_hook(hook)
+    try:
+        fake_llm.script([
+            tool_call("delegate_to_agent", agent_id=MEMBER, task="first"),
+            "member: one",
+            tool_call("delegate_to_agent", agent_id=MEMBER, task="second"),
+            "member: two",
+            "lead: done",
+        ])
+        await _run(_one_step("orch_t1d_f669", LEAD), "run_t1d_f669")
+    finally:
+        run_gate.set_task_hook(None)
+    assert heard == [("run_t1d_f669", "agent"), ("run_t1d_f669", "agent")]
+
+
+async def test_a_failing_task_hook_never_ends_the_run(fake_llm):
+    from core.orchestration import run_gate
+
+    async def broken(run_id, step_type):
+        raise RuntimeError("billing is down")
+
+    await _seed()
+    run_gate.set_task_hook(broken)
+    try:
+        fake_llm.script([tool_call("delegate_to_agent", agent_id=MEMBER, task="first"), "member: one", "lead: done"])
+        await _run(_one_step("orch_t1d_f669b", LEAD), "run_t1d_f669b")
+    finally:
+        run_gate.set_task_hook(None)
+    run, entries = await _entries("run_t1d_f669b")
+    assert run.status == "completed" and entries[0].get("tasks") == 1

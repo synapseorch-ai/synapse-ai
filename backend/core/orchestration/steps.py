@@ -367,6 +367,9 @@ class AgentStepExecutor:
                     parked = True
                 if counts_tasks and _is_a_task(event):
                     count_task(run.shared_state, step.id)
+                    # The host hears it now, not when a new job next reads the history (F669).
+                    from .run_gate import note_task
+                    await note_task(run.run_id, step.type.value)
                 if event.get("type") == "tasks_updated" and not event.get("delegate_from"):
                     # Task state lives on the run, not in a tool's process
                     # memory: checkpointing here is what makes the plan survive

@@ -42,6 +42,33 @@ def set_run_gate(hook: RunGate | None) -> None:
     _run_gate = hook
 
 
+#: `(run_id, step_type) -> None`: a task a delegate's step just ran, priced on its entry 1 + tasks (TEAM1d).
+TaskHook = Callable[[str, str], Awaitable[None]]
+
+_task_hook: TaskHook | None = None
+
+
+def set_task_hook(hook: TaskHook | None) -> None:
+    """Register (or, with None, clear) the host's ear for a step's tasks (F669, TEAM1e).
+
+    A host's gate is asked before each step for the next step's own price; a delegate's or a Team's step adds a
+    price per task inside itself (TEAM1d), which the gate never saw until a new job read the run's history again —
+    so a run of several such steps in one job went past what its workspace could pay. The host hears each task as
+    the step counts it, and adds it where it keeps the run's tally."""
+    global _task_hook
+    _task_hook = hook
+
+
+async def note_task(run_id: str, step_type: str) -> None:
+    """A step counted one task. Never raises: billing is the host's, and must not end a run."""
+    if _task_hook is None:
+        return
+    try:
+        await _task_hook(run_id, step_type)
+    except Exception:  # noqa: BLE001
+        _log.warning("task hook failed for %s; the step goes on", run_id, exc_info=True)
+
+
 async def stop_reason(
     run_id: str, step_type: str, cap: run_cap.RunCap | None = None,
 ) -> str | None:
