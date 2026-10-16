@@ -263,6 +263,45 @@ async def take_helper_stops(redis_client, session_id: str) -> list[str]:
     return [m.decode() if isinstance(m, bytes) else str(m) for m in members]
 
 
+def _team_ask_key(session_id: str) -> str:
+    return f"synapse:team-ask:chat:{session_id}"
+
+
+#: How long a person's ask waits for the team it was sent to (F659). Short: an ask is for the team working when it
+#: was sent, and one left over must not reach a later turn's.
+TEAM_ASK_TTL_SECONDS = 120
+
+
+async def publish_team_ask(redis_client, session_id: str, ask: dict, ttl: int = TEAM_ASK_TTL_SECONDS) -> None:
+    """A person's ask for the team working in this chat session (TEAM1d, F659): `{kind: "stop", member_id}`,
+    `{kind: "message", member_id, text}` or `{kind: "lead", text}` — a lane's Stop and Message, and "To: the lead".
+
+    A team's members run inside the lead's job, in whichever worker has it; the job's watcher takes these, in the
+    order they were sent, while its team works (`worker._hand_over_team_asks`).
+    """
+    key = _team_ask_key(session_id)
+    await redis_client.rpush(key, json.dumps(ask))
+    await redis_client.expire(key, ttl)
+
+
+async def take_team_asks(redis_client, session_id: str) -> list[dict]:
+    """The asks waiting for this chat session's team, in order, taken: each is acted on once."""
+    key = _team_ask_key(session_id)
+    async with redis_client.pipeline(transaction=True) as pipe:
+        pipe.lrange(key, 0, -1)
+        pipe.delete(key)
+        raw, _ = await pipe.execute()
+    asks = []
+    for item in raw or []:
+        try:
+            ask = json.loads(item)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(ask, dict):
+            asks.append(ask)
+    return asks
+
+
 def _member_answer_key(session_id: str) -> str:
     return f"synapse:member-answer:chat:{session_id}"
 

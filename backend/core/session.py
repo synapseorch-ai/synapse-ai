@@ -230,6 +230,10 @@ def members_from_events(events: list[dict], resumed: dict | None = None) -> list
                                         "status": "cancelled", "calls": [], "answer": ""}
         elif event.get("type") == "member_finished" and isinstance(event.get("record"), dict):
             kept[event.get("member_id")] = dict(event["record"])
+    # One still working or waiting in the last snapshot was cut short by whatever ended the turn (F656).
+    for record in kept.values():
+        if record.get("status") in ("queued", "running", "waiting_for_person"):
+            record["status"] = "cancelled"
     return list(kept.values())
 
 

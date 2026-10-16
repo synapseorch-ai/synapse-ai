@@ -577,6 +577,7 @@ async def _run_chat_turn_cancellably(redis, session_id: str, consume) -> bool:
                     return
                 await _stop_asked_helpers(redis, session_id)
                 await _hand_over_answers(redis, session_id)
+                await _hand_over_team_asks(redis, session_id)
             except Exception:  # noqa: BLE001 — a Redis hiccup is not a cancel
                 pass
             with contextlib.suppress(asyncio.TimeoutError):
@@ -641,6 +642,27 @@ async def _hand_over_answers(redis, session_id: str) -> None:
         if not working.answer(question, approve=bool(verdict.get("approve")),
                               reason=str(verdict.get("reason") or "")):
             await publish_member_answer(redis, session_id, verdict)
+
+
+async def _hand_over_team_asks(redis, session_id: str) -> None:
+    """Hand the person's asks to this turn's team, sent from another process while it works (TEAM1d, F659): a
+    member's Stop or Message, or a message to the lead. Only while a team works here; otherwise they wait out their
+    TTL, for no later turn."""
+    from core import team
+
+    working = team.find(session_id)
+    if working is None or working.ended:
+        return
+    from core.scale.pubsub import take_team_asks
+
+    for ask in await take_team_asks(redis, session_id):
+        kind, text = ask.get("kind"), str(ask.get("text") or "")
+        if kind == "stop":
+            working.stop_member(str(ask.get("member_id") or ""))
+        elif kind == "message" and text:
+            working.message_from_person(str(ask.get("member_id") or ""), text)
+        elif kind == "lead" and text:
+            working.message_lead_from_person(text)   # TEAM1b's "To: the lead"
 
 
 async def _take_held_answers(redis, session_id: str, questions: list[str]) -> list[dict]:
@@ -903,6 +925,10 @@ async def run_agent_chat_job(
     # From the loop's `final`, when it answers: the records, and the results the answer read.
     turn_helpers: list[dict] | None = None
     turn_inbox_read: list[str] = []
+    # A Team agent's turn (TEAM1a): its members' events, and what its answer's `final` keeps (F656).
+    member_events: list[dict] = []
+    turn_members: list[dict] | None = None
+    turn_team: dict | None = None
     # What the turn's inbox held when it parked (never published).
     parked_inbox: dict | None = None
 
@@ -934,6 +960,15 @@ async def run_agent_chat_job(
     history: list | None = None
     turn_runs: list[str] = []
 
+    def _ended(result: dict) -> dict:
+        """The job's result, with a Team agent's work meter for this job's stretch (TEAM1d): its lead's idle and
+        its members' and waited-for helpers' seconds, from the answer's `final` or the turn's last snapshot. A host
+        prices a team turn by it (cloud: its agents' minutes added together, 20 Q7)."""
+        work = (turn_team or {}).get("work") or ((latest_progress or {}).get("team") or {}).get("work")
+        if isinstance(work, dict) and work:
+            result["team_work"] = dict(work)
+        return result
+
     def _unanswered(content: str) -> list[dict]:
         """The question, and `content` in place of its answer, with what the turn did.
 
@@ -942,8 +977,8 @@ async def run_agent_chat_job(
         next turn's model said it had never run them — and a tool that acts could
         be run twice.
         """
-        from core.session import (helpers_from_events, image_notes, thinking_from_events, tools_from_calls,
-                                  turn_calls)
+        from core.session import (helpers_from_events, image_notes, members_from_events, thinking_from_events,
+                                  tools_from_calls, turn_calls)
         question = {"role": "user", "content": message}
         if images:
             question["images"] = image_notes(images)
@@ -961,6 +996,9 @@ async def run_agent_chat_job(
         # Its helpers' lanes, as far as they got (SUB1b): a background one works on in its own conversation.
         if kept := helpers_from_events(helper_events, resume_state):
             answer["helpers"] = kept
+        # A team's members, as far as they got (F656), as OSS's Stop keeps them.
+        if members := members_from_events(member_events, latest_progress or resume_state):
+            answer["members"] = members
         return [question, answer]
 
     try:
@@ -1078,7 +1116,7 @@ async def run_agent_chat_job(
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
             nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting, turn_citations, \
-                turn_helpers, turn_inbox_read, parked_inbox
+                turn_helpers, turn_inbox_read, parked_inbox, turn_members, turn_team
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
@@ -1111,6 +1149,12 @@ async def run_agent_chat_job(
                 if etype == "_inbox_parked":
                     parked_inbox = event.get("state") or None
                     continue
+                if etype in ("member_started", "member_finished"):
+                    member_events.append(event)
+                if etype == "final" and ("members" in event or "team" in event):
+                    # Kept with the answer (F656), and left on the stream: the page draws the turn from it.
+                    turn_members = [dict(m) for m in event.get("members") or [] if isinstance(m, dict)]
+                    turn_team = dict(event["team"]) if isinstance(event.get("team"), dict) else None
                 if etype in ("helper_started", "helper_finished"):
                     helper_events.append(event)
                 elif etype == "final" and ("helpers" in event or "inbox_read" in event):
@@ -1210,7 +1254,7 @@ async def run_agent_chat_job(
                 )
             # Else a call's first question still waits (F486): this one is not asked; the call says so.
             await _save_row("paused", history)
-            return {"status": "paused", "session_id": session_id}
+            return _ended({"status": "paused", "session_id": session_id})
 
         # A workflow waiting on a person has not answered, and its run saves
         # the turn when it ends (F261). Appended here it was the question and
@@ -1234,8 +1278,8 @@ async def run_agent_chat_job(
         # With what the question carried (F245) and what the turn's tools did
         # (F242), as the in-process path saves them: a bare pair left the next
         # turn blind to both.
-        from core.session import (citation_fields, helpers_from_events, image_notes, thinking_from_events,
-                                  turn_calls, tools_from_calls)
+        from core.session import (citation_fields, helpers_from_events, image_notes, members_from_events,
+                                  thinking_from_events, turn_calls, tools_from_calls)
         question = {"role": "user", "content": message}
         if images:
             question["images"] = image_notes(images)
@@ -1265,12 +1309,19 @@ async def run_agent_chat_job(
             answer_entry["helpers"] = [dict(h) for h in kept_helpers]
         if turn_inbox_read:
             answer_entry["inbox_read"] = list(turn_inbox_read)
+        # A team's lanes and task list (F656): the loop's own when it answered, else what its members' events said.
+        kept_members = turn_members if turn_members is not None else members_from_events(
+            member_events, latest_progress or resume_state)
+        if kept_members:
+            answer_entry["members"] = [dict(m) for m in kept_members]
+        if turn_team:
+            answer_entry["team"] = {k: v for k, v in turn_team.items() if k != "work"}
         history.append(answer_entry)
         recorded = True
         await _save_row("cancelled" if cancelled else "completed", history)
         if cancelled:
             await clear_chat_cancellation(redis, session_id)
-            return {"status": "cancelled", "session_id": session_id}
+            return _ended({"status": "cancelled", "session_id": session_id})
 
         # Deliver webhook if requested
         if webhook_url:
@@ -1288,7 +1339,7 @@ async def run_agent_chat_job(
                 secret=webhook_secret,
             )
 
-        return {"status": "completed", "session_id": session_id}
+        return _ended({"status": "completed", "session_id": session_id})
 
     except asyncio.CancelledError:
         # A stopping worker's cut (F424). ARQ gave the turn its 45 s and is now
