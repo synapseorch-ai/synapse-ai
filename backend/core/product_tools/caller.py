@@ -5,6 +5,7 @@ and their live role; an API key is the workspace's, at builder), the assistant f
 """
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -44,3 +45,13 @@ class Caller:
         if self.credential_id:
             return f"credential:{self.credential_id}"
         return "local"
+
+
+_CURRENT: contextvars.ContextVar["Caller | None"] = contextvars.ContextVar("product_tools_caller", default=None)
+
+
+def current() -> "Caller | None":
+    """The caller of the product tool whose handler is running here, or None outside one. For a host's code deep
+    under a handler that must name who acted and through what (cloud's delete observer writes its audit row with
+    the person and the surface rather than a second row)."""
+    return _CURRENT.get()

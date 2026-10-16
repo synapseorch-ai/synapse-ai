@@ -125,14 +125,19 @@ class TestTheKeyIsTheGate:
 
 
 class TestTheToolList:
-    async def test_builder_run_and_workflow_tools_and_no_deletes(self, mcp_app, api_key, seed_orchestration):
+    async def test_builder_run_and_workflow_tools_and_deletes_behind_a_token(self, mcp_app, api_key,
+                                                                             seed_orchestration):
         await seed_orchestration(id="orch_brief", name="Client brief", description="Drafts a brief.",
                                  offer_to_mcp=True)
         async with mcp_session(mcp_app, api_key) as s:
             tools = {t.name: t for t in (await s.list_tools()).tools}
         assert {"list_agents", "create_agent", "update_orchestration", "run_orchestration",
                 "get_run", "answer_run", "cancel_run", "list_runs", "chat_with_agent"} <= set(tools)
-        assert not {n for n in tools if n.startswith("delete_")}
+        deletes = {n: t for n, t in tools.items() if n.startswith("delete_")}
+        assert set(deletes) == {"delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool"}
+        for t in deletes.values():  # D292: irreversible, confirmed by a token, never by the builder's flag
+            assert t.annotations.destructiveHint is True
+            assert "confirm_token" in t.inputSchema["properties"] and "confirm" not in t.inputSchema["properties"]
         assert "finish_build" not in tools and "list_variables" not in tools
         assert tools["run_client_brief"].description.startswith("Drafts a brief.")
         assert tools["update_orchestration"].annotations.destructiveHint is True
@@ -306,12 +311,13 @@ class TestBuilderTools:
             got = await s.call_tool("get_agent", {"agent_id": agent_id})
         assert _body(got)["name"] == "Researcher"
 
-    async def test_a_delete_is_an_unknown_tool_and_deletes_nothing(self, mcp_app, api_key, seed_agent):
+    async def test_the_builders_confirm_flag_alone_deletes_nothing(self, mcp_app, api_key, seed_agent):
+        """D292: a client's model saying confirm=true is not a person confirming; only the preview's token is."""
         from core.store.resources import get_agent
         agent = await seed_agent(id="agent_keep", name="Keep")
         async with mcp_session(mcp_app, api_key) as s:
             result = await s.call_tool("delete_agent", {"agent_id": agent["id"], "confirm": True})
-        assert result.isError and "Unknown tool" in result.content[0].text
+        assert not result.isError and _body(result)["status"] == "needs_confirmation"
         assert await get_agent("agent_keep") is not None
 
     async def test_a_builder_tools_error_is_an_error_result(self, mcp_app, api_key):

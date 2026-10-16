@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 from core.product_tools import confirm, hooks
+from core.product_tools import caller as _caller_mod
 from core.product_tools import page as paging
 from core.product_tools.caller import Caller
 from core.product_tools.errors import ToolRefusal
@@ -210,7 +211,11 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
             }
         await confirm.redeem(token, caller, name, args)
 
-    result = await tool.handler(caller, args)
+    token_var = _caller_mod._CURRENT.set(caller)
+    try:
+        result = await tool.handler(caller, args)
+    finally:
+        _caller_mod._CURRENT.reset(token_var)
 
     if tool.kind == "act" and not tool.self_audited:
         target = tool.target(args, result) if tool.target is not None else None

@@ -266,3 +266,64 @@ class TestF466AWorkflowIsOfferedByItsSwitch:
 
         assert Orchestration(id="o", name="n").offer_to_mcp is False
         assert Orchestration(id="o", name="n", offer_to_mcp=True).offer_to_mcp is True
+
+
+class TestADeleteIsPreviewedThenConfirmed:
+    """Deletes over MCP (Naveen, D292): the first call says what goes, or what still uses it; the second, with the
+    preview's token, deletes and is audited."""
+
+    async def test_previewed_then_deleted_and_audited(self, mcp_app, api_key, seed_agent, audited):
+        from core.store.resources import get_agent
+
+        await seed_agent(id="agent_old", name="Old helper")
+        async with mcp_session(mcp_app, api_key) as s:
+            first = _body(await s.call_tool("delete_agent", {"agent_id": "agent_old"}))
+            assert first["status"] == "needs_confirmation"
+            assert first["preview"]["will_delete"] == {"type": "agent", "id": "agent_old", "name": "Old helper"}
+            assert await get_agent("agent_old") is not None and audited == []
+            done = await s.call_tool("delete_agent", {"agent_id": "agent_old",
+                                                      "confirm_token": first["confirm_token"]})
+        assert not done.isError, done.content[0].text
+        assert await get_agent("agent_old") is None
+        assert [(e.action, e.target_id) for e in audited] == [("agent.deleted", "agent_old")]
+
+    async def test_a_token_for_one_agent_deletes_no_other(self, mcp_app, api_key, seed_agent):
+        from _fakes import seed as S
+        from core.store.resources import get_agent
+
+        await S.seed_agents([S.make_agent(id="agent_a", name="A"), S.make_agent(id="agent_b", name="B")])
+        async with mcp_session(mcp_app, api_key) as s:
+            token = _body(await s.call_tool("delete_agent", {"agent_id": "agent_a"}))["confirm_token"]
+            res = await s.call_tool("delete_agent", {"agent_id": "agent_b", "confirm_token": token})
+        assert res.isError and "different call" in res.content[0].text
+        assert await get_agent("agent_a") is not None and await get_agent("agent_b") is not None
+
+    async def test_one_in_use_is_refused_at_the_preview_in_the_apps_words(self, mcp_app, api_key):
+        from _fakes import seed as S
+
+        await S.seed_agents([S.make_agent(id="agent_used", name="Used")])
+        await S.seed_orchestrations([S.make_orchestration(
+            id="orch_uses", name="Uses it", entry_step_id="a",
+            steps=[{"id": "a", "name": "A", "type": "agent", "agent_id": "agent_used", "output_key": "o",
+                    "next_step_id": None}])])
+        async with mcp_session(mcp_app, api_key) as s:
+            res = await s.call_tool("delete_agent", {"agent_id": "agent_used"})
+        assert res.isError and "Uses it" in res.content[0].text and "confirm_token" not in res.content[0].text
+
+    async def test_a_workflow_is_deleted_the_same_way(self, mcp_app, api_key, seed_orchestration):
+        from core.builder_tools import _visible_orchestration
+
+        await seed_orchestration(id="orch_bye", name="Bye")
+        async with mcp_session(mcp_app, api_key) as s:
+            token = _body(await s.call_tool("delete_orchestration", {"orch_id": "orch_bye"}))["confirm_token"]
+            done = await s.call_tool("delete_orchestration", {"orch_id": "orch_bye", "confirm_token": token})
+        assert not done.isError, done.content[0].text
+        assert await _visible_orchestration("orch_bye") is None
+
+    def test_an_approver_is_offered_no_delete(self):
+        assert not {n for n in _names(_as(Role.APPROVER)) if n.startswith("delete_")}
+
+    def test_no_delete_tells_a_client_to_pass_confirm_true(self):
+        for tool in server._fixed_tools(_as(Role.BUILDER)):
+            if tool.name.startswith("delete_"):
+                assert "confirm=true" not in tool.description, tool.name

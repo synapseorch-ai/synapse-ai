@@ -38,24 +38,25 @@ class TestTheAllowlist:
             "create_schedule", "set_schedule_enabled",
             # F694 (MCP2, D292): builder tools nothing had decided to hold back.
             "deploy_orchestration", "update_schedule",
+            # D292 (Naveen): deletes, behind a confirmation token.
+            "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool",
         }
 
-    @pytest.mark.parametrize("name", [
-        "delete_agent", "delete_orchestration", "delete_custom_tool", "delete_schedule",
-        "finish_build", "list_variables",
-    ])
-    def test_deletes_and_the_rest_are_not_served(self, name):
+    @pytest.mark.parametrize("name", ["finish_build", "list_variables"])
+    def test_the_rest_are_not_served(self, name):
         assert name in BUILDER_TOOL_NAMES  # still a builder tool…
         assert name not in catalog.SERVED_BUILDER_TOOLS  # …not an MCP one
         assert name not in {t.name for t in catalog.builder_tools()}
 
     def test_every_served_name_is_a_real_builder_tool(self, on):
         assert catalog.SERVED_BUILDER_TOOLS <= BUILDER_TOOL_NAMES
-        assert [t.name for t in catalog.builder_tools()] == list(catalog.READ_TOOLS + catalog.BUILD_TOOLS)
+        assert [t.name for t in catalog.builder_tools()] == list(
+            catalog.READ_TOOLS + catalog.BUILD_TOOLS + catalog.DELETE_TOOLS)
 
     def test_while_knowledge_is_off_the_rest_are_listed_in_order(self, off):
         assert [t.name for t in catalog.builder_tools()] == [
-            n for n in catalog.READ_TOOLS + catalog.BUILD_TOOLS if n not in KNOWLEDGE_BUILDER_TOOLS
+            n for n in catalog.READ_TOOLS + catalog.BUILD_TOOLS + catalog.DELETE_TOOLS
+            if n not in KNOWLEDGE_BUILDER_TOOLS
         ]
 
     def test_run_tools_do_not_shadow_builder_tools(self):
@@ -118,7 +119,7 @@ class TestScopes:
     def test_a_workflow_tool_runs(self):
         assert catalog.scope_of(workflows.PREFIX + "weekly_client_summary") == "run"
 
-    @pytest.mark.parametrize("name", ["delete_agent", "finish_build", "no_such_tool"])
+    @pytest.mark.parametrize("name", ["finish_build", "list_variables", "no_such_tool"])
     def test_what_is_not_served_has_no_scope(self, name):
         assert catalog.scope_of(name) is None
 

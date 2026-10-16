@@ -7,12 +7,14 @@ read, derived from there.
 An **allowlist**, deliberately. A builder tool added later is not exposed to every
 MCP client by accident: it is served only once someone has decided it belongs here.
 
-Three kinds of builder tool are not served:
+**Deletes** (`delete_agent`, `delete_orchestration`, `delete_custom_tool`,
+`delete_schedule`) are served since D292 (Naveen): irreversible product tools,
+previewed first and done only with the confirmation token that preview gave, so a
+client asks its person between the two (until then they stayed in the app, because
+the client's model would have been the only thing deciding).
 
-* **Deletes** (`delete_agent`, `delete_orchestration`, `delete_custom_tool`,
-  `delete_schedule`). Their only guard is a `confirm=true` argument; in the app a
-  person approves the plan first (the builder's manage review). Over MCP the
-  client's model would be the only thing deciding, so deleting stays in the app.
+Two kinds of builder tool are not served:
+
 * **`finish_build`** cleans up after the builder run it is called from, and an
   MCP call is not one — it would do nothing.
 * **`list_variables`** answers with the first 40 characters of each value, and
@@ -47,7 +49,10 @@ BUILD_TOOLS: tuple[str, ...] = tuple(_build.ACTS)
 #: orchestration, one step, or a tool or skill of the same name.
 OVERWRITING_TOOLS: frozenset[str] = _build.OVERWRITES
 
-SERVED_BUILDER_TOOLS: frozenset[str] = frozenset(READ_TOOLS + BUILD_TOOLS)
+#: Deletes, irreversible: previewed, then done with a confirmation token (D292).
+DELETE_TOOLS: tuple[str, ...] = tuple(_build.DELETES)
+
+SERVED_BUILDER_TOOLS: frozenset[str] = frozenset(READ_TOOLS + BUILD_TOOLS + DELETE_TOOLS)
 
 #: What a caller must have been granted to see and call a tool (D127). An embedder
 #: may grant less than everything — cloud's OAuth tokens carry these — while a key,
@@ -99,10 +104,11 @@ def builder_tools() -> list[types.Tool]:
 
     areas.ensure_loaded()
     tools = []
-    for name in READ_TOOLS + BUILD_TOOLS:
+    for name in READ_TOOLS + BUILD_TOOLS + DELETE_TOOLS:
         tool = registry.get(name)
         if tool.offered is not None and not tool.offered():
             continue
-        tools.append(types.Tool(name=name, description=tool.description, inputSchema=tool.schema(),
+        tools.append(types.Tool(name=name, description=tool.description,
+                                inputSchema=tool.schema(confirm_token=tool.needs_token("irreversible")),
                                 annotations=as_mcp_annotations(tool)))
     return tools

@@ -68,8 +68,9 @@ INSTRUCTIONS = (
     "say what exists. run_orchestration runs any workflow by id or name; the ones a workspace "
     "offers to MCP clients are also tools of their own (run_<name>). A run that asks a question "
     "comes back `paused`; answer it with answer_run, and list_waiting shows everything that waits "
-    "on a person. Deleting is done in the Synapse app, not here. Runs spend the workspace's model "
-    "credits."
+    "on a person. A delete answers first with what it would remove and a confirm_token; it is done "
+    "only when called again with that token, so ask the person in between. Runs spend the "
+    "workspace's model credits."
 )
 
 

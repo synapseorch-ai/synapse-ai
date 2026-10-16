@@ -8,7 +8,9 @@ The assistant does not take these through the registry: they already are its bui
 
 Which builder tools are served, and which are not, is still a decision per tool:
 
-* **Deletes** are served from MCP2c, irreversible, behind a confirmation token (Naveen, D292).
+* **Deletes** are served (Naveen, D292), irreversible: the first call previews what goes, or refuses at once in the
+  app's words when something still uses it; the confirmation token stands in for the builder's `confirm=true`. The
+  builder's own delete then checks again, so a use added between preview and confirm still refuses.
 * **`finish_build`** cleans up after the builder run it is called from; a call from outside one does nothing.
 * **`list_variables`** answers with the first characters of each value, which are often tokens.
 * **`list_recent_runs` / `get_run_summary`**: the run entries answer the same with more.
@@ -83,6 +85,14 @@ OVERWRITES: frozenset[str] = frozenset({
 #: Acts that reach outside the workspace.
 OPEN_WORLD: frozenset[str] = frozenset({"import_openapi"})
 
+#: Deletes: what each removes, its id argument, and the host's audit action.
+DELETES: dict[str, tuple[str, str, str]] = {
+    "delete_agent": ("agent", "agent_id", "agent.deleted"),
+    "delete_orchestration": ("orchestration", "orch_id", "orchestration.deleted"),
+    "delete_schedule": ("schedule", "schedule_id", "schedule.deleted"),
+    "delete_custom_tool": ("tool", "name", "tool.deleted"),
+}
+
 _TARGET_ARGS: tuple[tuple[str, str], ...] = (
     ("orch_id", "orchestration"), ("agent_id", "agent"), ("schedule_id", "schedule"),
 )
@@ -143,6 +153,84 @@ def _handler(name: str):
     return handle
 
 
+async def _preview_delete(name: str, args: dict[str, Any]) -> dict:
+    """What a delete would remove, by name, or a refusal now in the app's words when something uses it."""
+    kind, id_arg, _ = DELETES[name]
+    target = str(args.get(id_arg) or "")
+    if not target:
+        raise ToolRefusal(f"Missing argument: {id_arg}")
+    label = target
+    if kind == "agent":
+        from core.orchestration.dependents import agent_refusal, what_uses_agent
+        from core.store.resources import get_agent
+
+        agent = await get_agent(target)
+        if agent is None or agent.get("system"):
+            raise ToolRefusal(f"Agent '{target}' not found")
+        label = agent.get("name") or target
+        users = await what_uses_agent(target)
+        if users:
+            raise ToolRefusal(agent_refusal(label, users))
+    elif kind == "orchestration":
+        from core.builder_tools import _visible_orchestration
+        from core.orchestration.dependents import refusal, what_runs
+
+        orch = await _visible_orchestration(target)
+        if orch is None:
+            raise ToolRefusal(f"Orchestration '{target}' not found")
+        label = orch.get("name") or target
+        runners = await what_runs(target)
+        if runners:
+            raise ToolRefusal(refusal(label, runners))
+    elif kind == "schedule":
+        from core.store import schedules as schedule_store
+
+        schedule = await schedule_store.get(target)
+        if schedule is None:
+            raise ToolRefusal(f"Schedule '{target}' not found")
+        label = schedule.get("name") or target
+    else:
+        from core.store.resources import load_tools
+
+        if not any(t.get("name") == target for t in await load_tools()):
+            raise ToolRefusal(f"Custom tool '{target}' not found")
+    return {"will_delete": {"type": kind, "id": target, "name": label},
+            "note": "This cannot be undone."}
+
+
+def _delete_handler(name: str):
+    inner = _handler(name)
+
+    async def handle(caller: Any, args: dict[str, Any]) -> str:
+        # The registry's confirmation token is the confirmation; the builder's own guard asks for it this way.
+        return await inner(caller, {**args, "confirm": True})
+
+    return handle
+
+
+#: What each delete says over MCP, in its own words: the builder's say "requires confirm=true", which here is the
+#: preview's token instead.
+_DELETE_WORDS: dict[str, str] = {
+    "delete_agent": "Delete an agent. Refused while anything uses it — a widget, a channel or phone number, a "
+                    "schedule, a workflow's step or another agent that hands work to it — naming each.",
+    "delete_orchestration": "Delete a workflow (an orchestration). Refused while a workflow agent or a schedule "
+                            "runs it, naming each. Its run history is kept.",
+    "delete_schedule": "Delete a schedule: it no longer runs.",
+    "delete_custom_tool": "Delete a custom tool by name. Agents that list it lose it.",
+}
+_TOKEN_CONFIRM = ("Cannot be undone: the first call previews what goes (or says what still uses it) and gives a "
+                  "confirm_token; call again with the same arguments and that token to delete.")
+
+
+def _without_confirm(schema: dict) -> dict:
+    """The builder's delete schema less its `confirm` flag: over MCP, the token confirms."""
+    props = {k: v for k, v in (schema.get("properties") or {}).items() if k != "confirm"}
+    out = {**schema, "properties": props}
+    if "required" in schema:
+        out["required"] = [r for r in schema["required"] if r != "confirm"]
+    return out
+
+
 def _offered(name: str):
     def offered() -> bool:
         from core.builder_tools import builder_tool_offered
@@ -155,7 +243,7 @@ def entries() -> list[ProductTool]:
     from core.builder_tools import BUILDER_TOOL_SCHEMAS
 
     by_name = {s["function"]["name"]: s["function"] for s in BUILDER_TOOL_SCHEMAS}
-    missing = [n for n in (*READS, *ACTS) if n not in by_name]
+    missing = [n for n in (*READS, *ACTS, *DELETES) if n not in by_name]
     if missing:
         # A renamed builder tool must fail loudly here, not vanish from MCP.
         raise RuntimeError(f"product tools name builder tools that do not exist: {missing}")
@@ -175,4 +263,18 @@ def entries() -> list[ProductTool]:
                     target=_target(action), offered=_offered(n))
         for n, action in ACTS.items()
     ]
+    tools += [
+        ProductTool(name=n, description=f"{_DELETE_WORDS[n]} {_TOKEN_CONFIRM}",
+                    input_schema=_without_confirm(schema(n)), handler=_delete_handler(n), kind="act", area="build",
+                    min_role=Role.BUILDER, scope="build", irreversible=True, audit_action=action,
+                    target=_target(action), preview=_preview(n))
+        for n, (_, _, action) in DELETES.items()
+    ]
     return tools
+
+
+def _preview(name: str):
+    async def preview(caller: Any, args: dict[str, Any]) -> dict:
+        return await _preview_delete(name, args)
+
+    return preview
