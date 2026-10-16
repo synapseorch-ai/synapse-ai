@@ -400,8 +400,8 @@ def run_mailbox(run_id: str) -> str:
     """Where a person's answers and asks for a run's team go (TEAM1e): the run at the top, whose run page and bell
     a person reads — a nested run's team is reached through it. A run works one Team step at a time (a Parallel runs
     a delegate's branch in order, F255), so the questions a run asks are its team's."""
-    from core.orchestration.run_cap import root_of
-    return f"run:{root_of(run_id)}"
+    # `run_cap.root_of`'s rule, inline: a host's API reaches the run's team without loading the engine.
+    return f"run:{str(run_id).split('__', 1)[0]}"
 
 
 def at(mailbox: str) -> list["Team"]:

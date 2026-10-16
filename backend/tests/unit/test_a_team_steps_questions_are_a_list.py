@@ -320,3 +320,11 @@ class TestOnTheFleet:
         assert len([r for r in results if r.get("applied", True)]) == 1, results
         assert sorted(args["item"] for _, args in ran) == ["a", "b"]
         assert (await _run("run_t1eq_h")).status == "completed"
+
+
+def test_a_runs_mailbox_is_its_top_runs():
+    from core.orchestration.run_cap import root_of
+    from core.team import run_mailbox
+
+    for run_id in ("run_a", "run_a__child_1", "run_a__child_1__grand"):
+        assert run_mailbox(run_id) == f"run:{root_of(run_id)}" == "run:run_a"
