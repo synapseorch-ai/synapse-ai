@@ -137,16 +137,37 @@ _AGENT_TOOLS = re.compile(r"^[ \t>*`-]*tools:\s*\[([^\]\n]*)\]", re.M | re.I)
 #: A tool step's forced tool: `**Tool:** `name``, `Tool: `name``, "forced tool `name`".
 _STEP_TOOL = re.compile(r"(?:\*\*tool:?\*\*:?|\btool:|forced[ _]tool(?:\s+name)?(?:\s+is)?:?)\s*`([^`\s(]+)", re.I)
 _AGENT_ID = re.compile(r"\b(agent_[A-Za-z0-9_]{6,})\b")
+#: The phrasings gpt-4.1-mini writes instead of the format (F666: 4 of 4 plans): "using the `x` tool" (or "MCP
+#: tool"), a flow line's "(tool: x)" with or without backticks, and the approval lists' "- `x`: …" lines — one tool
+#: each, by the drafter's own format, so only inside those two sections.
+_PROSE_TOOL = re.compile(r"`([A-Za-z][\w.\-:/]*)`\s+(?:MCP\s+)?tool\b", re.I)
+_FLOW_TOOL = re.compile(r"\(tool:\s*`?([A-Za-z][\w.\-:/]*)`?\s*\)", re.I)
+_LISTED_TOOL = re.compile(r"^\s*[-*]\s*`([A-Za-z][\w.\-:/]*)`\s*:", re.M)
+_APPROVAL_SECTIONS = ("## asks you first", "## acts without asking")
+_A_NAME = re.compile(r"[A-Za-z][\w.\-:/]*")
+
+
+def _approval_lists(plan: str) -> str:
+    """The text of the plan's "Asks you first" and "Acts without asking" sections, each up to the next heading."""
+    lower, parts = plan.lower(), []
+    for heading in _APPROVAL_SECTIONS:
+        start = lower.find(heading)
+        if start >= 0:
+            end = lower.find("\n## ", start + len(heading))
+            parts.append(plan[start:end if end > start else None])
+    return "\n".join(parts)
 
 
 def names_in_plan(plan: str) -> dict[str, list[str]]:
     """`{"tools": [...], "reused_agents": [...]}`: the tool names a plan's agents and tool steps use, and the ids of
     the existing agents it reuses (only from its "Existing agents reused" list: a new agent's placeholder id is not
-    one)."""
+    one). The patterns are the fallback: `check_plan` also takes the tools the check step's model read (F666)."""
     tools: list[str] = []
     for listed in _AGENT_TOOLS.findall(plan or ""):
         tools += [t.strip().strip("'\"`") for t in listed.split(",")]
     tools += _STEP_TOOL.findall(plan or "")
+    tools += _PROSE_TOOL.findall(plan or "") + _FLOW_TOOL.findall(plan or "")
+    tools += _LISTED_TOOL.findall(_approval_lists(plan or ""))
     seen: set[str] = set()
     tools = [t for t in tools if re.search(r"[A-Za-z]", t) and t not in seen and not seen.add(t)]
     reused: list[str] = []
@@ -158,15 +179,29 @@ def names_in_plan(plan: str) -> dict[str, list[str]]:
     return {"tools": tools, "reused_agents": reused}
 
 
-async def check_plan(plan: str, server_module: Any, *, checks: int = 0) -> dict:
+def _listed_in_plan(listed: Any, plan: str) -> list[str]:
+    """The names the check step's model listed that the plan itself mentions: a model's guess is not the plan's."""
+    out: list[str] = []
+    for name in listed if isinstance(listed, list) else []:
+        name = name.strip().strip("'\"`") if isinstance(name, str) else ""
+        if (_A_NAME.fullmatch(name) and name not in out
+                and re.search(rf"(?<![\w.\-]){re.escape(name)}(?![\w\-])", plan)):
+            out.append(name)
+    return out
+
+
+async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: Any = None) -> dict:
     """What a plan names that nothing here provides, before the person sees it.
 
     `redraft` is true the first time anything is missing, so the drafter gets one chance to use real names; after
     that, what is still missing goes in front of the person (`note`) instead of stopping the build after approval.
+    `listed` is the tools the check step's model read from the plan, whatever its phrasing (F666); the plan's own
+    format, read by `names_in_plan`, is the fallback when a model lists none.
     """
     from core.routes.agents import load_user_agents
 
     names = names_in_plan(plan)
+    names["tools"] += [t for t in _listed_in_plan(listed, plan) if t not in names["tools"]]
     gone = await missing(names["tools"], server_module)
     missing_tools = [t for t, _ in gone]
     have = {a.get("id") for a in await load_user_agents()}
@@ -201,16 +236,23 @@ CHECK_PLAN_SCHEMA = {
         "name": "check_plan",
         "description": (
             "Check the plan this build has just drafted: every tool and reused agent it names, with the lookup a run "
-            "makes. Reads the plan from the run itself and takes no arguments; call it with {}."
+            "makes. Reads the plan from the run itself; list the tools it uses in `tools`."
         ),
-        "parameters": {"type": "object", "properties": {}},
+        "parameters": {"type": "object", "properties": {"tools": {
+            "type": "array", "items": {"type": "string"},
+            "description": (
+                "Every tool the plan uses, exactly as the plan writes it: each tool step's tool, each new agent's "
+                "tools, and each tool under Asks you first and Acts without asking. Tools only: never a step, an "
+                "agent, a state key or an output. [] when it uses none."),
+        }}},
     },
 }
 
 
 async def check_plan_tool(args: dict, server_module: Any, events: list[dict]) -> dict:
     """The builder's `step_check_plan`: the plan and the checks so far come from the run's last checkpoint, which
-    the engine takes at every step boundary, so nothing copies the plan through a model."""
+    the engine takes at every step boundary, so nothing copies the plan through a model; the model only names the
+    tools it read in it (`tools`, F666)."""
     from core.builder_tools import _current_run
     from core.orchestration.state import SharedState
 
@@ -220,7 +262,8 @@ async def check_plan_tool(args: dict, server_module: Any, events: list[dict]) ->
     state = (await SharedState.restore(run_id)).run.shared_state or {}
     prior = state.get("plan_check")
     checks = int(prior.get("checks") or 0) if isinstance(prior, dict) else 0
-    return await check_plan(str(state.get("plan_draft") or ""), server_module, checks=checks)
+    return await check_plan(str(state.get("plan_draft") or ""), server_module, checks=checks,
+                            listed=args.get("tools"))
 
 
 def _register() -> None:

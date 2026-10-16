@@ -61,6 +61,70 @@ def test_a_plan_naming_nothing_has_nothing_to_check(plan):
     assert names_in_plan(plan) == {"tools": [], "reused_agents": []}
 
 
+#: How gpt-4.1-mini names a tool step's tool (F666: 4 of 4 plans on the scratch OSS, 2026-10-16): in the step's
+#: prose, on the flow line without backticks, and in the Asks-first and Acts-without-asking bullets — never as
+#: `**Tool:** `x``, so the check found nothing missing and the build stopped at the saver after approval.
+PROSE_PLAN = """## Steps
+3. **Summary Formatting** (type: llm)
+   Reads `appointments` and writes `summary_text`.
+4. **Post to Teams** (type: tool)
+   Posts the `summary_text` to the clinic's Teams channel using the `teams_post_message` tool from the Teams MCP
+   server. Writes `post_status`.
+5. **Label** (type: tool/agent)
+   Buys a label with the `shippo_buy_label` MCP tool.
+
+## Asks you first
+- `stripe_create_charge`: charges the deposit; a Human step before it approves it.
+
+## Acts without asking
+- `teams_post_message`: Posts the daily summary automatically every weekday at 8am UTC, as requested.
+
+## Flow
+```flow
+Teams Message Post (tool: teams_post_message)
+    ↓
+Refund (tool: `stripe_refund`)
+    ↓
+End (end)
+```
+"""
+
+
+def test_a_tool_named_in_prose_on_the_flow_line_or_in_the_approval_lists_is_read():
+    assert names_in_plan(PROSE_PLAN)["tools"] == [
+        "stripe_refund", "teams_post_message", "shippo_buy_label", "stripe_create_charge"]
+
+
+@pytest.mark.parametrize("plan", [
+    "Reads `appointments` and writes `summary_text`; the `daily_report` workflow runs it.",
+    "4. **Post** (type: tool)\n5. **Fetch** (tool/agent)",
+    "## Asks you first\nNone.\n\n## Acts without asking\n- None",
+    "## Acts without asking\nThe `teams_post_message` step posts without asking.\n\n## Flow\n- `summary_text`: the text",
+])
+def test_backticked_words_that_are_not_named_as_tools_are_not_read_as_tools(plan):
+    assert names_in_plan(plan)["tools"] == []
+
+
+async def test_the_tools_the_check_step_lists_are_checked_whatever_the_plans_phrasing():
+    """The class, not the phrasings (the session manager's point): the check step's model reads the plan and lists
+    every tool it uses, so a tool named in words no pattern knows still reaches "Missing here". A listed name the
+    plan never mentions is dropped: a model's guess is not the plan's."""
+    plan = "## Steps\n2. **Post** (type: tool) — posts through teams_post_message, Microsoft's channel tool."
+    assert names_in_plan(plan)["tools"] == []
+    got = await check_plan(plan, _Server(), listed=["teams_post_message", "`invented_tool`", 7, "list_agents"])
+    assert got["missing_tools"] == ["teams_post_message"] and got["redraft"] is True
+
+
+def test_the_check_step_hands_its_model_the_plan_to_list_the_tools_from():
+    from core.builder_guard import CHECK_PLAN_SCHEMA
+    from core.native_builder import bundled_definitions
+
+    step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_check_plan")
+    assert step["forced_tool"] == "check_plan" and step["model_role"] == "quick"
+    assert "plan_draft" in step["input_keys"] and "{state.plan_draft}" in step["prompt_template"]
+    assert CHECK_PLAN_SCHEMA["function"]["parameters"]["properties"]["tools"]["type"] == "array"
+
+
 async def test_missing_tools_send_the_plan_back_once_then_go_to_the_person():
     first = await check_plan(PLAN, _Server())
     assert first["redraft"] is True and first["checks"] == 1
