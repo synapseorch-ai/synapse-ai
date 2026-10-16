@@ -42,7 +42,7 @@ function doneLine(button: ActionButton, result: Extract<ActResult, { ok: true }>
     if (result.message) return result.message;
     switch (button.tool) {
         case 'run_orchestration':
-        case 'run_schedule_now':
+        case 'trigger_schedule':
             return 'Started.';
         case 'cancel_run':
             return 'Stopped.';

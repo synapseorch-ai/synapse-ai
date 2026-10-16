@@ -194,3 +194,14 @@ async def test_prepare_action_is_a_card_and_the_reporter_and_operator_hold_it():
     agents = {a["id"]: a for a in bundled_definitions()["agents"]}
     for agent in ("agent_native_builder_reporter", "agent_native_builder_operator"):
         assert "prepare_action" in agents[agent]["tools"]
+
+
+def test_no_product_tool_is_named_like_a_workflows_own_tool():
+    """Found by cloud's MCP tests (ASSIST1): a product tool `run_schedule_now` read as a workflow's own MCP tool,
+    whose names are `run_<workflow>` (`mcp_server/workflows.PREFIX`). Only `run_orchestration`, from before, may."""
+    from core.mcp_server import workflows
+    from core.product_tools import areas, registry
+
+    areas.ensure_loaded()
+    clashing = {t.name for t in registry.all_tools() if t.name.startswith(workflows.PREFIX)}
+    assert clashing <= {"run_orchestration"}, clashing

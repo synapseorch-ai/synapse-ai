@@ -1,4 +1,4 @@
-"""A schedule's "Run now", as a product tool (ASSIST1, D291, F683).
+"""A schedule's "Run now", as a product tool `trigger_schedule` (ASSIST1, D291, F683).
 
 The Schedules screen's Run now: the schedule's target runs once, now, enabled or not, and its next time does not
 move (F72). Turning a schedule on or off is the builder's `set_schedule_enabled` (`build.py`). A builder's act, as
@@ -46,7 +46,8 @@ async def _run_now(caller: Any, args: dict[str, Any]) -> dict:
 
 def entries() -> list[ProductTool]:
     return [ProductTool(
-        name="run_schedule_now",
+        # Not `run_…`: that is the name of a workflow's own MCP tool (`mcp_server/workflows.PREFIX`).
+        name="trigger_schedule",
         description="Run a schedule once, now, whether or not it is on. Its next scheduled time does not move.",
         input_schema={"type": "object", "properties": {"schedule_id": {"type": "string"}},
                       "required": ["schedule_id"]},

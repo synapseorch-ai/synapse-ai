@@ -171,7 +171,7 @@ async def _offer(action: str, args: dict) -> dict:
         schedule = await _schedule(args)
         return _card(f'Run "{schedule.get("name")}" now',
                      detail="Once, now. Its next scheduled time does not move.",
-                     buttons=[await _button("Run now", "run_schedule_now", {"schedule_id": schedule["id"]})])
+                     buttons=[await _button("Run now", "trigger_schedule", {"schedule_id": schedule["id"]})])
 
     if action in ("schedule_on", "schedule_off"):
         schedule, on = await _schedule(args), action == "schedule_on"
