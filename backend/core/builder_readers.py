@@ -35,6 +35,15 @@ TOPICS: dict[str, str] = {
     "models": "the default model, the builder's models, and which providers have a key (never the key)",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
+    # What happened, not only what is set up (ASSIST1, D291).
+    "today": "what happened over the last `days` days (default 1, today): runs by status, each failure and why, "
+             "what waits on a person, schedules that ran, cost",
+    "run": "one run step by step, with the start of what each step wrote: `run_id`, or `name` for that workflow's "
+           "latest run. 'Did it finish', 'what did it do', 'why did it fail'",
+    "waiting": "what waits on a person: workflow runs asking a question and tool calls an agent stopped on, each "
+               "with what answers it",
+    "agent_activity": "what the agent `name` has been doing: its recent conversations (last question and answer) "
+                      "and the workflows that use it, with how each one's last run went",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -65,7 +74,9 @@ SCHEMA = {
                 "topic": {"type": "string", "enum": list(TOPICS)},
                 "name": {"type": "string", "description": "Only things whose name contains this (any topic)."},
                 "status": {"type": "string", "description": "runs: only this status, e.g. failed."},
-                "days": {"type": "integer", "description": "usage: how many days back (default 7)."},
+                "days": {"type": "integer", "description": "usage (default 7) and today (default 1): how many "
+                                                           "days back."},
+                "run_id": {"type": "string", "description": "run: the run to read."},
                 "limit": {"type": "integer", "description": "runs: how many (default 20, at most 100)."},
             },
             "required": ["topic"],
@@ -259,10 +270,71 @@ async def _workflows(args: dict) -> dict:
     return {"items": _named(out, args.get("name")), "count": len(out)}
 
 
+# ── what happened (ASSIST1): the product tools' reads, as the run's person ──────────────────────────────────
+
+def _caller():
+    from core.builder_access import current_caller
+    from core.product_tools.caller import Caller
+    from core.product_tools.roles import Role
+
+    return current_caller() or Caller(role=Role.OWNER, via="assistant")
+
+
+async def _product_read(name: str, args: dict) -> dict:
+    from core.product_tools import areas, registry
+    from core.product_tools.errors import ToolRefusal
+
+    areas.ensure_loaded()
+    try:
+        result = await registry.invoke(name, _caller(), args)
+    except ToolRefusal as exc:
+        return {"error": str(exc)}
+    return result if isinstance(result, dict) else {"items": result}
+
+
+async def _today(args: dict) -> dict:
+    return await _product_read("summarise_activity", {"days": args.get("days") or 1})
+
+
+async def _agent_activity(args: dict) -> dict:
+    return await _product_read("agent_activity", {"name": args.get("name") or ""})
+
+
+async def _waiting(args: dict) -> dict:
+    return await _product_read("list_waiting", {"limit": args.get("limit") or 25})
+
+
+async def _run(args: dict) -> dict:
+    from core.orchestration.run_view import list_runs
+    from core.routes.orchestrations import load_orchestrations
+
+    run_id = (args.get("run_id") or "").strip()
+    flows = {o.get("id"): o.get("name") for o in await load_orchestrations()
+             if not o.get("system") and o.get("is_active") is not False}
+    if not run_id:
+        wanted = [i for i, n in flows.items() if (args.get("name") or "").strip().lower() in str(n or "").lower()]
+        if not (args.get("name") or "").strip() or not wanted:
+            return {"error": "Say which run: its run_id, or the workflow's name (topic `workflows` lists them)."}
+        latest = sorted([r for i in wanted for r in await list_runs(limit=1, orchestration_id=i)],
+                        key=lambda r: r.get("started_at") or "", reverse=True)
+        if not latest:
+            return {"error": f"{flows[wanted[0]]!r} has not run yet." if len(wanted) == 1 else
+                    "None of the workflows by that name has run yet."}
+        run_id = latest[0]["run_id"]
+    view = await _product_read("get_run", {"run_id": run_id})
+    if "error" in view:
+        return view
+    row = next(iter(r for r in await list_runs(limit=500) if r.get("run_id") == run_id), {})
+    return {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),
+            "started_at": row.get("started_at"), "ended_at": row.get("ended_at"),
+            "model_dollars": round(float(row.get("total_cost_usd") or 0), 6)}
+
+
 _SELF_HOSTED: dict[str, Reader] = {
     "schedules": _schedules, "runs": _runs, "channels": _channels, "phone": _phone, "widgets": _widgets,
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
+    "today": _today, "run": _run, "waiting": _waiting, "agent_activity": _agent_activity,
 }
 
 
