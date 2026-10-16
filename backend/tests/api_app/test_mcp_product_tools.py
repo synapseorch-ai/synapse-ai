@@ -17,7 +17,9 @@ from core.product_tools.caller import Caller
 from core.product_tools.errors import ToolRefusal
 from core.product_tools.roles import Role
 
-from api_app.test_mcp_server import mcp_app, mcp_session  # noqa: F401  mcp_app is a fixture
+from api_app.test_mcp_server import _body, mcp_app, mcp_session  # noqa: F401  mcp_app is a fixture
+# The scheduled approval's own fixtures (F268), to answer one over MCP.
+from unit.test_a_scheduled_approval_asks_through_the_bell import executed, manager, schedule  # noqa: F401
 
 
 def _names(caller: Caller) -> set[str]:
@@ -116,3 +118,114 @@ class TestF693ABuildIsAudited:
         assert "error" in json.loads(res.content[0].text) or "not found" in res.content[0].text.lower()
         assert audited == []
 
+
+
+class TestF696WhatWaitsAndItsAnswers:
+    def test_a_viewer_sees_what_waits_and_an_approver_may_answer_it(self):
+        assert "list_waiting" in _names(_as(Role.VIEWER))
+        names = _names(_as(Role.APPROVER))
+        assert {"answer_run", "answer_tool_approval"} <= names and "chat_with_agent" not in names
+
+    async def test_the_bell_s_open_questions_name_the_tool_that_answers_each(self, mcp_app, api_key):
+        from core.notifications import hub
+
+        hub.publish("human_input", "MCP2 probe run needs your input", body="Which client?", run_id="run_mcp2_q",
+                    data={"step_id": "ask"})
+        hub.publish("tool_approval", "MCP2 probe schedule needs approval", body="send_email",
+                    data={"schedule_id": "sched_mcp2", "approval_id": "appr_mcp2", "tool_name": "send_email"})
+        done = hub.publish("human_input", "MCP2 probe answered", run_id="run_mcp2_done")
+        hub._resolve([done], "answered")
+        hub.publish("run_completed", "MCP2 probe completed", run_id="run_mcp2_q")
+
+        async with mcp_session(mcp_app, api_key) as s:
+            listed = _body(await s.call_tool("list_waiting", {}))
+        mine = [i for i in listed["items"] if str(i.get("title", "")).startswith("MCP2 probe")]
+        assert [i["kind"] for i in mine] == ["tool_approval", "run_question"]  # newest first
+        assert {k: mine[0].get(k) for k in ("schedule_id", "approval_id", "answer_with")} == {
+            "schedule_id": "sched_mcp2", "approval_id": "appr_mcp2", "answer_with": "answer_tool_approval"}
+        assert mine[1]["run_id"] == "run_mcp2_q" and mine[1]["answer_with"] == "answer_run"
+
+    async def test_a_chat_tool_call_is_answered_over_mcp_once(self, mcp_app, api_key, monkeypatch):
+        """F696: chat_with_agent stopped on an approval used to say "approve it in the app"."""
+        import core.react_engine as re
+        from _fakes import engine_events as E
+        from _fakes import seed as S
+        from tests.api_v1.test_v1_cli_surface import APPROVAL
+
+        await S.seed_agents([S.make_agent(id="agent_mail", name="Mailer")])
+        monkeypatch.setattr(re, "run_react_loop",
+                            E.gen_from([E.status(), {**APPROVAL, "approval_id": "appr-mcp2"}]))
+        async with mcp_session(mcp_app, api_key) as s:
+            asked = _body(await s.call_tool("chat_with_agent", {"message": "email them", "agent": "agent_mail",
+                                                                "wait_seconds": 10}))
+            assert asked["status"] == "awaiting_approval", asked
+            assert "answer_tool_approval" in asked["note"]
+
+            async def _loop(request, *args, **kwargs):
+                assert kwargs.get("resume_state") is not None
+                yield {"type": "final", "response": "sent it"}
+
+            monkeypatch.setattr(re, "run_react_loop", _loop)
+            answered = _body(await s.call_tool("answer_tool_approval", {
+                "approve": True, "session_id": asked["session_id"], "approval_id": "appr-mcp2",
+                "wait_seconds": 10}))
+            assert answered.get("status") == "completed" and answered.get("response") == "sent it", answered
+            again = await s.call_tool("answer_tool_approval", {
+                "approve": True, "session_id": asked["session_id"], "approval_id": "appr-mcp2"})
+        assert again.isError and "not waiting" in again.content[0].text
+
+    async def test_an_answer_must_say_yes_or_no(self, test_app):
+        with pytest.raises(ToolRefusal, match="approve: true"):
+            await server._call("answer_tool_approval", {"session_id": "s"}, caller=_as(Role.APPROVER))
+
+    async def test_a_host_without_the_answer_says_where_it_is_given(self, test_app, monkeypatch):
+        from core.mcp_server import runs
+
+        class Old:  # an embedder's backend from before MCP2
+            pass
+
+        monkeypatch.setattr(runs, "_backend", Old())
+        with pytest.raises(ToolRefusal, match="in the Synapse app"):
+            await server._call("answer_tool_approval", {"approve": True, "session_id": "s"},
+                               caller=_as(Role.APPROVER))
+
+    async def test_a_question_the_run_does_not_ask_is_refused_by_name(self, mcp_app, api_key, seed_orchestration):
+        from api_app.test_mcp_server import _ASK_THEN_THINK, _paused_run
+
+        orch = await seed_orchestration(entry_step_id="ask", steps=_ASK_THEN_THINK)
+        async with mcp_session(mcp_app, api_key) as s:
+            run = await _paused_run(s, orch["id"])
+            res = await s.call_tool("answer_run", {"run_id": run["run_id"], "answer": "Acme",
+                                                   "question_id": "q_nobody_asked"})
+        assert res.isError and "not asking question 'q_nobody_asked'" in res.content[0].text
+
+
+class TestF696AScheduledRunsCall:
+    """The bell's Approve for a scheduled run's parked call, over MCP: the call runs once, in the same run."""
+
+    async def test_listed_then_approved_once(self, test_app, fake_llm):
+        from unit.test_a_scheduled_approval_asks_through_the_bell import SCHED, _fire, _settled
+
+        manager, executed = self._manager, self._executed
+        await _fire(manager, fake_llm)
+        waiting = await server._call("list_waiting", {"kind": "tool_approval"}, caller=_as(Role.VIEWER))
+        [item] = [i for i in json.loads(waiting.content[0].text)["items"] if i.get("schedule_id") == SCHED]
+        assert item["answer_with"] == "answer_tool_approval" and item["tool_name"] == "danger"
+
+        fake_llm.script(["Deleted yesterday's rows."])
+        answered = await server._call("answer_tool_approval", {
+            "approve": True, "schedule_id": SCHED, "approval_id": item["approval_id"], "wait_seconds": 10,
+        }, caller=_as(Role.APPROVER))
+        assert not answered.isError, answered.content[0].text
+        await _settled()
+        assert executed == [("danger", {"rows": "yesterday"})]
+
+        with pytest.raises(ToolRefusal, match="not waiting"):
+            await server._call("answer_tool_approval", {
+                "approve": True, "schedule_id": SCHED, "approval_id": item["approval_id"],
+            }, caller=_as(Role.APPROVER))
+        assert executed == [("danger", {"rows": "yesterday"})]
+
+    @pytest.fixture(autouse=True)
+    def _armed(self, schedule, manager, executed):
+        self._manager, self._executed = manager, executed

@@ -102,6 +102,11 @@ RUN_TOOLS: tuple[types.Tool, ...] = (
                     "anyOf": [{"type": "string"}, {"type": "object"}],
                     "description": "The answer: text, or an object keyed by the question's field names.",
                 },
+                "question_id": {
+                    "type": "string",
+                    "description": "Which question, when the run asks several at once (a team step's members, "
+                                   "listed in the run's `questions`). Leave out when it asks one.",
+                },
                 "wait_seconds": _wait_prop(DEFAULT_WAIT_SECONDS),
             },
             "required": ["run_id", "answer"],
@@ -139,7 +144,7 @@ RUN_TOOLS: tuple[types.Tool, ...] = (
         description=(
             "Send one message to a Synapse agent and return its reply. Pass the returned "
             "session_id to continue the same conversation. An agent that needs a tool call "
-            "approved stops with status `awaiting_approval`; approvals are given in the Synapse app."
+            "approved stops with status `awaiting_approval`: answer it with answer_tool_approval."
         ),
         inputSchema={
             "type": "object",
@@ -154,6 +159,36 @@ RUN_TOOLS: tuple[types.Tool, ...] = (
                 },
             },
             "required": ["message"],
+        },
+        annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
+    ),
+    types.Tool(
+        name="answer_tool_approval",
+        description=(
+            "Allow or refuse a tool call an agent stopped on: in a conversation (chat_with_agent's "
+            "`awaiting_approval`, an app's or a phone call's), or in a scheduled run. Name where it waits "
+            "with session_id or schedule_id; list_waiting shows each with its ids. Allowed, the turn "
+            "carries on and this waits for its reply. A question is answered once."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "approve": {"type": "boolean", "description": "true to let the call run, false to refuse it."},
+                "reason": {"type": "string", "description": "Why, told to the agent (optional)."},
+                "session_id": {"type": "string", "description": "The conversation that waits."},
+                "schedule_id": {"type": "string", "description": "The schedule whose run waits."},
+                "approval_id": {"type": "string",
+                                "description": "The call this answers, so an older question is never answered "
+                                               "by mistake."},
+                "question_id": {"type": "string",
+                                "description": "Which team member's question, when several wait."},
+                "agent": {"type": "string", "description": "The agent whose question it is, when several wait."},
+                "wait_seconds": {
+                    "type": "integer", "minimum": 0, "maximum": 600, "default": DEFAULT_CHAT_WAIT_SECONDS,
+                    "description": "Seconds to wait for the resumed turn's reply. It carries on after the wait.",
+                },
+            },
+            "required": ["approve"],
         },
         annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
     ),
@@ -300,8 +335,9 @@ class RunBackend(Protocol):
         """`run_view.read_run`'s shape, or None when there is no such run. A
         paused view carries `PAUSE_KEY`, the question's ordinal."""
 
-    async def answer(self, run_id: str, response: Any) -> asyncio.Queue | None:
-        """Answer a paused run; its event queue when it resumes in this process."""
+    async def answer(self, run_id: str, response: Any, *, question_id: str | None = None) -> asyncio.Queue | None:
+        """Answer a paused run; its event queue when it resumes in this process. `question_id` names one of
+        several questions (a team step's), and is passed only when given."""
 
     async def cancel(self, run_id: str) -> dict:
         """Stop a run: `{"run_id", "status", "stopped"}`."""
@@ -311,6 +347,13 @@ class RunBackend(Protocol):
 
     async def chat(self, *, message: str, agent: str | None, session_id: str | None, wait: float) -> dict:
         """One chat turn and its reply, or where it is when the wait runs out."""
+
+    # Optional (MCP2, D292): a backend without it answers that tool calls are approved in the app.
+    async def answer_tool_call(self, *, approve: bool, reason: str, session_id: str | None,
+                               schedule_id: str | None, approval_id: str | None, question_id: str | None,
+                               agent: str | None, wait: float) -> dict:
+        """Allow or refuse the tool call a conversation or a scheduled run waits on; the resumed turn's reply,
+        or where it is when the wait runs out."""
 
 
 class InProcessRuns:
@@ -348,14 +391,16 @@ class InProcessRuns:
                 pass
         return view
 
-    async def answer(self, run_id: str, response: Any) -> asyncio.Queue | None:
+    async def answer(self, run_id: str, response: Any, *, question_id: str | None = None) -> asyncio.Queue | None:
         import core.server as _server
         from core.orchestration.answers import (
-            BadAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run,
+            BadAnswer, QuestionNotAsked, RunAlreadyActive, RunNotWaiting, answer_paused_run,
         )
 
         try:
-            answered = await answer_paused_run(_server.app.state, run_id, response)
+            answered = await answer_paused_run(_server.app.state, run_id, response, question_id=question_id)
+        except QuestionNotAsked:
+            raise ToolRefusal(f"The run is not asking question '{question_id}' now; get_run lists what it asks.")
         except BadAnswer as exc:
             # An email, date, phone or dropdown answer that is not one (F455).
             raise ToolRefusal(str(exc))
@@ -408,6 +453,72 @@ class InProcessRuns:
         return chat_result([entry.event for entry in turn.entries], identity)
 
 
+    async def answer_tool_call(self, *, approve: bool, reason: str, session_id: str | None,
+                               schedule_id: str | None, approval_id: str | None, question_id: str | None,
+                               agent: str | None, wait: float) -> dict:
+        """The product's own answers, through the functions their routes call: the bell's for a schedule, an API
+        door's (OpenAI-compatible, phone) for its turns, v1's approve for a conversation."""
+        from fastapi import HTTPException
+
+        from core import api_approvals, chat_turns
+        from core.routes.chat import TURN_RUNNING
+
+        decided = "allowed" if approve else "refused"
+        try:
+            if schedule_id:
+                from core.scheduler import _session_of
+                from core.store import schedules as schedule_store
+
+                found = await schedule_store.get(schedule_id)
+                if not found:
+                    raise ToolRefusal(f"Schedule '{schedule_id}' not found")
+                if question_id:
+                    session_id, agent = _session_of(schedule_id), found.get("target_id") or None
+                else:
+                    import core.server as _server
+                    manager = getattr(_server, "schedule_manager", None)
+                    if manager is None:
+                        raise ToolRefusal("The scheduler is not running here.")
+                    try:
+                        turn = await manager.answer_approval(schedule_id, approve=approve, reason=reason,
+                                                             approval_id=approval_id)
+                    except LookupError as exc:
+                        raise ToolRefusal(str(exc))
+                    return await _turn_reply(turn, {"schedule_id": schedule_id, "status_given": decided}, wait)
+            if not session_id:
+                raise ToolRefusal("Name where the call waits: session_id or schedule_id (list_waiting has both).")
+            if api_approvals.door_for(session_id) is not None:
+                try:
+                    turn = await api_approvals.answer(session_id, approve=approve, reason=reason,
+                                                      approval_id=approval_id, question_id=question_id)
+                except LookupError as exc:
+                    raise ToolRefusal(str(exc))
+                if turn is None:
+                    return {"status": decided, "session_id": session_id, "live": True}
+                return await _turn_reply(turn, {"session_id": session_id, "status_given": decided}, wait)
+            # A conversation an API caller (chat_with_agent) started resumes as v1 resumes it: an API turn,
+            # not the app's chat (which reads a person's @[path] mentions from the vault).
+            from core.routes.api_v1 import answer_v1_question
+            turn = await answer_v1_question(session_id, approve=approve, reason=reason, approval_id=approval_id,
+                                            question_id=question_id, agent=agent)
+            if turn is None:
+                return {"status": decided, "session_id": session_id, "live": True}
+            return await _turn_reply(turn, {"session_id": session_id}, wait)
+        except HTTPException as exc:
+            raise ToolRefusal(str(exc.detail))
+        except chat_turns.TurnAlreadyRunning:
+            raise ToolRefusal(TURN_RUNNING)
+
+
+async def _turn_reply(turn: Any, identity: dict, wait: float) -> dict:
+    """A resumed turn's reply, as `chat_with_agent` gives one; where it is when the wait runs out."""
+    try:
+        await asyncio.wait_for(asyncio.shield(turn.wait()), timeout=wait)
+    except asyncio.TimeoutError:
+        return {"status": "running", **identity, "note": CHAT_STILL_GOING}
+    return chat_result([entry.event for entry in turn.entries], identity)
+
+
 #: What a chat wait that ran out says; the turn carries on.
 CHAT_STILL_GOING = "The agent is still working. Its reply will be in this conversation in the Synapse app."
 
@@ -429,7 +540,8 @@ def chat_result(events: list[dict], identity: dict) -> dict:
             pause = {k: v for k, v in event.items() if k not in ("type", "session_id")}
             prompt = pause.pop("prompt", "")
             return {"response": prompt, "status": kind, **pause, **identity,
-                    "note": "Approve or answer this in the Synapse app."}
+                    "note": "Answer it with answer_tool_approval (this session_id and approval_id), "
+                            "or in the Synapse app."}
         if kind == "response":
             return {"response": event.get("content", ""), "status": "completed", **identity}
     return {"response": "I completed the requested actions.", "status": "completed", **identity}
@@ -490,7 +602,11 @@ async def _answer_run(args: dict) -> dict:
         refuse_empty(response)
     except EmptyAnswer as exc:
         raise ToolRefusal(str(exc))
-    queue = await get_run_backend().answer(run_id, response)
+    question_id = str(args["question_id"]) if args.get("question_id") else None
+    backend = get_run_backend()
+    # Passed only when given: an embedder's backend from before MCP2 takes no question.
+    queue = await (backend.answer(run_id, response, question_id=question_id) if question_id
+                   else backend.answer(run_id, response))
     return await _settle(run_id, queue, _wait(args, DEFAULT_WAIT_SECONDS), answered)
 
 
@@ -520,6 +636,26 @@ async def _chat_with_agent(args: dict) -> dict:
     )
 
 
+async def _answer_tool_approval(args: dict) -> dict:
+    if not isinstance(args.get("approve"), bool):
+        raise ToolRefusal("Say approve: true to let the call run, or false to refuse it.")
+    answer = getattr(get_run_backend(), "answer_tool_call", None)
+    if answer is None:
+        raise ToolRefusal("Tool calls are approved in the Synapse app on this server.")
+    try:
+        wait = max(0, min(int(args.get("wait_seconds", DEFAULT_CHAT_WAIT_SECONDS)), 600))
+    except (TypeError, ValueError):
+        wait = DEFAULT_CHAT_WAIT_SECONDS
+
+    def text(key: str) -> str | None:
+        return str(args[key]) if args.get(key) else None
+
+    return await answer(approve=args["approve"], reason=str(args.get("reason") or ""),
+                        session_id=text("session_id"), schedule_id=text("schedule_id"),
+                        approval_id=text("approval_id"), question_id=text("question_id"), agent=text("agent"),
+                        wait=float(wait))
+
+
 _HANDLERS = {
     "run_orchestration": _run_orchestration,
     "get_run": _get_run,
@@ -527,6 +663,7 @@ _HANDLERS = {
     "cancel_run": _cancel_run,
     "list_runs": _list_runs,
     "chat_with_agent": _chat_with_agent,
+    "answer_tool_approval": _answer_tool_approval,
 }
 
 

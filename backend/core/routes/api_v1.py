@@ -544,6 +544,26 @@ async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
     the question still open. Naming the call (`approval_id`) makes an answer to
     an older question a 409 rather than an answer to this one.
     """
+    from core import chat_turns
+
+    turn = await answer_v1_question(session_id, approve=body.approve, reason=body.reason,
+                                    approval_id=body.approval_id, question_id=body.question_id, agent=body.agent)
+    if turn is None:
+        return {"status": "allowed" if body.approve else "refused", "live": True,
+                "session_id": session_id, "question_id": body.question_id}
+
+    async def event_generator():
+        async for item in chat_turns.read(turn):
+            yield item if isinstance(item, str) else item.data
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+async def answer_v1_question(session_id: str, *, approve: bool, reason: str = "", approval_id: str | None = None,
+                             question_id: str | None = None, agent: str | None = None):
+    """Answer the tool call a v1 conversation stopped on and carry its turn on, server-owned: the turn, or None
+    when a working team's member took the answer now. The MCP server's `answer_tool_approval` answers through
+    here too (MCP2, D292). Raises 409 when nothing here waits on it or a turn holds the conversation."""
     from core import chat_turns, team
     from core.chat_approval import find_question, resume_state_for, take_answers
     from core.models import ChatRequest
@@ -551,12 +571,13 @@ async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
     from core.store import sessions as _sessions
     import core.server as _server
 
+    body = V1ApprovalRequest(approve=approve, reason=reason, approval_id=approval_id, question_id=question_id,
+                             agent=agent)
     if body.question_id:
         # A team at work here whose member waits on it (TEAM1c): that member carries on now.
         working = team.find(session_id)
         if working is not None and working.answer(body.question_id, approve=body.approve, reason=body.reason):
-            return {"status": "allowed" if body.approve else "refused", "live": True,
-                    "session_id": session_id, "question_id": body.question_id}
+            return None
     agent = (await _agent_or_error(body.agent) if body.agent is not None
              else await _waiting_agent(session_id, body.approval_id, body.question_id))
     try:
@@ -581,12 +602,7 @@ async def v1_approve_chat_tool(session_id: str, body: V1ApprovalRequest,
                                                         verdicts=verdicts)))
     except chat_turns.TurnAlreadyRunning:
         raise HTTPException(status_code=409, detail=TURN_RUNNING)
-
-    async def event_generator():
-        async for item in chat_turns.read(turn):
-            yield item if isinstance(item, str) else item.data
-
-    return StreamingResponse(event_generator(), media_type="text/event-stream", headers=_SSE_HEADERS)
+    return turn
 
 
 def _v1_drain(queue):

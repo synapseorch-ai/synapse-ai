@@ -21,6 +21,7 @@ _SHAPE: dict[str, tuple[str, Role, dict[str, bool]]] = {
     "cancel_run": ("act", Role.BUILDER, {"destructive": True}),
     "list_runs": ("read", Role.VIEWER, {}),
     "chat_with_agent": ("act", Role.BUILDER, {"open_world": True}),
+    "answer_tool_approval": ("act", Role.APPROVER, {"open_world": True}),
 }
 
 
