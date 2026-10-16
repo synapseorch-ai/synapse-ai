@@ -246,5 +246,22 @@ class TestResults:
                                   "started_at": "t", "output_key": "o"}],
                 "shared_state": {"o": "y" * 5000}}
         out = runs._for_model(view)
-        assert out["steps"] == [{"step_id": "a", "step_name": "A", "step_type": "llm", "status": "completed"}]
+        [line] = out["steps"]
+        assert {k: line[k] for k in ("step_id", "step_name", "step_type", "status")} == {
+            "step_id": "a", "step_name": "A", "step_type": "llm", "status": "completed"}
         assert len(out["shared_state"]["o"]) < 4100
+
+    def test_each_step_says_the_start_of_what_it_wrote_and_how_long_it_took(self):
+        """"Did it finish, and what did each step do" is one read (ASSIST1, D291)."""
+        view = {"status": "failed", "run_id": "r", "error": "Step 'Send' failed: 401",
+                "step_history": [
+                    {"step_id": "a", "step_name": "Draft", "step_type": "agent", "status": "completed",
+                     "output_key": "draft", "duration_seconds": 4.2, "tasks": 3},
+                    {"step_id": "b", "step_name": "Send", "step_type": "tool", "status": "failed",
+                     "output_key": "sent", "error": "401 Unauthorized"},
+                    "not an entry"],
+                "shared_state": {"draft": "z" * 2000, "sent": "partial"}}
+        draft, send = runs._for_model(view)["steps"]
+        assert draft["output"].startswith("z" * 500) and draft["output"].endswith("[1500 more characters]")
+        assert (draft["duration_seconds"], draft["tasks"]) == (4.2, 3)
+        assert send["error"] == "401 Unauthorized" and "output" not in send

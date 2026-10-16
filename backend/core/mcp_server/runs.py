@@ -17,6 +17,7 @@ every tool here, the waiting and the refusals included, stays the same.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Protocol
 
@@ -236,15 +237,30 @@ def _clip(value: Any) -> Any:
     return value
 
 
+#: A step's output, as a run's step line shows it: the start of what it wrote.
+_STEP_OUTPUT_CHARS = 500
+
+
+def _step_line(h: dict, state: dict) -> dict:
+    line = {k: h[k] for k in ("step_id", "step_name", "step_type", "status", "error", "duration_seconds",
+                              "tasks") if h.get(k)}
+    key = h.get("output_key")
+    if key and h.get("status") == "completed" and state.get(key) not in (None, ""):
+        value = state[key]
+        text = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
+        line["output"] = (text[:_STEP_OUTPUT_CHARS] + f"… [{len(text) - _STEP_OUTPUT_CHARS} more characters]"
+                          if len(text) > _STEP_OUTPUT_CHARS else text)
+    return line
+
+
 def _for_model(view: dict) -> dict:
-    """A run view a model can read: its steps as one line each, long values cut."""
+    """A run view a model can read: its steps as one line each, with the start of what each wrote; long values
+    cut. "Did it finish, and what did each step do" is one read (ASSIST1, D291)."""
     out = {k: v for k, v in view.items()
            if k not in ("step_history", "shared_state") and not k.startswith("_")}
     if "step_history" in view:
-        out["steps"] = [
-            {k: h[k] for k in ("step_id", "step_name", "step_type", "status", "error") if h.get(k)}
-            for h in view["step_history"]
-        ]
+        state = view.get("shared_state") or {}
+        out["steps"] = [_step_line(h, state) for h in view["step_history"] if isinstance(h, dict)]
     if "shared_state" in view:
         out["shared_state"] = {k: _clip(v) for k, v in view["shared_state"].items()}
     return out
