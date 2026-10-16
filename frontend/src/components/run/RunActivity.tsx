@@ -23,7 +23,7 @@ import * as React from 'react';
 import { Button, ErrorNote, Markdown, Modal, Spinner } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
-import { TeamView } from '@/components/team';
+import { TeamView, type LaneHandlers, type MemberAnswer } from '@/components/team';
 
 import { useRunHost } from './host';
 import { isLive } from './model';
@@ -37,11 +37,46 @@ function withStepError(event: unknown, errors: Record<string, string>): unknown 
     return real ? { ...(event as object), error: real } : event;
 }
 
+/**
+ * A Team step's lines, live (TEAM1e): each member's question answered in its line by its own id — a paused run
+ * moves on, one still working carries that member on — and a member stopped or written to. Only what this person
+ * may do (F452): answers under `canAnswer`, Stop and Message under `canControl`.
+ */
+export function useRunTeamHandlers(runId: string, onChanged?: () => void): LaneHandlers {
+    const host = useRunHost();
+    const [stopping, setStopping] = React.useState<Set<string>>(() => new Set());
+    const team = host.team;
+    return React.useMemo(() => {
+        if (!team) return {};
+        const handlers: LaneHandlers = { stopping };
+        if (host.canAnswer) {
+            handlers.onAnswer = (answer: MemberAnswer) => {
+                team.answer(runId, answer.question_id, answer.approve, answer.reason)
+                    .then(() => onChanged?.())
+                    .catch(() => onChanged?.());
+            };
+        }
+        if (host.canControl) {
+            handlers.onStop = (member) => {
+                setStopping((prev) => new Set(prev).add(member.id));
+                team.stop(runId, member.id).catch(() => setStopping((prev) => {
+                    const next = new Set(prev);
+                    next.delete(member.id);
+                    return next;
+                }));
+            };
+            handlers.onMessage = (member, text) => team.message(runId, member.id, text).catch(() => false);
+        }
+        return handlers;
+    }, [team, host.canAnswer, host.canControl, runId, onChanged, stopping]);
+}
+
 export function RunActivity({
     runId,
     status,
     stepErrors = {},
     emptyNote = 'No events were recorded for this run.',
+    onChanged,
 }: {
     runId: string;
     status: string;
@@ -49,8 +84,11 @@ export function RunActivity({
     stepErrors?: Record<string, string>;
     /** Said when there are no events (cloud: the live events expire, an archive may be missing). */
     emptyNote?: string;
+    /** Read the run again: a member's question answered in its line moves a paused run on. */
+    onChanged?: () => void;
 }) {
     const host = useRunHost();
+    const teamHandlers = useRunTeamHandlers(runId, onChanged);
     const [open, setOpen] = React.useState(true);
     const [state, setState] = React.useState<RunLogState>(emptyRunLog);
     const [loading, setLoading] = React.useState(true);
@@ -156,7 +194,7 @@ export function RunActivity({
                 </RCollapsible.Trigger>
                 <RCollapsible.Content>
                     {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
-                    <TeamView state={state.team} kept={!following} className="mb-3" />
+                    <TeamView state={state.team} kept={!following} className="mb-3" {...teamHandlers} />
                     {content}
                 </RCollapsible.Content>
             </RCollapsible.Root>

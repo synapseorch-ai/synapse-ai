@@ -13,7 +13,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowDown, X } from 'lucide-react';
 import { IconButton, Spinner } from '@/components/ui';
-import { LogLine, NestedRuns, TaskChecklist, type NestedRun, type RunLogState, type StepResultEntry } from '@/components/run';
+import { LogLine, NestedRuns, TaskChecklist, useRunTeamHandlers, type NestedRun, type RunLogState, type StepResultEntry } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import { TeamView } from '@/components/team';
 import type { RunDrawerView } from './RunStrip';
@@ -53,6 +53,8 @@ export function RunDrawer({
     pastRuns: RunSummary[];
     onRestoreRun: (run: RunSummary) => void;
 }) {
+    // A Team step's lines, answered, stopped and written to where they are drawn (TEAM1e).
+    const teamHandlers = useRunTeamHandlers(runId ?? '');
     const scrollRef = useRef<HTMLDivElement>(null);
     const [pinned, setPinned] = useState(true);
     const runLog = log.entries;
@@ -148,7 +150,7 @@ export function RunDrawer({
                         )}
 
                         {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
-                        {log.team && <TeamView state={log.team} kept={runStatus !== 'running'} />}
+                        {log.team && <TeamView state={log.team} kept={runStatus !== 'running'} {...teamHandlers} />}
 
                         {runId && (
                             <NestedRunsOf

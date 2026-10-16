@@ -219,7 +219,7 @@ export function RunDetail({
                 <section className="grid gap-3">
                     {/* Keyed on status: an answer, a cancel or a replay moves the run on, and both
                         sources replay from the first event — a fresh mount starts the log empty. */}
-                    <RunActivity key={`${run.id}:${run.status}`} runId={run.id} status={run.status} stepErrors={stepErrors} emptyNote={activityNote} />
+                    <RunActivity key={`${run.id}:${run.status}`} runId={run.id} status={run.status} stepErrors={stepErrors} emptyNote={activityNote} onChanged={onChanged} />
                     <NestedRuns runs={nested} />
                 </section>
 

@@ -45,6 +45,18 @@ export type RunLinks = {
     billing?: string;
 };
 
+/**
+ * A Team agent step's lines on the run page (TEAM1e, 20 Q5): a member's question answered in its line, by its own
+ * id, and a member stopped or written to while the step works. Each resolves with what to say (an answer) or
+ * whether it was read (Stop, Message); throws an Error whose message can be shown. Absent, the lines show with
+ * nothing to press.
+ */
+export type RunTeamActions = {
+    answer: (runId: string, questionId: string, approve: boolean, reason?: string) => Promise<string>;
+    stop: (runId: string, memberId: string) => Promise<boolean>;
+    message: (runId: string, memberId: string, text: string) => Promise<boolean>;
+};
+
 export type RunHost = {
     links: RunLinks;
     /**
@@ -67,6 +79,8 @@ export type RunHost = {
     canAnswer: boolean;
     /** Whether this person may cancel or replay a run (cloud: a builder and up). */
     canControl: boolean;
+    /** A Team step's lines: answered under `canAnswer`, stopped and written to under `canControl` (TEAM1e). */
+    team?: RunTeamActions;
 };
 
 const nothing = async () => { throw new Error('This page has no run host.'); };

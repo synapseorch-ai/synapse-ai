@@ -142,6 +142,27 @@ export const OSS_RUN_HOST: RunHost = {
     // One login (F452): whoever is here may answer, cancel and replay.
     canAnswer: true,
     canControl: true,
+    // A Team step's lines (TEAM1e): a question answered by its own id — a paused run resumes, a working one carries
+    // that member on — and a member stopped or written to.
+    team: {
+        answer: async (runId, questionId, approve, reason = '') => {
+            await postAndRelease(`/api/orchestrations/runs/${enc(runId)}/human-input`,
+                { response: { approve, reason }, question_id: questionId }, refusedAnswerMessage);
+            return approve ? 'Allowed — it carries on.' : 'Declined — it carries on without it.';
+        },
+        stop: async (runId, memberId) => {
+            const res = await fetch(`/api/orchestrations/runs/${enc(runId)}/members/${enc(memberId)}/stop`, { method: 'POST' });
+            if (!res.ok) throw new Error(await detailOf(res, 'The member was not stopped'));
+            return Boolean(((await res.json()) as { stopped?: boolean }).stopped);
+        },
+        message: async (runId, memberId, text) => {
+            const res = await fetch(`/api/orchestrations/runs/${enc(runId)}/members/${enc(memberId)}/message`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+            });
+            if (!res.ok) throw new Error(await detailOf(res, 'The message was not sent'));
+            return Boolean(((await res.json()) as { delivered?: boolean }).delivered);
+        },
+    },
 };
 
 /** A row of `GET /api/orchestrations/runs`, for the list. */

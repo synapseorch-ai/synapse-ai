@@ -15,14 +15,14 @@ export {
 export { GettingStarted, START_SUGGESTIONS, type StartSuggestion } from './GettingStarted';
 export { HomeSection } from './HomeSection';
 export { HomeStats } from './HomeStats';
-export { DEFAULT_RUN_HOST, RunHostProvider, useRunHost, type RunHost, type RunLinks } from './host';
+export { DEFAULT_RUN_HOST, RunHostProvider, useRunHost, type RunHost, type RunLinks, type RunTeamActions } from './host';
 export * from './model';
 export { NeedsYou, type ToolCall, type WaitingBrief } from './NeedsYou';
 export { NestedRuns } from './NestedRuns';
 export { PathGlyph } from './PathGlyph';
 export { RawEventLog } from './RawEventLog';
 export { RecentRuns } from './RecentRuns';
-export { RunActivity } from './RunActivity';
+export { RunActivity, useRunTeamHandlers } from './RunActivity';
 export { RunDetail } from './RunDetail';
 export { RUN_DOT, RunList, RUN_FILTERS, StatusLine, type RunFilter, type RunSort } from './RunList';
 export {
