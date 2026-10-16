@@ -20,6 +20,15 @@ Four hooks make it reusable by an embedder (cloud's hosted endpoint):
   (`catalog.SCOPES`). A tool it was not granted is not listed, and calling it is
   refused by name. Everything is granted by default; cloud's OAuth tokens carry
   scopes (D127).
+* `caller_of(principal) -> Caller` — who the principal is to the product tools
+  (`core.product_tools`, MCP2, D292): their role, their scopes, the person. By
+  default it is read off the principal (`caller_from`): the self-hosted product's
+  key is its one person, the owner; cloud's principal carries its role.
+
+Every tool but a workflow's own is a product tool: listed by
+`registry.for_caller`, called through `registry.invoke`, which checks the role,
+the scope and, for an irreversible act, a confirmation token, and tells the
+host's audit.
 
 Where a run tool's run executes is `runs.set_run_backend`'s, and where a knowledge
 search runs `knowledge.set_knowledge_searcher`'s.
@@ -34,7 +43,12 @@ from mcp import types
 from mcp.server.lowlevel import Server
 
 from core.log import get_logger
-from core.mcp_server import catalog, knowledge, runs, workflows
+from core.mcp_server import catalog, runs, workflows
+from core.product_tools import areas, registry
+from core.product_tools.build import using_module
+from core.product_tools.caller import Caller
+from core.product_tools.errors import ToolRefusal
+from core.product_tools.roles import Role
 
 _log = get_logger(__name__)
 
@@ -42,6 +56,7 @@ Authorize = Callable[[Any], Awaitable[Any | None]]
 Bind = Callable[[Any], contextlib.AbstractAsyncContextManager]
 ServerModule = Callable[[], contextlib.AbstractAsyncContextManager]
 Permits = Callable[[Any, str], bool]
+CallerOf = Callable[[Any], Caller]
 
 #: The most text one tool result carries. `get_orchestration` and a run's state
 #: have no bound of their own, and a client model reads every character.
@@ -111,6 +126,21 @@ def permit_all(_principal: Any, _scope: str) -> bool:
     return True
 
 
+def caller_from(principal: Any) -> Caller:
+    """The caller a principal is, read off it: the self-hosted key's record (a dict) is the install's one person,
+    the owner; an embedder's principal object says its own `role`, `scopes` and person (`user_id`)."""
+    if isinstance(principal, dict):
+        return Caller(role=Role.OWNER, via="mcp", credential_id=str(principal.get("id") or "") or None,
+                      principal=principal)
+    role = getattr(principal, "role", Role.OWNER)
+    role = getattr(role, "value", role)
+    user_id = getattr(principal, "user_id", None)
+    credential = getattr(principal, "credential_id", None)
+    return Caller(role=Role.parse(role), via="mcp", user_id=str(user_id) if user_id else None,
+                  credential_id=str(credential) if credential else None,
+                  scopes=getattr(principal, "scopes", None), principal=principal)
+
+
 @contextlib.asynccontextmanager
 async def this_process() -> AsyncIterator[Any]:
     """The open-source server module: this backend's own tool sessions."""
@@ -132,36 +162,48 @@ def _error(message: str) -> types.CallToolResult:
     return _text_result(json.dumps({"error": message}, ensure_ascii=False), is_error=True)
 
 
-def _fixed_tools() -> list[types.Tool]:
-    return catalog.builder_tools() + list(runs.RUN_TOOLS) + knowledge.tools()
+def as_mcp_tool(tool: registry.ProductTool) -> types.Tool:
+    return types.Tool(name=tool.name, description=tool.description,
+                      inputSchema=tool.schema(confirm_token=tool.needs_token("irreversible")),
+                      annotations=types.ToolAnnotations(**tool.annotations()))
+
+
+#: The caller `_fixed_tools()` lists for when none is given: everything a self-hosted key may call.
+_EVERYTHING = Caller(role=Role.OWNER, via="mcp")
+
+
+def _fixed_tools(caller: Caller = _EVERYTHING) -> list[types.Tool]:
+    """The product tools this caller is offered, as MCP tools: listed ones only (a feature switched off is not)."""
+    areas.ensure_loaded()
+    return [as_mcp_tool(t) for t in registry.for_caller(caller)
+            if t.offered is None or t.offered()]
 
 
 def _reserved() -> set[str]:
-    return set(catalog.SERVED_BUILDER_TOOLS) | set(runs.RUN_TOOL_NAMES) | set(catalog.KNOWLEDGE_TOOLS)
+    areas.ensure_loaded()
+    return {t.name for t in registry.all_tools()}
+
+
+def _result(value: Any) -> types.CallToolResult:
+    return _text_result(value) if isinstance(value, str) else _json_result(value)
 
 
 async def _call(name: str, args: dict, server_module: ServerModule = this_process,
-                principal: Any = None) -> types.CallToolResult:
-    if name in catalog.SERVED_BUILDER_TOOLS:
-        from core.builder_tools import execute_builder_tool_with_events
-
+                principal: Any = None, caller: Caller | None = None) -> types.CallToolResult:
+    caller = caller or caller_from(principal if principal is not None else {})
+    areas.ensure_loaded()
+    tool = registry.get(name)
+    if tool is not None and tool.area == "build":
         async with server_module() as module:
-            output, _events = await execute_builder_tool_with_events(name, args, module)
-        try:
-            parsed = json.loads(output)
-        except ValueError:
-            parsed = None
-        return _text_result(output, is_error=isinstance(parsed, dict) and "error" in parsed)
-
-    if name in runs.RUN_TOOL_NAMES:
-        return _json_result(await runs.call_run_tool(name, args))
-
-    if name == knowledge.NAME:
-        return _text_result(await knowledge.search_tool(args, principal))
+            with using_module(module):
+                return _result(await registry.invoke(name, caller, args))
+    if tool is not None:
+        return _result(await registry.invoke(name, caller, args))
 
     if name.startswith(workflows.PREFIX):
         orch = (await workflows.workflow_map(_reserved())).get(name)
         if orch is not None:
+            _may_run_a_workflow(caller)
             message, inputs = workflows.split_args(orch, args)
             return _json_result(await runs.start_run(
                 orch["id"], message, inputs, runs._wait(args, runs.DEFAULT_WAIT_SECONDS),
@@ -172,9 +214,23 @@ async def _call(name: str, args: dict, server_module: ServerModule = this_proces
     return _error(f"Unknown tool: {name}")
 
 
+def _may_run_a_workflow(caller: Caller) -> None:
+    """A workflow's own tool starts a run, as `run_orchestration` does: the run scope and the builder role."""
+    if not caller.granted("run"):
+        raise ToolRefusal("This connection was not granted 'run', which a workflow's tool needs. "
+                          "Reconnect and allow 'run' to use it.")
+    if not caller.role.can_act_as(Role.BUILDER):
+        raise ToolRefusal(f"Running a workflow needs the builder role; you are a {caller.role.label} in this "
+                          "workspace.")
+
+
+def _offers_workflows(caller: Caller) -> bool:
+    return caller.granted("run") and caller.role.can_act_as(Role.BUILDER)
+
+
 def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_settings,
                  name: str = "synapse", server_module: ServerModule = this_process,
-                 permits: Permits = permit_all) -> Server:
+                 permits: Permits = permit_all, caller_of: CallerOf = caller_from) -> Server:
     server: Server = Server(name, version=synapse_version(), instructions=INSTRUCTIONS)
 
     async def _principal() -> Any | None:
@@ -191,10 +247,12 @@ def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_set
         principal = await _principal()
         if principal is None:
             raise PermissionError("A valid Synapse API key is required.")
+        caller = caller_of(principal)
         async with bind(principal):
-            fixed = _fixed_tools()
-            named = await workflows.workflow_map(_reserved())
-            tools = fixed + [workflows.as_tool(n, o) for n, o in named.items()]
+            tools = _fixed_tools(caller)
+            if _offers_workflows(caller):
+                named = await workflows.workflow_map(_reserved())
+                tools += [workflows.as_tool(n, o) for n, o in named.items()]
             return [t for t in tools if permits(principal, catalog.scope_of(t.name))]
 
     @server.call_tool()
@@ -208,10 +266,11 @@ def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_set
                 f"This connection was not granted '{scope}', which {tool_name} needs. "
                 f"Reconnect and allow '{scope}' to use it."
             )
+        caller = caller_of(principal)
         async with bind(principal):
             try:
-                return await _call(tool_name, arguments or {}, server_module, principal)
-            except runs.ToolRefusal as exc:
+                return await _call(tool_name, arguments or {}, server_module, principal, caller)
+            except ToolRefusal as exc:
                 return _error(str(exc))
             except KeyError as exc:
                 return _error(f"Missing argument: {exc.args[0]}")

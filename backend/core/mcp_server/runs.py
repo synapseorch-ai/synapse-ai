@@ -32,8 +32,7 @@ _SETTLE_GRACE_SECONDS = 3.0
 _STATE_VALUE_CHARS = 4000
 
 
-class ToolRefusal(Exception):
-    """A call the tool refuses: returned to the client as an error result."""
+from core.product_tools.errors import ToolRefusal  # noqa: E402  one refusal for every product tool (D292)
 
 
 def _wait_prop(default: int) -> dict:

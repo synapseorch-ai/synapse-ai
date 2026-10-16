@@ -101,6 +101,11 @@ class TestAnnotationsComeFromTheFlags:
         assert _act(idempotent=True).annotations()["idempotentHint"] is True
         assert _act(open_world=True).annotations()["openWorldHint"] is True
 
+    def test_an_overwrite_or_a_stop_is_destructive_without_a_token(self):
+        tool = _act(destructive=True)
+        assert tool.annotations()["destructiveHint"] is True
+        assert not tool.needs_token("irreversible")
+
 
 class TestWhoIsOfferedWhat:
     def test_a_viewer_sees_reads_only(self):
@@ -195,6 +200,11 @@ class TestEveryActIsAuditedOnce:
         assert args["api_key"] == "[withheld]"
         assert args["headers"]["Authorization"] == "[withheld]"
         assert len(args["body"]) < 300
+
+    async def test_an_act_whose_handler_audits_itself_is_not_audited_twice(self, audited):
+        registry.register(_act(self_audited=True))
+        await invoke("t_act", _caller(), {})
+        assert audited == []
 
     async def test_a_failed_act_is_not_audited(self, audited):
         async def boom(caller, args):

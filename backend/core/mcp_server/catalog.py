@@ -1,5 +1,9 @@
 """Which builder tools Synapse serves over MCP, and how each one is marked (D125).
 
+Since MCP2 (D292) the list and the marks live in `core.product_tools.build`, where each served builder tool is a
+product tool with a role, a scope and an audit action; this module keeps the names the server, cloud and the tests
+read, derived from there.
+
 An **allowlist**, deliberately. A builder tool added later is not exposed to every
 MCP client by accident: it is served only once someone has decided it belongs here.
 
@@ -31,58 +35,17 @@ from __future__ import annotations
 
 from mcp import types
 
-#: Tools that only read. `validate_orchestration` clears a build-in-progress mark
-#: when an orchestration passes, which changes nothing a person can see.
-READ_TOOLS: tuple[str, ...] = (
-    "list_agents",
-    "get_agent",
-    "list_orchestrations",
-    "get_orchestration",
-    "validate_orchestration",
-    "list_tool_servers",
-    "list_server_tools",
-    "list_all_tools",
-    "get_tools_detail",
-    "list_custom_tools",
-    "list_skills",
-    "get_skill",
-    "list_schedules",
-    "list_repos",
-    "list_db_configs",
-    "list_knowledge_bases",
-)
+from core.product_tools import build as _build
+
+#: Tools that only read (`core.product_tools.build`, where they are product tools now).
+READ_TOOLS: tuple[str, ...] = _build.READS
 
 #: Tools that add or edit.
-BUILD_TOOLS: tuple[str, ...] = (
-    "create_agent",
-    "create_agents",
-    "update_agent",
-    "create_orchestration",
-    "create_orchestration_skeleton",
-    "add_steps",
-    "add_single_step",
-    "add_multiple_steps",
-    "update_step",
-    "remove_step",
-    "update_orchestration",
-    "set_orchestration_meta",
-    "create_http_tool",
-    "import_openapi",
-    "create_skill",
-    "update_skill",
-    "attach_skills",
-    "create_schedule",
-    "set_schedule_enabled",
-)
+BUILD_TOOLS: tuple[str, ...] = tuple(_build.ACTS)
 
 #: Build tools that replace or remove what is already there: every step of an
 #: orchestration, one step, or a tool or skill of the same name.
-OVERWRITING_TOOLS: frozenset[str] = frozenset({
-    "update_orchestration",
-    "remove_step",
-    "create_http_tool",
-    "create_skill",
-})
+OVERWRITING_TOOLS: frozenset[str] = _build.OVERWRITES
 
 SERVED_BUILDER_TOOLS: frozenset[str] = frozenset(READ_TOOLS + BUILD_TOOLS)
 
@@ -98,50 +61,48 @@ READING_RUN_TOOLS: frozenset[str] = frozenset({"get_run", "list_runs"})
 KNOWLEDGE_TOOLS: frozenset[str] = frozenset({"search_knowledge"})
 
 
+def _entry(name: str):
+    from core.product_tools import areas, registry
+    areas.ensure_loaded()
+    return registry.get(name)
+
+
+def as_mcp_annotations(tool) -> types.ToolAnnotations:
+    return types.ToolAnnotations(**tool.annotations())
+
+
 def annotations_for(name: str) -> types.ToolAnnotations:
-    if name in READ_TOOLS or name in KNOWLEDGE_TOOLS:
-        return types.ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
-    return types.ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=name in OVERWRITING_TOOLS,
-        openWorldHint=name == "import_openapi",
-    )
+    tool = _entry(name)
+    if tool is None:
+        raise KeyError(name)
+    return as_mcp_annotations(tool)
 
 
 def scope_of(name: str) -> str | None:
     """The scope a served tool needs; None for a name that is not served."""
-    from core.mcp_server import runs, workflows
+    from core.mcp_server import workflows
 
-    if name in READ_TOOLS or name in READING_RUN_TOOLS or name in KNOWLEDGE_TOOLS:
-        return "read"
-    if name in BUILD_TOOLS:
-        return "build"
-    if name in runs.RUN_TOOL_NAMES or name.startswith(workflows.PREFIX):
+    tool = _entry(name)
+    if tool is not None and not tool.app_only:
+        return tool.scope
+    if name.startswith(workflows.PREFIX):
         return "run"
     return None
 
 
 def builder_tools() -> list[types.Tool]:
-    """The served builder tools that exist here right now, as MCP tools, in the allowlist's order.
+    """The served builder tools that are listed here right now, as MCP tools, in the allowlist's order.
 
     A tool `builder_tool_offered` holds back (Knowledge's while it is off) is left out of the listing; a
     call to it still reaches its handler, which refuses."""
-    from core.builder_tools import BUILDER_TOOL_SCHEMAS, builder_tool_offered
+    from core.product_tools import areas, registry
 
-    by_name = {s["function"]["name"]: s["function"] for s in BUILDER_TOOL_SCHEMAS}
-    missing = [n for n in READ_TOOLS + BUILD_TOOLS if n not in by_name]
-    if missing:
-        # A renamed builder tool must fail loudly here, not vanish from MCP.
-        raise RuntimeError(f"MCP catalog names builder tools that do not exist: {missing}")
+    areas.ensure_loaded()
     tools = []
     for name in READ_TOOLS + BUILD_TOOLS:
-        if not builder_tool_offered(name):
+        tool = registry.get(name)
+        if tool.offered is not None and not tool.offered():
             continue
-        fn = by_name[name]
-        tools.append(types.Tool(
-            name=name,
-            description=fn.get("description", ""),
-            inputSchema=fn.get("parameters") or {"type": "object", "properties": {}},
-            annotations=annotations_for(name),
-        ))
+        tools.append(types.Tool(name=name, description=tool.description, inputSchema=tool.schema(),
+                                annotations=as_mcp_annotations(tool)))
     return tools

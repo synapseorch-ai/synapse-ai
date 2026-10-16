@@ -5,7 +5,8 @@ and their live role; an API key is the workspace's, at builder), the assistant f
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from core.product_tools.roles import Role
 
@@ -23,6 +24,9 @@ class Caller:
     credential_id: str | None = None
     #: The scopes this connection was granted; None grants every scope (a key, the assistant).
     scopes: frozenset[str] | None = None
+    #: The host's own record of the credential (the key's row, cloud's principal), for a handler that must name
+    #: it to the host (Knowledge's trace records the key). Never shown to a model.
+    principal: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.via not in VIAS:

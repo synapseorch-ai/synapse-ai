@@ -36,6 +36,8 @@ class TestTheAllowlist:
             "update_step", "remove_step", "update_orchestration", "set_orchestration_meta",
             "create_http_tool", "import_openapi", "create_skill", "update_skill", "attach_skills",
             "create_schedule", "set_schedule_enabled",
+            # F694 (MCP2, D292): builder tools nothing had decided to hold back.
+            "deploy_orchestration", "update_schedule",
         }
 
     @pytest.mark.parametrize("name", [

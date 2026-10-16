@@ -49,6 +49,9 @@ class ProductTool:
     scope: str = "read"
     #: It cannot be undone (a delete). Marked destructive; MCP confirms it with a token.
     irreversible: bool = False
+    #: It replaces or stops what is there (an overwrite, a cancel) without being a delete: marked destructive, so a
+    #: client asks its person, but no token.
+    destructive: bool = False
     #: Calling it twice with the same arguments does no more than once.
     idempotent: bool = False
     #: It reaches outside the workspace (the web, a third party's API).
@@ -63,7 +66,12 @@ class ProductTool:
     audit_action: str | None = None
     #: (target_type, target_id) for the audit, from the arguments and the result.
     target: Target | None = None
-    #: Whether this host offers it right now (a feature switched off). None is always.
+    #: The handler's own code already writes the host's audit row (cloud's run doors do): the registry does not
+    #: write a second.
+    self_audited: bool = False
+    #: Whether it is listed right now (a feature switched off is not). None is always. A listing hint, not a gate:
+    #: a call by name still reaches the handler, which refuses with the feature's own words ("Knowledge is
+    #: switched off in this workspace…") rather than "Unknown tool".
     offered: Callable[[], bool] | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
@@ -77,8 +85,8 @@ class ProductTool:
         if self.kind == "read":
             if self.scope != "read":
                 raise ValueError(f"{self.name}: a read needs the read scope, nothing more")
-            if self.irreversible:
-                raise ValueError(f"{self.name}: a read cannot be irreversible")
+            if self.irreversible or self.destructive:
+                raise ValueError(f"{self.name}: a read cannot be irreversible or destructive")
         if self.kind == "act" and self.min_role > Role.BUILDER and not self.app_only:
             raise ValueError(
                 f"{self.name}: an act needing more than builder must be app_only (acts off the app are capped at "
@@ -94,7 +102,7 @@ class ProductTool:
         read = self.kind == "read"
         return {
             "readOnlyHint": read,
-            "destructiveHint": self.irreversible,
+            "destructiveHint": self.irreversible or self.destructive,
             "idempotentHint": read or self.idempotent,
             "openWorldHint": self.open_world,
         }
@@ -176,8 +184,7 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
     """Call `name` as `caller`: every rule above, then the handler. Raises `ToolRefusal` for anything refused."""
     args = dict(args or {})
     tool = _TOOLS.get(name)
-    if tool is None or (tool.app_only and caller.via != "assistant") or (
-            tool.offered is not None and not tool.offered()):
+    if tool is None or (tool.app_only and caller.via != "assistant"):
         raise ToolRefusal(f"Unknown tool: {name}")
     if not caller.granted(tool.scope):
         raise ToolRefusal(
@@ -205,7 +212,7 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
 
     result = await tool.handler(caller, args)
 
-    if tool.kind == "act":
+    if tool.kind == "act" and not tool.self_audited:
         target = tool.target(args, result) if tool.target is not None else None
         await hooks.emit(hooks.AuditEvent(
             action=tool.action, tool=name, area=tool.area, via=caller.via, user_id=caller.user_id,
