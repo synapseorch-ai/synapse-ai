@@ -10174,14 +10174,34 @@ def _strings_under(value, keys: set[str], out: set[str]) -> None:
             _strings_under(item, keys, out)
 
 
+#: Markdown's marks, which a page renders away: a skill's line is read as the page shows it.
+_MARKDOWN_MARKS = re.compile(r"^\s*(?:#+|>|[-*+]|\d+[.)])\s+|\*\*|__|`")
+
+
 def _workspace_words() -> list[str]:
-    """Every name and description the workspace gave its own things, longest first."""
+    """Every name and description the workspace gave its own things, longest first.
+
+    And every line of its skills, as written (a skill installed on this machine is the workspace's text: one
+    describes "Staggered Orchestration" in its own words), with Markdown's marks taken off as the page renders it.
+    """
     words: set[str] = set()
     for path in _WORKSPACE_WORDS_FROM:
         try:
             _strings_under(api(path), _WORKSPACE_WORD_KEYS, words)
         except (urllib.error.URLError, ValueError):
             continue
+    try:
+        skills = api("/api/skills")
+    except (urllib.error.URLError, ValueError):
+        skills = []
+    for skill in skills if isinstance(skills, list) else []:
+        try:
+            body = api(f"/api/skills/{urllib.parse.quote(str(skill.get('name', '')))}").get("body") or ""
+        except (urllib.error.URLError, ValueError):
+            continue
+        words.add(str(skill.get("description") or "").strip())
+        for line in body.splitlines():
+            words.add(" ".join(_MARKDOWN_MARKS.sub("", line).split()))
     return sorted((w for w in words if len(w) >= 3), key=len, reverse=True)
 
 
@@ -11126,7 +11146,7 @@ async def check_onetoaststack(browser) -> str:
         await page.get_by_role("button", name="Save", exact=True).first.click()
         await page.get_by_text("Name and URL are required").first.wait_for(timeout=5_000)
         boxes = await page.evaluate("""() => ['Smoke flow failed', 'Name and URL are required'].map(t => {
-            const el = [...document.querySelectorAll('[role=status]')].find(e => e.innerText.includes(t));
+            const el = [...document.querySelectorAll('.shadow-elevated')].find(e => e.innerText.includes(t));
             if (!el) return null;
             const r = el.getBoundingClientRect();
             return {host: !!el.closest('[data-toast-stack]'), top: r.top, bottom: r.bottom, left: r.left,
@@ -11331,9 +11351,11 @@ async def check_helpertoolsrow(browser) -> str:
             raise AssertionError(f"the reopened row does not count the lookup and the refused send alone: {label!r}")
         await row.first.click()
         await page.get_by_text("lookup_order", exact=True).first.wait_for(timeout=5_000)
-        text = await page.evaluate("() => document.body.innerText")
-        if text.count("spawn_subtask") != 1 or "already running" not in text:
-            raise AssertionError("the reopened row lists the send its lane shows, or drops the refused one")
+        # The list the row opens on; the refused send is also under the answer's "Not run" (U68).
+        listed = await page.locator("ul").filter(has_text="lookup_order").first.inner_text()
+        if listed.count("spawn_subtask") != 1 or "already running" not in listed:
+            raise AssertionError(f"the reopened row lists the send its lane shows, or drops the refused one: "
+                                 f"{listed!r}")
     finally:
         await ctx.close()
 
