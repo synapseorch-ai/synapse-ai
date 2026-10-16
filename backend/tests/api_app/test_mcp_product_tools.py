@@ -327,3 +327,20 @@ class TestADeleteIsPreviewedThenConfirmed:
         for tool in server._fixed_tools(_as(Role.BUILDER)):
             if tool.name.startswith("delete_"):
                 assert "confirm=true" not in tool.description, tool.name
+
+
+
+def test_an_embedder_gives_the_endpoint_its_own_caller(monkeypatch):
+    """Cloud hands the endpoint the person's live role (MCP2d): `caller_of` reaches the server it builds."""
+    from core.mcp_server import endpoint as endpoint_mod
+
+    built = {}
+    monkeypatch.setattr(endpoint_mod, "build_server", lambda *a, **kw: built.update(kw) or object())
+
+    def caller_of(principal):
+        return _as(Role.VIEWER)
+
+    endpoint_mod.McpEndpoint(caller_of=caller_of)
+    assert built["caller_of"] is caller_of
+    endpoint_mod.McpEndpoint()
+    assert built["caller_of"] is server.caller_from
