@@ -120,7 +120,36 @@ def api_call(args, api: ApiClient, out: Output):
 @_handler
 def activity(args, api: ApiClient, out: Output):
     """What happened in the workspace: runs by status, what failed and why, what waits, what ran."""
-    show_value(out, _parsed(Mcp(api).call("summarise_activity", {"days": args.days})))
+    from rich.markup import escape
+
+    from synapse.client.commands import _when
+
+    value = _parsed(Mcp(api).call("summarise_activity", {"days": args.days}))
+    if out.json_mode or not isinstance(value, dict):
+        return show_value(out, value)
+    say = out.out.print
+    say(f"[bold]In {escape(str(value.get('window') or 'the last day'))}[/bold]", markup=True, highlight=False)
+    counts = value.get("runs") or {}
+    out.text("Runs: " + (", ".join(f"{n} {status}" for status, n in counts.items() if n) or "none"))
+    for title, key, style in (("Failed", "failed", "red"), ("Waiting for a person", "waiting_for_a_person", "yellow"),
+                              ("Running", "running", "dim")):
+        rows = value.get(key) or []
+        if not rows:
+            continue
+        out.text("")
+        say(f"[{style}]{title}[/{style}]", markup=True, highlight=False)
+        for row in rows:
+            why = f": {row['why']}" if row.get("why") else ""
+            since = row.get("since") or row.get("started_at")
+            out.text(f"  {row.get('workflow')}{why}  {row.get('run_id') or ''}"
+                     + (f"  ({_when(since)})" if since else ""))
+    ran = [s for s in value.get("schedules_that_ran") or [] if s.get("last_ran_at")]
+    if ran:
+        out.text("")
+        out.text("Schedules that ran: " + ", ".join(f"{s['schedule']} ({_when(s['last_ran_at'])})" for s in ran))
+    out.text("")
+    out.text(f"Spent on models: ${float(value.get('model_dollars') or 0):.4f}")
+    out.note("Workflow runs only. Conversations: synapse agents activity NAME. What waits: synapse runs waiting.")
 
 
 @_handler

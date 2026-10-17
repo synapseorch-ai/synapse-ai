@@ -158,3 +158,12 @@ class TestSearch:
         await corpus()
         code, _, err = await synapse("knowledge", "search", "fees", "--filter", "{not json")
         assert code == errors.USAGE and "--filter" in err
+
+
+class TestDocumentsByName:
+    async def test_a_note_is_listed_by_its_title(self, synapse, on, jobs):
+        await synapse("knowledge", "bases", "create", "Handbook", "--folder", "handbook")
+        await synapse("knowledge", "add-note", "Releases ship on Fridays.", "--base", "handbook", "--title",
+                      "Release day")
+        code, out, _ = await synapse("knowledge", "docs", "list", "--base", "handbook")
+        assert code == 0 and "Release day" in out and "_records/" not in out

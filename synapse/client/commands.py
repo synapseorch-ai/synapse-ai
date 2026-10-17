@@ -102,11 +102,25 @@ def _find(api: ApiClient, kind: str, ident: str) -> dict:
 
 
 def _when(started) -> str:
-    """A time as a person scans a table: `2026-10-17 14:05`, from ISO text or epoch seconds."""
-    if isinstance(started, (int, float)):
-        from datetime import datetime
-        return datetime.fromtimestamp(started).strftime("%Y-%m-%d %H:%M")
-    return (started or "").replace("T", " ")[:16]
+    """A time as a person scans a table, in this machine's time zone: `2026-10-17 14:05`.
+
+    From epoch seconds or ISO text; an ISO time with no zone is the server's UTC. Every time the CLI prints
+    reads the same way, whichever route it came from.
+    """
+    from datetime import datetime, timezone
+
+    if started in (None, ""):
+        return ""
+    try:
+        if isinstance(started, (int, float)):
+            moment = datetime.fromtimestamp(started, timezone.utc)
+        else:
+            moment = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return str(started).replace("T", " ")[:16]
+    return moment.astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _cost(value) -> str:
@@ -826,10 +840,6 @@ def runs_waiting(args, api: ApiClient, out: Output):
     if out.json_mode:
         return out.document(items)
 
-    def where(i: dict) -> str:
-        return i.get("run_id") or (f"schedule {i['schedule_id']}" if i.get("schedule_id")
-                                   else f"chat {i.get('session_id')}")
-
     def answer(i: dict) -> str:
         if i.get("kind") == "run_question":
             q = f" --question {i['question_id']}" if i.get("question_id") else ""
@@ -839,9 +849,18 @@ def runs_waiting(args, api: ApiClient, out: Output):
         q = f" --question {i['question_id']}" if i.get("question_id") else ""
         return f"synapse chat --session {i.get('session_id')}{q} --approve|--reject"
 
-    out.table(items, [("WHERE", where), ("WHAT", lambda i: i.get("title")),
-                      ("ASKED", lambda i: _when(i.get("asked_at"))), ("ANSWER WITH", answer)],
-              empty="Nothing waits on a person.")
+    if not items:
+        out.note("Nothing waits on a person.")
+        return errors.OK
+    # A list, not a table: each command is copied whole, and a table wraps the ids inside it.
+    for item in items:
+        detail = item.get("detail") or (f"{item['member_name']}: {item.get('tool_name')}"
+                                        if item.get("member_name") else None)
+        out.out.print(f"[yellow]?[/yellow] [bold]{escape(str(item.get('title') or 'A question'))}[/bold]"
+                      f"  [dim]{_when(item.get('asked_at'))}[/dim]", markup=True, highlight=False)
+        if detail:
+            out.out.print(f"  {escape(str(detail))}", markup=True, highlight=False)
+        out.text(f"  {answer(item)}")
 
 
 # ── schedules ───────────────────────────────────────────────────────────────
@@ -863,6 +882,11 @@ def _schedule_when(s: dict) -> str:
     return f"every {s.get('interval_value')} {s.get('interval_unit')}"
 
 
+def _kind(s: dict) -> str:
+    """What a schedule runs, in the product's words: an orchestration is a workflow."""
+    return "workflow" if s.get("target_type") == "orchestration" else str(s.get("target_type") or "")
+
+
 def _schedule_names(api: ApiClient) -> dict:
     return {**{a["id"]: a["name"] for a in api.get("/agents")},
             **{o["id"]: o.get("name") for o in api.get("/orchestrations")}}
@@ -878,7 +902,7 @@ def schedules_list(args, api: ApiClient, out: Output):
     names = _schedule_names(api) if schedules else {}
     out.table(schedules, [
         ("ID", lambda s: s["id"]), ("NAME", lambda s: s.get("name")),
-        ("RUNS", lambda s: f"{s.get('target_type')} {names.get(s.get('target_id'), s.get('target_id'))}"),
+        ("RUNS", lambda s: f"{_kind(s)} {names.get(s.get('target_id'), s.get('target_id'))}"),
         ("WHEN", _schedule_when),
         ("STATE", lambda s: "on" if s.get("enabled") else "paused"),
         ("NEXT RUN", lambda s: _when(s.get("next_run_at")) if s.get("enabled") else ""),
@@ -888,7 +912,7 @@ def schedules_list(args, api: ApiClient, out: Output):
 def _show_schedule(out: Output, s: dict, names: dict | None = None) -> None:
     names = names or {}
     out.fields([("Name", s.get("name")), ("ID", s.get("id")),
-                ("Runs", f"{s.get('target_type')} {names.get(s.get('target_id'), s.get('target_id'))}"),
+                ("Runs", f"{_kind(s)} {names.get(s.get('target_id'), s.get('target_id'))}"),
                 ("When", _schedule_when(s)), ("State", "on" if s.get("enabled") else "paused"),
                 ("Next run", _when(s.get("next_run_at")) if s.get("enabled") else None),
                 ("Last run", _when(s.get("last_run_at"))), ("If missed", s.get("missed_run_policy")),

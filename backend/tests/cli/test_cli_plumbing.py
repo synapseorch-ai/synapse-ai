@@ -343,3 +343,41 @@ class TestAStreamWithIds:
         assert asked == [{"Last-Event-ID": "1790-2"}]
         shown = [json.loads(line)["type"] for line in capsys.readouterr().out.splitlines()]
         assert shown == ["orchestration_start", "step_start", "orchestration_complete", "stream_complete"]
+
+
+# ── what a person reads ─────────────────────────────────────────────────────
+
+
+class TestWhatAPersonReads:
+    def test_a_time_reads_the_same_from_any_route(self, monkeypatch):
+        """Runs' times came as UTC ISO text and the bell's as epoch seconds: one table said 09:02, the next 14:32
+        for the same minute. Both are this machine's time now."""
+        import time as _time
+
+        from synapse.client.commands import _when
+
+        monkeypatch.setenv("TZ", "Asia/Kolkata")
+        _time.tzset()
+        try:
+            assert _when("2026-10-17T09:02:00") == _when("2026-10-17T09:02:00+00:00") == _when(1792227720.0) \
+                == "2026-10-17 14:32"
+            assert _when(None) == "" and _when("soon") == "soon"
+        finally:
+            monkeypatch.delenv("TZ")
+            _time.tzset()
+
+    async def test_a_schedule_runs_a_workflow_in_the_products_words(self, synapse, seed_orchestration,
+                                                                     schedule_manager):
+        await seed_orchestration(name="Weekly report")
+        await synapse("schedules", "create", "--workflow", "Weekly report", "--every", "1d")
+        code, out, _ = await synapse("schedules", "list")
+        assert code == 0 and "workflow Weekly report" in out and "orchestration" not in out
+
+    async def test_what_waits_prints_each_answer_whole(self, synapse, mcp_endpoint):
+        from core.notifications import hub
+
+        run_id = "run_orch_cli1_1792227765270_77dc9e"
+        hub.publish("human_input", "CLI1 probe ships", body="Ship it?", run_id=run_id, data={"step_id": "ask"})
+        code, out, _ = await synapse("runs", "waiting")
+        assert code == 0
+        assert f"  synapse runs answer {run_id} …" in out.splitlines(), "one line, copied whole"

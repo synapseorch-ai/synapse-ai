@@ -339,7 +339,7 @@ def docs_list(args, api: ApiClient, out: Output):
         return out.ids(docs)
     if out.json_mode:
         return out.document(docs)
-    out.table(docs, [("ID", lambda d: d["id"]), ("PATH", lambda d: d.get("path")),
+    out.table(docs, [("ID", lambda d: d["id"]), ("DOCUMENT", lambda d: d.get("title") or d.get("path")),
                      ("STATUS", lambda d: d.get("status")), ("CHUNKS", lambda d: d.get("chunks")),
                      ("UPDATED", lambda d: _when(d.get("indexed_at") or d.get("updated_at")))],
               empty="No documents yet.")
