@@ -353,6 +353,32 @@ RUN_CAP_PROPERTIES = {
 
 # ─── Tool Schemas ─────────────────────────────────────────────────────────────
 
+#: The tags the builder may give a custom tool it makes (TAG1, D296). Only claims that make the tool stricter are kept
+#: (`core.tool_tags.tighten`): its method's tags are used otherwise, and the person sees and changes them in the editor.
+_TAG_PARAMS = {
+    "read_only": {"type": "boolean", "description": "false when this GET changes something (e.g. /send?to=…). Omit otherwise."},
+    "destructive": {"type": "boolean", "description": "true when a call deletes, cancels, pays or sends something that cannot be undone. Omit otherwise."},
+    "idempotent": {"type": "boolean", "description": "false when calling twice does the work twice (books two rooms). Omit otherwise."},
+    "open_world": {"type": "boolean", "description": "Every HTTP tool reaches outside this workspace; omit."},
+}
+
+
+def _builder_tags(tool: dict, before: dict | None, claimed: dict | None) -> dict:
+    """`tool` as the builder saves it (TAG1): its method's tags, or the person's when it replaces a tool they tagged
+    with the same method, made stricter by what the builder claims and never looser. Its own tags stay marked as a
+    claim; a person's stay theirs."""
+    from core.tool_tags import carried, defaults_for, hints_of, tags_of, tighten
+    from core.tools import BUILDER_HINTS
+
+    carried(tool, before)
+    persons = isinstance(tool.get("annotations"), dict) and not tool.get("annotations_by")
+    base = tags_of(tool.get("annotations")) or defaults_for(tool.get("method"))
+    tool["annotations"] = hints_of(tighten(base, claimed))
+    if not persons:
+        tool["annotations_by"] = BUILDER_HINTS
+    return tool
+
+
 BUILDER_TOOL_SCHEMAS = [
     {
         "type": "function",
@@ -1169,6 +1195,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "input_schema_json": {"type": "string", "description": "JSON Schema object describing the tool's arguments, e.g. '{\"type\":\"object\",\"properties\":{\"user_id\":{\"type\":\"string\"}},\"required\":[\"user_id\"]}'"},
                     "body_template": {"type": "string", "description": "Request body template for POST/PUT/PATCH, with {{ placeholders }}. Omit to send the arguments as JSON."},
                     "group": {"type": "string", "description": "Optional group name to file the tool under"},
+                    **_TAG_PARAMS,
                 },
                 "required": ["name", "description", "url"],
             },
@@ -1190,6 +1217,10 @@ BUILDER_TOOL_SCHEMAS = [
                     "base_url": {"type": "string", "description": "Override the spec's server base URL"},
                     "name_prefix": {"type": "string", "description": "Prefix for every generated tool name, to avoid collisions"},
                     "group": {"type": "string", "description": "Group name (default: the spec's title)"},
+                    "tags_json": {"type": "string", "description": (
+                        "Optional JSON object of operation name → tags, only for an operation riskier than its "
+                        "method says, e.g. '{\"send_invoice\": {\"destructive\": true}}'. Tags: read_only, "
+                        "destructive, idempotent, open_world. Each operation otherwise takes its method's tags.")},
                 },
                 "required": ["spec_text"],
             },
@@ -2554,6 +2585,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
     elif tool_name == "list_custom_tools":
         from core.routes.tools import load_custom_tools
+        from core.tool_tags import tags_of
         return [
             {
                 "name": t.get("name"),
@@ -2562,6 +2594,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 "url": t.get("url", ""),
                 "group": t.get("group"),
                 "tool_type": t.get("tool_type", "http"),
+                # What it says it does (TAG1); "not set" until someone saves it, and who set them when not a person.
+                "tags": tags_of(t.get("annotations")) or "not set",
+                **({"tags_by": t["annotations_by"]} if t.get("annotations_by") else {}),
             }
             for t in await load_custom_tools()
         ]
@@ -2610,9 +2645,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         body_template = args.get("body_template")
         if body_template:
             tool["body"] = body_template
-        from core.tools import hinted
-        # Its method's hints, marked as the builder's: believed when they restrict, as a server's are (F488).
-        await save_tool(hinted(tool, by_builder=True))
+        # Its method's tags, made stricter by what it claims, marked as the builder's: believed when they restrict, as a
+        # server's are (F488, TAG1). Replacing a tool the person tagged starts from their tags.
+        from core.store.resources import load_tools
+        before = next((t for t in await load_tools() if t.get("name") == name), None)
+        claimed = {t: args[t] for t in ("read_only", "destructive", "idempotent", "open_world") if t in args}
+        await save_tool(_builder_tags(tool, before, claimed))
         _emit(events, "tool", "created", name, name, tool)
         return {"status": "created", "id": name, "name": name}
 
@@ -2656,8 +2694,17 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         for t in generated:
             t["group"] = group["id"]
         await _upsert_group(group)
-        from core.tools import hinted
-        await save_tools([hinted(t, by_builder=True) for t in generated])
+        claims = _parse_json_field(args.get("tags_json"), {})
+        claims = claims if isinstance(claims, dict) else {}
+        prefix = str(args.get("name_prefix") or "")
+        from core.store.resources import load_tools
+        before = {t.get("name"): t for t in await load_tools()}
+
+        def _claimed(name: str):
+            claim = claims.get(name, claims.get(name[len(prefix):] if prefix and name.startswith(prefix) else None))
+            return claim if isinstance(claim, dict) else None
+
+        await save_tools([_builder_tags(t, before.get(t["name"]), _claimed(t["name"])) for t in generated])
         # One event for the import, not one per operation: a 60-endpoint spec
         # would otherwise fill the panel with sixty identical banners.
         _emit(events, "tool", "created", group["id"], group_name,
