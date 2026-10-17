@@ -91,3 +91,25 @@ class TestGetUsage:
         usage.set_usage_source(cloud)
         got = await invoke("get_usage", _viewer(), {"by": "model"})
         assert seen == ["model"] and got["total"]["cost_usd"] == 1.5
+
+
+class TestWhatAHostCharged:
+    """Cloud keeps two kinds of money apart (pro `routes/usage.py`): what a customer's own provider will bill (the
+    estimate) and what Synapse charged for its own models (the ledger). A host's rows may carry `charged_usd`; the
+    total sums it apart from `cost_usd`, never into it."""
+
+    async def test_the_total_keeps_charged_apart_from_the_estimate(self):
+        async def cloud(since, by):
+            return [{"key": "synapse.nova-pro", "cost_usd": 0.0, "charged_usd": 0.0174, "input_tokens": 900,
+                     "output_tokens": 80, "calls": 3},
+                    {"key": "gpt-4.1-mini", "cost_usd": 0.002, "input_tokens": 100, "output_tokens": 10,
+                     "calls": 1}]
+        usage.set_usage_source(cloud)
+        got = await invoke("get_usage", _viewer(), {"by": "model"})
+        assert got["total"]["cost_usd"] == 0.002 and got["total"]["charged_usd"] == 0.0174
+        assert "charged" in got["note"].lower()
+
+    async def test_no_charge_says_nothing_of_one(self):
+        await _log()
+        got = await invoke("get_usage", _viewer(), {"by": "model"})
+        assert "charged_usd" not in got["total"]

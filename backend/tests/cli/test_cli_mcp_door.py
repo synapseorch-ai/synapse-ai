@@ -266,3 +266,20 @@ class TestEveryDoor:
         code, out, err = await synapse("api", "GET", "/agents/agent_nope")
         assert code == errors.NOT_FOUND
         assert "not found" in out.lower(), "the body is printed as the server sent it"
+
+
+class TestWhatACloudCharged:
+    async def test_usage_shows_what_was_charged_apart_from_the_estimate(self, synapse):
+        from core.product_tools import usage
+
+        async def cloud(since, by):
+            return [{"key": "synapse.nova-pro", "cost_usd": 0.0, "charged_usd": 0.0174, "input_tokens": 900,
+                     "output_tokens": 80, "calls": 3}]
+        usage.set_usage_source(cloud)
+        try:
+            code, out, err = await synapse("usage", "--by", "model")
+        finally:
+            usage.set_usage_source(None)
+        assert code == 0
+        assert "ESTIMATED" in out and "CHARGED" in out and "$0.0174" in out
+        assert "$0.0174 charged for Synapse's models" in err

@@ -168,15 +168,21 @@ def usage(args, api: ApiClient, out: Output):
     if rows is None:
         return show_value(out, value)
     out.note(value.get("window") or "", style="")
-    out.table(rows, [(args.by.upper(), lambda r: r.get("key")),
-                     ("USD", lambda r: f"${float(r.get('cost_usd') or 0):.4f}"),
-                     ("TOKENS IN", lambda r: f"{int(r.get('input_tokens') or 0):,}"),
-                     ("TOKENS OUT", lambda r: f"{int(r.get('output_tokens') or 0):,}"),
-                     ("CALLS", lambda r: r.get("calls"))],
-              empty="Nothing was spent in that window.")
     total = value.get("total") or {}
+    charged = "charged_usd" in total  # a host that charges for its own models (cloud): its money, apart
+    columns = [(args.by.upper(), lambda r: r.get("key")),
+               ("ESTIMATED" if charged else "USD", lambda r: f"${float(r.get('cost_usd') or 0):.4f}")]
+    if charged:
+        columns.append(("CHARGED", lambda r: f"${float(r.get('charged_usd') or 0):.4f}"))
+    columns += [("TOKENS IN", lambda r: f"{int(r.get('input_tokens') or 0):,}"),
+                ("TOKENS OUT", lambda r: f"{int(r.get('output_tokens') or 0):,}"),
+                ("CALLS", lambda r: r.get("calls"))]
+    out.table(rows, columns, empty="Nothing was spent in that window.")
     if rows:
-        out.note(f"In all: ${float(total.get('cost_usd') or 0):.4f} over {total.get('calls') or 0} model calls.")
+        spent = f"${float(total.get('cost_usd') or 0):.4f}" + (" estimated" if charged else "")
+        if charged:
+            spent += f", ${float(total['charged_usd']):.4f} charged for Synapse's models"
+        out.note(f"In all: {spent}, over {total.get('calls') or 0} model calls.")
 
 
 def _parsed(value):

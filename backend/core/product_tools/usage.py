@@ -19,8 +19,9 @@ from core.product_tools.roles import Role
 GROUPS = ("day", "agent", "model")
 MAX_DAYS = 90
 
-#: `source(since, by) -> rows`, each `{key, cost_usd, input_tokens, output_tokens, calls}`, largest spend first
-#: (by day: oldest first).
+#: `source(since, by) -> rows`, each `{key, cost_usd, input_tokens, output_tokens, calls}` and, where the host
+#: charges for models of its own, `charged_usd`: largest spend first (by day: oldest first). `cost_usd` is the
+#: estimate of what each provider bills the workspace; `charged_usd` is what the host took. They are never added.
 Source = Callable[[datetime, str], Awaitable[list[dict]]]
 
 _source: Source | None = None
@@ -84,9 +85,13 @@ async def _usage(caller: Any, args: dict[str, Any]) -> dict:
              "input_tokens": sum(r["input_tokens"] for r in rows),
              "output_tokens": sum(r["output_tokens"] for r in rows),
              "calls": sum(r["calls"] for r in rows)}
+    note = "cost_usd is estimated from each provider's listed prices; a model with no price counts $0."
+    if any("charged_usd" in r for r in rows):
+        # What the host took for its own models: a fact, kept apart from the estimate (cloud's ledger).
+        total["charged_usd"] = round(sum(r.get("charged_usd") or 0.0 for r in rows), 6)
+        note += " charged_usd is what was charged for Synapse's own models; the two are never added."
     return {"window": f"the last {days} day{'s' if days != 1 else ''} (since {since:%Y-%m-%d %H:%M} UTC)",
-            "by": by, "rows": rows, "total": total,
-            "note": "Estimated from each provider's listed prices; a model with no price counts $0."}
+            "by": by, "rows": rows, "total": total, "note": note}
 
 
 def entries() -> list[ProductTool]:
