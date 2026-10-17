@@ -137,18 +137,15 @@ BUILDER_HINTS = "builder"
 
 
 def method_hints(method: str | None) -> dict:
-    """The MCP hints a custom HTTP tool declares from its method (F488, BWA1).
+    """The MCP hints a custom HTTP tool declares from its method (F488, BWA1; the table is `core.tool_tags`, TAG1).
 
     Every custom tool was undeclared, so a policy of `open_world: confirm` let a booking API's POST run with no
     approval. GET reads (and reaches outside, as the built-in web tools say they do); DELETE destroys; every other
-    method changes something outside this workspace.
+    method changes something outside this workspace; PUT and DELETE are safe to repeat (RFC 9110).
     """
-    m = (method or "GET").upper()
-    if m in ("GET", "HEAD", "OPTIONS"):
-        return {"readOnlyHint": True, "idempotentHint": True, "openWorldHint": True}
-    if m == "DELETE":
-        return {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}
-    return {"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True}
+    from core.tool_tags import defaults_for, hints_of
+
+    return hints_of(defaults_for(method))
 
 
 def hinted(tool: dict, *, by_builder: bool = False) -> dict:
@@ -157,6 +154,13 @@ def hinted(tool: dict, *, by_builder: bool = False) -> dict:
     Applied where a tool is created or saved, so a tool nobody has saved since keeps behaving as it did (Naveen's
     call: new and edited tools only). Hints the person set are kept. The AI builder's are marked as its own.
     """
+    from core.tool_tags import clean_hints
+
+    if isinstance(tool.get("annotations"), dict):
+        # Only MCP's four hints, each a boolean (TAG1): what the person set, as they set it.
+        tool["annotations"] = clean_hints(tool["annotations"])
+    elif "annotations" in tool:
+        tool.pop("annotations")
     if (tool.get("tool_type") or "http") != "http":
         return tool
     if not isinstance(tool.get("annotations"), dict):
@@ -170,7 +174,8 @@ def custom_virtual_tool(ct: dict) -> "VirtualTool":
     """A custom tool as the engine offers it, with the hints it was saved with (none for a tool saved before F488)."""
     return VirtualTool(ct["name"], ct.get("description", ""), ct.get("inputSchema") or {"type": "object"},
                        annotations=ct.get("annotations") if isinstance(ct.get("annotations"), dict) else None,
-                       trusted=ct.get("annotations_by") != BUILDER_HINTS)
+                       # A person's tags carry no mark; the builder's and a file's are a claim (F488, TAG1).
+                       trusted=not ct.get("annotations_by"))
 
 
 def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
@@ -185,16 +190,12 @@ def tool_hints(tool, *, trusted: bool = True) -> ToolHints:
             value = ann.get(name)
         return value
 
-    read_only = bool(hint("readOnlyHint"))
-    # "destructiveHint is meaningful only when readOnlyHint is false" — MCP.
-    destructive = (not read_only) and hint("destructiveHint") is not False
+    from core.tool_tags import tags_from
+
+    # One reading rule for a live tool and a stored one (TAG1): an absent destructiveHint on a tool that is not
+    # read-only is MCP's default, destructive; idempotent is never inferred from read_only.
     return ToolHints(
-        read_only=read_only,
-        destructive=destructive,
-        # Not inferred from read_only: reading the clock changes nothing and
-        # still answers differently every call. Only the server can say.
-        idempotent=bool(hint("idempotentHint")),
-        open_world=bool(hint("openWorldHint")),
+        **tags_from(hint),
         declared=True,
         trusted=trusted,
     )

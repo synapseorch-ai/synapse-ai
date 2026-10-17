@@ -91,6 +91,10 @@ def decide(tool, policy: dict[str, Decision]) -> tuple[Decision, str]:
     # untrusted server's "I am safe" is not evidence, so it falls through.
     if hints.declared and hints.read_only and hints.trusted:
         return "allow", "read_only"
+    # A tool that says it changes something and stays inside (a custom tool whose person unticked "reaches
+    # outside", TAG1) is decided by the `undeclared` policy, never looser than before, and says what it declared.
+    if hints.declared and not hints.read_only:
+        return policy.get("undeclared", "allow"), "changes"
     return policy.get("undeclared", "allow"), "undeclared"
 
 
@@ -99,6 +103,8 @@ REASONS = {
     "destructive": "it can modify data in a way that cannot be undone",
     "open_world": "it reaches systems outside this workspace",
     "undeclared": "it does not declare what it does",
+    # Not a policy key: decided by `undeclared` (TAG1).
+    "changes": "it changes something in this workspace",
     "tool": "this agent's tool policy names this tool",
     # Not a policy category: a `remember` in a turn that read a file or a
     # tool's result is always held for a person (F279, `react_engine`).
