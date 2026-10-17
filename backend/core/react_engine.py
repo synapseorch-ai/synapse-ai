@@ -1949,7 +1949,6 @@ async def run_agent_step(
     # ── A team's turn (TEAM1a) ──────────────────────────────────────────────
     _forward_answer: str | None = None   # `forward`: a member's answer, word for word, is this turn's
     _team_nudged = False                 # a final answer while members work is asked about once
-    _person_bound = False                # a final answer leaving a person's task on its schedule's board, once (F581)
 
     def _team_park(waiting, at_turn: int):
         """Park the turn on every waiting member's question (TEAM1c, Q6): a list, each its own id.
@@ -2576,22 +2575,6 @@ async def run_agent_step(
                         yield _e
                     await _save_failed_turn()
                     raise _no_answer("\n\n".join(reasoning_blocks), _llm_result.stop_reason)
-
-                # A scheduled turn answering while a person's task on its schedule's board is still
-                # open, or claimed by it, is sent back once with the card named (F581): gpt-4.1-mini
-                # ignored "Also add BUG-204" there in 9 firings of 30. The next answer is accepted.
-                if (_turn_boards is not None and _boards_offered and not _person_bound
-                        and turn + 1 < max_turns):
-                    _persons = await _board_tools_mod.persons_open(_turn_boards)
-                    if _persons:
-                        _person_bound = True
-                        current_context_text += (
-                            f"\n[Turn {turn + 1} — Action]\n{action_text}\n\nSystem: {_persons}\n")
-                        for _e in _unstream("not_done"):
-                            yield _e
-                        yield {"type": "status",
-                               "message": "Not done yet — a person's task on this schedule's board is still open"}
-                        continue
 
                 # A lead with members still working is asked once (TEAM1a): an answer now stops
                 # them. One waiting on a person's approval parks the turn instead.

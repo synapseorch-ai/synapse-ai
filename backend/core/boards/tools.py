@@ -472,8 +472,8 @@ async def left_open(turn: TurnBoards) -> str | None:
 
 
 async def _persons_left(turn: TurnBoards) -> list[store.Card]:
-    """A person's tasks still to be done by this turn on its schedule's own board (open, or claimed by it); none
-    for a turn without one. Never raises: a board never fails a turn."""
+    """A person's tasks still to be done by this turn on its schedule's own board (open, or claimed by it), for a
+    refusal that names them (`_only_added`); none for a turn without one. Never raises: a board never fails a turn."""
     own = next((b for b in turn.boards if b.own and b.scope == "schedule"), None)
     if own is None:
         return []
@@ -486,21 +486,6 @@ async def _persons_left(turn: TurnBoards) -> list[store.Card]:
         logger.warning("a person's open tasks on %s not read: %s", own.label, exc)
         return []
     return [c for c in cards if _persons_task(c, turn)]
-
-
-async def persons_open(turn: TurnBoards) -> str | None:
-    """What a scheduled turn that answers is told when a person's task on its schedule's board is still open, or
-    claimed by it (F581): its answer is sent back once with each card named, so it can close it at once. None otherwise, and never raises. Only a schedule's own board — that schedule's inbox; a workflow's
-    board is every step's, so a person's task there may be another step's (Naveen)."""
-    own = next((b for b in turn.boards if b.own and b.scope == "schedule"), None)
-    left = await _persons_left(turn)
-    if own is None or not left:
-        return None
-    named = "\n".join(f"- {c.id} \"{c.title[:120]}\"" for c in left)
-    one = len(left) == 1
-    return (f"A person's {'task' if one else 'tasks'} on {own.label} {'is' if one else 'are'} still open:\n{named}\n"
-            f"Do {'it' if one else 'each'} and close {'it' if one else 'them'} with board_update (status 'done' and "
-            "the result), or close it 'failed' with the reason it cannot be done. Then give your final answer.")
 
 
 async def renew(turn: TurnBoards) -> None:
