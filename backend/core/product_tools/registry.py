@@ -99,14 +99,18 @@ class ProductTool:
         return self.audit_action or f"{self.area}.{self.name}"
 
     def annotations(self) -> dict[str, bool]:
-        """MCP's tool annotations, derived, never set by hand: a client treats a tool as destructive unless told."""
+        """MCP's tool annotations, derived, never set by hand, in the one spelling of tool tags
+        (`core.tool_tags`, TAG1). `explicit`: a read states `destructiveHint: False` too, since a client
+        treats a tool as destructive unless told (D125)."""
+        from core.tool_tags import hints_of
+
         read = self.kind == "read"
-        return {
-            "readOnlyHint": read,
-            "destructiveHint": self.irreversible or self.destructive,
-            "idempotentHint": read or self.idempotent,
-            "openWorldHint": self.open_world,
-        }
+        return hints_of({
+            "read_only": read,
+            "destructive": self.irreversible or self.destructive,
+            "idempotent": read or self.idempotent,
+            "open_world": self.open_world,
+        }, explicit=True)
 
     def schema(self, *, confirm_token: bool = False) -> dict[str, Any]:
         """The input schema an adapter offers: the entry's own, plus paging and, where asked, the token."""
