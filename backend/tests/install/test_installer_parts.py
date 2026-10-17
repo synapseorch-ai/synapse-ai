@@ -223,8 +223,9 @@ def test_the_provider_question_checks_the_key_by_listing_models(monkeypatch):
     monkeypatch.setitem(providers.CLOUDS, "anthropic", providers.Cloud(
         "anthropic", "Anthropic", "anthropic_key", lister, "claude-sonnet-4-6"))
     found = providers.Found(ollama=[], claude=False, gemini=False, codex=False)
-    # Anthropic, a key it refuses, a key it takes, then the preferred model.
-    keys = ["enter"] + list("bad") + ["enter"] + list("good") + ["enter", "enter"]
+    # Anthropic, a key it refuses, a key it takes, then the preferred model;
+    # no other key, and Synapse AI's model the same (ONB1).
+    keys = ["enter"] + list("bad") + ["enter"] + list("good") + ["enter", "enter"] + ["enter", "enter"]
     answer = providers.ask(_asker(keys), found)
     assert calls == ["bad", "good"]
     assert answer == {"anthropic_key": "good", "model": "claude-sonnet-4-6", "mode": "cloud"}
@@ -232,7 +233,7 @@ def test_the_provider_question_checks_the_key_by_listing_models(monkeypatch):
 
 def test_ollama_is_offered_first_when_it_is_here_and_stored_with_its_prefix():
     found = providers.Found(ollama=["gemma3:4b", "llama3:8b"], claude=False, gemini=False, codex=False)
-    answer = providers.ask(_asker(["enter", "enter"]), found)
+    answer = providers.ask(_asker(["enter", "enter", "enter", "enter"]), found)
     # Bare, `gemma3` routed to Gemini.
     assert answer == {"model": "ollama.gemma3:4b", "mode": "local"}
 
@@ -240,6 +241,103 @@ def test_ollama_is_offered_first_when_it_is_here_and_stored_with_its_prefix():
 def test_skip_and_no_keyboard_both_mean_no_answer():
     found = providers.Found(ollama=[], claude=True, gemini=False, codex=False)
     assert providers.ask(_asker(None), found) == {}
+
+
+def _two_clouds(monkeypatch, calls=None):
+    def anthropic(key):
+        if calls is not None:
+            calls.append(("anthropic", key))
+        if key == "bad":
+            raise providers.net.HttpError("401", 401)
+        return ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-6"]
+
+    def openai(key):
+        if calls is not None:
+            calls.append(("openai", key))
+        if key == "bad":
+            raise providers.net.HttpError("401", 401)
+        return ["gpt-5", "gpt-4.1-mini"]
+
+    monkeypatch.setitem(providers.CLOUDS, "anthropic", providers.Cloud(
+        "anthropic", "Anthropic", "anthropic_key", anthropic, "claude-sonnet-4-6"))
+    monkeypatch.setitem(providers.CLOUDS, "openai", providers.Cloud(
+        "openai", "OpenAI", "openai_key", openai, "gpt-4o"))
+    return providers.Found(ollama=[], claude=False, gemini=False, codex=False)
+
+
+def test_a_second_key_then_the_everyday_model_and_synapse_ais(monkeypatch):
+    """ONB1 (D295, F723): keys for more than one provider, then two models —
+    the everyday one (workflows, agents, chat) and Synapse AI's."""
+    calls = []
+    found = _two_clouds(monkeypatch, calls)
+    keys = (
+        ["enter"] + list("good") + ["enter"]   # Anthropic, its key
+        + ["enter"]                            # its preferred model (Sonnet)
+        + ["1", "enter"]                       # add another key? Yes
+        + ["enter"]                            # OpenAI, the first provider not yet keyed
+        + list("bad") + ["enter"]              # a key it refuses
+        + list("ok") + ["enter"]               # a key it takes
+        + ["enter"]                            # another? No
+        + ["enter"]                            # the everyday model: Sonnet stays
+        + ["5", "enter"]                       # Synapse AI's: Same, haiku, sonnet, opus, gpt-5
+    )
+    answer = providers.ask(_asker(keys), found)
+    assert calls == [("anthropic", "good"), ("openai", "bad"), ("openai", "ok")]
+    assert answer == {"anthropic_key": "good", "openai_key": "ok", "model": "claude-sonnet-4-6",
+                      "builder_model": "gpt-5", "mode": "cloud"}
+    assert providers.describe(answer) == "claude-sonnet-4-6, Synapse AI on gpt-5"
+
+
+def test_the_everyday_model_can_come_from_the_second_key(monkeypatch):
+    found = _two_clouds(monkeypatch)
+    keys = (
+        ["enter"] + list("good") + ["enter", "enter"]   # Anthropic, Sonnet
+        + ["1", "enter", "enter"] + list("ok") + ["enter"]   # OpenAI's key
+        + ["enter"]                                     # no more
+        + ["4", "enter"]                                # everyday: haiku, sonnet, opus, gpt-5
+        + ["enter"]                                     # Synapse AI's: the same
+    )
+    answer = providers.ask(_asker(keys), found)
+    assert answer["model"] == "gpt-5"
+    assert "builder_model" not in answer, "the same model is the default: nothing to write"
+
+
+def test_a_local_model_still_asks_for_synapse_ais(monkeypatch):
+    found = providers.Found(ollama=["gemma3:4b", "llama3:8b"], claude=False, gemini=False, codex=False)
+    # Ollama's first model; no key; Synapse AI's model: the second option is that same list's first.
+    answer = providers.ask(_asker(["enter", "enter", "enter", "3", "enter"]), found)
+    assert answer == {"model": "ollama.gemma3:4b", "builder_model": "ollama.llama3:8b", "mode": "local"}
+
+
+def test_going_back_from_the_second_provider_asks_again(monkeypatch):
+    found = _two_clouds(monkeypatch)
+    keys = (
+        ["enter"] + list("good") + ["enter", "enter"]
+        + ["1", "enter", "esc"]    # Yes, then back out of the provider list
+        + ["enter"]                # asked again: No
+        + ["enter"]                # Synapse AI's: the same
+    )
+    answer = providers.ask(_asker(keys), found)
+    assert answer == {"anthropic_key": "good", "model": "claude-sonnet-4-6", "mode": "cloud"}
+
+
+def test_synapse_setup_asks_the_installers_question(monkeypatch):
+    """ONB1 (F724): `synapse setup` asked its own eight-provider question (no
+    hosted providers, a bare Ollama name); it asks the installer's now, and saves
+    what that answers."""
+    from synapse import setup_wizard
+
+    asked, saved = [], {}
+    monkeypatch.setattr(setup_wizard, "load_settings", lambda: dict(setup_wizard.DEFAULT_SETTINGS))
+    monkeypatch.setattr(setup_wizard, "save_settings", saved.update)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+    monkeypatch.setattr(providers, "ask", lambda asker, found=None: asked.append(asker) or {
+        "groq_key": "gk", "model": "groq.openai/gpt-oss-120b", "builder_model": "groq.qwen3", "mode": "cloud"})
+    setup_wizard.run()
+    assert len(asked) == 1
+    assert saved["groq_key"] == "gk" and saved["model"] == "groq.openai/gpt-oss-120b"
+    assert saved["builder_model"] == "groq.qwen3" and saved["mode"] == "cloud"
+    assert saved["backend_port"] == 8765, "the ports are still asked, and kept on Enter"
 
 
 def test_grok_writes_the_key_the_engine_reads():

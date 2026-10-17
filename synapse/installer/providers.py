@@ -177,9 +177,58 @@ CLOUDS = {
 
 # ── the question ─────────────────────────────────────────────────────────────
 
+_EVERYDAY = "Workflows, agents and chat run on it unless they name their own."
+
 def ask(asker: Asker, found: Found | None = None) -> dict:
-    """Ask until there is an answer. {} means "skip — choose later in Settings"."""
-    found = found or detect()
+    """Ask until there is an answer. {} means "skip — choose later in Settings".
+
+    Then (ONB1, D295): keys for more providers, if there are any, and the two
+    models — the everyday one (`model`: workflows, agents and chat) and Synapse
+    AI's (`builder_model`, left out when it is the same)."""
+    answer = _first(asker, found or detect())
+    if not answer:
+        return {}
+    pool = answer.pop("_pool", None) or [answer["model"]]
+    modes = dict.fromkeys(pool, answer["mode"])
+    if _more_keys(asker, answer, pool, modes):
+        everyday = asker.select(
+            "Everyday model", [Option(m, m) for m in pool],
+            default=pool.index(answer["model"]) if answer["model"] in pool else 0,
+            filterable=len(pool) > 8, note=_EVERYDAY)
+        answer["model"], answer["mode"] = everyday, modes[everyday]
+    builder = asker.select(
+        "Synapse AI's model", [Option("Same as everyday model", ""), *(Option(m, m) for m in pool)],
+        filterable=len(pool) >= 8,
+        note="It builds your workflows and answers in the assistant. A stronger model pays for itself here.")
+    if builder:
+        answer["builder_model"] = builder
+    return answer
+
+
+def _more_keys(asker: Asker, answer: dict, pool: list[str], modes: dict[str, str]) -> bool:
+    """Keys for other providers, each checked by listing its models. True if any was added."""
+    added = False
+    while asker.confirm("Add a key for another provider?", default=False,
+                        note="Agents and Synapse AI can then use its models too."):
+        others = [c for c in CLOUDS.values() if c.key_setting not in answer]
+        choice = asker.select("Which provider?", [Option(c.label, c.key) for c in others],
+                              filterable=len(others) > 8, back=True)
+        if choice is BACK:
+            continue
+        cloud = CLOUDS[choice]
+        key, models = _key_and_models(asker, cloud.label, cloud.lister)
+        if key is BACK:
+            continue
+        answer[cloud.key_setting] = key
+        for m in models or [cloud.fallback_model]:
+            pool.append(f"{cloud.prefix}{m}")
+            modes[f"{cloud.prefix}{m}"] = "cloud"
+        added = True
+    return added
+
+
+def _first(asker: Asker, found: Found) -> dict:
+    """The first provider, and its model. The answer carries `_pool`: every model it reaches."""
     while True:
         options: list[Option] = []
         if found.ollama:
@@ -214,8 +263,8 @@ def _answer(asker: Asker, choice, found: Found):
         models = {"claude": CLAUDE_CLI_MODELS, "gemini": GEMINI_CLI_MODELS,
                   "codex": CODEX_CLI_MODELS}[choice[4:]]
         model = models[0] if len(models) == 1 else asker.select(
-            "Which model?", [Option(m, m) for m in models], back=True)
-        return BACK if model is BACK else {"model": model, "mode": "cli"}
+            "Everyday model", [Option(m, m) for m in models], back=True, note=_EVERYDAY)
+        return BACK if model is BACK else {"model": model, "mode": "cli", "_pool": list(models)}
     if choice in CLOUDS:
         return _cloud(asker, CLOUDS[choice])
     if choice == "other":
@@ -266,10 +315,10 @@ def _key_and_models(asker: Asker, name: str, lister, optional: bool = False):
 
 def _choose_model(asker: Asker, models: list[str], fallback: str, provider: str = ""):
     if models:
-        return asker.select("Which model?", [Option(m, m) for m in models],
+        return asker.select("Everyday model", [Option(m, m) for m in models],
                             default=preferred_index(provider, models),
-                            filterable=len(models) > 8, back=True)
-    return asker.text("Which model?", default=fallback,
+                            filterable=len(models) > 8, back=True, note=_EVERYDAY)
+    return asker.text("Everyday model", default=fallback,
                       note="Could not fetch the list — type a model name.")
 
 
@@ -281,7 +330,8 @@ def _cloud(asker: Asker, cloud: Cloud):
         model = _choose_model(asker, models, cloud.fallback_model, cloud.key)
         if model is BACK:
             continue
-        return {cloud.key_setting: key, "model": f"{cloud.prefix}{model}", "mode": "cloud"}
+        return {cloud.key_setting: key, "model": f"{cloud.prefix}{model}", "mode": "cloud",
+                "_pool": [f"{cloud.prefix}{m}" for m in models] or [f"{cloud.prefix}{model}"]}
 
 
 def _base_url(asker: Asker, question: str, default: str):
@@ -329,7 +379,8 @@ def _pick_ollama(asker: Asker, models: list[str], base_url: str = ""):
                           note="No models found there — type one you will pull.")
     if name is BACK:
         return BACK
-    answer = {"model": f"ollama.{name}", "mode": "local"}
+    answer = {"model": f"ollama.{name}", "mode": "local",
+              "_pool": [f"ollama.{m}" for m in models] or [f"ollama.{name}"]}
     if base_url:
         answer["ollama_base_url"] = base_url
     return answer
@@ -360,9 +411,14 @@ def _bedrock(asker: Asker):
 
 
 def describe(answer: dict) -> str:
-    """"claude-sonnet-4-6" for a done line; "" when the question was skipped."""
-    model = answer.get("model", "")
-    for prefix in ("ollama.", "oaic.", "locv1.", "bedrock.", "cli."):
-        if model.startswith(prefix):
-            return model[len(prefix):] or model
-    return model
+    """"claude-sonnet-4-6" for a done line, with Synapse AI's model when it has its
+    own; "" when the question was skipped."""
+    def bare(model: str) -> str:
+        for prefix in ("ollama.", "oaic.", "locv1.", "bedrock.", "cli."):
+            if model.startswith(prefix):
+                return model[len(prefix):] or model
+        return model
+
+    model = bare(answer.get("model", ""))
+    builder = answer.get("builder_model")
+    return f"{model}, Synapse AI on {bare(builder)}" if model and builder else model
