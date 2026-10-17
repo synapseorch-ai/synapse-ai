@@ -330,7 +330,7 @@ async def _run(args: dict) -> dict:
                     "None of the workflows by that name has run yet."}
         run_id = latest[0]["run_id"]
     view = await _product_read("get_run", {"run_id": run_id})
-    if "error" in view:
+    if "status" not in view:  # a refusal; a failed run's view carries its reason in `error` too (F756)
         return view
     row = next(iter(r for r in await list_runs(limit=500) if r.get("run_id") == run_id), {})
     return {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),

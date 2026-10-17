@@ -1447,10 +1447,17 @@ BUILDER_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_recent_runs",
-            "description": "Recent orchestration runs, newest first, with their status and step. Use this to answer questions about what ran and what failed.",
+            "description": (
+                "Recent workflow runs, newest first: each with its workflow's name, status, step, times, whether it "
+                "waits on a person, and `error`, why a failed or cancelled run stopped. `name` keeps one workflow's "
+                "runs. Use this to answer questions about what ran and what failed."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"limit": {"type": "integer", "description": "How many runs (default 10, max 50)"}},
+                "properties": {
+                    "limit": {"type": "integer", "description": "How many runs (default 10, max 50)"},
+                    "name": {"type": "string", "description": "Only runs of workflows whose name contains this."},
+                },
                 "required": [],
             },
         },
@@ -1459,10 +1466,13 @@ BUILDER_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_run_summary",
-            "description": "Status snapshot for one run: status, current step, whether it is waiting on a human, start and end times.",
+            "description": (
+                "One run step by step: its workflow's name, status, current step, whether it waits on a person, "
+                "times, `error` (why it failed) and what each step wrote. A workflow's id reads its latest run."
+            ),
             "parameters": {
                 "type": "object",
-                "properties": {"run_id": {"type": "string"}},
+                "properties": {"run_id": {"type": "string", "description": "The run's id, or a workflow's id"}},
                 "required": ["run_id"],
             },
         },
@@ -2971,8 +2981,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         from core.orchestration.state import SharedState
 
         limit = max(1, min(int(args.get("limit") or 10), 50))
-        visible = {o["id"] for o in await load_orchestrations() if _is_visible(o) and o.get("id")}
-        runs = await SharedState.list_runs(limit=limit, orchestration_ids=visible)
+        names = {o["id"]: o.get("name") for o in await load_orchestrations() if _is_visible(o) and o.get("id")}
+        wanted = str(args.get("name") or "").strip().lower()
+        if wanted:
+            # One workflow's runs, by its name (F756): asked "is the invoice sync running?", the model read the
+            # workspace's latest run, another workflow's, as Invoice sync's.
+            names = {i: n for i, n in names.items() if wanted in str(n or "").lower()}
+            if not names:
+                return {"error": f"No workflow's name contains {args.get('name')!r}; list_orchestrations lists them."}
+        runs = await SharedState.list_runs(limit=limit, orchestration_ids=set(names))
         return [
             {
                 "run_id": r.get("run_id"),
@@ -2981,19 +2998,39 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 "current_step_id": r.get("current_step_id"),
                 "started_at": r.get("started_at"),
                 "ended_at": r.get("ended_at"),
+                # What `read_workspace`'s `runs` says too (F756): whose run, why it stopped, whether it waits.
+                "workflow": names.get(r.get("orchestration_id")),
+                "error": r.get("error"),
+                "waiting_for_human": bool(r.get("waiting_for_human")),
             }
             for r in runs
         ]
 
     elif tool_name == "get_run_summary":
+        from core.builder_readers import read_workspace
+        from core.orchestration.state import SharedState
         from core.routes.orchestrations import _run_summary
 
-        summary = await _run_summary(str(args.get("run_id") or ""))
+        run_id = str(args.get("run_id") or "").strip()
+        flow = await _visible_orchestration(run_id)
+        if flow is not None:
+            # A workflow's id for a run's (F756: did-02 passed `orch_…` and heard "no checkpoint"): its latest run.
+            latest = await SharedState.list_runs(limit=1, orchestration_ids={run_id})
+            if not latest:
+                return {"error": f"The workflow '{flow.get('name')}' has not run yet."}
+            run_id = latest[0]["run_id"]
+        summary = await _run_summary(run_id)
         if summary is None:
             return {"error": f"Run '{args.get('run_id')}' has no checkpoint"}
         if await _visible_orchestration(summary.get("orchestration_id")) is None:
             return {"error": f"Run '{args.get('run_id')}' has no checkpoint"}
-        return summary
+        # The run step by step from `read_workspace`'s `run` reader, the host's where it has one (F756): its
+        # workflow's name, why it failed, what each step wrote. The snapshot's own fields stay as they were.
+        view = await read_workspace({"topic": "run", "run_id": run_id}, server_module, [])
+        if "status" not in view:  # the reader refused or failed; a failed run's view has `error` and a status
+            return {**summary, "note": f"The steps could not be read: {view['error']}"}
+        view.pop("topic", None)
+        return {**view, **summary}
 
     # ── Deletes ──────────────────────────────────────────────────────────────
 
