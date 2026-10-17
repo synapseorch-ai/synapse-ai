@@ -252,6 +252,8 @@ class RunFollower:
         self._types: dict[str, str] = {}
         self._steps = 0
         self._seconds = 0.0
+        #: Why the run failed, from its last step error, for the summary.
+        self._why: str | None = None
 
     # ── at a terminal ───────────────────────────────────────────────────────
 
@@ -292,6 +294,7 @@ class RunFollower:
                       + (f" {float(took):6.1f}s" if took is not None else "") + "[/dim]")
         elif kind == "step_error":
             self.stop()
+            self._why = event.get("error") or self._why
             name = str(self.names.get(step, step))
             self._say(f"  [red]✗ {escape(name)}[/red]  {escape(str(event.get('error') or ''))}")
         elif kind == "human_input_required":
@@ -301,13 +304,21 @@ class RunFollower:
         elif kind == "orchestration_complete":
             self.stop()
             steps = f"{self._steps} step{'s' if self._steps != 1 else ''}"
-            self._say(f"[green]Completed[/green] [dim]· {steps} · {self._seconds:.1f}s[/dim]\n")
+            status = event.get("status") or "completed"
+            if status == "completed":
+                self._say(f"[green]Completed[/green] [dim]· {steps} · {self._seconds:.1f}s[/dim]\n")
+            elif status == "cancelled":
+                self._say("[dim]Stopped.[/dim]")
+            else:  # the engine ends a failed run here too, with its status
+                why = self._why or status
+                self._say(f"[red]Failed[/red] [dim]after {steps} ·[/dim] {escape(str(why))}")
         elif kind == "orchestration_error":
             self.stop()
             if event.get("error") == "Cancelled":
                 self._say("[dim]Stopped.[/dim]")
             else:
-                self._say(f"[red]Failed[/red] [dim]after {self._steps} steps ·[/dim] {escape(str(event.get('error')))}")
+                steps = f"{self._steps} step{'s' if self._steps != 1 else ''}"
+                self._say(f"[red]Failed[/red] [dim]after {steps} ·[/dim] {escape(str(event.get('error')))}")
         else:
             return False
         return True

@@ -452,3 +452,23 @@ class TestAChatAtATerminal:
         shown = _screen(buffer)
         assert "· web_search" in shown
         assert "Researcher" in shown and "1 tool" in shown and chat.session == "api_1"
+
+
+class TestHowARunEndedAtATerminal:
+    def test_a_run_that_ends_failed_says_failed(self):
+        """The engine ends a failed run with `orchestration_complete` and its status: the summary said "Completed"
+        for it (found recording a broken workflow at a terminal)."""
+        out, buffer = _terminal()
+        start = TestARunAtATerminal.EVENTS[0]
+        RunFollower(out).follow([_f(start),
+                                 _f({"type": "step_start", "orch_step_id": "s", "step_name": "Draft"}),
+                                 _f({"type": "step_error", "orch_step_id": "s", "error": "agent_gone is gone"}),
+                                 _f({"type": "orchestration_complete", "status": "failed"})])
+        shown = _screen(buffer)
+        assert "Completed" not in shown and "Failed after 0 steps" in shown
+
+    def test_a_run_stopped_says_stopped(self):
+        out, buffer = _terminal()
+        RunFollower(out).follow([_f(TestARunAtATerminal.EVENTS[0]),
+                                 _f({"type": "orchestration_complete", "status": "cancelled"})])
+        assert "Stopped." in _screen(buffer)
