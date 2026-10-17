@@ -164,6 +164,17 @@ def _isolate_notifications(tmp_path, monkeypatch):
     notif_mod.hub._terminal_notified.clear()
 
 
+# ── model CLI status isolation (autouse) ─────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _isolate_cli_status():
+    """Forget what the model CLIs said (CLIM1): their status is cached for ten
+    minutes per binary, and a test's faked `which` must not answer for the next."""
+    import core.providers.cli_status as cli_status
+    cli_status.clear_cache()
+    yield
+    cli_status.clear_cache()
+
+
 # ── Knowledge seam isolation (autouse) ───────────────────────────────────────
 @pytest.fixture(autouse=True)
 def _isolate_knowledge_seams():

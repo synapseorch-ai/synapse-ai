@@ -169,96 +169,6 @@ async def list_datasets():
 
 # --- Models ---
 
-_COPILOT_FALLBACK_MODELS = [
-    "cli.copilot",
-    "cli.copilot.claude-sonnet-4-5",
-    "cli.copilot.claude-opus-4-5",
-    "cli.copilot.claude-haiku-4-5",
-    "cli.copilot.gpt-4o",
-    "cli.copilot.gpt-4.1",
-    "cli.copilot.o3",
-    "cli.copilot.o4-mini",
-]
-
-async def _get_github_token() -> "str | None":
-    """Discover a GitHub token from env vars, gh CLI, or copilot config files (cross-platform)."""
-    import shutil, os as _os, json as _json, platform
-    token = (_os.getenv("COPILOT_GITHUB_TOKEN")
-             or _os.getenv("GH_TOKEN")
-             or _os.getenv("GITHUB_TOKEN"))
-    if token:
-        return token
-    if shutil.which("gh"):
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "gh", "auth", "token",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-            if proc.returncode == 0 and (t := stdout.decode().strip()):
-                return t
-        except Exception:
-            pass
-    # Config file paths differ by OS
-    system = platform.system()
-    if system == "Windows":
-        config_dirs = [Path(_os.getenv("APPDATA") or (Path.home() / "AppData" / "Roaming")) / "github-copilot"]
-    elif system == "Darwin":
-        config_dirs = [
-            Path.home() / "Library" / "Application Support" / "github-copilot",
-            Path.home() / ".config" / "github-copilot",
-        ]
-    else:  # Linux and others
-        config_dirs = [
-            Path(_os.getenv("XDG_CONFIG_HOME") or (Path.home() / ".config")) / "github-copilot",
-        ]
-    for config_dir in config_dirs:
-        hosts_path = config_dir / "hosts.json"
-        if hosts_path.exists():
-            try:
-                data = _json.loads(hosts_path.read_text(encoding="utf-8"))
-                t = (data.get("github.com", {}).get("oauth_token")
-                     or data.get("github.com", {}).get("token"))
-                if t:
-                    return t
-            except Exception:
-                pass
-    # Older plaintext fallback (~/.copilot/config.json)
-    config_path = Path.home() / ".copilot" / "config.json"
-    if config_path.exists():
-        try:
-            data = _json.loads(config_path.read_text(encoding="utf-8"))
-            if t := (data.get("oauth_token") or data.get("token")):
-                return t
-        except Exception:
-            pass
-    return None
-
-
-async def _fetch_copilot_models() -> "list[str]":
-    """Fetch live model list from GitHub Models catalog API; falls back to hardcoded list."""
-    token = await _get_github_token()
-    if not token:
-        return _COPILOT_FALLBACK_MODELS
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(
-                "https://api.github.com/catalog/models",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-            )
-        if resp.status_code != 200:
-            return _COPILOT_FALLBACK_MODELS
-        data = resp.json()
-        names = [m["name"] for m in data if isinstance(m, dict) and m.get("name")]
-        return (["cli.copilot"] + [f"cli.copilot.{n}" for n in names]) if names else _COPILOT_FALLBACK_MODELS
-    except Exception:
-        return _COPILOT_FALLBACK_MODELS
-
-
 @router.get("/api/models/rerank")
 async def get_rerank_models(refresh: bool = False):
     """The rerank models this workspace's keys can use, per provider (BF9, D293): Knowledge's rerank pickers and
@@ -276,8 +186,12 @@ async def get_rerank_models(refresh: bool = False):
 
 
 @router.get("/api/models")
-async def get_models():
-    """Fetches available models dynamically from each provider's API."""
+async def get_models(refresh: bool = False):
+    """Fetches available models dynamically from each provider's API.
+
+    `refresh` asks the model CLIs again rather than serving what they said
+    within the last ten minutes (CLIM1).
+    """
     settings = load_settings()
 
     # --- Fallback model lists (used when API calls fail) ---
@@ -478,87 +392,36 @@ async def get_models():
             out.append(name if name.startswith(prefix) else f"{prefix}{name}")
         return out
 
-    async def fetch_claude_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("claude"):
-            return False, [], []
-        models = _cli_custom_models("anthropic_cli_models", "cli.claude.") + [
-            "cli.claude.claude-sonnet-4-6",
-            "cli.claude.claude-opus-4-6",
-            "cli.claude.claude-haiku-4-5-20251001",
-            "cli.claude.claude-sonnet-4-5-20250929",
-            "cli.claude.claude-opus-4-5-20251101",
-            "cli.claude"
-        ]
-        return True, models, []
+    # The model CLIs: whether each is installed and signed in and the models it
+    # names, asked of the CLI itself (CLIM1, D299). Typed names come first, then
+    # its own, then the bare `cli.<x>` that runs its default.
+    from core.providers import cli_status as _cli_status
+    cli_states: dict = {}
 
-    async def fetch_gemini_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("gemini"):
+    async def _fetch_cli(provider: str, setting_key: str) -> tuple[bool, list[str], list[str]]:
+        st = await _cli_status.cli_status(provider, refresh)
+        cli_states[provider] = st
+        if not st.installed:
             return False, [], []
-        models = _cli_custom_models("gemini_cli_models", "cli.gemini.") + [
-            "cli.gemini.pro",
-            "cli.gemini.flash",
-            "cli.gemini"
-        ]
-        return True, models, []
-
-    def _codex_cached_models() -> list[str]:
-        """Surface the models this account is actually entitled to, read from
-        codex's local cache (~/.codex/models_cache.json, or $CODEX_HOME). Codex's
-        compiled-in default model — used by a bare `cli.codex` with no -m — can be
-        one the account can't use (e.g. ChatGPT accounts get gpt-5.4, not the
-        default gpt-5.x-codex), which 400s. Listing the real entitlements lets the
-        user pick a working model without knowing the names."""
-        import json
-        home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
-        try:
-            with open(os.path.join(home, "models_cache.json"), "r", encoding="utf-8") as f:
-                data = json.load(f)
-            entries = []
-            for m in data.get("models", []):
-                slug = m.get("slug")
-                # visibility "list" = user-selectable; skip hidden/internal models
-                if not slug or m.get("visibility") != "list" or not m.get("supported_in_api", True):
-                    continue
-                entries.append((m.get("priority", 999), slug))
-            entries.sort(key=lambda x: x[0])
-            return [f"cli.codex.{slug}" for _, slug in entries]
-        except Exception:
-            return []
-
-    async def fetch_codex_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("codex"):
-            return False, [], []
-        # Order: user custom entries, then account-entitled models from the cache,
-        # then bare `cli.codex` (defers to codex's own default, which may mismatch
-        # the account and 400 — so it's last). Dedupe, preserving order.
+        prefix = st.base + "."
         seen, models = set(), []
-        for m in _cli_custom_models("codex_cli_models", "cli.codex.") + _codex_cached_models() + ["cli.codex"]:
+        for m in _cli_custom_models(setting_key, prefix) + [prefix + n for n in st.models] + [st.base]:
             if m not in seen:
                 seen.add(m)
                 models.append(m)
         return True, models, []
 
+    async def fetch_claude_cli() -> tuple[bool, list[str], list[str]]:
+        return await _fetch_cli("anthropic_cli", "anthropic_cli_models")
+
+    async def fetch_gemini_cli() -> tuple[bool, list[str], list[str]]:
+        return await _fetch_cli("gemini_cli", "gemini_cli_models")
+
+    async def fetch_codex_cli() -> tuple[bool, list[str], list[str]]:
+        return await _fetch_cli("codex_cli", "codex_cli_models")
+
     async def fetch_github_copilot_cli() -> tuple[bool, list[str], list[str]]:
-        import shutil
-        if not shutil.which("copilot"):
-            return False, [], []
-        # Verify it's the GitHub Copilot CLI binary
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "copilot", "--version",
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-            if proc.returncode != 0:
-                return False, [], []
-        except Exception:
-            return False, [], []
-        models = _cli_custom_models("github_copilot_cli_models", "cli.copilot.") + await _fetch_copilot_models()
-        return True, models, []
+        return await _fetch_cli("github_copilot_cli", "github_copilot_cli_models")
 
     async def fetch_openai_compatible() -> tuple[bool, list[str], list[str]]:
         if not openai_compatible_base_url:
@@ -766,6 +629,11 @@ async def get_models():
         "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
         "model_gateway": {"available": mg_avail, "models": mg_chat, "embedding_models": mg_embed},
     }
+    for provider, st in cli_states.items():
+        if provider in providers:
+            info = st.as_dict()
+            providers[provider]["cli"] = {k: info[k] for k in ("version", "signed_in", "sign_in_hint",
+                                                               "models_source", "models_note", "note")}
     hosted_chat: list[str] = []
     for spec, (avail, chat, embed) in zip(HOSTED, results[15:]):
         providers[spec.id] = {"available": avail, "models": chat, "embedding_models": embed}

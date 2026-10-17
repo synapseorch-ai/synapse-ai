@@ -17,7 +17,6 @@ import hashlib
 import hmac
 from collections import OrderedDict
 from typing import NamedTuple
-import tempfile
 import asyncio
 import base64
 import threading
@@ -93,6 +92,9 @@ _AUTH_RE = re.compile(
     r"|\bunauthorized\b"
     r"|\b401\b"
     r"|/login"
+    # Codex 0.137.0 on a stale sign-in: "Please log out and sign in again" (CLIM1).
+    r"|sign in again"
+    r"|log in again"
     r")",
     re.IGNORECASE,
 )
@@ -827,22 +829,31 @@ def _bearer_auth_handler(api_key: str):
 
 # ─── CLI Session Providers ──────────────────────────────────────────────────────
 
-# Maps cli.* model names to their CLI binary + flags
-_CLI_COMMANDS: dict[str, list[str]] = {
-    # JSON so the answer and the error flag can be read reliably (F65).
-    # `--tools ""` empties Claude Code's built-in tool set: the agent's tools
-    # are written into the prompt and run by the engine. It used to send
-    # `--allowedTools ""`, a permission allow-list — which in -p mode still
-    # left the tools that need no permission, file reads among them (F98).
-    "cli.claude":   ["claude", "-p", "--output-format", "json", "--tools", ""],
-    "cli.gemini":   ["gemini", "--prompt", ""],
-    # `instructions` (codex's system-prompt slot) is set per-call in
-    # call_cli_provider — never left empty, since some accounts reject an empty
-    # value with 400 "Instructions are required".
-    "cli.codex":    ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox",
-                     "-c", "features.shell_tool=false"],
-    "cli.copilot":  ["copilot", "-p"],
+# Each CLI is run for its model and nothing else of its own — no tools, MCP
+# servers, hooks, skills, memory files, project or transcript. Its command,
+# environment and working directory are decided in
+# `core.providers.cli_invocation` (CLIM1, D299).
+
+_CLI_LABELS = {"cli.claude": "Claude Code", "cli.gemini": "Gemini CLI", "cli.codex": "Codex",
+               "cli.copilot": "Copilot CLI"}
+_CLI_UPDATE = {"cli.claude": "claude update", "cli.gemini": "npm install -g @google/gemini-cli",
+               "cli.codex": "npm install -g @openai/codex", "cli.copilot": "npm install -g @github/copilot"}
+_CLI_SIGN_IN = {
+    "cli.claude": "Run `claude` in a terminal and sign in",
+    "cli.gemini": "Run `gemini` in a terminal and sign in with Google, or set GEMINI_API_KEY",
+    "cli.codex": "Run `codex login` in a terminal",
+    "cli.copilot": "Run `copilot` in a terminal and `/login`, or `gh auth login`",
 }
+# A flag this version of the CLI does not know (commander, yargs, clap).
+_CLI_UNKNOWN_FLAG = re.compile(r"unknown option|unknown argument|unexpected argument|unrecognized (?:option|argument)"
+                               r"|unknown feature flag",
+                               re.IGNORECASE)
+# What Codex may report with an answer; any other item is a tool of its own.
+_CODEX_ANSWER_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", "error"})
+_CLI_RATE_LIMIT = ("429", "rate limit", "ratelimit", "quota", "too many requests", "capacity",
+                   "resource_exhausted", "ratelimitexceeded")
+_STACK_FRAME = re.compile(r"^\s+at \S")
+_ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 #: The CLIs that take an effort level. Only Claude Code has one (`--effort`,
 #: below); the others take none. Served by the Models route, so the agent
@@ -919,14 +930,15 @@ async def call_cli_provider(
     timeout: float = _CLI_TIMEOUT,
     effort: str | None = None,
 ) -> tuple[str, int, int]:
-    """Spawn a local CLI binary, feed it the full context, and return the response.
+    """Run an installed CLI for its model alone, and return its answer.
 
-    Every call is a fresh CLI session. The whole transcript is already in
+    Every call is a fresh CLI session in a fresh, empty directory of its own,
+    removed afterwards (CLIM1). The whole transcript is already in
     `full_prompt`, so resuming the CLI's own session would send the history
     twice; the resume code that tried never worked anyway (F65).
 
     Args:
-        cli_model: One of 'cli.claude', 'cli.gemini', 'cli.codex', 'cli.copilot'
+        cli_model: 'cli.claude', 'cli.gemini', 'cli.codex' or 'cli.copilot', with an optional '.<model>'
         full_prompt: Complete flat-text prompt (system + tools + transcript)
         timeout: Seconds before we kill the process and raise LLMError
         effort: The agent's or workspace's `reasoning_effort` — `cli.claude`
@@ -936,178 +948,53 @@ async def call_cli_provider(
         (response_text, estimated_input_tokens, estimated_output_tokens)
 
     Raises:
-        LLMError: on timeout, auth failure, binary not found, or empty output
+        LLMError: on timeout, a sign-in or rate-limit failure, a missing or too
+        old binary, empty output, or an answer reached through a tool of the CLI's own
     """
-    from core import usage_tracker
-
-    ANSI_ESCAPE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-    # Auth-failure detection uses the module-level _match_auth() helper (specific
-    # phrases only). Rate-limit detection keeps its broad substring list below.
-    RATE_LIMIT_PATTERNS = ["429", "rate limit", "ratelimit", "quota", "too many requests", "capacity", "resource_exhausted", "ratelimitexceeded"]
-
-    # Split into base ("cli.<provider>") + variant, preserving dots in the
-    # variant (e.g. "cli.codex.gpt-5.4" → variant "gpt-5.4"). The base is matched
-    # case-insensitively; the variant is kept verbatim since model names can be
-    # case-sensitive and are passed straight through to the CLI's -m/--model flag.
-    parts = cli_model.split(".", 2)
-    if len(parts) >= 2:
-        base_cli = f"{parts[0]}.{parts[1]}".lower()
-    else:
-        base_cli = cli_model.lower()
-    variant = parts[2] if len(parts) > 2 else None
-
-    base_cmd = _CLI_COMMANDS.get(base_cli)
-    if not base_cmd:
-        raise LLMError(f"Unknown CLI base '{base_cli}'. Supported: {list(_CLI_COMMANDS.keys())}")
-
-    cmd = base_cmd.copy()
-
-    # ── Dynamic Model & Options Parsing ──
-    if base_cli == "cli.claude":
-        # The effort is the agent's or the workspace's setting. It used to be
-        # read off a model-name suffix, which sent `low` for a plain model and
-        # `medium` for `-max` (F65). A stored id with an old suffix still names
-        # its model; the suffix itself is ignored.
-        from core import reasoning as _reasoning
-        level = _reasoning.normalise(effort, fallback="low")
-        cmd.extend(["--effort", "low" if level == "off" else level])
-        if variant:
-            model_name = variant
-            for suffix in ("-thinking", "-max", "-high"):
-                if model_name.endswith(suffix):
-                    model_name = model_name[: -len(suffix)]
-            cmd.extend(["--model", model_name])
-
-    elif variant:
-        if base_cli == "cli.gemini":
-            if "pro" in variant:
-                cmd.extend(["--model", "pro"])
-            elif "flash" in variant:
-                cmd.extend(["--model", "flash"])
-
-        elif base_cli == "cli.codex":
-            # Pass the variant directly as the model name (e.g. o3, o4-mini, gpt-4o)
-            cmd.extend(["-m", variant])
-
-        elif base_cli == "cli.copilot":
-            # Pass the variant directly as the model name (e.g. claude-sonnet-4-5, gpt-4o)
-            cmd.extend(["--model", variant])
-
-    # codex exec requires "-" as the positional PROMPT arg to signal stdin input.
-    # Append it after all option flags are resolved so it stays last.
-    if base_cli == "cli.codex":
-        cmd.append("-")
-
     import shutil
-    executable = shutil.which(cmd[0])
+    from pathlib import Path
+    from core import usage_tracker
+    from core.providers import cli_invocation as _inv
+    from core.providers import cli_status as _cli_status
+
+    base, variant = _inv.split_cli_model(cli_model)
+    binary = _inv.CLI_BINARIES.get(base)
+    if not binary:
+        raise LLMError(f"Unknown CLI base '{base}'. Supported: {list(_inv.CLI_BINARIES)}")
+    executable = shutil.which(binary)
     if not executable:
-        raise LLMError(f"CLI binary '{cmd[0]}' exactly resolved by shutil.which not found. Check your PATH.")
+        raise LLMError(f"CLI binary '{binary}' was not found in PATH. Install {_CLI_LABELS[base]} and sign in to it first.")
 
-    env = os.environ.copy()
-    temp_sys_prompt_file = None
-    temp_input_file = None
-    temp_output_file = None
-
-    # Prompt and response files handed to a CLI subprocess and deleted after
-    # the call. Genuinely throwaway, so: scratch. Kept off the system temp dir
-    # for the cross-OS permission reasons that put them under the project root
-    # in the first place.
-    from core.storage.scratch import scratch_dir
-    _tmp_dir = str(scratch_dir("llm_cli"))
-
+    catalog = await _cli_status.codex_catalog() if base == "cli.codex" else None
+    token = await _cli_status.github_token() if base == "cli.copilot" else None
+    root = os.environ.get("SYNAPSE_CLI_WORKDIR_ROOT")
+    workdir = _inv.new_workdir(Path(root) if root else None)
     try:
-        if base_cli == "cli.copilot":
-            # copilot -p takes the full prompt inline as a CLI argument; stdin is not used.
-            # System prompt is already embedded in full_prompt by _build_cli_prompt().
-            cmd.append(full_prompt)
-            stdin_source = asyncio.subprocess.DEVNULL
-        else:
-            if base_cli == "cli.claude" and sys_prompt:
-                # Write sys_prompt to a temp file and pass via --system-prompt-file.
-                # `--tools ""` (in _CLI_COMMANDS) strips Claude Code's own tools, so only
-                # the tools written into this prompt are active.
-                temp_sys_prompt_file = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".md", prefix="claude_sys_prompt_", delete=False,
-                    encoding="utf-8", dir=_tmp_dir
-                )
-                temp_sys_prompt_file.write(sys_prompt)
-                temp_sys_prompt_file.flush()
-                temp_sys_prompt_file.close()
-                cmd.extend(["--system-prompt-file", temp_sys_prompt_file.name])
-
-                # stdin carries only the content after the sys_prompt (tools + messages).
-                # full_prompt = sys_prompt.strip() + "\n\n" + rest, so strip the prefix.
-                prefix = sys_prompt.strip()
-                stdin_payload = full_prompt[len(prefix):].lstrip("\n") if full_prompt.startswith(prefix) else full_prompt
-
-            elif base_cli == "cli.gemini" and sys_prompt:
-                # Gemini CLI reads GEMINI_SYSTEM_MD env var as the path to a markdown file
-                # containing the system prompt, overriding its native default system prompt.
-                temp_sys_prompt_file = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".md", prefix="gemini_sys_prompt_", delete=False,
-                    encoding="utf-8", dir=_tmp_dir
-                )
-                temp_sys_prompt_file.write(sys_prompt)
-                temp_sys_prompt_file.flush()
-                temp_sys_prompt_file.close()
-                env["GEMINI_SYSTEM_MD"] = temp_sys_prompt_file.name
-
-                # stdin carries only the content after the sys_prompt (tools + messages).
-                prefix = sys_prompt.strip()
-                stdin_payload = full_prompt[len(prefix):].lstrip("\n") if full_prompt.startswith(prefix) else full_prompt
-
-            elif base_cli == "cli.codex":
-                # Codex's `instructions` config is its system-prompt slot and must be
-                # non-empty — an empty value 400s with "Instructions are required" on
-                # some accounts. The agent's real (ReAct) system prompt continues to
-                # ride in stdin via full_prompt, exactly as before; this just
-                # satisfies the API with a neutral non-empty value.
-                cmd.extend(["-c", "instructions=You are a helpful assistant."])
-                stdin_payload = full_prompt
-
-            else:
-                stdin_payload = full_prompt
-
-            # Write stdin payload to a temp file and feed it as stdin (like `< file`),
-            # avoiding large string pipes and keeping content out of the process list.
-            temp_input_file = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".txt", prefix="cli_input_", delete=False,
-                encoding="utf-8", dir=_tmp_dir
+        inv = _inv.build_cli_invocation(base, variant, workdir=workdir, system_prompt=sys_prompt,
+                                        prompt=full_prompt, effort=effort, codex_catalog=catalog,
+                                        github_token=token)
+        # Fed from a file (like `< file`), keeping the prompt out of the process list.
+        stdin_source = asyncio.subprocess.DEVNULL
+        if inv.stdin is not None:
+            stdin_path = workdir / "stdin.txt"
+            stdin_path.write_text(inv.stdin, encoding="utf-8")
+            stdin_source = open(stdin_path, "rb")
+        _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning {binary} in {inv.cwd}")
+        try:
+            process = await asyncio.create_subprocess_exec(
+                executable, *inv.argv[1:],
+                stdin=stdin_source,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(inv.cwd),
+                env=inv.env,
             )
-            temp_input_file.write(stdin_payload)
-            temp_input_file.flush()
-            temp_input_file.close()
-
-            # codex exec: use -o to capture only the final agent message, avoiding TUI noise
-            if base_cli == "cli.codex":
-                temp_output_file = tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", prefix="codex_output_", delete=False,
-                    encoding="utf-8", dir=_tmp_dir
-                )
-                temp_output_file.close()
-                cmd.extend(["-o", temp_output_file.name])
-
-            stdin_source = open(temp_input_file.name, "rb")
-
-        _log.debug(f"🖥️  CLI provider '{cli_model}' — spawning subprocess: {' '.join(str(a) for a in cmd)}")
-
-        process = await asyncio.create_subprocess_exec(
-            executable,
-            *cmd[1:],
-            stdin=stdin_source,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env
-        )
-
-        if temp_input_file:
-            stdin_source.close()
+        finally:
+            if stdin_source is not asyncio.subprocess.DEVNULL:
+                stdin_source.close()
 
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout,
-            )
+            stdout_b, stderr_b = await asyncio.wait_for(process.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             try:
                 process.kill()
@@ -1119,110 +1006,188 @@ async def call_cli_provider(
                 "Is the CLI authenticated and responsive?"
             )
 
+        stdout_text = _ANSI_ESCAPE.sub("", stdout_b.decode("utf-8", errors="replace")).strip()
         stderr_text = stderr_b.decode("utf-8", errors="replace").strip()
-        if stderr_text:
-            # Scan only the tail of stderr for error patterns — Codex (and some other CLIs)
-            # echo the stdin/banner to stderr, which can contain words like "capacity" that
-            # would falsely trigger rate-limit detection. Real API errors appear at the end.
-            lower_err = stderr_text[-600:].lower()
-            if any(p in lower_err for p in RATE_LIMIT_PATTERNS):
-                raise LLMError(
-                    f"CLI provider '{cli_model}' rate limit / capacity error.\n"
-                    f"Details: {stderr_text[:400]}"
-                )
-            if _match_auth(stderr_text[-600:]):
-                raise LLMError(
-                    f"CLI provider '{cli_model}' authentication failure detected.\n"
-                    f"Run the CLI in your terminal to re-authenticate.\n"
-                    f"Details: {stderr_text[:400]}"
-                )
-            _log.debug(f"🖥️  CLI stderr: {stderr_text[:300]}")
-
-        # codex exec writes just the final agent message to the -o file; use that
-        # to avoid parsing the TUI header/footer noise from stdout.
-        if base_cli == "cli.codex" and temp_output_file:
-            try:
-                with open(temp_output_file.name, "r", encoding="utf-8", errors="replace") as f:
-                    raw = f.read()
-            except Exception:
-                raw = stdout_b.decode("utf-8", errors="replace")
-        else:
-            raw = stdout_b.decode("utf-8", errors="replace")
-        clean = ANSI_ESCAPE.sub("", raw).strip()
-
-        # ── Response unwrapping ──
-        if base_cli == "cli.claude":
-            # `--output-format json` returns one result object: the answer is
-            # `result`, and `is_error` says whether it is one.
-            try:
-                import json as _json
-                obj = _json.loads(clean)
-            except Exception:
-                obj = None  # not JSON — treat clean as plain text
-            if isinstance(obj, dict):
-                extracted = obj.get("result", "")
-                if isinstance(extracted, str) and extracted.strip():
-                    clean = extracted.strip()
-                if obj.get("is_error"):
-                    # Scan only the message fields — not the stringified whole
-                    # object — so unrelated keys can't trip a false positive.
-                    err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
-                    if _match_auth(err_text):
-                        raise LLMError(
-                            f"CLI provider '{cli_model}' authentication failure.\n"
-                            f"Run 'claude' in your terminal to re-authenticate.\n"
-                            f"Details: {str(obj)[:300]}"
-                        )
-                    # An error is not an answer: returned as one, the run would
-                    # carry on with the error text as the model's reply.
-                    raise LLMError(f"CLI provider '{cli_model}' failed: {err_text.strip()[:300]}")
-
-        # Auth failure check (also catches plain-text "Not logged in" from claude).
-        # `clean` is the model's normal stdout on success, so only treat it as an
-        # auth failure when the process ALSO exited non-zero — a successful (exit-0)
-        # response is a valid answer, never an auth error, even if it happens to
-        # mention words like "authorization". Genuine auth failures exit non-zero
-        # (or, for claude JSON, are caught by the is_error block above).
-        if process.returncode != 0 and _match_auth(clean):
-            raise LLMError(
-                f"CLI provider '{cli_model}' is not authenticated.\n"
-                f"Run the CLI in your terminal and complete the login flow, then retry.\n"
-                f"Details: {clean[:300]}"
-            )
-
-        if not clean:
-            # Report the TAIL of stderr, not the head. CLIs like codex echo a
-            # startup banner (version/workdir/model) to the head of stderr and
-            # write the actual failure (e.g. an invalid_request_error for an
-            # unsupported model) at the tail — so [:200] would hide the real cause.
-            raise LLMError(
-                f"CLI provider '{cli_model}' returned empty output. "
-                f"Return code: {process.returncode}. "
-                f"stderr: {stderr_text[-600:]}"
-            )
-
-        _log.debug(f"✅ CLI '{cli_model}' response ({len(clean)} chars)")
-
-        input_est = usage_tracker.estimate_tokens_from_text(full_prompt)
-        output_est = usage_tracker.estimate_tokens_from_text(clean)
-        return clean, input_est, output_est
+        answer = _read_cli_answer(base, cli_model, process.returncode, stdout_text, stderr_text, inv.output_file)
+        _log.debug(f"✅ CLI '{cli_model}' response ({len(answer)} chars)")
+        return (answer, usage_tracker.estimate_tokens_from_text(full_prompt),
+                usage_tracker.estimate_tokens_from_text(answer))
 
     except LLMError:
         raise
     except FileNotFoundError:
-        raise LLMError(
-            f"CLI binary for '{cli_model}' not found in PATH. "
-            f"Install and authenticate the CLI first: {cmd[0]}"
-        )
+        raise LLMError(f"CLI binary for '{cli_model}' not found in PATH. Install and authenticate the CLI first: {binary}")
     except Exception as e:
         raise LLMError(f"CLI provider '{cli_model}' unexpected error: {e}")
     finally:
-        for f in [temp_sys_prompt_file, temp_input_file, temp_output_file]:
-            if f:
-                try:
-                    os.unlink(f.name)
-                except Exception:
-                    pass
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) -> LLMError:
+    """The error a CLI's failure text (its tail) stands for.
+
+    Stack frames (Node's "    at …" lines) and repeated lines are left out, so
+    the message is what is left: Gemini CLI prints its reason above 30 frames.
+    """
+    lines, seen = [], set()
+    for line in (text or "").splitlines():
+        if _STACK_FRAME.match(line) or not line.strip() or line in seen:
+            continue
+        seen.add(line)
+        lines.append(line)
+    tail = "\n".join(lines)[-600:]
+    if any(p in tail.lower() for p in _CLI_RATE_LIMIT):
+        return LLMError(f"CLI provider '{cli_model}' rate limit / capacity error.\nDetails: {tail[-400:]}")
+    if auth or _match_auth(tail):
+        return LLMError(f"CLI provider '{cli_model}' is not signed in. {_CLI_SIGN_IN[base]}, then retry.\n"
+                        f"Details: {tail[-300:]}")
+    return LLMError(f"CLI provider '{cli_model}' failed: {tail[-400:]}")
+
+
+def _refuse_own_tools(cli_model: str, tools: list[str]) -> LLMError:
+    """An answer reached through a tool of the CLI's own is not the model's
+    answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1)."""
+    return LLMError(f"CLI provider '{cli_model}' ran its own tool ({', '.join(sorted(set(tools)))}) instead of "
+                    "answering; Synapse runs these CLIs for their model only, so its answer was refused.")
+
+
+def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: str, stderr: str,
+                     output_file) -> str:
+    """The model's answer from what a CLI printed, or the LLMError it stands for."""
+    if returncode not in (0, None) and _CLI_UNKNOWN_FLAG.search(stderr or stdout or ""):
+        return_err = (stderr or stdout)[-300:]
+        raise LLMError(f"{_CLI_LABELS[base]} is too old for how Synapse runs it ({return_err.strip()}). "
+                       f"Update it (`{_CLI_UPDATE[base]}`) and retry.")
+
+    if base == "cli.claude":
+        # `--output-format json` is one result object: the answer is `result`,
+        # and `is_error` says whether it is one (F65).
+        try:
+            obj = json.loads(stdout)
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
+            if obj.get("is_error"):
+                # An error is not an answer: returned as one, the run would carry
+                # on with the error text as the model's reply.
+                if _match_auth(err_text):
+                    raise _cli_failure(base, cli_model, err_text, auth=True)
+                raise LLMError(f"CLI provider '{cli_model}' failed: {err_text.strip()[:300]}")
+            denied = [str(d.get("tool_name") or d) for d in obj.get("permission_denials") or [] if d]
+            if denied:
+                raise _refuse_own_tools(cli_model, denied)
+            if isinstance(obj.get("num_turns"), int) and obj["num_turns"] > 1:
+                raise _refuse_own_tools(cli_model, [f"{obj['num_turns']} turns"])
+            answer = obj.get("result")
+            if isinstance(answer, str) and answer.strip():
+                return answer.strip()
+        elif returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+        if stdout and not isinstance(obj, dict):
+            # Plain text (also catches "Not logged in" from claude).
+            if returncode not in (0, None) and _match_auth(stdout):
+                raise _cli_failure(base, cli_model, stdout, auth=True)
+            return stdout
+
+    elif base == "cli.gemini":
+        # `-o json`: {"response", "stats"} on stdout; an error is {"error": …} on
+        # stderr, and exit code 41 is a missing sign-in.
+        err = None
+        for line in reversed((stderr or "").splitlines()):
+            try:
+                cand = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(cand, dict) and isinstance(cand.get("error"), dict):
+                err = cand["error"]
+                break
+        if returncode == 41:
+            raise _cli_failure(base, cli_model, (err or {}).get("message") or stderr, auth=True)
+        try:
+            obj = json.loads(stdout[stdout.index("{"):]) if "{" in stdout else None
+        except Exception:
+            obj = None
+        if isinstance(obj, dict):
+            tools = ((obj.get("stats") or {}).get("tools") or {})
+            if (tools.get("totalCalls") or 0) > 0:
+                raise _refuse_own_tools(cli_model, list((tools.get("byName") or {}).keys()) or ["a tool"])
+            if isinstance(obj.get("response"), str) and obj["response"].strip():
+                return obj["response"].strip()
+        if err:
+            raise _cli_failure(base, cli_model, str(err.get("message") or err))
+        if returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+
+    elif base == "cli.codex":
+        # `--json` events on stdout: what it did, and why a turn failed. Its
+        # answer is the last message, written to `-o`.
+        used, errors, last_message = [], [], ""
+        for line in (stdout or "").splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            kind = event.get("type")
+            if kind in ("item.started", "item.completed"):
+                item = event.get("item") or {}
+                if item.get("type") not in _CODEX_ANSWER_ITEMS:
+                    used.append(str(item.get("type")))
+                elif item.get("type") == "agent_message" and isinstance(item.get("text"), str):
+                    last_message = item["text"]
+            elif kind == "error":
+                errors.append(str(event.get("message") or ""))
+            elif kind == "turn.failed":
+                errors.append(str((event.get("error") or {}).get("message") or ""))
+        if used:
+            raise _refuse_own_tools(cli_model, used)
+        answer = ""
+        if output_file is not None:
+            try:
+                answer = output_file.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                answer = ""
+        answer = answer or last_message.strip()
+        if errors and not answer:
+            raise _cli_failure(base, cli_model, "\n".join(errors))
+        if answer:
+            return answer
+        if returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+
+    elif base == "cli.copilot":
+        # `--output-format json`: JSONL events. Its answer is the last assistant
+        # message; a tool it asked for or ran is a tool of its own.
+        used, answer = [], ""
+        for line in (stdout or "").splitlines():
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(event, dict):
+                continue
+            kind = str(event.get("type") or "")
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            if kind.startswith("tool."):
+                used.append(str(data.get("toolName") or data.get("name") or kind))
+            elif kind == "assistant.message":
+                for req in data.get("toolRequests") or []:
+                    used.append(str((req or {}).get("name") or "a tool") if isinstance(req, dict) else "a tool")
+                if isinstance(data.get("content"), str) and data["content"].strip():
+                    answer = data["content"].strip()
+        if used:
+            raise _refuse_own_tools(cli_model, used)
+        if answer:
+            return answer
+        if returncode not in (0, None):
+            raise _cli_failure(base, cli_model, stderr or stdout)
+
+    # Report the TAIL of stderr: CLIs echo a startup banner at its head and the
+    # actual failure at its end.
+    raise LLMError(f"CLI provider '{cli_model}' returned empty output. Return code: {returncode}. "
+                   f"stderr: {stderr[-600:]}")
 
 
 # ────────────────────────────────────────────────────────────────────────────────
