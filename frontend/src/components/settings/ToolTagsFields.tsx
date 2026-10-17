@@ -23,7 +23,7 @@ function hostOf(url: string | undefined): string {
     }
 }
 
-export function ToolTagsFields({ kind, method, url, annotations, onChange }: {
+export function ToolTagsFields({ kind, method, url, annotations, onChange, disabled = false }: {
     kind: 'http' | 'python';
     method?: string;
     url?: string;
@@ -32,6 +32,8 @@ export function ToolTagsFields({ kind, method, url, annotations, onChange }: {
     annotations: ToolAnnotations | null | undefined;
     /** undefined: an HTTP tool takes its method's tags again; null: a Python tool is not set again. */
     onChange: (next: ToolAnnotations | null | undefined) => void;
+    /** A person who may not edit the tool sees its tags, unchangeable. */
+    disabled?: boolean;
 }) {
     const stored = tagsOf(annotations);
     if (kind === 'python' && !stored) {
@@ -41,7 +43,7 @@ export function ToolTagsFields({ kind, method, url, annotations, onChange }: {
                 <p className="text-xs text-text-muted">
                     Not set. Your tool policy treats it as a tool that doesn’t say what it does.
                 </p>
-                <Button type="button" variant="secondary" size="sm"
+                <Button type="button" variant="secondary" size="sm" disabled={disabled}
                     onClick={() => onChange(hintsOf(defaultsFor('POST')))}>
                     Say what it does
                 </Button>
@@ -64,13 +66,14 @@ export function ToolTagsFields({ kind, method, url, annotations, onChange }: {
                 onChange={v => set(withEffect(tags, v as ToolEffect))}
                 aria-label="What the tool does"
                 options={TOOL_EFFECTS}
+                disabled={disabled}
             />
             <div className="grid gap-2 pt-1">
                 <div className="flex items-start gap-2">
                     <Checkbox
                         id="tool-tag-idempotent"
                         checked={reads || tags.idempotent}
-                        disabled={reads}
+                        disabled={disabled || reads}
                         onChange={c => set({ ...tags, idempotent: c })}
                         label="Safe to repeat"
                     />
@@ -87,6 +90,7 @@ export function ToolTagsFields({ kind, method, url, annotations, onChange }: {
                     <Checkbox
                         id="tool-tag-open-world"
                         checked={tags.open_world}
+                        disabled={disabled}
                         onChange={c => set({ ...tags, open_world: c })}
                         label="Reaches outside this workspace"
                     />
@@ -107,12 +111,12 @@ export function ToolTagsFields({ kind, method, url, annotations, onChange }: {
                         ? `Set from ${where}. Change them if that’s wrong.`
                         : 'Your tool policy reads these: a tool that changes or deletes something can wait for a person before it runs.'}
                 </p>
-                {kind === 'http' && !follows && (
+                {kind === 'http' && !follows && !disabled && (
                     <Button type="button" variant="ghost" size="sm" onClick={() => onChange(undefined)}>
                         Use the method’s
                     </Button>
                 )}
-                {kind === 'python' && (
+                {kind === 'python' && !disabled && (
                     <Button type="button" variant="ghost" size="sm" onClick={() => onChange(null)}>
                         Clear
                     </Button>
