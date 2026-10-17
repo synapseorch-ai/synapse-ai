@@ -739,9 +739,11 @@ class ToolCallFailed(RuntimeError):
     thing twice.
     """
 
-    def __init__(self, message: str, *, retryable: bool):
+    def __init__(self, message: str, *, retryable: bool, ran: bool = False):
         super().__init__(message)
         self.retryable = retryable
+        # The tool ran before it failed (a python tool's non-zero exit): what it did before failing is done (TAG1).
+        self.ran = ran
 
 
 class ToolStepExecutor:
@@ -898,6 +900,17 @@ class ToolStepExecutor:
         last_tool_args: dict = {}
         attempts = 0
 
+        # Whether a call that may have gone through can be made again (TAG1, F737): a custom tool's tags or method,
+        # else what the tool declares; a tool that declares nothing keeps the retry it always had.
+        from core.tool_tags import MAY_HAVE_RUN, may_have_reached, may_repeat
+        from core.tools import tool_hints
+        _own = next((t for t in custom_tools if isinstance(t, dict) and t.get("name") == tool_obj.name), None)
+        if _own is not None:
+            _repeatable = may_repeat(_own)
+        else:
+            _h = tool_hints(tool_obj)
+            _repeatable = not _h.declared or _h.read_only or _h.idempotent
+
         for turn in range(max_turns):
             attempts = turn + 1
             turn_prompt = tool_prompt
@@ -1035,11 +1048,18 @@ class ToolStepExecutor:
             except ToolCallFailed as e:
                 last_error = str(e)
                 _log.debug(f"TOOL STEP: ❌ tool reported failure turn={turn + 1}: {last_error}")
+                if e.ran and not _repeatable:
+                    last_error = f"{last_error} — {MAY_HAVE_RUN}"
+                    break
                 if not e.retryable or _replaying:
                     break
             except Exception as e:
-                last_error = str(e)
+                last_error = str(e) or type(e).__name__
                 _log.debug(f"TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}")
+                if may_have_reached(e) and not _repeatable:
+                    # Not made again: the first may have booked, sent or charged (F737).
+                    last_error = f"{last_error} — {MAY_HAVE_RUN}"
+                    break
                 if _replaying:
                     break
             # A person approved one call and it failed: the step ends with its error (F668, Naveen). A retry would
@@ -1165,7 +1185,7 @@ class ToolStepExecutor:
             detail = (result.stderr or result.stdout or "").strip()[-800:]
             raise ToolCallFailed(
                 f"Python tool exited with code {result.exit_code}: {detail or '(no output)'}",
-                retryable=True)
+                retryable=True, ran=True)
         try:
             return json.dumps(json.loads(result.stdout.strip()))
         except Exception:

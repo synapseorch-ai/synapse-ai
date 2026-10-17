@@ -3426,7 +3426,13 @@ async def run_agent_step(
                             last_data = json_resp if json_resp is not None else {"output": raw_output}
                             continue
                         except Exception as e:
-                            current_context_text += f"\nSystem: Error executing custom tool {tool_name}: {str(e)}\n"
+                            from core.tool_tags import MAY_HAVE_RUN, may_have_reached, may_repeat
+                            # The request was out and the tool is not safe to repeat: the model is told before it
+                            # calls again (TAG1, F737).
+                            _maybe = (f" The request reached the server before it failed: {MAY_HAVE_RUN}."
+                                      if may_have_reached(e) and not may_repeat(target_tool) else "")
+                            current_context_text += (f"\nSystem: Error executing custom tool {tool_name}: "
+                                                     f"{str(e) or type(e).__name__}{_maybe}\n")
                             continue
 
                     # Hallucinated / unknown tool
