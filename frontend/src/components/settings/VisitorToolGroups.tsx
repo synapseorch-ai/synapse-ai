@@ -31,6 +31,8 @@ export const TOOL_CATEGORY: Record<string, { label: string; tone: BadgeTone }> =
     open_world: { label: 'Reaches outside', tone: 'warning' },
     read_only: { label: 'Reads your data', tone: 'warning' },
     undeclared: { label: 'Does not say what it does', tone: 'warning' },
+    // Says it changes something and stays inside this workspace (TAG1); decided by the undeclared policy.
+    changes: { label: 'Changes something here', tone: 'warning' },
 };
 
 type Group = { id: string; label: string; description?: string; tools: (VisitorToolChoice & { description: string })[] };

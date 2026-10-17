@@ -2,7 +2,8 @@
 import { useState } from 'react';
 import { X, FileUp, CheckSquare, Square, Import } from 'lucide-react';
 
-import { Spinner, buttonStyles } from '@/components/ui';
+import { Badge, Spinner, buttonStyles } from '@/components/ui';
+import { tagChips, tagsOf } from '@/lib/toolHints';
 interface OpenApiImportProps {
     /** Return to the tool list without importing. */
     onClose: () => void;
@@ -236,6 +237,10 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                                         'bg-machine-subtle text-accent-ink'
                                     }`}>{t.method}</span>
                                     <span className="font-mono text-xs text-text truncate">{t.name}</span>
+                                    {/* What it will say it does (TAG1): its method's tags, or the ones a person set on a tool of the same name. */}
+                                    <span className="hidden shrink-0 gap-1 sm:flex" data-import-tags={t.name}>
+                                        {tagChips(tagsOf(t.annotations)).map(c => <Badge key={c} size="sm" tone="neutral">{c}</Badge>)}
+                                    </span>
                                     <span className="font-mono text-[10px] text-text-faint truncate ml-auto">{t.url}</span>
                                 </button>
                             ))}

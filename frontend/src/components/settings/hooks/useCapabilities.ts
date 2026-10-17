@@ -15,7 +15,12 @@
  * fetch would run twice.
  */
 import { useEffect, useState } from "react";
+import type { ToolAnnotations } from "@/lib/toolHints";
 import type { SizedTool } from "@/lib/toolTokens";
+
+/** One tool in a capability. `annotations`: what it says it does (TAG1); `trusted`: false for an outside server's
+ *  or the AI builder's claim, which the tool policy believes only when it restricts. */
+export type ToolDetail = { name: string; description: string; tokens?: number; annotations?: ToolAnnotations; trusted?: boolean };
 
 export type Capability = {
     id: string;
@@ -23,7 +28,7 @@ export type Capability = {
     description?: string;
     tools: string[];
     /** `tokens`: what the tool adds to every model call (F483, `lib/toolTokens.ts`). */
-    toolDetails: { name: string; description: string; tokens?: number }[];
+    toolDetails: ToolDetail[];
     /** Drives the badge: MCP, native, or a user's own tool. */
     toolType: "mcp" | "native" | "custom";
 };
@@ -40,7 +45,13 @@ type AvailableTool = {
     group_label?: string | null;
     /** What it adds to every model call (F483): the engine's `declaration_tokens`. */
     tokens?: number;
+    annotations?: ToolAnnotations;
+    trusted?: boolean;
 };
+
+function detail(t: AvailableTool): ToolDetail {
+    return { name: t.name, description: t.description || "", tokens: t.tokens, annotations: t.annotations, trusted: t.trusted };
+}
 
 /** The tool an agent sends helpers with; stored in its `tools` like any other (D204). */
 export const HELPERS_TOOL = "spawn_subtask";
@@ -65,7 +76,7 @@ function group(tools: AvailableTool[]): Capability[] {
                 toolDetails: [],
                 toolType: "custom",
             };
-            groups[key].toolDetails.push({ name: t.name, description: t.description || "", tokens: t.tokens });
+            groups[key].toolDetails.push(detail(t));
             continue;
         }
         if (t.source === "custom_http") {
@@ -76,7 +87,7 @@ function group(tools: AvailableTool[]): Capability[] {
                 label: t.label || t.name,
                 description: t.description,
                 tools: [t.name],
-                toolDetails: [{ name: t.name, description: t.description || "", tokens: t.tokens }],
+                toolDetails: [detail(t)],
                 toolType: "custom",
             };
             continue;
@@ -95,7 +106,7 @@ function group(tools: AvailableTool[]): Capability[] {
                 t.type === "mcp_external" ? "mcp" : t.type === "mcp_native" ? "native" : "custom",
         };
         groups[source].tools.push(t.name);
-        groups[source].toolDetails.push({ name: t.name, description: t.description || "", tokens: t.tokens });
+        groups[source].toolDetails.push(detail(t));
     }
 
     return Object.values(groups);

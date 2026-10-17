@@ -38,7 +38,7 @@ export const POLICY_CATEGORIES = [
         id: 'undeclared',
         label: "Tools that don't say what they do",
         clause: "a tool that doesn't say what it does",
-        hint: 'Most tools. An outside MCP server’s promise that its tool is safe is a claim rather than a boundary, so a read-only tool from one lands here too.',
+        hint: 'Most tools. An outside MCP server’s promise that its tool is safe is a claim rather than a boundary, so a read-only tool from one lands here too, as does a tool that changes something without reaching outside this workspace.',
     },
 ] as const;
 

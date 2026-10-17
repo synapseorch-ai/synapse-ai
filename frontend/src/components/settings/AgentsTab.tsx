@@ -1,11 +1,12 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { AlertTriangle, Bot, Trash, Copy, ChevronDown, ChevronRight, Lock, Sparkles, MessageSquare, ExternalLink, CheckCircle, XCircle, Square, PanelRightOpen, Image as ImageIcon } from 'lucide-react';
-import { Button, Checkbox, Combobox, Drawer, ErrorNote, Input, Label, MarkdownEditor, Modal, SearchInput, Section, Select, Spinner, Switch } from '@/components/ui';
+import { Badge, Button, Checkbox, Combobox, Drawer, ErrorNote, Input, Label, MarkdownEditor, Modal, SearchInput, Section, Select, Spinner, Switch } from '@/components/ui';
 import Link from 'next/link';
 import { matchesQuery } from '@/lib/search';
 import { humanizeToolName } from '@/lib/toolNames';
 import { toolContext } from '@/lib/toolTokens';
-import { HELPERS_TOOL, selectedToolNames, sizedTools } from './hooks/useCapabilities';
+import { HELPERS_TOOL, selectedToolNames, sizedTools, type ToolDetail } from './hooks/useCapabilities';
+import { tagChips, tagsOf } from '@/lib/toolHints';
 import { vaultMentions } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
 import { useDispatch } from 'react-redux';
@@ -988,7 +989,7 @@ export const AgentsTab = ({
                                                     // a group's description on hover and in its opened list. A
                                                     // search once there are more than 8, as cloud's editor has.
                                                     const q = toolQuery.trim();
-                                                    const detailsOf = (cap: any): { name: string, description: string }[] =>
+                                                    const detailsOf = (cap: any): ToolDetail[] =>
                                                         cap.toolDetails || cap.tools.map((t: string) => ({ name: t, description: '' }));
                                                     const shown = availableCapabilities
                                                         .map((cap: any) => ({
@@ -1006,7 +1007,7 @@ export const AgentsTab = ({
                                                         <div className="max-h-[440px] overflow-y-auto rounded-lg border border-border bg-surface-2/40 p-2 modern-scrollbar">
                                                         <div className="grid items-start gap-2 @2xl:grid-cols-2">
                                                             {shown.map(({ cap, groupHit, tools: matched }: any) => {
-                                                                const toolDetails: { name: string, description: string }[] = q && !groupHit ? matched : detailsOf(cap);
+                                                                const toolDetails: ToolDetail[] = q && !groupHit ? matched : detailsOf(cap);
                                                                 const hasMultipleTools = detailsOf(cap).length > 1;
                                                                 // A search opens the groups it found tools in.
                                                                 const isExpanded = expandedCaps.has(cap.id) || (!!q && !groupHit);
@@ -1085,7 +1086,7 @@ export const AgentsTab = ({
                                                                         {isExpanded && hasMultipleTools && !isAutoGroup && (
                                                                             <div className="divide-y divide-border border-t border-border px-3">
                                                                                 {cap.description && <p className="py-2 text-xs text-text-faint">{cap.description}</p>}
-                                                                                {toolDetails.map((tool: { name: string, description: string }) => {
+                                                                                {toolDetails.map((tool: ToolDetail) => {
                                                                                     const isToolAuto = autoTools.has(tool.name);
                                                                                     const isToolEnabled = isToolAuto || draftAgent.tools.includes("all") || draftAgent.tools.includes(tool.name);
                                                                                     const Row = isToolAuto ? 'div' : 'label';
@@ -1104,6 +1105,14 @@ export const AgentsTab = ({
                                                                                                 </span>
                                                                                                 {tool.description && (
                                                                                                     <span className="mt-0.5 line-clamp-2 block text-xs leading-tight text-text-faint">{tool.description}</span>
+                                                                                                )}
+                                                                                                {/* What it says it does (TAG1), as its server or person declared it. */}
+                                                                                                {tool.annotations && (
+                                                                                                    <span className="mt-1 flex flex-wrap gap-1" data-tool-chips={tool.name}>
+                                                                                                        {tagChips(tagsOf(tool.annotations), tool.trusted !== false).map(c => (
+                                                                                                            <Badge key={c} size="sm" tone="neutral">{c}</Badge>
+                                                                                                        ))}
+                                                                                                    </span>
                                                                                                 )}
                                                                                             </span>
                                                                                             {isToolAuto ? (

@@ -6,7 +6,8 @@ import { PythonToolEditor, type PythonDraftTool } from './PythonToolEditor';
 import { OpenApiImport } from './OpenApiImport';
 import { Badge, Button, buttonStyles, CodeEditor, ConfirmDialog, Label, Select, TemplateInput, TemplateScope, schemaArgs } from '@/components/ui';
 import { AppScreen } from '@/components/app/AppScreen';
-import { annotationsFor, effectOf, effectOfMethod, TOOL_EFFECTS, type ToolEffect } from '@/lib/toolHints';
+import { defaultsFor, sameTags, tagChips, tagsOf } from '@/lib/toolHints';
+import { ToolTagsFields } from './ToolTagsFields';
 
 interface CustomToolsTabProps {
     customTools: any[];
@@ -224,6 +225,10 @@ export const CustomToolsTab = ({
                                     </span>
                                     {t.generalName && <span className="truncate font-mono text-xs text-text-faint">{t.name}</span>}
                                     {t.description && <span className="line-clamp-2 text-xs text-text-muted">{t.description}</span>}
+                                    {/* What it says it does (TAG1): a tool saved before F488, or an untagged Python one, is "Not set". */}
+                                    <span className="flex flex-wrap gap-1" data-tool-chips="">
+                                        {tagChips(tagsOf(t.annotations)).map(c => <Badge key={c} size="sm" tone="neutral">{c}</Badge>)}
+                                    </span>
                                     {group && <span className="truncate text-xs text-text-faint">{group.name}</span>}
                                 </button>
                                 <button
@@ -370,9 +375,9 @@ export const CustomToolsTab = ({
                                     onChange={v => setDraftTool({
                                         ...draftTool,
                                         method: v,
-                                        // What it does follows the method until the person says otherwise (F488).
+                                        // What it does follows the method until the person says otherwise (F488, TAG1).
                                         annotations: draftTool.annotations
-                                            && effectOf(draftTool.annotations, draftTool.method) !== effectOfMethod(draftTool.method || 'POST')
+                                            && !sameTags(tagsOf(draftTool.annotations), defaultsFor(draftTool.method || 'POST'))
                                             ? draftTool.annotations : undefined,
                                     })}
                                     aria-label="HTTP method"
@@ -380,19 +385,14 @@ export const CustomToolsTab = ({
                                 />
                             </div>
 
-                            {/* What it does (F488): the tool policy decides from this whether it asks first. */}
-                            <div className="space-y-1">
-                                <Label className="block">What it does</Label>
-                                <Select
-                                    value={effectOf(draftTool.annotations, draftTool.method || 'POST')}
-                                    onChange={v => setDraftTool({ ...draftTool, annotations: annotationsFor(v as ToolEffect) })}
-                                    aria-label="What the tool does"
-                                    options={TOOL_EFFECTS}
-                                />
-                                <p className="text-xs text-text-muted">
-                                    Your tool policy reads this: a tool that changes or deletes something can wait for a person before it runs.
-                                </p>
-                            </div>
+                            {/* What it does, safe to repeat, reaches outside (F488, TAG1): the tool policy reads them. */}
+                            <ToolTagsFields
+                                kind="http"
+                                method={draftTool.method || 'POST'}
+                                url={draftTool.url}
+                                annotations={draftTool.annotations}
+                                onChange={annotations => setDraftTool({ ...draftTool, annotations })}
+                            />
 
                             {/* Group */}
                             <div className="space-y-1">
@@ -666,6 +666,12 @@ export const CustomToolsTab = ({
                             <PythonToolEditor
                                 draft={draftTool as PythonDraftTool}
                                 onChange={(updated) => setDraftTool(updated)}
+                            />
+                            {/* A Python tool can say what it does too (TAG1); until then it is "not set". */}
+                            <ToolTagsFields
+                                kind="python"
+                                annotations={draftTool.annotations}
+                                onChange={annotations => setDraftTool({ ...draftTool, annotations })}
                             />
                         </div>
                     )}

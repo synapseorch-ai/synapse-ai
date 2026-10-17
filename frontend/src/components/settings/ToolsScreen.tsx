@@ -108,6 +108,8 @@ export function ToolsScreen() {
                     // erased on every save — which is what happened to a tool's
                     // declared globals, set anywhere but here (F28).
                     globals: draftTool.globals || [],
+                    // What it says it does (TAG1); null keeps it "not set".
+                    annotations: draftTool.annotations ?? null,
                 },
                 "Python tool saved successfully",
             );
