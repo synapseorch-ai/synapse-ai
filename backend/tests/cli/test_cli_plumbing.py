@@ -381,3 +381,74 @@ class TestWhatAPersonReads:
         code, out, _ = await synapse("runs", "waiting")
         assert code == 0
         assert f"  synapse runs answer {run_id} …" in out.splitlines(), "one line, copied whole"
+
+
+# ── at a terminal ───────────────────────────────────────────────────────────
+
+
+def _terminal() -> tuple[Output, "object"]:
+    import io
+
+    from rich.console import Console
+
+    out = Output()
+    buffer = io.StringIO()
+    out.err = Console(file=buffer, force_terminal=True, width=100, color_system=None)
+    return out, buffer
+
+
+def _screen(buffer) -> str:
+    """What stays on a terminal: the spinner's own cursor moves and clears taken out."""
+    import re
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buffer.getvalue())
+
+
+class TestARunAtATerminal:
+    EVENTS = [
+        {"type": "orchestration_start", "orchestration_name": "Weekly report", "run_id": "run_o_1"},
+        {"type": "step_start", "orch_step_id": "s", "step_name": "Summarise", "step_type": "llm"},
+        {"type": "tool_execution", "tool_name": "web_search", "args": {"q": "numbers"}},
+        {"type": "step_complete", "orch_step_id": "s", "step_name": "Summarise", "duration_seconds": 1.2},
+        {"type": "step_start", "orch_step_id": "end", "step_name": "End", "step_type": "end"},
+        {"type": "step_complete", "orch_step_id": "end", "step_name": "End", "duration_seconds": 0.3},
+        {"type": "orchestration_complete", "status": "completed"},
+    ]
+
+    def test_one_line_a_step_and_a_summary(self):
+        """A person sees the run as the run page shows it: its name and id, a line for each step done with its
+        type and time, and how it ended. Piped, every event stays its own line (TestEveryRunLine)."""
+        out, buffer = _terminal()
+        follower = RunFollower(out)
+        assert follower.tty
+        follower.follow([_f(e) for e in self.EVENTS])
+        shown = _screen(buffer)
+        assert "▶ Weekly report  run_o_1" in shown
+        assert "▸" not in shown, "a step at work is the spinner's, not a line of its own"
+        lines = [line.rstrip() for line in shown.splitlines() if "✓" in line]
+        assert lines[0].split() == ["✓", "Summarise", "llm", "1.2s"]
+        assert lines[1].split() == ["✓", "End", "end", "0.3s"]
+        assert "↳ web_search" in shown
+        assert "Completed · 2 steps · 1.5s" in shown
+
+    def test_a_failure_says_where(self):
+        out, buffer = _terminal()
+        RunFollower(out).follow([_f(self.EVENTS[0]), _f(self.EVENTS[1]),
+                                 _f({"type": "step_error", "orch_step_id": "s", "error": "model refused"}),
+                                 _f({"type": "orchestration_error", "error": "Step 's' failed"})])
+        shown = _screen(buffer)
+        assert "✗ Summarise  model refused" in shown and "Failed after 0 steps" in shown
+
+
+class TestAChatAtATerminal:
+    def test_the_answer_under_the_agents_name_with_its_tools_and_time(self):
+        from synapse.client.chat import Chat
+
+        out, buffer = _terminal()
+        chat = Chat(api=None, out=out, agent={"id": "a", "name": "Researcher"}, session=None, verbose=False)
+        chat._render([_f({"type": "session", "session_id": "api_1"}),
+                      _f({"type": "tool_execution", "tool_name": "web_search", "args": {}}),
+                      _f({"type": "response", "content": "Three things changed."}),
+                      _f({"type": "done"})])
+        shown = _screen(buffer)
+        assert "· web_search" in shown
+        assert "Researcher" in shown and "1 tool" in shown and chat.session == "api_1"

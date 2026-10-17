@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from pathlib import Path
 
 from rich.markup import escape
@@ -115,7 +116,12 @@ class Chat:
         """Print a turn's events; return the pause it ended on, if any."""
         self._last_code = errors.OK
         spinner = None
-        if not self.out.json_mode and self.out.err.is_terminal:
+        # At a terminal a turn is drawn: the tools it uses as quiet lines, the answer under the agent's name, and
+        # how long it took. Piped, only the answer is stdout's, as scripts read it.
+        tty = not self.out.json_mode and self.out.err.is_terminal
+        started, tools = time.monotonic(), 0
+        answered = False
+        if tty:
             spinner = self.out.err.status("Thinking…", spinner="dots")
             spinner.start()
         try:
@@ -134,10 +140,13 @@ class Chat:
                 if kind == "session" and event.get("session_id"):
                     self.session = event["session_id"]
                 elif kind == "tool_execution":
+                    tools += 1
                     if spinner:
                         spinner.update(f"Running {event.get('tool_name')}…")
                     if self.verbose and not self.out.json_mode:
                         self.out.note(f"  ↳ {event.get('tool_name')} {event.get('args')}")
+                    elif tty:
+                        self.out.note(f"  · {event.get('tool_name')}")
                 elif kind == "tool_result" and self.verbose and not self.out.json_mode:
                     self.out.note(f"    {str(event.get('preview') or '')[:200]}")
                 elif kind in ("status", "thinking") and spinner and event.get("message"):
@@ -157,8 +166,11 @@ class Chat:
                     if spinner:
                         spinner.stop()
                         spinner = None
+                    if tty:
+                        self.out.err.print(f"\n[bold cyan]{escape(self.agent['name'])}[/bold cyan]", highlight=False)
                     if not self.out.json_mode:
                         self.out.markdown(event.get("content") or "")
+                    answered = True
                 elif kind in ("awaiting_approval", "paused"):
                     return event
                 elif kind == "error":
@@ -174,6 +186,9 @@ class Chat:
         finally:
             if spinner:
                 spinner.stop()
+        if tty and answered:
+            took = time.monotonic() - started
+            self.out.note(f"{took:.1f}s" + (f" · {tools} tool{'s' if tools != 1 else ''}" if tools else "") + "\n")
         return None
 
     # ── the REPL ────────────────────────────────────────────────────────────
@@ -212,8 +227,11 @@ class Chat:
 
     def repl(self) -> int:
         _history()
-        self.out.err.print(f"[bold]Chatting with {escape(self.agent['name'])}[/bold]  "
-                           f"[dim]/help for commands · Ctrl-C stops a reply · Ctrl-D leaves[/dim]")
+        model = self.agent.get("model")
+        self.out.err.print(f"[bold]Chatting with {escape(self.agent['name'])}[/bold]"
+                           + (f"  [dim]{escape(str(model))}[/dim]" if model else ""), highlight=False)
+        self.out.err.print("[dim]/help for commands · Ctrl-C stops a reply · Ctrl-D leaves[/dim]\n",
+                           highlight=False)
         while True:
             try:
                 message = _read_message()
@@ -238,7 +256,7 @@ class Chat:
 
 
 def _read_message() -> str:
-    first = input("› ")
+    first = input("you › ")
     if first.strip() == '"""':
         lines = []
         while (line := input("… ")).strip() != '"""':

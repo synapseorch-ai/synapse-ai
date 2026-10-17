@@ -245,9 +245,77 @@ class RunFollower:
         self.skip = 0
         #: The last frame's id, when the stream names them (cloud's do): a reattach reads on from it.
         self.last_id: str | None = None
+        #: A person at a terminal sees the run drawn: a spinner on the step at work, one line per step done, a
+        #: summary at the end. Piped, every event is its own plain line, as scripts and logs read it.
+        self.tty = not out.json_mode and out.err.is_terminal
+        self._spinner = None
+        self._types: dict[str, str] = {}
+        self._steps = 0
+        self._seconds = 0.0
+
+    # ── at a terminal ───────────────────────────────────────────────────────
+
+    def _spin(self, text: str) -> None:
+        if self._spinner is None:
+            self._spinner = self.out.err.status(text, spinner="dots")
+            self._spinner.start()
+        else:
+            self._spinner.update(text)
+
+    def stop(self) -> None:
+        if self._spinner is not None:
+            self._spinner.stop()
+            self._spinner = None
+
+    def _say(self, text: str) -> None:
+        self.out.err.print(text, highlight=False, soft_wrap=True)
+
+    def _drawn(self, event: dict) -> bool:
+        """Draw what a terminal shows differently from a pipe; False for the lines both show alike."""
+        kind = event.get("type")
+        step = event.get("orch_step_id")
+        if kind == "orchestration_start":
+            name = event.get("orchestration_name") or event.get("orchestration_id")
+            self._say(f"[bold]▶ {escape(str(name))}[/bold]  [dim]{escape(str(event.get('run_id') or ''))}[/dim]")
+        elif kind == "step_start":
+            self.names[step] = event.get("step_name") or step
+            self._types[step] = event.get("step_type") or ""
+            self._spin(f"{event.get('step_name') or step}…")
+        elif kind == "step_complete":
+            self.stop()
+            took = event.get("duration_seconds")
+            self._steps += 1
+            self._seconds += float(took or 0)
+            name = str(event.get("step_name") or self.names.get(step) or step)
+            kind_of = self._types.get(step) or event.get("step_type") or ""
+            self._say(f"  [green]✓[/green] {escape(name):<30} [dim]{escape(kind_of):<10}"
+                      + (f" {float(took):6.1f}s" if took is not None else "") + "[/dim]")
+        elif kind == "step_error":
+            self.stop()
+            name = str(self.names.get(step, step))
+            self._say(f"  [red]✗ {escape(name)}[/red]  {escape(str(event.get('error') or ''))}")
+        elif kind == "human_input_required":
+            self.stop()
+            if self.show_questions:
+                self._say(f"  [yellow]? {escape(str(event.get('prompt') or 'Waiting for an answer.'))}[/yellow]")
+        elif kind == "orchestration_complete":
+            self.stop()
+            steps = f"{self._steps} step{'s' if self._steps != 1 else ''}"
+            self._say(f"[green]Completed[/green] [dim]· {steps} · {self._seconds:.1f}s[/dim]\n")
+        elif kind == "orchestration_error":
+            self.stop()
+            if event.get("error") == "Cancelled":
+                self._say("[dim]Stopped.[/dim]")
+            else:
+                self._say(f"[red]Failed[/red] [dim]after {self._steps} steps ·[/dim] {escape(str(event.get('error')))}")
+        else:
+            return False
+        return True
 
     def line(self, event: dict) -> None:
         """One event, as a person reads it on stderr."""
+        if self.tty and self._drawn(event):
+            return
         kind = event.get("type")
         note = self.out.note
         if kind == "orchestration_start":
@@ -304,6 +372,12 @@ class RunFollower:
         v1's run stream holds back; those are passed over, so a script reads one
         shape either way.
         """
+        try:
+            return self._follow(frames, detach, journal)
+        finally:
+            self.stop()
+
+    def _follow(self, frames: Iterable[dict], detach: bool, journal: bool) -> Outcome:
         outcome = Outcome()
         for frame in frames:
             event = frame["data"]
@@ -541,13 +615,13 @@ def _drive(api: ApiClient, out: Output, frames: Iterator[dict], detach: bool = F
         outcome.run_id = outcome.run_id or run_id
 
     if outcome.status in ("failed", "cancelled"):
-        if not out.json_mode:
+        if not out.json_mode and not follower.tty:  # at a terminal the follower's summary said so
             out.note(f"Run {outcome.status}.", style="red")
         return errors.RUN_FAILED
     if not out.json_mode:
         if outcome.response:
             out.markdown(outcome.response)
-        else:
+        elif not follower.tty:
             out.note(f"Run {outcome.status or 'ended'}.")
     return errors.OK
 
