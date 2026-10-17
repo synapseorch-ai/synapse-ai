@@ -153,18 +153,24 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
 }) {
     const {
         state, streaming, send, stop, canAttach,
-        providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft,
+        providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
     } = useBuilder();
     const entered = active;
 
-    const [input, setInput] = useState('');
     // Words handed over by `open({ prompt })` land in the composer, unsent, for
-    // the person to read and send. Adopted while rendering, not in an effect.
+    // the person to read and send. A conversation mounts when the panel opens,
+    // after the words were handed over: it starts with them unless a composer took
+    // them already (the provider's `draftTaken`), and adopts a newer hand-over
+    // while rendering, not in an effect.
+    const [input, setInput] = useState(() => (draft && draft.n !== draftTaken ? draft.text : ''));
     const [adopted, setAdopted] = useState(draft?.n ?? 0);
     if (draft && draft.n !== adopted) {
         setAdopted(draft.n);
         setInput(draft.text);
     }
+    useEffect(() => {
+        if (draft && draft.n !== draftTaken) takeDraft(draft.n);
+    }, [draft, draftTaken, takeDraft]);
     const bottomRef = useRef<HTMLDivElement>(null);
     // The composer's field, for "Change something" and a suggestion to focus.
     const textarea = useRef<HTMLTextAreaElement>(null);

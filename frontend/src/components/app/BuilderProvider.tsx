@@ -146,6 +146,9 @@ interface BuilderContextValue {
     open: (options?: OpenOptions) => void;
     /** The words the last `open({ prompt })` handed over, for the panel's composer. */
     draft: BuilderDraft | null;
+    /** The `n` of the last draft a composer took: one that mounts later (the panel opening) takes only a newer one. */
+    draftTaken: number;
+    takeDraft: (n: number) => void;
     close: () => void;
     state: BuilderState;
     streaming: boolean;
@@ -182,6 +185,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [isOpen, setIsOpen] = useState(false);
     const [entered, setEntered] = useState(false);
     const [draft, setDraft] = useState<BuilderDraft | null>(null);
+    const [draftTaken, takeDraft] = useState(0);
     const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
     const [streaming, setStreaming] = useState(false);
     const [providers, setProviders] = useState<Record<string, ProviderModels>>({});
@@ -641,11 +645,11 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
 
     const value = useMemo(
         () => ({
-            isOpen, entered, open, draft, close, state, streaming, send, stop, newConversation,
+            isOpen, entered, open, draft, draftTaken, takeDraft, close, state, streaming, send, stop, newConversation,
             providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
             setCurrentOrchestration,
         }),
-        [isOpen, entered, open, draft, close, state, streaming, send, stop, newConversation,
+        [isOpen, entered, open, draft, draftTaken, close, state, streaming, send, stop, newConversation,
          providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
          setCurrentOrchestration],
     );
