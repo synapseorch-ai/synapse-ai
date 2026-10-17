@@ -229,6 +229,8 @@ class RunFollower:
         self.seen = 0
         #: Events to pass over on a reattached stream: the ones already shown.
         self.skip = 0
+        #: The last frame's id, when the stream names them (cloud's do): a reattach reads on from it.
+        self.last_id: str | None = None
 
     def line(self, event: dict) -> None:
         """One event, as a person reads it on stderr."""
@@ -291,6 +293,8 @@ class RunFollower:
         outcome = Outcome()
         for frame in frames:
             event = frame["data"]
+            if frame.get("id"):
+                self.last_id = str(frame["id"])
             if not isinstance(event, dict):
                 continue
             if frame.get("id") is None and event.get("status") == "answered":
@@ -390,11 +394,33 @@ def _number(label: str):
         return int(value) if value.is_integer() else value
 
 
-def _reattach(api: ApiClient, follower: RunFollower, run_id: str) -> Iterator[dict]:
-    """The run's events stream from its start, the events this process has shown passed over (F716)."""
+def _reattach(api: ApiClient, follower: RunFollower, run_id: str, after: str | None = None) -> Iterator[dict]:
+    """The run's events stream, read on from where this process is (F716).
+
+    With `after` (the run's last event id before an answer was given), from
+    just after it. Without, from the run's start with every event this
+    process has shown passed over: `seen` counts the run's, across every cut.
+    """
+    after = after if after is not None else follower.last_id
+    if after is not None:
+        follower.skip = 0
+        return api.stream("GET", f"/orchestrations/runs/{run_id}/events/stream",
+                          headers={"Last-Event-ID": str(after)})
     follower.skip = follower.seen
-    follower.seen = 0
     return api.stream("GET", f"/orchestrations/runs/{run_id}/events/stream")
+
+
+def _journal_end(api: ApiClient, run_id: str) -> str | None:
+    """The id of a run's last event so far, to read on after it; None when it has none."""
+    after, last = 0, None
+    while True:
+        page = api.get(f"/orchestrations/runs/{run_id}/events", after=after, limit=5000)
+        events = page.get("events") or []
+        if events:
+            last = page.get("last_id", events[-1].get("id"))
+        if len(events) < 5000 or page.get("last_id") == after:
+            return None if last is None else str(last)
+        after = page["last_id"]
 
 
 def _follow(api: ApiClient, out: Output, follower: RunFollower, frames: Iterator[dict], *,
@@ -465,7 +491,7 @@ def _waiting_note(out: Output, run_id: str, pause: dict) -> None:
 
 
 def _drive(api: ApiClient, out: Output, frames: Iterator[dict], detach: bool = False,
-           owns_run: bool = True, run_id: str | None = None) -> int:
+           owns_run: bool = True, run_id: str | None = None, after: str | None = None) -> int:
     """Follow a run to its end, answering each question here when a person is present."""
     follower = _Tracking(out, show_questions=False)
     follower.run_id = run_id
@@ -483,7 +509,9 @@ def _drive(api: ApiClient, out: Output, frames: Iterator[dict], detach: bool = F
         run_id = (outcome.pause or {}).get("run_id") or outcome.run_id or follower.run_id
         if outcome.answered_live:
             # A team member took the answer; the run never stopped. Read on from its events.
-            outcome = _follow(api, out, follower, _reattach(api, follower, run_id), journal=True)
+            start = None if owns_run else after
+            outcome = _follow(api, out, follower, _reattach(api, follower, run_id, start), journal=True)
+            after = None
             outcome.run_id = outcome.run_id or run_id
             continue
         if out.json_mode or not _interactive():
@@ -767,8 +795,11 @@ def runs_answer(args, api: ApiClient, out: Output):
     body = {"response": response}
     if question_id:
         body["question_id"] = question_id
+    # Where the run's events end now: a team that takes the answer while it works never pauses, and the CLI
+    # reads on from just after this, showing nothing from before the answer again.
+    after = _journal_end(api, args.run_id)
     frames = api.stream("POST", f"/orchestrations/runs/{args.run_id}/resume/stream", body)
-    return _drive(api, out, frames, owns_run=False, run_id=args.run_id)
+    return _drive(api, out, frames, owns_run=False, run_id=args.run_id, after=after)
 
 
 @_handler

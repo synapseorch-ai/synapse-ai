@@ -259,3 +259,87 @@ class TestACutStream:
         assert code == 0
         assert calls == [None, {"Last-Event-ID": "7"}]
         assert "reading on" in err and "✓ A" in err
+
+
+class TestACutStreamTwice:
+    START = TestACutStream.START
+    STEP = TestACutStream.STEP
+    DONE = TestACutStream.DONE
+    FINAL = TestACutStream.FINAL
+    END = TestACutStream.END
+
+    def test_a_second_cut_skips_everything_shown_so_far(self, capsys):
+        """Two cuts show nothing twice: the first reads on by counting what the id-less run stream showed, the
+        second from the last id the events stream named (the server honours Last-Event-ID, as both products do)."""
+        out = Output(json_mode=True)
+        follower = _Tracking(out, show_questions=False)
+        journal = [_f(self.START, "1"), _f(self.STEP, "2"), _f(self.DONE, "3"), _f(self.FINAL, "4"),
+                   _f(self.END, "5"), _f({"type": "stream_complete"})]
+        asked = []
+
+        class Journal(_Api):
+            def stream(self, method, path, body=None, params=None, headers=None):
+                asked.append(headers)
+                after = int((headers or {}).get("Last-Event-ID") or 0)
+                frames = [f for f in journal if f["id"] is None or int(f["id"]) > after]
+                return _cut(frames[:2]) if len(asked) == 1 else iter(frames)
+
+        outcome = _follow(Journal(), out, follower, _cut([_f(self.START), _f(self.STEP)]))
+        assert outcome.status == "completed"
+        assert asked == [None, {"Last-Event-ID": "2"}], "the last id it had read, skipped or shown"
+        shown = [json.loads(line)["type"] for line in capsys.readouterr().out.splitlines()]
+        assert shown == ["orchestration_start", "step_start", "step_complete", "final", "orchestration_complete",
+                         "stream_complete"]
+
+
+class TestAnAnswerAWorkingTeamTakes:
+    def test_another_shell_reads_on_from_where_the_run_was_when_it_answered(self, monkeypatch, capsys):
+        """`runs answer` in a new shell, to a team that takes the answer while it works (TEAM1c): the run never
+        paused, so the CLI reads on from the run's events — after the last one there was before the answer,
+        so nothing from before it is shown again."""
+        from synapse.client import commands
+
+        asked = []
+
+        class Api(_Api):
+            def get(self, path, **params):
+                asked.append(("GET", path, params))
+                return {"events": [{"id": 41, "event": {}}, {"id": 42, "event": {}}], "last_id": 42}
+
+            def stream(self, method, path, body=None, params=None, headers=None):
+                asked.append((method, path, headers))
+                if method == "POST":
+                    return iter([{"id": None, "data": {"status": "answered", "run_id": "run_o_1", "delivered": True}}])
+                return iter([_f({"type": "member_finished", "member_name": "Ben", "status": "completed"}, "43"),
+                             _f({"type": "orchestration_complete", "status": "completed"}, "44"),
+                             _f({"type": "stream_complete"})])
+
+        api = Api()
+        start = commands._journal_end(api, "run_o_1")
+        frames = api.stream("POST", "/orchestrations/runs/run_o_1/resume/stream", {"response": {"approve": True}})
+        code = commands._drive(api, Output(json_mode=True), frames, owns_run=False, run_id="run_o_1", after=start)
+        assert code == 0
+        assert asked[-1] == ("GET", "/orchestrations/runs/run_o_1/events/stream", {"Last-Event-ID": "42"})
+        shown = [json.loads(line).get("type") or json.loads(line).get("status")
+                 for line in capsys.readouterr().out.splitlines()]
+        assert shown == ["answered", "member_finished", "orchestration_complete", "stream_complete"]
+
+
+class TestAStreamWithIds:
+    def test_a_cut_stream_whose_frames_have_ids_reads_on_from_the_last(self, capsys):
+        """Cloud's run streams name each frame's id: read on from it, rather than count what was shown."""
+        out = Output(json_mode=True)
+        follower = _Tracking(out, show_questions=False)
+        start, step = TestACutStream.START, TestACutStream.STEP
+        asked = []
+
+        class Api(_Api):
+            def stream(self, method, path, body=None, params=None, headers=None):
+                asked.append(headers)
+                return iter([_f(TestACutStream.END, "1790-3"), _f({"type": "stream_complete"})])
+
+        outcome = _follow(Api(), out, follower, _cut([_f(start, "1790-1"), _f(step, "1790-2")]))
+        assert outcome.status == "completed"
+        assert asked == [{"Last-Event-ID": "1790-2"}]
+        shown = [json.loads(line)["type"] for line in capsys.readouterr().out.splitlines()]
+        assert shown == ["orchestration_start", "step_start", "orchestration_complete", "stream_complete"]
