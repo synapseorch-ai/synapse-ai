@@ -109,3 +109,11 @@ def test_a_listed_tool_keeps_the_hints_it_set():
     assert listed_hints(Tool(name="x", inputSchema={"type": "object"})) is None
     assert listed_hints({"name": "x", "annotations": {"readOnlyHint": 1, "title": "t"}}) == {"readOnlyHint": True}
     assert listed_hints({"name": "x"}) is None
+
+
+def test_a_read_can_state_both_hints_for_outside_clients():
+    """D125: every tool Synapse serves over MCP states readOnlyHint and destructiveHint, since a client that reads
+    an absent destructiveHint as destructive would prompt on every read. A custom tool keeps the three (F488)."""
+    assert hints_of(defaults_for("GET"), explicit=True) == {"readOnlyHint": True, "destructiveHint": False,
+                                                             "idempotentHint": True, "openWorldHint": True}
+    assert hints_of(defaults_for("POST"), explicit=True) == hints_of(defaults_for("POST"))

@@ -47,11 +47,13 @@ def defaults_for(method: str | None) -> dict[str, bool]:
     return dict(METHOD_TAGS.get((method or "GET").upper(), _WRITE))
 
 
-def hints_of(tags: dict) -> dict[str, bool]:
+def hints_of(tags: dict, *, explicit: bool = False) -> dict[str, bool]:
     """MCP's hints for `tags`. A read-only tool carries no destructiveHint: "destructiveHint is meaningful only when
-    readOnlyHint is false" (MCP), and F488's saved GETs carry the three."""
+    readOnlyHint is false" (MCP), and F488's saved GETs carry the three. `explicit`: a read states
+    `destructiveHint: False` too, as every tool Synapse serves to outside MCP clients does (D125): a client that
+    reads an absent one as destructive would prompt on every read."""
     out = {HINT_OF[t]: bool(tags.get(t)) for t in TAGS}
-    if out["readOnlyHint"]:
+    if out["readOnlyHint"] and not explicit:
         del out["destructiveHint"]
     return out
 
