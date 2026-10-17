@@ -346,6 +346,15 @@ async def import_bundle(req: ImportRequest):
             merged_headers = {k: user_secrets.get(k, "") for k in tool_entry["headers"].keys()}
             tool_entry["headers"] = merged_headers
 
+        # A file's tags are a claim (TAG1): believed when they restrict, until a person saves the tool.
+        from core.tool_tags import IMPORT_HINTS, clean_hints
+        if isinstance(tool_entry.get("annotations"), dict):
+            tool_entry["annotations"] = clean_hints(tool_entry["annotations"])
+            tool_entry["annotations_by"] = tool_entry.get("annotations_by") or IMPORT_HINTS
+        else:
+            tool_entry.pop("annotations", None)
+            tool_entry.pop("annotations_by", None)
+
         imported_tools.append(tool_entry)
         results["custom_tools"].append({
             "name": tname,
@@ -494,10 +503,15 @@ def _sanitize_mcp_servers(servers: List[dict]) -> List[dict]:
 
 
 def _sanitize_custom_tools(tools: List[dict]) -> List[dict]:
-    """Replace HTTP tool header values with empty strings (keep keys)."""
+    """Replace HTTP tool header values with empty strings (keep keys).
+
+    Who wrote a tool's tags (`annotations_by`) stays behind: it says whom this workspace believes, and the importer
+    marks every tag a file brings as the file's (TAG1).
+    """
     sanitized = []
     for t in tools:
         entry = dict(t)
+        entry.pop("annotations_by", None)
         if isinstance(entry.get("headers"), dict):
             entry["headers"] = {k: "" for k in entry["headers"].keys()}
         sanitized.append(entry)

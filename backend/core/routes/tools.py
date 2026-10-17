@@ -58,6 +58,7 @@ async def get_available_tools():
 
     # Native engine tools appear first so they show above MCP and custom tools
     from core.spawn_subtask import SPAWN_SUBTASK_STATIC_SCHEMA
+    from core.tool_tags import listed_hints
     from core.task_list import TASK_LIST_STATIC_SCHEMA
     all_tools = [TASK_LIST_STATIC_SCHEMA, SPAWN_SUBTASK_STATIC_SCHEMA]
 
@@ -87,6 +88,9 @@ async def get_available_tools():
                     "schema": t.inputSchema,
                     # What it adds to every call an agent holding it makes (F483).
                     "tokens": declaration_tokens(name, t.description, t.inputSchema),
+                    # What it says it does, and whether that is believed (TAG1): an outside server's is a claim.
+                    **({"annotations": hints} if (hints := listed_hints(t)) is not None else {}),
+                    "trusted": not is_external,
                 })
         except Exception as e:
             print(f"Error listing tools for agent '{name}': {e}")
@@ -111,6 +115,9 @@ async def get_available_tools():
                 # whole group as `group:<id>` (core/tools.py).
                 "group": group,
                 "group_label": group_names.get(group) if group else None,
+                # What it says it does (TAG1): a person's tags are believed, the builder's and a file's are a claim.
+                **({"annotations": hints} if (hints := listed_hints(t)) is not None else {}),
+                "trusted": not t.get("annotations_by"),
             })
     except Exception as e:
         print(f"Error listing custom tools: {e}")
@@ -279,6 +286,13 @@ async def import_openapi(req: OpenAPIImportRequest):
     group = {"id": _group_id(group_name), "name": group_name, "description": str((spec.get("info") or {}).get("description") or "").strip()[:500]}
     for t in generated:
         t["group"] = group["id"]
+    # The preview shows what each operation will declare (TAG1): a tool already saved under the name keeps the
+    # person's tags while its method is the same; the rest start from their method.
+    from core.store.resources import load_tools
+    from core.tool_tags import carried
+    from core.tools import hinted
+    before = {t.get("name"): t for t in await load_tools()}
+    generated = [hinted(carried(t, before.get(t["name"]))) for t in generated]
 
     if req.save:
         await _upsert_group(group)

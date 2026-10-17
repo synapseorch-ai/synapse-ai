@@ -477,9 +477,12 @@ class WorkerServerModule:
             await report_mcp_status(server_name, "connected")
             # And what it lists now, for a host that stores the list and counts it
             # in the agent editor: it went stale silently (F524).
+            # With what each says it does, so a host's screens agree with the run (TAG1, F740).
+            from core.tool_tags import listed_hints
             await report_mcp_tools(server_name, [
                 {"name": str(tool.name), "description": str(getattr(tool, "description", None) or ""),
-                 "inputSchema": getattr(tool, "inputSchema", None) or {}}
+                 "inputSchema": getattr(tool, "inputSchema", None) or {},
+                 **({"annotations": hints} if (hints := listed_hints(tool)) is not None else {})}
                 for tool in tools_result.tools
             ])
             _log.debug(

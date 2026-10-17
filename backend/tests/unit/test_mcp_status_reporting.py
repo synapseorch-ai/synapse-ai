@@ -200,6 +200,36 @@ class TestTheLiveToolListIsReported:
         assert tools == [("vercel", [{"name": "do_thing", "description": "", "inputSchema": {}}])]
         await module.close()
 
+    async def test_what_each_tool_says_it_does_is_reported_too(self, reported, monkeypatch):
+        """TAG1 (F740): the stored list kept no annotations, so a host's screens and badges said every server tool
+        was undeclared while the run read its hints live."""
+        from mcp.types import ToolAnnotations
+
+        tools: list[tuple[str, list[dict]]] = []
+
+        async def fake_tools(server_name, listed):
+            tools.append((server_name, listed))
+
+        async def list_tools(self):
+            result = _ToolsResult(["do_thing"])
+            told = _Tool("deploy")
+            told.annotations = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True,
+                                               title="Deploy")
+            result.tools.append(told)
+            return result
+
+        monkeypatch.setattr(_FakeSession, "list_tools", list_tools)
+        monkeypatch.setattr(context, "report_mcp_tools", fake_tools)
+        _oauth(monkeypatch, can=True, refresh_result=None)
+        module = await _connect([_oauth_cfg(url="https://good.example.com/mcp")], monkeypatch)
+
+        assert tools == [("vercel", [
+            {"name": "do_thing", "description": "", "inputSchema": {}},
+            {"name": "deploy", "description": "", "inputSchema": {},
+             "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True}},
+        ])]
+        await module.close()
+
     async def test_a_server_that_did_not_connect_reports_no_list(self, reported, monkeypatch):
         tools: list = []
 
