@@ -1,7 +1,8 @@
 """What a command prints: rich for a person, JSON for a script.
 
 With `--json`, stdout carries only JSON — a document for `list`/`show`, one
-event per line for a stream — and anything meant for a person goes to stderr.
+event per line for a stream — and anything meant for a person goes to stderr;
+an error is one JSON object there, `{"error": {"message", "exit_code", "status"}}`.
 Without it, results go to stdout and progress to stderr, so `synapse run x >
 out.txt` keeps only the answer.
 """
@@ -73,5 +74,19 @@ class Output:
     def note(self, message: str, style: str = "dim") -> None:
         self.err.print(message, style=style, markup=False)
 
-    def error(self, message: str) -> None:
+    def error(self, message: str, code: int | None = None, status: int | None = None) -> None:
+        """What went wrong; with `--json`, one JSON object on stderr a script can read (D294)."""
+        if self.json_mode:
+            body = {"message": message, "exit_code": code}
+            if status is not None:
+                body["status"] = status
+            sys.stderr.write(json.dumps({"error": body}) + "\n")
+            sys.stderr.flush()
+            return
         self.err.print(f"Error: {message}", style="red", markup=False)
+
+    def ids(self, rows: Iterable[dict], key: str = "id") -> None:
+        """`-q`: one id a line, nothing else, for `xargs` and `$(…)`."""
+        for row in rows:
+            sys.stdout.write(f"{row[key]}\n")
+        sys.stdout.flush()

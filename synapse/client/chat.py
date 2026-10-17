@@ -15,7 +15,7 @@ from pathlib import Path
 from rich.markup import escape
 
 from synapse.client import commands, errors
-from synapse.client.commands import _ask, _drive, _pick, _yes_no
+from synapse.client.commands import _ask, _drive, _yes_no
 from synapse.client.errors import CliError
 from synapse.client.http import ApiClient
 from synapse.client.output import Output
@@ -49,6 +49,16 @@ class Chat:
             body["session_id"] = self.session
         return self._follow(self.api.stream("POST", "/chat/stream", body))
 
+    def answer(self, approve: bool, reason: str = "", question_id: str | None = None,
+               approval_id: str | None = None) -> int:
+        """Allow or refuse the call this conversation stopped on, and show the turn it carries on with."""
+        body = {"approve": approve, "reason": reason, "agent": self.agent["id"]}
+        if approval_id:
+            body["approval_id"] = approval_id
+        if question_id:
+            body["question_id"] = question_id
+        return self._follow(self.api.stream("POST", f"/chat/{self.session}/approve", body))
+
     def _follow(self, frames) -> int:
         """Show a turn to its end; answer what it stops on when someone is here to."""
         try:
@@ -61,20 +71,38 @@ class Chat:
         if pause is None:
             return self._last_code
         if self.out.json_mode or not commands._interactive():
+            if pause["type"] == "awaiting_approval":
+                asked = [q for q in pause.get("questions") or [] if q.get("question_id")]
+                for q in asked:
+                    self.out.note(f"  ? {_member_line(q)}", style="yellow")
+                    self.out.note(f"    synapse chat --session {self.session} --question {q['question_id']} "
+                                  "--approve|--reject", style="yellow")
+                if not asked:
+                    call = pause.get("pending_call") or {}
+                    self.out.note(f"  ? {call.get('tool_name')} {call.get('tool_args') or ''}".rstrip(),
+                                  style="yellow")
+                    self.out.note(f"The agent is waiting for an answer. Give it with: "
+                                  f"synapse chat --session {self.session} --approve|--reject", style="yellow")
+                return errors.WAITING
             self.out.note(f"The agent is waiting for an answer. Continue with: synapse chat --session {self.session}",
                           style="yellow")
             return errors.WAITING
         if pause["type"] == "awaiting_approval":
             call = pause.get("pending_call") or {}
-            self.out.markdown(pause.get("prompt") or "")
-            if call.get("tool_args"):
-                self.out.note(f"  {call.get('tool_name')} {call.get('tool_args')}")
+            asked = [q for q in pause.get("questions") or [] if q.get("question_id")]
+            if asked:
+                # A team's members each stopped on a call (TEAM1c): each is its own question.
+                question = asked[0]
+                self.out.err.print(f"\n[bold yellow]?[/] {escape(_member_line(question))}")
+            else:
+                question = None
+                self.out.markdown(pause.get("prompt") or "")
+                if call.get("tool_args"):
+                    self.out.note(f"  {call.get('tool_name')} {call.get('tool_args')}")
             allowed = _yes_no("Allow it?")
             reason = "" if allowed else input("Why not? (optional) ").strip()
-            return self._follow(self.api.stream("POST", f"/chat/{self.session}/approve", {
-                "approve": allowed, "reason": reason, "approval_id": call.get("approval_id"),
-                "agent": self.agent["id"],
-            }))
+            return self.answer(allowed, reason, question_id=(question or {}).get("question_id"),
+                               approval_id=(question or call).get("approval_id"))
         # A run the agent started is asking a person.
         run_id = pause.get("run_id")
         run = self.api.get(f"/orchestrations/runs/{run_id}")
@@ -98,6 +126,11 @@ class Chat:
                 if self.out.json_mode:
                     self.out.event(event)
                 kind = event.get("type")
+                if kind is None and event.get("live"):
+                    # A working team member took the answer at once; the turn carries on (TEAM1c).
+                    if not self.out.json_mode:
+                        self.out.note("Answered; the team carries on.")
+                    break
                 if kind == "session" and event.get("session_id"):
                     self.session = event["session_id"]
                 elif kind == "tool_execution":
@@ -109,6 +142,15 @@ class Chat:
                     self.out.note(f"    {str(event.get('preview') or '')[:200]}")
                 elif kind in ("status", "thinking") and spinner and event.get("message"):
                     spinner.update(str(event["message"])[:80])
+                elif kind in ("member_started", "helper_started") and not self.out.json_mode:
+                    who = event.get("member_name") or event.get("helper_name")
+                    task = str(event.get("task") or "").strip().splitlines()
+                    self.out.note(f"  · {who}" + (f": {task[0][:80]}" if task else ""))
+                elif kind in ("member_finished", "helper_finished") and not self.out.json_mode:
+                    who = event.get("member_name") or event.get("helper_name")
+                    status = event.get("status") or "done"
+                    self.out.note(f"  {'✓' if status in ('completed', 'done') else '·'} {who} {status}",
+                                  style="green" if status in ("completed", "done") else "dim")
                 elif kind == "agent_step_result" and not self.out.json_mode:
                     self.out.note(f"  ✓ {event.get('step_name')}", style="green")
                 elif kind == "response":
@@ -153,7 +195,7 @@ class Chat:
                 self.out.note(f"Talking to {self.agent['name']}. /agent NAME to switch.", style="")
             else:
                 try:
-                    self.agent = _pick(self.api.get("/agents"), rest, "agent")
+                    self.agent = commands._find(self.api, "agent", rest)
                 except CliError as exc:
                     self.out.error(exc.message)
                     return True
@@ -233,12 +275,26 @@ def _save_history(readline, path: Path) -> None:
         pass
 
 
+def _member_line(q: dict) -> str:
+    args = q.get("tool_args")
+    return f"{q.get('member_name') or 'A member'} wants to run {q.get('tool_name')}" + (f" {args}" if args else "")
+
+
 def run_chat(args, api: ApiClient, out: Output) -> int:
-    agents = api.get("/agents")
-    if not agents:
-        raise CliError("There are no agents to chat with yet.")
-    agent = _pick(agents, args.agent, "agent") if args.agent else agents[0]
+    deciding = getattr(args, "approve", False) or getattr(args, "reject", False)
+    if deciding and not args.session:
+        raise CliError("--approve and --reject answer a conversation's held call: say which with --session.",
+                       errors.USAGE)
+    if args.agent:
+        agent = commands._find(api, "agent", args.agent)
+    else:
+        agents = api.get("/agents")
+        if not agents:
+            raise CliError("There are no agents to chat with yet.")
+        agent = agents[0]
     chat = Chat(api, out, agent, args.session, args.verbose)
+    if deciding:
+        return chat.answer(bool(args.approve), args.reason or "", question_id=args.question)
 
     if args.message is not None or not sys.stdin.isatty():
         message = args.message if args.message is not None else sys.stdin.read()

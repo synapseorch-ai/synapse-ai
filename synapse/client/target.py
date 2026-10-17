@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from synapse.client import errors
 from synapse.client.errors import CliError
 
 #: The name the CLI's own key carries in Settings → API keys.
@@ -85,8 +86,15 @@ def _quietly(fn, *args):
 
 @functools.cache
 def _install_settings() -> dict:
-    """This machine's settings, read once per command."""
+    """The settings the client needs from this machine's store, read once per command.
+
+    Read-only and without the engine where the store allows it (F710);
+    otherwise through the store, as every other command reads settings.
+    """
     from synapse import _store
+    peeked = _store.peek_settings()
+    if peeked is not None:
+        return peeked
     return _quietly(_store.load_settings)
 
 
@@ -125,6 +133,9 @@ class Target:
     api_key: str | None
     #: The key is the CLI's own for this machine, so a refused one can be replaced.
     managed: bool = False
+    #: Where the key came from: `--api-key`, `SYNAPSE_API_KEY`, `kept` (`synapse login --api-key-stdin`) or
+    #: `this machine` (the CLI's own).
+    key_from: str = "this machine"
     _config: dict = field(default_factory=dict, repr=False)
 
     @property
@@ -183,6 +194,20 @@ class Target:
             with contextlib.suppress(Exception):
                 _quietly(_store.run, lambda: delete_api_key(key_id))
 
+    # ── a remote Synapse's key, kept ────────────────────────────────────────
+
+    def keep_key(self, key: str) -> None:
+        """Keep `key` for this origin, so its commands need no `--api-key` or `SYNAPSE_API_KEY`."""
+        self._entry()["kept_key"] = key
+        _write_config(self._config)
+
+    def forget_kept_key(self) -> bool:
+        entry = self._entry()
+        if entry.pop("kept_key", None) is None:
+            return False
+        _write_config(self._config)
+        return True
+
     # ── the login session ───────────────────────────────────────────────────
 
     def save_session(self, token: str | None) -> None:
@@ -207,15 +232,25 @@ def resolve_origin(url: str | None = None) -> tuple[str, str]:
     return origin, origin + (parts.path.rstrip("/") or API_PREFIX)
 
 
-def resolve(url: str | None = None, api_key: str | None = None) -> Target:
-    """The target a command talks to, from its flags, the environment and the defaults."""
-    key = (api_key or os.getenv("SYNAPSE_API_KEY") or "").strip() or None
+def resolve(url: str | None = None, api_key: str | None = None, need_key: bool = True) -> Target:
+    """The target a command talks to, from its flags, the environment and the defaults.
+
+    The key is `--api-key`, else `SYNAPSE_API_KEY`, else the one kept for this
+    origin, else (on this machine) the CLI's own.
+    """
     origin, api_base = resolve_origin(url)
-    target = Target(origin=origin, api_base=api_base, api_key=key, _config=_read_config())
-    if key is None:
-        if not target.is_local:
+    config = _read_config()
+    flag, env = (api_key or "").strip(), (os.getenv("SYNAPSE_API_KEY") or "").strip()
+    kept = (((config.get("targets") or {}).get(origin) or {}).get("kept_key") or "").strip()
+    key, key_from = ((flag, "--api-key") if flag else (env, "SYNAPSE_API_KEY") if env
+                     else (kept, "kept") if kept else (None, "this machine"))
+    target = Target(origin=origin, api_base=api_base, api_key=key or None, key_from=key_from, _config=config)
+    if not key:
+        if not target.is_local and need_key:
             raise CliError(
-                f"{origin} needs an API key. Pass --api-key or set SYNAPSE_API_KEY."
+                f"{origin} needs an API key. Pass --api-key, set SYNAPSE_API_KEY, or keep one with: "
+                f"synapse login --url {origin} --api-key-stdin",
+                errors.REFUSED,
             )
-        target.managed = True
+        target.managed = target.is_local
     return target

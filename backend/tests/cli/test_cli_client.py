@@ -26,8 +26,8 @@ import pytest
 
 from _fakes import engine_events as E
 
-cli = pytest.importorskip("synapse.cli", reason="the synapse package is not importable here")
-from synapse.client import commands, target  # noqa: E402
+from cli_harness import answers as _answers, cli  # noqa: E402 — after the skip, as the harness imports synapse
+from synapse.client import target  # noqa: E402
 from synapse.client.errors import CliError  # noqa: E402
 
 _THINK = [{"id": "s", "name": "Think", "type": "llm",
@@ -39,44 +39,6 @@ _ASK = [
      "output_key": "answer", "next_step_id": "s"},
     *_THINK,
 ]
-
-
-@pytest.fixture(autouse=True)
-def _own_config(tmp_path, monkeypatch):
-    monkeypatch.setenv("SYNAPSE_CLI_CONFIG", str(tmp_path / "cli.json"))
-    monkeypatch.setenv("SYNAPSE_CHAT_HISTORY", str(tmp_path / "chat_history"))
-    for name in ("SYNAPSE_API_URL", "SYNAPSE_API_KEY"):
-        monkeypatch.delenv(name, raising=False)
-    target._install_settings.cache_clear()
-    yield
-    target._install_settings.cache_clear()
-
-
-def _main(monkeypatch, capsys, *argv) -> tuple[int, str, str]:
-    monkeypatch.setattr(sys, "argv", ["synapse", *argv])
-    try:
-        cli.main()
-        code = 0
-    except SystemExit as exc:
-        code = exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-    captured = capsys.readouterr()
-    return code, captured.out, captured.err
-
-
-@pytest.fixture
-def synapse(live_server, api_key, monkeypatch, capsys):
-    """`await synapse("agents", "list")` → (exit code, stdout, stderr), against the live app."""
-    async def run(*argv):
-        return await asyncio.to_thread(
-            _main, monkeypatch, capsys, *argv, "--url", live_server.url, "--api-key", api_key["raw"])
-    return run
-
-
-def _answers(monkeypatch, *replies):
-    """A person at the terminal, typing these replies in order."""
-    it = iter(replies)
-    monkeypatch.setattr(builtins, "input", lambda prompt="": next(it))
-    monkeypatch.setattr(commands, "_interactive", lambda: True)
 
 
 # ── output ──────────────────────────────────────────────────────────────────
@@ -113,9 +75,10 @@ class TestDiscovery:
         assert code == 0 and "Research Bot" in out
 
     async def test_an_unknown_name_is_an_error(self, synapse):
+        """Exit 5, the not-found code, since D294 (it was 1, every refusal's); a workflow by its product name."""
         code, out, err = await synapse("orchestrations", "show", "nope")
-        assert code == 1 and out == ""
-        assert "No orchestration" in err
+        assert code == 5 and out == ""
+        assert "No workflow" in err
 
     async def test_orch_is_orchestrations(self, synapse, seed_orchestration):
         orch = await seed_orchestration(name="Weekly report")
@@ -256,13 +219,7 @@ class TestRuns:
 # ── schedules ───────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-def schedule_manager(test_app):
-    from core.scheduler import ScheduleManager
-    mgr = ScheduleManager()
-    mgr._server_module = test_app.state.server_module
-    test_app.state.schedule_manager = mgr
-    return mgr
+
 
 
 class TestSchedules:
@@ -392,26 +349,7 @@ class TestChat:
 # ── mcp ─────────────────────────────────────────────────────────────────────
 
 
-@pytest.fixture
-async def mcp_endpoint(test_app):
-    """The app's MCP endpoint running, as the lifespan starts it (A's `mcp_app`, D125)."""
-    from core.mcp_server.endpoint import default_endpoint
 
-    endpoint = default_endpoint()
-    started, stop = asyncio.Event(), asyncio.Event()
-
-    async def _serve():
-        async with endpoint.serve():
-            started.set()
-            await stop.wait()
-
-    task = asyncio.create_task(_serve())
-    await asyncio.wait_for(started.wait(), 5)
-    try:
-        yield
-    finally:
-        stop.set()
-        await asyncio.wait_for(task, 5)
 
 
 class TestMcp:
@@ -451,13 +389,7 @@ class TestMcp:
 # ── the target: sync, the CLI and the store alone ───────────────────────────
 
 
-@pytest.fixture
-def clean_install(tmp_path, monkeypatch):
-    monkeypatch.setenv("SYNAPSE_DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'store.db'}")
-    monkeypatch.setenv("SYNAPSE_BLOB_DIR", str(tmp_path / "blobs"))
-    monkeypatch.delenv("SYNAPSE_DATA_DIR", raising=False)
-    monkeypatch.delenv("SYNAPSE_BACKEND_PORT", raising=False)
-    return tmp_path
+
 
 
 def _keys():

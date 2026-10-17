@@ -2325,6 +2325,8 @@ def main():
     # The API commands: agents, orchestrations, run, runs, schedules, chat, … (D126)
     from synapse.client import commands as _client_commands
     _client_commands.register(sub)
+    from synapse.client import help as _client_help
+    _client_help.tidy(parser)
 
     args = parser.parse_args()
 

@@ -2,16 +2,22 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 
 import httpx
 
-from synapse.client.errors import ApiError, CliError
+from synapse.client import errors
+from synapse.client.errors import ApiError, CliError, StreamBroken
 from synapse.client.target import Target
 
 #: A stream's read timeout. Every v1 stream sends a heartbeat at least every
 #: 15 s while it is quiet, so a minute of silence means the server is gone.
 _STREAM_READ_TIMEOUT = 60.0
+#: The longest `Retry-After` a command waits out, once, before it gives up with
+#: UNAVAILABLE (D294). Longer than this, a script is better told at once.
+_MAX_RETRY_AFTER = 30.0
+_BUSY = (429, 503)
 
 
 def _detail(resp: httpx.Response) -> str:
@@ -20,11 +26,32 @@ def _detail(resp: httpx.Response) -> str:
     except ValueError:
         return resp.text.strip()[:300] or resp.reason_phrase
     detail = body.get("detail") if isinstance(body, dict) else None
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):  # the OpenAI-shaped routes
+        detail = body["error"].get("message")
     if isinstance(detail, list):  # FastAPI's validation errors
         return "; ".join(
             f"{'.'.join(str(p) for p in d.get('loc', [])[1:])}: {d.get('msg')}" for d in detail
         )
     return str(detail or body)
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    """The seconds a busy server asked for, when it asked for few enough to wait."""
+    try:
+        seconds = float(resp.headers.get("retry-after", ""))
+    except ValueError:
+        return None
+    return seconds if 0 <= seconds <= _MAX_RETRY_AFTER else None
+
+
+def _body(resp: httpx.Response):
+    """A response's JSON, or None when it has none (204, or an empty 202)."""
+    if not resp.content:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return resp.text
 
 
 def parse_sse(lines: Iterator[str]) -> Iterator[dict]:
@@ -71,53 +98,90 @@ class ApiClient:
 
     def _unreachable(self, exc: Exception) -> CliError:
         hint = " Is it running? Start it with `synapse start`." if self.target.is_local else ""
-        return CliError(f"Could not reach Synapse at {self.target.origin}.{hint} ({exc.__class__.__name__})")
+        return CliError(f"Could not reach Synapse at {self.target.origin}.{hint} ({exc.__class__.__name__})",
+                        errors.UNAVAILABLE)
 
     def _refused(self) -> CliError:
         """The server refused a key the CLI had just minted: drop it and say why."""
         self.target.forget_key()
         return CliError(
             f"{self.target.origin} refused the key this machine's install minted, so it "
-            "is reading a different database than the CLI. Pass --api-key."
+            "is reading a different database than the CLI. Pass --api-key.",
+            errors.REFUSED, 401,
         )
 
-    def _send(self, method: str, path: str, **kwargs) -> httpx.Response:
-        for attempt in (1, 2):
+    def send(self, method: str, path: str, *, url: str | None = None, check: bool = True,
+             extra_headers: dict | None = None, **kwargs) -> httpx.Response:
+        """One call, its key renewed once if the CLI's own was refused, and a short wait out once if busy."""
+        minted = waited = False
+        while True:
             try:
-                resp = self._http.request(method, self._url(path), headers=self._headers(), **kwargs)
+                resp = self._http.request(method, url or self._url(path),
+                                          headers={**self._headers(), **(extra_headers or {})}, **kwargs)
             except httpx.TransportError as exc:
                 raise self._unreachable(exc) from None
-            if resp.status_code == 401 and self.target.managed and attempt == 1:
+            if resp.status_code == 401 and self.target.managed and not minted:
                 # The CLI's own key was revoked, or belongs to another install on
                 # this port: replace it once, then say so if that is refused too.
                 self.target.mint_key()
+                minted = True
+                continue
+            if resp.status_code in _BUSY and not waited and (delay := _retry_after(resp)) is not None:
+                time.sleep(delay)
+                waited = True
                 continue
             break
         if resp.status_code == 401 and self.target.managed:
             raise self._refused()
-        if resp.status_code >= 400:
+        if check and resp.status_code >= 400:
             raise ApiError(resp.status_code, _detail(resp))
         return resp
 
     def get(self, path: str, **params):
-        return self._send("GET", path, params={k: v for k, v in params.items() if v is not None}).json()
+        return _body(self.send("GET", path, params={k: v for k, v in params.items() if v is not None}))
 
     def post(self, path: str, body: dict | None = None):
-        return self._send("POST", path, json=body or {}).json()
+        return _body(self.send("POST", path, json=body or {}))
 
     def patch(self, path: str, body: dict):
-        return self._send("PATCH", path, json=body).json()
+        return _body(self.send("PATCH", path, json=body))
+
+    def put(self, path: str, body: dict):
+        return _body(self.send("PUT", path, json=body))
 
     def delete(self, path: str):
-        return self._send("DELETE", path).json()
+        return _body(self.send("DELETE", path))
+
+    def put_part(self, url: str, data: bytes, headers: dict) -> httpx.Response:
+        """One upload part, to the URL the server handed out, with exactly its headers and no key.
+
+        A part URL is cloud's presigned one or OSS v1's (CCR-8): either way the
+        URL and its headers are the authority, so the key is never sent there.
+        """
+        if url.startswith("/"):
+            url = self.target.origin + url  # OSS's part URLs are paths on the same origin
+        try:
+            resp = self._http.put(url, content=data, headers=headers, timeout=httpx.Timeout(30.0, read=300.0))
+        except httpx.TransportError as exc:
+            raise self._unreachable(exc) from None
+        if resp.status_code >= 400:
+            raise ApiError(resp.status_code, _detail(resp))
+        return resp
 
     def stream(self, method: str, path: str, body: dict | None = None,
-               params: dict | None = None) -> Iterator[dict]:
-        """An SSE route's frames, decoded. Stops when the server closes the stream."""
+               params: dict | None = None, headers: dict | None = None) -> Iterator[dict]:
+        """An SSE route's frames, decoded. Stops when the server closes the stream.
+
+        A route that answers JSON instead (a team member took the answer while
+        the run kept going) yields that body once, as `{"id": None, "data": …}`.
+        A stream cut after it started raises `StreamBroken`, so a caller that
+        knows where it was can read on from there.
+        """
         timeout = httpx.Timeout(30.0, read=_STREAM_READ_TIMEOUT)
+        started = False
         for attempt in (1, 2):
             try:
-                with self._http.stream(method, self._url(path), headers=self._headers(),
+                with self._http.stream(method, self._url(path), headers={**self._headers(), **(headers or {})},
                                        json=body if method != "GET" else None,
                                        params=params, timeout=timeout) as resp:
                     if resp.status_code == 401 and self.target.managed:
@@ -128,7 +192,16 @@ class ApiClient:
                     if resp.status_code >= 400:
                         resp.read()
                         raise ApiError(resp.status_code, _detail(resp))
-                    yield from parse_sse(resp.iter_lines())
+                    if resp.headers.get("content-type", "").startswith("application/json"):
+                        resp.read()
+                        yield {"id": None, "data": _body(resp)}
+                        return
+                    for frame in parse_sse(resp.iter_lines()):
+                        started = True
+                        yield frame
                     return
             except httpx.TransportError as exc:
+                if started:
+                    raise StreamBroken(f"The connection to {self.target.origin} dropped "
+                                       f"({exc.__class__.__name__}).") from None
                 raise self._unreachable(exc) from None
