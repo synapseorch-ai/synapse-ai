@@ -46,12 +46,12 @@ const SAME = '__same__';
 const NONE = '__none__';
 
 /** The rerankers on your own keys, each a provider card as on cloud's Rerankers (Naveen, M2g). Words are cloud's `RERANK_META`. */
-const KEYS: { name: (typeof KNOWLEDGE_SECRETS)[number]; provider: string; label: string; placeholder: string; description: string }[] = [
-    { name: 'cohere_key', provider: 'Cohere', label: 'Cohere API key', placeholder: 'For cohere.* rerank models',
+const KEYS: { name: (typeof KNOWLEDGE_SECRETS)[number]; provider: string; icon: string; label: string; placeholder: string; description: string }[] = [
+    { name: 'cohere_key', provider: 'Cohere', icon: '/cohere-icon.svg', label: 'Cohere API key', placeholder: 'For cohere.* rerank models',
       description: "Reranks a knowledge base's search results with Cohere Rerank on your own Cohere account, which bills it. Its rerank models are listed once the key is saved." },
-    { name: 'voyage_key', provider: 'Voyage AI', label: 'Voyage AI API key', placeholder: 'For voyage.* rerank models',
+    { name: 'voyage_key', provider: 'Voyage AI', icon: '/voyage-icon.svg', label: 'Voyage AI API key', placeholder: 'For voyage.* rerank models',
       description: "Reranks with Voyage's rerankers on your own Voyage account, which bills it. Its rerank models are listed once the key is saved." },
-    { name: 'jina_key', provider: 'Jina AI', label: 'Jina AI API key', placeholder: 'For jina.* rerank models',
+    { name: 'jina_key', provider: 'Jina AI', icon: '/jina-icon.svg', label: 'Jina AI API key', placeholder: 'For jina.* rerank models',
       description: "Reranks with Jina's multilingual rerankers on your own Jina account, which bills it. Its rerank models are listed once the key is saved." },
 ];
 /** A rerank server of your own (TEI or Infinity): the fourth card, holding its address and key. */
@@ -103,7 +103,7 @@ export function KnowledgeModels({
                 {KEYS.map(k => (
                     <ProviderCard
                         key={k.name}
-                        meta={{ label: k.provider, description: k.description, keyPlaceholder: k.placeholder }}
+                        meta={{ label: k.provider, icon: k.icon, description: k.description, keyPlaceholder: k.placeholder }}
                         live={!!secrets[k.name]?.set && !listing(k.name)?.error}
                         status={secrets[k.name]?.set ? rerankStatus(listing(k.name), 'Key saved') : 'No key configured'}
                         error={secrets[k.name]?.set ? listing(k.name)?.error : null}
