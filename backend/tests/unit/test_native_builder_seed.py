@@ -239,20 +239,20 @@ class TestOnlyTheOperatorCanDestroy:
             s for s in orch["steps"] if s.get("agent_id") == "agent_native_builder_operator"
         )
 
+        def targets(s):
+            return [s.get("next_step_id"), *(s.get("route_map") or {}).values(),
+                    s.get("if_true_step_id"), s.get("if_false_step_id")]
+
         # Who can reach the operator's step?
-        reaching = [
-            s for s in orch["steps"]
-            if operator_step["id"] in
-            [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
-        ]
+        reaching = [s for s in orch["steps"] if operator_step["id"] in targets(s)]
         assert reaching, "nothing reaches the operator"
         for step in reaching:
-            # Every route in is a router whose own input came from a human step.
-            assert step["type"] == "evaluator", step["id"]
-            feeders = [
-                s for s in orch["steps"]
-                if step["id"] in [s.get("next_step_id"), *(s.get("route_map") or {}).values()]
-            ]
+            # Every route in is a gate whose own input came from a human step, and since F754 a gate decided in
+            # code: the operator is only on its yes side.
+            assert step["type"] in ("evaluator", "if_else"), step["id"]
+            if step["type"] == "if_else":
+                assert step["if_true_step_id"] == operator_step["id"] != step["if_false_step_id"], step["id"]
+            feeders = [s for s in orch["steps"] if step["id"] in targets(s)]
             assert any(by_id[f["id"]]["type"] == "human" for f in feeders), step["id"]
 
 
@@ -285,9 +285,13 @@ class TestAParseFailureGoesSomewhereSafe:
         unparseable reply ran the saver, or the operator with its write tools,
         without anyone approving anything."""
         by_id = {s["id"]: s for s in self._evaluators()}
-        assert by_id["step_approval_route"]["fallback_route"] == "revise"
-        assert by_id["step_manage_route"]["fallback_route"] == "revise"
         assert by_id["step_manage_writes"]["fallback_route"] == "writes"
+        # The two approvals are decided in code since F754, and a condition that cannot be read counts as false
+        # (`IfElseStepExecutor`): their false side is the redraft, never the saver or the operator.
+        from core.native_builder import bundled_definitions
+        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+        assert steps["step_approval_route"]["if_false_step_id"] == "step_draft_plan"
+        assert steps["step_manage_route"]["if_false_step_id"] == "step_manage_plan"
 
     def test_it_does_not_depend_on_key_order(self):
         """What Postgres does to the map, done here: if the fallback survives

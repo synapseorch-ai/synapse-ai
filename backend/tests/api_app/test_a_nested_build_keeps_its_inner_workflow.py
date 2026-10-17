@@ -71,7 +71,6 @@ async def test_the_inner_workflow_survives_the_build_and_its_parent_finds_it(cli
 
     fake_llm.reset()
     fake_llm.script([
-        route("approved"),                # step_approval_route
         route("no"),                      # step_agents_needed
         route("create"),                  # step_save_route
         *SAVER,                           # step_save_create

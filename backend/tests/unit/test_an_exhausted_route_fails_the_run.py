@@ -239,11 +239,11 @@ class TestTheBuildersOwnCycles:
     async def test_four_revisions_then_approval_saves(self, driver, fake_llm):
         assert await self._start(driver, fake_llm, ["create", "draft"], "run_brev") == "paused"
         for _ in range(4):
-            fake_llm.script([_route("revise")])
+            # approval is decided in code (F754): "change it" redrafts without a model call
             assert await driver.answer("run_brev", {"feedback": "change it"}) == "paused"
             assert (await _run("run_brev")).current_step_id == "step_human_review"
 
-        fake_llm.script([_route("approved"), _route("no"), _route("create")])
+        fake_llm.script([_route("no"), _route("create")])
         assert await driver.answer("run_brev", {"feedback": "approve"}) == "completed"
         run = await _run("run_brev")
         assert "step_save_create" in [h["step_id"] for h in run.step_history]
@@ -251,10 +251,8 @@ class TestTheBuildersOwnCycles:
     async def test_a_fifth_revision_gives_up_and_says_so(self, driver, fake_llm):
         assert await self._start(driver, fake_llm, ["create", "draft"], "run_brev5") == "paused"
         for _ in range(4):
-            fake_llm.script([_route("revise")])
             assert await driver.answer("run_brev5", {"feedback": "change it"}) == "paused"
 
-        fake_llm.script([_route("revise")])
         assert await driver.answer("run_brev5", {"feedback": "change it again"}) == "failed"
         assert "gave up after 5 attempts" in (await _run("run_brev5")).step_history[-1]["error"]
 

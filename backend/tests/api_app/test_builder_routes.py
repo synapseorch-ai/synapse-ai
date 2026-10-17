@@ -436,7 +436,7 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
         # It pauses at the gate; answer it so the operator actually runs.
         run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
         fake_llm.reset()
-        fake_llm.script([route("approved"), "Created the skill."])
+        fake_llm.script(["Created the skill."])  # approval is decided in code (F754)
         after = await stream(client, "/api/builder/resume", {
             "run_id": run_id, "response": {"feedback": "approve"},
         })
