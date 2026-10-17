@@ -120,7 +120,7 @@ def _short(value) -> str:
 def question_box(console: Console, title: str, lines: list[str], *, border: str = "yellow") -> None:
     """A question that waits on the person here: boxed, as Claude Code asks before a tool runs."""
     body = Group(*(Text(line) for line in lines)) if lines else Text("")
-    console.print(Panel(body, title=Text(f" {title} ", style="bold"), title_align="left", border_style=border,
+    console.print(Panel(body, title=Text(title, style="bold"), title_align="left", border_style=border,
                         padding=(0, 1), expand=False))
 
 

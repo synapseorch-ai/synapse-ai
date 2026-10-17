@@ -840,7 +840,11 @@ def runs_show(args, api: ApiClient, out: Output):
 
 def _final_answer(out: Output, event: dict) -> None:
     if event.get("type") == "final" and not event.get("orch_step_id") and event.get("response"):
-        out.markdown(event["response"])
+        if out.out.is_terminal:
+            from synapse.client import look
+            look.said(out.out, "Answer", event["response"])
+        else:
+            out.markdown(event["response"])
 
 
 @_handler

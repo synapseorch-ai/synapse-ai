@@ -18,6 +18,10 @@ def _text(content) -> str:
     return str(content or "")
 
 
+#: The requests a tool was already called for, so each is called once.
+_CALLED: set[str] = set()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args) -> None:  # quiet: the suite reads the backend's log, not this
         pass
@@ -74,11 +78,20 @@ class Handler(BaseHTTPRequestHandler):
         one), its string arguments filled with what was asked. Then answer, as a model does."""
         tools = [t.get("function") or {} for t in body.get("tools") or []]
         messages = body.get("messages") or []
-        called = any(m.get("role") == "tool" or m.get("tool_calls") or "call_fake_1" in json.dumps(m)
-                     for m in messages)
+        called = request in _CALLED or any(m.get("role") == "tool" or m.get("tool_calls") for m in messages)
         if not tools or called or "look up" not in request.lower():
             return None
-        pick = next((t for t in tools if "search" in str(t.get("name"))), tools[0])
+
+        def needs(t: dict) -> set:
+            return set((t.get("parameters") or {}).get("required") or [])
+
+        # A search a request can fill alone: its only required argument a string.
+        easy = [t for t in tools if len(needs(t)) <= 1 and "search" in str(t.get("name"))]
+        order = ("search_knowledge", "web_search", "search")
+        pick = next((t for want in order for t in easy if want in str(t.get("name"))), None)
+        if pick is None:
+            return None
+        _CALLED.add(request)  # once a request: then it answers, as a model does
         params = (pick.get("parameters") or {}).get("properties") or {}
         required = (pick.get("parameters") or {}).get("required") or list(params)[:1]
         args = {k: request for k in required if (params.get(k) or {}).get("type", "string") == "string"}

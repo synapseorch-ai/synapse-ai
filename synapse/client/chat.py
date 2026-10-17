@@ -197,7 +197,7 @@ class Chat:
                 spinner.stop()
         if tty and answered:
             took = time.monotonic() - started
-            self.out.note(f"  {took:.1f}s" + (f" · {tools} tool{'s' if tools != 1 else ''}" if tools else "") + "\n")
+            self.out.note(f"  {took:.1f}s" + (f" · {tools} tool{'s' if tools != 1 else ''}" if tools else ""))
         return None
 
     # ── the REPL ────────────────────────────────────────────────────────────
@@ -247,7 +247,9 @@ class Chat:
     def _welcome(self, target) -> None:
         look.welcome(self.out.err, "Synapse", [
             ("agent", " · ".join(x for x in (self.agent["name"], self.agent.get("model")) if x)),
-            ("talking to", target.origin + ("" if target.key_from == "this machine" else f" · {target.key_from}")),
+            ("talking to", target.origin),
+            ("key", {"this machine": "this machine's own", "kept": "kept for this Synapse"}.get(
+                target.key_from, f"from {target.key_from}")),
             ("conversation", self.session or "a new one"),
         ], "/help commands · /agent NAME switch · Ctrl-C stops a reply · Ctrl-D leaves")
 
