@@ -18,6 +18,7 @@ import { useSavedSecrets } from './SavedSecret';
 // with no logo of ours is a theme-aware letter tile (`AppMark`, M2f), not a
 // brand hex that stays one colour on both grounds (M2g).
 const OLLAMA_IMG = '/ollama-icon.svg';
+const COPILOT_IMG = '/github-copilot-icon.svg';
 
 interface ProviderInfo {
     available: boolean;
@@ -25,6 +26,21 @@ interface ProviderInfo {
     embedding_models?: string[];
     /** Why its list could not be read: a hosted provider that refused the key (PROV1). */
     error?: string;
+    /** A model CLI's own word on itself, asked without a model call (CLIM1). */
+    cli?: CliInfo;
+}
+
+/** What `/api/models` says of an installed model CLI (CLIM1, D299). */
+interface CliInfo {
+    version: string | null;
+    /** null: it cannot be told without a model call. */
+    signed_in: boolean | null;
+    sign_in_hint: string | null;
+    /** "cli": the CLI listed its models itself; "list": Synapse's list for its version. */
+    models_source: 'cli' | 'list' | null;
+    models_note: string | null;
+    /** Something it reads that Synapse cannot switch off. */
+    note: string | null;
 }
 
 interface ModelsTabProps {
@@ -218,10 +234,14 @@ const PROVIDER_META: Record<string, ProviderMeta> = {
         img: '/google-gemini-icon.svg',
         description: 'Use the locally installed Google Gemini CLI. No API key needed — uses your existing terminal session.',
     },
+    // Codex has no mark of its own in Simple Icons; it is OpenAI's, as the OpenAI card's (CLIM1).
     codex_cli: {
+        img: '/chatgpt-icon.svg',
         description: 'Use the locally installed OpenAI Codex CLI agent. No API key needed — uses your existing terminal session.',
     },
+    // GitHub Copilot's mark (Simple Icons 16.35.0), black: inverted on the dark ground like Ollama's.
     github_copilot_cli: {
+        img: COPILOT_IMG,
         description: 'Use the locally installed GitHub Copilot CLI. No API key needed — uses your existing GitHub session.',
     },
 };
@@ -394,16 +414,30 @@ export const ModelsTab = ({
         if (key.endsWith('_cli')) {
             const cfg = cliCustom[key];
             const install = CLI_INSTALL[key];
+            const cli = providerData.cli;
             return (
                 <div className="space-y-2">
-                    <div className="text-2xs text-text-faint">
-                        {providerData.available
-                            ? `Detected ${modelCount} CLI session${modelCount !== 1 ? 's' : ''}: ${providerData.models.join(', ')}`
-                            : `No CLI binary found in PATH for ${providerLabel(key)}.`}
+                    <div className="text-2xs text-text-faint" data-cli-state={key}>
+                        {!providerData.available
+                            ? `${providerLabel(key)} is not installed: no binary for it was found in PATH.`
+                            : [
+                                cli?.version ? `Version ${cli.version}` : 'Installed',
+                                cli?.signed_in === true ? 'signed in' : cli?.signed_in === false ? 'not signed in' : null,
+                                cli?.models_note,
+                            ].filter(Boolean).join(' · ')}
                     </div>
+                    {providerData.available && cli?.signed_in === false && cli.sign_in_hint && (
+                        <div className="rounded-md border border-warning/25 bg-warning-subtle px-3 py-2.5 text-xs leading-relaxed text-text">
+                            <strong>Not signed in.</strong> {cli.sign_in_hint} Then press Refresh.
+                        </div>
+                    )}
                     <div className="rounded-md bg-surface-2 px-3 py-2.5 text-xs leading-relaxed text-text-muted">
                         <strong>No API key needed</strong> — uses your existing CLI session. Run the CLI manually first to authenticate.
+                        {' '}Synapse runs it for its model only: none of its own tools, MCP servers, hooks, skills or memory files.
                     </div>
+                    {providerData.available && cli?.note && (
+                        <p className="text-2xs leading-relaxed text-text-faint">{cli.note}</p>
+                    )}
                     {install && (
                         <a href={install.url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-accent-ink hover:underline">
                             <ExternalLink className="h-2.5 w-2.5" /> {install.label}
@@ -568,24 +602,24 @@ export const ModelsTab = ({
                                 meta={{
                                     label: providerLabel(key),
                                     icon: meta.img,
-                                    iconClassName: meta.img === OLLAMA_IMG ? 'theme-adaptive-icon' : undefined,
+                                    iconClassName: meta.img === OLLAMA_IMG || meta.img === COPILOT_IMG ? 'theme-adaptive-icon' : undefined,
                                     description: meta.description,
                                     keyPlaceholder: meta.keyPlaceholder,
                                     keyLink: meta.keyLink,
                                     keyNote: meta.keyNote,
                                     warning: meta.warning,
                                 }}
-                                live={providerData.available}
+                                live={providerData.available && providerData.cli?.signed_in !== false}
                                 error={providerData.error}
                                 status={providerData.available
-                                    ? `${modelCount} model${modelCount !== 1 ? 's' : ''}`
+                                    ? (providerData.cli?.signed_in === false ? 'Not signed in' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`)
                                     : key === 'ollama' ? 'Not running' : key.endsWith('_cli') ? 'Not installed' : 'No key configured'}
                                 keyState={stored ? { set: stored.set, hint: stored.hint ? `…${stored.hint}` : null } : undefined}
                                 keyLabel={KEY_LABELS[key]}
                                 onSaveKey={secret ? (v: string) => saveSecret(secret, v) : undefined}
                                 onRemoveKey={secret ? async () => { await removeSecret(secret); } : undefined}
                                 extras={extrasFor(key, providerData)}
-                                models={key === 'ollama' || key.endsWith('_cli') ? [] : providerData.models}
+                                models={key === 'ollama' ? [] : providerData.models}
                                 open={expandedProvider === key}
                                 onToggle={() => setExpandedProvider(expandedProvider === key ? null : key)}
                             />

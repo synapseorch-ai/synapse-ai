@@ -171,7 +171,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
         setLoadingModels(true);
         void refreshRerank(force);
         try {
-            const res = await fetch('/api/models');
+            // Refresh asks the model CLIs again too: their word is kept ten minutes (CLIM1).
+            const res = await fetch(`/api/models${force ? '?refresh=1' : ''}`);
             const data = await res.json();
             setLocalModels(data.local || []);
             setCloudModels(data.cloud || []);
