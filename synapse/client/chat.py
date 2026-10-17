@@ -15,7 +15,7 @@ from pathlib import Path
 
 from rich.markup import escape
 
-from synapse.client import commands, errors
+from synapse.client import commands, errors, look
 from synapse.client.commands import _ask, _drive, _yes_no
 from synapse.client.errors import CliError
 from synapse.client.http import ApiClient
@@ -94,13 +94,16 @@ class Chat:
             if asked:
                 # A team's members each stopped on a call (TEAM1c): each is its own question.
                 question = asked[0]
-                self.out.err.print(f"\n[bold yellow]?[/] {escape(_member_line(question))}")
+                who, tool, args = question.get("member_name") or "A member", question.get("tool_name"), \
+                    question.get("tool_args")
             else:
                 question = None
-                self.out.markdown(pause.get("prompt") or "")
-                if call.get("tool_args"):
-                    self.out.note(f"  {call.get('tool_name')} {call.get('tool_args')}")
-            allowed = _yes_no("Allow it?")
+                who, tool, args = self.agent["name"], call.get("tool_name"), call.get("tool_args")
+            look.question_box(self.out.err, "Allow this call?",
+                              [f"{who} wants to run {tool}", *([f"  {args}"] if args else []),
+                               *([str(pause.get("prompt"))] if not asked and pause.get("prompt")
+                                 and tool and tool not in str(pause.get("prompt")) else [])])
+            allowed = _yes_no("  Allow it?")
             reason = "" if allowed else input("Why not? (optional) ").strip()
             return self.answer(allowed, reason, question_id=(question or {}).get("question_id"),
                                approval_id=(question or call).get("approval_id"))
@@ -116,14 +119,15 @@ class Chat:
         """Print a turn's events; return the pause it ended on, if any."""
         self._last_code = errors.OK
         spinner = None
-        # At a terminal a turn is drawn: the tools it uses as quiet lines, the answer under the agent's name, and
-        # how long it took. Piped, only the answer is stdout's, as scripts read it.
+        # At a terminal a turn is drawn as Claude Code and Codex draw one (D294): a working line while it thinks,
+        # each tool call and what it answered, the answer under the agent's name, and how long it took. Piped,
+        # only the answer is stdout's, as scripts read it.
         tty = not self.out.json_mode and self.out.err.is_terminal
+        boxed = not self.out.json_mode and self.out.out.is_terminal
         started, tools = time.monotonic(), 0
         answered = False
         if tty:
-            spinner = self.out.err.status("Thinking…", spinner="dots")
-            spinner.start()
+            spinner = look.working(self.out.err)
         try:
             for frame in frames:
                 event = frame["data"]
@@ -143,12 +147,17 @@ class Chat:
                     tools += 1
                     if spinner:
                         spinner.update(f"Running {event.get('tool_name')}…")
-                    if self.verbose and not self.out.json_mode:
+                    if tty:
+                        self.out.err.print(look.call_line(str(event.get("tool_name")), event.get("args")))
+                    elif self.verbose and not self.out.json_mode:
                         self.out.note(f"  ↳ {event.get('tool_name')} {event.get('args')}")
-                    elif tty:
-                        self.out.note(f"  · {event.get('tool_name')}")
-                elif kind == "tool_result" and self.verbose and not self.out.json_mode:
-                    self.out.note(f"    {str(event.get('preview') or '')[:200]}")
+                elif kind == "tool_result" and not self.out.json_mode:
+                    if tty:
+                        self.out.err.print(look.result_line(event.get("preview") or ""))
+                    elif self.verbose:
+                        self.out.note(f"    {str(event.get('preview') or '')[:200]}")
+                    if spinner:
+                        spinner.update("Thinking…")
                 elif kind in ("status", "thinking") and spinner and event.get("message"):
                     spinner.update(str(event["message"])[:80])
                 elif kind in ("member_started", "helper_started") and not self.out.json_mode:
@@ -166,9 +175,9 @@ class Chat:
                     if spinner:
                         spinner.stop()
                         spinner = None
-                    if tty:
-                        self.out.err.print(f"\n[bold cyan]{escape(self.agent['name'])}[/bold cyan]", highlight=False)
-                    if not self.out.json_mode:
+                    if boxed:
+                        look.said(self.out.out, self.agent["name"], event.get("content") or "")
+                    elif not self.out.json_mode:
                         self.out.markdown(event.get("content") or "")
                     answered = True
                 elif kind in ("awaiting_approval", "paused"):
@@ -188,7 +197,7 @@ class Chat:
                 spinner.stop()
         if tty and answered:
             took = time.monotonic() - started
-            self.out.note(f"{took:.1f}s" + (f" · {tools} tool{'s' if tools != 1 else ''}" if tools else "") + "\n")
+            self.out.note(f"  {took:.1f}s" + (f" · {tools} tool{'s' if tools != 1 else ''}" if tools else "") + "\n")
         return None
 
     # ── the REPL ────────────────────────────────────────────────────────────
@@ -227,14 +236,31 @@ class Chat:
 
     def repl(self) -> int:
         _history()
-        model = self.agent.get("model")
-        self.out.err.print(f"[bold]Chatting with {escape(self.agent['name'])}[/bold]"
-                           + (f"  [dim]{escape(str(model))}[/dim]" if model else ""), highlight=False)
-        self.out.err.print("[dim]/help for commands · Ctrl-C stops a reply · Ctrl-D leaves[/dim]\n",
-                           highlight=False)
+        target = self.api.target
+        if not self.out.err.is_terminal:
+            self.out.err.print(f"Chatting with {self.agent['name']}  /help for commands · Ctrl-D leaves",
+                               markup=False, highlight=False)
+        else:
+            self._welcome(target)
+        return self._loop()
+
+    def _welcome(self, target) -> None:
+        look.welcome(self.out.err, "Synapse", [
+            ("agent", " · ".join(x for x in (self.agent["name"], self.agent.get("model")) if x)),
+            ("talking to", target.origin + ("" if target.key_from == "this machine" else f" · {target.key_from}")),
+            ("conversation", self.session or "a new one"),
+        ], "/help commands · /agent NAME switch · Ctrl-C stops a reply · Ctrl-D leaves")
+
+    def _loop(self) -> int:
         while True:
             try:
-                message = _read_message()
+                fancy = look.is_terminal(self.out.err)
+                if fancy:
+                    self.out.err.print()
+                    look.composer_rule(self.out.err)
+                message = _read_message("› " if fancy else "you › ")
+                if fancy and message.strip() and not message.startswith("/"):
+                    look.echo_message(self.out.err, message, typed_lines=1 + message.count("\n") + 1)
             except EOFError:
                 self.out.note("")
                 return errors.OK
@@ -255,8 +281,8 @@ class Chat:
                 self.out.note("")
 
 
-def _read_message() -> str:
-    first = input("you › ")
+def _read_message(prompt: str = "you › ") -> str:
+    first = input(prompt)
     if first.strip() == '"""':
         lines = []
         while (line := input("… ")).strip() != '"""':

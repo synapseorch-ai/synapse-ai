@@ -422,13 +422,14 @@ class TestARunAtATerminal:
         assert follower.tty
         follower.follow([_f(e) for e in self.EVENTS])
         shown = _screen(buffer)
-        assert "▶ Weekly report  run_o_1" in shown
+        assert "◉ Weekly report  run_o_1" in shown
         assert "▸" not in shown, "a step at work is the spinner's, not a line of its own"
-        lines = [line.rstrip() for line in shown.splitlines() if "✓" in line]
+        assert "Summarise…  0s · Ctrl-C to stop" in shown, "the working line names the step and how to stop"
+        lines = [line.rstrip().split("\r")[-1] for line in shown.splitlines() if "✓" in line]
         assert lines[0].split() == ["✓", "Summarise", "llm", "1.2s"]
         assert lines[1].split() == ["✓", "End", "end", "0.3s"]
-        assert "↳ web_search" in shown
-        assert "Completed · 2 steps · 1.5s" in shown
+        assert '● web_search(q: "numbers")' in shown
+        assert "● Completed · 2 steps · 1.5s" in shown
 
     def test_a_failure_says_where(self):
         out, buffer = _terminal()
@@ -450,8 +451,8 @@ class TestAChatAtATerminal:
                       _f({"type": "response", "content": "Three things changed."}),
                       _f({"type": "done"})])
         shown = _screen(buffer)
-        assert "· web_search" in shown
-        assert "Researcher" in shown and "1 tool" in shown and chat.session == "api_1"
+        assert "● web_search" in shown and "1 tool" in shown and chat.session == "api_1"
+        assert "◐ ◐" not in shown, "one spinner"
 
 
 class TestHowARunEndedAtATerminal:

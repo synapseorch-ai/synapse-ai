@@ -46,6 +46,16 @@ class Handler(BaseHTTPRequestHandler):
         request = next((line.split(":", 1)[1].strip() for line in lines if line.startswith("User Request:")),
                        lines[-1] if lines else "")
         reply = f"Done: {request[:80]}"
+        call = self._tool_call(body, request)
+        if call is not None and body.get("stream"):
+            return self._stream(body.get("model") or "fake", "", {"prompt_tokens": 1, "completion_tokens": 1,
+                                                                  "total_tokens": 2}, call)
+        if call is not None:
+            return self._send(200, {
+                "id": "chatcmpl-fake", "object": "chat.completion", "model": body.get("model") or "fake",
+                "choices": [{"index": 0, "finish_reason": "tool_calls",
+                             "message": {"role": "assistant", "content": None, "tool_calls": [call]}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
         usage = {"prompt_tokens": max(1, len(asked) // 4), "completion_tokens": max(1, len(reply) // 4),
                  "total_tokens": max(2, (len(asked) + len(reply)) // 4)}
         if body.get("stream"):
@@ -58,7 +68,24 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
-    def _stream(self, model: str, reply: str, usage: dict) -> None:
+    @staticmethod
+    def _tool_call(body: dict, request: str):
+        """Asked to "look up" something, with tools offered and none called yet: call one (a search, if there is
+        one), its string arguments filled with what was asked. Then answer, as a model does."""
+        tools = [t.get("function") or {} for t in body.get("tools") or []]
+        messages = body.get("messages") or []
+        called = any(m.get("role") == "tool" or m.get("tool_calls") or "call_fake_1" in json.dumps(m)
+                     for m in messages)
+        if not tools or called or "look up" not in request.lower():
+            return None
+        pick = next((t for t in tools if "search" in str(t.get("name"))), tools[0])
+        params = (pick.get("parameters") or {}).get("properties") or {}
+        required = (pick.get("parameters") or {}).get("required") or list(params)[:1]
+        args = {k: request for k in required if (params.get(k) or {}).get("type", "string") == "string"}
+        return {"id": "call_fake_1", "type": "function",
+                "function": {"name": pick.get("name"), "arguments": json.dumps(args)}}
+
+    def _stream(self, model: str, reply: str, usage: dict, call: dict | None = None) -> None:
         """The answer as OpenAI's SSE chunks: a word at a time, then the finish and the usage, then [DONE]."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -71,11 +98,15 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {json.dumps(body)}\n\n".encode())
             self.wfile.flush()
 
-        words = reply.split(" ")
-        chunk({"role": "assistant", "content": words[0]})
-        for word in words[1:]:
-            chunk({"content": " " + word})
-        chunk({}, "stop", usage=usage)
+        if call is not None:
+            chunk({"role": "assistant", "tool_calls": [{"index": 0, **call}]})
+            chunk({}, "tool_calls", usage=usage)
+        else:
+            words = reply.split(" ")
+            chunk({"role": "assistant", "content": words[0]})
+            for word in words[1:]:
+                chunk({"content": " " + word})
+            chunk({}, "stop", usage=usage)
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
 

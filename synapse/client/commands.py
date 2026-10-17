@@ -17,6 +17,7 @@ from collections.abc import Iterable, Iterator
 from urllib.parse import quote
 
 from rich.markup import escape
+from rich.text import Text
 
 from synapse.client import errors
 from synapse.client.errors import ApiError, CliError, StreamBroken
@@ -258,9 +259,10 @@ class RunFollower:
     # ── at a terminal ───────────────────────────────────────────────────────
 
     def _spin(self, text: str) -> None:
+        from synapse.client import look
+
         if self._spinner is None:
-            self._spinner = self.out.err.status(text, spinner="dots")
-            self._spinner.start()
+            self._spinner = look.working(self.out.err, text)
         else:
             self._spinner.update(text)
 
@@ -276,9 +278,15 @@ class RunFollower:
         """Draw what a terminal shows differently from a pipe; False for the lines both show alike."""
         kind = event.get("type")
         step = event.get("orch_step_id")
+        from synapse.client import look
+
         if kind == "orchestration_start":
             name = event.get("orchestration_name") or event.get("orchestration_id")
-            self._say(f"[bold]▶ {escape(str(name))}[/bold]  [dim]{escape(str(event.get('run_id') or ''))}[/dim]")
+            self._say(f"[bold {look.ACCENT}]{look.MARK}[/] [bold]{escape(str(name))}[/bold]  "
+                      f"[dim]{escape(str(event.get('run_id') or ''))}[/dim]")
+        elif kind == "tool_execution":
+            self.out.err.print(Text("    ").append_text(look.call_line(str(event.get("tool_name")),
+                                                                       event.get("args"))))
         elif kind == "step_start":
             self.names[step] = event.get("step_name") or step
             self._types[step] = event.get("step_type") or ""
@@ -306,19 +314,20 @@ class RunFollower:
             steps = f"{self._steps} step{'s' if self._steps != 1 else ''}"
             status = event.get("status") or "completed"
             if status == "completed":
-                self._say(f"[green]Completed[/green] [dim]· {steps} · {self._seconds:.1f}s[/dim]\n")
+                self._say(f"[green]{look.DOT}[/green] Completed [dim]· {steps} · {self._seconds:.1f}s[/dim]\n")
             elif status == "cancelled":
-                self._say("[dim]Stopped.[/dim]")
+                self._say(f"[dim]{look.DOT} Stopped.[/dim]")
             else:  # the engine ends a failed run here too, with its status
                 why = self._why or status
-                self._say(f"[red]Failed[/red] [dim]after {steps} ·[/dim] {escape(str(why))}")
+                self._say(f"[red]{look.DOT} Failed[/red] [dim]after {steps} ·[/dim] {escape(str(why))}")
         elif kind == "orchestration_error":
             self.stop()
             if event.get("error") == "Cancelled":
-                self._say("[dim]Stopped.[/dim]")
+                self._say(f"[dim]{look.DOT} Stopped.[/dim]")
             else:
                 steps = f"{self._steps} step{'s' if self._steps != 1 else ''}"
-                self._say(f"[red]Failed[/red] [dim]after {steps} ·[/dim] {escape(str(event.get('error')))}")
+                self._say(f"[red]{look.DOT} Failed[/red] [dim]after {steps} ·[/dim] "
+                          f"{escape(str(event.get('error')))}")
         else:
             return False
         return True
@@ -450,10 +459,16 @@ def _question_line(q: dict) -> str:
 
 def _ask(pause: dict, out: Output):
     """Answer a paused step at the terminal: an approval, its fields, or a line of text."""
+    from synapse.client import look
+
     prompt = pause.get("prompt") or "The run is waiting for an answer."
-    out.err.print(f"\n[bold yellow]?[/] {escape(prompt)}")
+    if out.err.is_terminal:
+        out.err.print()
+        look.question_box(out.err, "Waiting for you", [prompt])
+    else:
+        out.err.print(f"\n[bold yellow]?[/] {escape(prompt)}")
     if pause.get("kind") == "tool_approval" or pause.get("tool_name"):
-        allowed = _yes_no("Allow it?")
+        allowed = _yes_no("  Allow it?")
         reason = "" if allowed else input("Why not? (optional) ").strip()
         return {"approve": allowed, "reason": reason}
     fields = pause.get("fields") or []
@@ -464,11 +479,11 @@ def _ask(pause: dict, out: Output):
         label = (field.get("label") or "").strip() or field["name"]
         kind = (field.get("type") or "string").lower()
         if kind in ("boolean", "bool"):
-            answer[field["name"]] = _yes_no(label)
+            answer[field["name"]] = _yes_no(f"  {label}")
         elif kind in ("number", "int", "integer", "float"):
-            answer[field["name"]] = _number(label)
+            answer[field["name"]] = _number(f"  {label}")
         else:
-            answer[field["name"]] = input(f"{label}: ").strip()
+            answer[field["name"]] = input(f"  {label}: ").strip()
     return answer
 
 
@@ -568,8 +583,14 @@ class _Tracking(RunFollower):
 
 def _answer_for(question: dict, out: Output):
     if question.get("question_id"):
-        out.err.print(f"\n[bold yellow]?[/] {escape(_question_line(question))}")
-        allowed = _yes_no("Allow it?")
+        from synapse.client import look
+
+        if out.err.is_terminal:
+            out.err.print()
+            look.question_box(out.err, "Allow this call?", [_question_line(question)])
+        else:
+            out.err.print(f"\n[bold yellow]?[/] {escape(_question_line(question))}")
+        allowed = _yes_no("  Allow it?")
         reason = "" if allowed else input("Why not? (optional) ").strip()
         return {"approve": allowed, "reason": reason}
     return _ask(question, out)
@@ -630,7 +651,10 @@ def _drive(api: ApiClient, out: Output, frames: Iterator[dict], detach: bool = F
             out.note(f"Run {outcome.status}.", style="red")
         return errors.RUN_FAILED
     if not out.json_mode:
-        if outcome.response:
+        if outcome.response and out.out.is_terminal:
+            from synapse.client import look
+            look.said(out.out, "Answer", outcome.response)
+        elif outcome.response:
             out.markdown(outcome.response)
         elif not follower.tty:
             out.note(f"Run {outcome.status or 'ended'}.")
