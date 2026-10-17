@@ -187,6 +187,24 @@ class TestEveryActIsAuditedOnce:
         assert (e.action, e.tool, e.via, e.user_id) == ("test.t_act", "t_act", "mcp", "u9")
         assert (e.target_type, e.target_id) == ("orchestration", "orch_1")
 
+    async def test_the_audit_runs_while_its_caller_is_still_bound(self):
+        """A host's audit reads who acted from `caller.current()` (cloud's principal rides on it); the
+        registry unbound the caller as the handler returned, so cloud wrote no row (found in the joint
+        MCP2/ASSIST1 cloud suite)."""
+        from core.product_tools import caller as caller_mod
+
+        seen = []
+
+        async def record(event):
+            seen.append(caller_mod.current())
+
+        hooks.set_audit(record)
+        registry.register(_act())
+        who = _caller(user_id="u7")
+        await invoke("t_act", who, {})
+        assert seen == [who]
+        assert caller_mod.current() is None
+
     async def test_an_entry_may_name_its_action(self, audited):
         registry.register(_act(audit_action="run.started"))
         await invoke("t_act", _caller(), {})

@@ -211,18 +211,20 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
             }
         await confirm.redeem(token, caller, name, args)
 
+    # Bound for the handler and for the audit after it: a host's audit reads who acted from
+    # `caller.current()` (cloud's principal rides on the caller).
     token_var = _caller_mod._CURRENT.set(caller)
     try:
         result = await tool.handler(caller, args)
+
+        if tool.kind == "act" and not tool.self_audited:
+            target = tool.target(args, result) if tool.target is not None else None
+            await hooks.emit(hooks.AuditEvent(
+                action=tool.action, tool=name, area=tool.area, via=caller.via, user_id=caller.user_id,
+                credential_id=caller.credential_id, role=caller.role.label,
+                target_type=target[0] if target else None, target_id=target[1] if target else None,
+                args=_summary(args),
+            ))
     finally:
         _caller_mod._CURRENT.reset(token_var)
-
-    if tool.kind == "act" and not tool.self_audited:
-        target = tool.target(args, result) if tool.target is not None else None
-        await hooks.emit(hooks.AuditEvent(
-            action=tool.action, tool=name, area=tool.area, via=caller.via, user_id=caller.user_id,
-            credential_id=caller.credential_id, role=caller.role.label,
-            target_type=target[0] if target else None, target_id=target[1] if target else None,
-            args=_summary(args),
-        ))
     return result
