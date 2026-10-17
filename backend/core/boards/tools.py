@@ -161,10 +161,13 @@ def _todo(cards: list[store.Card], turn: TurnBoards) -> str:
             line += " — " + (body if len(body) <= 300 else body[:297] + "...")
         if card.held_by(turn.holder):
             line += " (you hold it)"
-        lines.append(line)
-    lines.append("Finish each with board_update: its card_id, status 'done' and the result, or 'failed' and why it "
-                 "cannot be done.")
+        lines.append(f"{line} — when done: {_close_call(card)}")
+    lines.append("Close each with its own card_id as shown (status 'failed', with why, if it cannot be done).")
     return "\n".join(lines)
+
+
+def _close_call(card: store.Card) -> str:
+    return f'board_update(card_id="{card.id}", status="done", result="…")'
 
 
 @dataclass
@@ -285,8 +288,21 @@ async def _card_for(turn: TurnBoards, card_id: Any, *, work: bool = True) -> tup
     if card is None or board is None:
         raise store.NoSuchCard(f"There is no card {card_id} on your boards. board_list shows them.")
     if work and board.access != "work":
-        raise store.BadValue(_add_only(board.label))
+        raise store.BadValue(await _only_added(turn, card, board))
     return card, board
+
+
+async def _only_added(turn: TurnBoards, card: store.Card, board: TurnBoard) -> str:
+    """Why a card on a board this agent may only add to cannot be changed, and what to do instead (BOARD2's M1):
+    gpt-4.1-mini went to close the card it had just added there, not the person's task, and stopped at a refusal
+    that named neither. A person's task still open on its schedule's board is named with its call."""
+    text = (f"card {card.id} is on {board.label}, where this agent may only add cards: it cannot change, claim or "
+            "read them. An added card stays open for others to work, so it needs no closing.")
+    left = await _persons_left(turn)
+    if left:
+        named = "; ".join(f"{c.id} \"{c.title[:120]}\": {_close_call(c)}" for c in left)
+        text += (f" A person's {'task' if len(left) == 1 else 'tasks'} still open on your own board: {named}.")
+    return text
 
 
 def _full(card: store.Card, comments: list[store.CardEvent], turn: TurnBoards) -> str:
@@ -455,23 +471,30 @@ async def left_open(turn: TurnBoards) -> str | None:
     return f"{who} left {named} claimed without closing {it}; {it} {'goes' if len(held) == 1 else 'go'} back to Open as the turn ends."
 
 
+async def _persons_left(turn: TurnBoards) -> list[store.Card]:
+    """A person's tasks still to be done by this turn on its schedule's own board (open, or claimed by it); none
+    for a turn without one. Never raises: a board never fails a turn."""
+    own = next((b for b in turn.boards if b.own and b.scope == "schedule"), None)
+    if own is None:
+        return []
+    try:
+        await turn.refresh()
+        if own.board_id is None:
+            return []
+        cards = await store.list_cards([own.board_id], statuses=("open", "claimed"), limit=DIGEST_LINES)
+    except Exception as exc:  # noqa: BLE001 — a board never fails a turn
+        logger.warning("a person's open tasks on %s not read: %s", own.label, exc)
+        return []
+    return [c for c in cards if _persons_task(c, turn)]
+
+
 async def persons_open(turn: TurnBoards) -> str | None:
     """What a scheduled turn that answers is told when a person's task on its schedule's board is still open, or
     claimed by it (F581): its answer is sent back once with each card named, so it can close it at once. None otherwise, and never raises. Only a schedule's own board — that schedule's inbox; a workflow's
     board is every step's, so a person's task there may be another step's (Naveen)."""
     own = next((b for b in turn.boards if b.own and b.scope == "schedule"), None)
-    if own is None:
-        return None
-    try:
-        await turn.refresh()
-        if own.board_id is None:
-            return None
-        cards = await store.list_cards([own.board_id], statuses=("open", "claimed"), limit=DIGEST_LINES)
-    except Exception as exc:  # noqa: BLE001 — a board never fails a turn
-        logger.warning("a person's open tasks on %s not read: %s", own.label, exc)
-        return None
-    left = [c for c in cards if _persons_task(c, turn)]
-    if not left:
+    left = await _persons_left(turn)
+    if own is None or not left:
         return None
     named = "\n".join(f"- {c.id} \"{c.title[:120]}\"" for c in left)
     one = len(left) == 1

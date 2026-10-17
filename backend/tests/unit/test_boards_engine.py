@@ -875,7 +875,7 @@ class TestAPersonsTasksOpenTheDigest:
         assert todo < tail.index("This schedule's board")
         assert f"1) {ask.id}" in tail and "Priority: high, before the release." in tail
         assert "board_update" in tail[todo:tail.index("This schedule's board")]
-        assert tail.count(ask.id) == 1                            # not listed twice
+        assert ask.id not in tail[tail.index("This schedule's board"):]  # not listed twice
         assert mine.id in tail[tail.index("This schedule's board"):]
         assert note.id in tail[tail.index("This schedule's board"):]
 
@@ -904,3 +904,56 @@ class TestAPersonsTasksOpenTheDigest:
         tail = str(fake_llm.calls[0]["volatile_tail"])
         assert "A person asked you" not in tail
         assert card.id in tail and "from a person" in tail
+
+
+class TestTheRightCardToClose:
+    """BOARD2's M1 (D297, 2026-10-17): with a person's task heading its digest, gpt-4.1-mini acted on it every time,
+    then in 8 of its 9 misses went for the card it had just added on the add-only shared board, not the person's card.
+    Its call was refused ("may only add cards") with no word on what to close, so it stopped. A refusal on a card the
+    agent may only add says that card needs no closing and names the person's task still open; each to-do line
+    names its own call."""
+
+    SCOPE = TestAPersonsTaskBindsAScheduledTurn.SCOPE
+
+    async def _setup(self, *, ask=True):
+        bugs = await _shared("Bugs", ("schedule", "sch_intake", "add"))
+        added, _ = await store.add_card(bugs.id, title="the export button is missing on Safari", key="BUG-204",
+                                        by=store.Actor(agent="intake", source="schedule"))
+        card = None
+        if ask:
+            own = await store.get_or_create_scoped_board("schedule", "sch_intake")
+            card, _ = await store.add_card(own.id, title="Also add BUG-204: the export button is missing on Safari",
+                                           by=PERSON)
+        return added, card
+
+    async def test_a_refused_close_of_an_added_card_names_the_persons_task(self, boards_on, fake_llm):
+        added, ask = await self._setup()
+        await _turn(fake_llm, [tool_call("board_update", card_id=added.id, status="done", result="Added."), "Done."],
+                    _agent(id="intake"), **self.SCOPE)
+        said = _observations(fake_llm, 1).split("[Turn 1 — Observation]", 1)[1]
+        assert said.lstrip().split("\n", 1)[1].startswith("Refused")
+        assert "needs no closing" in said
+        assert f'board_update(card_id="{ask.id}", status="done"' in said and "Also add BUG-204" in said
+        assert (await store.get_card(added.id)).status == "open"
+
+    async def test_a_refused_claim_of_an_added_card_names_it_too(self, boards_on, fake_llm):
+        added, ask = await self._setup()
+        await _turn(fake_llm, [tool_call("board_claim", card_id=added.id), "Done."], _agent(id="intake"), **self.SCOPE)
+        said = _observations(fake_llm, 1).split("[Turn 1 — Observation]", 1)[1]
+        assert "needs no closing" in said and ask.id in said
+
+    async def test_with_no_persons_task_it_says_only_that_the_card_needs_no_closing(self, boards_on, fake_llm):
+        added, _ = await self._setup(ask=False)
+        own = await store.get_or_create_scoped_board("schedule", "sch_intake")
+        await store.add_card(own.id, title="Retry the import", by=store.Actor(agent="intake", source="schedule"))
+        await _turn(fake_llm, [tool_call("board_update", card_id=added.id, status="done", result="Added."), "Done."],
+                    _agent(id="intake"), **self.SCOPE)
+        said = _observations(fake_llm, 1).split("[Turn 1 — Observation]", 1)[1]
+        assert "needs no closing" in said and "A person's task" not in said
+
+    async def test_each_todo_line_names_its_own_call(self, boards_on, fake_llm):
+        _, ask = await self._setup()
+        await _turn(fake_llm, ["Done."], _agent(id="intake", max_turns=1), max_turns=1, **self.SCOPE)
+        tail = str(fake_llm.calls[0]["volatile_tail"])
+        line = next(ln for ln in tail.splitlines() if ln.startswith("1) "))
+        assert ask.id in line and f'board_update(card_id="{ask.id}", status="done", result=' in line
