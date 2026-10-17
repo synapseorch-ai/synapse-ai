@@ -426,6 +426,7 @@ export function BuilderPanel() {
         <>
             <aside
                 aria-label="Synapse AI"
+                data-testid="assistant-panel"
                 onKeyDown={(e) => {
                     // Escape on the panel, not on the document: the card is not
                     // modal and does not trap focus, so a document listener

@@ -270,6 +270,7 @@ export function AppRail({
                     type="button"
                     onClick={() => openBuilder()}
                     title="Synapse AI"
+                    data-testid="assistant-open"
                     className={cn(
                         // The frame's own action (D223): a white card in light, teal in dark.
                         ROW, 'w-full bg-[var(--frame-action)] font-medium text-accent-ink shadow-[var(--frame-action-shadow)]',

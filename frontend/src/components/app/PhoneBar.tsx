@@ -102,6 +102,7 @@ export function PhoneBar({
                 onClick={() => openBuilder()}
                 aria-label={builderWaiting ? 'Synapse AI (waiting for your answer)' : 'Synapse AI'}
                 title="Synapse AI"
+                data-testid="assistant-open"
                 className="relative flex size-9 shrink-0 items-center justify-center rounded-md hover:bg-surface-2"
             >
                 <Mark size={20} compact={false} className="text-accent" aria-hidden />

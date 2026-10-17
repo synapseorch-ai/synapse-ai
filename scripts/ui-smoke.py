@@ -336,7 +336,7 @@ window.fetch = function (input, init) {
 """
 
 PANEL = """() => {
-  const panel = document.querySelector('aside[aria-label="AI builder"]');
+  const panel = document.querySelector('[data-testid="assistant-panel"]');
   if (!panel) return {panel: false};
   const ta = panel.querySelector('textarea');
   const named = [...panel.querySelectorAll('button')].map((b) => ({
@@ -357,9 +357,9 @@ RUN_ID = "builder_uismoke00"
 
 
 async def _build_with_ai(page):
-    """Open the AI builder as a person does since M2c retired the corner launcher: the menu's Build with AI (below
-    `md`, the phone bar's mark, which has the same name). Returns the button pressed."""
-    buttons = page.get_by_role("button", name=re.compile(r"^Build with AI"))
+    """Open the AI builder as a person does since M2c retired the corner launcher: the menu's Synapse AI row (Build with
+    AI before ASSIST1; below `md`, the phone bar's mark). Found by its test id, not its words. Returns the button pressed."""
+    buttons = page.locator('[data-testid="assistant-open"]')
     for _ in range(40):
         for i in range(await buttons.count()):
             button = buttons.nth(i)
@@ -367,7 +367,7 @@ async def _build_with_ai(page):
                 await button.click()
                 return button
         await asyncio.sleep(0.25)
-    raise AssertionError("no visible Build with AI to open the builder with")
+    raise AssertionError("no visible Synapse AI row or mark to open the builder with")
 
 
 async def _open_builder(browser, width=WIDE):
@@ -378,10 +378,10 @@ async def _open_builder(browser, width=WIDE):
     await asyncio.sleep(SETTLE + 1.0)
     await _build_with_ai(page)
     await asyncio.sleep(0.5)
-    await page.locator('aside[aria-label="AI builder"] textarea').fill("build me something")
+    await page.locator('[data-testid="assistant-panel"] textarea').fill("build me something")
     # Send is disabled until React has seen the change event `fill` dispatches.
     # Inside the builder: chat's composer behind it has a Send of its own since M2c.
-    send = page.locator('aside[aria-label="AI builder"]').get_by_role("button", name="Send", exact=True)
+    send = page.locator('[data-testid="assistant-panel"]').get_by_role("button", name="Send", exact=True)
     await send.wait_for()
     for _ in range(20):
         if not await send.is_disabled():
@@ -654,7 +654,7 @@ async def check_layout(browser) -> str:
         await asyncio.sleep(SETTLE)
         await _build_with_ai(page)
         await asyncio.sleep(0.6)
-        launcher = page.locator('aside[aria-label="AI builder"] button[aria-label="Start a new conversation"]')
+        launcher = page.locator('[data-testid="assistant-panel"] button[aria-label="Start a new conversation"]')
         box = await launcher.bounding_box()
         if box is None:
             raise AssertionError("no Start a new conversation in the builder on /dashboard")
@@ -1042,7 +1042,7 @@ async def check_builderctx(browser) -> str:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 2.0)
         # The open canvas's own way in, in its bar: "Change with AI" (M3a; it was the
-        # toolbar's "Build with AI"). The rail keeps its Build with AI row.
+        # toolbar's "Build with AI"). The rail's row is Synapse AI (ASSIST1).
         await page.locator("main").get_by_role("button", name="Change with AI").first.click()
         await asyncio.sleep(1.2)
         await say("one")                       # on the orchestration: names it
@@ -4141,7 +4141,7 @@ async def _builder_back(browser, conversation: dict):
 
 async def _panel_text(page) -> str:
     return await page.evaluate(
-        "() => (document.querySelector('aside[aria-label=\"AI builder\"]') || {}).innerText || ''")
+        "() => (document.querySelector('[data-testid=\"assistant-panel\"]') || {}).innerText || ''")
 
 
 @check
@@ -4163,19 +4163,19 @@ async def check_builderreload(browser) -> str:
     }
     ctx, page = await _builder_back(browser, parked)
     try:
-        # The menu's Build with AI says so (the corner launcher did, until M2c retired it).
-        row = page.get_by_role("button", name=re.compile(r"^Build with AI")).first
+        # The menu's Synapse AI row says so (the corner launcher did, until M2c retired it).
+        row = page.locator('[data-testid="assistant-open"]').first
         await row.wait_for(timeout=10_000)
         named = await row.inner_text()
         if "waiting" not in named:
-            raise AssertionError(f"a plan waiting after a reload does not show on Build with AI ({named!r})")
+            raise AssertionError(f"a plan waiting after a reload does not show on the Synapse AI row ({named!r})")
         await row.click()
         await asyncio.sleep(0.5)
         text = await _panel_text(page)
         for shown in ("a weekly digest of the tickets", "Here is the proposed plan: one step that summarises."):
             if shown not in text:
                 raise AssertionError(f"after a reload the panel does not show {shown!r}")
-        await page.locator('aside[aria-label="AI builder"] textarea').fill("approve")
+        await page.locator('[data-testid="assistant-panel"] textarea').fill("approve")
         # With a question open, Send is named for what it does.
         send = page.get_by_role("button", name="Send your answer", exact=True)
         for _ in range(20):
@@ -9235,7 +9235,7 @@ async def check_homeempty(browser) -> str:
 
 async def _composer(page) -> str:
     """What the AI builder's composer holds, once its panel is open."""
-    box = page.get_by_role("complementary", name="AI builder").get_by_role("textbox", name="Message the AI builder")
+    box = page.locator('[data-testid="assistant-panel"]').get_by_role("textbox", name="Message Synapse AI")
     await box.wait_for(timeout=10_000)
     return await box.input_value()
 
@@ -9269,14 +9269,14 @@ async def check_homestart(browser) -> str:
         await path.get_by_role("button", name="Build with AI").last.click()
         if (await _composer(page)) != "Every Friday, sum up the week's invoices":
             bad.append(f"the builder opened with {await _composer(page)!r}")
-        sent = await page.evaluate("[...document.querySelectorAll('[aria-label=\"AI builder\"] *')].some(e => e.innerText === \"Every Friday, sum up the week's invoices\" && e.tagName !== 'TEXTAREA')")
+        sent = await page.evaluate("[...document.querySelectorAll('[data-testid=\"assistant-panel\"] *')].some(e => e.innerText === \"Every Friday, sum up the week's invoices\" && e.tagName !== 'TEXTAREA')")
         if sent:
             bad.append("the words were sent, not left in the composer")
-        await page.get_by_role("button", name="Close the AI builder").click()
+        await page.get_by_role("button", name="Close Synapse AI").click()
         await page.get_by_role("button", name="A weekly report").click()
         if not (await _composer(page)).startswith("Every Monday at 9, write a short report"):
             bad.append(f"the suggestion opened the builder with {await _composer(page)!r}")
-        await page.get_by_role("button", name="Close the AI builder").click()
+        await page.get_by_role("button", name="Close Synapse AI").click()
         await page.get_by_role("button", name="Don’t show again").click()
         await page.get_by_text("Nothing is waiting on you.").wait_for(timeout=5_000)
         if await path.count():
@@ -9312,7 +9312,7 @@ async def check_homeways(browser) -> str:
         await page.get_by_role("button", name="Schedule it with AI").click()
         if (await _composer(page)) != "Put the workflow “Smoke invoice triage” on a schedule.":
             bad.append(f"Schedule it with AI opened the builder with {await _composer(page)!r}")
-        await page.get_by_role("button", name="Close the AI builder").click()
+        await page.get_by_role("button", name="Close Synapse AI").click()
         folded = page.locator("section[aria-labelledby='home-start']")
         if "Next:" not in await folded.inner_text():
             bad.append(f"the path after a run reads {await folded.inner_text()!r}")
@@ -9372,7 +9372,7 @@ async def check_plancard(browser) -> str:
     ctx, page = await _builder_back(browser, _parked(PLAN_QUESTION))
     try:
         await _build_with_ai(page)
-        card = page.locator('aside[aria-label="AI builder"] section[aria-label="The plan"]')
+        card = page.locator('[data-testid="assistant-panel"] section[aria-label="The plan"]')
         await card.wait_for(timeout=10_000)
         rows = card.get_by_role("list", name="Steps").locator("li")
         names = [(await rows.nth(i).inner_text()).replace("\n", " ") for i in range(await rows.count())]
@@ -9388,7 +9388,7 @@ async def check_plancard(browser) -> str:
             bad.append("an Open questions box for a plan whose questions are 'None'")
         await card.get_by_role("button", name="Change something").click()
         focused = await page.evaluate("() => document.activeElement && document.activeElement.getAttribute('aria-label')")
-        if focused != "Message the AI builder":
+        if focused != "Message Synapse AI":
             bad.append(f"Change something left the focus on {focused!r}")
         if await _resumes(page):
             bad.append("Change something sent an answer")
@@ -9416,7 +9416,7 @@ async def check_plancard(browser) -> str:
             panel = await _panel_text(page)
             if words not in panel:
                 bad.append(f"{step}: the card does not show {words!r}")
-            go = page.locator('aside[aria-label="AI builder"]').get_by_role("button", name=button)
+            go = page.locator('[data-testid="assistant-panel"]').get_by_role("button", name=button)
             if not await go.count():
                 bad.append(f"{step}: no {button!r}")
             else:
@@ -9439,10 +9439,11 @@ async def check_buildersuggest(browser) -> str:
     bad: list[str] = []
     try:
         await _build_with_ai(page)
-        panel = page.locator('aside[aria-label="AI builder"]')
-        chips = panel.get_by_role("list", name="Things to ask for").get_by_role("button")
+        panel = page.locator('[data-testid="assistant-panel"]')
+        chips = panel.get_by_role("list", name="Things to ask").get_by_role("button")
         await chips.first.wait_for(timeout=10_000)
-        if await chips.count() != 3:
+        # The examples (four since ASSIST1 added "Summarise today") and the Agent Builder switch (SW1).
+        if await chips.count() != 5:
             bad.append(f"{await chips.count()} suggestions")
         first = (await chips.first.inner_text()).strip()
         await chips.first.click()
@@ -9457,7 +9458,7 @@ async def check_buildersuggest(browser) -> str:
         await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return "three suggestions; one fills the composer, unsent; the hint shows before the first message"
+    return "five suggestions; one fills the composer, unsent; the hint shows before the first message"
 
 
 COMPOSER_PROBE = """() => {
