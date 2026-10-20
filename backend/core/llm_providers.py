@@ -583,15 +583,32 @@ class LLMError(Exception):
     """
 
     def __init__(self, message: str = "", *, provider: str | None = None,
-                 status: int | None = None, code: str | None = None):
+                 status: int | None = None, code: str | None = None, detail: str | None = None):
         super().__init__(message)
         self.provider = provider
+        #: The provider's own sentence, read from its whole answer (`_body_message`): the message above keeps only
+        #: the start of a body, and a longer sentence was cut there (F782).
+        self.detail = detail
         self.status = status if status is not None else _status_in(str(message))
         self.code = code or classify_failure(self.status, str(message))
 
     @property
     def retryable(self) -> bool:
         return self.code in RETRYABLE
+
+
+def _body_message(text: str) -> str | None:
+    """An error answer's own sentence: `error.message` (or `error` as a string, or a top-level `message`) of a JSON
+    body, read whole; None for anything else (F782)."""
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    said = error.get("message") if isinstance(error, dict) else error if isinstance(error, str) else data.get("message")
+    return said.strip() if isinstance(said, str) and said.strip() else None
 
 
 class EmptyAnswer(LLMError):
@@ -2673,6 +2690,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
         headers["Authorization"] = f"Bearer {api_key}"
 
     last_error = None
+    last_detail = None   # the answer's own sentence, whole (F782)
     response = None
     for attempt in range(1, MAX_RETRIES + 1):
         backoff = BACKOFF_SCHEDULE[attempt - 1]
@@ -2681,6 +2699,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
                 resp = await _post_chat(client, endpoint, headers=headers, payload=payload)
             if resp.status_code in (429, 499, 500, 502, 503, 529):
                 last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+                last_detail = _body_message(resp.text)
                 if is_quota_refusal(resp.status_code, resp.text):
                     break   # out of credit or quota: no retry clears it (F275)
                 _retry_notice(label, f"answered {resp.status_code}", attempt, MAX_RETRIES, backoff)
@@ -2699,6 +2718,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             break
         except httpx.TimeoutException:
             last_error = f"Request timed out ({V1_TIMEOUT}s)"
+            last_detail = None
             _retry_notice(label, f"did not answer within {V1_TIMEOUT:g}s", attempt, MAX_RETRIES, backoff)
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
@@ -2707,6 +2727,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             # The body, not str(e): a gateway's refusal carries its reason (and
             # figures) in the response body, and the URL alone explains nothing.
             last_error = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
+            last_detail = _body_message(e.response.text)
             _log.warning(f"❌ {label} HTTP error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES and e.response.status_code in (429, 499, 500, 502, 503, 529):
                 await asyncio.sleep(backoff)
@@ -2714,6 +2735,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
             break
         except Exception as e:
             last_error = str(e)
+            last_detail = None
             _log.warning(f"⚠️ {label} error on attempt {attempt}/{MAX_RETRIES}: {e}")
             if attempt < MAX_RETRIES:
                 await asyncio.sleep(backoff)
@@ -2722,7 +2744,7 @@ async def call_v1_compatible(model, messages, system, base_url, api_key, tools=N
     if response is None:
         error_msg = f"{label} LLM Error: failed after {_attempts(attempt)}. Last error: {last_error}"
         _log.warning(f"❌ {error_msg}")
-        raise LLMError(error_msg)
+        raise LLMError(error_msg, detail=last_detail)
 
     data = response.json()
     usage = data.get("usage", {})
@@ -2794,12 +2816,15 @@ async def call_model_gateway(model, messages, system, settings, tools=None, imag
         # a person's chat.
         if e.status is None or not 400 <= e.status < 500:
             raise
-        detail = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
+        # The sentence from the whole body (F782): the message keeps only its first 200 characters, and a longer
+        # sentence (the context window's, an image's reason, F689's) lost its closing quote there.
+        found = re.search(r'"message"\s*:\s*"([^"]+)"', str(e))
+        detail = e.detail or (found.group(1) if found else None)
         if detail is None:
             raise
         from core.model_failures import GATEWAY_REFUSED
 
-        raise LLMError(f"{GATEWAY_REFUSED}{detail.group(1)}",
+        raise LLMError(f"{GATEWAY_REFUSED}{detail}",
                        provider="gateway", status=e.status, code=e.code) from e
 
 
