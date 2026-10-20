@@ -249,3 +249,35 @@ def test_codex_sends_nothing_of_its_own_but_what_it_cannot_drop(capture, seeded,
         for block in ("<permissions", "<environment_context>", "skills_instructions"):
             assert block not in text, (model, block)
     assert not (codex_home / "sessions").exists()       # no transcript
+
+
+#: What the bridge adds besides the agent's tools: Codex's helpers for reading an
+#: MCP server's resources. The bridge serves none, and a call to them is still
+#: refused as Codex's own tool.
+_CODEX_MCP_HELPERS = {"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}
+
+
+@pytest.mark.skipif(not shutil.which("codex"), reason="Codex is not installed")
+def test_codex_is_offered_the_agents_tools_through_the_bridge(capture, seeded, tmp_path):
+    """F753: the installed Codex starts the bridge and offers the agent's tools as its own."""
+    catalog = _codex_catalog()
+    model = next((m["slug"] for m in (catalog or {}).get("models", []) if m.get("visibility") == "list"), "gpt-5.4-mini")
+    tools = [{"type": "function", "function": {"name": "get_order", "description": "Get an order by id.",
+              "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}}}]
+    (seeded["home"] / ".codex").mkdir(exist_ok=True)
+    environ = {"PATH": shutil.os.environ["PATH"], "HOME": str(seeded["home"]),
+               "CODEX_HOME": str(seeded["home"] / ".codex"), "CAPTURE_KEY": "capture-only"}
+    workdir = new_workdir(tmp_path)
+    inv = build_cli_invocation("cli.codex", model, workdir=workdir, system_prompt="SYSTEM", prompt=_prompt(seeded),
+                               environ=environ, codex_catalog=catalog, tools=tools)
+    provider = ("model_providers.capture={name=\"capture\",base_url=\"" + capture.url
+                + "/v1\",wire_api=\"responses\",env_key=\"CAPTURE_KEY\"}")
+    inv.argv[2:2] = ["-c", provider, "-c", "model_provider=\"capture\""]
+    done = _run(inv)
+
+    sent = capture.model_requests("/responses")
+    assert sent, f"Codex sent no request: {done.stderr.decode(errors='replace')[-600:]}"
+    offered = _codex_tools(sent[0])
+    assert "get_order" in {n.split(".")[-1] for n in offered}, offered
+    others = {n.split(".")[-1] for n in offered} - {"get_order"}
+    assert others <= _CODEX_LEFT | _CODEX_MCP_HELPERS, others

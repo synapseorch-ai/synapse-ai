@@ -31,12 +31,23 @@ import copy
 import json
 import os
 import re
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
 CLI_BASES = ("cli.claude", "cli.gemini", "cli.codex", "cli.copilot")
+
+#: The CLIs given the agent's tools as real tools through the bridge (F753): run
+#: with no tools of their own, newer Codex models would not use the tools written
+#: into the prompt. Claude Code uses them as text (CLIM1's measure, 14/14 on Sonnet).
+BRIDGED_CLIS = ("cli.codex",)
+
+#: The bridge server the CLI starts for a call (standard library only).
+BRIDGE_SERVER = Path(__file__).resolve().with_name("cli_bridge_server.py")
+#: The name the bridge's MCP server goes by in the CLI's config and events.
+BRIDGE_SERVER_NAME = "synapse"
 
 #: The binary each CLI base runs.
 CLI_BINARIES = {"cli.claude": "claude", "cli.gemini": "gemini", "cli.codex": "codex", "cli.copilot": "copilot"}
@@ -136,6 +147,8 @@ class CliInvocation:
     stdin: str | None
     #: Codex writes its last message here.
     output_file: Path | None = None
+    #: Where the bridge records the tool calls the CLI makes (F753); None unbridged.
+    bridge_calls: Path | None = None
 
 
 def split_cli_model(cli_model: str) -> tuple[str, str | None]:
@@ -258,7 +271,27 @@ def _gemini(variant, *, workdir, prompt, environ, **_):
     return CliInvocation(argv, env, workdir / "cwd", GEMINI_TURN)
 
 
-def _codex(variant, *, workdir, system_prompt, prompt, environ, codex_catalog=None, **_):
+def _bridge_tools(tools: list[dict]) -> list[dict]:
+    """The agent's tools as the bridge lists them: a name the model API takes
+    (letters, digits, `_`, `-`), mapped back to the engine's own name."""
+    out, used = [], set()
+    for t in tools or []:
+        fn = t.get("function") if isinstance(t, dict) else None
+        if not isinstance(fn, dict) or not fn.get("name"):
+            continue
+        engine_name = str(fn["name"])
+        name = re.sub(r"[^A-Za-z0-9_-]", "_", engine_name)[:64] or "tool"
+        base, n = name, 2
+        while name in used:
+            name = f"{base[:60]}_{n}"
+            n += 1
+        used.add(name)
+        out.append({"name": name, "engine_name": engine_name, "description": fn.get("description") or "",
+                    "inputSchema": fn.get("parameters") or {"type": "object", "properties": {}}})
+    return out
+
+
+def _codex(variant, *, workdir, system_prompt, prompt, environ, codex_catalog=None, tools=None, **_):
     env = dict(environ)
     # Its own system prompt (18 KB: writing style, collaboration modes) gives
     # way to the agent's, as Claude Code's does; never empty, since some
@@ -290,10 +323,20 @@ def _codex(variant, *, workdir, system_prompt, prompt, environ, codex_catalog=No
                     model.pop(key, None)
         path = _write(workdir / "models.json", json.dumps(catalog))
         argv += ["-c", f"model_catalog_json={json.dumps(str(path))}"]
+    bridge_calls = None
+    listed = _bridge_tools(tools)
+    if listed:
+        # The agent's tools as real tools; the bridge records a call and runs nothing (F753).
+        spec = _write(workdir / "bridge-tools.json", json.dumps(listed))
+        bridge_calls = workdir / "bridge-calls.jsonl"
+        server = (f"{{command={json.dumps(sys.executable)}, "
+                  f"args=[{json.dumps(str(BRIDGE_SERVER))}, {json.dumps(str(spec))}, {json.dumps(str(bridge_calls))}]}}")
+        argv += ["-c", f"mcp_servers.{BRIDGE_SERVER_NAME}={server}"]
     if variant:
         argv += ["-m", variant]
     argv += ["-o", str(out), "-"]
-    return CliInvocation(argv, env, cwd, _strip_system(prompt, system_prompt), output_file=out)
+    return CliInvocation(argv, env, cwd, _strip_system(prompt, system_prompt), output_file=out,
+                         bridge_calls=bridge_calls)
 
 
 def _copilot(variant, *, workdir, prompt, environ, github_token=None, **_):
@@ -320,7 +363,8 @@ _BUILDERS = {"cli.claude": _claude, "cli.gemini": _gemini, "cli.codex": _codex, 
 
 def build_cli_invocation(base: str, variant: str | None, *, workdir: Path, system_prompt: str | None,
                          prompt: str, effort: str | None = None, environ: Mapping[str, str] | None = None,
-                         codex_catalog: dict | None = None, github_token: str | None = None) -> CliInvocation:
+                         codex_catalog: dict | None = None, github_token: str | None = None,
+                         tools: list[dict] | None = None) -> CliInvocation:
     """The command, environment and working directory of one call to `base`.
 
     `prompt` is the whole flat prompt (`_build_cli_prompt`: the system prompt,
@@ -332,4 +376,5 @@ def build_cli_invocation(base: str, variant: str | None, *, workdir: Path, syste
         raise ValueError(f"Unknown CLI base '{base}'. Supported: {list(_BUILDERS)}")
     return builder(variant, workdir=workdir, system_prompt=system_prompt, prompt=prompt, effort=effort,
                    environ=dict(os.environ if environ is None else environ),
-                   codex_catalog=codex_catalog, github_token=github_token)
+                   codex_catalog=codex_catalog, github_token=github_token,
+                   tools=tools if base in BRIDGED_CLIS else None)

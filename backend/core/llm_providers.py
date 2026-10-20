@@ -28,6 +28,7 @@ from botocore.config import Config
 
 from core.config import LLM_REQUEST_TIMEOUT
 from core.telemetry import spans as _spans
+from core.providers import cli_invocation as _cli_invocation
 from core.providers import registry as _providers
 
 from core.log import get_logger
@@ -929,6 +930,7 @@ async def call_cli_provider(
     messages: list[dict] | None = None,
     timeout: float = _CLI_TIMEOUT,
     effort: str | None = None,
+    tools: list[dict] | None = None,
 ) -> tuple[str, int, int]:
     """Run an installed CLI for its model alone, and return its answer.
 
@@ -943,6 +945,8 @@ async def call_cli_provider(
         timeout: Seconds before we kill the process and raise LLMError
         effort: The agent's or workspace's `reasoning_effort` — `cli.claude`
             sends it as `--effort`. The CLI has no "off", so off and None are low.
+        tools: The agent's tools. A bridged CLI (Codex) is offered them as real
+            tools; a call it makes comes back as the engine's own tool call (F753).
 
     Returns:
         (response_text, estimated_input_tokens, estimated_output_tokens)
@@ -972,7 +976,7 @@ async def call_cli_provider(
     try:
         inv = _inv.build_cli_invocation(base, variant, workdir=workdir, system_prompt=sys_prompt,
                                         prompt=full_prompt, effort=effort, codex_catalog=catalog,
-                                        github_token=token)
+                                        github_token=token, tools=tools)
         # Fed from a file (like `< file`), keeping the prompt out of the process list.
         stdin_source = asyncio.subprocess.DEVNULL
         if inv.stdin is not None:
@@ -1008,7 +1012,8 @@ async def call_cli_provider(
 
         stdout_text = _ANSI_ESCAPE.sub("", stdout_b.decode("utf-8", errors="replace")).strip()
         stderr_text = stderr_b.decode("utf-8", errors="replace").strip()
-        answer = _read_cli_answer(base, cli_model, process.returncode, stdout_text, stderr_text, inv.output_file)
+        answer = _read_cli_answer(base, cli_model, process.returncode, stdout_text, stderr_text, inv.output_file,
+                                  bridge_calls=inv.bridge_calls)
         _log.debug(f"✅ CLI '{cli_model}' response ({len(answer)} chars)")
         return (answer, usage_tracker.estimate_tokens_from_text(full_prompt),
                 usage_tracker.estimate_tokens_from_text(answer))
@@ -1021,6 +1026,29 @@ async def call_cli_provider(
         raise LLMError(f"CLI provider '{cli_model}' unexpected error: {e}")
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _bridged_calls(path) -> list[dict]:
+    """The tool calls the bridge recorded for this call (F753), in order."""
+    if path is None:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    calls = []
+    for line in lines:
+        try:
+            call = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(call, dict) and isinstance(call.get("tool"), str):
+            call = {"tool": call["tool"], "arguments": call.get("arguments") or {}}
+            # Made again as written in the same turn, it is one call: Codex called
+            # get_order three times for one order though each was answered "stop now".
+            if call not in calls:
+                calls.append(call)
+    return calls
 
 
 def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) -> LLMError:
@@ -1052,7 +1080,7 @@ def _refuse_own_tools(cli_model: str, tools: list[str]) -> LLMError:
 
 
 def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: str, stderr: str,
-                     output_file) -> str:
+                     output_file, bridge_calls=None) -> str:
     """The model's answer from what a CLI printed, or the LLMError it stands for."""
     if returncode not in (0, None) and _CLI_UNKNOWN_FLAG.search(stderr or stdout or ""):
         return_err = (stderr or stdout)[-300:]
@@ -1133,6 +1161,9 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
             kind = event.get("type")
             if kind in ("item.started", "item.completed"):
                 item = event.get("item") or {}
+                if (bridge_calls is not None and item.get("type") == "mcp_tool_call"
+                        and item.get("server") == _cli_invocation.BRIDGE_SERVER_NAME):
+                    continue                  # the agent's own tool, through the bridge (F753)
                 if item.get("type") not in _CODEX_ANSWER_ITEMS:
                     used.append(str(item.get("type")))
                 elif item.get("type") == "agent_message" and isinstance(item.get("text"), str):
@@ -1143,6 +1174,12 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
                 errors.append(str((event.get("error") or {}).get("message") or ""))
         if used:
             raise _refuse_own_tools(cli_model, used)
+        bridged = _bridged_calls(bridge_calls)
+        if bridged:
+            # The model's tool calls, for the engine to run like any model's: its
+            # policy, approvals and guards. What the CLI wrote after them is not an
+            # answer; the result comes back on its next turn.
+            return "\n".join(f"<tool_call>{json.dumps(c)}</tool_call>" for c in bridged)
         answer = ""
         if output_file is not None:
             try:
@@ -3700,6 +3737,7 @@ async def _chat_cli(call: ChatCall, spec) -> LLMResult:
         sys_prompt=call.system,
         messages=messages,
         effort=call.reasoning_effort,
+        tools=call.tools,
     )
     return LLMResult(text, input_tokens, output_tokens)
 
