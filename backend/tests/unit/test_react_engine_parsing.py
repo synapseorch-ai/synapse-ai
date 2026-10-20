@@ -7,7 +7,9 @@ class TestToolCallParsing:
         from core.react_engine import parse_tool_call
         call, _ = parse_tool_call('{"tool": "get_weather", "args": {"city": "NYC"}}')
         assert call["tool"] == "get_weather"
-        assert call["args"] == {"city": "NYC"}
+        # In the engine's shape since F758: the loop runs a call from its
+        # `arguments`, so `args` passed through as written ran with none.
+        assert call["arguments"] == {"city": "NYC"}
 
     def test_tool_call_after_reasoning_preamble(self):
         from core.react_engine import parse_tool_call

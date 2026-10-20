@@ -58,10 +58,35 @@ def _uses(uses: Any) -> list[dict] | None:
     return calls
 
 
+#: Other names a model gives a call's arguments, read when the call has no `arguments` (F758).
+_ARGUMENT_KEYS = ("parameters", "args", "input")
+
+
+def _with_arguments(call: dict) -> dict:
+    """An engine call with its arguments under `arguments` (F758).
+
+    A call with no `arguments` but other keys beside `tool` had them as its
+    arguments: Claude Haiku wrote a Team hand-off as `{"tool": "assign",
+    "member": …, "task": …}`, read as `assign` with nothing and refused. A lone
+    `parameters`/`args`/`input` object is the arguments under another name. A
+    call with `arguments`, or with nothing beside `tool`, is left as written.
+    """
+    if "arguments" in call:
+        return call
+    rest = {k: v for k, v in call.items() if k != "tool"}
+    if not rest:
+        return call
+    if len(rest) == 1:
+        (key, value), = rest.items()
+        if key in _ARGUMENT_KEYS and isinstance(value, dict):
+            return {"tool": call["tool"], "arguments": value}
+    return {"tool": call["tool"], "arguments": rest}
+
+
 def calls_in(obj: Any) -> list[dict]:
     """The tool calls `obj` is, in the engine's shape; [] when it is not a call."""
     if is_engine_call(obj):
-        return [obj]
+        return [_with_arguments(obj)]
     if not isinstance(obj, dict):
         return []
     if "tool_uses" in obj:
