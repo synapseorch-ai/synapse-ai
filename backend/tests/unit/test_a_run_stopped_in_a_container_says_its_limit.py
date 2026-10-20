@@ -20,6 +20,7 @@ body's entries are there. The container at the top is entered last, so the
 run's reason is its sentence. A person's cancel writes no body entry here.
 """
 import asyncio
+import contextlib
 import re
 import time
 import types
@@ -68,27 +69,67 @@ def slow_prints(monkeypatch):
     monkeypatch.setitem(steps_mod.STEP_EXECUTORS, StepType.PRINT, Slow())
 
 
+#: How long a finished held Print takes, on the test's clock.
+PRINT_S = 0.1
+
+
 @pytest.fixture
 def held_prints(monkeypatch):
-    """Prints that finish at once until `held_prints.after` have, then run until the limit cuts them (F519).
+    """Prints that finish at once until `held_prints.after` have, then are held until the limit cuts them (F519).
 
     A 0.4 s Print timed the cut against step boundaries: on a loaded machine the
     limit could fire while the run was between two steps — writing its checkpoint
     — and the run was left with no cut entry while the engine was right. Held,
     there is always a step in progress when the limit comes, and the ones before
     it have finished.
+
+    And the limit comes when the steps are held, not at one second of the real
+    clock (BF10): a loaded machine took longer than that to seed, start and run
+    the first prints, and the limit still fired between them
+    (`test_a_container_cut_inside_is_failed_not_cut` in loaded full suites). The
+    engine reads the run's budget from `time.time`, which is the test's clock
+    here: a finished Print is `PRINT_S` of it, and once `held_prints.parks` steps
+    are held it moves to the run's limit and the run's outermost `fail_after` —
+    the top container's, what was left of the ceiling — is made due. The engine
+    meets the same `TimeoutError`, from the same scope, with its budget spent, as
+    when the ceiling runs out on the real clock.
     """
     from core.models_orchestration import StepType
     from core.orchestration import steps as steps_mod
 
+    start = time.time()
+    now = [start]
+    monkeypatch.setattr(time, "time", lambda: now[0])
+
+    scopes: list[anyio.CancelScope] = []
+    real_fail_after = anyio.fail_after
+
+    @contextlib.contextmanager
+    def watched_fail_after(delay, shield=False):
+        # No deadline of its own on the real clock, which a loaded machine reaches first: due only when the
+        # held steps say so, below. `fail_after` still raises `TimeoutError` then, as when its delay runs out.
+        with real_fail_after(None, shield) as scope:
+            scopes.append(scope)
+            yield scope
+
+    monkeypatch.setattr(anyio, "fail_after", watched_fail_after)
+
     class Held:
         after = 0
         done = 0
+        parks = 1      # how many are held when the limit comes (one per Parallel branch)
+        parked = 0
+        limit_s = 1.0  # the ceiling the test set (`ceiling()`)
 
         async def execute(self, step, run, engine):
             if self.done >= self.after:
+                self.parked += 1
+                if self.parked == self.parks:
+                    now[0] = start + self.limit_s                 # the run's limit, reached
+                    scopes[0].deadline = anyio.current_time()     # and its scope, due
                 await anyio.sleep_forever()
             self.done += 1
+            now[0] += PRINT_S
             run.shared_state[step.output_key] = step.id
             return
             yield
@@ -173,6 +214,7 @@ class TestAContainerAtTheTop:
         assert _reason(run) == by_id["outer"]["error"]
 
     async def test_a_parallels_branches_are_entered_before_it(self, held_prints):
+        held_prints.parks = 2  # the step each branch is in
         ceiling()
         fan = {"id": "fan", "name": "Fan", "type": "parallel", "next_step_id": None,
                "parallel_branches": [["a1", "a2", "a3", "a4"], ["b1", "b2", "b3", "b4"]]}
