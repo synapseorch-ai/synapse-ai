@@ -10,11 +10,15 @@ Now the paused entry keeps what was worked before the pause, the resumed
 stretch adds to it, and the person's wait is in neither. Inside a container the
 entry starts at the step's own start, as at the top level.
 
-Measured on the real clock: every model call is half a second. That the
-person's wait is not counted is proven against the entry's own window less the
-wait this test held (F519): the engine paused before the test saw it and resumed
-after the answer, so its count can never exceed that, however slow the machine.
-A fixed margin ("under 1.8 s") failed when a loaded machine stretched the work.
+Measured on a clock the test moves (BF10, F519's rule): every model call is
+half a second of it and the person's wait is a second, and nothing else moves it.
+That the person's wait is not counted is proven against the entry's own window
+less the wait this test held: the engine paused before the test saw it and
+resumed after the answer, so its count can never exceed that. On the real clock
+a loaded machine still broke it: two pauses' roundings and the scheduler's gaps
+between the engine's stamps and the test's own were more than its 20 ms
+(`TestTwoApprovalsInOneExecution[fleet]` and `TestInALoop[engine]` in loaded
+full suites); a fixed margin ("under 1.8 s") had failed before that.
 """
 import asyncio
 import time
@@ -29,11 +33,29 @@ CALL_S = 0.5
 WAIT_S = 1.0
 
 
+#: The clock the engine reads (`time.time`): moved by a model call and by the person's wait, never by the machine.
+_NOW: list[float] = []
+
+
 @pytest.fixture
-def half_second_calls(monkeypatch):
-    monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MIN", str(CALL_S))
-    monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_MAX", str(CALL_S))
-    monkeypatch.setenv("SYNAPSE_FAKE_LLM_DELAY_PROB", "1")
+def half_second_calls(monkeypatch, fake_llm):
+    """Every model call is half a second of a clock only this test moves."""
+    _NOW[:] = [time.time()]
+    monkeypatch.setattr(time, "time", lambda: _NOW[0])
+
+    async def half_a_second():
+        _NOW[0] += CALL_S
+        await asyncio.sleep(0)  # still a turn of the loop, as a call is
+
+    monkeypatch.setattr(fake_llm, "_maybe_delay", half_a_second)
+
+
+async def _wait_for_the_person():
+    """The person's wait: `WAIT_S` of the test's clock, and what it held, read from that clock."""
+    seen = time.time()
+    _NOW[0] += WAIT_S
+    await asyncio.sleep(0)
+    return time.time() - seen
 
 
 async def _approved(driver, orch, run_id, fake_llm, script, approvals=1):
@@ -47,9 +69,7 @@ async def _approved(driver, orch, run_id, fake_llm, script, approvals=1):
         status = await driver.start(orch, run_id)
         for _ in range(approvals):
             assert status == "paused"
-            seen = time.time()
-            await asyncio.sleep(WAIT_S)                    # the person's wait
-            held += time.time() - seen
+            held += await _wait_for_the_person()
             status = await driver.answer(run_id, {"approve": True})
     assert status == "completed"
     return [h for h in (await _run(run_id)).step_history if h.get("step_id") == "work"], held
@@ -98,10 +118,8 @@ class TestTwoApprovalsInOneExecution:
             status = await driver.start(orch, "run_f463")
             for _ in range(2):
                 assert status == "paused"
-                seen = time.time()
                 ordinals.append(pause_ordinal((await _run("run_f463")).step_history))
-                await asyncio.sleep(WAIT_S)
-                held += time.time() - seen
+                held += await _wait_for_the_person()
                 status = await driver.answer("run_f463", {"approve": True})
         assert status == "completed"
         assert ordinals[0] != ordinals[1], "each question is its own"
