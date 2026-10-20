@@ -354,3 +354,12 @@ async def test_a_goal_with_no_tool_is_researched_and_ends_in_findings(client, bu
     cards = [e for e in events if e["type"] == "research_findings"]
     assert len(cards) == 1 and cards[0]["options"][0]["provider"] == "Shippo"
     assert not [e for e in events if e["type"] == "resource_saved"], "research builds nothing"
+
+
+def test_the_findings_step_asks_for_its_own_tool_on_the_researchers_report():
+    """Its words named `search_help`, copied from the how-to step, while its forced tool is `report_findings` (F764):
+    the model read an instruction for the wrong tool, and the report it turns into the card only as an input."""
+    step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_findings")
+    assert step["forced_tool"] == "report_findings"
+    assert "search_help" not in step["prompt_template"]
+    assert "`report_findings`" in step["prompt_template"] and "{state.summary}" in step["prompt_template"]

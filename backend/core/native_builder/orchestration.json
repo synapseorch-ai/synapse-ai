@@ -1242,7 +1242,7 @@
             "name": "Make the Findings Card",
             "type": "tool",
             "agent_id": null,
-            "prompt_template": "Call `search_help` with the person's question, in their own words:\n{state.user_message}",
+            "prompt_template": "Call `report_findings` with one option per provider the report below looked at, each with how it would connect here (mcp, api, none or unclear), what it needs, and the pages it read, exactly as the report says.\n\nWhat the person asked:\n{state.user_message}\n\nThe report:\n{state.summary}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
