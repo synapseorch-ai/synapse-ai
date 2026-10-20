@@ -123,9 +123,13 @@ def _target(action: str):
         except ValueError:
             parsed = None
         if isinstance(parsed, dict):
-            for key in ("id", "orch_id", "agent_id", "schedule_id"):
-                if parsed.get(key):
-                    return kind, str(parsed[key])
+            # A create answers with its record nested under its kind ({"agent": {"id": …}}, F697).
+            nested = parsed.get(kind)
+            records = [nested, parsed] if isinstance(nested, dict) else [parsed]
+            for record in records:
+                for key in ("id", "orch_id", "agent_id", "schedule_id"):
+                    if record.get(key):
+                        return kind, str(record[key])
         if args.get("name"):
             return kind, str(args["name"])
         return None

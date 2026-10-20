@@ -108,8 +108,22 @@ class TestF693ABuildIsAudited:
             assert not made.isError, made.content[0].text
             await s.call_tool("list_agents", {})
         assert [(e.action, e.tool, e.via) for e in audited] == [("agent.created", "create_agent", "mcp")]
-        assert audited[0].target_type == "agent" and audited[0].target_id
+        # F697: the created agent's id, never its name (the builder nests it: {"agent": {"id": …}}).
+        made_id = json.loads(made.content[0].text)["agent"]["id"]
+        assert (audited[0].target_type, audited[0].target_id) == ("agent", made_id)
         assert audited[0].credential_id == api_key["record"]["id"]
+
+    async def test_a_created_workflow_is_audited_by_its_id(self, mcp_app, api_key, audited):
+        """F697, for a workflow: the builder answers {"orchestration": {"id": …}}."""
+        steps = [{"id": "s", "name": "Say", "type": "print", "print_content": "hi", "output_key": "o",
+                  "next_step_id": None}]
+        async with mcp_session(mcp_app, api_key) as s:
+            made = await s.call_tool("create_orchestration", {
+                "name": "F697 probe", "steps_json": json.dumps(steps), "entry_step_id": "s"})
+            assert not made.isError, made.content[0].text
+        orch_id = json.loads(made.content[0].text)["orchestration"]["id"]
+        assert [(e.action, e.target_type, e.target_id) for e in audited] == [
+            ("orchestration.created", "orchestration", orch_id)]
 
     async def test_a_refused_build_is_not_audited(self, mcp_app, api_key, audited):
         async with mcp_session(mcp_app, api_key) as s:
