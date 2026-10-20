@@ -130,6 +130,33 @@ async def test_what_is_asked_is_resolved_exactly_or_not_at_all():
     assert cards == [] and "error" in said
 
 
+async def test_two_with_the_same_name_are_told_apart_by_their_ids():
+    """F760, found on dev (acme has two "C2 sched print"): the refusal named only the names, twice, so the next call
+    sent the name again and "1" was asked about forever. It names each with its id, and the id picks it."""
+    await _workflow(id="orch_first", name="C2 sched print")
+    await _workflow(id="orch_second", name="C2 sched print")
+    await _assistant_run()
+
+    said, cards = await _prepare({"action": "run_workflow", "workflow": "C2 sched print", "message": "x"})
+    assert cards == []
+    assert "orch_first" in said["error"] and "orch_second" in said["error"]
+    assert "id" in said["error"].split("orch_second", 1)[1].lower(), "it says to call again with the id"
+
+    _, [card] = await _prepare({"action": "run_workflow", "workflow": "orch_second", "message": "x"})
+    assert card["buttons"][0]["arguments"]["orchestration_id"] == "orch_second"
+
+
+async def test_a_schedule_named_twice_is_told_apart_the_same_way():
+    from core.store import schedules as store
+
+    for sid in ("sched_a", "sched_b"):
+        await store.save({"id": sid, "name": "Nightly", "enabled": True, "target_type": "orchestration",
+                          "target_id": "orch_x", "prompt": "", "schedule_type": "cron", "cron_expression": "0 2 * * *"})
+    await _assistant_run()
+    said, cards = await _prepare({"action": "schedule_off", "schedule": "Nightly"})
+    assert cards == [] and "sched_a" in said["error"] and "sched_b" in said["error"]
+
+
 async def test_stopping_a_run_that_has_ended_is_not_offered():
     await _workflow(id="orch_inv", name="Invoice chaser")
     await SharedState(OrchestrationRun(run_id="run_done", orchestration_id="orch_inv", status="completed")).checkpoint()

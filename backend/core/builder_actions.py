@@ -107,8 +107,10 @@ def _pick(items: list[dict], wanted: str, what: str, list_hint: str) -> dict:
         return near[0]
     if not near:
         raise _NotOffered(f"No {what} is called {wanted!r}. {list_hint}")
-    names = ", ".join(f'"{i.get("name")}"' for i in near[:8])
-    raise _NotOffered(f"More than one {what} matches {wanted!r}: {names}. Ask which one they mean.")
+    # Each with its id: two of the same name told apart by name alone sent the name back, and was refused again (F760).
+    names = ", ".join(f'"{i.get("name")}" ({i.get("id")})' for i in near[:8])
+    raise _NotOffered(f"More than one {what} matches {wanted!r}: {names}. Ask which one they mean, then call again "
+                      f"with that one's id as `{what}`.")
 
 
 async def _workflow(args: dict) -> dict:
