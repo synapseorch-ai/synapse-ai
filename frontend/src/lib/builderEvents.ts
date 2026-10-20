@@ -193,6 +193,40 @@ function completeLastStep(messages: BuilderMessage[]): BuilderMessage[] {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+/** A JSON string's own words, from the text between its quotes; null when they cannot be read. */
+function unquoted(body: string): string | null {
+    try {
+        return JSON.parse(`"${body}"`) as string;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * What the step trail says for a tool's result (F761). A card's `prepare_action` answers JSON for the model
+ * (`{"card": …, "say": …}`), and the trail showed it raw, escapes and all; it shows what the card says, or a
+ * refusal's sentence. The engine cuts a preview at 500 characters, so the `say` or `error` is also read from a
+ * preview that no longer parses. Any other result is left as it was.
+ */
+export function previewInWords(preview: string): string {
+    const text = preview.trim();
+    if (!text.startsWith('{')) return preview;
+    try {
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        for (const key of ['say', 'error'] as const) {
+            if (typeof parsed[key] === 'string' && parsed[key]) return parsed[key] as string;
+        }
+        return preview;
+    } catch {
+        for (const key of ['say', 'error']) {
+            const found = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(text);
+            const words = found ? unquoted(found[1]) : null;
+            if (words) return words;
+        }
+        return preview;
+    }
+}
+
 export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): BuilderState {
     const type: string = event?.type ?? '';
     const key = `${type}-${event?.orch_step_id ?? ''}-${event?.tool_name ?? ''}-${event?.id ?? ''}-${seq}`;
@@ -233,7 +267,7 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         case 'tool_result':
             return append(state, {
                 role: 'assistant', content: '', kind: 'tool_result', key,
-                toolName: event.tool_name ?? '', toolPreview: String(event.preview ?? ''),
+                toolName: event.tool_name ?? '', toolPreview: previewInWords(String(event.preview ?? '')),
             });
 
         case 'resource_saved': {
