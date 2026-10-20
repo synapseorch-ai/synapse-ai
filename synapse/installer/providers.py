@@ -15,10 +15,14 @@ app's model list afterwards.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
+import subprocess
 import urllib.parse
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 from . import net
@@ -26,12 +30,12 @@ from .widgets import BACK, Asker, Option
 
 # ── what is on this computer already ─────────────────────────────────────────
 
-CLAUDE_CLI_MODELS = [
-    "cli.claude.claude-sonnet-4-6", "cli.claude.claude-opus-4-6",
-    "cli.claude.claude-haiku-4-5-20251001", "cli.claude",
-]
+#: Claude Code by its aliases: each is the newest model of its kind the account
+#: can use, so the list never goes stale (ONB2, F727; CLIM1's `MODEL_LISTS`).
+CLAUDE_CLI_MODELS = ["cli.claude.sonnet", "cli.claude.opus", "cli.claude.haiku", "cli.claude"]
 GEMINI_CLI_MODELS = ["cli.gemini.pro", "cli.gemini.flash", "cli.gemini"]
-CODEX_CLI_MODELS = ["cli.codex"]
+#: Shown by name; the rest of each line is the setting's prefix.
+CLI_LABELS = {"claude": "Claude Code", "gemini": "Gemini CLI", "codex": "Codex CLI", "copilot": "GitHub Copilot CLI"}
 
 
 def ollama_models(base_url: str = "http://127.0.0.1:11434") -> list[str]:
@@ -48,15 +52,84 @@ class Found:
     claude: bool
     gemini: bool
     codex: bool
+    copilot: bool = False
 
 
 def detect() -> Found:
+    """What is here, without running any of it: a CLI's models are asked only once it is picked."""
     return Found(
         ollama=ollama_models(),
         claude=bool(shutil.which("claude")),
         gemini=bool(shutil.which("gemini")),
         codex=bool(shutil.which("codex")),
+        copilot=bool(shutil.which("copilot")),
     )
+
+
+def _run_cli(*argv: str, timeout: float = 8.0) -> tuple[int | None, str]:
+    """A CLI's exit code and output, or (None, "") when it cannot be run in time."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    return done.returncode, done.stdout or ""
+
+
+# The two readers below copy CLIM1's (`core/providers/cli_status.py`), which
+# the installer cannot import; the installer's tests hold each to that one.
+
+def codex_models(binary: str = "codex") -> list[str]:
+    """The models Codex lets this account pick, in its own order: `codex debug
+    models` first; the cache file it keeps (which can lag) only when that fails."""
+    catalog = None
+    code, out = _run_cli(binary, "debug", "models")
+    if code == 0:
+        try:
+            catalog = json.loads(out)
+        except ValueError:
+            catalog = None
+    if not (isinstance(catalog, dict) and isinstance(catalog.get("models"), list)):
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        try:
+            catalog = json.loads((home / "models_cache.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            catalog = None
+    listed = catalog.get("models") if isinstance(catalog, dict) else None
+    entries = []
+    for m in listed if isinstance(listed, list) else []:
+        if not isinstance(m, dict) or not m.get("slug"):
+            continue
+        if m.get("visibility") != "list" or not m.get("supported_in_api", True):
+            continue
+        entries.append((m.get("priority", 999), m["slug"]))
+    return [slug for _, slug in sorted(entries, key=lambda e: e[0])]
+
+
+def copilot_models(binary: str = "copilot") -> list[str]:
+    """`auto` (Copilot's own pick), then the choices `copilot help config` lists under `model`."""
+    _, text = _run_cli(binary, "help", "config")
+    out, inside = [], False
+    for line in text.splitlines():
+        if re.match(r"^\s{0,4}`[\w.]+`:", line):
+            if inside:
+                break
+            inside = line.strip().startswith("`model`:")
+            continue
+        if inside:
+            m = re.match(r'^\s+-\s+"([^"]+)"\s*$', line)
+            if m:
+                out.append(m.group(1))
+    return ["auto", *out]
+
+
+def cli_models(name: str) -> list[str]:
+    """The models to offer for a CLI found here, its bare id (the CLI's own default) last."""
+    if name == "claude":
+        return list(CLAUDE_CLI_MODELS)
+    if name == "gemini":
+        return list(GEMINI_CLI_MODELS)
+    listed = codex_models() if name == "codex" else copilot_models()
+    return [*(f"cli.{name}.{m}" for m in listed), f"cli.{name}"]
 
 
 # ── listing a provider's models (which is also checking its key) ─────────────
@@ -234,12 +307,9 @@ def _first(asker: Asker, found: Found) -> dict:
         if found.ollama:
             n = len(found.ollama)
             options.append(Option("Ollama", "ollama", f"{n} model{'s' if n != 1 else ''} on this computer"))
-        if found.claude:
-            options.append(Option("Claude Code", "cli:claude", "found on this computer"))
-        if found.gemini:
-            options.append(Option("Gemini CLI", "cli:gemini", "found on this computer"))
-        if found.codex:
-            options.append(Option("Codex CLI", "cli:codex", "found on this computer"))
+        for name, label in CLI_LABELS.items():
+            if getattr(found, name):
+                options.append(Option(label, f"cli:{name}", "found on this computer"))
         options += [
             Option("Anthropic (Claude)", "anthropic"),
             Option("OpenAI", "openai"),
@@ -260,8 +330,7 @@ def _answer(asker: Asker, choice, found: Found):
     if choice == "ollama":
         return _pick_ollama(asker, found.ollama)
     if isinstance(choice, str) and choice.startswith("cli:"):
-        models = {"claude": CLAUDE_CLI_MODELS, "gemini": GEMINI_CLI_MODELS,
-                  "codex": CODEX_CLI_MODELS}[choice[4:]]
+        models = cli_models(choice[4:])
         model = models[0] if len(models) == 1 else asker.select(
             "Everyday model", [Option(m, m) for m in models], back=True, note=_EVERYDAY)
         return BACK if model is BACK else {"model": model, "mode": "cli", "_pool": list(models)}

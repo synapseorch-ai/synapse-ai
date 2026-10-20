@@ -631,3 +631,123 @@ def test_an_unknown_extra_is_refused_before_anything_runs(captured_options, caps
     assert exit_info.value.code == 2
     assert "knowledge, telemetry" in capsys.readouterr().err
     assert captured_options == []
+
+
+# ── the model CLIs found on this computer (ONB2, F727, D303) ─────────────────
+# The installer cannot import core/, so it keeps its own copy of CLIM1's
+# readers (core/providers/cli_status.py); each is held to that one here.
+
+_CODEX_CATALOG = {"models": [
+    {"slug": "gpt-5.6-luna", "visibility": "list", "supported_in_api": True, "priority": 2},
+    {"slug": "gpt-6-luna", "visibility": "list", "priority": 1},
+    {"slug": "codex-auto-review", "visibility": "hide", "priority": 0},
+    {"slug": "gpt-5.6-terra", "visibility": "list", "supported_in_api": False, "priority": 3},
+    {"slug": "gpt-5.5", "visibility": "list"},
+]}
+
+_COPILOT_CONFIG_HELP = """Configuration Settings:
+
+  `allowed_urls`: URLs the CLI may fetch.
+    - "https://example.com"
+
+  `model`: AI model to use for Copilot CLI; can be changed with /model command or --model flag option.
+    - "claude-sonnet-5.5"
+    - "gpt-5.6"
+    - "gemini-3-pro-preview"
+
+  `theme`: the colour theme.
+    - "auto"
+    - "dark"
+"""
+
+
+def _cli_runs(monkeypatch, answers: dict):
+    """`providers._run_cli` answering from `answers` {argv[1:] joined: (code, out)}; anything else fails."""
+    ran = []
+
+    def run(*argv, timeout=8.0):
+        ran.append(argv)
+        return answers.get(" ".join(argv[1:]), (1, ""))
+
+    monkeypatch.setattr(providers, "_run_cli", run)
+    return ran
+
+
+def test_claude_code_is_offered_by_its_aliases_not_fixed_ids():
+    """Fixed 4.6 ids went stale; an alias is the newest model of its kind the account can use (CLIM1)."""
+    assert providers.CLAUDE_CLI_MODELS == ["cli.claude.sonnet", "cli.claude.opus", "cli.claude.haiku", "cli.claude"]
+    from core.providers.cli_status import MODEL_LISTS
+    aliases = MODEL_LISTS["cli.claude"][-1][1]
+    for m in providers.CLAUDE_CLI_MODELS[:-1]:
+        assert m.removeprefix("cli.claude.") in aliases, m
+    found = providers.Found(ollama=[], claude=True, gemini=False, codex=False)
+    # Claude Code; the everyday model (Sonnet); no other key; Synapse AI's the same.
+    answer = providers.ask(_asker(["enter", "enter", "enter", "enter"]), found)
+    assert answer == {"model": "cli.claude.sonnet", "mode": "cli"}
+
+
+def test_gemini_clis_names_are_its_own():
+    from core.providers.cli_status import MODEL_LISTS
+    for _, names in MODEL_LISTS["cli.gemini"]:
+        for m in providers.GEMINI_CLI_MODELS[:-1]:
+            assert m.removeprefix("cli.gemini.") in names, m
+
+
+def test_codex_lists_the_models_it_lets_this_account_pick(monkeypatch):
+    from core.providers.cli_status import _codex_models
+    _cli_runs(monkeypatch, {"debug models": (0, json.dumps(_CODEX_CATALOG))})
+    assert providers.codex_models("/bin/codex") == _codex_models(_CODEX_CATALOG) == ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.5"]
+    assert providers.cli_models("codex") == ["cli.codex.gpt-6-luna", "cli.codex.gpt-5.6-luna", "cli.codex.gpt-5.5", "cli.codex"]
+
+
+def test_codex_falls_back_to_its_cache_file(monkeypatch, tmp_path):
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": [{"slug": "gpt-5.4", "visibility": "list"}]}))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    ran = _cli_runs(monkeypatch, {})
+    assert providers.codex_models("/bin/codex") == ["gpt-5.4"]
+    assert ran and ran[0][1:] == ("debug", "models"), "its own list first; the cache can lag"
+
+
+def test_codex_with_no_list_is_its_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    _cli_runs(monkeypatch, {})
+    assert providers.cli_models("codex") == ["cli.codex"]
+
+
+def test_codex_is_asked_only_when_picked(monkeypatch):
+    monkeypatch.setattr(providers.shutil, "which", lambda cmd, *a, **k: f"/bin/{cmd}" if cmd == "codex" else None)
+    monkeypatch.setattr(providers, "ollama_models", lambda *a, **k: [])
+    ran = _cli_runs(monkeypatch, {"debug models": (0, json.dumps(_CODEX_CATALOG))})
+    found = providers.detect()
+    assert found.codex and not ran, "finding it runs nothing"
+    # Codex; its first model; no key; Synapse AI's the same.
+    answer = providers.ask(_asker(["enter", "enter", "enter", "enter"]), found)
+    assert answer == {"model": "cli.codex.gpt-6-luna", "mode": "cli"}
+
+
+def test_copilot_cli_is_found_and_offered(monkeypatch):
+    monkeypatch.setattr(providers.shutil, "which", lambda cmd, *a, **k: f"/bin/{cmd}" if cmd == "copilot" else None)
+    monkeypatch.setattr(providers, "ollama_models", lambda *a, **k: [])
+    found = providers.detect()
+    assert found.copilot and not (found.claude or found.gemini or found.codex)
+    asked = []
+
+    class Spy(widgets.Asker):
+        def select(self, title, options, **kw):
+            asked.append((title, [o.label for o in options]))
+            return super().select(title, options, **kw)
+
+    _cli_runs(monkeypatch, {"help config": (0, _COPILOT_CONFIG_HELP)})
+    s = screen.LiveScreen(tui.Term(stream=io.StringIO()), "t")
+    answer = providers.ask(Spy(s, FakeKeys(["enter", "enter", "enter", "enter"])), found)
+    assert asked[0][1][0] == "GitHub Copilot CLI"
+    assert answer == {"model": "cli.copilot.auto", "mode": "cli"}
+
+
+def test_copilots_models_are_its_settings_choices_auto_first(monkeypatch):
+    from core.providers.cli_status import _setting_choices
+    _cli_runs(monkeypatch, {"help config": (0, _COPILOT_CONFIG_HELP)})
+    assert providers.copilot_models("/bin/copilot") == ["auto", *_setting_choices(_COPILOT_CONFIG_HELP, "model")]
+    assert providers.copilot_models("/bin/copilot") == ["auto", "claude-sonnet-5.5", "gpt-5.6", "gemini-3-pro-preview"]
+    _cli_runs(monkeypatch, {})
+    assert providers.copilot_models("/bin/copilot") == ["auto"]
