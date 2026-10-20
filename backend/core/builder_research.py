@@ -275,6 +275,21 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
 register_builder_tool(FINDINGS_SCHEMA, report_findings)
 
 
+def previous_findings(state: Any) -> dict:
+    """The findings card the previous turn of a conversation ended in, from that run's state; {} when it did not
+    (F766). A host reads the newest run of the conversation and hands its state here, so the next turn's "go ahead
+    and build it" reaches the build with what was already found, instead of being researched again."""
+    found = (state or {}).get("findings") if isinstance(state, dict) else None
+    if isinstance(found, str):
+        try:
+            found = json.loads(found)
+        except ValueError:
+            return {}
+    if not isinstance(found, dict) or not [o for o in found.get("options") or [] if isinstance(o, dict)]:
+        return {}
+    return {"goal": str(found.get("goal") or ""), "options": [o for o in found["options"] if isinstance(o, dict)]}
+
+
 # ── 3. The web, through the built-in scraper ──────────────────────────────────────────────────────────────────────
 #
 # The builder's agents hold only builder tools ("nothing pasted can be run"), so the Researcher reaches the scraper

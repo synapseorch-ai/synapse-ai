@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from core.images import checked_images
 from core.models_orchestration import Orchestration
 from core.builder_access import CALLER_KEY
+from core.builder_research import previous_findings
 from core.native_builder import (
     BUILDER_RUN_PREFIX,
     NATIVE_BUILDER_ORCH_ID,
@@ -105,23 +106,16 @@ def _format_history(history: list[dict]) -> str:
     return "\n".join(f"{m.get('role', 'user')}: {_as_kept(str(m.get('content', '')))}" for m in history)
 
 
-async def _previous_matches(session_id: str) -> str:
-    """What the previous turn of this conversation asked about, if it asked.
-
-    When a turn could not tell which orchestration was meant, its state lists
-    the candidates; the next message in the same conversation is resolved
-    against that list, so "the second one" is an answer (F16). Only the newest
-    turn counts: a question two turns back has been answered or dropped since.
-    """
+async def _newest_state(session_id: str) -> dict:
+    """The shared state of this conversation's newest turn, before this message's own run exists."""
     from sqlalchemy import select
 
-    from core.native_builder.target import AMBIGUOUS
     from core.store import session
     from core.store.models import OrchestrationRunDB
     from core.tenancy import get_tenant
 
     async with session() as s:
-        state = (
+        return (
             await s.execute(
                 select(OrchestrationRunDB.shared_state)
                 .where(
@@ -132,6 +126,19 @@ async def _previous_matches(session_id: str) -> str:
                 .limit(1)
             )
         ).scalar_one_or_none() or {}
+
+
+async def _previous_matches(session_id: str, state: dict | None = None) -> str:
+    """What the previous turn of this conversation asked about, if it asked.
+
+    When a turn could not tell which orchestration was meant, its state lists
+    the candidates; the next message in the same conversation is resolved
+    against that list, so "the second one" is an answer (F16). Only the newest
+    turn counts: a question two turns back has been answered or dropped since.
+    """
+    from core.native_builder.target import AMBIGUOUS
+
+    state = await _newest_state(session_id) if state is None else state
     if state.get("current_orchestration_source") != AMBIGUOUS:
         return ""
     return str(state.get("current_orchestration_matches") or "")
@@ -272,6 +279,10 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # its checkpoints or any model sees the message. Both empty otherwise.
     export = export_state(request.message)
     message = export["user_message"]
+    previous = await _newest_state(session_id)
+    # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
+    # which plans from them instead of researching again.
+    found = previous_findings(previous)
 
     initial_state = {
         "user_message": message,
@@ -289,8 +300,10 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
             # only the one on screen counts.
             "" if export["export_source"] else message,
             request.current_orchestration_id,
-            await _previous_matches(session_id),
+            await _previous_matches(session_id, previous),
         ),
+        "prior_findings": found,
+        "plan_findings": found,
         "org_profile": await _workspace_profile(),
         "requirements": "",
         "human_response": {},

@@ -226,8 +226,9 @@ class TestSeeHowImBuilt:
         # the researcher and the step that makes its findings card (F577); 32 with "Find who can" on the plan; 35 with the
         # door before a build or a change for a person whose role may not (ASSIST1, F682); 36 with the gate that puts a
         # change plan's cards up when it is only buttons (F755); 39 with the build's own look-up of who provides a
-        # tool its plan names that nothing here provides: the gate, the Researcher, and the step that notes it (F763).
-        assert legend["step_count"] == 39
+        # tool its plan names that nothing here provides: the gate, the Researcher, and the step that notes it (F763);
+        # 40 with the gate that sends a research request after a findings card to the build (F766).
+        assert legend["step_count"] == 40
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
