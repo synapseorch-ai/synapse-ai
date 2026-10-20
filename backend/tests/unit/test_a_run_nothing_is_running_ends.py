@@ -23,6 +23,7 @@ import types
 import pytest
 
 from _fakes import seed as S
+from _fakes.wait import until
 
 
 def _server():
@@ -157,7 +158,9 @@ class TestCancelReachesAPumpedRun:
         await asyncio.wait_for(agents.waiting.wait(), 5)
 
         await publish_cancellation(fake_redis, "run_c1")
-        await asyncio.sleep(0.3)  # the lease's beat reads the key
+        from core.orchestration.state import _cancelled_run_ids
+        # The lease's beat reads the key: wait for it to have, not for a time (F519's rule, BF10).
+        await until(lambda: "run_c1" in _cancelled_run_ids, what="the lease's beat reading the Cancel")
         gate.set()
         await asyncio.wait_for(turn, 5)
 
@@ -185,11 +188,14 @@ class TestTheSweepEndsARunNothingIsRunning:
         """A worker killed under its pump: the lease outlives it by its TTL, then the run is over."""
         from core.scale.heartbeat import sweep_orphaned_runs
         await _row("run_or2", "running")
-        await fake_redis.set("synapse:run-live:run_or2", "worker-dead", ex=1)
+        key = "synapse:run-live:run_or2"
+        await fake_redis.set(key, "worker-dead", ex=90)
 
         assert await sweep_orphaned_runs(fake_redis) == []
         assert await sweep_orphaned_runs(fake_redis) == []
-        await asyncio.sleep(1.2)
+        # Its TTL runs out: said by deleting the key, not by a 1 s TTL and a sleep, which a loaded box outran
+        # before the two sweeps above had looked (BF10, F519's rule).
+        await fake_redis.delete(key)
         assert await sweep_orphaned_runs(fake_redis) == []
         assert await sweep_orphaned_runs(fake_redis) == ["run_or2"]
 
