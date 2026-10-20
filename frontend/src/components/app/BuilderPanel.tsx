@@ -45,7 +45,7 @@ import {
     useImageAttachments,
 } from '@/components/app/ImageAttachments';
 import { Combobox, Hint, Mark, Markdown, Spinner } from '@/components/ui';
-import type { BuilderMessage } from '@/lib/builderEvents';
+import { isPlanReview, type BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
 
@@ -194,6 +194,12 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
         ? state.messages.findLast((m) => m.kind === 'human_prompt')?.key
         : undefined;
 
+    // Changing a waiting plan (its card's Change something, F759): what is typed then is the plan's answer. Otherwise
+    // words typed while a plan waits are a new request, and the plan is set aside; a question takes any words.
+    const [revising, setRevising] = useState(false);
+    const planWaiting = isPlanReview(state.pending);
+    const changingPlan = revising && planWaiting;
+
     const submit = () => {
         const text = input.trim();
         // An image on its own is a message — "what is this?" is often the
@@ -202,7 +208,8 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
         const images = attachments.images.map((image) => image.base64);
         setInput('');
         attachments.clear();
-        void send(text, images);
+        setRevising(false);
+        void send(text, images, { revising: changingPlan });
     };
 
     // Grouped by provider rather than one flat list of ~66, and a remembered
@@ -227,7 +234,11 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
     }
     if (buffer.length) groups.push({ type: 'activity', events: buffer });
 
-    const ask = state.pending ? 'Answer the question above…' : 'Describe what you want to happen…';
+    const ask = changingPlan
+        ? 'What should change in the plan?'
+        : planWaiting
+          ? 'Ask something else, or press Change something to change the plan'
+          : state.pending ? 'Answer the question above…' : 'Describe what you want to happen…';
     const fresh = state.messages.every((m) => m.key === 'welcome') && !streaming;
     return (
         <>
@@ -276,7 +287,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                                     <ConnectCard
                                         spec={message.connect}
                                         connector={selfHostedConnector}
-                                        onConnected={(text) => void send(text, [])}
+                                        onConnected={(text) => void send(text, [], { revising: true })}
                                     />
                                 </AgentTurn>
                             );
@@ -306,8 +317,12 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                                             prompt={message.content}
                                             kind={kind}
                                             open={open}
-                                            onAnswer={(text) => void send(text, [])}
-                                            onRevise={() => textarea.current?.focus()}
+                                            // The card's words always answer its plan (F759).
+                                            onAnswer={(text) => void send(text, [], { revising: true })}
+                                            onRevise={() => {
+                                                setRevising(true);
+                                                textarea.current?.focus();
+                                            }}
                                             onStop={onStop}
                                             estimate={loadRunEstimate}
                                         />
@@ -348,7 +363,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                         onChange={setInput}
                         onSend={submit}
                         canSend={(Boolean(input.trim()) || attachments.images.length > 0) && !streaming}
-                        sendLabel={state.pending ? 'Send your answer' : 'Send'}
+                        sendLabel={state.pending && (!planWaiting || changingPlan) ? 'Send your answer' : 'Send'}
                         // Only until the run has an id — after that this button is Stop.
                         sendPending={streaming && !working}
                         busy={working}
@@ -361,7 +376,24 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                         textareaRef={textarea}
                         dropHandlers={attachments.dropHandlers}
                         pasteHandlers={attachments.pasteHandlers}
-                        top={<AttachmentChips images={attachments.images} onRemove={attachments.remove} />}
+                        top={(
+                            <>
+                                {changingPlan && (
+                                    <span className="inline-flex items-center gap-1 self-start rounded-full border border-person/60 bg-person-subtle py-0.5 pl-2.5 pr-1 text-xs font-medium text-person-ink">
+                                        Changing the plan
+                                        <button
+                                            type="button"
+                                            aria-label="Stop changing the plan"
+                                            onClick={() => setRevising(false)}
+                                            className={cn('rounded-full p-0.5 hover:bg-person/20', focusRing)}
+                                        >
+                                            <X size={12} aria-hidden />
+                                        </button>
+                                    </span>
+                                )}
+                                <AttachmentChips images={attachments.images} onRemove={attachments.remove} />
+                            </>
+                        )}
                         pill={pill ?? (
                             <span className={cn(composerPillClass, 'hover:bg-surface-2')}>
                                 <PillAvatar><Mark size={14} className="text-accent" aria-hidden /></PillAvatar>

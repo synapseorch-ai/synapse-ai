@@ -20,6 +20,8 @@ import {
     applyBuilderEvent,
     emptyBuilderState,
     refusedAnswer,
+    SET_ASIDE_NOTE,
+    typedWhilePending,
     type BuilderMessage,
     type BuilderState,
     type SavedResource,
@@ -152,7 +154,9 @@ interface BuilderContextValue {
     close: () => void;
     state: BuilderState;
     streaming: boolean;
-    send: (text: string, images?: string[]) => Promise<void>;
+    /** `revising`: the words answer a waiting plan itself — its card's buttons, or typed after Change something
+     * (F759). Without it, words typed while a plan waits are a new request, and the plan is set aside. */
+    send: (text: string, images?: string[], options?: { revising?: boolean }) => Promise<void>;
     /**
      * End the attached run — the one being built, or the one parked on a
      * question. Both are the same POST; only who reports it back differs.
@@ -488,11 +492,18 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     }, [follow]);
 
     const send = useCallback(
-        async (text: string, images: string[] = []) => {
+        async (text: string, images: string[] = [], { revising = false }: { revising?: boolean } = {}) => {
             // An image on its own is a message. Only an empty one is nothing.
             if ((!text.trim() && !images.length) || streaming) return;
             touched.current = true;
-            const pending = state.pending;
+            // A new request while a plan waits (F759): the plan is stopped where it waits — nothing it planned was
+            // done — and this message starts a new turn instead of answering it.
+            const setAside = state.pending !== null && typedWhilePending(state.pending, text, revising) === 'set_aside';
+            const pending = setAside ? null : state.pending;
+            if (setAside && state.pending) {
+                const parked = state.pending.runId;
+                await cancelRun(parked).catch(() => undefined);
+            }
 
             setState((prev) => ({
                 ...prev,
@@ -501,6 +512,10 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 error: null,
                 messages: [
                     ...prev.messages,
+                    ...(setAside
+                        ? [{ role: 'assistant' as const, content: SET_ASIDE_NOTE, kind: 'text' as const,
+                             key: `aside-${prev.messages.length}` }]
+                        : []),
                     {
                         role: 'user',
                         content: text || `(${images.length} ${images.length === 1 ? 'image' : 'images'})`,
@@ -557,7 +572,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 stopRequested.current = false;
             }
         },
-        [consume, conversationId, reportStreamEnd, sessionModel, state.messages, state.pending, streaming],
+        [cancelRun, consume, conversationId, reportStreamEnd, sessionModel, state.messages, state.pending, streaming],
     );
 
     // Home's ask line (ASSIST1): the words go as the person's message once the panel is open, and wait while a

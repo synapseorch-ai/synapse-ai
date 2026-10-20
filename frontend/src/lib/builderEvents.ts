@@ -192,7 +192,46 @@ function completeLastStep(messages: BuilderMessage[]): BuilderMessage[] {
     return messages;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+/**
+ * The human steps that are a plan's review (F759): each feeds a gate that approves in code (F754). While one waits,
+ * it is answered through its card (Go ahead, Change something, Stop instead) or by a typed yes; anything else typed
+ * is a new request, and the plan is set aside. A test in open source derives this list from the definition.
+ */
+export const PLAN_REVIEW_STEPS: readonly string[] = ['step_human_review', 'step_manage_review'];
+
+/** What those gates take as a yes, word for word (checked against the definition in open source's tests). */
+export const APPROVAL_WORDS: readonly string[] = [
+    'approve', 'approved', 'ok', 'okay', 'yes', 'looks good', 'lgtm', 'go ahead', 'build it', 'proceed',
+    'sounds good', 'do it', '👍',
+];
+
+/** Whether `text` is a yes the gates take: trimmed, lowered and stripped of spaces, dots and bangs at its ends. */
+export function isApproval(text: string): boolean {
+    const said = text.trim().toLowerCase().replace(/^[ .!]+|[ .!]+$/g, '');
+    return APPROVAL_WORDS.includes(said);
+}
+
+/** What the conversation says when a waiting plan is set aside for a new request (F759). */
+export const SET_ASIDE_NOTE = 'The plan above was set aside: nothing in it was done.';
+
+type Waiting = { runId: string; field: string; stepId: string | null };
+
+/** Whether what waits is a plan's review, not a question. */
+export function isPlanReview(pending: Waiting | null): boolean {
+    return !!pending?.stepId && PLAN_REVIEW_STEPS.includes(pending.stepId);
+}
+
+/**
+ * What a message typed while the builder waits does (F759). A question takes whatever is typed. A plan takes its
+ * yes, or what the person types while changing it (its card's Change something); anything else sets it aside and
+ * starts a new request: ASSIST1's dev pass typed three unrelated requests at a waiting plan, and each was folded
+ * into the plan while the question went unanswered.
+ */
+export function typedWhilePending(pending: Waiting, text: string, revising: boolean): 'answer' | 'set_aside' {
+    if (!isPlanReview(pending) || revising || isApproval(text)) return 'answer';
+    return 'set_aside';
+}
+
 /** A JSON string's own words, from the text between its quotes; null when they cannot be read. */
 function unquoted(body: string): string | null {
     try {
@@ -227,6 +266,7 @@ export function previewInWords(preview: string): string {
     }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): BuilderState {
     const type: string = event?.type ?? '';
     const key = `${type}-${event?.orch_step_id ?? ''}-${event?.tool_name ?? ''}-${event?.id ?? ''}-${seq}`;
