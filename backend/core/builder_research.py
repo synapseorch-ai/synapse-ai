@@ -40,10 +40,29 @@ _EVIDENCE: dict[str, dict] = {}
 
 
 def _evidence() -> dict:
-    """`own_mcp`: provider slug → a link to its own server's page; `read_hosts`: the hosts whose pages were read."""
+    """`own_mcp`: provider slug → a link to its own server's page; `read_hosts`: the hosts whose pages were read;
+    `spent`: what this research has called, for the backstop below."""
     from core.builder_tools import _current_run
 
-    return _EVIDENCE.setdefault(_current_run.get() or "", {"own_mcp": {}, "read_hosts": set()})
+    return _EVIDENCE.setdefault(_current_run.get() or "", {"own_mcp": {}, "read_hosts": set(), "spent": {}})
+
+
+#: A research run's backstop (F765, Naveen's numbers): generous, so good research never reaches it — the batches'
+#: thorough runs made at most 8 web searches, 17 page reads, 3 Registry searches for a provider and 3 catalog calls —
+#: and a runaway stops (Gemini Flash once made 48 web searches in one run). Counted from a research's first call to
+#: its report.
+BACKSTOP = {"search_the_web": 12, "read_web_page": 20, "find_in_catalog": 3, "search_mcp_registry": 3}
+ENOUGH = {"enough": True, "note": ("The research has read enough: report now with what you have, and mark what you "
+                                   "could not check as unclear. No more searching or reading in this research.")}
+
+
+def _over_backstop(tool: str, provider: str = "") -> bool:
+    """Count this call against the research's backstop; True when it is past it (and so not made). The Registry's
+    count is per provider."""
+    spent = _evidence().setdefault("spent", {})
+    key = f"{tool}:{_slug(provider)}" if tool == "search_mcp_registry" else tool
+    spent[key] = spent.get(key, 0) + 1
+    return spent[key] > BACKSTOP[tool]
 
 
 def _host(url: str) -> str:
@@ -79,6 +98,9 @@ CATALOG_SCHEMA = {
 
 async def find_in_catalog(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_connect import _read_options
+
+    if _over_backstop("find_in_catalog"):
+        return dict(ENOUGH)
 
     words = set(_words(args.get("query") or ""))
     catalog = (await _read_options()).get("catalog") or []
@@ -147,6 +169,8 @@ async def search_mcp_registry(args: dict, server_module: Any, events: list[dict]
     domain = str(args.get("domain") or "").strip() or None
     if not provider:
         return {"error": "Name the provider to look for."}
+    if _over_backstop("search_mcp_registry", provider):
+        return dict(ENOUGH)
     url = f"{REGISTRY}?search={quote(provider)}&version=latest&limit={_REGISTRY_READ}"
     try:
         body = json.loads(await fetch_bytes(url))
@@ -385,6 +409,8 @@ async def search_the_web(args: dict, server_module: Any, events: list[dict]) -> 
     query = str(args.get("query") or "").strip()
     if not query:
         return {"error": "Give the words to search for."}
+    if _over_backstop("search_the_web"):
+        return dict(ENOUGH)
     page = await _scrape(server_module, {"url": SEARCH_URL + quote_plus(query), "include_links": True,
                                          "remove_overlays": True})
     if page.get("error"):
@@ -445,6 +471,8 @@ async def read_web_page(args: dict, server_module: Any, events: list[dict]) -> d
     url = str(args.get("url") or "").strip()
     if not url.startswith(("https://", "http://")):
         return {"error": "Give a web address (https://…)."}
+    if _over_backstop("read_web_page"):
+        return dict(ENOUGH)
     page = await _scrape(server_module, {"url": url, "remove_overlays": True})
     if page.get("error"):
         return {"url": url, "error": page["error"]}
