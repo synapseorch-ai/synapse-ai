@@ -240,6 +240,21 @@ async def get_models(refresh: bool = False):
             pass
         return False, [], []
 
+    #: Why a first-party provider's list could not be read: a refused key is said
+    #: on its card, as a hosted one's is, never hidden behind the fallback list —
+    #: which read as "Key saved" and offered models that could only fail (ONB2,
+    #: F729). Gemini refuses a bad key with a 400 that names it.
+    from core.providers.registry import PROVIDERS as _PROVIDERS
+    refused: dict[str, str] = {}
+
+    def _refused(provider_id: str, r) -> bool:
+        bad = r.status_code in (401, 403) or (
+            r.status_code == 400 and ("API_KEY_INVALID" in r.text or "API key not valid" in r.text))
+        if bad:
+            label = next(p.label for p in _PROVIDERS if p.id == provider_id)
+            refused[provider_id] = f"{label} refused this key ({r.status_code})"
+        return bad
+
     async def fetch_openai() -> tuple[bool, list[str], list[str]]:
         if not openai_key:
             return False, OPENAI_FALLBACK, ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"]
@@ -261,6 +276,8 @@ async def get_models(refresh: bool = False):
                     return True, chat_models if chat_models else OPENAI_FALLBACK, embed_models if embed_models else ["text-embedding-3-small", "text-embedding-3-large"]
                 else:
                     print(f"Error fetching OpenAI models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("openai", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching OpenAI models: {type(e).__name__}: {e}")
         return True, OPENAI_FALLBACK, ["text-embedding-3-small", "text-embedding-3-large"]
@@ -284,6 +301,8 @@ async def get_models(refresh: bool = False):
                     return True, models if models else ANTHROPIC_FALLBACK, []
                 else:
                     print(f"Error fetching Anthropic models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("anthropic", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching Anthropic models: {type(e).__name__}: {e}")
         return True, ANTHROPIC_FALLBACK, []
@@ -316,6 +335,8 @@ async def get_models(refresh: bool = False):
                     return True, sorted(set(chat_models)) if chat_models else GEMINI_FALLBACK, sorted(set(embed_models)) if embed_models else ["text-embedding-004"]
                 else:
                     print(f"Error fetching Gemini models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("gemini", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching Gemini models: {type(e).__name__}: {e}")
         return True, GEMINI_FALLBACK, ["text-embedding-004"]
@@ -338,6 +359,8 @@ async def get_models(refresh: bool = False):
                     return True, models if models else GROK_FALLBACK, []
                 else:
                     print(f"Error fetching Grok models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("grok", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching Grok models: {type(e).__name__}: {e}")
         return True, GROK_FALLBACK, []
@@ -360,6 +383,8 @@ async def get_models(refresh: bool = False):
                     return True, models if models else DEEPSEEK_FALLBACK, []
                 else:
                     print(f"Error fetching DeepSeek models: HTTP {r.status_code}: {r.text[:200]}")
+                    if _refused("deepseek", r):
+                        return False, [], []
         except Exception as e:
             print(f"Error fetching DeepSeek models: {type(e).__name__}: {e}")
         return True, DEEPSEEK_FALLBACK, []
@@ -629,6 +654,8 @@ async def get_models(refresh: bool = False):
         "huggingface": {"available": hf_avail, "models": hf_chat, "embedding_models": []},
         "model_gateway": {"available": mg_avail, "models": mg_chat, "embedding_models": mg_embed},
     }
+    for provider, why in refused.items():
+        providers[provider]["error"] = why
     for provider, st in cli_states.items():
         if provider in providers:
             info = st.as_dict()

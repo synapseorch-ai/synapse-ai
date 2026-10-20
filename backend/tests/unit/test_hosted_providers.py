@@ -9,6 +9,8 @@ spelling that provider takes — `reasoning_effort`, `thinking: {type}` or
 `enable_thinking` — with Off said, never left unsaid (F269). Then how each
 provider's model list is read, and what `/api/models` serves from it.
 """
+import json
+
 import pytest
 
 import core.llm_providers as llm
@@ -403,3 +405,43 @@ async def test_a_refused_key_is_said_on_its_card(client, monkeypatch):
     install_httpx(monkeypatch, lambda url, kwargs: FakeResponse({"error": "invalid api key"}, status_code=401))
     groq = (await client.get("/api/models")).json()["providers"]["groq"]
     assert groq == {"available": False, "models": [], "embedding_models": [], "error": "Groq refused this key (401)"}
+
+
+_GEMINI_BAD_KEY = {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.",
+                             "status": "INVALID_ARGUMENT", "details": [{"reason": "API_KEY_INVALID"}]}}
+
+
+@pytest.mark.parametrize("provider,setting,label,status,body", [
+    ("openai", "openai_key", "OpenAI", 401, {"error": {"code": "invalid_api_key"}}),
+    ("anthropic", "anthropic_key", "Anthropic", 401, {"error": {"type": "authentication_error"}}),
+    ("gemini", "gemini_key", "Gemini", 400, _GEMINI_BAD_KEY),
+    ("gemini", "gemini_key", "Gemini", 403, {"error": {"status": "PERMISSION_DENIED"}}),
+    ("grok", "grok_key", "Grok", 401, {"error": "Incorrect API key provided"}),
+    ("deepseek", "deepseek_key", "DeepSeek", 401, {"error": {"message": "Authentication Fails"}}),
+])
+async def test_a_first_party_providers_refused_key_is_said_too(client, monkeypatch, provider, setting, label, status, body):
+    """ONB2 (F729, D303): OpenAI, Anthropic, Gemini, Grok and DeepSeek answered a refused key with their fallback
+    list, so their card and the first-run model step said "Key saved" and offered models that could only fail.
+    Gemini refuses a bad key with a 400 that names it."""
+    import core.routes.data as data
+
+    monkeypatch.setattr(data, "load_settings", lambda: {setting: "k-bad-not-real"})
+    install_httpx(monkeypatch, lambda url, kwargs: FakeResponse(body, status_code=status, text=json.dumps(body)))
+    got = (await client.get("/api/models")).json()["providers"][provider]
+    assert got["available"] is False and got["models"] == []
+    assert got["error"] == f"{label} refused this key ({status})"
+
+
+@pytest.mark.parametrize("provider,setting", [("openai", "openai_key"), ("gemini", "gemini_key"), ("anthropic", "anthropic_key")])
+async def test_a_provider_that_is_down_keeps_its_fallback(client, monkeypatch, provider, setting):
+    """A 503 or a 400 that is not about the key proves nothing about it: the fallback list stays."""
+    import core.routes.data as data
+
+    monkeypatch.setattr(data, "load_settings", lambda: {setting: "k-maybe-fine"})
+    install_httpx(monkeypatch, lambda url, kwargs: FakeResponse({"error": "busy"}, status_code=503))
+    got = (await client.get("/api/models")).json()["providers"][provider]
+    assert got["available"] is True and got["models"] and "error" not in got
+    install_httpx(monkeypatch, lambda url, kwargs: FakeResponse({"error": {"message": "bad pageSize"}}, status_code=400,
+                                                                text='{"error": {"message": "bad pageSize"}}'))
+    got = (await client.get("/api/models")).json()["providers"][provider]
+    assert got["available"] is True and "error" not in got
