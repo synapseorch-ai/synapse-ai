@@ -10311,10 +10311,10 @@ _OLD_WORDS = re.compile(r"\borchestrations?\b|\bMCP servers?\b", re.I)
 #: Kept on purpose (F511's K list, Naveen's OK): the protocol where a person connects or debugs one.
 _KEPT_WORDS = re.compile(r"(filesystem|Google Workspace|outside|SynapseOrch) MCP server|MCP servers registry|"
                          r"Remove MCP server", re.I)
-#: Every main page but Apps and Tools (servers added by endpoint, K1), API keys (the API's own nouns, K2) and
-#: Templates, whose packs carry their own names and descriptions ("Simple Orchestration Pack": content, F515).
+#: Every main page but Apps and Tools (servers added by endpoint, K1) and API keys (the API's own nouns, K2).
+#: Templates is read too: its packs' own names and descriptions were renamed (F515).
 _WORD_PAGES = ["/", "/agents", "/channels", "/evals", "/knowledge", "/logs", "/runs", "/schedules", "/skills",
-               "/usage", "/vault", "/widgets", "/workflows", "/settings/general", "/settings/memory",
+               "/templates", "/usage", "/vault", "/widgets", "/workflows", "/settings/general", "/settings/memory",
                "/settings/scale", "/settings/support", "/settings/variables", "/settings/import_export"]
 
 
