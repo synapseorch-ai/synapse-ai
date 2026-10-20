@@ -277,17 +277,27 @@ async def github_token(refresh: bool = False) -> str | None:
     return token
 
 
+def binary(base: str) -> str | None:
+    """Where a CLI's binary is on PATH, or None: the one place this is asked.
+
+    Model readiness asks it on every chat page load (ONB2, D303), so it runs
+    nothing; whether the CLI is signed in is the probe's, cached below.
+    """
+    name = CLI_BINARIES.get(base)
+    return shutil.which(name) if name else None
+
+
 async def _probe(provider: str, base: str) -> CliStatus:
-    binary = shutil.which(CLI_BINARIES[base])
+    binary_path = binary(base)
     label = LABELS[base]
-    if not binary:
+    if not binary_path:
         return CliStatus(provider, base, label, installed=False)
     st = CliStatus(provider, base, label, installed=True)
-    _, out = await _run(binary, "--version")
+    _, out = await _run(binary_path, "--version")
     st.version = _version(out)
 
     if base == "cli.claude":
-        code, out = await _run(binary, "auth", "status", "--json")
+        code, out = await _run(binary_path, "auth", "status", "--json")
         try:
             logged = json.loads(out).get("loggedIn")
             st.signed_in = logged if isinstance(logged, bool) else None
@@ -303,12 +313,12 @@ async def _probe(provider: str, base: str) -> CliStatus:
         st.models_source = "list"
 
     elif base == "cli.codex":
-        code, out = await _run(binary, "login", "status", stderr=True)
+        code, out = await _run(binary_path, "login", "status", stderr=True)
         if code == 0 and "logged in" in out.lower():
             st.signed_in = True
         elif code not in (0, None):
             st.signed_in = False
-        st._catalog = await _codex_catalog_from(binary)
+        st._catalog = await _codex_catalog_from(binary_path)
         st.models = _codex_models(st._catalog)
         if st.models:
             st.models_source, st.models_note = "cli", "From Codex"
@@ -322,12 +332,12 @@ async def _probe(provider: str, base: str) -> CliStatus:
 
     elif base == "cli.copilot":
         st.signed_in = (await github_token()) is not None
-        _, config_help = await _run(binary, "help", "config")
+        _, config_help = await _run(binary_path, "help", "config")
         choices = _setting_choices(config_help, "model")
         if choices:
             # `auto` is its own pick, not one of the setting's choices.
             st.models, st.models_source, st.models_note = ["auto", *choices], "cli", "From Copilot CLI"
-        elif choices := _help_choices((await _run(binary, "--help"))[1], "--model"):
+        elif choices := _help_choices((await _run(binary_path, "--help"))[1], "--model"):
             st.models, st.models_source, st.models_note = choices, "cli", "From Copilot CLI"
         else:
             st.models, st.models_note = _listed(base, st.version)
@@ -341,8 +351,8 @@ async def _probe(provider: str, base: str) -> CliStatus:
 async def cli_status(provider: str, refresh: bool = False) -> CliStatus:
     """One CLI's status, from the cache unless `refresh` or its binary changed."""
     base = PROVIDERS[provider]
-    binary = shutil.which(CLI_BINARIES[base])
-    key = _binary_key(binary) if binary else (None, None)
+    path = binary(base)
+    key = _binary_key(path) if path else (None, None)
     now = time.monotonic()
     hit = _cache.get(provider)
     if not refresh and hit and hit[0] > now and hit[1] == key:

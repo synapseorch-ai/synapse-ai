@@ -16,15 +16,22 @@ Only what can be proven is reported, and nothing is spent finding out:
   one local call to `/api/tags` with a short timeout, since a page load waits on
   it (a refused port fails at once).
 
+* a model CLI that is not on this computer — a PATH lookup, nothing run
+  (ONB2, D303): a person whose installer answer was Claude Code and who later
+  removed it was told "Ready", then answered with "not found in PATH".
+
 A saved key is not tried: trying it is a paid call. Bedrock (boto's default
-credential chain) and the CLI providers (their own login) can authenticate
-outside settings, so they are never called "not ready" on a guess.
+credential chain) can authenticate outside settings, and whether a CLI is
+signed in is its own command's to say (too slow for a page load), so neither
+is called "not ready" on a guess.
 """
 from __future__ import annotations
 
 import httpx
 
 from core.llm_providers import _ollama_base_url, detect_provider_from_model
+from core.providers import cli_status
+from core.providers.cli_invocation import CLI_BINARIES, split_cli_model
 from core.providers.registry import PROVIDERS
 
 #: What each provider needs saved before it can answer, from the provider table:
@@ -43,6 +50,15 @@ async def _ollama_models(base: str) -> list[str]:
         response.raise_for_status()
         models = (response.json() or {}).get("models") or []
         return [str(m.get("name") or "") for m in models if isinstance(m, dict)]
+
+
+def _cli_problem(model: str) -> str | None:
+    """Why a `cli.*` model cannot answer: its CLI is not on this computer."""
+    base, _ = split_cli_model(model)
+    if base not in CLI_BINARIES or cli_status.binary(base):
+        return None
+    label = cli_status.LABELS.get(base, base)
+    return f"{label} is not installed on this computer (no `{CLI_BINARIES[base]}` in PATH)."
 
 
 def _pulled(model: str, names: list[str]) -> bool:
@@ -71,6 +87,8 @@ async def model_problems(settings: dict, models: list[str]) -> dict[str, str | N
         elif provider in _ADDRESSED:
             field, label = _ADDRESSED[provider]
             answers[model] = None if (settings.get(field) or "").strip() else f"No {label} server address is saved."
+        elif model.lower().startswith("cli."):
+            answers[model] = _cli_problem(model)
         elif provider != "ollama":
             answers[model] = None
         else:

@@ -136,6 +136,27 @@ async def get_status():
     }
 
 
+@router.get("/api/onboarding/models")
+async def get_onboarding_models():
+    """Whether the workspace's everyday model can answer, for the first-run model step (ONB2, F728, D303).
+
+    The workspace `model`, not the active agent's (that is `/api/status`'s): the
+    step is about what Synapse runs on when nothing names its own model. Free,
+    like `/api/status`: no model call, no key tried, no CLI run.
+    """
+    from core.model_readiness import model_problem
+
+    current = load_settings()
+    model = current.get("model") or "ollama.mistral"
+    problem = await model_problem(current, model)
+    return {
+        "model": model,
+        "ready": problem is None,
+        "problem": problem,
+        "closed": bool(current.get("first_run_models_closed")),
+    }
+
+
 def public_settings(settings: dict) -> dict:
     """The settings as the browser may see them: no secret (F201).
 

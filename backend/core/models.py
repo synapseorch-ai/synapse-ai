@@ -192,6 +192,7 @@ class Settings(BaseModel):
     agent_name: str = "Synapse"
     model: str = "mistral" # Default model (Ollama or Cloud)
     builder_model: str = ""  # Model for the AI builder; empty = use `model`
+    first_run_models_closed: bool = False  # the web app's first-run model step was closed (ONB2, D303)
     builder_quick_model: str = ""  # Model for the builder's quick steps (its routing); empty = the builder model (BWA1)
     judge_model: str = ""    # Model for eval scoring; empty = use `model`
     reasoning_effort: str = "medium"  # workspace default; agents may override

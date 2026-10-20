@@ -324,3 +324,108 @@ class TestAnAgentSavedWithDefault:
         assert status["provider"] != "ollama"
         assert status["agents"][agent["id"]]["can_see_images"] is False, "deepseek-chat reads no images"
         assert "named default" not in (status["model_problem"] or "")
+
+
+@pytest.fixture
+def on_path(monkeypatch):
+    """Which CLI binaries are on PATH; a CLI's own probe (a subprocess) is never run for readiness (ONB2, D303)."""
+    from core.providers import cli_status
+
+    found: set[str] = set()
+
+    def which(cmd, *_a, **_kw):
+        return f"/usr/local/bin/{cmd}" if cmd in found else None
+
+    async def no_probe(*_a, **_kw):
+        raise AssertionError("readiness ran a CLI: a page load must not wait on one")
+
+    monkeypatch.setattr(cli_status.shutil, "which", which)
+    monkeypatch.setattr(cli_status, "_run", no_probe)
+    return found
+
+
+class TestACliModelNeedsItsCli:
+    """A cli.* model whose CLI is gone from this computer is a proven gap (ONB2, F728; Naveen 2026-10-20).
+
+    Before, every CLI model read "Ready": a person whose installer answer was
+    Claude Code and who later removed it was greeted as ready and answered with
+    a "not found in PATH" error. Signed out is not judged: telling needs the
+    CLI's own command, too slow for a page load.
+    """
+
+    async def test_a_missing_cli_is_named(self, client, ollama, on_path):
+        status = await _status(client, model="cli.claude.opus")
+        assert status["model_ready"] is False
+        assert status["model_problem"] == "Claude Code is not installed on this computer (no `claude` in PATH)."
+
+    async def test_the_bare_cli_is_judged_too(self, client, ollama, on_path):
+        status = await _status(client, model="cli.codex")
+        assert status["model_problem"] == "Codex is not installed on this computer (no `codex` in PATH)."
+
+    async def test_an_installed_cli_is_ready_without_asking_it(self, client, ollama, on_path):
+        on_path.add("claude")
+        status = await _status(client, model="cli.claude.opus")
+        assert status["model_ready"] is True and status["model_problem"] is None
+
+    async def test_an_unknown_cli_is_not_judged(self, ollama, on_path):
+        from core.model_readiness import model_problem
+        assert await model_problem({}, "cli.someother") is None
+
+    async def test_a_workflow_step_on_a_missing_cli_is_named(self, client, ollama, on_path, monkeypatch):
+        import core.routes.agents as agents_mod
+        monkeypatch.setattr(agents_mod, "active_agent_id", None)  # module memory; restored after
+        top = await _workflow([_agent_step("write", model="cli.copilot.auto")], agents=[_eyes()])
+        await client.post("/api/agents/active", json={"agent_id": top["id"]})
+        status = await _status(client, model="gpt-5", openai_key="dummy-key-not-real-1234")
+        assert status["model_problem"] == (
+            "Step 'Write' (cli.copilot.auto): Copilot CLI is not installed on this computer (no `copilot` in PATH).")
+
+
+async def _onboarding(client) -> dict:
+    got = await client.get("/api/onboarding/models")
+    assert got.status_code == 200, got.text
+    return got.json()
+
+
+class TestOnboardingSaysWhetherTheWorkspaceModelAnswers:
+    """The OSS first-run model step opens on this (ONB2, F728, D303)."""
+
+    async def test_a_skipped_install_with_no_ollama_is_not_ready(self, client, ollama):
+        ollama["answer"] = httpx.ConnectError("refused")
+        said = await _onboarding(client)
+        assert said["ready"] is False
+        assert said["model"] == "ollama.mistral"
+        assert said["problem"].startswith("Ollama is not reachable")
+        assert said["closed"] is False
+
+    async def test_a_saved_key_is_ready_and_never_served(self, client, ollama):
+        await client.post("/api/settings", json={"model": "gemini-2.5-flash", "gemini_key": "dummy-key-not-real-1234"})
+        got = await client.get("/api/onboarding/models")
+        assert got.json()["ready"] is True and got.json()["problem"] is None
+        assert "dummy-key-not-real-1234" not in got.text
+
+    async def test_it_reads_the_workspace_model_not_the_active_agents(self, client, seed_agent, ollama, monkeypatch):
+        import core.routes.agents as agents_mod
+        monkeypatch.setattr(agents_mod, "active_agent_id", None)  # module memory; restored after
+        agent = await seed_agent(model="gemini-2.5-flash")
+        await client.post("/api/agents/active", json={"agent_id": agent["id"]})
+        await client.post("/api/settings", json={"model": "ollama.mistral"})
+        said = await _onboarding(client)
+        assert said["model"] == "ollama.mistral" and said["ready"] is True
+
+    async def test_closed_is_remembered(self, client, ollama):
+        saved = await client.post("/api/settings", json={"first_run_models_closed": True})
+        assert saved.status_code == 200, saved.text
+        assert (await _onboarding(client))["closed"] is True
+
+    async def test_a_missing_cli_is_not_ready(self, client, ollama, on_path):
+        await client.post("/api/settings", json={"model": "cli.gemini.pro"})
+        said = await _onboarding(client)
+        assert said["ready"] is False and "Gemini CLI is not installed" in said["problem"]
+
+    async def test_a_key_saved_for_the_step_is_never_printed(self, client, ollama, capfd):
+        await client.post("/api/settings", json={"anthropic_key": "sk-ant-dummy-not-real-98765"})
+        await _onboarding(client)
+        out, err = capfd.readouterr()
+        assert "sk-ant-dummy-not-real-98765" not in out + err
+        assert "98765" not in out + err, "not even a fragment"

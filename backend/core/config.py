@@ -155,6 +155,9 @@ _DEFAULTS = {
         # being able to point it at a stronger model than the day-to-day one
         # without changing every agent.
         "builder_model": "",
+        # The web app's first-run model step (ONB2, D303) was closed: it opens on
+        # its own only until then; Home's "Connect a model" opens it again.
+        "first_run_models_closed": False,
         "builder_quick_model": "",
         "judge_model": "",
         "mode": "local",
