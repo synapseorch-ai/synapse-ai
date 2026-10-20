@@ -230,7 +230,10 @@ async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: 
     mentioned = [t for t in missing_tools if t not in acting]
     checks += 1
     out: dict[str, Any] = {"checks": checks, "missing_tools": missing_tools, "missing_agents": missing_agents,
-                           "redraft": bool(acting) and checks == 1, "note": ""}
+                           "redraft": bool(acting) and checks == 1, "note": "",
+                           # The tools the build would call that nothing provides, looked up by the Researcher once,
+                           # before the redraft (F763): who provides them is found, not guessed or dropped.
+                           "research": [t for t in acting if t in missing_tools] if checks == 1 else []}
     if gone:
         # `missing()`'s close cutoff: a far match ("list_schedules" for `smtp_send_mail`) would steer the drafter to
         # a tool that does something else.
@@ -241,7 +244,11 @@ async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: 
                            " (nearest: " + "; ".join(f"`{t}` → {', '.join(f'`{c}`' for c in n)}"
                                                     for t, n in out.get("nearest", {}).items()) + ")"
                            if out.get("nearest") else "")
-                       + ". What has no real tool here becomes an Open question, said plainly, not a step.")
+                       + (". Who provides each missing tool is looked up first (`plan_findings`): keep a step whose "
+                          "provider has a way in (`mcp` or `api`) and name what it needs connected under Open "
+                          "questions; only what nobody provides becomes an Open question, said plainly."
+                          if out["research"] else
+                          ". What has no real tool here becomes an Open question, said plainly, not a step."))
     out["section"] = ""
     if not out["redraft"] and (missing_tools or missing_agents):
         said = []
@@ -256,6 +263,44 @@ async def check_plan(plan: str, server_module: Any, *, checks: int = 0, listed: 
         # The plan card reads it as its own section (`plan.ts`), drawn as needing the person.
         out["section"] = "## Missing here\n" + out["note"]
     return out
+
+
+async def offer_connections(plan: str, findings: Any, offered: list[str], events: list[dict]) -> tuple[str, list[str]]:
+    """What the build's research found for the plan, for the person, and a Connect card for each app it found in the
+    Apps catalog (F763): the build still waits until the app is connected, and the card makes that one click.
+
+    Only a provider the plan names, with a way in (`mcp` or `api`). An app's card goes up once per build (`offered`
+    holds the slugs already shown); a provider not in the catalog, or a host with no catalog, is named with the page
+    the research read."""
+    from core.builder_connect import _read_options, prepare_connection
+    from core.builder_research import _words
+
+    offered = list(offered or [])
+    if not isinstance(findings, dict):
+        return "", offered
+    text = (plan or "").lower()
+    catalog = (await _read_options()).get("catalog") or []
+    said = []
+    for option in findings.get("options") or []:
+        provider = str(option.get("provider") or "").strip()
+        how = option.get("how")
+        if not provider or how not in ("mcp", "api") or provider.lower() not in text:
+            continue
+        words = set(_words(provider))
+        app = next((e for e in catalog if words & set(_words(f"{e.get('name')} {e.get('slug')}"))), None)
+        if app is not None:
+            slug = str(app.get("slug"))
+            if slug not in offered:
+                shown = await prepare_connection({"kind": "app", "catalog_slug": slug, "title": f"Connect {app.get('name')}",
+                                                  "why": f"This plan's {provider} steps need it."}, None, events)
+                if shown.get("status") == "card_shown":
+                    offered.append(slug)
+            said.append(f"{app.get('name')} is in the Apps catalog: connect it with the card above, then approve.")
+            continue
+        page = next(iter(option.get("sources") or []), "")
+        way = "its own MCP server" if how == "mcp" else "a public API"
+        said.append(f"{provider} has {way}" + (f" ({page})" if page else "") + ": connect it, then approve.")
+    return " ".join(said), offered
 
 
 CHECK_PLAN_SCHEMA = {
@@ -290,8 +335,17 @@ async def check_plan_tool(args: dict, server_module: Any, events: list[dict]) ->
     state = (await SharedState.restore(run_id)).run.shared_state or {}
     prior = state.get("plan_check")
     checks = int(prior.get("checks") or 0) if isinstance(prior, dict) else 0
-    return await check_plan(str(state.get("plan_draft") or ""), server_module, checks=checks,
-                            listed=args.get("tools"))
+    plan = str(state.get("plan_draft") or "")
+    out = await check_plan(plan, server_module, checks=checks, listed=args.get("tools"))
+    # After the build's research (F763): what it found for what is still missing, with a Connect card for an app.
+    offered = list(prior.get("offered") or []) if isinstance(prior, dict) else []
+    if state.get("plan_findings") and not out["redraft"] and (out["missing_tools"] or out["missing_agents"]):
+        said, offered = await offer_connections(plan, state.get("plan_findings"), offered, events)
+        if said:
+            out["note"] = f"{out['note']} {said}".strip()
+            out["section"] = f"{out['section']}\n\n{said}" if out["section"] else f"## Missing here\n{said}"
+    out["offered"] = offered
+    return out
 
 
 def _register() -> None:
