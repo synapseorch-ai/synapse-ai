@@ -610,56 +610,33 @@ async def aggregate_all_tools(server_module, active_agent, custom_tools_list, *,
 
 #: The Reason-Act contract, in two versions.
 #:
-#: `[REASONING]` markers exist because most models have no other way to show
-#: their thinking: the convention gives the engine something to strip out of the
-#: answer and put in the thinking panel. A model with a native reasoning channel
-#: already has that, and telling it to *also* write markers is actively worse —
-#: it thinks twice, once for real and once for the transcript, and the panel
-#: shows both. So the requirement is dropped for those models, while the action
-#: format they still need is kept.
+#: Most models have no reasoning channel, so the thinking panel shows what they
+#: write before a call: a sentence saying why (`llm_thought`), or the contents of
+#: `[REASONING]` markers a model still writes (stripped, `llm_reasoning`). It used
+#: to *ask* for that marker block before every call, and the Claude 5 family
+#: refuses a prompt that does (F757, 2026-10-17): Sonnet 5.5, Opus 5.5 and Fable
+#: 5.1 answered `stop_reason: refusal` with no text, Claude Code "safeguards
+#: flagged this message". Renaming the marker or rewording around it was refused
+#: too; one plain sentence passed on all three. So no version asks for a marker.
+#: A model with a native reasoning channel is told not to narrate at all.
 #:
 #: This sits inside the prompt-cache prefix, so the choice has to be stable for
 #: the life of a run. It is: the model and the agent's effort are both fixed
 #: before the first turn.
 _MARKER_PROTOCOL = """
 
-### REASONING & ACTION FORMAT
-You operate in a Reason–Act loop. Each turn produces ONE of:
-  (a) A tool call **preceded by a `[REASONING]...[/REASONING]` block** explaining why you are making that specific call. The reasoning block is REQUIRED before every tool call — it is what the user sees as your "thinking" panel, and it is what lets you (next turn) recover the intent behind the call.
-  (b) A final response in plain markdown for the user (no `[REASONING]` block, no JSON).
+### ACTION FORMAT
+Each turn is ONE of:
+  (a) A tool call, written as JSON: {"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
+      Just before it, write one or two sentences saying why this call is the next step. The user sees them beside the call.
+  (b) Your final answer, in plain markdown (no JSON).
 
-The `[REASONING]` block is private scratch space — it is stripped from your final response and from the context you see next turn, but it is surfaced live to the user as a "thinking" panel and recorded in the run log.
-
-What to put in `[REASONING]`:
-- WHY you are calling this tool right now (what you concluded from the previous observation).
-- WHAT you expect the tool to return.
-- HOW the result will move you toward the user's goal.
-2–4 sentences is plenty. Do not restate the user's question; do not narrate obvious facts.
-
-Example tool-calling turn:
-[REASONING]
-The previous result gave a high-level overview but not the specific field the user asked for. I need to drill into the most relevant source from those results — that should yield the exact value, after which I can answer directly.
-[/REASONING]
-{"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
-
-Example final-response turn (after gathering enough info):
-Here is the requested information, with the key points the user asked about and any caveats worth flagging.
-
-**If your tool calls are made through a native function-calling interface** — a
-structured call rather than JSON you write into your reply — you cannot wrap it
-in `[REASONING]` markers, and you do not need to. Put the same two or three
-sentences in the **text of the same reply, alongside the call**. The markers are
-optional there; the sentences are not. A reply that is a bare function call with
-no text leaves the user watching a spinner with nothing to read, which is the
-one outcome this section exists to prevent.
+If your tool calls go through a native function-calling interface, put those one or two sentences in the text of the same reply instead.
 
 Rules:
-- Emit a `[REASONING]` block before EVERY tool call. Skipping it produces an empty "thinking" panel for the user.
-- Never wrap a final response in `[REASONING]` blocks.
-- Never put commentary between the closing `[/REASONING]` and the JSON tool call.
-- One tool call per turn unless you genuinely need multiple independent calls (then emit them sequentially in one response, no prose between).
-- Say WHY, not WHAT. "Searching DuckDuckGo for India GDP 2025" restates the call the user can already see; "the official statistics office release is the primary source, so I will find it before quoting a figure" is the part only you know.
-- Never describe your tool call in prose *instead of* making it, and never repeat the call's JSON back as commentary — the user sees the call itself.
+- One tool call per turn unless you need several independent calls (then write them one after another in one reply, with no prose between).
+- Say why, not what: the user already sees which tool you call and with which arguments.
+- Never describe a tool call in prose instead of making it, and never repeat its JSON as commentary.
 """
 
 _NATIVE_PROTOCOL = """
@@ -804,9 +781,7 @@ Whenever a tool returns URLs, source links, documentation references, or any oth
 User: <a question that requires looking something up>
 
 Turn 1 (yours):
-[REASONING]
-I don't have this in context. I'll use the most relevant available tool with the narrowest arguments that satisfy the question, so the result is precise rather than a broad dump.
-[/REASONING]
+I don't have this in context, so I'll use the most relevant available tool with the narrowest arguments that satisfy the question.
 {"tool": "<tool_name>", "arguments": {"<key>": "<value>"}}
 
 Tool result: <some structured payload>

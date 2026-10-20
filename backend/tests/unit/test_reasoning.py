@@ -405,10 +405,14 @@ class TestTheSystemPromptStopsAskingTwice:
         assert "do not write `[REASONING]` markers" in native
         assert "Emit a `[REASONING]` block before EVERY tool call" not in native
 
-    def test_everyone_else_keeps_the_convention(self):
+    def test_everyone_else_says_why_in_a_plain_sentence(self):
+        """Changed by F757: the marker block this asked for before every call is
+        refused by the Claude 5 family. A sentence saying why is still asked for;
+        a marker a model writes anyway is still stripped and shown."""
         from core.tools import _reasoning_protocol
         markers = _reasoning_protocol(False)
-        assert "Emit a `[REASONING]` block before EVERY tool call" in markers
+        assert "write one or two sentences saying why" in markers
+        assert "[REASONING]" not in markers
 
     def test_both_still_teach_the_action_format(self):
         """The JSON shape is how the loop finds a tool call. Only the
