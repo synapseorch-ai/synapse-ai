@@ -34,6 +34,15 @@ def _random_id(prefix: str, length: int = 7) -> str:
 # filter — so a retired orchestration is invisible here too, rather than being
 # resurrected by the next save.
 
+#: What `update_orchestration` sets, flat or through its legacy `fields` (F784): its declared fields, and
+#: `steps`/`state_schema` as `_normalize_steps_arg`/`_normalize_state_schema_arg` make them. The run caps
+#: (`RUN_CAP_PROPERTIES`) are added where it is used.
+_UPDATE_ORCHESTRATION_FIELDS = frozenset({
+    "name", "description", "entry_step_id", "state_schema_json", "state_schema",
+    "steps_json", "steps", "max_total_turns", "timeout_minutes",
+})
+
+
 def _is_visible(resource: dict) -> bool:
     """Whether a stored agent/orchestration is workspace content."""
     if resource.get("system"):
@@ -2178,9 +2187,23 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if orch is None:
             return {"error": f"Orchestration '{args['orch_id']}' not found"}
         # update_orchestration now accepts flat top-level fields (like the other
-        # builder tools), falling back to legacy `fields` for back-compat.
+        # builder tools), falling back to legacy `fields` for back-compat — for the
+        # fields it declares only, on this workflow only (F784). Written whole, an
+        # `id` in it overwrote another workflow (a system or deleted one too, as the
+        # check above read `orch_id`), and `rubric_id`, `system` or `is_active` went in
+        # unchecked. An echo of this workflow's own id or times is ignored.
         legacy_fields = args.get("fields") or {}
-        fields = dict(legacy_fields)
+        if not isinstance(legacy_fields, dict):
+            return {"error": "`fields` must be an object of the fields to set."}
+        echoed = {k for k in ("created_at", "updated_at") if k in legacy_fields}
+        if legacy_fields.get("id") == orch["id"]:
+            echoed.add("id")
+        settable = _UPDATE_ORCHESTRATION_FIELDS | set(RUN_CAP_PROPERTIES)
+        refused_keys = sorted(set(legacy_fields) - settable - echoed)
+        if refused_keys:
+            return {"error": f"update_orchestration cannot set {', '.join(refused_keys)}: it sets "
+                             f"{', '.join(sorted(settable))}, on the workflow `orch_id` names."}
+        fields = {k: v for k, v in legacy_fields.items() if k in settable}
         for key in ("name", "description", "entry_step_id", "state_schema_json",
                     "steps_json", "max_total_turns", "timeout_minutes"):
             if key in args and args[key] is not None:
@@ -2207,6 +2230,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # Drop orch_id if it snuck in
         fields.pop("orch_id", None)
         orch.update(fields)
+        orch["id"] = args["orch_id"]  # the id is not patchable (F784), as `update_agent`'s is not
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         await save_orchestration(orch)
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
