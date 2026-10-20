@@ -29,6 +29,7 @@ import {
     KNOWLEDGE_MODEL_DEFAULTS, KNOWLEDGE_SECRETS, type KnowledgeModelSettings,
 } from './settings/KnowledgeModels';
 import { SavedSecretsContext, pickSecrets, type SecretState } from './settings/SavedSecret';
+import { clearSecret, postSecret } from '@/lib/providerSecrets';
 import { IntegrationsTab } from './settings/IntegrationsTab';
 import { ToastNotification } from './settings/ToastNotification';
 import { ReposTab } from './settings/ReposTab';
@@ -201,13 +202,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
 
     const removeSecret = async (name: string) => {
         try {
-            const res = await fetch('/api/settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ clear_secrets: [name] }),
-            });
-            if (!res.ok) throw new Error();
-            setSecretState(pickSecrets(await res.json(), SECRET_NAMES));
+            setSecretState(pickSecrets(await clearSecret(name), SECRET_NAMES));
             await refreshModels();
             showToast('Key removed', 'success');
         } catch {
@@ -218,16 +213,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     // A provider card saves its own key (PROV1, cloud's card): a POST of that
     // one setting, which the route merges into what is stored.
     const saveSecret = async (name: string, value: string) => {
-        const res = await fetch('/api/settings', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ [name]: value }),
-        });
-        if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(typeof body?.detail === 'string' ? body.detail : 'Could not save that key.');
-        }
-        setSecretState(pickSecrets(await res.json(), SECRET_NAMES));
+        setSecretState(pickSecrets(await postSecret(name, value), SECRET_NAMES));
         await refreshModels();
         showToast('Key saved', 'success');
     };

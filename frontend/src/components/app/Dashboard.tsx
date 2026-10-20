@@ -25,6 +25,7 @@ import { AlertTriangle, Blocks, Bot, Clock, MessagesSquare, Workflow } from 'luc
 
 import { AppScreen } from '@/components/app/AppScreen';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
+import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { NOTIFICATION_EVENT, useNotifications } from '@/components/notifications/NotificationProvider';
 import { ToolApprovalActions } from '@/components/notifications/ToolApproval';
 import {
@@ -35,7 +36,6 @@ import {
 import type { RunSummary } from '@/components/runs/summary';
 import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
-import { HOSTED_KEY_NAMES } from '@/lib/models';
 import { plainText } from '@/lib/plainText';
 import { OSS_RUN_HOST, ossRunRecord, ossRunRow } from '@/lib/runHost';
 import type { Orchestration } from '@/types/orchestration';
@@ -67,12 +67,6 @@ const compact = (n: number) =>
 const runHref = (id: string) => `/runs/${encodeURIComponent(id)}`;
 const editorHref = (id: string) => `/workflows?id=${encodeURIComponent(id)}`;
 
-/** Settings that mean a model can be called: a provider's key or an address of one. */
-const MODEL_SETTINGS = [
-    'gemini_key', 'anthropic_key', 'openai_key', 'grok_key', 'deepseek_key', 'bedrock_api_key', 'aws_access_key_id',
-    'openai_compatible_base_url', 'local_compatible_base_url', 'model_gateway_base_url', 'huggingface_models',
-    ...HOSTED_KEY_NAMES,
-];
 const isWaiting = (r: RunSummary) => r.status === 'paused' && Boolean(r.waiting_for_human);
 /** A waiting run's record is read again only when its question may have changed. */
 const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.steps_completed ?? 0}`;
@@ -80,6 +74,7 @@ const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.ste
 export function Dashboard() {
     const clock = useClock();
     const { open: openBuilder } = useBuilder();
+    const modelSetup = useModelSetup();
     // "Don't show again" on the first-workflow path: this browser's, as OSS has one person.
     const [startHidden, setStartHidden] = usePersisted<'0' | '1'>('synapseHomeStartHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
     const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
@@ -215,8 +210,14 @@ export function Dashboard() {
     const humanWorkflow = workflows.find(w => hasHuman(w));
     const latest = [...rows].sort((a, b) => String(b.startedAt ?? '').localeCompare(String(a.startedAt ?? '')))[0];
     const steps = startSteps({
-        modelReady: MODEL_SETTINGS.some(k => String(settings?.[k] ?? '').trim()) || rows.some(r => r.status === 'completed'),
-        modelText: typeof settings?.model === 'string' && settings.model ? `Using ${settings.model}` : undefined,
+        // The backend's one readiness (ONB2, F728): this read `settings[key]`, which is served blank
+        // (F201), so a saved key never ticked the step, and Ollama or a model CLI never did.
+        modelReady: modelSetup.ready === true,
+        // The step's own read moves when the first-run step saves; settings are read once.
+        modelText: (() => {
+            const model = modelSetup.model ?? (typeof settings?.model === 'string' ? settings.model : '');
+            return model ? `Using ${model}` : undefined;
+        })(),
         workflow: newest ? { id: newest.id, name: newest.name } : null,
         lastRun: latest ? { at: latest.startedAt, name: latest.workflowName } : null,
         humanWorkflow: humanWorkflow ? { id: humanWorkflow.id, name: humanWorkflow.name } : null,
@@ -295,7 +296,7 @@ export function Dashboard() {
                         onDismiss={() => setStartHidden('1')}
                         describe={{ onSubmit: text => openBuilder(text ? { prompt: text } : undefined), suggestions: START_SUGGESTIONS }}
                         actions={{
-                            model: <LinkButton href="/settings/models" size="sm">Models</LinkButton>,
+                            model: <Button size="sm" variant="primary" onClick={modelSetup.open}>Connect a model</Button>,
                             build: (
                                 <>
                                     <LinkButton href="/templates" size="sm" variant="primary">Browse templates</LinkButton>

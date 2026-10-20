@@ -10745,6 +10745,130 @@ async def check_agentboards(browser) -> str:
             "names it and the one its schedule brings, saying so")
 
 
+_FIRSTRUN_PROBLEM = "Ollama is not reachable at http://127.0.0.1:9."
+_FIRSTRUN_MODELS = {"providers": {
+    "ollama": {"available": False, "models": []},
+    "gemini": {"available": True, "models": ["gemini-2.5-flash"]},
+    "anthropic_cli": {"available": True, "models": ["cli.claude.opus", "cli.claude"],
+                      "cli": {"version": "2.1.301", "signed_in": True, "sign_in_hint": None,
+                              "models_source": "list", "models_note": None, "note": None}},
+    "codex_cli": {"available": True, "models": ["cli.codex.gpt-6-luna", "cli.codex"],
+                  "cli": {"version": "0.163.0", "signed_in": False, "sign_in_hint": "Run `codex login` in a terminal.",
+                          "models_source": "cli", "models_note": "From Codex", "note": None}},
+}}
+
+
+async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE):
+    """A page over a stubbed install whose model cannot answer (ONB2): `state["closed"]` is the setting,
+    `state["posts"]` every settings write."""
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    if theme:
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
+    await ctx.add_init_script("try{localStorage.removeItem('synapseHomeStartHidden')}catch(e){}")
+    settings = {"model": "ollama.mistral", "builder_model": "", "gemini_key": "", "gemini_key_set": True,
+                "gemini_key_hint": "x9Q2"}
+
+    async def onboarding(route):
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"model": "ollama.mistral", "ready": False, "problem": _FIRSTRUN_PROBLEM, "closed": state["closed"]}))
+
+    async def settings_route(route):
+        if route.request.method == "POST":
+            body = json.loads(route.request.post_data or "{}")
+            state["posts"].append(body)
+            if body.get("first_run_models_closed"):
+                state["closed"] = True
+        await route.fulfill(status=200, content_type="application/json", body=json.dumps(settings))
+
+    await ctx.route("**/api/onboarding/models", onboarding)
+    await ctx.route(re.compile(r".*/api/models(\?.*)?$"), _answer(_FIRSTRUN_MODELS))
+    await ctx.route(re.compile(r".*/api/settings$"), settings_route)
+    await ctx.route("**/api/status", _answer({"agents": {}, "active_agent_id": None, "overall": "operational",
+                                               "model": "ollama.mistral", "mode": "local", "provider": "ollama",
+                                               "model_ready": False, "model_problem": _FIRSTRUN_PROBLEM}))
+    page = await ctx.new_page()
+    await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+    return ctx, page
+
+
+@check
+async def check_firstrun(browser) -> str:
+    """An install whose model cannot answer opens the first-run model step once (ONB2, F728, D303): what is on this
+    computer with its state (a signed-out CLI with its own hint), a saved key's tile, a click outside keeps it, the
+    two models save as picked with a signed-out CLI's models left out; Escape closes it for good; Home's "Connect a
+    model" and Chat's line open it again."""
+    state = {"closed": False, "posts": []}
+    bad: list[str] = []
+    ctx, page = await _firstrun_page(browser, "/dashboard", state)
+    dialog = page.get_by_test_id("model-setup")
+    try:
+        await dialog.wait_for(timeout=30_000)
+        if _FIRSTRUN_PROBLEM not in await dialog.inner_text():
+            bad.append("it does not say what is missing")
+        found = {k: await page.locator(f"[data-found='{k}']").get_attribute("data-state")
+                 for k in ("anthropic_cli", "codex_cli")}
+        if found != {"anthropic_cli": "ready", "codex_cli": "signed-out"}:
+            bad.append(f"found here reads {found}")
+        if "codex login" not in await page.locator("[data-found='codex_cli']").inner_text():
+            bad.append("the signed-out CLI does not give its sign-in hint")
+        if await page.locator("[data-found='ollama']").count():
+            bad.append("Ollama is listed though it is not running")
+        if await page.locator("[data-two-ways]").count():
+            bad.append("the two ways show though a CLI and a key are here")
+        gemini = page.locator("[data-setup-provider='gemini']")
+        if await gemini.get_attribute("aria-pressed") != "true" or "Key saved" not in await gemini.inner_text():
+            bad.append("the saved Gemini key is not picked and marked")
+        await page.mouse.click(5, 5)
+        await asyncio.sleep(0.5)
+        if not await dialog.is_visible():
+            bad.append("a click outside closed it (F726)")
+        await dialog.get_by_role("button", name="Continue").click()
+        # The kit's Combobox opens from a Radix popover trigger, which is a button.
+        everyday = dialog.get_by_role("button", name="Everyday model")
+        await everyday.click()
+        listed = await page.get_by_role("option").all_inner_texts()
+        if any("cli.codex" in t for t in listed):
+            bad.append("a signed-out CLI's models can be picked")
+        await page.get_by_role("option", name="cli.claude.opus").click()
+        await dialog.get_by_role("button", name="Done").click()
+        await dialog.wait_for(state="hidden", timeout=5_000)
+        if state["posts"][-1:] != [{"model": "cli.claude.opus", "builder_model": "", "first_run_models_closed": True}]:
+            bad.append(f"Done saved {state['posts'][-1:]}")
+
+        # Opened again by Home's step; Escape closes it.
+        await page.get_by_role("button", name="Connect a model").click()
+        await dialog.wait_for(timeout=5_000)
+        await page.keyboard.press("Escape")
+        await dialog.wait_for(state="hidden", timeout=5_000)
+        await page.reload(wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if await dialog.count():
+            bad.append("closed once, it opened again on its own")
+    finally:
+        await ctx.close()
+
+    # A first load closed by Escape is remembered; Chat's line opens it.
+    state = {"closed": False, "posts": []}
+    ctx, page = await _firstrun_page(browser, "/", state)
+    dialog = page.get_by_test_id("model-setup")
+    try:
+        await dialog.wait_for(timeout=30_000)
+        await page.keyboard.press("Escape")
+        await dialog.wait_for(state="hidden", timeout=5_000)
+        await asyncio.sleep(0.5)
+        if {"first_run_models_closed": True} not in state["posts"]:
+            bad.append(f"Escape did not remember it was closed: {state['posts']}")
+        await page.locator("[data-connect-model]").click()
+        await dialog.wait_for(timeout=5_000)
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("opens once on a model that cannot answer, CLI states and a saved key shown, outside click kept, "
+            "two models saved, Escape remembered, Home and Chat reopen it")
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
@@ -10762,6 +10886,13 @@ async def main() -> int:
 
     names = args.only or list(CHECKS)
     failed = 0
+    if any(n != "firstrun" for n in names):
+        # The first-run model step (ONB2) would open over every page of a scratch store whose model cannot
+        # answer; `firstrun` stubs its own.
+        try:
+            api("/api/settings", "POST", {"first_run_models_closed": True})
+        except Exception as exc:
+            print(f"note: could not close the first-run model step: {exc}")
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             executable_path=CHROME if os.path.exists(CHROME) else None,

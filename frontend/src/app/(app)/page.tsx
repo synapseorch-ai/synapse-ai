@@ -28,6 +28,7 @@ import {
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
+import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
 
@@ -694,8 +695,9 @@ type AgentIntroData = { description: string | null; tools: string[]; knowledge: 
  * its name, model and state, what it is for and what it can use. Below it, quieter,
  * the examples banner (its first 12 days) and the ways to build more.
  */
-function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false, model, intro, onNavigate, showExamplesBanner, onDismissBanner }: {
+function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false, model, intro, onNavigate, showExamplesBanner, onDismissBanner, onConnectModel }: {
   agentName: string; modelReady?: boolean; modelProblem?: string | null; isWorkflow?: boolean;
+  onConnectModel: () => void;
   model: React.ReactNode; intro: AgentIntroData | null;
   onNavigate: (path: string) => void; showExamplesBanner: boolean; onDismissBanner: () => void;
 }) {
@@ -733,9 +735,18 @@ function WelcomeScreen({ agentName, modelReady, modelProblem, isWorkflow = false
         {modelReady === false && modelProblem && (
           <p className="max-w-md text-center text-[13px] leading-relaxed text-text-muted">
             <WithCode text={modelProblem} />{' '}
-            <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent-ink underline-offset-2 hover:underline">
-              Open Settings → Models
-            </Link>
+            {/* The agent's own model opens the first-run step (ONB2, Naveen 2026-10-20); a workflow's
+                steps each name theirs, so it keeps Settings → Models. */}
+            {isWorkflow ? (
+              <Link href={MODELS_SETTINGS} className="whitespace-nowrap font-medium text-accent-ink underline-offset-2 hover:underline">
+                Open Settings → Models
+              </Link>
+            ) : (
+              <button type="button" onClick={onConnectModel} data-connect-model
+                className="whitespace-nowrap rounded font-medium text-accent-ink underline-offset-2 hover:underline">
+                Connect a model
+              </button>
+            )}
           </p>
         )}
       </div>
@@ -848,6 +859,7 @@ export default function Home() {
   // place of the agent that answers (F229).
   const agentNamedRef = useRef(false);
   const router = useRouter();
+  const modelSetup = useModelSetup();
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [streamingActivity, setStreamingActivity] = useState<string | null>(null);
   const [isThinking, setIsThinking] = useState(false);
@@ -1230,6 +1242,12 @@ export default function Home() {
       }
     }).catch(console.error);
   };
+
+  // The first-run model step saved models or closed (ONB2): the line above the
+  // composer says Ready, or what is still missing, without a reload.
+  useEffect(() => {
+    if (modelSetup.version) refreshSystemStatus();
+  }, [modelSetup.version]);
 
   // Initialize Application State — the last agent, and the conversation this
   // page was on. It used to open empty while keeping the conversation's id, so
@@ -3098,6 +3116,7 @@ export default function Home() {
               onNavigate={(path) => router.push(path)}
               showExamplesBanner={showExamplesBanner}
               onDismissBanner={() => setShowExamplesBanner(false)}
+              onConnectModel={modelSetup.open}
             />
           ) : (
             <div className="px-4 pb-44 pt-6 md:px-6">
