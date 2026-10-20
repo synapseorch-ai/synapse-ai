@@ -113,7 +113,7 @@ class WalletExhausted(KnowledgeError):
 
     def __init__(self, message: str = "", *, needed_microusd: int | None = None,
                  available_microusd: int | None = None):
-        super().__init__(message or "The model wallet is empty.")
+        super().__init__(message or "The model wallet refused the call.")
         self.needed_microusd = needed_microusd
         self.available_microusd = available_microusd
 

@@ -24,7 +24,7 @@ _HINTS: dict[str, str] = {
     "empty_document": "The file has no text to index.",
     "excluded": "The file is excluded from this knowledge base.",
     "budget_cap": "The knowledge base reached its monthly budget. Raise it, or wait for the month to turn.",
-    "wallet_402": "The model wallet is empty. Top it up, then retry.",
+    "wallet_402": "The model wallet can't pay for this; the error says why. Retry once it can.",
     "egress_blocked": "The address was refused by the network guard.",
     "robots_disallowed": "The site's robots.txt disallows fetching this page.",
     "fetch_failed": "The page could not be fetched (no answer, or an error from the site). Retry fetches it "

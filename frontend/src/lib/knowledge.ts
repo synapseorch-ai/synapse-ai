@@ -302,7 +302,7 @@ export const REASONS: Record<string, string> = {
     empty_document: 'No text in it',
     excluded: 'Excluded',
     budget_cap: 'Monthly budget reached',
-    wallet_402: 'Model wallet is empty',
+    wallet_402: "Model wallet can't pay",
     egress_blocked: 'Address refused',
     robots_disallowed: 'Disallowed by robots.txt',
     parser_timeout: 'Reading timed out',
@@ -544,7 +544,7 @@ export function rerankStatus(listing: RerankListing | undefined, fallback: strin
 /** Why a rebuild waits, in words. */
 export const BUILD_PAUSED: Record<string, string> = {
     budget_cap: 'Paused: the monthly budget is reached. Raise it to go on, or it resumes next month.',
-    wallet_402: 'Paused: the wallet is empty.',
+    wallet_402: "Paused: the model wallet can't pay for it.",
     embedder_unavailable: 'Paused: the embedding model needs a key or address that is not saved.',
 };
 
