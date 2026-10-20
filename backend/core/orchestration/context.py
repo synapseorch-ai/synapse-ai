@@ -13,10 +13,11 @@ Provides:
 from __future__ import annotations
 
 import datetime
+import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from core import templating as _templating
 
@@ -67,6 +68,10 @@ class TransitionContext:
     # Loop-specific
     loop_iteration: int | None = None
     loop_total: int | None = None
+    #: A for-each loop (`loop_over`): each iteration is the same task for its own
+    #: item, not another pass at the last output (F767).
+    loop_for_each: bool = False
+    loop_item: Any = None
 
     # Human-specific
     human_response_key: str | None = None
@@ -717,6 +722,11 @@ def build_origin_aware_context(
     """
     sections: list[str] = []
     is_rerun = transition.execution_number > 1
+    # A for-each iteration is its item's task, run afresh: the refine-your-last-
+    # output framing below is for loops that go round on their own output. Told
+    # "produce the next item … don't silently re-emit", Claude Haiku invented the
+    # next order ids instead of the item it was given (F767).
+    for_each = transition.origin_type == "loop" and transition.loop_for_each
 
     # ------------------------------------------------------------------
     # Section: ROLE
@@ -809,6 +819,13 @@ def build_origin_aware_context(
                 "An evaluator reviewed your previous output and routed you back. "
                 "See HOW TO PROCEED below."
             )
+        elif for_each:
+            why_lines = [
+                "## WHY YOU ARE RUNNING AGAIN",
+                f"This loop runs this step once for each item of a list "
+                f"(iteration {transition.loop_iteration} of {transition.loop_total}). "
+                f"This iteration's item is: {_item_text(transition.loop_item)}",
+            ]
         elif transition.origin_type == "loop":
             iter_str = (
                 f"iteration {transition.loop_iteration} of {transition.loop_total}"
@@ -827,7 +844,7 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: YOUR PREVIOUS OUTPUT (any re-run)
     # ------------------------------------------------------------------
-    if is_rerun and step.output_key and step.output_key in run.shared_state:
+    if is_rerun and not for_each and step.output_key and step.output_key in run.shared_state:
         prev_out = str(run.shared_state[step.output_key])
         if len(prev_out) > 2000:
             from .summarizer import smart_truncate
@@ -841,7 +858,7 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # Section: YOUR PREVIOUS WORK / REVISION HISTORY (on any re-invocation)
     # ------------------------------------------------------------------
-    if is_rerun:
+    if is_rerun and not for_each:
         memory = get_execution_memory(run, step.id)
         if memory:
             use_full = (
@@ -886,7 +903,9 @@ def build_origin_aware_context(
         loop_key = f"_loop_{step.output_key}"
         loop_results = run.shared_state.get(loop_key, [])
         if loop_results:
-            iter_lines = ["## PREVIOUS ITERATIONS"]
+            iter_lines = ["## EARLIER ITEMS (context only)",
+                          "What this step produced for the list's earlier items. They are not a "
+                          "sequence to continue."] if for_each else ["## PREVIOUS ITERATIONS"]
             for entry in loop_results[-5:]:  # last 5 to keep it manageable
                 it = entry.get("iteration", "?")
                 res = str(entry.get("result", ""))[:200]
@@ -942,7 +961,13 @@ def build_origin_aware_context(
     # the deliberate non-change) relative to the previous attempt.
     # ------------------------------------------------------------------
     if is_rerun:
-        if transition.origin_type == "loop":
+        if for_each:
+            proceed_block = (
+                "## HOW TO PROCEED\n"
+                "Do the task below for this iteration's item only. The earlier items are "
+                "there for context: do not continue their sequence or repeat their work."
+            )
+        elif transition.origin_type == "loop":
             proceed_block = (
                 "## HOW TO PROCEED\n"
                 "This is another iteration of a loop. Your previous iteration's output and "
@@ -981,7 +1006,7 @@ def build_origin_aware_context(
     # channel or a parent run put there is never rendered.
     task_text = _task_text(step, run, engine, prompt_template)
 
-    if is_rerun:
+    if is_rerun and not for_each:
         task_header = "## ORIGINAL TASK (reference only)"
         task_suffix = (
             "\n\nThis is the original task statement, included for reference. "
@@ -1038,7 +1063,14 @@ def build_origin_aware_context(
     # cannot drown out the iteration signal.
     # ------------------------------------------------------------------
     system_prompt_prefix = ""
-    if is_rerun:
+    if is_rerun and for_each:
+        system_prompt_prefix = (
+            "LOOP ITEM - READ BEFORE RESPONDING\n"
+            f"This step runs once for each item of a list; this is iteration "
+            f"{transition.loop_iteration} of {transition.loop_total}. Do the task in the "
+            "user message for this iteration's item."
+        )
+    elif is_rerun:
         why_short = ""
         if transition.origin_type == "evaluator" and transition.routing_decision:
             why_short = f" (evaluator routed back: \"{transition.routing_decision}\")"
@@ -1055,6 +1087,16 @@ def build_origin_aware_context(
         )
 
     return prompt, system_prompt_extra, system_prompt_prefix
+
+
+def _item_text(item: Any) -> str:
+    """A for-each item as the prompt names it: text as written, anything else as JSON."""
+    if isinstance(item, str):
+        return item
+    try:
+        return json.dumps(item, ensure_ascii=False, default=str)[:500]
+    except (TypeError, ValueError):
+        return str(item)[:500]
 
 
 #: What "Conversation so far" may cost a prompt: per message, and in all.

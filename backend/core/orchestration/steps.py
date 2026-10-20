@@ -2266,6 +2266,8 @@ class LoopStepExecutor:
                         from_step_name=step.name,
                         loop_iteration=iteration,
                         loop_total=total,
+                        loop_for_each=bool(step.loop_over),
+                        loop_item=run.shared_state.get(step.loop_item_key) if step.loop_over else None,
                     )
 
                     # The run's cap and the host's gate (CAP1, F419), as before a
