@@ -97,6 +97,9 @@ def _turns(messages: list[dict]) -> list[dict]:
             turn["members"] = [dict(m) for m in assistant["members"]]
         if assistant.get("team"):
             turn["team"] = dict(assistant["team"])
+        if assistant.get("notes"):
+            # What the turn warned of beside its answer (F584): a board card it left claimed (F582).
+            turn["notes"] = list(assistant["notes"])
         if user.get("automated"):
             # A question nobody typed: a helper's result posted back (SUB1a) — drawn as the helper's.
             turn["automated"] = dict(user["automated"])
@@ -399,6 +402,7 @@ async def _save_conversation_turn(
     inbox_read: list[str] | None = None,
     members: list[dict] | None = None,
     team: dict | None = None,
+    notes: list[str] | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
@@ -410,6 +414,8 @@ async def _save_conversation_turn(
     the turn sent (`core.helpers`, SUB1a): their lanes, reopened. `automated` marks
     a question nobody typed (a helper's result posted back), and `inbox_read` names
     the helpers whose results the answer read — so each is known to have arrived.
+    `notes` are what the turn warned of beside its answer (F584), drawn under it
+    reopened; like the panels, never sent to the model as history.
     """
     from core.store import sessions as store
 
@@ -436,6 +442,8 @@ async def _save_conversation_turn(
     if team:
         # Its task list, how many tasks it used, and whether the lead answered alone.
         answer["team"] = dict(team)
+    if notes:
+        answer["notes"] = list(notes)
     await store.append_turn(
         session_id,
         _agent(agent_id),

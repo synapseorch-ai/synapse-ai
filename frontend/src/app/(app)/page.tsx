@@ -302,6 +302,17 @@ function AssistantBubble({ msg, agentName }: { msg: Message; agentName: string }
           ))}
         </ul>
       )}
+      {msg.notes && msg.notes.length > 0 && (
+        // What the turn warned of beside its answer (F584): the answer above may say the card is closed.
+        <ul className="space-y-0.5 text-xs text-warning" aria-label="Notes on this answer">
+          {msg.notes.map((note, i) => (
+            <li key={i} className="flex gap-1.5">
+              <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+              <span>{note}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {teamLine && (
         // How a Team agent's turn went (Q1b): it answered alone, or what its members took.
         <p className="inline-flex items-center gap-1.5 text-xs text-text-faint" aria-label="This turn's team">
@@ -398,6 +409,8 @@ type SessionTurn = {
   team?: Record<string, unknown>;
   /** Set when nobody typed the question: a helper's result posted back (SUB1a). */
   automated?: Automated;
+  /** What the turn warned of beside its answer (F584): a board card it left claimed. */
+  notes?: string[];
 };
 
 /** The loop's own line before every model call (`react_engine.py`): no news once the agent has had a thought. */
@@ -966,6 +979,8 @@ export default function Home() {
   /** The answer's Sources (`knowledge_citations`, B1b), drawn under the answer that follows;
    *  a workflow step's under that step's result. */
   const sourcesRef = useRef<{ citations: KnowledgeCitation[]; unresolvedCitations: string[] } | null>(null);
+  /** What the turn warns of beside its answer (`step_warning`, F584), drawn under the answer that follows. */
+  const notesRef = useRef<string[]>([]);
   const stepSourcesRef = useRef<Record<string, { citations: KnowledgeCitation[]; unresolvedCitations: string[] }>>({});
   // SSE abort controller — cancelled on new chat, unmount, or confirmed Settings navigation
   const sseAbortRef = useRef<AbortController | null>(null);
@@ -1144,6 +1159,8 @@ export default function Home() {
             ? { citations: t.citations ?? [], unresolvedCitations: t.unresolved_citations ?? [] } : {}),
           // Its helpers' lanes, as live (SUB1a).
           ...(t.helpers?.length ? { helpers: t.helpers.map(laneFromRecord) } : {}),
+          // What it warned of, as live (F584).
+          ...(t.notes?.length ? { notes: t.notes } : {}),
           // Its team, each member as one line that opens (TEAM1b).
           ...(teamFromTurn(t) ? { team: teamFromTurn(t) as TeamState } : {}),
         });
@@ -1844,6 +1861,7 @@ export default function Home() {
     refusedRef.current = [];
     liveCallsRef.current = [];
     sourcesRef.current = null;
+    notesRef.current = [];
     const controller = new AbortController();
     sseAbortRef.current = controller;
     try {
@@ -1961,6 +1979,7 @@ export default function Home() {
     setSendTo('lead');
     automatedTurnRef.current = false;
     sourcesRef.current = null;
+    notesRef.current = [];
     stepSourcesRef.current = {};
     try {
       await work();
@@ -2218,6 +2237,8 @@ export default function Home() {
         liveCallsRef.current = [];
         const sources = sourcesRef.current;
         sourcesRef.current = null;
+        const notes = notesRef.current;
+        notesRef.current = [];
         const helpers = takeLiveHelpers();
         const answered = foldTeam(liveTeamRef.current, data);
         takeLiveTeam();
@@ -2235,6 +2256,7 @@ export default function Home() {
           ...(refused.length > 0 ? { refused } : {}),
           ...(toolCalls.length > 0 ? { toolCalls } : {}),
           ...(sources ?? {}),
+          ...(notes.length > 0 ? { notes } : {}),
         }]);
         pendingThoughtsRef.current = [];
         pendingReasoningRef.current = [];
@@ -2274,6 +2296,8 @@ export default function Home() {
           liveCallsRef.current = [];
           const sources = sourcesRef.current;
           sourcesRef.current = null;
+          const notes = notesRef.current;
+          notesRef.current = [];
           const helpers = takeLiveHelpers();
           const answered = foldTeam(liveTeamRef.current, data);
           takeLiveTeam();
@@ -2291,6 +2315,7 @@ export default function Home() {
             ...(refused.length > 0 ? { refused } : {}),
             ...(toolCalls.length > 0 ? { toolCalls } : {}),
             ...(sources ?? {}),
+            ...(notes.length > 0 ? { notes } : {}),
           }]);
           pendingThoughtsRef.current = [];
           pendingReasoningRef.current = [];
@@ -2357,6 +2382,14 @@ export default function Home() {
         else sourcesRef.current = sources;
         break;
       }
+
+      case 'step_warning':
+        // The turn's own warning (F582: a card it left claimed), kept under its answer (F584). A step's is its
+        // run's, read on the run page; a delegate's is its lead's to say.
+        if (!data.orch_step_id && !data.delegate_from && typeof data.message === 'string' && data.message) {
+          notesRef.current = [...notesRef.current, data.message];
+        }
+        break;
 
       case 'step_complete':
         setStreamingActivity(`✓ ${(data.step_name as string) || 'Step'} complete`);

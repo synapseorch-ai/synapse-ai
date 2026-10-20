@@ -968,6 +968,8 @@ async def run_agent_chat_job(
     member_events: list[dict] = []
     turn_members: list[dict] | None = None
     turn_team: dict | None = None
+    # What the turn warned of beside its answer, from the loop's `final` (F584).
+    turn_notes: list[str] = []
     # What the turn's inbox held when it parked (never published).
     parked_inbox: dict | None = None
 
@@ -1155,7 +1157,7 @@ async def run_agent_chat_job(
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
             nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting, turn_citations, \
-                turn_helpers, turn_inbox_read, parked_inbox, turn_members, turn_team
+                turn_helpers, turn_inbox_read, parked_inbox, turn_members, turn_team, turn_notes
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
@@ -1201,6 +1203,11 @@ async def run_agent_chat_job(
                     turn_helpers = list(event.get("helpers") or [])
                     turn_inbox_read = list(event.get("inbox_read") or [])
                     event = {k: v for k, v in event.items() if k not in ("helpers", "inbox_read")}
+                if (etype == "final" and "notes" in event and not event.get("delegate_from")
+                        and not event.get("orch_step_id")):
+                    # Kept with the answer (F584); the stream said each already, as a `step_warning`.
+                    turn_notes = [str(n) for n in event.get("notes") or []]
+                    event = {k: v for k, v in event.items() if k != "notes"}
                 if etype in ("tool_execution", "tool_result"):
                     events_since_progress.append(event)
                 elif etype in ("llm_reasoning", "llm_thought"):
@@ -1381,6 +1388,8 @@ async def run_agent_chat_job(
             answer_entry["members"] = [dict(m) for m in kept_members]
         if turn_team:
             answer_entry["team"] = {k: v for k, v in turn_team.items() if k != "work"}
+        if turn_notes and visitor is None:
+            answer_entry["notes"] = list(turn_notes)
         history.append(answer_entry)
         recorded = True
         await _save_row("cancelled" if cancelled else "completed", history)

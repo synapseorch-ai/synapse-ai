@@ -3671,6 +3671,17 @@ async def run_agent_step(
         except Exception as _kn_exc:
             _log.warning(f"knowledge citations skipped: {_kn_exc}")
 
+    # A turn answering while it still holds a claim says so before its answer (F582): its end releases the
+    # claim, and the run's reader, not only the card's history, should know the card was left unclosed. Made
+    # before the save, and kept with the answer as one of its notes, so a conversation read later says it too
+    # (F584): a cloud schedule's firing is read only afterwards. Never a visitor's: it names the owner's board.
+    _turn_notes: list[str] = []
+    if _turn_boards is not None and _turn_boards.holding:
+        _left_open = await _board_tools_mod.left_open(_turn_boards)
+        if _left_open:
+            _turn_notes.append(_left_open)
+    _kept_notes = _turn_notes if _visitor is None else []
+
     # Persist the conversation turn (skip for orchestrator agents, for a
     # delegated hand-off, which is work done for another agent, not a chat, and
     # for a workflow's step, F261)
@@ -3696,6 +3707,7 @@ async def run_agent_step(
                 inbox_read=_inbox_read,
                 members=_team.records() if _team is not None else None,
                 team=_team.summary() if _team is not None else None,
+                notes=_kept_notes,
             )
             if inbox is not None:
                 inbox.settle()
@@ -3704,12 +3716,8 @@ async def run_agent_step(
 
     if _kn_citations is not None:
         yield _kn_citations
-    # A turn answering while it still holds a claim says so before its answer (F582): its end releases the
-    # claim, and the run's reader, not only the card's history, should know the card was left unclosed.
-    if _turn_boards is not None and _turn_boards.holding:
-        _left_open = await _board_tools_mod.left_open(_turn_boards)
-        if _left_open:
-            yield {"type": "step_warning", "message": _left_open}
+    for _note in _turn_notes:
+        yield {"type": "step_warning", "message": _note}
     final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
                    "tool_name": tool_name}
     if not (not is_orchestrator and persist_turn and not _workflow_step and save_turn):
@@ -3718,6 +3726,9 @@ async def run_agent_step(
         _read_here = inbox.in_flight_ids() if inbox is not None else []
         if _turn_helpers or _read_here:
             final_event.update(helpers=[dict(h) for h in _turn_helpers], inbox_read=_read_here)
+        if _kept_notes:
+            # Its notes (F584), which the caller keeps with the answer as the save above does.
+            final_event["notes"] = list(_kept_notes)
     if _unanswered is not None:
         final_event["no_answer"] = _unanswered
     if _team is not None:

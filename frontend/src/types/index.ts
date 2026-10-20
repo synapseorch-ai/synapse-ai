@@ -87,6 +87,8 @@ export interface Message {
     helpers?: HelperLaneData[];
     // A Team agent's turn (TEAM1b): its task list, notes and members' lanes, live or as saved.
     team?: TeamState;
+    // What the turn warned of beside its answer (F584): a board card it left claimed (F582), live or as saved.
+    notes?: string[];
 }
 
 export interface SystemStatus {
