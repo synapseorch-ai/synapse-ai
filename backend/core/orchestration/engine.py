@@ -595,6 +595,8 @@ class OrchestrationEngine:
                             # events pass, so a summary can say exactly that rather than recall it.
                             if event.get("type") == "resource_saved":
                                 run_writes.record(run.shared_state, event)
+                            elif event.get("type") == "build_stopped":  # why a build saved nothing (F768)
+                                run_writes.note_stopped(run.shared_state, event)
                             elif event.get("type") == "tool_result":
                                 run_writes.note_failure(run.shared_state, event)
 

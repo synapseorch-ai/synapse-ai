@@ -26,6 +26,8 @@ WRITES_KEY = "_run_writes"
 FAILURES_KEY = "_run_failures"
 #: The writes in words, re-rendered after every write: what the AI builder's summary prints.
 TEXT_KEY = "run_changes"
+#: Why a build saved no workflow, when `finish_build` can say (F768): the tools its plan uses that nothing provides.
+STOPPED_KEY = "_run_stopped"
 
 NOTHING_CHANGED = "Nothing in your workspace changed."
 
@@ -50,7 +52,15 @@ def record(state: dict, event: dict) -> None:
     writes = state.setdefault(WRITES_KEY, [])
     if isinstance(writes, list):
         writes.append(entry)
-    state[TEXT_KEY] = render(state.get(WRITES_KEY), state.get(FAILURES_KEY))
+    state[TEXT_KEY] = render(state.get(WRITES_KEY), state.get(FAILURES_KEY), state.get(STOPPED_KEY))
+
+
+def note_stopped(state: dict, event: dict) -> None:
+    """Keep why the build saved nothing (`finish_build`'s `build_stopped` event, F768), and re-render the words."""
+    reason = str(event.get("reason") or "").strip()
+    if reason:
+        state[STOPPED_KEY] = reason[:600]
+        state[TEXT_KEY] = render(state.get(WRITES_KEY), state.get(FAILURES_KEY), state.get(STOPPED_KEY))
 
 
 def note_failure(state: dict, event: dict) -> None:
@@ -72,7 +82,7 @@ def note_failure(state: dict, event: dict) -> None:
     if isinstance(failures, list):
         failures.append({"tool": event.get("tool_name"), "error": str(error)[:300]})
         del failures[:-5]
-    state[TEXT_KEY] = render(state.get(WRITES_KEY), state.get(FAILURES_KEY))
+    state[TEXT_KEY] = render(state.get(WRITES_KEY), state.get(FAILURES_KEY), state.get(STOPPED_KEY))
 
 
 def _quoted(names: list[str]) -> str:
@@ -102,8 +112,9 @@ def _net(writes: list[dict]) -> dict[tuple[str, str], dict]:
     return net
 
 
-def render(writes: Any, failures: Any = None) -> str:
-    """The run's writes as fixed sentences, or `NOTHING_CHANGED` (and what last failed)."""
+def render(writes: Any, failures: Any = None, stopped: Any = None) -> str:
+    """The run's writes as fixed sentences, or `NOTHING_CHANGED` (and what last failed); a build that stopped says why
+    instead (F768)."""
     net = _net(writes if isinstance(writes, list) else [])
     groups: dict[tuple[str, str], list[str]] = {}
     schedules: list[str] = []
@@ -142,6 +153,8 @@ def render(writes: Any, failures: Any = None) -> str:
     for (kind, action), names in groups.items():  # a kind not listed above, said plainly
         lines.append(f"{verbs.get(action, action.title())} the {kind} {_quoted(names)}.")
     lines += schedules + removed
+    if isinstance(stopped, str) and stopped.strip():
+        lines.append(stopped.strip())
 
     if lines:
         return " ".join(lines)

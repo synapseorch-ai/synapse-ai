@@ -1685,6 +1685,40 @@ async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
             and ("agent", w.get("id")) not in gone]
 
 
+async def _why_nothing_was_built(run: str, removed: list[str]) -> str:
+    """Why `run`'s build saved no workflow, when its plan check still names what nothing here provides (F768): the
+    tools, the provider its research found for them, and what to do. "" when it saved one, or for another reason."""
+    from core.orchestration.run_writes import WRITES_KEY
+    from core.orchestration.state import SharedState
+
+    try:
+        state = (await SharedState.restore(run)).run.shared_state or {}
+    except FileNotFoundError:
+        return ""
+    writes = [w for w in state.get(WRITES_KEY) or [] if isinstance(w, dict)]
+    gone = {(w.get("kind"), w.get("id")) for w in writes if w.get("action") == "deleted"}
+    if any(w.get("kind") == "orchestration" and w.get("action") == "created" and w.get("id") not in removed
+           and ("orchestration", w.get("id")) not in gone for w in writes):
+        return ""
+    check = state.get("plan_check") if isinstance(state.get("plan_check"), dict) else {}
+    missing = [str(t) for t in (check.get("missing_tools") or []) + (check.get("missing_agents") or [])]
+    if not missing:
+        return ""
+    plan = str(state.get("plan_draft") or "").lower()
+    findings = state.get("plan_findings") if isinstance(state.get("plan_findings"), dict) else {}
+    found = []
+    for option in findings.get("options") or []:
+        provider = str(option.get("provider") or "").strip() if isinstance(option, dict) else ""
+        if provider and option.get("how") in ("mcp", "api") and provider.lower() in plan:
+            way = "its own MCP server" if option["how"] == "mcp" else "a public API"
+            page = next(iter(option.get("sources") or []), "")
+            found.append(f"{provider} has {way}" + (f" ({page})" if page else ""))
+    names = ", ".join(f"`{t}`" for t in missing[:5])
+    return ("Nothing was built: this plan uses " + names + ", which nothing in this workspace provides yet. "
+            + (("The research found: " + "; ".join(found) + ". ") if found else "")
+            + "Connect the app or service it needs, then ask me to build it again.")
+
+
 async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -> str:
     """Dispatch a builder tool call and return a JSON string result."""
     output, _events = await execute_builder_tool_with_events(tool_name, args, server_module)
@@ -2599,7 +2633,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                           reason="the build stopped before its workflow was saved")
                     removed_names.append(agent.get("name") or agent["id"])
                 left = [agent for agent in left if agent not in free]
-        return {"status": "finished", "removed": removed, "removed_names": removed_names, "kept": kept}
+        stopped = await _why_nothing_was_built(run, removed) if run is not None else ""
+        if stopped:
+            events.append({"type": "build_stopped", "reason": stopped})
+        return {"status": "finished", "removed": removed, "removed_names": removed_names, "kept": kept,
+                **({"stopped": stopped} if stopped else {})}
 
     # ── Custom HTTP tools ────────────────────────────────────────────────────
 
