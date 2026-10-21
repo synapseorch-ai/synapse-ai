@@ -353,7 +353,7 @@ function LlmSection({ step, update, availableModels, showVaultHints }: StepSecti
 
 /**
  * A Tool step's arguments set on the step (E1): one row per argument the tool takes, then any other the step
- * already sets. Each value may read state with `{{state.key}}`. Without the tool's schema (a host that does not list
+ * already sets. Each value may read state with `{{ state.key }}`. Without the tool's schema (a host that does not list
  * it), a person adds arguments by name.
  */
 function ToolArguments({ step, update, tool }: { step: StepConfig; update: StepSectionProps['update']; tool?: ToolWithSchema }) {
@@ -397,7 +397,7 @@ function ToolArguments({ step, update, tool }: { step: StepConfig; update: StepS
                     <LocalInput
                         size="sm"
                         aria-label={`Argument ${row.name}`}
-                        placeholder={row.description || '{{state.key}} or a value'}
+                        placeholder={row.description || '{{ state.key }} or a value'}
                         value={row.text}
                         onCommit={(text) => update({ tool_arguments: withArgument(set, row, text) })}
                     />
@@ -419,7 +419,7 @@ function ToolArguments({ step, update, tool }: { step: StepConfig; update: StepS
                 </Button>
             </div>
             <p className="text-[10px] text-text-faint">
-                Read a value from state with {'{{state.key}}'}. Numbers, true / false and JSON are sent as values,
+                Read a value from state with {'{{ state.key }}'}. Numbers, true / false and JSON are sent as values,
                 except to an argument the tool says is text.
             </p>
         </div>
