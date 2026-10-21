@@ -1243,8 +1243,8 @@ class _FakeSession:
 class TestAToolServerListingSaysWhatTheServerDoes:
     """`list_tool_servers` is the first call the builder prompts name (F126).
 
-    The Requirements Analyst is told to call it first, to stop when it has what
-    it needs, and never to call `list_all_tools` — and it gets one round of
+    The Requirements Analyst is told to call it first and to stop when it has
+    what it needs (it does not hold `list_all_tools`) — and it gets one round of
     tool calls. So a listing of bare names is often the whole basis for picking
     an integration: `deepwiki` reads like a wiki to search, and the agent it
     holds answers questions about GitHub repositories.

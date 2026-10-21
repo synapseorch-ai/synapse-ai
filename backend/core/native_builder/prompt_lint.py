@@ -97,3 +97,40 @@ def loops_not_item_first(orch: dict[str, Any]) -> list[str]:
             if not names_it.search(first):
                 late.append(sid)
     return late
+
+
+#: A tool's name as a prompt writes it, in backticks.
+_TICKED = re.compile(r"`([a-z][a-z0-9_]+)")
+#: The engine's own tools an agent may be taught although its list does not name them.
+_ENGINE_TOOLS = frozenset({"update_tasks", "remember", "load_skill"})
+
+
+def known_tools() -> set[str]:
+    """Every tool name this install knows: the builder's and the product's."""
+    from core.builder_tools import BUILDER_TOOL_NAMES
+    from core.product_tools import areas, registry
+
+    areas.ensure_loaded()
+    return set(BUILDER_TOOL_NAMES) | {t.name for t in registry.all_tools()} | set(_ENGINE_TOOLS)
+
+
+def tools_not_held(agents: list[dict] | None = None, orch: dict | None = None) -> list[tuple[str, str]]:
+    """F800: each (place, tool) where a prompt an agent reads names, in backticks, a tool that agent does not hold:
+    its system prompt and the prompts of the steps it runs. A model taught a tool it cannot call calls it (F803's
+    class: gpt-oss called the `update_tasks` it was taught but not given, 3 times in 12). A name that is no tool
+    (an op, a field) is not counted."""
+    if agents is None or orch is None:
+        bundle = seed.bundled_definitions()
+        agents, orch = bundle["agents"], bundle["orchestration"]
+    known = known_tools()
+    found: list[tuple[str, str]] = []
+    for agent in agents:
+        held = set(agent.get("tools") or [])
+        texts = {f"agent:{agent['id']}": agent.get("system_prompt") or ""}
+        for step in orch.get("steps") or []:
+            if step.get("agent_id") == agent["id"]:
+                texts[f"step:{step['id']}.prompt_template"] = step.get("prompt_template") or ""
+        for place, text in texts.items():
+            found += [(place, name) for name in dict.fromkeys(_TICKED.findall(text))
+                      if name in known and name not in held and name not in _ENGINE_TOOLS]
+    return found

@@ -20,8 +20,9 @@ import pytest
 from core.native_builder import prompt_lint, seed
 
 #: The expanded bundle. Change it only with a prompt change made on purpose, in the same commit. At v2.0 635a3967,
-#: before any passage moved into the library: 0edc6f5b…; SAI2-P2 (F799): the change route on a typed Change.
-BUNDLE_SHA256 = "074d96f78ab09a7d02d5a38b3e83f79e4d928f6cdcde20d6718999d65bdea028"
+#: before any passage moved into the library: 0edc6f5b…; SAI2-P2 (F799): the change route on a typed Change,
+#: 074d96f7…; F800: the analyst no longer told never to call a tool it does not hold.
+BUNDLE_SHA256 = "2b9c8941bb7f29ad80d0836296fdb04ee99812dd5fdf366892119f9752f4e12f"
 
 
 def _sha(definitions) -> str:
@@ -83,3 +84,23 @@ class TestThePromptFormRules:
         ]}
         assert prompt_lint.loops_not_item_first(orch) == ["ask"]
 
+
+class TestAPromptTeachesOnlyTheToolsItsAgentHolds:
+    """F800 (SAI2-P2): the class behind F803. A model taught a tool it cannot call calls it: gpt-oss-120b called the
+    `update_tasks` its prompt taught but its turn did not offer, 3 times in 12. A prompt an agent reads — its own and
+    its steps' — names in backticks only tools that agent holds. The one today's bundle had (the analyst's "NEVER call
+    `list_all_tools`", a tool it does not hold) is gone rather than listed."""
+
+    def test_none_does(self):
+        assert prompt_lint.tools_not_held() == []
+
+    def test_one_that_does_is_named(self):
+        agents = [{"id": "a", "tools": ["read_workspace"], "system_prompt": "Read with `read_workspace`, then call "
+                                                                             "`delete_agent` and `update_tasks`."}]
+        orch = {"steps": [{"id": "s", "agent_id": "a", "prompt_template": "Finish with `submit_change`."}]}
+        assert prompt_lint.tools_not_held(agents, orch) == [("agent:a", "delete_agent"),
+                                                            ("step:s.prompt_template", "submit_change")]
+
+    def test_a_name_that_is_no_tool_is_not_counted(self):
+        agents = [{"id": "a", "tools": [], "system_prompt": "Use the op `edit_steps` and its `what` field."}]
+        assert prompt_lint.tools_not_held(agents, {"steps": []}) == []
