@@ -319,6 +319,8 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         CALLER_KEY: {"user_id": None, "may_change": True},
         # The router's door before a build or a change (F682): read by `step_may_change`, said by `step_not_yours`.
         "may_change": True,
+        # The change route's door (SAI2-P2): approver and up reach it, and each op's role is checked there.
+        "may_act": True,
         "asker_role": "owner",
     }
 

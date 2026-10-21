@@ -214,13 +214,16 @@ async def test_turning_a_schedule_off_is_a_card_and_the_click_turns_it_off(clien
     assert (await store.get("sched_n"))["enabled"] is False
 
 
-async def test_prepare_action_is_a_card_and_the_reporter_and_operator_hold_it():
+async def test_prepare_action_is_a_card_and_the_reporter_holds_it():
+    """The reporter puts a card up for a button asked as a question; on the change route the card is code's
+    (`check_change` makes it through `prepare_action`'s own `_offer`, SAI2-P2), so its planner holds no card tool."""
     from core.native_builder.seed import bundled_definitions
 
     assert builder_access.KINDS["prepare_action"] == "card"
     agents = {a["id"]: a for a in bundled_definitions()["agents"]}
-    for agent in ("agent_native_builder_reporter", "agent_native_builder_operator"):
-        assert "prepare_action" in agents[agent]["tools"]
+    assert "prepare_action" in agents["agent_native_builder_reporter"]["tools"]
+    assert "prepare_action" not in agents["agent_native_builder_change_planner"]["tools"]
+    assert builder_access.KINDS["check_change"] == "card"
 
 
 def test_no_product_tool_is_named_like_a_workflows_own_tool():

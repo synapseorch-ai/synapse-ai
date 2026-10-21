@@ -227,17 +227,19 @@ class TestSeeHowImBuilt:
         # door before a build or a change for a person whose role may not (ASSIST1, F682); 36 with the gate that puts a
         # change plan's cards up when it is only buttons (F755); 39 with the build's own look-up of who provides a
         # tool its plan names that nothing here provides: the gate, the Researcher, and the step that notes it (F763);
-        # 40 with the gate that sends a research request after a findings card to the build (F766).
-        assert legend["step_count"] == 40
+        # 40 with the gate that sends a research request after a findings card to the build (F766); 45 with the change
+        # route on a typed Change (SAI2-P2): the plan, its two gates and the operator out, and the card read, the
+        # planner, its check and route, the question, what it says, the approval, the apply and its summary in.
+        assert legend["step_count"] == 45
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
         assert {a["role"] for a in legend["agents"]} == {
-            "analyst", "agent_creator", "saver_create", "saver_update", "operator", "reporter", "researcher",
+            "analyst", "agent_creator", "saver_create", "saver_update", "change_planner", "reporter", "researcher",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
-        # has nothing to approve.
-        assert len(legend["human_gates"]) == 3
+        # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2).
+        assert len(legend["human_gates"]) == 4
         assert "evaluator" in legend["step_types"]
 
     async def test_the_legend_carries_the_orchestration_the_canvas_draws(self, client):
@@ -356,48 +358,59 @@ class TestAQuestionGetsAnAnswer:
         assert "list_variables" not in reporter["tools"]
 
 
-class TestAReadOnlyPlanHasNothingToApprove:
-    async def test_it_skips_the_gate_and_answers(self, client, builder, fake_llm):
+class TestAChangeThatChangesNothingHasNothingToApprove:
+    """The change route's planner proposes ops; code checks them (SAI2-P2). A change that would do nothing, or that
+    names nothing here, is said and ends: no review, no apply. One that writes waits at the review, whose words and
+    object are code's."""
+
+    async def test_it_skips_the_review_and_says_why(self, client, builder, fake_llm):
         fake_llm.script([
-            route("manage"),                           # step_intent
-            "- list_recent_runs — see what failed",    # step_manage_plan
-            route("read_only"),                        # step_manage_writes
-            "Nothing failed yesterday.",               # step_answer
+            route("manage"),                                                        # step_intent
+            tool_call("submit_change", ops=[{"op": "rename_agent", "target": {"kind": "agent", "name": "Nobody"},
+                                             "fields": {"name": "Somebody"}}]),     # step_change
         ])
-        events = await stream(client, "/api/builder/chat", {"message": "anything fail yesterday?"})
+        events = await stream(client, "/api/builder/chat", {"message": "rename Nobody to Somebody"})
 
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-        assert "Plan the Change" in steps
-        assert "Answer the Question" in steps
+        assert "Plan the Change" in steps and "Check the Change" in steps
         assert "Approve the Change" not in steps
         assert "Apply the Change" not in steps
         assert not [e for e in events if e["type"] == "human_input_required"]
+        done = next(e for e in events if e["type"] == "orchestration_complete")
+        assert done["final_state"]["summary"] == 'No agent is called "Nobody".'
+        assert len(fake_llm.calls) == 2, "the check is code: no model reads the planner's change"
 
-    async def test_a_writing_plan_still_stops_at_the_gate(self, client, builder, fake_llm):
+    async def test_a_writing_change_still_stops_at_the_review(self, client, builder, fake_llm):
+        from core.store import schedules
+
+        await schedules.save({"id": "sched_brief", "name": "Nightly brief", "enabled": True, "target_type":
+                              "orchestration", "target_id": "orch_x", "prompt": "", "schedule_type": "cron",
+                              "cron_expression": "0 2 * * *"})
         fake_llm.script([
-            route("manage"),                                 # step_intent
-            "- delete_schedule — remove the nightly brief",  # step_manage_plan
-            route("writes"),                                 # step_manage_writes
+            route("manage"),
+            tool_call("submit_change", ops=[{"op": "delete_schedule", "target": {"kind": "schedule",
+                                                                                 "name": "nightly brief"}}]),
         ])
         events = await stream(client, "/api/builder/chat", {"message": "delete the nightly brief"})
 
         asked = next(e for e in events if e["type"] == "human_input_required")
-        assert asked["fields"][0]["name"] == "feedback"
+        assert asked["fields"][0]["name"] == "feedback" and asked["orch_step_id"] == "step_manage_review"
+        assert '⚠️ DELETES: Delete the schedule "Nightly brief"' in asked["prompt"]
+        assert asked["context"]["object"] == "change" and asked["context"]["calls"] == [
+            ["delete_schedule", {"schedule_id": "sched_brief"}]]
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
         assert "Apply the Change" not in steps
+        assert await schedules.get("sched_brief") is not None
 
-    async def test_an_unreadable_decision_falls_back_to_the_gate(self, client, builder, fake_llm):
-        """An evaluator that cannot parse its own reply falls back to the first
-        label in `route_map`. `writes` is first for exactly this reason: the
-        accident has to be the one that asks a human."""
-        fake_llm.script([
-            route("manage"),
-            "- delete_schedule — remove the nightly brief",
-            "not a route at all",       # step_manage_writes, unparseable
-        ])
+    async def test_a_planner_that_never_finishes_does_nothing(self, client, builder, fake_llm):
+        """It used to be an evaluator that could not parse its own reply, falling back to the review. A planner that
+        answers in words twice (one reminder, E2) ends the run with nothing reviewed and nothing done."""
+        fake_llm.script([route("manage"), "I would delete it.", "Yes, delete it."])
         events = await stream(client, "/api/builder/chat", {"message": "delete something"})
 
-        assert [e for e in events if e["type"] == "human_input_required"]
+        assert not [e for e in events if e["type"] == "human_input_required"]
+        steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+        assert "Check the Change" not in steps and "Apply the Change" not in steps
 
 
 class TestAnAttachmentReachesTheStepAndNothingElse:
@@ -424,30 +437,24 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
     async def test_a_step_that_did_not_ask_is_not_given_them(self, client, builder, fake_llm):
         """The negative half, driven through an *agent* step.
 
-        `pass_images` is only read by the agent executor, so routing this
-        through `step_manage_plan` (an `llm` step) would pass whether the opt-in
-        existed or not. `step_manage_apply` is an agent step without it.
+        `pass_images` is only read by the agent executor, so the step this goes
+        through must be an agent step without it: the change planner
+        (`step_change`, SAI2-P2) is one.
         """
         fake_llm.script([
             route("manage"),
-            "- create_skill — add a summarising skill",
-            route("writes"),
+            tool_call("submit_change", ops=[{"op": "rename_agent", "target": {"kind": "agent", "name": "Nobody"},
+                                             "fields": {"name": "Somebody"}}]),
         ])
         events = await stream(client, "/api/builder/chat", {
-            "message": "add a summarising skill", "images": [self.PNG],
-        })
-        # It pauses at the gate; answer it so the operator actually runs.
-        run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
-        fake_llm.reset()
-        fake_llm.script(["Created the skill."])  # approval is decided in code (F754)
-        after = await stream(client, "/api/builder/resume", {
-            "run_id": run_id, "response": {"feedback": "approve"},
+            "message": "rename Nobody to Somebody", "images": [self.PNG],
         })
 
         # The assertion is worthless unless the agent step actually ran.
-        steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
-        assert "Apply the Change" in steps, steps
-        assert not any(c.get("images") for c in fake_llm.calls)
+        steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+        assert "Plan the Change" in steps, steps
+        assert len(fake_llm.calls) == 2
+        assert not fake_llm.calls[1].get("images")
 
     async def test_no_image_bytes_reach_the_browser(self, client, builder, fake_llm):
         fake_llm.script([route("answer"), "A cat."])

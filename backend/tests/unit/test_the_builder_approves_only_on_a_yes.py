@@ -16,7 +16,7 @@ from core.orchestration.steps import _eval_state_expr
 GATES = {
     # gate: (the human step's output key, approved →, anything else →)
     "step_approval_route": ("review_feedback", "step_agents_needed", "step_draft_plan"),
-    "step_manage_route": ("manage_review", "step_manage_apply", "step_manage_plan"),
+    "step_manage_route": ("manage_review", "step_change_approve", "step_change"),
 }
 
 YES = ["approve", "Approve", " approve ", "approved", "ok", "OK!", "okay", "yes", "Yes.", "looks good",
@@ -85,3 +85,16 @@ def test_the_card_sends_a_word_the_gate_takes():
     gate = _steps()["step_approval_route"]
     value, _ = _eval_state_expr(gate["if_condition"], {"review_feedback": {"feedback": sent}}, default=False)
     assert value is True
+
+
+@pytest.mark.parametrize("answer", YES + NOT_YES)
+def test_the_change_route_s_own_check_of_the_yes_is_the_gate_s(answer):
+    """`approve_change` checks the yes again rather than trusting the branch it is on (SAI2-P2): it must read every
+    answer exactly as the gate does."""
+    from core.native_builder.review import APPROVAL_WORDS, is_yes
+
+    gate = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}["step_manage_route"]
+    took, error = _eval_state_expr(gate["if_condition"], {"manage_review": {"feedback": answer}}, default=False)
+    assert error is None and is_yes(answer) is bool(took)
+    words = gate["if_condition"].split(" in (", 1)[1].rstrip(")")
+    assert words == ", ".join(f'"{w}"' for w in APPROVAL_WORDS)

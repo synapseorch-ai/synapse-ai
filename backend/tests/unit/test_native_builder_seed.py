@@ -32,7 +32,7 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "agent_creator", "analyst", "operator", "orchestrator",
+            "agent_creator", "analyst", "change_planner", "orchestrator",
             "reporter", "researcher", "saver_create", "saver_update",
         ]
 
@@ -93,9 +93,11 @@ class TestTheSchemaSaysWhatTheStepsWrite:
         wrong = []
         for step in orch["steps"]:
             key, kind = step.get("output_key"), step["type"]
-            if key and kind in self.WRITES and schema[key]["type"] != self.WRITES[kind]:
+            # An agent that finishes by calling a tool (E2) writes that tool's object, not text.
+            writes = "dict" if kind == "agent" and step.get("finish_tools") else self.WRITES.get(kind)
+            if key and writes and schema[key]["type"] != writes:
                 wrong.append(f"{key} is declared {schema[key]['type']} but "
-                             f"{step['id']} ({kind}) writes {self.WRITES[kind]}")
+                             f"{step['id']} ({kind}) writes {writes}")
         # `resume()` copies every answer to `human_response` as well, whatever
         # the step's own output_key.
         if any(s["type"] == "human" for s in orch["steps"]) and schema["human_response"]["type"] != "dict":
@@ -201,25 +203,30 @@ class TestItStaysOutOfSight:
         assert [a["id"] for a in exported["agents"]] == ["agent_mine"]
 
 
-class TestOnlyTheOperatorCanDestroy:
-    """Two layers guard a deletion. `confirm=true` is one; this is the other,
-    and it is the one that matters — the operator runs only after a human has
-    read a plan that named the deletion and approved it."""
+class TestOnlyTheApplyStepCanDestroy:
+    """Two layers guard a deletion. The registry's own rule is one; this is the
+    other, and it is the one that matters — a delete is made only by the apply
+    step (code, through the registry), and only after a human has read a review
+    that named the deletion and approved it. Since SAI2-P2 no agent holds a
+    delete at all: the operator, which did, is gone."""
 
     DESTRUCTIVE = {"delete_agent", "delete_orchestration", "delete_custom_tool", "delete_schedule"}
 
-    def test_no_other_sub_agent_holds_a_delete(self):
+    def test_no_sub_agent_holds_a_delete(self):
         for agent in bundled_definitions()["agents"]:
-            if agent["system_role"] == "operator":
-                continue
             held = self.DESTRUCTIVE & set(agent.get("tools") or [])
             assert not held, f"{agent['system_role']} holds {held}"
 
-    def test_the_operator_holds_all_of_them(self):
-        operator = next(
-            a for a in bundled_definitions()["agents"] if a["system_role"] == "operator"
-        )
-        assert self.DESTRUCTIVE <= set(operator["tools"])
+    def test_the_apply_step_makes_all_of_them(self):
+        """Every delete is a change op, and the one step that makes a change's calls is `step_apply`; no other
+        step forces a write."""
+        from core.builder_access import WRITES
+        from core.native_builder import change_ops
+
+        assert self.DESTRUCTIVE <= set(change_ops.WRITE_TOOLS)
+        writing = {s["id"] for s in bundled_definitions()["orchestration"]["steps"]
+                   if s["type"] == "tool" and s.get("forced_tool") in WRITES}
+        assert writing == {"step_finish_build", "step_change_approve", "step_apply"}
 
     def test_nothing_inherits_the_default_tool_set_by_accident(self):
         """A sub-agent that does not skip the defaults gets every tool in the
@@ -230,30 +237,28 @@ class TestOnlyTheOperatorCanDestroy:
                 continue  # the orchestrator shell declares none and runs none
             assert agent.get("skip_default_tools") is True, agent["system_role"]
 
-    def test_the_operator_is_reached_only_through_a_human_approval(self):
-        """The path to it: plan → human → router → operator. Remove the human
-        step and the builder can delete things unprompted."""
+    def test_the_apply_step_is_reached_only_through_a_human_approval(self):
+        """The path to it: check → human → gate → approve → apply. Remove the human step and the builder can
+        delete things unprompted."""
         orch = bundled_definitions()["orchestration"]
         by_id = {s["id"]: s for s in orch["steps"]}
-        operator_step = next(
-            s for s in orch["steps"] if s.get("agent_id") == "agent_native_builder_operator"
-        )
 
         def targets(s):
             return [s.get("next_step_id"), *(s.get("route_map") or {}).values(),
+                    *(s.get("switch_cases") or {}).values(), s.get("switch_default_step_id"),
                     s.get("if_true_step_id"), s.get("if_false_step_id")]
 
-        # Who can reach the operator's step?
-        reaching = [s for s in orch["steps"] if operator_step["id"] in targets(s)]
-        assert reaching, "nothing reaches the operator"
-        for step in reaching:
-            # Every route in is a gate whose own input came from a human step, and since F754 a gate decided in
-            # code: the operator is only on its yes side.
-            assert step["type"] in ("evaluator", "if_else"), step["id"]
-            if step["type"] == "if_else":
-                assert step["if_true_step_id"] == operator_step["id"] != step["if_false_step_id"], step["id"]
-            feeders = [s for s in orch["steps"] if step["id"] in targets(s)]
-            assert any(by_id[f["id"]]["type"] == "human" for f in feeders), step["id"]
+        def reaching(step_id):
+            return [s for s in orch["steps"] if step_id in targets(s)]
+
+        # Only the approval reaches the apply, and only the gate reaches the approval.
+        assert [s["id"] for s in reaching("step_apply")] == ["step_change_approve"]
+        [gate] = reaching("step_change_approve")
+        # A gate decided in code (F754): the approval is only on its yes side, and its input came from a human.
+        assert gate["type"] == "if_else"
+        assert gate["if_true_step_id"] == "step_change_approve" != gate["if_false_step_id"], gate["id"]
+        feeders = reaching(gate["id"])
+        assert feeders and all(by_id[f["id"]]["type"] == "human" for f in feeders), gate["id"]
 
 
 class TestAParseFailureGoesSomewhereSafe:
@@ -284,14 +289,17 @@ class TestAParseFailureGoesSomewhereSafe:
         both listed `approved` first, so on SQLite — the default store — an
         unparseable reply ran the saver, or the operator with its write tools,
         without anyone approving anything."""
-        by_id = {s["id"]: s for s in self._evaluators()}
-        assert by_id["step_manage_writes"]["fallback_route"] == "writes"
         # The two approvals are decided in code since F754, and a condition that cannot be read counts as false
-        # (`IfElseStepExecutor`): their false side is the redraft, never the saver or the operator.
+        # (`IfElseStepExecutor`): their false side is the redraft, never the saver or the apply.
         from core.native_builder import bundled_definitions
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
         assert steps["step_approval_route"]["if_false_step_id"] == "step_draft_plan"
-        assert steps["step_manage_route"]["if_false_step_id"] == "step_manage_plan"
+        assert steps["step_manage_route"]["if_false_step_id"] == "step_change"
+        # The change route's own split is code too (SAI2-P2): a check whose outcome cannot be read says what it
+        # found and ends; it never falls to the review, let alone the apply.
+        route = steps["step_check_route"]
+        assert route["type"] == "switch" and route["switch_default_step_id"] == "step_change_said"
+        assert steps["step_change_said"]["next_step_id"] == "step_end"
 
     def test_it_does_not_depend_on_key_order(self):
         """What Postgres does to the map, done here: if the fallback survives
@@ -338,7 +346,7 @@ class TestTheBuilderKnowsItsTarget:
         assert {"current_page", "current_orchestration_source", "current_orchestration_matches"} <= set(
             steps["step_answer"]["input_keys"]
         )
-        assert "current_page" in steps["step_manage_plan"]["input_keys"]
+        assert "current_page" in steps["step_change"]["input_keys"]
 
     def test_an_unclear_change_is_answered_not_built(self):
         """Two matches, or a name that is not the open one, leaves the id empty —

@@ -19,9 +19,9 @@ import pytest
 
 from core.native_builder import prompt_lint, seed
 
-#: The expanded bundle at v2.0 635a3967, before any passage moved into the library. Change it only with a prompt
-#: change made on purpose, in the same commit.
-BUNDLE_SHA256 = "0edc6f5b534b54bb510069bdd7fc7780d39ca67776a48e3fde4f76109b47ba68"
+#: The expanded bundle. Change it only with a prompt change made on purpose, in the same commit. At v2.0 635a3967,
+#: before any passage moved into the library: 0edc6f5b…; SAI2-P2 (F799): the change route on a typed Change.
+BUNDLE_SHA256 = "074d96f78ab09a7d02d5a38b3e83f79e4d928f6cdcde20d6718999d65bdea028"
 
 
 def _sha(definitions) -> str:
@@ -82,3 +82,4 @@ class TestThePromptFormRules:
             {"id": "say", "type": "llm", "prompt_template": "Order {state.order}: write one line on its status."},
         ]}
         assert prompt_lint.loops_not_item_first(orch) == ["ask"]
+

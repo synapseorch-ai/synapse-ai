@@ -19,7 +19,7 @@ from core.native_builder.seed import bundled_definitions
 from core.orchestration.engine import OrchestrationEngine
 
 #: Where each route went before the gate.
-BEFORE = {"create": "step_plan_room", "update": "step_fetch_existing", "manage": "step_manage_plan"}
+BEFORE = {"create": "step_plan_room", "update": "step_fetch_existing", "manage": "step_change_context"}
 
 
 class _Server:
@@ -60,11 +60,23 @@ async def test_a_person_who_may_goes_where_the_route_went_before(engine, label):
 
 @pytest.mark.parametrize("label", list(BEFORE))
 async def test_a_person_who_may_not_is_told_why_and_nothing_is_planned(engine, label):
-    assert await _next(engine, "step_may_change", {"intent": label, "may_change": False}) == "step_not_yours"
+    assert await _next(engine, "step_may_change", {"intent": label, "may_change": False, "may_act": False}) == \
+        "step_not_yours"
     refusal = engine.step_map["step_not_yours"]
     assert refusal.type.value == "print" and refusal.output_key == "summary"
     assert "{state.asker_role}" in refusal.print_content and "builder" in refusal.print_content
     assert await _next(engine, "step_not_yours", {}) == "step_end"
+
+
+async def test_an_approver_reaches_the_change_route_and_only_it(engine):
+    """Below builder, a change keeps only the ops the role may do (SAI2-P2): an approver may answer what waits for
+    them, so `manage` lets them through to the change route, where each op's role is checked; building or editing
+    a workflow's steps stays the builder's."""
+    approver = {"may_change": False, "may_act": True}
+    assert await _next(engine, "step_may_change", {"intent": "manage", **approver}) == "step_change_route"
+    assert await _next(engine, "step_change_route", {"intent": "manage", **approver}) == "step_change_context"
+    for label in ("create", "update"):
+        assert await _next(engine, "step_may_change", {"intent": label, **approver}) == "step_not_yours"
 
 
 async def test_a_host_that_says_nothing_is_let_through_as_before(engine):
@@ -76,4 +88,4 @@ def test_the_self_hosted_entry_says_its_one_person_may():
 
     from core.routes import builder
     source = inspect.getsource(builder.prepare_builder_run)
-    assert '"may_change": True' in source and '"asker_role": "owner"' in source
+    assert '"may_change": True' in source and '"may_act": True' in source and '"asker_role": "owner"' in source

@@ -140,3 +140,30 @@ class TestNothingWritesThePlanBetweenTheYesAndTheApply:
         assert writes_between(orch, "review", "apply", {"change", "plan"}) == ["redraft"]
         orch["steps"][2]["output_key"] = "notes"
         assert writes_between(orch, "review", "apply", {"change", "plan"}) == []
+
+    def test_a_redraft_that_goes_back_through_the_review_is_not_between(self):
+        """The change route's "change something" loop re-checks the change, then shows it again: a new yes comes
+        before any apply (SAI2-P2)."""
+        from core.native_builder.review import writes_between
+
+        orch = {"steps": [
+            {"id": "review", "type": "human", "output_key": "answer", "next_step_id": "gate"},
+            {"id": "gate", "type": "if_else", "if_true_step_id": "approve", "if_false_step_id": "redraft"},
+            {"id": "redraft", "type": "tool", "output_key": "change", "next_step_id": "review"},
+            {"id": "approve", "type": "tool", "output_key": "approval", "next_step_id": "apply"},
+            {"id": "apply", "type": "tool", "output_key": "applied", "next_step_id": None},
+        ]}
+        assert writes_between(orch, "review", "apply", {"change"}) == []
+        orch["steps"][3]["output_key"] = "change"
+        assert writes_between(orch, "review", "apply", {"change"}) == ["approve"]
+
+    def test_the_shipped_change_route_writes_nothing_it_approved_after_the_review(self):
+        """MCP2's point 5, on Synapse AI as shipped: from the change review to the apply, nothing writes the checked
+        change, nor the approval but the approval step."""
+        from core.native_builder.review import writes_between
+        from core.native_builder.seed import bundled_definitions
+
+        orch = bundled_definitions()["orchestration"]
+        assert writes_between(orch, "step_manage_review", "step_apply", {"change_checked"}) == []
+        assert writes_between(orch, "step_manage_review", "step_apply", {"change_approval"}) == [
+            "step_change_approve"]

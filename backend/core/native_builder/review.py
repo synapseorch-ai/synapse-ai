@@ -42,24 +42,38 @@ def approved_review(state: dict[str, Any]) -> ApprovedReview | None:
 
 
 def writes_between(orch: dict[str, Any], start: str, end: str, keys: set[str]) -> list[str]:
-    """The steps on a path from `start` to `end` (neither counted) that write one of `keys`: what could change an
-    approved object after the yes and before it is applied."""
+    """The steps on a path from `start` to `end` (neither counted, and not passing `start` again) that write one of
+    `keys`: what could change an approved object after the yes and before it is applied. A path that goes back
+    through `start` brings a new review, and a new yes, before any apply: a redraft on it is not between the two
+    (SAI2-P2: the change route's "change something" loop re-checks, then reviews again)."""
     from core.builder_tools import step_successors
 
     by_id = {s["id"]: s for s in orch.get("steps") or [] if isinstance(s, dict) and s.get("id")}
-    found: list[str] = []
-    seen: set[str] = set()
-    todo = [n for n in step_successors(by_id[start], by_id)] if start in by_id else []
+    if start not in by_id:
+        return []
+    after: set[str] = set()
+    todo = list(step_successors(by_id[start], by_id))
     while todo:
         sid = todo.pop(0)
-        if sid in seen or sid == end or sid not in by_id:
+        if sid in after or sid in (start, end) or sid not in by_id:
             continue
-        seen.add(sid)
+        after.add(sid)
+        todo += step_successors(by_id[sid], by_id)
+    # Which of them still reach `end` without passing `start` again.
+    reaches = {sid for sid in after if end in step_successors(by_id[sid], by_id)}
+    grew = True
+    while grew:
+        grew = False
+        for sid in after - reaches:
+            if any(n in reaches for n in step_successors(by_id[sid], by_id)):
+                reaches.add(sid)
+                grew = True
+    found: list[str] = []
+    for sid in sorted(reaches, key=list(by_id).index):
         step = by_id[sid]
         written = {step.get("output_key")}
         if step.get("type") == "loop":
             written |= {step.get("loop_item_key") or "loop_item", step.get("loop_index_key") or "loop_index"}
         if written & keys:
             found.append(sid)
-        todo += step_successors(step, by_id)
     return found

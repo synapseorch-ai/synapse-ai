@@ -1,26 +1,30 @@
-"""A button's act that reaches the change route is a card, not a plan to review (F755, ASSIST1, D291).
+"""A button's act that reaches the change route is a card, not a plan to review (F755, ASSIST1, D291; re-pointed at
+the Change's op kinds by SAI2-P2, D308).
 
 BWA1's assist batch on dev (Nova Pro, 2026-10-17): "Pause the Monday invoices schedule", which was already off, went
-to the change route; its planner, which reads nothing, drafted `set_schedule_enabled — disables …`; the person
+to the change route; its planner, which read nothing, drafted `set_schedule_enabled — disables …`; the person
 approved; the operator found nothing to do. A plan review spent on one thing the app does with a button, and on a
 change that changed nothing. Naveen: a card, no review.
 
-The planner plans a button's act (turning an existing schedule on or off among them) as `prepare_action`. In code,
-between the plan and its review, `step_manage_cards` (an if-else) sends a plan that names only buttons to `step_answer`:
-`prepare_action`, or `set_schedule_enabled` on its own (the Schedules screen's toggle, which the planner on Gemini
-Flash still wrote for "pause it" 5 times in 8 when told otherwise), and none of the operator's other write tools. the reporter puts each card up, and `prepare_action` resolves it against
-the workspace as it is, so a schedule already off is said to be, with no card. Every other plan goes on to the review
-as before. The reporter holds no write tool, so a plan read wrongly either way writes nothing nobody pressed.
+The gate that decided it was a substring test on the plan's markdown (`step_manage_cards`). Now the change planner
+proposes typed ops, and whether each is a card or goes to the review is the op's kind (`change_ops.OPS`), decided in
+code by `check_change`: the button acts (`ACTIONS`) are cards, through `prepare_action`'s own code, so a schedule
+already off is said to be, with no card; a change of acts only never reaches the review or the apply. Turning an
+existing schedule on or off is a button act; the Schedules screen's toggle is not an op a model can write.
 """
 from __future__ import annotations
+
+import json
 
 import pytest
 
 from core import builder_access
+from core.builder_actions import ACTIONS
 from core.models_orchestration import Orchestration, OrchestrationRun
+from core.native_builder import change_ops
+from core.native_builder.objects import Change
 from core.native_builder.seed import bundled_definitions
 from core.orchestration.engine import OrchestrationEngine
-from core.orchestration.steps import _eval_state_expr
 
 
 class _Server:
@@ -41,10 +45,8 @@ def _agents() -> dict:
     return {a["id"]: a for a in bundled_definitions()["agents"]}
 
 
-def _cards_only(plan) -> bool:
-    value, error = _eval_state_expr(_steps()["step_manage_cards"]["if_condition"], {"manage_plan": plan}, default=False)
-    assert error is None, error
-    return value
+def _op(op, kind, target, **fields):
+    return {"op": op, "target": {"kind": kind, "name": target}, "fields": fields}
 
 
 async def _next(engine, step_id: str, state: dict) -> str | None:
@@ -56,69 +58,77 @@ async def _next(engine, step_id: str, state: dict) -> str | None:
     return target
 
 
-#: How the planner writes a button's act, as its prompt asks.
+#: A button's acts, as the change planner writes them.
 CARDS = [
-    '- `prepare_action — schedule_off "Monday invoices"`',
-    '- `prepare_action` — schedule_on: the "Monday invoices" schedule',
-    '1. `prepare_action — run_workflow "Invoice chaser"`\n2. `prepare_action — cancel_run run_8f2`',
-    '⚠️ DELETES: the board "Bugs" and its 12 cards.\n- `prepare_action — board_delete "Bugs"`',
-    '- `prepare_action — knowledge_delete_document "pricing.pdf" from "Support docs"`',
-    '- `set_schedule_enabled — Disables the "Monday invoices" schedule`',   # what the planner wrote on dev
-    '* set_schedule_enabled — Turn on the Monday report schedule',
+    [_op("schedule_off", "schedule", "Monday invoices")],
+    [_op("schedule_on", "schedule", "Monday invoices")],
+    [_op("run_workflow", "workflow", "Invoice chaser"), _op("cancel_run", "run", "run_8f2")],
+    [_op("board_delete", "board", "Bugs")],
+    [_op("knowledge_delete_document", "document", "pricing.pdf")],
 ]
 
-#: Plans the person must review: any of the operator's writes, alone or beside a card; a read; nothing.
+#: Changes the person must review: any write, alone or beside a card.
 REVIEWED = [
-    '- `update_schedule — move "Every night at 2" to 3am`\n- `prepare_action — run_schedule_now "Every night at 2"`',
-    '- `create_schedule — every Monday 9am`\n- `set_schedule_enabled — turn the new schedule on`',
-    '- `update_schedule — rename it "Weekly invoices"`\n- `set_schedule_enabled — pause it`',
-    '⚠️ DELETES: the agent "Old bot".\n- `delete_agent — agent_old`',
-    '- `list_schedules — see what runs`',
-    "",
-    None,
+    [_op("set_schedule", "schedule", "Every night at 2", cron_expression="0 3 * * *"),
+     _op("run_schedule_now", "schedule", "Every night at 2")],
+    [_op("create_schedule", "schedule", "Mondays", runs={"kind": "workflow", "name": "Invoice sync"}, prompt="Go",
+         cron_expression="0 9 * * 1")],
+    [_op("rename_schedule", "schedule", "Monday invoices", name="Weekly invoices"),
+     _op("schedule_off", "schedule", "Weekly invoices")],
+    [_op("delete_agent", "agent", "Old bot")],
 ]
 
 
-def test_the_gate_is_code_between_the_plan_and_its_review():
+def test_the_split_is_code_between_the_planner_and_its_review():
     steps = _steps()
-    gate = steps["step_manage_cards"]
-    assert steps["step_manage_plan"]["next_step_id"] == "step_manage_cards"
-    assert gate["type"] == "if_else" and "manage_plan" in gate["input_keys"]
-    assert (gate["if_true_step_id"], gate["if_false_step_id"]) == ("step_answer", "step_manage_writes")
+    assert steps["step_change"]["next_step_id"] == "step_check_change"
+    check = steps["step_check_change"]
+    assert check["type"] == "tool" and check["forced_tool"] == "check_change"
+    assert check["tool_arguments"] == {"draft": "{{ state.change_draft }}"}  # set: no model reads the draft
+    route = steps["step_check_route"]
+    assert route["type"] == "switch" and route["switch_expression"] == "state.change_checked.outcome"
+    assert route["switch_cases"]["review"] == "step_manage_review"
+    assert route["switch_cases"]["said"] == "step_change_said"
 
 
-@pytest.mark.parametrize("plan", CARDS)
-def test_a_plan_of_cards_only_goes_straight_to_the_cards(plan):
-    assert _cards_only(plan) is True
+@pytest.mark.parametrize("ops", CARDS)
+def test_a_change_of_buttons_only_has_nothing_to_review(ops):
+    change = Change.model_validate({"ops": ops})
+    assert all(op.is_act for op in change.ops) and not change.has_writes
 
 
-@pytest.mark.parametrize("plan", REVIEWED)
-def test_any_other_plan_goes_on_to_its_review(plan):
-    assert _cards_only(plan) is False
+@pytest.mark.parametrize("ops", REVIEWED)
+def test_any_change_with_a_write_goes_on_to_its_review(ops):
+    assert Change.model_validate({"ops": ops}).has_writes
 
 
-async def test_the_engine_takes_the_gate_as_a_run_does(engine):
-    assert await _next(engine, "step_manage_cards", {"manage_plan": CARDS[0]}) == "step_answer"
-    assert await _next(engine, "step_manage_cards", {"manage_plan": REVIEWED[0]}) == "step_manage_writes"
-    assert await _next(engine, "step_manage_cards", {"manage_plan": CARDS[-2]}) == "step_answer"
-    assert await _next(engine, "step_manage_cards", {}) == "step_manage_writes"
+def test_the_schedule_toggle_is_a_button_not_an_op():
+    assert "set_schedule_enabled" not in change_ops.OPS
+    assert {"schedule_on", "schedule_off"} <= {n for n, op in change_ops.OPS.items() if op.is_act}
+    assert set(ACTIONS) == {n for n, op in change_ops.OPS.items() if op.is_act}
 
 
-def test_the_gate_names_every_write_the_operator_holds():
-    """The planner names the operator's tools; one the gate did not know would read as a plan of cards. A write tool
-    given to the operator later fails here until the gate names it. `set_schedule_enabled` is named as a button."""
-    operator = _agents()["agent_native_builder_operator"]
-    writes = {t for t in operator["tools"] if builder_access.KINDS.get(t) == "write"}
-    assert writes, "the operator holds no write tool?"
-    condition = _steps()["step_manage_cards"]["if_condition"]
-    assert {t for t in writes if f'"{t}"' not in condition} == set()
+async def test_the_engine_takes_the_split_as_a_run_does(engine):
+    said = json.dumps({"object": "change", "outcome": "said", "say": "A card is up."})
+    review = json.dumps({"object": "change", "outcome": "review", "review": "- Rename"})
+    assert await _next(engine, "step_check_route", {"change_checked": said}) == "step_change_said"
+    assert await _next(engine, "step_check_route", {"change_checked": review}) == "step_manage_review"
+    assert await _next(engine, "step_check_route", {"change_checked": "not json"}) == "step_change_said"
+    assert await _next(engine, "step_check_route", {}) == "step_change_said"
+
+
+def test_every_write_a_change_makes_is_a_write_the_role_door_knows():
+    """A write the door did not know would count as one anyway (`KINDS.get(…, "write")`), but a new op must be
+    classified on purpose."""
+    tools = {op.tool for op in change_ops.OPS.values() if op.is_write}
+    assert tools and {t for t in tools if builder_access.KINDS.get(t) != "write"} == set()
 
 
 def test_the_cards_side_never_reaches_a_write():
-    """Everything reachable from the gate's yes side, before the run ends: no operator, no human review it skipped,
-    and no agent holding a write tool."""
+    """Everything reachable from the check's `said` side, before the run ends: no review it skipped, no apply, no
+    agent holding a write tool and no step forcing one."""
     steps, agents = _steps(), _agents()
-    seen, todo = set(), [_steps()["step_manage_cards"]["if_true_step_id"]]
+    seen, todo = set(), [steps["step_check_route"]["switch_cases"]["said"]]
     while todo:
         sid = todo.pop()
         if not sid or sid in seen or sid == "step_end":
@@ -126,22 +136,25 @@ def test_the_cards_side_never_reaches_a_write():
         seen.add(sid)
         s = steps[sid]
         todo += [s.get("next_step_id"), *(s.get("route_map") or {}).values(), s.get("if_true_step_id"),
-                 s.get("if_false_step_id")]
-    assert "step_manage_apply" not in seen
+                 s.get("if_false_step_id"), *(s.get("switch_cases") or {}).values(), s.get("switch_default_step_id")]
+    assert not {"step_manage_review", "step_change_approve", "step_apply"} & seen
     for sid in seen:
-        agent = agents.get(steps[sid].get("agent_id") or "")
+        s = steps[sid]
+        agent = agents.get(s.get("agent_id") or "")
         held = {t for t in (agent or {}).get("tools") or [] if builder_access.KINDS.get(t) == "write"}
         assert not held, (sid, held)
+        assert builder_access.KINDS.get(s.get("forced_tool") or "") != "write", sid
 
 
 def test_the_planner_plans_a_schedule_on_or_off_as_a_button():
-    prompt = _steps()["step_manage_plan"]["prompt_template"]
-    button = prompt.split("one thing a button does", 1)[1].split("`prepare_action", 1)[0]
-    assert "turn an existing schedule on or off" in button
-    assert "Plan `set_schedule_enabled` only for a schedule this same plan creates" in prompt
+    prompt = _agents()["agent_native_builder_change_planner"]["system_prompt"]
+    button = prompt.split("Button acts", 1)[1].split("\n", 1)[0]
+    assert "turn a schedule on or off" in button and "they get a card to press" in button
 
 
-def test_the_answer_puts_up_the_cards_of_a_plan_that_reached_it():
-    prompt = _steps()["step_answer"]["prompt_template"]
-    assert "put up a card for each button it names" in prompt and "`schedule_on` or `schedule_off`" in prompt
-
+def test_the_answer_still_puts_up_a_card_for_a_button_it_is_asked():
+    """A button asked for as a question still reaches the reporter, which puts the card up; no change plan reaches
+    it any more."""
+    answer = _steps()["step_answer"]
+    assert "put the card up with `prepare_action`" in answer["prompt_template"]
+    assert "manage_plan" not in answer["input_keys"] and "manage_plan" not in answer["prompt_template"]

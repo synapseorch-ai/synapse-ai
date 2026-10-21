@@ -69,10 +69,13 @@ async def test_its_target_can_move_to_another_workflow():
     assert (await schedule_store.get(before["id"]))["target_id"] == "orch_other"
 
 
-def test_the_operator_has_it_and_the_planner_reads_it_as_a_write():
+def test_a_new_time_is_a_change_op_that_moves_it_and_the_planner_is_told_so():
+    """The change route moves a schedule with its `set_schedule` op, which is `update_schedule` and a write
+    (reviewed), never a delete and a create (SAI2-P2)."""
+    from core.native_builder import change_ops
+
     defs = bundled_definitions()
-    operator = next(a for a in defs["agents"] if a["id"].endswith("operator"))
-    assert "update_schedule" in operator["tools"]
-    steps = {s["id"]: s for s in defs["orchestration"]["steps"]}
-    assert "plan `update_schedule`" in steps["step_manage_plan"]["prompt_template"]
-    assert "update_schedule" in steps["step_manage_writes"]["evaluator_prompt"]
+    op = change_ops.OPS["set_schedule"]
+    assert op.tool == "update_schedule" and op.is_write and "cron_expression" in op.fields
+    planner = next(a for a in defs["agents"] if a["system_role"] == "change_planner")
+    assert "change it with set_schedule; never delete it and make a new one" in planner["system_prompt"]
