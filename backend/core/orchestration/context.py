@@ -663,7 +663,7 @@ def _format_context_value(
 #: `templating.REF`) and the older `{state.x}` (group 2). The double-brace
 #: alternative comes first, so an unspaced `{{state.x}}` is a double-brace
 #: reference rather than a `{state.x}` wrapped in braces (F3).
-_TASK_REF = re.compile(rf"{_templating.REF.pattern}|\{{state\.(\w+)\}}")
+_TASK_REF = re.compile(rf"{_templating.REF.pattern}|\{{state\.([\w.]+)\}}")
 
 
 def _fill_task_template(template: str, shared_state: dict, global_variables: dict) -> str:
@@ -683,7 +683,10 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     A state key no step has written yet reads empty, in either form (U74): this
     is a model's prompt, and on a feedback loop's first pass the writer's
     `{state.feedback}` reached the model as those words, which it echoed into
-    its draft. A declared default already fills the key (`_init_state`). A
+    its draft. A declared default already fills the key (`_init_state`). So a
+    field of a key that holds only its empty default (`""`, `{}`, `[]`) reads
+    empty too: nothing has written it either (SAI2-P2; the change planner's
+    "what happened on the first pass" read as template text on its first). A
     person's text — a Human or a Print step's — keeps the gap
     (`steps.render_state_refs`).
     """
@@ -692,11 +695,25 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     def _sub(match: re.Match) -> str:
         if match.group(1) is not None:
             parts = match.group(1).split(".")
-            if parts[0] == "state" and len(parts) > 1 and shared_state.get(parts[1]) is None:
-                return ""
+            if parts[0] == "state" and len(parts) > 1:
+                top = shared_state.get(parts[1])
+                if top is None or (len(parts) > 2 and top in ("", {}, [])):
+                    return ""
             return _templating.render(match.group(0), context)
-        value = shared_state.get(match.group(2))
-        return "" if value is None else str(value)
+        # The older single-brace form walks a path too (`{state.review.final_summary}`), as a person's text
+        # (`render_state_refs`) and the `{{ }}` form do: it took one word only, so a path reached the model as
+        # those words even when it was set.
+        head, *path = match.group(2).split(".")
+        value = shared_state.get(head)
+        if value is None or (path and value in ("", {}, [])):
+            return ""
+        if path:
+            found, value = _templating._walk(value, path)
+            if not found:
+                return match.group(0)  # a wrong path inside a key that is set stays visible, as `{{ }}`'s does
+            if value is None:
+                return ""
+        return str(value)
 
     return _TASK_REF.sub(_sub, template)
 
