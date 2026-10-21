@@ -33,12 +33,14 @@ READS: frozenset[str] = frozenset({
     "list_repos", "list_db_configs", "list_orchestrations", "get_orchestration", "validate_orchestration",
     "list_custom_tools", "list_skills", "list_knowledge_bases", "get_skill", "list_schedules", "list_variables",
     "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities", "check_plan",
-    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page",
+    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "read_change_context",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,
 #: and then through the app's own doors under their own role.
-CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action"})
+#: The change route's finish tools and its check (SAI2-P2) write only the run's own state, or put up an act's card.
+CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action", "submit_change",
+                                   "ask_person", "cannot", "check_change"})
 
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",
@@ -46,6 +48,7 @@ WRITES: frozenset[str] = frozenset({
     "remove_step", "add_single_step", "add_multiple_steps", "create_http_tool", "import_openapi",
     "delete_custom_tool", "create_skill", "update_skill", "attach_skills", "finish_build", "create_schedule",
     "set_schedule_enabled", "update_schedule", "delete_schedule", "delete_agent", "delete_orchestration",
+    "approve_change", "apply_change",
 })
 
 KINDS: dict[str, str] = {**{n: "read" for n in READS}, **{n: "card" for n in CARDS}, **{n: "write" for n in WRITES}}
