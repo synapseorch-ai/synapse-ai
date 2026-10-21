@@ -108,7 +108,7 @@ export interface StepConfig {
     // Per-step guardrails
     max_turns?: number;
     timeout_seconds?: number;
-    allowed_tools?: string[];
+    allowed_tools?: string[] | null;
 
     // Response cache (skipped for AGENT steps)
     cache_responses_enabled?: boolean;

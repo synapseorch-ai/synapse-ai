@@ -21,6 +21,7 @@ import { PythonEditor } from './PythonEditor';
 import { agentKind, agentOptions, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
+import { toolsRestricted } from '../allowedTools';
 
 /* ── shared toggles ─────────────────────────────────────────────────────── */
 
@@ -102,7 +103,7 @@ function AllowedTools({ step, update, agents, availableTools }: StepSectionProps
     const descriptions = new Map(availableTools.map((t) => [t.name, t.description]));
     const selected = step.allowed_tools || [];
     const stale = selected.filter((t) => !offered.includes(t));
-    const restricted = step.allowed_tools !== undefined;
+    const restricted = toolsRestricted(step);
     if (offered.length === 0 && stale.length === 0) return null;
 
     const toggle = (name: string, checked: boolean) => {
