@@ -106,18 +106,24 @@ def _moved_since(before: dict | None, now: dict | None) -> list[str]:
 
 
 async def _created_id(item: dict, result: Any) -> str | None:
+    """What a create made: its id from the tool's answer, else the one thing of its kind with its name."""
+    from core.native_builder.change_tools import candidates
+
+    kind = C.OPS[item["op"]].target
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
     except ValueError:
         parsed = None
     if isinstance(parsed, dict):
-        for record in (parsed.get("schedule"), parsed):
-            if isinstance(record, dict) and record.get("id"):
-                return str(record["id"])
-    from core.store import schedules
-
-    name = item["target"].get("name", "").lower()
-    return next((s["id"] for s in await schedules.load() if (s.get("name") or "").lower() == name), None)
+        nested = parsed.get("orchestration" if kind == "workflow" else kind)
+        for record in (nested, parsed):
+            if isinstance(record, dict):
+                for key in ("id", "orch_id", "agent_id", "schedule_id"):
+                    if record.get(key):
+                        return str(record[key])
+    name = (item["target"].get("name") or "").lower()
+    found = [i["id"] for i in await candidates(kind) or [] if i["name"].lower() == name]
+    return found[0] if len(found) == 1 else None
 
 
 async def apply_change(args: dict, server_module: Any, events: list[dict]) -> dict:

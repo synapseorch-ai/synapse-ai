@@ -24,15 +24,24 @@ def test_every_button_act_is_an_op_and_its_kind_says_card():
 
 
 def test_the_model_s_enum_is_the_table():
-    assert set(CHANGE_OPS) == set(C.OPS)
-    assert set(WRITE_OPS) == {n for n, op in C.OPS.items() if not op.is_act}
+    assert set(CHANGE_OPS) == set(C.PLANNER_OPS) == {n for n, op in C.OPS.items() if not op.internal}
+    assert set(WRITE_OPS) == {n for n in C.PLANNER_OPS if not C.OPS[n].is_act}
+
+
+def test_an_undo_s_re_create_is_code_s_only():
+    assert {n for n, op in C.OPS.items() if op.internal} == {"restore_agent", "restore_workflow", "restore_tool"}
+    assert C.issues("restore_agent", {"kind": "agent", "name": "x"}, {}) == [
+        f"`restore_agent` is not an op. The ops are: {', '.join(C.PLANNER_OPS)}."]
 
 
 @pytest.mark.parametrize("tool", ["create_agent", "create_agents", "create_skill", "create_http_tool",
                                   "import_openapi"])
 def test_making_something_new_is_handed_over_not_an_op(tool):
+    """No op a model may propose reaches a create tool: only an undo's re-create, which code builds from what a
+    change deleted (F797), may call one."""
     assert tool not in C.OPS
-    assert tool not in C.WRITE_TOOLS
+    assert tool not in {C.OPS[n].tool for n in C.PLANNER_OPS}
+    assert {op.name for op in C.OPS.values() if op.tool == tool} <= {"restore_agent", "restore_tool"}
     assert C.OPS["create"].kind == "handoff"
 
 
@@ -136,6 +145,10 @@ def _samples():
         ("set_agent_skills", {"add": ["x"]}), ("set_agent_instructions", {"system_prompt": "s"}),
         ("rename_agent", {"name": "N"}), ("set_tool_policy", {"open_world": "deny"}), ("delete_agent", {}),
         ("update_skill", {"description": "d"}), ("delete_tool", {}),
+        ("restore_agent", {"name": "N", "description": "d", "type": "conversational", "tools": [],
+                           "system_prompt": "s", "model": "m"}),
+        ("restore_workflow", {"name": "N", "steps_json": "[]", "entry_step_id": "s1", "max_run_credits": 2}),
+        ("restore_tool", {"name": "N", "description": "d", "url": "https://x.example/api", "method": "GET"}),
     ]
 
 

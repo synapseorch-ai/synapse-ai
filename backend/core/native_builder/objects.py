@@ -179,8 +179,8 @@ class Request(_Written):
 #: The ops a change may hold: the button acts (`ACTIONS`), the writes, and two hand-overs to another route
 #: (`edit_steps`, `create`). Closed, and one table's (`change_ops.OPS`, F792): a change with no op that fits is
 #: answered "can't" with the nearest thing that works (P0's finding 1).
-CHANGE_OPS = tuple(_change_ops.OPS)
-WRITE_OPS = tuple(n for n, op in _change_ops.OPS.items() if not op.is_act)
+CHANGE_OPS = _change_ops.PLANNER_OPS
+WRITE_OPS = tuple(n for n in CHANGE_OPS if not _change_ops.OPS[n].is_act)
 
 
 class Target(_Written):

@@ -22,8 +22,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from core.builder_actions import ACTIONS
-
 Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
@@ -49,6 +47,8 @@ class Op:
     any_of: bool = False
     #: The review's words for it: "<verb> <target>".
     verb: str = ""
+    #: Built by code only, never offered to a model: an undo's re-create from a before-image (F797).
+    internal: bool = False
 
     @property
     def is_act(self) -> bool:
@@ -117,8 +117,27 @@ _HANDOFFS = (
     Op("create", "handoff", "new", fields=("what",), required=("what",), verb="Make"),
 )
 
-OPS: dict[str, Op] = {op.name: op for op in (*_ACTS, *_WRITES, *_HANDOFFS)}
-assert set(ACTIONS) == {op.name for op in _ACTS}, "every button act is an op, and only those"
+#: An undo's re-create of what a change deleted, from its before-image (F797): code builds these from the card it
+#: kept, never a model, so they are no second way to make a new agent, workflow or tool. Each comes back as a new
+#: copy, which the review says.
+_RESTORES = (
+    Op("restore_agent", "create", "agent", "create_agent",
+       ("name", "description", "type", "tools", "system_prompt", "model", "delegate_agent_ids", "tool_policy"),
+       ("name", "description", "type", "tools", "system_prompt"), verb="Bring back", internal=True),
+    Op("restore_workflow", "create", "workflow", "create_orchestration",
+       ("name", "description", "steps_json", "entry_step_id", "state_schema_json", "max_total_turns",
+        "timeout_minutes", "max_run_credits", "max_run_usd"), ("name", "steps_json", "entry_step_id"),
+       verb="Bring back", internal=True),
+    Op("restore_tool", "create", "tool", "create_http_tool",
+       ("name", "description", "url", "method", "input_schema_json", "body_template", "group"),
+       ("name", "description", "url"), verb="Bring back", internal=True),
+)
+
+OPS: dict[str, Op] = {op.name: op for op in (*_ACTS, *_WRITES, *_HANDOFFS, *_RESTORES)}
+#: What a model may propose: every op but the internal ones.
+PLANNER_OPS = tuple(n for n, op in OPS.items() if not op.internal)
+#: (Every button act in `builder_actions.ACTIONS` is an op of kind act, and only those: a test holds it, since this
+#: module is imported while the builder's tools load and cannot read that table then.)
 
 #: The registry tool each write calls, once each (a test holds every one served and its arguments its schema's).
 WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
@@ -166,8 +185,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
 def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any]) -> list[str]:
     """What is wrong with one proposed op, one line each, for the model to fix (empty when nothing is)."""
     op = OPS.get(op_name)
-    if op is None:
-        return [f"`{op_name}` is not an op. The ops are: {', '.join(OPS)}."]
+    if op is None or op.internal:
+        return [f"`{op_name}` is not an op. The ops are: {', '.join(PLANNER_OPS)}."]
     found: list[str] = []
     kind = (target or {}).get("kind")
     if op.name == "create":
@@ -254,6 +273,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"system_prompt": fields["system_prompt"]}
     if name == "set_tool_policy":
         return {"tool_policy": _policy(live, fields)}
+    if op.internal:
+        return {"name": fields["name"]}
     raise ValueError(f"{name} leaves nothing to check")
 
 
@@ -265,6 +286,8 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
     if op.kind == "delete":
         key = {"workflow": "orch_id", "agent": "agent_id", "schedule": "schedule_id", "tool": "name"}[op.target]
         return op.tool, {key: target_id}
+    if op.internal:
+        return op.tool, {k: v for k, v in fields.items() if k in op.fields and v is not None}
     if op.target == "workflow":
         return op.tool, {"orch_id": target_id, **after}
     if op.name == "create_schedule":

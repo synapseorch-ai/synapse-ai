@@ -47,7 +47,7 @@ def _op_schema() -> dict:
     return {
         "type": "object",
         "properties": {
-            "op": {"type": "string", "enum": list(C.OPS)},
+            "op": {"type": "string", "enum": list(C.PLANNER_OPS)},
             "target": {"type": "object", "properties": {
                 "kind": {"type": "string", "enum": list(C.TARGET_KINDS)},
                 "id": {"type": "string", "description": "Its id, from what you read. Leave out when you only have "
@@ -355,10 +355,11 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         return {**base, "outcome": "said", "say": "I could not work out what to change. Say it again in other words."}
 
     ops = draft.get("ops") or []
+    notes: list[str] = []
     if draft.get("undo_of"):
         from core.native_builder.change_undo import inverse_ops
 
-        ops, refusal = await inverse_ops(str(draft["undo_of"]))
+        ops, refusal, notes = await inverse_ops(str(draft["undo_of"]))
         if refusal:
             return {**base, "outcome": "said", "say": refusal}
 
@@ -380,21 +381,25 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             item.update(status="refused", say=f"{op.verb} {target.get('name') or ''} is its own request: ask me "
                                               "for it on its own once this is done.".replace("  ", " "))
             continue
-        if op.name == "create_schedule":
-            runs = dict(fields["runs"])
-            found = resolve(await candidates(runs["kind"]) or [], runs)
-            if len(found) != 1:
-                item.update(status="refused" if not found else "pick",
-                            say=f"No {runs['kind']} is called {_quoted(runs.get('name') or runs.get('id'))}."
-                            if not found else "")
-                if found:
-                    picks.append({"op": n, "field": "runs", "kind": runs["kind"],
-                                  "wanted": runs.get("name") or runs.get("id"), "options": found[:8]})
-                continue
-            fields["runs"] = {"kind": runs["kind"], "id": found[0]["id"], "name": found[0]["name"]}
-            name = _text(target.get("name"))
-            if any(s["name"].lower() == name.lower() for s in await candidates("schedule") or []):
-                item.update(status="refused", say=f"A schedule is already called {_quoted(name)}: say another name.")
+        if op.kind == "create":
+            if op.name == "create_schedule":
+                runs = dict(fields["runs"])
+                found = resolve(await candidates(runs["kind"]) or [], runs)
+                if len(found) != 1:
+                    item.update(status="refused" if not found else "pick",
+                                say=f"No {runs['kind']} is called {_quoted(runs.get('name') or runs.get('id'))}."
+                                if not found else "")
+                    if found:
+                        picks.append({"op": n, "field": "runs", "kind": runs["kind"],
+                                      "wanted": runs.get("name") or runs.get("id"), "options": found[:8]})
+                    continue
+                fields["runs"] = {"kind": runs["kind"], "id": found[0]["id"], "name": found[0]["name"]}
+            # Whatever is made needs a name nothing has: an undo's re-create checks nothing took it since (F797).
+            name = _text(target.get("name")) or _text(fields.get("name"))
+            if any(i["name"].lower() == name.lower() for i in await candidates(op.target) or []):
+                item.update(status="refused", say=f"A {op.target} is already called {_quoted(name)}: "
+                                                  + ("say another name." if not op.internal else
+                                                     "so I can't bring the old one back under its name."))
                 continue
             target["name"] = name
         else:
@@ -460,11 +465,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                     before=_keep(op, live, want), line=_words(op, target, fields, item["says"]))
 
     ready = [i for i in checked if i["status"] == "ready"]
+    said = " ".join([*notes, *([_said(checked)] if len(ready) < len(checked) or not ready else [])])
     if not ready:
-        return {**base, "outcome": "said", "ops": checked, "say": _said(checked)}
+        return {**base, "outcome": "said", "ops": checked, "say": said}
     calls = [[i["call"]["tool"], i["call"]["args"]] for i in ready]
-    out = {**base, "outcome": "review", "ops": checked, "calls": calls, "review": _review(checked),
-           "say": _said(checked) if len(ready) < len(checked) else ""}
+    review = _review(checked) + "".join(f"\n- Not undone: {note}" for note in notes)
+    out = {**base, "outcome": "review", "ops": checked, "calls": calls, "review": review, "say": said,
+           **({"undo_of": draft["undo_of"]} if draft.get("undo_of") else {})}
     out["digest"] = digest(reviewed_of(out))
     await _card(out, stage=WAITING)
     return out
