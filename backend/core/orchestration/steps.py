@@ -1020,7 +1020,10 @@ class ToolStepExecutor:
                 _log.debug(f"TOOL STEP: ⚠ parse failed turn={turn + 1}: {last_error}")
                 continue
 
-            called_tool = tool_call.get("tool", "")
+            from core.react_engine import _offered_name
+
+            # A provider's namespace on the name (`default_api:clock`) is the step's own tool, never another (F779).
+            called_tool = _offered_name(tool_call.get("tool", ""), {tool_obj.name: None})
             tool_args = tool_call.get("arguments", {})
             if called_tool != tool_obj.name and not _same_tool(called_tool, tool_obj.name):
                 # This step's tool is the only one it runs (F281). The name in

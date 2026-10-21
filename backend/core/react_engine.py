@@ -416,14 +416,19 @@ def _unwrap_parallel(calls: list[dict], offered) -> list[dict]:
     return unwrapped
 
 
+#: The namespaces providers put on a function's name: OpenAI's `functions.` (F550, gpt-4.1-mini) and the Gemini SDK's
+#: `default_api` (F779, Gemini 3 Flash in E2's measure).
+PROVIDER_NAMESPACES = ("functions.", "default_api:", "default_api.")
+
+
 def _offered_name(name: str, offered) -> str:
-    """A call's name with OpenAI's `functions.` namespace taken off when that is the offered tool (F550):
-    gpt-4.1-mini wrote `{"tool": "functions.spawn_subtask"}` and the guard refused a tool it does not have. Never
-    when the dotted name is itself offered, or the bare one is not."""
-    prefix = "functions."
-    if isinstance(name, str) and name.startswith(prefix) and name not in offered and name[len(prefix):] in offered:
-        return name[len(prefix):]
-    return name
+    """A call's name with a provider's namespace taken off when what is left is the one offered tool it means (F550,
+    F779). Never fuzzy: a name offered as written stays as written, a bare name not offered is not invented, and a
+    name two namespaces could both fit is left as it is."""
+    if not isinstance(name, str) or name in offered:
+        return name
+    fits = {name[len(p):] for p in PROVIDER_NAMESPACES if name.startswith(p) and name[len(p):] in offered}
+    return fits.pop() if len(fits) == 1 else name
 
 
 def _own_model(agent: dict | None) -> str | None:
