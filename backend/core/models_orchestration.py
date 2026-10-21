@@ -149,6 +149,15 @@ class StepConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _finish_tools_only_on_an_agent_step(self):
+        """`finish_tools` is read by the Agent step and nowhere else (E2): refused elsewhere, as `pass_images` is."""
+        if self.finish_tools and self.type != StepType.AGENT:
+            raise ValueError(
+                f"finish_tools are only read by agent steps; step '{self.id}' is '{self.type.value}'."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _arguments_only_on_a_tool_step(self):
         """`tool_arguments` is read by the Tool step and nowhere else: refused elsewhere, as `pass_images` is."""
         if self.tool_arguments is not None and self.type != StepType.TOOL:
@@ -159,6 +168,11 @@ class StepConfig(BaseModel):
 
     input_keys: list[str] = []    # Keys to pull from shared state as context
     output_key: str | None = None  # Key to write result into shared state
+
+    #: AGENT -- the tools the step finishes with (E2, SAI2-P1): its loop ends when one of them is called and
+    #: succeeds, and the step's output is that call's result as an object, not the agent's prose. Each must be among
+    #: the agent's tools. Empty, the default, is an agent step as before.
+    finish_tools: list[str] = []
 
     # TOOL — forced single tool call with ReAct retry
     forced_tool: str | None = None  # Tool name for TOOL type steps

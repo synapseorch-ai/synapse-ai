@@ -3313,6 +3313,16 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                     f"orchestration — build that orchestration first, then deploy_orchestration it "
                     f"and use the agent id it returns."
                 )
+            # The tools it finishes with (E2) are tools it holds: a finish tool the agent cannot call never ends it.
+            held = [t for t in target.get("tools") or [] if isinstance(t, str)] if target else []
+            if target is not None and "all" not in held:
+                who = target.get("name") or s.get("agent_id") if target else ""
+                for name in s.get("finish_tools") or []:
+                    if name not in held:
+                        issues.append(
+                            f"Agent step '{sid}' finishes with '{name}', which its agent '{who}' does not hold — "
+                            "give the agent that tool, or finish with one it has."
+                        )
         if stype == "evaluator" and not (s.get("route_map") or {}):
             issues.append(f"Evaluator step '{sid}' has an empty route_map.")
         if stype == "tool" and not s.get("forced_tool"):

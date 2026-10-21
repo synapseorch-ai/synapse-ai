@@ -168,6 +168,50 @@ function AllowedTools({ step, update, agents, availableTools }: StepSectionProps
     );
 }
 
+/**
+ * How an agent step finishes (E2): with its reply in words, as before, or by calling one of the tools it holds —
+ * then its output is that call's result, an object, and a reply in words is reminded once and then fails the step.
+ * Offered for an agent, not for a Team or a workflow, whose turns end their own way.
+ */
+function FinishTools({ step, update, agents, availableTools }: StepSectionProps) {
+    const agent = agents.find((a: any) => a.id === step.agent_id);
+    if (!agent || agentKind(agent) !== 'agent') return null;
+    const agentTools: string[] = Array.isArray(agent.tools) ? agent.tools : ['all'];
+    const offered = agentTools.includes('all') ? availableTools.map((t) => t.name) : agentTools;
+    const chosen = step.finish_tools ?? [];
+    const byTool = chosen.length > 0;
+    return (
+        <div className="space-y-2">
+            <Field label="Finishes">
+                <Select
+                    size="sm"
+                    aria-label="How the step finishes"
+                    value={byTool ? 'tool' : 'reply'}
+                    onChange={(v) => update({ finish_tools: v === 'tool' ? (offered[0] ? [offered[0]] : []) : undefined })}
+                    options={[
+                        { value: 'reply', label: 'With its reply', hint: 'The agent’s answer in words is the output' },
+                        { value: 'tool', label: 'By calling a tool', hint: 'The tool’s result, an object, is the output' },
+                    ]}
+                />
+            </Field>
+            {byTool && (
+                <div data-testid="finish-tools">
+                    <KeyChips
+                        value={chosen}
+                        onChange={(names) => update({ finish_tools: names.length ? names : undefined })}
+                        suggestions={offered}
+                        inputLabel="Add a tool it finishes with"
+                    />
+                    <p className="mt-1 text-[10px] text-text-faint">
+                        The step ends when the agent calls one of these and the call succeeds. A reply in words is
+                        reminded once, then the step fails.
+                    </p>
+                </div>
+            )}
+        </div>
+    );
+}
+
 /* ── per-type sections ──────────────────────────────────────────────────── */
 
 /**
@@ -270,6 +314,7 @@ function AgentSection(props: StepSectionProps) {
                 />
             </Field>
             <AllowedTools {...props} />
+            <FinishTools {...props} />
             <HistoryToggle step={step} update={update} />
             <SeesAttachmentsToggle step={step} update={update}
                 runsWorkflow={agents.find((a: any) => a.id === step.agent_id)?.type === 'orchestrator'} />

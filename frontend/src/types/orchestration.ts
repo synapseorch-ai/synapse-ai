@@ -67,6 +67,9 @@ export interface StepConfig {
     loop_break_condition?: string;
     loop_max_iterations?: number;
 
+    /** AGENT — the tools the step finishes with (E2); its output is that call's result. Unset: its reply. */
+    finish_tools?: string[];
+
     // TOOL — forced single tool call
     forced_tool?: string;
     /** TOOL — the arguments set on the step (E1); unset, a model writes them. Values may read `{{state.key}}`. */

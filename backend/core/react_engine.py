@@ -183,6 +183,31 @@ _REASONING_ONLY_NUDGE = (
 )
 
 
+def _finish_result(pending: tuple[str, int] | None, summary: list[str]) -> dict | None:
+    """A finish tool's call that succeeded, as `{"tool", "result"}`, or None (E2, F772).
+
+    `pending` is the finish tool called and where the turn's tool summary stood before it. Every path that runs a
+    tool and gets its result adds one entry (`"<name>: <output>"`); a refusal, a block or an exception adds none.
+    A result that is `{"error": …}` is a failed call, the model's to fix. Anything else is the step's output, as
+    an object: a JSON object as it is, any other result wrapped as `{"result": …}`.
+    """
+    if pending is None:
+        return None
+    name, before = pending
+    if len(summary) <= before:
+        return None
+    output = summary[before].removeprefix(f"{name}: ")
+    try:
+        parsed = json.loads(output)
+    except (TypeError, ValueError):
+        parsed = output
+    if isinstance(parsed, dict):
+        if "error" in parsed:
+            return None
+        return {"tool": name, "result": parsed}
+    return {"tool": name, "result": {"result": parsed}}
+
+
 def _no_answer(reasoning: str, stop_reason: str | None):
     """The failure for a turn whose model thought and never answered (F305)."""
     from core.llm_providers import EmptyAnswer
@@ -1019,6 +1044,7 @@ async def run_agent_step(
     board_scope=None,                     # core.boards.BoardScope (or its dict): the workflow step or schedule it runs in (BOARD1a)
     team_seat=None,                       # core.team.Seat: this turn is a member's, working for its team's lead (TEAM1a)
     step_limits=None,                     # core.team.StepLimits: a workflow step's time and the run's cap, for its team (TEAM1e)
+    finish_tools=None,                    # [name]: the turn ends when one is called and succeeds; its result is the output (E2)
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1596,6 +1622,13 @@ async def run_agent_step(
     # running out of turns): named on `final` so a workflow step can fail with
     # it (F413). Chat shows the words; a step must not take them as its output.
     _unanswered: dict | None = None
+    # An Agent step that finishes with a tool (E2, F772): its loop ends on the first of these whose call succeeds,
+    # and its output is that call's result as an object (`final.finish`). A reply in words is reminded once,
+    # inside the step's own turns; a second one ends the turn unanswered (`no_finish`).
+    _finish = [str(t) for t in (finish_tools or []) if t]
+    _finished: dict | None = None
+    _finish_pending: tuple[str, int] | None = None
+    _finish_reminded = False
     last_intent = "chat"
     last_data = None
     tool_name = None
@@ -2488,7 +2521,8 @@ async def run_agent_step(
                 # workflow agent said `{"city":"Chennai"}` and a forecast it never fetched
                 # (F730).
                 _bare = _opens_with_arguments(action_text, tool_schema_map)
-                if _workflow_step and _bare == "alone":
+                if _workflow_step and _bare == "alone" and not _finish:
+                    # A step that finishes with a tool answers only through it (E2): JSON alone is not its answer.
                     _bare = ""
                 if _bare and not (_parse_retries < MAX_PARSE_RETRIES and turn + 1 < max_turns):
                     for _e in _unstream("error"):
@@ -2602,6 +2636,24 @@ async def run_agent_step(
                             yield _e
                         return
 
+                # A step that finishes with a tool (E2) is answered only by that call: words are reminded once,
+                # as one of its own turns, then the turn ends unanswered.
+                if _finish:
+                    _names = " or ".join(f"`{n}`" for n in _finish)
+                    for _e in _unstream("not_done"):
+                        yield _e
+                    if not _finish_reminded and turn + 1 < max_turns:
+                        _finish_reminded = True
+                        current_context_text += (
+                            f"\n[Turn {turn + 1} — Action]\n{action_text}\n"
+                            f"\nSystem: This step finishes only by calling {_names}: a reply in words is not "
+                            f"its answer. Call {_names} now with what you have.\n")
+                        yield {"type": "status", "message": f"Not done yet: this step finishes by calling {_names}"}
+                        continue
+                    final_response = action_text
+                    _unanswered = {"why": "no_finish", "tools": list(_finish)}
+                    break
+
                 # Final response: strip any leftover reasoning so it never
                 # reaches the user or the session history.
                 final_response = action_text
@@ -2643,9 +2695,16 @@ async def run_agent_step(
                 _close_call()
                 if _repeat_stop:
                     break
+                _finished = _finished or _finish_result(_finish_pending, tools_used_summary)
+                _finish_pending = None
+                if _finished is not None:
+                    break  # the step finished (E2): the reply's later calls are not made
                 tool_name = _offered_name(tool_call.get("tool", ""), tool_schema_map)
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue
+                if tool_name in _finish:
+                    # Whatever path runs it, a result it produced is the summary's next entry.
+                    _finish_pending = (tool_name, len(tools_used_summary))
                 tool_args = tool_call.get("arguments", {})
                 # Legacy alias: saved agents and shipped bundles that still name
                 # the retired npx tool get the native task list instead.
@@ -3575,6 +3634,13 @@ async def run_agent_step(
                         pass
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": f"Error: {error_msg}"}
             _close_call()
+            _finished = _finished or _finish_result(_finish_pending, tools_used_summary)
+            _finish_pending = None
+            if _finished is not None:
+                # The step's finish tool was called and succeeded (E2): its result is the output, with no model
+                # call after it.
+                final_response = json.dumps(_finished["result"], ensure_ascii=False)
+                break
             if _caller_ended is not None:
                 # The caller's own tool ended it (F642): nothing after it is said, so nothing is written.
                 final_response = _caller_ended
@@ -3731,6 +3797,8 @@ async def run_agent_step(
             final_event["notes"] = list(_kept_notes)
     if _unanswered is not None:
         final_event["no_answer"] = _unanswered
+    if _finished is not None:
+        final_event["finish"] = _finished
     if _team is not None:
         # The team's list and whether the lead answered alone (the cost line, Q1b); its members' records.
         # With this stretch's work meter, for a host that prices the turn by it (F658); never saved with the turn.

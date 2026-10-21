@@ -188,6 +188,10 @@ def _no_answer_reason(step_name: str, no_answer: dict) -> str:
         # A Team step's call would have passed the run's cap (TEAM1e, Q8): CAP1's own words.
         from .run_cap import usd_sentence
         return usd_sentence(float(no_answer.get("limit_usd") or 0), float(no_answer.get("spent_usd") or 0))
+    if no_answer.get("why") == "no_finish":
+        names = " or ".join(no_answer.get("tools") or [])
+        return (f"Agent step '{step_name}' ended without calling {names}, which is how it finishes: it answered in "
+                "words instead, after being reminded.")
     if no_answer.get("why") == "spend_limit":
         return (f"Agent step '{step_name}' stopped without an answer: another step would pass its team's spend "
                 f"limit (${float(no_answer.get('limit_usd') or 0):g}).")
@@ -362,6 +366,8 @@ class AgentStepExecutor:
                 # The workflow's own board (lasting across its runs), and this step as its claims' holder.
                 board_scope={"kind": "workflow", "id": run.orchestration_id, "holder": board_holder},
                 step_limits=limits,
+                # It finishes by calling one of these (E2): its output is that call's result, an object.
+                finish_tools=list(step.finish_tools) or None,
             ):
                 if event.get("type") == "human_input_required":
                     parked = True
@@ -463,7 +469,9 @@ class AgentStepExecutor:
                     continue
                 yield {**event, "orch_step_id": step.id, "step_name": step.name}
                 if event.get("type") == "final":
-                    final_response = event.get("response", "")
+                    # A finish tool's result is the output as the object it is (E2); otherwise the reply's text.
+                    finish = event.get("finish")
+                    final_response = finish["result"] if isinstance(finish, dict) else event.get("response", "")
         except asyncio.CancelledError:
             # A step timeout, a cancel, a parent's stop — not an Exception, so
             # it used to reach the `finally` still reading "completed" (F257).

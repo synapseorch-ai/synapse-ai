@@ -93,9 +93,17 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
         // Any step may name where a route to it goes at its Max iterations (F248).
         checkTarget(s.id, s.on_exhausted_step_id, '“When it reaches the limit”');
         switch (s.type) {
-            case 'agent':
+            case 'agent': {
                 if (!s.agent_id) add(s.id, error('No agent selected'));
+                // A tool it finishes with that its agent does not hold never ends it (E2).
+                const holds = (agents?.find((a) => a.id === s.agent_id) as { tools?: string[] } | undefined)?.tools;
+                if (holds && !holds.includes('all')) {
+                    for (const name of s.finish_tools ?? []) {
+                        if (!holds.includes(name)) add(s.id, error(`Finishes with “${name}”, which its agent does not hold`));
+                    }
+                }
                 break;
+            }
             case 'llm':
                 if (!s.prompt_template?.trim()) add(s.id, error('No prompt set'));
                 break;
