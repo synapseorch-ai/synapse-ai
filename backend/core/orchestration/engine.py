@@ -4,6 +4,7 @@ checkpointing, loop guards, and yielding SSE events.
 """
 import asyncio
 import calendar
+import contextlib
 import json
 import time
 from contextvars import ContextVar
@@ -57,6 +58,30 @@ MAX_NESTED_DEPTH = 3
 #: there because the OSS store and cloud's engine table both mirror that
 #: column already — a new field on the run would need a migration on each.
 ACTIVE_TIME_KEY = "__run__"
+
+#: The runs this process is working right now, by id (F777): how a tool a step calls reaches its own run's record —
+#: its research evidence and counts (`core.builder_research`) — to write it through, never a copy restored from the
+#: store, which the engine's own next checkpoint would overwrite.
+_LIVE: dict[str, OrchestrationRun] = {}
+
+
+@contextlib.contextmanager
+def live(run: OrchestrationRun):
+    """`run` as this process's live copy of its id while the block runs (a run and its resume both do)."""
+    before = _LIVE.get(run.run_id)
+    _LIVE[run.run_id] = run
+    try:
+        yield run
+    finally:
+        if before is None:
+            _LIVE.pop(run.run_id, None)
+        else:
+            _LIVE[run.run_id] = before
+
+
+def live_run(run_id: str) -> OrchestrationRun | None:
+    """The run this process is working under that id, or None."""
+    return _LIVE.get(run_id)
 
 
 class RouteFailed(Exception):
@@ -370,8 +395,9 @@ class OrchestrationEngine:
             "orchestration_name": self.orch.name,
         }
 
-        async for event in self._execute_loop(run, state):
-            yield event
+        with live(run):
+            async for event in self._execute_loop(run, state):
+                yield event
 
     @_spans.traced_generator("synapse.run", _spans.run_attributes, on_end=_spans.run_end)
     async def _execute_loop(
@@ -1189,8 +1215,9 @@ class OrchestrationEngine:
         # it as failed — so the fleet records `failed`, where it used to find no
         # `orchestration_complete` and record the run `completed`.
         await state.checkpoint()
-        async for event in self._execute_loop(run, state, started=self._resumed_at):
-            yield event
+        with live(run):
+            async for event in self._execute_loop(run, state, started=self._resumed_at):
+                yield event
         _log.debug(f"[engine.resume] 🏁 _execute_loop finished, run.status={run.status} run.current_step_id={run.current_step_id!r}")
 
     @staticmethod

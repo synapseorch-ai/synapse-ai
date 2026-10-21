@@ -20,9 +20,9 @@ from core.native_builder import bundled_definitions
 
 @pytest.fixture(autouse=True)
 def _fresh_evidence():
-    br._EVIDENCE.clear()
+    br._LOOSE.clear()
     yield
-    br._EVIDENCE.clear()
+    br._LOOSE.clear()
 
 
 @pytest.fixture
