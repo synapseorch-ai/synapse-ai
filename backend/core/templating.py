@@ -34,9 +34,21 @@ NAMESPACES = ("global", "state", "args")
 
 
 def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
-    """Follow `path` into dicts (and list indexes). `(found, value)`."""
+    """Follow `path` into dicts (and list indexes). `(found, value)`.
+
+    A step into text that holds a JSON object reads the object (F801): a builder tool's output is JSON text in
+    state, and a prompt names a field of it as a condition or a set argument does. The text is parsed, never
+    rendered: nothing in it is read as a template.
+    """
     cur = root
     for part in path:
+        if isinstance(cur, str) and cur.lstrip().startswith("{"):
+            try:
+                parsed = json.loads(cur)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                cur = parsed
         if isinstance(cur, dict):
             if part not in cur:
                 return False, None
