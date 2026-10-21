@@ -742,6 +742,12 @@ async def _eligible_members(active_agent: dict) -> dict:
     return eligible
 
 
+def _tool_label(t) -> str:
+    """A turn's tool by name, in either shape it arrives: an MCP `Tool`, or a caller's OpenAI-style declaration
+    (`tools_override`, F802)."""
+    return t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")
+
+
 def _offer_engine_tools(all_tools: list, ollama_tools: list, tool_schema_map: dict, tools: list):
     """Offer tools the engine itself answers (a team's, TEAM1a): a same-named tool the agent holds is hidden,
     since the name means the engine's for this turn. New lists; the declarations re-rendered."""
@@ -1470,8 +1476,6 @@ async def run_agent_step(
     # agent's steps run in this same context, so they are held to it too.
     _visitor = _visitor_mod.current()
     if _visitor is not None:
-        def _tool_label(t):
-            return t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")
         # The owner's list intersects what a member would be admitted here —
         # a step's `allowed_tools` narrowing included — and never replaces it:
         # an orchestrator agent's step narrowed to `peek` must not run a tool
@@ -3483,7 +3487,7 @@ async def run_agent_step(
                             continue
 
                     # Hallucinated / unknown tool
-                    available_tool_names = [t.name for t in all_tools]
+                    available_tool_names = [_tool_label(t) for t in all_tools]
                     names_str = ", ".join(available_tool_names[:30])
                     if len(available_tool_names) > 30:
                         names_str += f" ... ({len(available_tool_names)} total)"
