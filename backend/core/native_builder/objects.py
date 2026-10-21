@@ -71,6 +71,8 @@ class Schedule(_Written):
     cron: str = Field(description="Five-field cron, e.g. 0 7 * * *")
     timezone: str | None = None
     says: str = Field(description="The schedule in words, e.g. every day at 7:00")
+    input: str | None = Field(None, description="What each scheduled run starts with: the task, with what it is "
+                                                "about (F155)")
 
 
 class InnerWorkflow(_Written):
@@ -117,6 +119,8 @@ class PlanDraft(_Written):
     questions: list[str] = Field(default_factory=list, description="Only what the person alone knows")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")
+    settings: dict[str, Any] | None = Field(None, description="Optional workflow settings by their engine names: "
+                                                              "state_schema, result_key")
 
 
 # ── what code fills in ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -252,6 +256,49 @@ def tool_names(plan: PlanDraft) -> list[str]:
     return list(dict.fromkeys(n for n in names if n))
 
 
+def settled(steps: list[Step]) -> list[Step]:
+    """A Plan's steps with what it leaves unsaid decided, as code can: models list steps in order and leave `next`
+    out (P0's plans, often), and a list is an order.
+
+    * A step with no `next` that does not branch and is not inside a Loop or a Parallel goes to the next step in
+      the list that is not inside one either — or ends the run when it is the last (`"end"`).
+    * A Parallel with no join joins at the merge all its branches lead to, or else as any step would.
+    * A container's body steps go nowhere of their own (F124), and an End step goes nowhere at all.
+    """
+    by_id = {s.id: s for s in steps}
+    bodies = {b for s in steps if s.type in ("loop", "parallel") for b in s.body or []}
+    out: list[Step] = []
+    for i, s in enumerate(steps):
+        if s.next is None and s.type != "end" and s.id not in bodies and not (
+                s.branches and s.type in ("if_else", "switch", "evaluator")):
+            join = None
+            if s.type == "parallel":
+                joins = {by_id[b].next for b in s.body or [] if b in by_id}
+                if len(joins) == 1 and (only := next(iter(joins))) in by_id and by_id[only].type == "merge":
+                    join = only
+            if join is None:
+                join = next((x.id for x in steps[i + 1:] if x.id not in bodies), "end")
+            s = s.model_copy(update={"next": join})
+        out.append(s)
+    return out
+
+
+def _unreached(steps: list[Step], where: str) -> list[str]:
+    """Steps no path from the first one reaches: a plan whose parts are not joined up runs only its first part."""
+    steps = settled(steps)
+    by_id = {s.id: s for s in steps}
+    seen: set[str] = set()
+    todo = [steps[0].id] if steps else []
+    while todo:
+        sid = todo.pop()
+        if sid in seen or sid not in by_id:
+            continue
+        seen.add(sid)
+        todo += _targets(by_id[sid])
+    return [f"{where}step {s.id}: no step leads to it, so it never runs: lead to it from another step, or drop it"
+            for s in steps if s.id not in seen and s.type != "end"]
+
+
 def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], list[str]]:
     """(errors, notes). Errors go back to the model for a retry; notes are facts code fills in (a tool nothing
     provides is a note, not an error: finding who does is the lookup's job, not the model's)."""
@@ -286,6 +333,10 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
             errors.append(f"step {s.id}: a loop names its body steps")
         if s.type == "human" and not s.prompt:
             errors.append(f"step {s.id}: a human step says what it asks")
+        if s.branches and s.type not in ("if_else", "switch", "evaluator"):
+            errors.append(f"step {s.id}: a {s.type} step cannot branch; branch in an if_else, a switch or an "
+                          "evaluator step after it")
+    errors += _unreached(plan.steps, "")
     flows = {w.title for w in plan.inner_workflows} | set(inventory.workflows)
     for s in plan.steps:
         if s.workflow and s.workflow not in flows:
@@ -295,6 +346,7 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
         if w.title not in used:
             errors.append(f"inner workflow '{w.title}' is never run: add a workflow step that runs it, or drop it")
         inner = {x.id for x in w.steps} | {"end"}
+        errors += _unreached(w.steps, f"inner workflow '{w.title}' ")
         for x in w.steps:
             for t in _targets(x):
                 if t not in inner:

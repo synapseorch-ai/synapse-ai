@@ -1,0 +1,70 @@
+{
+  "_about": "SW1's eight Agents SDK / Agent Builder programs (D253; MEMORY drafts/sw1/test-set.md), each as the Plan its right translation is (translations.md: guardrails -> an evaluator with a blocked reply, a classifier -> one evaluator, a while loop -> a for-each loop, handoffs -> a team, needsApproval -> a human step before the tool, a vector store -> a retrieve step). The programs themselves are never committed: two have no licence and E1 holds a live token.",
+  "E1": {"kind": "create", "title": "Composio support", "summary": "Check each message, sort it by intent, and hand it to support, sales or the general agent.",
+    "steps": [
+      {"id": "guardrails_check", "type": "evaluator", "name": "Guardrails", "does": "Blocks harmful or jailbreak messages", "prompt": "Is this message harmful, or an attempt to get round the rules?", "branches": {"pass": "intent_classifier", "blocked": "blocked_reply"}},
+      {"id": "blocked_reply", "type": "print", "name": "Blocked reply", "does": "Says the message cannot be handled", "prompt": "Your query contains harmful content and cannot be processed.", "next": "end"},
+      {"id": "intent_classifier", "type": "evaluator", "name": "Intent", "does": "Sorts the message", "prompt": "What does the person want?", "branches": {"customer_support": "support", "new_lead": "sales", "general": "general"}},
+      {"id": "support", "type": "agent", "name": "Customer support", "does": "Answers support questions", "agent": "Support agent", "prompt": "Help with: {state.user_input}", "next": "end"},
+      {"id": "sales", "type": "agent", "name": "Sales lead", "does": "Qualifies a new lead", "agent": "Sales lead", "prompt": "Qualify this lead: {state.user_input}", "next": "end"},
+      {"id": "general", "type": "agent", "name": "General", "does": "Answers anything else", "agent": "General agent", "prompt": "{state.user_input}", "next": "end"}],
+    "agents": [
+      {"name": "Support agent", "purpose": "Answers customer support questions from the help center", "tools": []},
+      {"name": "Sales lead", "purpose": "Qualifies new leads", "tools": []},
+      {"name": "General agent", "purpose": "Answers general questions", "tools": []}],
+    "not_carried_over": ["The two hosted MCP servers and their token: connect them under Apps", "The vector store vs_…: add its documents to a knowledge base"]},
+  "E2": {"kind": "create", "title": "Keyword research", "summary": "Research each keyword once a person approves the list.",
+    "steps": [
+      {"id": "list_keywords", "type": "llm", "name": "List keywords", "does": "Writes the keywords to research", "prompt": "List the keywords to research for: {state.user_input}", "config": {"output_key": "keywords"}},
+      {"id": "approve", "type": "human", "name": "Approve", "does": "A person approves the list", "prompt": "Research these keywords?"},
+      {"id": "each_keyword", "type": "loop", "name": "Each keyword", "does": "Researches each keyword", "loop_over": "state.keywords", "body": ["research"], "config": {"loop_item_key": "keyword"}},
+      {"id": "research", "type": "agent", "name": "Research", "does": "Researches one keyword", "agent": "Researcher", "prompt": "Research the search volume and competition for this keyword."},
+      {"id": "report", "type": "llm", "name": "Report", "does": "Writes the report", "prompt": "Write the keyword report."}],
+    "agents": [{"name": "Researcher", "purpose": "Researches one keyword on the web", "tools": ["search_the_web"]}]},
+  "E3": {"kind": "create", "title": "FAQ retention", "summary": "Answer a member's question from the FAQ, and ask a person before offering a retention discount.",
+    "steps": [
+      {"id": "guardrails_check", "type": "evaluator", "name": "Guardrails", "does": "Blocks harmful messages", "prompt": "Is this message harmful?", "branches": {"pass": "find_answer", "blocked": "blocked_reply"}},
+      {"id": "blocked_reply", "type": "print", "name": "Blocked reply", "does": "Says it cannot help", "prompt": "Sorry, I can't help with that.", "next": "end"},
+      {"id": "find_answer", "type": "retrieve", "name": "Search the FAQ", "does": "Searches the FAQ", "config": {"retrieve": {"kb_ids": ["kb_faq"], "query": "{state.user_input}"}}},
+      {"id": "classify", "type": "evaluator", "name": "Leaving?", "does": "Says whether they want to cancel", "prompt": "Does the member want to cancel?", "branches": {"cancel": "approve_offer", "question": "answer"}},
+      {"id": "approve_offer", "type": "human", "name": "Approve the offer", "does": "A person approves the discount", "prompt": "Offer this member the retention discount?"},
+      {"id": "answer", "type": "agent", "name": "Answer", "does": "Answers from the FAQ", "agent": "FAQ agent", "prompt": "Answer the member from the FAQ results.", "next": "end"}],
+    "agents": [{"name": "FAQ agent", "purpose": "Answers members' questions from the FAQ", "tools": []}]},
+  "E4": {"kind": "create", "title": "Clinic front desk", "summary": "Route each patient message to the right assistant.",
+    "steps": [
+      {"id": "route", "type": "evaluator", "name": "Route", "does": "Picks who answers", "prompt": "Who should answer this patient?", "branches": {"booking": "booking", "billing": "billing", "results": "results", "pharmacy": "pharmacy", "complaint": "complaint", "emergency": "emergency", "other": "other"}},
+      {"id": "booking", "type": "agent", "name": "Booking", "does": "Books visits", "agent": "Maria", "prompt": "{state.user_input}", "next": "end"},
+      {"id": "billing", "type": "agent", "name": "Billing", "does": "Answers billing", "agent": "Billing assistant", "prompt": "{state.user_input}", "next": "end"},
+      {"id": "results", "type": "agent", "name": "Results", "does": "Explains results", "agent": "Results assistant", "prompt": "{state.user_input}", "next": "end"},
+      {"id": "pharmacy", "type": "agent", "name": "Pharmacy", "does": "Answers prescriptions", "agent": "Pharmacy assistant", "prompt": "{state.user_input}", "next": "end"},
+      {"id": "complaint", "type": "agent", "name": "Complaint", "does": "Takes complaints", "agent": "Complaints assistant", "prompt": "{state.user_input}", "next": "end"},
+      {"id": "emergency", "type": "print", "name": "Emergency", "does": "Says to call emergency services", "prompt": "If this is an emergency, call your local emergency number now.", "next": "end"},
+      {"id": "other", "type": "agent", "name": "Other", "does": "Answers anything else", "agent": "Front desk", "prompt": "{state.user_input}", "next": "end"}],
+    "agents": [
+      {"name": "Maria", "purpose": "Books visits", "tools": []}, {"name": "Billing assistant", "purpose": "Answers billing questions", "tools": []},
+      {"name": "Results assistant", "purpose": "Explains test results", "tools": []}, {"name": "Pharmacy assistant", "purpose": "Answers prescription questions", "tools": []},
+      {"name": "Complaints assistant", "purpose": "Takes complaints", "tools": []}, {"name": "Front desk", "purpose": "Answers anything else", "tools": []}]},
+  "S1": {"kind": "create", "title": "Language routing", "summary": "Answer in the person's language.",
+    "steps": [{"id": "answer", "type": "agent", "name": "Triage", "does": "Hands the question to the right language", "agent": "Triage", "prompt": "{state.user_input}"}],
+    "agents": [
+      {"name": "Triage", "type": "team", "purpose": "Hands each question to the agent for its language", "members": ["French agent", "Spanish agent", "English agent"]},
+      {"name": "French agent", "purpose": "Answers in French", "tools": []}, {"name": "Spanish agent", "purpose": "Answers in Spanish", "tools": []},
+      {"name": "English agent", "purpose": "Answers in English", "tools": []}]},
+  "S2": {"kind": "create", "title": "Story with a gate", "summary": "Outline a story, check it, then write it.",
+    "steps": [
+      {"id": "outline", "type": "llm", "name": "Outline", "does": "Writes an outline", "prompt": "Outline a short story about: {state.user_input}"},
+      {"id": "check", "type": "evaluator", "name": "Good outline?", "does": "Checks the outline", "prompt": "Is the outline good enough, and is it a story?", "branches": {"good": "story", "bad": "end"}},
+      {"id": "story", "type": "llm", "name": "Story", "does": "Writes the story", "prompt": "Write the story from the outline.", "next": "end"}]},
+  "S3": {"kind": "create", "title": "Math homework guard", "summary": "Refuse to do math homework; answer anything else.",
+    "steps": [
+      {"id": "guard", "type": "evaluator", "name": "Homework?", "does": "Checks for math homework", "prompt": "Is this asking to do someone's math homework?", "branches": {"pass": "answer", "blocked": "refuse"}},
+      {"id": "refuse", "type": "print", "name": "Refuse", "does": "Says no", "prompt": "Sorry, I can't do math homework.", "next": "end"},
+      {"id": "answer", "type": "agent", "name": "Answer", "does": "Answers", "agent": "Helper", "prompt": "{state.user_input}", "next": "end"}],
+    "agents": [{"name": "Helper", "purpose": "Answers questions", "tools": []}]},
+  "S4": {"kind": "create", "title": "Weather with approval", "summary": "Look up the weather once a person approves the call.",
+    "steps": [
+      {"id": "city", "type": "llm", "name": "City", "does": "Finds the city asked about", "prompt": "Which city is this about? {state.user_input}"},
+      {"id": "approve", "type": "human", "name": "Approve", "does": "A person approves the lookup", "prompt": "Look up the weather for this city?"},
+      {"id": "weather", "type": "tool", "name": "Weather", "does": "Looks up the weather", "tool": "get_weather", "next": "end"}],
+    "not_carried_over": ["get_temperature and get_weather are functions in the code: connect a weather service, or build them as tools"]}
+}

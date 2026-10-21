@@ -2,8 +2,10 @@
 
 The fixtures are P0's schema-fill probe: 133 plans eight models wrote for 15 build requests
 (`tests/fixtures/sai2_plans/`, Naveen's address replaced). Each reads as a Plan, and the structure check says of
-each what the probe's check said — its notes word for word. The three it now refuses are the class P0 found after
-its first run, an inner workflow no step runs, which is why the check exists.
+each what the probe's check said — its notes word for word. Four it now refuses, each by a rule added since:
+three are the class P0 found after its first run (an inner workflow no step runs), and one gives an `llm` step
+branches, which only an if_else, a switch or an evaluator has. A step the plan leaves without a `next` goes to the
+next one in its list (`objects.settled`): models write steps in order and leave it out.
 """
 import json
 import types
@@ -21,6 +23,8 @@ INVENTORY = O.Inventory(agents=_INV["agents"], workflows=_INV["workflows"], tool
 #: P0's finding (p0c): these defined an inner workflow and ran its work some other way.
 INNER_NEVER_RUN = {("p0", "gemini-3-flash-preview", "bld-08"), ("p0", "cli.codex", "bld-08"),
                    ("p0c-nested", "claude-haiku-4-5", "bld-08")}
+#: An `llm` step given branches: it cannot branch.
+BRANCHES_IN_AN_LLM = {("p0", "synapse.nova-pro", "bld-04")}
 
 
 def _key(row):
@@ -39,6 +43,8 @@ class TestWhatModelsWrote:
         problems, notes = O.check_structure(plan, INVENTORY)
         if _key(row) in INNER_NEVER_RUN:
             assert len(problems) == 1 and "is never run" in problems[0]
+        elif _key(row) in BRANCHES_IN_AN_LLM:
+            assert len(problems) == 1 and "cannot branch" in problems[0]
         else:
             assert problems == []
         assert notes == sorted(set(row["notes"]))
@@ -80,6 +86,10 @@ class TestTheCheck:
          "true and false"),
         ({"steps": [{"id": "a", "type": "loop", "name": "A", "does": "x"}]}, "body steps"),
         ({"steps": [{"id": "a", "type": "human", "name": "A", "does": "x"}]}, "says what it asks"),
+        ({"steps": [{"id": "a", "type": "llm", "name": "A", "does": "x", "branches": {"yes": "end"}}]},
+         "cannot branch"),
+        ({"steps": [{"id": "a", "type": "print", "name": "A", "does": "x", "next": "end"},
+                    {"id": "b", "type": "print", "name": "B", "does": "x", "next": "end"}]}, "never runs"),
         ({"steps": []}, "at least one step"),
         ({"schedule": {"cron": "every monday", "says": "Mondays"}}, "five fields"),
         ({"inner_workflows": [{"title": "Inner", "does": "x", "steps": [
