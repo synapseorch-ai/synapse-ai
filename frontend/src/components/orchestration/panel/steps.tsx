@@ -201,6 +201,7 @@ function FinishTools({ step, update, agents, availableTools }: StepSectionProps)
                         onChange={(names) => update({ finish_tools: names.length ? names : undefined })}
                         suggestions={offered}
                         inputLabel="Add a tool it finishes with"
+                        placeholder="Add a tool by name…"
                     />
                     <p className="mt-1 text-[10px] text-text-faint">
                         The step ends when the agent calls one of these and the call succeeds. A reply in words is
@@ -510,7 +511,7 @@ function WorkflowSection({ step, update, orchestration, workflows, showVaultHint
     return (
         <div className="space-y-3">
             <Note>
-                <strong>Run another workflow</strong> — runs it from the start as part of this run, waits for it
+                <strong>Run another workflow</strong>{' '}— runs it from the start as part of this run, waits for it
                 to finish, and writes what it made to this step&apos;s output. A question it asks is answered here.
             </Note>
             <Field label="Workflow" required hint={picked?.description || undefined}>
