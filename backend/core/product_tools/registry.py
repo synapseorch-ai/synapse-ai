@@ -207,7 +207,7 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
         )
 
     token = args.pop(confirm.TOKEN_ARG, None)
-    policy, by_review = confirm_policy, False
+    policy, by_review, confirmed_by = confirm_policy, False, None
     if confirm_policy == "approved_review":
         # The person's approved review is the confirmation of each call it covers; anything else asks as the
         # assistant always does, with a token per call.
@@ -227,6 +227,9 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
                         "confirm_token to do it.",
             }
         await confirm.redeem(token, caller, name, args)
+        confirmed_by = "token"
+    if by_review:
+        confirmed_by = f"review:{review.digest[:16]}"
 
     # Bound for the handler and for the audit after it: a host's audit reads who acted from
     # `caller.current()` (cloud's principal rides on the caller).
@@ -240,7 +243,7 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
                 action=tool.action, tool=name, area=tool.area, via=caller.via, user_id=caller.user_id,
                 credential_id=caller.credential_id, role=caller.role.label,
                 target_type=target[0] if target else None, target_id=target[1] if target else None,
-                args=_summary(args),
+                args=_summary(args), confirmed_by=confirmed_by,
             ))
     finally:
         _caller_mod._CURRENT.reset(token_var)

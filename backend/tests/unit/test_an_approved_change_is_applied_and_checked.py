@@ -112,6 +112,8 @@ async def test_an_approved_rename_is_made_audited_by_id_and_checked(client, fres
     [audit] = fresh["audits"]
     assert (audit.tool, audit.target_type, audit.target_id, audit.user_id) == (
         "update_agent", "agent", agent["id"], "u1")
+    # Confirmed by the person's review, and which one: never said to be a token (MCP2's point 4).
+    assert audit.confirmed_by == f"review:{run.shared_state['_approved_review']['digest'][:16]}"
 
 
 async def test_without_a_yes_nothing_is_approved_and_nothing_is_done(client):

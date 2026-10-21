@@ -32,6 +32,9 @@ class AuditEvent:
     target_id: str | None = None
     #: The call's arguments, summarised: secrets withheld, long text cut.
     args: dict[str, Any] = field(default_factory=dict)
+    #: What confirmed the act, when something did: `token` (the person pressed its card, or an MCP client sent its
+    #: token back), or `review:<digest>` (a person's approved review covered it, F778). None when it needed neither.
+    confirmed_by: str | None = None
 
 
 Audit = Callable[[AuditEvent], Awaitable[None]]

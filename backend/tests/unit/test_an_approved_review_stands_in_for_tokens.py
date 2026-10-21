@@ -167,3 +167,46 @@ class TestNothingWritesThePlanBetweenTheYesAndTheApply:
         assert writes_between(orch, "step_manage_review", "step_apply", {"change_checked"}) == []
         assert writes_between(orch, "step_manage_review", "step_apply", {"change_approval"}) == [
             "step_change_approve"]
+
+
+class TestTheAuditSaysWhatConfirmedIt:
+    """MCP2's point 4: a covered act's audit row says a review confirmed it, and which; a pressed card says token;
+    an act that needed neither says nothing."""
+
+    async def test_each_says_its_own(self, monkeypatch):
+        from core.product_tools import confirm, hooks, registry
+        from core.product_tools.approved import approve
+        from core.product_tools.caller import Caller
+        from core.product_tools.registry import ProductTool
+        from core.product_tools.roles import Role
+
+        confirm.set_claim_store(None)
+        seen: list = []
+
+        async def audit(event):
+            seen.append(event.confirmed_by)
+
+        async def handler(caller, args):
+            return {"ok": True}
+
+        hooks.set_audit(audit)
+        monkeypatch.setitem(registry._TOOLS, "zap_it", ProductTool(
+            name="zap_it", description="", input_schema={"type": "object"}, handler=handler, kind="act",
+            area="tests", min_role=Role.BUILDER, scope="build", irreversible=True))
+        person = Caller(role=Role.OWNER, via="assistant", user_id="u1")
+        try:
+            obj = {"ops": [1]}
+            review = approve(obj, person, [("zap_it", {"n": 1})])
+            await registry.invoke("zap_it", person, {"n": 1}, confirm_policy="approved_review", review=review,
+                                  reviewed=obj)
+            minted = await registry.invoke("zap_it", person, {"n": 2}, confirm_policy="every_act")
+            await registry.invoke("zap_it", person, {"n": 2, "confirm_token": minted["confirm_token"]},
+                                  confirm_policy="every_act")
+            monkeypatch.setitem(registry._TOOLS, "nudge_it", ProductTool(
+                name="nudge_it", description="", input_schema={"type": "object"}, handler=handler, kind="act",
+                area="tests", min_role=Role.BUILDER, scope="build"))
+            # Not irreversible, under MCP's policy: it needs no token, so a token sent with it confirms nothing.
+            await registry.invoke("nudge_it", person, {"n": 3, "confirm_token": "unused"})
+        finally:
+            hooks.set_audit(None)
+        assert seen == [f"review:{review.digest[:16]}", "token", None]
