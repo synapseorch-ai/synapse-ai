@@ -116,6 +116,13 @@ export interface BuilderMessage {
      */
     stepId?: string | null;
     contextKey?: string | null;
+    /**
+     * A `human_prompt`'s typed object, when its step's context is one that names
+     * itself (`{object: 'change', …}`: Synapse AI's checked change, F795). The
+     * card draws from it; the prompt's words stay the question for everything
+     * else, and for runs started before the object was sent.
+     */
+    context?: Record<string, unknown> | null;
     /** A findings card (`kind: 'findings'`). */
     findings?: ResearchFindings;
     /** An action card (`kind: 'action'`). */
@@ -367,6 +374,7 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                     key: `human-${event.orch_step_id ?? ''}-${seq}`,
                     stepId: event.orch_step_id ?? null,
                     contextKey: event.context_key ?? null,
+                    ...(event.context && typeof event.context === 'object' ? { context: event.context } : {}),
                 },
             );
 

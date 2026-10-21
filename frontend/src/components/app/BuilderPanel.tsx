@@ -316,6 +316,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                                         <PlanCard
                                             prompt={message.content}
                                             kind={kind}
+                                            context={message.context}
                                             open={open}
                                             // The card's words always answer its plan (F759).
                                             onAnswer={(text) => void send(text, [], { revising: true })}

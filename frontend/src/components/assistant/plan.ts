@@ -344,6 +344,69 @@ export function planDefinition(plan: Plan): { entry_step_id: string; steps: Reco
  * Read a plan question. `null` when no step can be read, and the card then
  * shows the words as they were asked.
  */
+// ── A change, from its own object (SAI2-P2, F798) ─────────────────────────────
+
+/** One op of Synapse AI's checked change, as its review's event carries it (`check_change`). */
+export interface ChangeOpView {
+    op: string;
+    kind: 'act' | 'write' | 'delete' | 'create' | 'handoff';
+    status: string;
+    target?: { kind?: string; id?: string | null; name?: string | null };
+    /** Code's words for it: "<what> — <how>". */
+    line?: string;
+    /** For a delete: what uses its target, by name. */
+    used_by?: string[];
+}
+
+/** The checked change a review carries when its object is one (`context.object === 'change'`). */
+export interface ChangeView {
+    object: 'change';
+    ops: ChangeOpView[];
+    /** What else the check said: the cards it put up, what was already so, what the role may not do. */
+    say?: string;
+}
+
+export function changeOf(context: unknown): ChangeView | null {
+    if (!context || typeof context !== 'object') return null;
+    const c = context as { object?: unknown; ops?: unknown };
+    return c.object === 'change' && Array.isArray(c.ops) ? (context as ChangeView) : null;
+}
+
+/**
+ * The change's card, from the object rather than its markdown: one row per op
+ * the person approves, a delete in the danger colour with what uses it. Null
+ * when nothing waits for approval; the card then shows the words as asked.
+ */
+export function planFromChange(change: ChangeView, prompt: string): Plan | null {
+    const ready = change.ops.filter((o) => o.status === 'ready' && o.line);
+    if (!ready.length) return null;
+    const count = (name: string) => ready.filter((o) => (o.target?.name ?? '') === name).length;
+    const steps: PlanStep[] = ready.map((o, i) => {
+        const [what, ...how] = (o.line as string).split(' — ');
+        const name = o.target?.name ?? '';
+        // Two of one name are told apart by id (F760's class).
+        const id = count(name) > 1 && o.target?.id ? ` (${o.target.id})` : '';
+        const deletes = o.kind === 'delete';
+        const uses = deletes
+            ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
+            : '';
+        const detail = [how.join(' — '), uses].filter(Boolean).join(' ');
+        return {
+            n: i + 1,
+            name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${what}${id}`,
+            type: null,
+            label: '',
+            role: 'logic',
+            ...(detail ? { detail } : {}),
+            ...(deletes ? { deletes: true } : {}),
+        };
+    });
+    return {
+        kind: 'change', body: splitQuestion(prompt).body, overview: change.say?.trim() || null, steps,
+        schedule: null, newAgents: [], openQuestions: null, notCarried: null, needs: null, asksFirst: null, actsAlone: null,
+    };
+}
+
 export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null {
     const { body } = splitQuestion(prompt);
     if (!body) return null;

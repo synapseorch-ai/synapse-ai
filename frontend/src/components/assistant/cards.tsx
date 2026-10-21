@@ -22,7 +22,7 @@ import { EstimateLine, useRunEstimate, type EstimateLoader } from '@/components/
 import { Button, Markdown } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
-import { planDefinition, readPlan, splitQuestion, type Plan, type PlanStep } from './plan';
+import { changeOf, planDefinition, planFromChange, readPlan, splitQuestion, type Plan, type PlanStep } from './plan';
 
 /**
  * What a run of the plan would cost (CE1). The plan names every step once and
@@ -174,10 +174,12 @@ function Steps({ plan }: { plan: Plan }) {
  * and pressing Send does. `onRevise` takes the person to the composer.
  */
 export function PlanCard({
-    prompt, kind, open, onAnswer, onRevise, onStop, estimate,
+    prompt, kind, open, onAnswer, onRevise, onStop, estimate, context,
 }: {
     prompt: string;
     kind: 'build' | 'change';
+    /** The question's typed object (F795): a change draws from it, its words the fallback. */
+    context?: Record<string, unknown> | null;
     open: boolean;
     onAnswer: (text: string) => void;
     onRevise: () => void;
@@ -185,7 +187,10 @@ export function PlanCard({
     /** The product's estimate route (CE1): a build plan says what a run of it would cost. */
     estimate?: EstimateLoader;
 }) {
-    const plan = React.useMemo(() => readPlan(prompt, kind), [prompt, kind]);
+    const plan = React.useMemo(() => {
+        const change = kind === 'change' ? changeOf(context) : null;
+        return (change && planFromChange(change, prompt)) ?? readPlan(prompt, kind);
+    }, [prompt, kind, context]);
     const [expanded, setExpanded] = React.useState(false);
     const [sent, setSent] = React.useState(false);
     const title = kind === 'change' ? 'The change' : 'The plan';
