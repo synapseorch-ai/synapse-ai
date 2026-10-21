@@ -48,10 +48,13 @@ function LabelledHandle({ id, top, label }: { id: string; top: number; label: st
 }
 
 /** One line of per-type context in the card body. */
-function summaryFor(step: StepConfig, agentName?: string): string | null {
+function summaryFor(step: StepConfig, agentName?: string, workflowName?: string): string | null {
     const clip = (s: string, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
     switch (step.type) {
         case 'agent': return agentName ?? 'No agent selected';
+        case 'workflow':
+            if (!step.workflow_id) return 'No workflow selected';
+            return workflowName ? `Run workflow: ${workflowName}` : 'Runs another workflow';
         case 'tool': return step.forced_tool ? (step.tool_arguments != null ? `${step.forced_tool} · set arguments` : step.forced_tool) : 'No tool selected';
         case 'llm': return step.prompt_template ? clip(step.prompt_template) : 'No prompt set';
         case 'evaluator': {
@@ -148,7 +151,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
         : 1;
     const minHeight = handleCount > 2 ? handleCount * 24 + 48 : undefined;
 
-    const summary = summaryFor(step, agentName);
+    const summary = summaryFor(step, agentName, data.workflowName);
 
     return (
         // The status class comes first among the frame's `border-*` classes:

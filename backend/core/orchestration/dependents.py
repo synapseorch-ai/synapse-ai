@@ -55,6 +55,12 @@ def _calls(orchestration: dict, agent_id: str) -> bool:
     return any(step.get("agent_id") == agent_id for step in orchestration.get("steps") or [])
 
 
+def _runs(orchestration: dict, orch_id: str) -> bool:
+    """Whether one of the workflow's steps is a Workflow step running `orch_id` (E3)."""
+    return any(step.get("type") == "workflow" and step.get("workflow_id") == orch_id
+               for step in orchestration.get("steps") or [])
+
+
 async def what_runs(orch_id: str) -> list[Dependent]:
     """What runs workflow `orch_id` in this tenant, and what uses the agents that do.
 
@@ -94,6 +100,9 @@ async def what_runs(orch_id: str) -> list[Dependent]:
                       for s in schedules if s.get("target_type") == "agent" and s.get("target_id") == agent["id"]]
             found += [Dependent("workflow", o.get("name") or o["id"], via=via)
                       for o in workflows if _calls(o, agent["id"])]
+    # A Workflow step names the workflow it runs itself (E3).
+    found += [Dependent("workflow", o.get("name") or o["id"], id=o["id"])
+              for o in await load_orchestrations() if o.get("id") != orch_id and not _gone(o) and _runs(o, orch_id)]
     found += [Dependent("schedule", s.get("name") or s["id"])
               for s in schedules if s.get("target_type") == "orchestration" and s.get("target_id") == orch_id]
     return found

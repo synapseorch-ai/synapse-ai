@@ -26,7 +26,7 @@ import type { Orchestration, StepConfig, StepType } from '@/types/orchestration'
 import { KNOWLEDGE_STEP_TYPES, STEP_TYPE_META } from '@/types/orchestration';
 import { collectStateKeys, hasTypeSpecificConfig, isLinearStep } from './graph';
 import { validateOrchestration } from './validate';
-import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, type StepSectionProps } from './panel/shared';
+import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, type StepSectionProps, type WorkflowOption } from './panel/shared';
 import { STEP_SECTIONS } from './panel/steps';
 import { useAvailableTools } from './panel/use-available-tools';
 import { StepIcon } from '../run/StepIcon';
@@ -100,6 +100,8 @@ interface StepConfigPanelProps {
     lead?: React.ReactNode;
     /** A Team step is priced 1 credit plus 1 per member task: cloud says so in its setup (TEAM1d, TEAM1e). */
     tasksPriced?: boolean;
+    /** The workspace's workflows, for a Workflow step's picker (E3). Without them the id is typed. */
+    workflows?: WorkflowOption[];
 }
 
 // The engine asks the runner for the internet (`Network.INTERNET` in the
@@ -112,7 +114,7 @@ const SELF_HOSTED_RUNNER_NOTE =
 const SELF_HOSTED_SEMANTIC_NOTE =
     'It embeds each prompt with the Embedding Model in Settings → Models; with none set, only exact match runs.';
 
-const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end', 'retrieve', 'ingest'];
+const STEP_TYPES: StepType[] = ['agent', 'llm', 'tool', 'evaluator', 'parallel', 'merge', 'loop', 'human', 'transform', 'extract_json', 'if_else', 'switch', 'print', 'end', 'retrieve', 'ingest', 'workflow'];
 
 const MIN_WIDTH = 320;
 const MAX_WIDTH = 640;
@@ -121,7 +123,7 @@ export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, orchestration, showVaultHints = true, canRunCode = true,
     codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
-    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead, tasksPriced = false,
+    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead, tasksPriced = false, workflows,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -188,7 +190,7 @@ export function StepConfigPanel({
         step, update, otherSteps, agents,
         availableModels: availableModels || [],
         availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly, knowledgeBases,
-        tasksPriced,
+        tasksPriced, workflows,
     };
     const TypeSection = STEP_SECTIONS[step.type];
     const isLinear = isLinearStep(step);

@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 
-export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end' | 'retrieve' | 'ingest';
+export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end' | 'retrieve' | 'ingest' | 'workflow';
 
 /** Knowledge's two steps (R1). Offered only while Knowledge is on: a shell that does not say so hides them. */
 export const KNOWLEDGE_STEP_TYPES: readonly StepType[] = ['retrieve', 'ingest'];
@@ -71,6 +71,9 @@ export interface StepConfig {
     forced_tool?: string;
     /** TOOL — the arguments set on the step (E1); unset, a model writes them. Values may read `{{state.key}}`. */
     tool_arguments?: Record<string, unknown> | null;
+
+    // WORKFLOW — runs another workflow by its id as a nested run (E3); its prompt_template is the child's input
+    workflow_id?: string;
 
     // TRANSFORM
     transform_code?: string;
@@ -218,6 +221,8 @@ export interface StepNodeData {
     isEntry: boolean;
     isSelected: boolean;
     agentName?: string;
+    /** A Workflow step's workflow, by name, where the host listed its workflows (E3). */
+    workflowName?: string;
     /** What an Agent step holds: an agent, a Team (as a team, or one at a time) or a workflow (TEAM1e). */
     agentKind?: 'agent' | 'team' | 'one_at_a_time' | 'workflow';
     runStatus?: 'pending' | 'running' | 'paused' | 'completed' | 'failed';
@@ -261,4 +266,5 @@ export const STEP_TYPE_META: Record<StepType, {
     end:          { label: 'End',          color: '#6b7280', icon: 'Square',        category: 'I/O',   blurb: 'Terminate the flow here' },
     retrieve:     { label: 'Retrieve',     color: '#0ea5e9', icon: 'BookOpenText',  category: 'Data',  blurb: 'Search knowledge bases' },
     ingest:       { label: 'Ingest',       color: '#d946ef', icon: 'FileInput',     category: 'Data',  blurb: 'Add records to a knowledge base' },
+    workflow:     { label: 'Workflow',     color: '#0d9488', icon: 'Workflow',      category: 'Core',  blurb: 'Run another workflow, then carry on' },
 };

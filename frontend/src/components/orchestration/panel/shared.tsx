@@ -15,6 +15,13 @@ import { Combobox, Input } from '@/components/ui';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
 
 /** Props every per-type section receives. */
+/** A workflow as a Workflow step's picker shows it (E3). */
+export interface WorkflowOption {
+    id: string;
+    name: string;
+    description?: string;
+}
+
 /** A knowledge base as the Retrieve and Ingest pickers show it. */
 export interface KnowledgeBaseOption {
     id: string;
@@ -44,6 +51,8 @@ export interface StepSectionProps {
     knowledgeBases?: KnowledgeBaseOption[];
     /** A Team step is priced 1 credit plus 1 per member task (cloud, TEAM1d); self-hosted has no credits. */
     tasksPriced?: boolean;
+    /** The workspace's workflows (a Workflow step's picker); unset, the id is typed. */
+    workflows?: WorkflowOption[];
 }
 
 /** Neutral explainer block — replaces the per-type rainbow of tinted boxes. */

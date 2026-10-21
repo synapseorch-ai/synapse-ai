@@ -14,7 +14,7 @@ import { roleOf, type StepRole } from './model';
 
 const ICONS: Record<string, React.FC<{ className?: string }>> = {
     Bot, Zap, Wrench, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Braces, GitFork, ArrowLeftRight,
-    FileText, Square, BookOpenText, FileInput,
+    FileText, Square, BookOpenText, FileInput, Workflow,
 };
 
 const GROUND: Record<StepRole, string> = {

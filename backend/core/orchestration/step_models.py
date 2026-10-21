@@ -111,22 +111,29 @@ async def _walk(orch_id: str, walked: WorkflowModels, *, load_agent: Loader, loa
 
     for step in orch.steps:
         kind = getattr(step.type, "value", step.type)
-        if not calls_a_model(step):
-            continue
         path = f"{prefix}{_name(step)}"
-        takes = passed and kind == "agent" and bool(getattr(step, "pass_images", False))
-        if kind != "agent":
-            walked.steps.append(ModelStep(path, model_or_none(step.model) or workspace_model, False))
-            continue
-        agent = await load_agent(step.agent_id) if step.agent_id else None
-        if agent is None:
-            walked._say(f"Step '{path}' names an agent that no longer exists ({step.agent_id or 'none'}).")
-            continue
-        if agent.get("type") != "orchestrator":
-            walked.steps.append(ModelStep(path, model_or_none(step.model) or model_or_none(agent.get("model")) or workspace_model,
-                                          takes))
-            continue
-        child = agent.get("orchestration_id")
+        if kind == "workflow":
+            # A Workflow step names its workflow itself (E3); attachments reach only an Agent step.
+            child, takes = getattr(step, "workflow_id", None), False
+            if not child:
+                walked._say(f"Step '{path}' names no workflow to run.")
+                continue
+        else:
+            if not calls_a_model(step):
+                continue
+            takes = passed and kind == "agent" and bool(getattr(step, "pass_images", False))
+            if kind != "agent":
+                walked.steps.append(ModelStep(path, model_or_none(step.model) or workspace_model, False))
+                continue
+            agent = await load_agent(step.agent_id) if step.agent_id else None
+            if agent is None:
+                walked._say(f"Step '{path}' names an agent that no longer exists ({step.agent_id or 'none'}).")
+                continue
+            if agent.get("type") != "orchestrator":
+                walked.steps.append(ModelStep(path, model_or_none(step.model) or model_or_none(agent.get("model")) or workspace_model,
+                                              takes))
+                continue
+            child = agent.get("orchestration_id")
         if not child:
             walked._say(f"Step '{path}' runs a workflow agent that has no workflow.")
         elif child in chain:

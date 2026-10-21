@@ -25,7 +25,7 @@ const error = (message: string): StepIssue => ({ severity: 'error', message });
 const warning = (message: string): StepIssue => ({ severity: 'warning', message });
 
 /** Steps that exist to produce a value, so losing it is worth saying. */
-const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human', 'retrieve']);
+const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human', 'retrieve', 'workflow']);
 
 /**
  * `agents` is the list the caller already holds for the picker. When it is
@@ -101,6 +101,10 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
                 break;
             case 'tool':
                 if (!s.forced_tool) add(s.id, error('No tool selected'));
+                break;
+            case 'workflow':
+                if (!s.workflow_id) add(s.id, error('No workflow selected'));
+                else if (s.workflow_id === orch.id) add(s.id, error('A workflow cannot run itself'));
                 break;
             case 'evaluator': {
                 const routes = Object.entries(s.route_map || {});
@@ -399,7 +403,7 @@ const ENGINE_KEYS = new Set(['user_input', 'user_query', 'history']);
 /** The keys a model's prompt names (an Agent's, an LLM's or a Tool step's template, a Retrieve query). */
 function promptReads(step: StepConfig): Set<string> {
     const texts: string[] = [];
-    if (step.type === 'agent' || step.type === 'llm') texts.push(step.prompt_template || '');
+    if (step.type === 'agent' || step.type === 'llm' || step.type === 'workflow') texts.push(step.prompt_template || '');
     // A Tool step reads its prompt when a model writes its arguments, and its set arguments when they are set (E1).
     if (step.type === 'tool') {
         if (step.tool_arguments != null) texts.push(JSON.stringify(step.tool_arguments));

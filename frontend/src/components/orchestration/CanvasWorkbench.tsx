@@ -62,6 +62,8 @@ export interface CanvasWorkbenchProps {
     /** Every edit: the canvas's, the name's, the toolbar's. The host records it for undo. */
     onChange: (next: Orchestration) => void;
     agents: any[];
+    /** Workflow id → name, so a Workflow step's card names the workflow it runs (E3). */
+    workflowNames?: Record<string, string>;
     /** Retrieve and Ingest are offered only with Knowledge on. */
     knowledgeEnabled?: boolean;
     selectedStepId: string | null;
@@ -165,7 +167,7 @@ function subscribeCoarse(onChange: () => void) {
 }
 
 function Workbench({
-    orchestration, onChange, agents, knowledgeEnabled = false, selectedStepId, onSelectStep,
+    orchestration, onChange, agents, workflowNames, knowledgeEnabled = false, selectedStepId, onSelectStep,
     renderStep, renderSettings, settingsAtOpen = false, board, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
     insetRight = 0, run, runStrip, runDrawer, lastRun,
 }: CanvasWorkbenchProps) {
@@ -251,6 +253,7 @@ function Workbench({
     const graph = useWorkflowGraph({
         orchestration,
         agents,
+        workflowNames,
         selectedStepId,
         onSelectStep,
         onUpdateOrchestration: onChange,

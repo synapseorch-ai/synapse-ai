@@ -195,6 +195,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // The list is read in the browser: until the first read answers, it draws
     // nothing rather than "No workflows yet" for a moment (Naveen, M2k review).
     const [listLoaded, setListLoaded] = useState(false);
+    // A Workflow step's picker and its card's name (E3).
+    const workflowOptions = useMemo(
+        () => orchestrations.map((o) => ({ id: o.id, name: o.name, description: o.description })),
+        [orchestrations],
+    );
+    const workflowNames = useMemo(
+        () => Object.fromEntries(orchestrations.map((o) => [o.id, o.name])),
+        [orchestrations],
+    );
     const [selectedOrchId, setSelectedOrchId] = useState<string | null>(null);
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
@@ -1876,6 +1885,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                             orchestration={draft}
                             onChange={updateOrchestration}
                             agents={agents}
+                            workflowNames={workflowNames}
                             knowledgeEnabled={knowledgeEnabled}
                             selectedStepId={selectedStepId}
                             onSelectStep={setSelectedStepId}
@@ -1894,6 +1904,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     orchestration={draft}
                                     knowledgeEnabled={knowledgeEnabled}
                                     knowledgeBases={knowledgeBases}
+                                    workflows={workflowOptions}
                                     semanticCacheNote={semanticCacheNote}
                                     lead={step.id === waitingStep ? approval(true) : undefined}
                                 />

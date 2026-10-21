@@ -28,6 +28,8 @@ class StepType(str, Enum):
     # Knowledge (R1): search knowledge bases, and add records to one.
     RETRIEVE = "retrieve"
     INGEST = "ingest"
+    # E3 (F770, SAI2-P1): run another workflow by its id, as a nested run of this step.
+    WORKFLOW = "workflow"
 
 
 class StepConfig(BaseModel):
@@ -114,6 +116,12 @@ class StepConfig(BaseModel):
     # bad body never stops an orchestration from loading.
     retrieve: dict[str, Any] | None = None
     ingest: dict[str, Any] | None = None
+
+    # WORKFLOW -- the workflow this step runs as a nested run (E3, F770). Its rendered `prompt_template` is the
+    # child's input (the run's own input when it has none), and what the child made (its `result_key`, else its
+    # last content step) is this step's output. An Agent step whose agent is a workflow does the same through the
+    # agent, which stays for chat and channels (D204).
+    workflow_id: str | None = None
 
     # I/O mapping
     # Whether this step's agent sees the attachments the caller sent. Off by

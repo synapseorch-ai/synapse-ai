@@ -451,6 +451,11 @@ async def _warnings(orchs: List[dict], agents: List[dict], tool_names: List[str]
                 out.append(_warning("orchestrations", orch,
                                     f"Its step {step.get('name') or step.get('id')} uses the agent {used}, "
                                     "which isn't in this file or on this install."))
+            runs = step.get("workflow_id") if isinstance(step, dict) and step.get("type") == "workflow" else None
+            if runs and runs not in orch_ids:
+                out.append(_warning("orchestrations", orch,
+                                    f"Its step {step.get('name') or step.get('id')} runs the workflow {runs}, "
+                                    "which isn't in this file or on this install. Open it and pick its workflow."))
 
     # Models: imported as they are, and named when this install can't serve them.
     uses: Dict[str, List[tuple]] = {}

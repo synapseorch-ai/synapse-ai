@@ -224,7 +224,8 @@ def span(
         low, high = price(step)
         if per_task and (counted := tasks(step, agents)) is not None:
             low, high = low * (1 + counted[0]), high * (1 + counted[1])
-        if kind == "agent" and (agents.get(str(step.get("agent_id"))) or {}).get("type") == "orchestrator":
+        if kind == "workflow" or (
+                kind == "agent" and (agents.get(str(step.get("agent_id"))) or {}).get("type") == "orchestrator"):
             opened.add(NESTED)
         held = [c for c in _children(step) if c in by_id and c not in holding and c != sid]
         if held:

@@ -204,6 +204,8 @@ const ROLE: Record<StepType, StepRole> = {
     human: 'person',
     parallel: 'logic', merge: 'logic', loop: 'logic', if_else: 'logic', switch: 'logic',
     transform: 'logic', extract_json: 'logic', print: 'logic', end: 'logic', ingest: 'logic',
+    // A Workflow step calls no model itself: its child's steps show their own roles (E3).
+    workflow: 'logic',
 };
 
 export function roleOf(type: string | undefined | null): StepRole {

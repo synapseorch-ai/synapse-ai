@@ -62,13 +62,14 @@ async def _visible_orchestration(orch_id: str | None) -> dict | None:
 
 
 async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[str]]:
-    """The workflows `orch` calls through workflow agents, at any depth, and an issue
-    for each call whose workflow is gone (F429).
+    """The workflows `orch` calls, at any depth, and an issue for each call whose
+    workflow is gone (F429).
 
-    A workflow calls another only through an agent step whose agent runs it, so
-    this is what validating a parent has to validate with it. A step whose agent
-    runs a workflow already on the chain that reached it — this one included —
-    is a loop: every run would call itself again without end (F691).
+    A workflow calls another through an agent step whose agent runs it, or a
+    Workflow step that names it (E3), so this is what validating a parent has to
+    validate with it. A step that runs a workflow already on the chain that
+    reached it — this one included — is a loop: every run would call itself
+    again without end (F691).
     """
     from core.store.resources import get_orchestration
 
@@ -79,13 +80,19 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
     async def visit(current: dict, chain: tuple) -> None:
         where = "" if current is orch else f"In the inner workflow '{current.get('name')}' ({current.get('id')}): "
         for s in current.get("steps") or []:
-            target = agents.get(s.get("agent_id")) or {}
-            child_id = target.get("orchestration_id") if target.get("type") == "orchestrator" else None
+            direct = s.get("type") == "workflow"
+            target = {} if direct else (agents.get(s.get("agent_id")) or {})
+            if direct:
+                child_id = s.get("workflow_id") or None
+            else:
+                child_id = target.get("orchestration_id") if target.get("type") == "orchestrator" else None
             if not child_id:
                 continue
             if child_id in chain:
                 looped = "this workflow" if child_id == orch.get("id") else f"the workflow '{child_id}' that calls it"
                 issues.append(
+                    f"{where}Workflow step '{s.get('id')}' runs {looped}: every run would call itself again, "
+                    f"without end. Point the step at another workflow." if direct else
                     f"{where}Agent step '{s.get('id')}' uses workflow agent '{target.get('id')}', which runs "
                     f"{looped}: every run would call itself again, without end. Point the step at the agent that "
                     f"does the work, not at a workflow agent of this workflow."
@@ -97,6 +104,8 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
             child = await get_orchestration(child_id)
             if child is None or child.get("is_active", True) is False:
                 issues.append(
+                    f"{where}Workflow step '{s.get('id')}' runs the workflow '{child_id}', which does not exist — "
+                    f"build it first, or point the step at one that does." if direct else
                     f"{where}Agent step '{s.get('id')}' uses workflow agent '{target.get('id')}', whose "
                     f"orchestration '{child_id}' does not exist — build it again, deploy_orchestration it, "
                     f"and use the agent id it returns."
@@ -962,7 +971,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "name": {"type": "string", "description": "Human-readable step name"},
                     "type": {
                         "type": "string",
-                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest"],
+                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow"],
                         "description": "Step type",
                     },
                     "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps)"},
@@ -992,6 +1001,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{state.review.feedback}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
                     "forced_tool": {"type": "string", "description": "Tool name for tool steps"},
+                    "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs, as a nested run (workflow steps)"},
                     "merge_strategy": {
                         "type": "string", "enum": ["concat", "list", "dict"],
                         "description": "How to combine inputs (merge steps)",
@@ -1115,7 +1125,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "name": {"type": "string", "description": "Step name"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest"],
+                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow"],
                                 },
                                 "agent_id": {"type": "string"},
                                 "prompt_template": {"type": "string"},
@@ -1129,6 +1139,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "human_prompt": {"type": "string"},
                                 "human_fields_json": {"type": "string"},
                                 "forced_tool": {"type": "string"},
+                                "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs (workflow steps)"},
                                 "merge_strategy": {"type": "string", "enum": ["concat", "list", "dict"]},
                                 "loop_step_ids": {"type": "array", "items": {"type": "string"}},
                                 "loop_count": {"type": "integer"},
@@ -3112,7 +3123,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
 
 #: Steps that exist to produce a value, so losing it is worth an issue.
-_RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human", "retrieve"})
+_RESULT_STEP_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human", "retrieve",
+                                "workflow"})
 
 
 def _knowledge_step_issues(step: dict, kbs: dict | None, knowledge_off: bool) -> list[str]:
@@ -3305,6 +3317,8 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             issues.append(f"Evaluator step '{sid}' has an empty route_map.")
         if stype == "tool" and not s.get("forced_tool"):
             issues.append(f"Tool step '{sid}' has no forced_tool.")
+        if stype == "workflow" and not s.get("workflow_id"):
+            issues.append(f"Workflow step '{sid}' has no workflow_id: name the workflow it runs.")
         if stype == "human" and not s.get("human_prompt"):
             issues.append(f"Human step '{sid}' has no human_prompt.")
         if stype == "transform" and not s.get("transform_code"):

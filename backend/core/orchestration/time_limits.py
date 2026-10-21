@@ -158,17 +158,21 @@ async def _step_limit(step: StepConfig, engine: "OrchestrationEngine") -> tuple[
     """The step's own limit: its `timeout_seconds`, or for a step that runs a
     workflow, that workflow's own budget (F291)."""
     own = step.timeout_seconds or ORCH_STEP_TIMEOUT  # as it always was: an int when set
-    if step.type != StepType.AGENT or not step.agent_id:
-        return own, None
-
     from core.scale.context import resolve_orchestration
-    from .resolved import resolve_for_run
 
-    resolved = await resolve_for_run(engine, step.agent_id, tools=False)
-    agent = resolved.agent if resolved else None
-    if not agent or agent.get("type") != "orchestrator" or not agent.get("orchestration_id"):
+    if step.type == StepType.WORKFLOW and step.workflow_id:
+        child_id = step.workflow_id  # a Workflow step names it (E3)
+    elif step.type == StepType.AGENT and step.agent_id:
+        from .resolved import resolve_for_run
+
+        resolved = await resolve_for_run(engine, step.agent_id, tools=False)
+        agent = resolved.agent if resolved else None
+        if not agent or agent.get("type") != "orchestrator" or not agent.get("orchestration_id"):
+            return own, None
+        child_id = agent["orchestration_id"]
+    else:
         return own, None
-    child = await resolve_orchestration(agent["orchestration_id"])
+    child = await resolve_orchestration(child_id)
     if not child:
         return own, None  # the step fails on the missing workflow, as it always has
 
@@ -176,7 +180,7 @@ async def _step_limit(step: StepConfig, engine: "OrchestrationEngine") -> tuple[
         minutes = int(child.get("timeout_minutes") or ORCH_GLOBAL_TIMEOUT_MIN)
     except (TypeError, ValueError):
         minutes = ORCH_GLOBAL_TIMEOUT_MIN
-    name = child.get("name") or agent["orchestration_id"]
+    name = child.get("name") or child_id
     limit, why = float(minutes * 60), f"the workflow '{name}''s own {minutes}-minute timeout"
     if not _is_default(step.timeout_seconds) and own < limit:
         limit, why = own, None

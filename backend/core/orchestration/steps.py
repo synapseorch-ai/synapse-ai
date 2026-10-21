@@ -529,125 +529,151 @@ class AgentStepExecutor:
         Events:         all sub-events tagged with parent orch_step_id +
                         nested_run_id so the UI can attribute them.
         """
-        from core.scale.context import resolve_orchestration
-        from core.models_orchestration import Orchestration
-        from .engine import OrchestrationEngine, MAX_NESTED_DEPTH
-
         sub_orch_id = target_agent.get("orchestration_id")
         if not sub_orch_id:
             raise RuntimeError(
                 f"Orchestrator agent '{target_agent.get('id')}' has no orchestration_id"
             )
+        from core.react_engine import workflow_gone
 
-        parent_depth = getattr(engine, "depth", 0)
-        if parent_depth + 1 > MAX_NESTED_DEPTH:
-            raise RuntimeError(
-                f"Nested orchestration depth limit exceeded "
-                f"(max {MAX_NESTED_DEPTH}). Possible recursive agent loop."
-            )
+        async for event in run_nested_workflow(
+            step, run, engine, transition, sub_orch_id, prompt, inputs_snapshot,
+            source=f"agent '{target_agent.get('id')}'", gone=workflow_gone(target_agent),
+            label=target_agent.get("name") or target_agent.get("id") or "sub_orchestration",
+        ):
+            yield event
 
-        # By id, through the resource provider — the same path resume takes.
-        # This used to load every orchestration in the tenant and scan.
-        sub_orch_data = await resolve_orchestration(sub_orch_id)
-        if sub_orch_data and sub_orch_data.get("is_active", True) is False:
-            # Deleted and kept as a record: never run (F408).
-            from core.react_engine import workflow_gone
-            raise RuntimeError(workflow_gone(target_agent))
-        if not sub_orch_data:
-            raise RuntimeError(
-                f"Sub-orchestration '{sub_orch_id}' (from agent "
-                f"'{target_agent.get('id')}') not found"
-            )
 
-        sub_orch = Orchestration.model_validate(sub_orch_data)
-        from core.run_ids import new_child_run_id
+async def run_nested_workflow(
+    step: StepConfig,
+    run: OrchestrationRun,
+    engine: "OrchestrationEngine",
+    transition,
+    sub_orch_id: str,
+    prompt: str,
+    inputs_snapshot: dict,
+    *,
+    source: str,
+    gone: str,
+    label: str,
+) -> AsyncGenerator[dict, None]:
+    """Run the workflow `sub_orch_id` as a nested run of `step`: in-process, inside its parent's run.
 
-        sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
-        sub_engine.caller_tools = list(getattr(engine, "caller_tools", None) or [])
-        sub_engine.caller = engine.caller_for(run, step)
-        # What the run may spend is its root's: the child's own cap is for when
-        # it runs on its own (CAP1).
-        sub_engine.run_cap = getattr(engine, "run_cap", None)
-        # What the person attached reaches the child only through a step that
-        # passes it (F313); the child's own steps then decide, as here.
-        sub_engine.images = list(getattr(engine, "images", None) or []) if step.pass_images else []
-        # One id per run of this step (F251): each Loop iteration and each retry
-        # used to overwrite one record, one log and one set of usage rows.
-        sub_run_id = new_child_run_id(run.run_id, step.id, parent_depth + 1)
-        sub_session = run.session_id or f"orch_{run.run_id}"
+    The one nested executor. An Agent step whose agent is a workflow (`AgentStepExecutor`) and a Workflow step (E3,
+    F770) both come here, so what the docstring above says of one holds for both. `source` names what asked for it
+    in a not-found message, `gone` is the sentence for a workflow deleted and kept as a record (F408), and `label`
+    is the name its execution memory is kept under.
+    """
+    from core.scale.context import resolve_orchestration
+    from core.models_orchestration import Orchestration
+    from .engine import OrchestrationEngine, MAX_NESTED_DEPTH
 
-        agent_name = target_agent.get("name") or target_agent.get("id") or "sub_orchestration"
-        yield {
-            "type": "thinking",
-            "orch_step_id": step.id,
-            "step_name": step.name,
-            "message": f"Delegating to sub-orchestration '{sub_orch.name}' (depth {parent_depth + 1})...",
-        }
+    parent_depth = getattr(engine, "depth", 0)
+    if parent_depth + 1 > MAX_NESTED_DEPTH:
+        raise RuntimeError(
+            f"Nested orchestration depth limit exceeded "
+            f"(max {MAX_NESTED_DEPTH}). Possible recursive agent loop."
+        )
 
-        # Lifecycle meta-events that belong to the sub-orch's own run; forwarding
-        # them would confuse the parent's frontend state (premature "complete" banners,
-        # wrong step-start banners, etc.).
-        _NESTED_FILTER_TYPES = NESTED_OWN_EVENTS
+    # By id, through the resource provider — the same path resume takes.
+    # This used to load every orchestration in the tenant and scan.
+    sub_orch_data = await resolve_orchestration(sub_orch_id)
+    if sub_orch_data and sub_orch_data.get("is_active", True) is False:
+        # Deleted and kept as a record: never run (F408).
+        raise RuntimeError(gone)
+    if not sub_orch_data:
+        raise RuntimeError(
+            f"Sub-orchestration '{sub_orch_id}' (from {source}) not found"
+        )
 
-        outcome = NestedOutcome()
-        sub_events: list[dict] = []
-        try:
-            async for sub_event in sub_engine.run(
-                initial_input=prompt,
-                run_id=sub_run_id,
-                session_id=sub_session,
-            ):
-                sub_events.append(sub_event)
-                outcome.read(sub_event)
+    sub_orch = Orchestration.model_validate(sub_orch_data)
+    from core.run_ids import new_child_run_id
 
-                # Skip sub-orch lifecycle events — they pollute the parent's UI
-                if sub_event.get("type") in _NESTED_FILTER_TYPES:
-                    continue
+    sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)
+    sub_engine.caller_tools = list(getattr(engine, "caller_tools", None) or [])
+    sub_engine.caller = engine.caller_for(run, step)
+    # What the run may spend is its root's: the child's own cap is for when
+    # it runs on its own (CAP1).
+    sub_engine.run_cap = getattr(engine, "run_cap", None)
+    # What the person attached reaches the child only through a step that
+    # passes it (F313); the child's own steps then decide, as here.
+    sub_engine.images = list(getattr(engine, "images", None) or []) if step.pass_images else []
+    # One id per run of this step (F251): each Loop iteration and each retry
+    # used to overwrite one record, one log and one set of usage rows.
+    sub_run_id = new_child_run_id(run.run_id, step.id, parent_depth + 1)
+    sub_session = run.session_id or f"orch_{run.run_id}"
 
-                # Override run_id with the PARENT's run_id so the frontend routes
-                # human-input calls to the parent run (not the sub-run directly).
-                # The sub-run id is preserved in nested_run_id for backend resume logic.
-                yield {
-                    **tag_nested_event(sub_event, run.run_id, step.id, step.name, sub_run_id, sub_orch.id),
-                    "nested_depth": parent_depth + 1,
-                }
-        except Exception:
-            raise
+    yield {
+        "type": "thinking",
+        "orch_step_id": step.id,
+        "step_name": step.name,
+        "message": f"Delegating to sub-orchestration '{sub_orch.name}' (depth {parent_depth + 1})...",
+    }
 
-        # A child that did not complete fails this step, with its reason (F253).
-        # Its final text used to be taken as the result whatever its status, so
-        # "Orchestration failed. Error: … Traceback …" became the step's output,
-        # the next step used it, and the run completed; in a Loop the iteration
-        # was dropped and the loop carried on to the next item. Here, after the
-        # child's last event — a child that paused never gets this far, its
-        # parent stops at the pause.
-        failure = outcome.failure(sub_orch.name)
-        if failure:
-            raise RuntimeError(failure)
+    # Lifecycle meta-events that belong to the sub-orch's own run; forwarding
+    # them would confuse the parent's frontend state (premature "complete" banners,
+    # wrong step-start banners, etc.).
+    _NESTED_FILTER_TYPES = NESTED_OWN_EVENTS
 
-        # What the child made, as the value it is (F249): its `result_key`, or
-        # its last content step — not its closing question or route label, which
-        # its final text used to be. A list stays a list.
-        from .results import nested_result
-        result = nested_result(sub_events, sub_orch.result_key)
-        if result is None:
-            raise RuntimeError(
-                f"Sub-orchestration '{sub_orch.name}' ended without a final response"
-            )
+    outcome = NestedOutcome()
+    sub_events: list[dict] = []
+    try:
+        async for sub_event in sub_engine.run(
+            initial_input=prompt,
+            run_id=sub_run_id,
+            session_id=sub_session,
+        ):
+            sub_events.append(sub_event)
+            outcome.read(sub_event)
 
-        if step.output_key:
-            run.shared_state[step.output_key] = result
-        final_response = result if isinstance(result, str) else str(result)
+            # Skip sub-orch lifecycle events — they pollute the parent's UI
+            if sub_event.get("type") in _NESTED_FILTER_TYPES:
+                continue
 
-        # Record memory so re-invocations see what the sub-orch returned.
-        from .context import build_execution_trace, store_execution_memory
-        synth_events = [
-            {"type": "tool_call", "tool_name": "sub_orchestration", "tool_input": {"orchestration": sub_orch.name}},
-            {"type": "tool_result", "result": str(final_response)},
-            {"type": "final", "response": str(final_response)},
-        ]
-        trace = build_execution_trace(synth_events)
-        store_execution_memory(run, step, trace, agent_name, transition, inputs_snapshot)
+            # Override run_id with the PARENT's run_id so the frontend routes
+            # human-input calls to the parent run (not the sub-run directly).
+            # The sub-run id is preserved in nested_run_id for backend resume logic.
+            yield {
+                **tag_nested_event(sub_event, run.run_id, step.id, step.name, sub_run_id, sub_orch.id),
+                "nested_depth": parent_depth + 1,
+            }
+    except Exception:
+        raise
+
+    # A child that did not complete fails this step, with its reason (F253).
+    # Its final text used to be taken as the result whatever its status, so
+    # "Orchestration failed. Error: … Traceback …" became the step's output,
+    # the next step used it, and the run completed; in a Loop the iteration
+    # was dropped and the loop carried on to the next item. Here, after the
+    # child's last event — a child that paused never gets this far, its
+    # parent stops at the pause.
+    failure = outcome.failure(sub_orch.name)
+    if failure:
+        raise RuntimeError(failure)
+
+    # What the child made, as the value it is (F249): its `result_key`, or
+    # its last content step — not its closing question or route label, which
+    # its final text used to be. A list stays a list.
+    from .results import nested_result
+    result = nested_result(sub_events, sub_orch.result_key)
+    if result is None:
+        raise RuntimeError(
+            f"Sub-orchestration '{sub_orch.name}' ended without a final response"
+        )
+
+    if step.output_key:
+        run.shared_state[step.output_key] = result
+    final_response = result if isinstance(result, str) else str(result)
+
+    # Record memory so re-invocations see what the sub-orch returned.
+    from .context import build_execution_trace, store_execution_memory
+    synth_events = [
+        {"type": "tool_call", "tool_name": "sub_orchestration", "tool_input": {"orchestration": sub_orch.name}},
+        {"type": "tool_result", "result": str(final_response)},
+        {"type": "final", "response": str(final_response)},
+    ]
+    trace = build_execution_trace(synth_events)
+    store_execution_memory(run, step, trace, label, transition, inputs_snapshot)
 
 
 #: A nested run's own lifecycle events, kept off its parent's stream. Its
@@ -1492,6 +1518,12 @@ async def _why_in_order(engine: "OrchestrationEngine", step_ids: list[str],
                 why = await _why_in_order(engine, body, steps, depth, seen)
                 if why:
                     return why
+            continue
+        if sub.type == StepType.WORKFLOW:
+            # Its child could ask (E3), as an orchestrator agent's could.
+            why = await _why_child_in_order(engine, {"orchestration_id": sub.workflow_id}, depth)
+            if why:
+                return why
             continue
         if sub.type not in (StepType.AGENT, StepType.TOOL):
             continue
@@ -3155,6 +3187,45 @@ class IngestStepExecutor:
         yield done.event
 
 
+class WorkflowStepExecutor:
+    """Run another workflow by its id, as a nested run of this step (E3, F770; SAI2-P1).
+
+    The engine's own nested executor (`run_nested_workflow`), which an Agent step whose agent is a workflow reaches
+    too: in-process inside its parent's run, the root's cap, the depth limit, the child's result as this step's
+    output, and a question inside the child resumed through this step (`OrchestrationEngine._resume_nested` reads
+    the run's `nested_*` ids, not the step's kind). The child is handed this step's task: its rendered template, or
+    the run's input when it has none (F252).
+    """
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from .context import TransitionContext, build_task_text, snapshot_inputs
+
+        if not step.workflow_id:
+            # A step that cannot run is not a step that ran (F90).
+            message = f"Workflow step '{step.name}' names no workflow to run"
+            yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+            raise RuntimeError(message)
+
+        transition = getattr(engine, "current_transition", None) or TransitionContext(
+            origin_type="entry", execution_number=1)
+        task, mentions = await build_task_text(step, run, engine)
+        yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": task,
+               "system_prompt_extra": "", "system_prompt_prefix": "",
+               "mentions": [m.summary() for m in mentions]}
+        for warning in _mention_warnings(mentions):
+            yield {"type": "step_warning", "orch_step_id": step.id, "message": warning}
+        async for event in run_nested_workflow(
+            step, run, engine, transition, step.workflow_id, task, snapshot_inputs(step, run, engine),
+            source=f"step '{step.name}'",
+            gone=(f"The workflow step '{step.name}' runs ({step.workflow_id}) was deleted, so it cannot run. "
+                  "Point the step at another workflow."),
+            label=step.name or step.workflow_id,
+        ):
+            yield event
+
+
 class EndStepExecutor:
     """Terminate the orchestration."""
 
@@ -3183,4 +3254,5 @@ STEP_EXECUTORS = {
     StepType.END: EndStepExecutor(),
     StepType.RETRIEVE: RetrieveStepExecutor(),
     StepType.INGEST: IngestStepExecutor(),
+    StepType.WORKFLOW: WorkflowStepExecutor(),
 }

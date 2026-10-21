@@ -15,7 +15,7 @@ import { humanizeToolName } from '@/lib/toolNames';
 import type { IngestSettings, RetrieveSettings, StepConfig, StepType } from '@/types/orchestration';
 import {
     KeyChips, LocalInput, ModelSelect, Note, StateKeyHelper, StepTargetSelect, intOrUndefined,
-    type KnowledgeBaseOption, type StepSectionProps,
+    type KnowledgeBaseOption, type StepSectionProps, type WorkflowOption,
 } from './shared';
 import { PythonEditor } from './PythonEditor';
 import { agentKind, agentOptions, memberNames, teamSettings, type KindAgent } from '../agentKind';
@@ -452,6 +452,56 @@ function ToolPromptFields({
             </Field>
             <HistoryToggle step={step} update={update} />
         </>
+    );
+}
+
+/**
+ * A Workflow step (E3): another workflow by its id, run as a nested run of this step. Its input is the rendered
+ * prompt (the run's own input when it is empty); what it made is this step's output.
+ */
+function WorkflowSection({ step, update, orchestration, workflows, showVaultHints }: StepSectionProps) {
+    const others: WorkflowOption[] = (workflows ?? []).filter((w) => w.id !== orchestration?.id);
+    const picked = others.find((w) => w.id === step.workflow_id);
+    return (
+        <div className="space-y-3">
+            <Note>
+                <strong>Run another workflow</strong> — runs it from the start as part of this run, waits for it
+                to finish, and writes what it made to this step&apos;s output. A question it asks is answered here.
+            </Note>
+            <Field label="Workflow" required hint={picked?.description || undefined}>
+                {workflows ? (
+                    <Combobox
+                        size="sm"
+                        aria-label="Workflow"
+                        value={step.workflow_id}
+                        onChange={(id) => update({ workflow_id: id || undefined })}
+                        options={others.map((w) => ({ value: w.id, label: w.name || w.id, hint: w.description || undefined }))}
+                        placeholder="Select a workflow…"
+                        searchPlaceholder="Search workflows…"
+                    />
+                ) : (
+                    <LocalInput
+                        size="sm"
+                        aria-label="Workflow id"
+                        placeholder="orch_…"
+                        value={step.workflow_id || ''}
+                        onCommit={(id) => update({ workflow_id: id.trim() || undefined })}
+                    />
+                )}
+            </Field>
+            <Field label="Its input" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
+                <MarkdownEditor
+                    key={step.id}
+                    compact
+                    rows={3}
+                    profile="step-prompt"
+                    mentions={showVaultHints ? vaultMentions : undefined}
+                    value={step.prompt_template || ''}
+                    onChange={(prompt_template) => update({ prompt_template: prompt_template || undefined })}
+                    placeholder="Empty: this run's own input. Or e.g. Summarise {{ state.notes }}"
+                />
+            </Field>
+        </div>
     );
 }
 
@@ -1396,4 +1446,5 @@ export const STEP_SECTIONS: Record<StepType, React.FC<StepSectionProps>> = {
     end: EndSection,
     retrieve: RetrieveSection,
     ingest: IngestSection,
+    workflow: WorkflowSection,
 };

@@ -76,7 +76,7 @@ class RouteFailed(Exception):
 
 #: Step types with no model to override: they run no LLM at all.
 _MODEL_FREE_STEP_TYPES = {"end", "human", "merge", "parallel", "loop", "print", "transform",
-                          "retrieve", "ingest"}
+                          "retrieve", "ingest", "workflow"}
 
 
 def apply_model_override(orchestration: "Orchestration", model: str | None, roles: dict | None = None) -> None:
@@ -1430,7 +1430,9 @@ class OrchestrationEngine:
                 run.step_history.append({
                     "step_id": step_id,
                     "step_name": parent_step.name if parent_step else "",
-                    "step_type": "agent", "status": "failed", "error": failure,
+                    # The step's own kind: an Agent step whose agent is a workflow, or a Workflow step (E3).
+                    "step_type": parent_step.type.value if parent_step else "agent",
+                    "status": "failed", "error": failure,
                     "ended_at": ended_at,
                 })
             run.status = "failed"
@@ -1466,7 +1468,7 @@ class OrchestrationEngine:
             run.step_history.append({
                 "step_id": step_id,
                 "step_name": parent_step.name if parent_step else "",
-                "step_type": "agent",
+                "step_type": parent_step.type.value if parent_step else "agent",
                 "status": "completed",
                 "ended_at": ended_at,
             })
