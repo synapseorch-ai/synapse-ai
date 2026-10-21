@@ -1,0 +1,1 @@
+Call `report_findings` with one option per provider the report below looked at, each with how it would connect here (mcp, api, none or unclear), what it needs, and the pages it read, exactly as the report says.

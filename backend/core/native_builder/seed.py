@@ -18,11 +18,15 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from typing import Any
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _AGENTS_DIR = os.path.join(_HERE, "agents")
 _ORCH_FILE = os.path.join(_HERE, "orchestration.json")
+#: The prompt library (SAI2-P1, F773): a passage two places share, once, as `<name>.md`, named `{{PROMPT:name}}`.
+_PROMPTS_DIR = os.path.join(_HERE, "prompts")
+FRAGMENT = re.compile(r"\{\{PROMPT:([a-z0-9_]+)\}\}")
 
 NATIVE_BUILDER_ORCH_ID = "orch_native_builder"
 NATIVE_BUILDER_AGENT_ID = "agent_native_builder"
@@ -50,26 +54,50 @@ def _load_json(path: str) -> Any:
         return json.load(f)
 
 
-def _expand_cheatsheet(text: str) -> str:
+def fragment_names() -> list[str]:
+    """The prompt library's passages, by name."""
+    if not os.path.isdir(_PROMPTS_DIR):
+        return []
+    return sorted(n[:-3] for n in os.listdir(_PROMPTS_DIR) if n.endswith(".md"))
+
+
+def prompt_fragment(name: str) -> str:
+    """One passage, exactly as written: a file's one trailing newline (an editor's) is not part of it."""
+    path = os.path.join(_PROMPTS_DIR, f"{name}.md")
+    if not os.path.isfile(path):
+        raise KeyError(f"no prompt fragment '{name}' in core/native_builder/prompts")
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    return text[:-1] if text.endswith("\n") else text
+
+
+def expand_prompts(text: str) -> str:
+    """A prompt as it runs: its library passages, then the step-type cheatsheet, written in where they are named.
+    A name the library does not have is an error, never a blank."""
     # Imported lazily to avoid a circular import (this module is imported from __init__.py).
     from . import STEP_TYPE_CHEATSHEET
     if not isinstance(text, str):
         return text
+    text = FRAGMENT.sub(lambda m: prompt_fragment(m.group(1)), text)
     return text.replace("{{STEP_TYPE_CHEATSHEET}}", STEP_TYPE_CHEATSHEET)
 
 
 def _apply_cheatsheet_to_agent(agent: dict) -> dict:
     sp = agent.get("system_prompt")
     if isinstance(sp, str):
-        agent["system_prompt"] = _expand_cheatsheet(sp)
+        agent["system_prompt"] = expand_prompts(sp)
     return agent
+
+
+#: The step fields a model or a person reads, each expanded as an agent's system prompt is.
+PROMPT_FIELDS = ("prompt_template", "evaluator_prompt", "human_prompt", "print_content")
 
 
 def _apply_cheatsheet_to_orch(orch: dict) -> dict:
     for step in orch.get("steps", []) or []:
-        pt = step.get("prompt_template")
-        if isinstance(pt, str):
-            step["prompt_template"] = _expand_cheatsheet(pt)
+        for field in PROMPT_FIELDS:
+            if isinstance(step.get(field), str):
+                step[field] = expand_prompts(step[field])
     return orch
 
 
