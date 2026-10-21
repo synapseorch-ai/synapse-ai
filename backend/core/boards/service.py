@@ -9,7 +9,9 @@ one shape.
 What a host knows and the engine does not — the names of its agents, workflows and schedules, which schedule
 runs what, a workflow's latest run — comes in as a `Directory` and a `current_run`, built by the host per request.
 
-A team's run boards (`scope="run"`, TEAM1a) are never a person's: they are not listed, read or written here.
+A team's run boards (`scope="run"`, TEAM1a) are never a person's: they are not listed, read or written here. Nor,
+yet, is Synapse AI's own board (`scope="assistant"`, SAI2-P1, `core.boards.assistant`): P3 shows it, each person their
+own cards.
 """
 from __future__ import annotations
 
@@ -24,6 +26,8 @@ LIVE_LIMIT = 200
 DONE_LIMIT = 50
 #: History kinds a person can take back (`store.undo`).
 UNDOABLE = frozenset({"created", "edited", "closed", "reopened", "comment"})
+#: Scopes a person's screens never list, read or write here.
+_NOT_A_PERSONS = ("run", "assistant")
 #: The principals an access list names, as a person says them.
 PRINCIPAL_NOUN = {"agent": "agent", "workflow": "workflow", "schedule": "schedule"}
 
@@ -74,7 +78,7 @@ def _access_out(entry: store.Access, directory: Directory) -> dict[str, Any]:
 
 async def _readable(board_id: str) -> store.Board:
     board = await store.get_board(board_id)
-    if board is None or board.scope == "run":
+    if board is None or board.scope in _NOT_A_PERSONS:
         raise store.NoSuchBoard(f"There is no board {board_id}.")
     return board
 
@@ -90,7 +94,7 @@ async def _readable_card(card_id: str) -> store.Card:
 async def boards_list(directory: Directory, *, max_shared: int) -> dict[str, Any]:
     """Every board a person can open — shared, each workflow's and each schedule's — with its live counts, and
     how many shared boards the workspace has of its cap (0 is none)."""
-    boards = [b for b in await store.list_boards() if b.scope != "run"]
+    boards = [b for b in await store.list_boards() if b.scope not in _NOT_A_PERSONS]
     counts = await store.live_counts([b.id for b in boards])
     shared = sum(1 for b in boards if b.scope == "shared")
     return {"boards": [_board_out(b, directory, counts.get(b.id, (0, 0))) for b in boards],

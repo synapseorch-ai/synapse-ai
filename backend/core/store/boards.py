@@ -28,6 +28,7 @@ own session, checked, and then written with a WHERE that holds the read still tr
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -43,7 +44,11 @@ from core.tenancy import get_tenant
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ("shared", "workflow", "schedule", "run")
+SCOPES = ("shared", "workflow", "schedule", "run", "assistant")
+#: Where a build or a change stands on Synapse AI's board (scope `assistant`, SAI2-P1): open while it is being
+#: drafted, waits on its person or on a connection; closed once built, changed or set aside.
+STAGES = ("drafting", "waiting", "needs_connection", "built", "changed", "set_aside")
+CLOSED_STAGES = ("built", "changed", "set_aside")
 PRINCIPALS = ("agent", "workflow", "schedule")
 ACCESS = ("add", "work")
 KINDS = ("task", "note")
@@ -55,6 +60,8 @@ TITLE_MAX = 200
 BODY_MAX = 4000
 RESULT_MAX = 4000
 COMMENT_MAX = 2000
+#: A card's typed object (Synapse AI's Plan / Change), as JSON: far more than a plan card holds.
+DATA_MAX = 64000
 KEY_MAX = 200
 NAME_MAX = 120
 #: The most shared boards an agent, a workflow or a schedule is given (C8).
@@ -223,6 +230,10 @@ class Card:
     created_at: datetime | None
     updated_at: datetime | None
     closed_at: datetime | None
+    #: Synapse AI's board only (SAI2-P1): its stage, its typed Plan / Change, and the person it belongs to.
+    stage: str | None = None
+    data: dict[str, Any] | None = None
+    owner_id: str | None = None
 
     def held_by(self, holder: Holder | None) -> bool:
         return (holder is not None and self.status == "claimed"
@@ -281,7 +292,7 @@ def _card(row, now: datetime | None = None) -> Card:
         holder_agent=holder_agent, holder_key=holder_key, holder_label=holder_label, claim_expires_at=expires,
         created_by=dict(row.created_by or {}), by_person=bool(row.by_person), run_id=row.run_id,
         tainted=bool(row.tainted), created_at=_aware(row.created_at), updated_at=_aware(row.updated_at),
-        closed_at=_aware(row.closed_at),
+        closed_at=_aware(row.closed_at), stage=row.stage, data=row.data, owner_id=row.owner_id,
     )
 
 
@@ -301,6 +312,28 @@ def _text(value: Any, what: str, limit: int, *, required: bool = False) -> str:
     if holds_credential(text):
         raise SecretInCard()
     return text
+
+
+def _stage(value: Any) -> str | None:
+    if value is None:
+        return None
+    if value not in STAGES:
+        raise BadValue(f"A card's stage is one of {', '.join(STAGES)}.")
+    return value
+
+
+def _data(value: Any) -> dict[str, Any] | None:
+    """A card's typed object: a JSON object, held to the same rule as its text (no credential), and capped."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise BadValue("A card's data is a JSON object.")
+    text = json.dumps(value, ensure_ascii=False)
+    if len(text) > DATA_MAX:
+        raise BadValue(f"The card's data is {len(text):,} characters, more than the {DATA_MAX:,} a card keeps.")
+    if holds_credential(text):
+        raise SecretInCard()
+    return value
 
 
 def _key(value: Any) -> str | None:
@@ -340,11 +373,12 @@ async def find_scoped_board(scope: str, scope_id: str) -> Board | None:
 
 
 async def get_or_create_scoped_board(scope: str, scope_id: str, *, by: Actor | None = None) -> Board:
-    """A workflow's, a schedule's or a run's board, made at its first write. Two first writes make one board."""
+    """A workflow's, a schedule's or a run's board, or the workspace's one Synapse AI board (`assistant`, no
+    scope id), made at its first write. Two first writes make one board."""
     from core.store import session
     from core.store.models import BoardDB
 
-    if scope not in ("workflow", "schedule", "run") or not scope_id:
+    if not ((scope in ("workflow", "schedule", "run") and scope_id) or (scope == "assistant" and not scope_id)):
         raise BadValue(f"No board scope {scope!r} for {scope_id!r}.")
     found = await find_scoped_board(scope, scope_id)
     if found is not None:
@@ -758,7 +792,8 @@ async def _explain(card_id: str, holder: Holder | None, version: int | None) -> 
 
 
 async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "task", key: str | None = None,
-                   by: Actor, tainted: bool = False, max_open: int = 0) -> tuple[Card, bool]:
+                   by: Actor, tainted: bool = False, max_open: int = 0, stage: str | None = None,
+                   data: dict[str, Any] | None = None, owner_id: str | None = None) -> tuple[Card, bool]:
     """Add a card, or, when `key` is already on the board, return that card unchanged. Whether it was added.
 
     `max_open` is the board's cap on open cards (0: none; a `run` board has none). Two adds of one key at once
@@ -772,6 +807,7 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
     title = _text(title, "title", TITLE_MAX, required=True)
     body = _text(body, "body", BODY_MAX)
     key = _key(key)
+    stage, data = _stage(stage), _data(data)
     board = await get_board(board_id)
     if board is None:
         raise NoSuchBoard(f"There is no board {board_id}.")
@@ -790,11 +826,12 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
                     tenant_id=tenant, id=card_id, board_id=board_id, kind=kind, title=title, body=body,
                     status="open", result="", key=key, version=1, created_by=by.to_json(),
                     by_person=bool(by.person), run_id=by.run or None, tainted=bool(tainted), event_seq=1,
-                    created_at=now, updated_at=now))
+                    created_at=now, updated_at=now, stage=stage, data=data, owner_id=owner_id or None))
                 await s.flush()
                 s.add(BoardCardEventDB(
                     tenant_id=tenant, card_id=card_id, seq=1, board_id=board_id, kind="created", by=by.to_json(),
-                    after={"kind": kind, "title": title, "body": body, "key": key}, tainted=bool(tainted),
+                    after={"kind": kind, "title": title, "body": body, "key": key,
+                           **({"stage": stage} if stage else {})}, tainted=bool(tainted),
                     created_at=now))
         except IntegrityError:
             if key:
@@ -812,7 +849,8 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
 
 async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder | None, tainted: bool = False,
                       title: str | None = None, body: str | None = None, status: str | None = None,
-                      result: str | None = None) -> Card:
+                      result: str | None = None, stage: str | None = None,
+                      data: dict[str, Any] | None = None) -> Card:
     """Change a card read at `version`: its title or body, its result, or its status — `done` (a task succeeded,
     or a note is no longer true), `failed` (a task, with the reason as `result`), or `open` again.
 
@@ -839,6 +877,12 @@ async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder |
         if card.kind == "note":
             raise BadValue("A note takes no result: change its body, or close it when it is no longer true.")
         after["result"] = _text(result, "result", RESULT_MAX)
+    if stage is not None:
+        after["stage"] = _stage(stage)
+    # The typed object is written, never kept in the history: an undo restores what the history holds, and an old
+    # copy of a plan must never come back in place of the live one (SAI2-P1).
+    new_data = _data(data) if data is not None else None
+    data_changed = new_data is not None and new_data != card.data
     closing = False
     if status is not None:
         if status == "done":
@@ -864,13 +908,15 @@ async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder |
     # Only what changes is written and kept; a status always changes (an unchanged one is refused above).
     after = {k: v for k, v in after.items()
              if k == "status" or getattr(card, k) != (_parse(v) if k == "closed_at" else v)}
-    if not after:
+    if not after and not data_changed:
         raise BadValue("Nothing to change: name a new title, body, result or status.")
     before = {k: (_iso(card.closed_at) if k == "closed_at" else getattr(card, k)) for k in after}
     if before.get("status") == "claimed":
         before["status"] = "open"  # an undo reopens; it never gives a claim back
 
     values: dict[str, Any] = {k: (_parse(v) if k == "closed_at" else v) for k, v in after.items()}
+    if data_changed:
+        values["data"] = new_data
     values.update(version=card.version + 1, updated_at=now)
     if tainted:
         values["tainted"] = True

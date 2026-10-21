@@ -22,6 +22,12 @@ changed cannot be reached by ADD COLUMN at all, and neither dialect can repoint
 one in place. It is implemented as the copy-and-rename every such migration
 reduces to, and it is guarded so tightly that it runs once and then never
 matches again. Two entries here would be the signal for Alembic.
+
+The second is ``_RECHECKS`` (SAI2-P1, 2026-10-21): a CHECK widened after it
+shipped — `boards.scope` gaining Synapse AI's `assistant`. SQLite cannot alter
+a constraint, so the table is rebuilt the same way; Postgres drops and re-adds
+the one constraint. Naveen chose this knowing it is that signal: the next
+change of this kind brings in Alembic rather than a third exception.
 """
 from __future__ import annotations
 
@@ -62,6 +68,19 @@ _ADDITIONS: tuple[tuple[str, str, str, str | None], ...] = (
     # Why a host stopped a golden set before its last case (F441): a wallet that
     # could not pay for the next one. NULL for any other ending.
     ("eval_suite_runs", "stop_reason", "TEXT", None),
+    # Synapse AI's board (SAI2-P1): a card's stage, its typed Plan / Change, and the person it belongs to. NULL on
+    # every other board.
+    ("board_cards", "stage", "VARCHAR(32)", None),
+    ("board_cards", "data", "JSON", None),
+    ("board_cards", "owner_id", "VARCHAR(255)", None),
+)
+
+
+#: (table, CHECK constraint name, a value it must allow) — a CHECK widened after it shipped. See the module
+#: docstring: the second exception, and the last.
+_RECHECKS: tuple[tuple[str, str, str], ...] = (
+    # Synapse AI's own board is scope `assistant` (SAI2-P1); BOARD1a shipped four scopes.
+    ("boards", "ck_boards_scope", "assistant"),
 )
 
 
@@ -102,6 +121,24 @@ async def run_migrations(engine: AsyncEngine) -> list[str]:
             # every column the additions below would add.
             existing = await conn.run_sync(_existing_columns)
 
+        for table, constraint, value in _RECHECKS:
+            if table not in existing:
+                continue   # create_all just made it with the current check
+            sqltext = await conn.run_sync(_check_text, table, constraint)
+            if sqltext is None or f"'{value}'" in sqltext:
+                continue
+            if conn.dialect.name == "postgresql":
+                from core.store.models import Base
+
+                wanted = next(c for c in Base.metadata.tables[table].constraints if c.name == constraint)
+                await conn.execute(text(f"ALTER TABLE {table} DROP CONSTRAINT {constraint}"))
+                await conn.execute(text(f"ALTER TABLE {table} ADD CONSTRAINT {constraint} CHECK ({wanted.sqltext})"))
+            else:
+                await _rebuild(conn, table, existing[table])
+                existing = await conn.run_sync(_existing_columns)
+            applied.append(f"{table} (its check {constraint} now allows '{value}')")
+            print(f"[store] widened {table}'s check {constraint} to allow '{value}'; rows kept", flush=True)
+
         for table, column, ddl_type, backfill_from in _ADDITIONS:
             if table not in existing:
                 # create_all just made it from the current model, so the column
@@ -131,6 +168,14 @@ def _existing_columns(sync_conn) -> dict[str, set[str]]:
         name: {c["name"] for c in inspector.get_columns(name)}
         for name in inspector.get_table_names()
     }
+
+
+def _check_text(sync_conn, table: str, constraint: str) -> str | None:
+    """The SQL of a named CHECK on `table`, or None when the database does not report it."""
+    for check in inspect(sync_conn).get_check_constraints(table):
+        if check.get("name") == constraint:
+            return str(check.get("sqltext") or "")
+    return None
 
 
 def _primary_key(sync_conn, table: str) -> list[str]:

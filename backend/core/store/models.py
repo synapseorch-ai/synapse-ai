@@ -1003,7 +1003,7 @@ class BoardDB(Base):
     __table_args__ = (
         PrimaryKeyConstraint("tenant_id", "id", name="boards_pkey"),
         UniqueConstraint("tenant_id", "scope", "scope_id", "name", name="uq_boards_tenant_scope_name"),
-        CheckConstraint("scope IN ('shared', 'workflow', 'schedule', 'run')", name="ck_boards_scope"),
+        CheckConstraint("scope IN ('shared', 'workflow', 'schedule', 'run', 'assistant')", name="ck_boards_scope"),
     )
 
 
@@ -1060,6 +1060,11 @@ class BoardCardDB(Base):
     run_id = Column(String(255))                              # the run that added it
     tainted = Column(Boolean, nullable=False, default=False)
     event_seq = Column(Integer, nullable=False, default=0)
+    # Synapse AI's board (scope `assistant`, SAI2-P1): where a build or a change stands, its typed Plan / Change,
+    # and the person it belongs to. NULL on every other board.
+    stage = Column(String(32))
+    data = Column(JSONType)
+    owner_id = Column(String(255))
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_now)
     closed_at = Column(DateTime(timezone=True))
