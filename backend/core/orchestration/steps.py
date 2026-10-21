@@ -2635,6 +2635,17 @@ def render_tool_arguments(value: Any, state: dict) -> Any:
     return _ARG_REF.sub(lambda m: _text(_state_value(state, m.group(1) or m.group(2))), value)
 
 
+def _typed_object(value: Any) -> dict | None:
+    """`value` as an object that names itself (`{"object": "change", …}`), or JSON text of one; else None."""
+    if isinstance(value, str):
+        from core.expressions import _json_object
+
+        value = _json_object(value)
+    if isinstance(value, dict) and isinstance(value.get("object"), str) and value["object"]:
+        return value
+    return None
+
+
 class HumanStepExecutor:
     """Pause execution and request human input.
 
@@ -2672,6 +2683,7 @@ class HumanStepExecutor:
                     break
 
         channel_id = step.human_channel_id
+        typed = _typed_object(run.shared_state.get(context_key)) if context_key else None
 
         yield {
             "type": "human_input_required",
@@ -2682,6 +2694,9 @@ class HumanStepExecutor:
             "agent_context": agent_context,
             "context_key": context_key,
             "channel_id": channel_id,  # frontend can show which channel was notified
+            # The object a panel draws the question from, when the context is one that names itself (F795): Synapse
+            # AI's checked Change. The prompt's words stay the question for everything else that reads it.
+            **({"context": typed} if typed is not None else {}),
         }
 
 
