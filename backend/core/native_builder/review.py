@@ -17,6 +17,16 @@ from core.product_tools.caller import Caller
 #: The run-state key the approval is kept under (private: a step's prompt never reads it).
 REVIEW_KEY = "_approved_review"
 
+#: F754's yes, word for word as the review gates' `if_condition` and the panel's `APPROVAL_WORDS` take it (a test
+#: holds the three equal): code that acts on a yes checks it again rather than trusting the branch it is on.
+APPROVAL_WORDS = ("approve", "approved", "ok", "okay", "yes", "looks good", "lgtm", "go ahead", "build it", "proceed",
+                  "sounds good", "do it", "👍")
+
+
+def is_yes(answer: Any) -> bool:
+    """The gate's own reading: trimmed, lower-cased, with a trailing space, dot or bang dropped."""
+    return isinstance(answer, str) and answer.strip().lower().strip(" .!") in APPROVAL_WORDS
+
 
 def record_approval(state: dict[str, Any], obj: Any, caller: Caller, calls: list[tuple[str, dict[str, Any]]], *,
                     run_id: str = "") -> ApprovedReview:

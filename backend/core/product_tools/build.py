@@ -100,6 +100,22 @@ _TARGET_ARGS: tuple[tuple[str, str], ...] = (
 _MODULE: contextvars.ContextVar[Any] = contextvars.ContextVar("product_tools_server_module", default=None)
 
 
+#: Where a host caller wants the builder's UI events (`resource_saved`, a card) from the calls it makes: Synapse AI's
+#: apply step hands them to its run, so `run_writes` and the stream see them (F695's host half). None drops them, as
+#: over MCP, which has no stream to send them to.
+_EVENTS: contextvars.ContextVar[list | None] = contextvars.ContextVar("product_tools_build_events", default=None)
+
+
+@contextlib.contextmanager
+def collecting_events(sink: list) -> Iterator[list]:
+    """The builder's events from the calls made inside, appended to `sink`."""
+    token = _EVENTS.set(sink)
+    try:
+        yield sink
+    finally:
+        _EVENTS.reset(token)
+
+
 @contextlib.contextmanager
 def using_module(module: Any) -> Iterator[None]:
     """The tool sessions a builder tool is handed (`server_module`), for the calls made inside: the MCP server's
@@ -144,8 +160,10 @@ def _handler(name: str):
         module = _MODULE.get()
         if module is None:
             import core.server as module  # this process's own tool sessions
-        # The builder's UI events have no stream to go to from here (F695).
-        output, _events = await execute_builder_tool_with_events(name, args, module)
+        output, events = await execute_builder_tool_with_events(name, args, module)
+        sink = _EVENTS.get()
+        if sink is not None:
+            sink.extend(events)  # a host's run streams them (F695); over MCP there is no stream to go to
         try:
             parsed = json.loads(output)
         except ValueError:
