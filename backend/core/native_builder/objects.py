@@ -19,8 +19,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from core.builder_actions import ACTIONS
 from core.models_orchestration import StepType
+from core.native_builder import change_ops as _change_ops
 
 #: The engine's step types, as a Plan names them.
 STEP_TYPES = tuple(t.value for t in StepType)
@@ -176,16 +176,15 @@ class Request(_Written):
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")
 
 
-#: The write ops a change may hold, beside the button acts (`ACTIONS`). Closed: a change with no op that fits is
-#: answered "can't" with the nearest thing that works (P0's finding 1). P2 owns their meaning and may extend it.
-WRITE_OPS = ("update_workflow", "rename_workflow", "delete_workflow", "set_schedule", "rename_schedule",
-             "delete_schedule", "set_agent_model", "set_agent_tools", "set_agent_skills", "set_agent_instructions",
-             "rename_agent", "delete_agent", "set_tool_policy")
-CHANGE_OPS = (*ACTIONS, *WRITE_OPS)
+#: The ops a change may hold: the button acts (`ACTIONS`), the writes, and two hand-overs to another route
+#: (`edit_steps`, `create`). Closed, and one table's (`change_ops.OPS`, F792): a change with no op that fits is
+#: answered "can't" with the nearest thing that works (P0's finding 1).
+CHANGE_OPS = tuple(_change_ops.OPS)
+WRITE_OPS = tuple(n for n, op in _change_ops.OPS.items() if not op.is_act)
 
 
 class Target(_Written):
-    kind: Literal["workflow", "agent", "schedule", "tool", "board", "knowledge_base", "run", "card"]
+    kind: Literal[_change_ops.TARGET_KINDS]  # type: ignore[valid-type]
     id: str | None = Field(None, description="Its id when known; else its name")
     name: str | None = None
 
@@ -199,7 +198,7 @@ class ChangeOp(_Written):
     @property
     def is_act(self) -> bool:
         """A button act: it goes on a card the person presses, never through the plan review (F755)."""
-        return self.op in ACTIONS
+        return _change_ops.OPS[self.op].is_act
 
 
 class Change(_Written):
@@ -207,6 +206,8 @@ class Change(_Written):
 
     ops: list[ChangeOp] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
+    #: "Undo that": the board card of the change to undo. Code builds the inverse ops from its record (F797).
+    undo_of: str | None = None
 
     @property
     def has_writes(self) -> bool:
