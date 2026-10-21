@@ -92,6 +92,21 @@ class TestTheEstimate:
         assert NESTED in priced.open
         assert priced.low == priced.high == 1.0
 
+    def test_it_costs_what_a_workflow_agents_step_on_the_same_workflow_costs(self):
+        """Parity with the orchestrator delegate (SAI2, 10-21): one step, `nested`, "or more". Cloud's credit hold
+        prices the same way, so a Workflow step neither adds the child's cost nor drops the step."""
+        from core.orchestration.estimate import span
+
+        agents = {"agent_wrap": {"id": "agent_wrap", "type": "orchestrator", "orchestration_id": "orch_e2_child"}}
+        delegate = S.make_orchestration(id="orch_e2", entry_step_id="nested", steps=[
+            {"id": "nested", "name": "Nested", "type": "agent", "agent_id": "agent_wrap", "prompt_template": "go",
+             "output_key": "result", "next_step_id": "end"}, _end()])
+        direct = _parent("orch_e2", "orch_e2_child")
+        price = {"agent": (3.0, 3.0), "workflow": (3.0, 3.0)}
+        a = span(delegate, lambda step: price[step["type"]], agents=agents)
+        b = span(direct, lambda step: price[step["type"]], agents=agents)
+        assert (a.low, a.high, a.open) == (b.low, b.high, b.open)
+
     def test_it_calls_no_model_itself(self):
         from core.orchestration.estimate import step_model
 
