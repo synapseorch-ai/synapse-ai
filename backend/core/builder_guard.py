@@ -411,6 +411,26 @@ def exempt_in_plan(plan: str) -> set[str]:
     return set(re.findall(r"`([^`\s]+)`", rest[:end.start()] if end else rest))
 
 
+async def acting_tool(name: str, server_module: Any, custom: list | None = None):
+    """The tool `name` when it changes something outside this workspace, else None: one that declares it only reads,
+    one nothing provides (F489's to say), or one a lookup cannot reach. Anything undeclared acts, as the policy
+    treats it; an outside server's own claim to only read is not believed (TAG1)."""
+    from core.tools import resolve_one_tool, tool_hints
+
+    if custom is None:
+        from core.routes.tools import load_custom_tools
+
+        custom = await load_custom_tools()
+    try:
+        tool = await resolve_one_tool(server_module, name, {"tools": [name]}, custom)
+    except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence either way
+        return None
+    if tool is None:
+        return None
+    hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
+    return None if hints.declared and hints.read_only else tool
+
+
 async def unapproved(workflows: list[dict], agents: dict[str, dict], server_module: Any, *,
                      made_agents: set[str], exempt: set[str], strict: bool = True) -> tuple[list[str], list[str]]:
     """`(issues, warnings)`: tools that change something outside this workspace and can run with nobody approving.
@@ -425,7 +445,6 @@ async def unapproved(workflows: list[dict], agents: dict[str, dict], server_modu
     from core.config import load_settings
     from core.routes.tools import load_custom_tools
     from core.tool_policy import decide, resolve_policy
-    from core.tools import resolve_one_tool, tool_hints
 
     settings = load_settings()
     custom = await load_custom_tools()
@@ -433,14 +452,7 @@ async def unapproved(workflows: list[dict], agents: dict[str, dict], server_modu
     warnings: list[str] = []
 
     async def acting(name: str):
-        try:
-            tool = await resolve_one_tool(server_module, name, {"tools": [name]}, custom)
-        except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence either way
-            return None
-        if tool is None:
-            return None  # nothing provides it: F489's to say
-        hints = tool_hints(tool, trusted=getattr(tool, "trusted", True))
-        return None if hints.declared and hints.read_only else tool
+        return await acting_tool(name, server_module, custom)
 
     def say(message: str, own: bool) -> None:
         (issues if strict and own else warnings).append(message)
