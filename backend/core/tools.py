@@ -682,9 +682,23 @@ def _visitor_block() -> str:
     return VISITOR_BLOCK if visitor.current() is not None else ""
 
 
+#: What the stable prompt says of the task list, only to an agent the engine offers `update_tasks` to (F803): one
+#: with `planning` off, `skip_default_tools` or a caller's own tool list does not have it, and a model taught it
+#: calls it anyway.
+TASK_LIST_SECTION = (
+    "**TASK LIST (`update_tasks`):**\n"
+    "Your task list is shown to the user live — it is how they watch you work. "
+    "For any multi-step job (3+ distinct actions), call `update_tasks` FIRST to write the plan, then keep it true: exactly one task `in_progress` at a time, mark a task `completed` the moment it is done (never batch updates), and mark a task `cancelled` if it turns out not to apply. "
+    "Every call must contain the FULL list — it replaces the previous one. "
+    "Skip the task list for trivial single-step requests. "
+    "You will not be able to finish while tasks are still open: complete them or cancel them before giving your final response. "
+    "`update_tasks` only records the plan — it cannot fetch data or act; make progress with real tools between updates.\n\n"
+)
+
+
 def build_system_prompt(agent_system_template, tools_json, session_id, session_state_getter,
                         memory_store, agent_id=None, turns_remaining=None, max_turns=None,
-                        inject_tools=True, native_reasoning=False):
+                        inject_tools=True, native_reasoning=False, task_list=True):
     """The STABLE system prompt: identical on every turn of a step.
 
     Identity, reasoning protocol, tools (for providers without native tool
@@ -771,10 +785,7 @@ If you do not need to use a tool, reply in plain text.
 **VAULT (LARGE OUTPUT HANDLING):**
 When a tool's output exceeds the character limit, it is automatically saved to a vault file. You will receive a JSON reference containing the vault file path, file type, size, and total line count — instead of the raw output. Its `message` names the path to use and the tools that read a slice of it or search it; follow that rather than reading the whole file, which would only be saved to the vault again.
 
-**TASK LIST (`update_tasks`):**
-Your task list is shown to the user live — it is how they watch you work. For any multi-step job (3+ distinct actions), call `update_tasks` FIRST to write the plan, then keep it true: exactly one task `in_progress` at a time, mark a task `completed` the moment it is done (never batch updates), and mark a task `cancelled` if it turns out not to apply. Every call must contain the FULL list — it replaces the previous one. Skip the task list for trivial single-step requests. You will not be able to finish while tasks are still open: complete them or cancel them before giving your final response. `update_tasks` only records the plan — it cannot fetch data or act; make progress with real tools between updates.
-
-### LINKS & REFERENCES
+""" + (TASK_LIST_SECTION if task_list else "") + """### LINKS & REFERENCES
 Whenever a tool returns URLs, source links, documentation references, or any other hyperlinks — **always include them in your response**. Present them clearly so the user can visit them directly. If you know of relevant official documentation, articles, or resources that would help the user, proactively include those links even if not explicitly returned by a tool.
 
 ### EXAMPLE INTERACTION

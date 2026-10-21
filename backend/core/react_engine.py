@@ -2163,6 +2163,7 @@ async def run_agent_step(
                 _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
                 inject_tools=inject_tools_in_prompt,
                 native_reasoning=_native_reasoning,
+                task_list=_task_tool_enabled,  # taught only where offered (F803)
             )
             if system_prompt_extra:
                 active_sys_prompt = active_sys_prompt + "\n\n" + system_prompt_extra
