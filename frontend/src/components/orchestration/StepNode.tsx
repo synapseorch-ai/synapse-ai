@@ -52,7 +52,7 @@ function summaryFor(step: StepConfig, agentName?: string): string | null {
     const clip = (s: string, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
     switch (step.type) {
         case 'agent': return agentName ?? 'No agent selected';
-        case 'tool': return step.forced_tool || 'No tool selected';
+        case 'tool': return step.forced_tool ? (step.tool_arguments != null ? `${step.forced_tool} · set arguments` : step.forced_tool) : 'No tool selected';
         case 'llm': return step.prompt_template ? clip(step.prompt_template) : 'No prompt set';
         case 'evaluator': {
             const labels = Object.keys(step.route_map || {});

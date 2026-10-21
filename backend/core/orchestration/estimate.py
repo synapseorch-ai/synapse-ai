@@ -61,7 +61,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.orchestration.step_models import MODEL_STEP_TYPES, model_or_none
+from core.orchestration.step_models import MODEL_STEP_TYPES, calls_a_model, model_or_none
 
 #: What the engine calls a Loop's count and its cap when a step leaves them unset
 #: (`core/models_orchestration.py::StepConfig`).
@@ -303,7 +303,7 @@ def step_model(step: Mapping[str, Any], agents: Mapping[str, Mapping[str, Any]],
     A step that runs another workflow calls no model itself.
     """
     kind = _kind(step)
-    if kind not in MODEL_STEP_TYPES:
+    if kind not in MODEL_STEP_TYPES or not calls_a_model(step):
         return None
     own = model_or_none(step.get("model"))
     if kind != "agent":

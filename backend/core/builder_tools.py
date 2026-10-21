@@ -2552,6 +2552,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         tool_issues, tool_warnings = await builder_guard.missing_in([orch, *ours], agents, server_module)
         issues += tool_issues
         verdict["warnings"] = [*verdict.get("warnings", []), *tool_warnings]
+        # E1: a Tool step's set arguments fit its tool, or every run fails.
+        issues += await builder_guard.argument_issues([orch, *ours], server_module)
         # Decision 4 (BWA1): in a build of its own, nothing that changes something outside runs with nobody
         # approving it, except what the approved plan lets act without asking. A workflow it only edits is warned.
         plan, made = await _plan_and_agents_of(run)
@@ -3416,6 +3418,21 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                     f"earlier step '{k}' as its output_key, or change the read to a key that "
                     f"is already written. Remove the read only if the step does not need that value."
                 )
+        # A Tool step's set arguments (E1) read state with no model to repair them: a key nothing writes would
+        # fail every run ("could not set its arguments").
+        if s.get("type") == "tool" and s.get("tool_arguments") is not None:
+            if not isinstance(s["tool_arguments"], dict):
+                issues.append(f"Tool step '{sid}' has tool_arguments that are not an object of argument → value.")
+            else:
+                from core.orchestration.steps import tool_argument_refs
+
+                for ref in tool_argument_refs(s["tool_arguments"]):
+                    key = ref.split(".")[0]
+                    if key not in writable and key not in (orch.get("state_schema") or {}):
+                        issues.append(
+                            f"Tool step '{sid}' sets an argument from 'state.{ref}', but nothing writes '{key}' — "
+                            f"give an earlier step '{key}' as its output_key, or declare it in the state schema."
+                        )
         # An Ingest step reads its records from one key. A key the schema
         # declares counts too: a run's caller can fill it, and a list default
         # is a way to seed records.

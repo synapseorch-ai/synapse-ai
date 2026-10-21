@@ -26,6 +26,16 @@ from typing import Any, Awaitable, Callable
 #: The steps that call a model. The rest (transform, if_else, human, …) call none.
 MODEL_STEP_TYPES = frozenset({"agent", "llm", "tool", "evaluator"})
 
+
+def calls_a_model(step: Any) -> bool:
+    """Whether a step calls a model: one of `MODEL_STEP_TYPES`, but not a Tool step whose arguments are set on it
+    (E1), which calls its tool with none. Reads a stored dict or a `StepConfig`."""
+    get = step.get if isinstance(step, dict) else (lambda key: getattr(step, key, None))
+    kind = getattr(get("type"), "value", get("type")) or get("step_type")
+    if kind not in MODEL_STEP_TYPES:
+        return False
+    return not (kind == "tool" and get("tool_arguments") is not None)
+
 Loader = Callable[[str], Awaitable[dict | None]]
 
 
@@ -101,7 +111,7 @@ async def _walk(orch_id: str, walked: WorkflowModels, *, load_agent: Loader, loa
 
     for step in orch.steps:
         kind = getattr(step.type, "value", step.type)
-        if kind not in MODEL_STEP_TYPES:
+        if not calls_a_model(step):
             continue
         path = f"{prefix}{_name(step)}"
         takes = passed and kind == "agent" and bool(getattr(step, "pass_images", False))

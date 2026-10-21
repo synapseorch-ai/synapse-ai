@@ -29,7 +29,7 @@ export interface StepSectionProps {
     otherSteps: { id: string; name: string }[];
     agents: any[];
     availableModels: string[];
-    availableTools: { name: string; description: string }[];
+    availableTools: { name: string; description: string; schema?: unknown }[];
     stateKeys: string[];
     showVaultHints: boolean;
     /** Where a transform's code runs, in this product's words. See `StepConfigPanel`. */

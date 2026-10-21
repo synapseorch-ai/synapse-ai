@@ -12,6 +12,8 @@ import { useEffect, useState } from 'react';
 export interface AvailableTool {
     name: string;
     description: string;
+    /** Its input schema, where the host lists one (a Tool step's set arguments read it, E1). */
+    schema?: unknown;
 }
 
 export function useAvailableTools(): AvailableTool[] {

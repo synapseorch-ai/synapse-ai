@@ -399,7 +399,12 @@ const ENGINE_KEYS = new Set(['user_input', 'user_query', 'history']);
 /** The keys a model's prompt names (an Agent's, an LLM's or a Tool step's template, a Retrieve query). */
 function promptReads(step: StepConfig): Set<string> {
     const texts: string[] = [];
-    if (step.type === 'agent' || step.type === 'llm' || step.type === 'tool') texts.push(step.prompt_template || '');
+    if (step.type === 'agent' || step.type === 'llm') texts.push(step.prompt_template || '');
+    // A Tool step reads its prompt when a model writes its arguments, and its set arguments when they are set (E1).
+    if (step.type === 'tool') {
+        if (step.tool_arguments != null) texts.push(JSON.stringify(step.tool_arguments));
+        else texts.push(step.prompt_template || '');
+    }
     if (step.type === 'retrieve') texts.push(step.retrieve?.query || '');
     const keys = new Set<string>();
     for (const text of texts) {

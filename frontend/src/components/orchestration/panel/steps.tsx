@@ -20,6 +20,7 @@ import {
 import { PythonEditor } from './PythonEditor';
 import { agentKind, agentOptions, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
+import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 
 /* ── shared toggles ─────────────────────────────────────────────────────── */
 
@@ -303,13 +304,98 @@ function LlmSection({ step, update, availableModels, showVaultHints }: StepSecti
     );
 }
 
+/**
+ * A Tool step's arguments set on the step (E1): one row per argument the tool takes, then any other the step
+ * already sets. Each value may read state with `{{state.key}}`. Without the tool's schema (a host that does not list
+ * it), a person adds arguments by name.
+ */
+function ToolArguments({ step, update, tool }: { step: StepConfig; update: StepSectionProps['update']; tool?: ToolWithSchema }) {
+    const set = step.tool_arguments ?? {};
+    const rows = argumentRows(tool, set);
+    const [adding, setAdding] = useState('');
+    const add = () => {
+        const name = adding.trim();
+        if (!name || name in set) return;
+        update({ tool_arguments: { ...set, [name]: '' } });
+        setAdding('');
+    };
+    return (
+        <div className="space-y-2" data-testid="tool-arguments">
+            {rows.length === 0 && (
+                <p className="text-[11px] text-text-faint">
+                    {step.forced_tool ? 'This tool takes no arguments.' : 'Pick a tool to set its arguments.'}
+                </p>
+            )}
+            {rows.map((row) => (
+                <div key={row.name} className="space-y-1">
+                    <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs text-text">{row.name}</span>
+                        {row.required && <span className="text-[10px] text-text-muted">required</span>}
+                        {row.type && <span className="text-[10px] text-text-faint">{row.type}</span>}
+                        {!row.declared && (
+                            <button
+                                type="button"
+                                className="ml-auto text-text-faint hover:text-text"
+                                aria-label={`Remove argument ${row.name}`}
+                                onClick={() => {
+                                    const next = { ...set };
+                                    delete next[row.name];
+                                    update({ tool_arguments: next });
+                                }}
+                            >
+                                <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                        )}
+                    </div>
+                    <LocalInput
+                        size="sm"
+                        aria-label={`Argument ${row.name}`}
+                        placeholder={row.description || '{{state.key}} or a value'}
+                        value={row.text}
+                        onCommit={(text) => update({ tool_arguments: withArgument(set, row, text) })}
+                    />
+                </div>
+            ))}
+            <div className="flex items-center gap-2">
+                <Input
+                    size="sm"
+                    aria-label="New argument name"
+                    placeholder="Add an argument by name"
+                    value={adding}
+                    onChange={(e) => setAdding(e.target.value)}
+                    onKeyDown={(e) => {
+                        if (e.key === 'Enter') add();
+                    }}
+                />
+                <Button size="sm" variant="secondary" onClick={add} disabled={!adding.trim()}>
+                    <Plus className="h-3.5 w-3.5" /> Add
+                </Button>
+            </div>
+            <p className="text-[10px] text-text-faint">
+                Read a value from state with {'{{state.key}}'}. Numbers, true / false and JSON are sent as values,
+                except to an argument the tool says is text.
+            </p>
+        </div>
+    );
+}
+
 function ToolSection({ step, update, availableModels, availableTools, showVaultHints }: StepSectionProps) {
-    const selectedTool = availableTools.find((t) => t.name === step.forced_tool);
+    const selectedTool = availableTools.find((t) => t.name === step.forced_tool) as ToolWithSchema | undefined;
+    const setHere = step.tool_arguments != null;
     return (
         <div className="space-y-3">
             <Note>
-                <strong>Forced tool call</strong> — the LLM generates arguments for exactly one tool, then
-                calls it. If the first attempt fails, the ReAct loop retries up to <em>Max turns</em> times.
+                {setHere ? (
+                    <>
+                        <strong>Tool call with set arguments</strong> — calls exactly one tool with the arguments
+                        below, read from state. No model is asked, so it costs no model call.
+                    </>
+                ) : (
+                    <>
+                        <strong>Forced tool call</strong> — the LLM generates arguments for exactly one tool, then
+                        calls it. If the first attempt fails, the ReAct loop retries up to <em>Max turns</em> times.
+                    </>
+                )}
             </Note>
             <Field label="Tool" required hint={selectedTool?.description}>
                 <Combobox
@@ -322,6 +408,33 @@ function ToolSection({ step, update, availableModels, availableTools, showVaultH
                     searchPlaceholder="Search tools…"
                 />
             </Field>
+            <Field label="Arguments">
+                <Select
+                    size="sm"
+                    aria-label="Arguments"
+                    value={setHere ? 'set' : 'ask'}
+                    onChange={(v) => update({ tool_arguments: v === 'set' ? (step.tool_arguments ?? {}) : undefined })}
+                    options={[
+                        { value: 'ask', label: 'Ask the model', hint: 'A model writes them from the prompt' },
+                        { value: 'set', label: 'Set here', hint: 'Fixed or read from state; no model call' },
+                    ]}
+                />
+            </Field>
+            {setHere ? (
+                <ToolArguments step={step} update={update} tool={selectedTool} />
+            ) : (
+                <ToolPromptFields step={step} update={update} availableModels={availableModels} showVaultHints={showVaultHints} />
+            )}
+        </div>
+    );
+}
+
+/** The prompt and model a Tool step's model reads to write its arguments (Arguments: Ask the model). */
+function ToolPromptFields({
+    step, update, availableModels, showVaultHints,
+}: Pick<StepSectionProps, 'step' | 'update' | 'availableModels' | 'showVaultHints'>) {
+    return (
+        <>
             <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
                 <MarkdownEditor
                     key={step.id}
@@ -338,7 +451,7 @@ function ToolSection({ step, update, availableModels, availableTools, showVaultH
                 <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} />
             </Field>
             <HistoryToggle step={step} update={update} />
-        </div>
+        </>
     );
 }
 

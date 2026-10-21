@@ -125,6 +125,40 @@ async def missing_in(workflows: list[dict], agents: dict[str, dict], server_modu
     return issues, warnings
 
 
+async def argument_issues(workflows: list[dict], server_module: Any) -> list[str]:
+    """Issues for Tool steps whose set arguments (E1) do not fit their tool's own schema: a name it does not take,
+    or a required one left out. With no model to repair them, either fails every run. A tool nothing provides is
+    `missing_in`'s to say; a tool whose schema names no properties takes anything."""
+    from core.routes.tools import load_custom_tools
+    from core.tools import resolve_one_tool
+
+    custom = await load_custom_tools()
+    issues: list[str] = []
+    for workflow in workflows:
+        for step in workflow.get("steps") or []:
+            arguments, name = step.get("tool_arguments"), step.get("forced_tool")
+            if step.get("type") != "tool" or not isinstance(arguments, dict) or not isinstance(name, str) or not name:
+                continue
+            try:
+                tool = await resolve_one_tool(server_module, name, {"tools": [name]}, custom)
+            except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence either way
+                continue
+            schema = getattr(tool, "inputSchema", None) if tool is not None else None
+            props = (schema or {}).get("properties") if isinstance(schema, dict) else None
+            if not isinstance(props, dict) or not props:
+                continue
+            label = step.get("name") or step.get("id")
+            unknown = [a for a in arguments if a not in props]
+            if unknown:
+                issues.append(f"Step '{label}' sets {', '.join(repr(a) for a in unknown)}, which `{name}` does not "
+                              f"take: it takes {', '.join(props)}.")
+            left_out = [r for r in schema.get("required") or [] if r not in arguments]
+            if left_out:
+                issues.append(f"Step '{label}' leaves out {', '.join(repr(r) for r in left_out)}, which `{name}` "
+                              "needs: set it on the step, or let the model write the arguments.")
+    return issues
+
+
 # ── The plan, before the person approves it (F492) ──────────────────────────
 #
 # gpt-oss-120b's BWA1 baseline: 37 of 45 saver runs stopped because the plan the person had approved named tools

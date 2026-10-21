@@ -69,6 +69,8 @@ export interface StepConfig {
 
     // TOOL — forced single tool call
     forced_tool?: string;
+    /** TOOL — the arguments set on the step (E1); unset, a model writes them. Values may read `{{state.key}}`. */
+    tool_arguments?: Record<string, unknown> | null;
 
     // TRANSFORM
     transform_code?: string;

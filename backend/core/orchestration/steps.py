@@ -8,7 +8,7 @@ import json
 import re
 import time
 from contextvars import ContextVar
-from typing import AsyncGenerator, TYPE_CHECKING
+from typing import Any, AsyncGenerator, TYPE_CHECKING
 
 import anyio
 
@@ -878,6 +878,18 @@ class ToolStepExecutor:
             yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
             raise RuntimeError(message)
 
+        # Arguments set on the step (E1): rendered once from state, and no model is asked. An approved call being
+        # replayed is the call the person saw, so it is not rendered again.
+        _set_args: dict | None = None
+        if step.tool_arguments is not None and _replay is None:
+            try:
+                _set_args = render_tool_arguments(step.tool_arguments, run.shared_state)
+            except MissingStateRef as missing:
+                message = (f"Tool step '{step.name}' could not set its arguments: {missing} is not in the run's "
+                           "state")
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                raise RuntimeError(message) from None
+
         # Build evaluator-style prompt: ask LLM to output JSON tool call (no tools= API param)
         tool_schema_str = str(tool_obj.inputSchema)
         tool_prompt = (
@@ -922,6 +934,8 @@ class ToolStepExecutor:
             if _replaying:
                 # The approved call, as it was approved — once.
                 response, _replay = json.dumps(_replay), None
+            elif _set_args is not None:
+                response = None
             else:
                 try:
                     tool_sys_prompt = "You are a tool-calling assistant. Output ONLY valid JSON."
@@ -958,12 +972,15 @@ class ToolStepExecutor:
                         raise
                     raise RuntimeError(f"Tool step '{step.name}' LLM call failed: {e}") from e
 
-            if not _replaying:
-                # Log the LLM response (mirrors _log_evaluator for evaluator steps)
-                yield {"type": "_log_tool_step_llm", "orch_step_id": step.id,
-                       "prompt": turn_prompt, "llm_response": response}
-
-            tool_call, json_error = parse_tool_call(response)
+            if response is None:
+                # Set on the step: the call is the step's own, not parsed from anything a model wrote.
+                tool_call, json_error = {"tool": tool_obj.name, "arguments": _set_args}, None
+            else:
+                if not _replaying:
+                    # Log the LLM response (mirrors _log_evaluator for evaluator steps)
+                    yield {"type": "_log_tool_step_llm", "orch_step_id": step.id,
+                           "prompt": turn_prompt, "llm_response": response}
+                tool_call, json_error = parse_tool_call(response)
             if not tool_call:
                 last_error = json_error or "LLM did not return a valid tool call JSON"
                 _log.debug(f"TOOL STEP: ⚠ parse failed turn={turn + 1}: {last_error}")
@@ -1051,7 +1068,9 @@ class ToolStepExecutor:
                 if e.ran and not _repeatable:
                     last_error = f"{last_error} — {MAY_HAVE_RUN}"
                     break
-                if not e.retryable or _replaying:
+                # A tool's own error is retried with other arguments; set arguments cannot change, so the same call
+                # would fail the same way.
+                if not e.retryable or _replaying or _set_args is not None:
                     break
             except Exception as e:
                 last_error = str(e) or type(e).__name__
@@ -2501,6 +2520,70 @@ def render_state_refs(text: str, state: dict) -> str:
         return str(val) if val is not None else match.group(0)
 
     return re.sub(r"\{state\.([\w.]+)\}", _resolve, text)
+
+
+class MissingStateRef(ValueError):
+    """A set argument names a state value that is not there (E1). Raised rather than sent on as written: a tool
+    must never receive a literal `{{state.x}}`."""
+
+
+#: `{{ state.a.b }}` or the older `{state.a.b}`, standing alone or inside text.
+_ARG_REF = re.compile(r"\{\{\s*state\.([\w.\-]+)\s*\}\}|\{state\.([\w.]+)\}")
+
+
+def _state_value(state: dict, path: str) -> Any:
+    """The value at `path` in state. A step into a value held as JSON text reads the JSON: a builder tool's output
+    is JSON text in state, and a set argument names a field of it."""
+    from core.templating import _walk
+
+    cur: Any = state
+    for part in path.split("."):
+        if isinstance(cur, str):
+            try:
+                cur = json.loads(cur)
+            except ValueError:
+                raise MissingStateRef(f"state.{path}") from None
+        found, cur = _walk(cur, [part])
+        if not found:
+            raise MissingStateRef(f"state.{path}")
+    return cur
+
+
+def tool_argument_refs(value: Any) -> list[str]:
+    """Every state path a Tool step's set arguments read (`a.b` for `{{state.a.b}}`), in order, once each."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        parts = [tool_argument_refs(v) for v in value.values()]
+    elif isinstance(value, list):
+        parts = [tool_argument_refs(v) for v in value]
+    elif isinstance(value, str):
+        parts = [[m.group(1) or m.group(2) for m in _ARG_REF.finditer(value)]]
+    else:
+        parts = []
+    for refs in parts:
+        found += [r for r in refs if r not in found]
+    return found
+
+
+def render_tool_arguments(value: Any, state: dict) -> Any:
+    """A Tool step's set arguments, rendered from state (E1).
+
+    A string that is one reference and nothing else becomes that value, keeping its type (a list stays a list); a
+    reference inside text is written as text, an object or a list as JSON (`templating`'s rule, not Python's repr).
+    Dicts and lists are rendered all the way down. A reference to nothing raises `MissingStateRef` naming it.
+    """
+    if isinstance(value, dict):
+        return {k: render_tool_arguments(v, state) for k, v in value.items()}
+    if isinstance(value, list):
+        return [render_tool_arguments(v, state) for v in value]
+    if not isinstance(value, str):
+        return value
+    whole = _ARG_REF.fullmatch(value.strip())
+    if whole:
+        return _state_value(state, whole.group(1) or whole.group(2))
+    from core.templating import _text
+
+    return _ARG_REF.sub(lambda m: _text(_state_value(state, m.group(1) or m.group(2))), value)
 
 
 class HumanStepExecutor:

@@ -140,11 +140,25 @@ class StepConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _arguments_only_on_a_tool_step(self):
+        """`tool_arguments` is read by the Tool step and nowhere else: refused elsewhere, as `pass_images` is."""
+        if self.tool_arguments is not None and self.type != StepType.TOOL:
+            raise ValueError(
+                f"tool_arguments are only read by tool steps; step '{self.id}' is '{self.type.value}'."
+            )
+        return self
+
     input_keys: list[str] = []    # Keys to pull from shared state as context
     output_key: str | None = None  # Key to write result into shared state
 
     # TOOL — forced single tool call with ReAct retry
     forced_tool: str | None = None  # Tool name for TOOL type steps
+    #: TOOL -- the arguments, set on the step (E1, SAI2-P1): the tool is called with these and no model is asked.
+    #: Values are templates over state: `{{state.x}}` standing alone keeps its type, inside text it is written as
+    #: text (an object as JSON); the older `{state.x}` is read too (`steps.render_tool_arguments`). None, the default,
+    #: is "ask the model", as every Tool step did before.
+    tool_arguments: dict[str, Any] | None = None
 
     # Per-step guardrails
     max_turns: int = 15
