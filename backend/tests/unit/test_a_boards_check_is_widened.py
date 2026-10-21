@@ -113,3 +113,40 @@ async def test_a_current_database_is_left_alone(tmp_path):
     async with engine.begin() as conn:
         await _insert_assistant(conn)
     await engine.dispose()
+
+
+_PG_URL = __import__("os").environ.get("SYNAPSE_TEST_POSTGRES_URL", "")
+
+
+async def test_on_postgres_the_one_constraint_is_replaced():
+    """Postgres alters a constraint in place: the old check is dropped and the model's added, rows kept. Run when
+    `SYNAPSE_TEST_POSTGRES_URL` names a throwaway database of your own."""
+    import pytest
+
+    if not _PG_URL:
+        pytest.skip("SYNAPSE_TEST_POSTGRES_URL is not set")
+    from core.store.engine import normalise_db_url
+
+    engine = build_engine(normalise_db_url(_PG_URL))
+    async with engine.begin() as conn:
+        for table in ("board_card_events", "board_cards", "board_access", "boards"):
+            await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
+        metadata = MetaData()
+        table = _old_boards(metadata)
+        await conn.run_sync(metadata.create_all)
+        await conn.execute(table.insert().values(
+            tenant_id="default", id="brd_1", scope="shared", scope_id="", name="Bugs", description="ours",
+            created_at=text("now()"), updated_at=text("now()")))
+    try:
+        applied = await run_migrations(engine)
+        assert any("ck_boards_scope" in entry for entry in applied)
+        async with engine.begin() as conn:
+            await _insert_assistant(conn)
+            rows = (await conn.execute(text("SELECT id, scope FROM boards ORDER BY id"))).all()
+        assert [tuple(r) for r in rows] == [("brd_1", "shared"), ("brd_ai", "assistant")]
+        assert await run_migrations(engine) == []
+    finally:
+        async with engine.begin() as conn:
+            for table in ("board_card_events", "board_cards", "board_access", "boards"):
+                await conn.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
+        await engine.dispose()
