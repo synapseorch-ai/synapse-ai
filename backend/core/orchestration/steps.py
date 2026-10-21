@@ -2553,10 +2553,16 @@ def render_state_refs(text: str, state: dict) -> str:
     A reference that resolves to nothing is left as written, so a typo shows
     rather than vanishing. A human step's prompt and a Print's content read
     through this one function; the prompt used to read only top-level keys.
+    A step into a value held as JSON text reads the JSON (F801), as a set
+    argument's reference does: a builder tool's output is JSON text in state.
     """
+    from core.expressions import _json_object
+
     def _resolve(match: re.Match) -> str:
         val = state
         for part in match.group(1).split("."):
+            if isinstance(val, str):
+                val = _json_object(val)
             val = val.get(part) if isinstance(val, dict) else None
             if val is None:
                 break

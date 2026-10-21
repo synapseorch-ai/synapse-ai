@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import json
 import operator
 from dataclasses import dataclass
 from typing import Any
@@ -128,6 +129,17 @@ class DotNavigableState:
 
     def __len__(self):
         return len(object.__getattribute__(self, '_data'))
+
+
+def _json_object(text: str) -> dict | None:
+    """`text` as the JSON object it holds, or None when it holds none."""
+    if not text.lstrip().startswith("{"):
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _raw(value: Any) -> Any:
@@ -369,6 +381,14 @@ class _Walk:
 
     def _attribute(self, node):
         receiver = self._eval(node.value)
+        if isinstance(receiver, str):
+            # A builder tool answers with JSON text, which a Tool step keeps as
+            # its output: a field of it reads the JSON, as a set argument's
+            # reference does (F801). A string that is not a JSON object still
+            # has no fields; a method call never comes through here.
+            parsed = _json_object(receiver)
+            if parsed is not None:
+                receiver = DotNavigableState(parsed)
         if isinstance(receiver, DotNavigableState):
             # Delegated on purpose: missing-key-is-None and the nested rewrap are
             # the wrapper's, not a second copy of them that can drift.
