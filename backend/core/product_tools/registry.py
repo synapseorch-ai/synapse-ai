@@ -8,7 +8,8 @@ An entry says what it is; `invoke` enforces it. Nothing an adapter or a prompt s
 * **Role.** The caller's live role must reach the entry's `min_role`. It is checked on every call, a confirmed
   one included, so a demotion takes effect on the next call.
 * **Confirmation.** An act that needs it (`confirm.py`) answers first with a preview and a token, and is done only
-  when the same call comes back with that token.
+  when the same call comes back with that token. Under `approved_review` (Synapse AI's apply and save, SAI2-P1),
+  the person's approved review stands in for the token of each call it covers (`approved.py`), and only those.
 * **Audit.** Every act that succeeded is told to the host once (`hooks.emit`); a read never is.
 """
 from __future__ import annotations
@@ -29,7 +30,7 @@ __all__ = ["ProductTool", "ToolRefusal", "register", "unregister", "get", "all_t
 Handler = Callable[[Caller, dict[str, Any]], Awaitable[Any]]
 Preview = Callable[[Caller, dict[str, Any]], Awaitable[Any]]
 Target = Callable[[dict[str, Any], Any], "tuple[str, str] | None"]
-ConfirmPolicy = Literal["irreversible", "every_act"]
+ConfirmPolicy = Literal["irreversible", "every_act", "approved_review"]
 
 KINDS = frozenset({"read", "act"})
 SCOPES = frozenset({"read", "run", "build"})
@@ -136,7 +137,8 @@ class ProductTool:
         return caller.granted(self.scope) and caller.role.can_act_as(self.min_role)
 
     def needs_token(self, policy: ConfirmPolicy) -> bool:
-        return self.kind == "act" and (policy == "every_act" or self.irreversible)
+        # Under `approved_review` an act needs one unless the review covers the call, which `invoke` decides.
+        return self.kind == "act" and (policy in ("every_act", "approved_review") or self.irreversible)
 
 
 _TOOLS: dict[str, ProductTool] = {}
@@ -185,8 +187,11 @@ def _summary(value: Any, depth: int = 0) -> Any:
 
 
 async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, *,
-                 confirm_policy: ConfirmPolicy = "irreversible") -> Any:
-    """Call `name` as `caller`: every rule above, then the handler. Raises `ToolRefusal` for anything refused."""
+                 confirm_policy: ConfirmPolicy = "irreversible", review: Any = None, reviewed: Any = None) -> Any:
+    """Call `name` as `caller`: every rule above, then the handler. Raises `ToolRefusal` for anything refused.
+
+    `review` and `reviewed`, with `confirm_policy="approved_review"`: the person's approved review and the object it
+    approved as state holds it now, both read by the host's code, never from a model's arguments."""
     args = dict(args or {})
     tool = _TOOLS.get(name)
     if tool is None or (tool.app_only and caller.via != "assistant"):
@@ -202,7 +207,15 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
         )
 
     token = args.pop(confirm.TOKEN_ARG, None)
-    if tool.needs_token(confirm_policy):
+    policy, by_review = confirm_policy, False
+    if confirm_policy == "approved_review":
+        # The person's approved review is the confirmation of each call it covers; anything else asks as the
+        # assistant always does, with a token per call.
+        from core.product_tools import approved
+
+        by_review = tool.kind == "act" and approved.uncovered(review, caller, name, args, reviewed) is None
+        policy = "every_act"
+    if not by_review and tool.needs_token(policy):
         if not token:
             preview = await tool.preview(caller, args) if tool.preview is not None else {"tool": name, "arguments": args}
             return {
