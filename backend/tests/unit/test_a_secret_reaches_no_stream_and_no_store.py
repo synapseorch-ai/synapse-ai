@@ -84,3 +84,14 @@ class TestAWorkflowRun:
         await variables.load()
         said = reason_of(RuntimeError(f"Could not reach https://{CANARY}.example/x"))
         assert CANARY not in said and MARK in said
+
+
+class TestTheBuildersVariables:
+    async def test_a_secret_previews_by_name_and_a_plain_value_as_it_is(self, canary_secret):
+        """`list_variables` showed the first 40 characters of every value: cut, a long secret no longer matched
+        the value held to scrub, and its start reached the model and the builder's tool result (SAI2's OK)."""
+        from core.builder_tools import execute_builder_tool
+
+        listed = json.loads(await execute_builder_tool("list_variables", {}, _server()))
+        previews = {v["key"]: v["preview"] for v in listed}
+        assert previews == {"API_TOKEN": "‹secret›", "REGION": "eu-west-1"}

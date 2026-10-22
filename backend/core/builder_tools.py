@@ -2980,13 +2980,18 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
     elif tool_name == "list_variables":
         from core import variables
+        from core.secret_scrub import held_secrets
 
         # Keys and a short preview only. A variable holds things like an API
         # token; the builder needs to know it exists and how to reference it,
-        # never what it says.
+        # never what it says. A secret previews by name: cut to 40 characters it
+        # no longer matched the value held to scrub, and its start was shown (F854).
+        values = await variables.load()
+        secrets = held_secrets()
         return [
-            {"key": key, "preview": str(value)[:40], "reference": f"{{{{ global.{key} }}}}"}
-            for key, value in sorted((await variables.load()).items())
+            {"key": key, "preview": "‹secret›" if key in secrets else str(value)[:40],
+             "reference": f"{{{{ global.{key} }}}}"}
+            for key, value in sorted(values.items())
         ]
 
     elif tool_name == "list_recent_runs":

@@ -530,7 +530,7 @@ async def run_orchestration(orch_id: str, request: Request):
 
 
 # The engine's own state keys, one list with every door's (F854).
-from core.events_public import PRIVATE_STATE_PREFIXES as _PRIVATE_STATE_PREFIXES  # noqa: E402
+from core.events_public import PRIVATE_STATE_PREFIXES as _PRIVATE_STATE_PREFIXES
 
 
 def _public_run_view(run) -> dict:

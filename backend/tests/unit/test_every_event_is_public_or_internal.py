@@ -10,7 +10,12 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from core.events_public import DOOR_FRAME_TYPES, INTERNAL_EVENT_TYPES, PUBLIC_EVENT_TYPES, public_event
+from core.events_public import (
+    DOOR_FRAME_TYPES,
+    INTERNAL_EVENT_TYPES,
+    PUBLIC_EVENT_TYPES,
+    public_event,
+)
 
 CORE = Path(__file__).resolve().parents[2] / "core"
 
