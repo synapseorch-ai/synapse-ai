@@ -535,6 +535,15 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 item.update(status="refused", say=f"{article} {op.target} is already called {_quoted(new_name)}: "
                                                   "say another name.")
                 continue
+        if op.name == "set_agent_model":
+            from core import model_choices
+
+            found = await model_choices.choices()
+            if not model_choices.offers(found, _text(fields.get("model"))):
+                listed = "; ".join(f"{p}: {', '.join(m[:6])}" for p, m in found.items())
+                item.update(status="refused", say=f"{_quoted(_text(fields.get('model')))} is not a model this "
+                                                  f"workspace can use. It can use: {listed}.")
+                continue
         if op.name == "set_agent_skills":
             refusal = await _skill_names(fields)
             if refusal:

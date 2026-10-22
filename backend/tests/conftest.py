@@ -183,6 +183,20 @@ def _restore_settings_provider():
 
 # ── model CLI status isolation (autouse) ─────────────────────────────────────
 @pytest.fixture(autouse=True)
+def _no_model_list():
+    """No test reads this machine's providers for the models a workspace can pick (`core.model_choices`, SAI2-P2):
+    the list is a host's here, and a test that is about it sets one. With none, nothing is refused for its model."""
+    from core import model_choices
+
+    async def nothing():
+        return {}
+
+    model_choices.set_model_choices(nothing)
+    yield
+    model_choices.set_model_choices(None)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_cli_status():
     """Forget what the model CLIs said (CLIM1): their status is cached for ten
     minutes per binary, and a test's faked `which` must not answer for the next."""

@@ -252,9 +252,16 @@ async def _models(args: dict) -> dict:
     s = load_settings()
     keys = sorted(name[: -len("_key")] for name in SECRET_SETTINGS
                   if name.endswith("_key") and s.get(name) and not name.startswith(("login", "aws")))
-    return {"default_model": s.get("model"), "builder_model": s.get("builder_model") or "(the default model)",
-            "builder_model_for_quick_steps": s.get("builder_quick_model") or "(the builder model)",
-            "providers_with_a_key": keys, "note": "Keys are never shown, only whether one is set."}
+    from core import model_choices
+
+    out = {"default_model": s.get("model"), "builder_model": s.get("builder_model") or "(the default model)",
+           "builder_model_for_quick_steps": s.get("builder_quick_model") or "(the builder model)",
+           "providers_with_a_key": keys, "note": "Keys are never shown, only whether one is set."}
+    # The models an agent can be set to, by provider: what the agent editor's picker offers (SAI2-P2).
+    found = await model_choices.choices()
+    if found:
+        out["models_you_can_pick"] = found
+    return out
 
 
 async def _agents(args: dict) -> dict:
