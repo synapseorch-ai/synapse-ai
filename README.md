@@ -179,7 +179,7 @@ synapse uninstall # remove Synapse, wipe ~/.synapse, and uninstall the package
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=synapseorch-ai/synapse-ai&type=date&legend=top-left)](https://www.star-history.com/#synapseorch-ai/synapse-ai&type=date&legend=top-left)
+[![Star History Chart](https://star-history.dera.page/svg?repos=synapseorch-ai/synapse-ai&type=date&legend=top-left)](https://star-history.dera.page/#synapseorch-ai/synapse-ai&type=date&legend=top-left)
 
 ---
 
