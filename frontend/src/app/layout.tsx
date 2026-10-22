@@ -27,9 +27,10 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// The product's name; "Synapse AI" is the assistant inside it (F829).
 export const metadata: Metadata = {
-  title: "Synapse AI",
-  description: "Synapse AI",
+  title: "SynapseOrch",
+  description: "AI automation you can read, approve and rely on.",
 };
 
 /*
