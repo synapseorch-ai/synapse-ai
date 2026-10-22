@@ -415,6 +415,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             return {**base, "outcome": "said", "say": refusal}
 
     handoffs = [o for o in ops if C.OPS.get(o.get("op", ""), C.OPS["create"]).kind == "handoff"]
+    if len(handoffs) > 1 and len(handoffs) == len(ops):
+        # Each goes on as its own route for the rest of the run, so only one can be taken: say them, rather than
+        # take the first and drop the rest (the branch review's finding 14).
+        asked = "; ".join(f"{C.OPS[o['op']].verb.lower()} {_quoted((o.get('target') or {}).get('name') or '')}"
+                          for o in handoffs)
+        return {**base, "outcome": "said", "ops": handoffs,
+                "say": f"Those are {len(handoffs)} separate requests ({asked}). Ask me for them one at a time, and "
+                       "I'll take each in turn."}
     if handoffs and len(handoffs) == len(ops):
         return await _handed_over(base, handoffs)
 

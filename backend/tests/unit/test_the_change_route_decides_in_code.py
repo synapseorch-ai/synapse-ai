@@ -337,3 +337,14 @@ async def test_a_rename_to_a_name_something_has_is_said_before_the_review(client
     out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "id": other["id"]},
                                "fields": {"name": "front desk"}}])
     assert out["outcome"] == "said" and out["say"] == 'An agent is already called "front desk": say another name.'
+
+
+async def test_two_hand_overs_are_said_as_two_requests_not_one_followed(client, role):
+    """A hand-over goes on as its own route for the rest of the run, so only one can be taken: the first was, and the
+    others were dropped without a word (the branch review's finding 14)."""
+    await _workflow(name="Invoice sync")
+    out, _, _ = await _check([
+        {"op": "edit_steps", "target": {"kind": "workflow", "name": "Invoice sync"}, "fields": {"what": "add a step"}},
+        {"op": "create", "target": {"kind": "skill", "name": "Polite replies"}, "fields": {"what": "a skill"}}])
+    assert out["outcome"] == "said"
+    assert "Invoice sync" in out["say"] and "Polite replies" in out["say"] and "one at a time" in out["say"]
