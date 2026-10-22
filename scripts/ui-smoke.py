@@ -9050,6 +9050,51 @@ async def check_runanswer(browser) -> str:
 
 
 @check
+async def check_emptyanswer(browser) -> str:
+    """An empty answer is never sent (F842, Naveen 2026-10-23): on the run page and on Home, a free-text question's
+    Send answer stays disabled until something is typed — blank space is nothing — and then posts what was typed.
+    On prod an empty "Send answer" on the run page resumed a run past its approval."""
+    def free_text(runs: dict) -> dict:
+        for run in runs.values():
+            if run.get("waiting_for_human"):
+                run["human_fields"] = []
+        return runs
+
+    bad: list[str] = []
+    for path, runs in (("/runs/run_smoke_m2b_wait", free_text(json.loads(json.dumps(_M2B_RUNS)))),
+                       ("/dashboard", free_text(_m2a_runs()))):
+        sent: list[dict] = []
+        ctx, page, _ = await _m2b_page(browser, path, runs=runs)
+        try:
+            async def human(route):
+                sent.append(json.loads(route.request.post_data or "{}"))
+                await route.fulfill(status=200, content_type="text/event-stream", body=_frame({"type": "done"}))
+            await ctx.route("**/api/orchestrations/runs/*/human-input", human)
+            card = page.get_by_role("region", name="Waiting for a person").first
+            box = card.get_by_role("textbox", name="Your answer")
+            send = card.get_by_role("button", name="Send answer", exact=True)
+            if not await send.is_disabled():
+                bad.append(f"{path}: Send answer is enabled with nothing typed")
+            await box.fill("   ")
+            if not await send.is_disabled():
+                bad.append(f"{path}: Send answer is enabled for blank space")
+            await box.fill("Looks right, go ahead")
+            if await send.is_disabled():
+                bad.append(f"{path}: Send answer stays disabled after an answer was typed")
+            else:
+                await send.click()
+                await page.get_by_text("Answer sent — the run is resuming.").first.wait_for(timeout=10_000)
+            if sent != [{"response": "Looks right, go ahead"}]:
+                bad.append(f"{path}: posted {sent}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "run page and Home: Send answer waits for words (blank space is none), then posts them once"
+
+
+
+@check
 async def check_runcontrast(browser) -> str:
     """The runs list and the run page meet AA in both themes (M2b): the facts, the followed line on its tint, the
     failure card with Technical details open, the question's card, an opened step, the stepper and the log."""

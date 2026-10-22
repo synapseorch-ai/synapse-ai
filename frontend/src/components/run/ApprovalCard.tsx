@@ -18,14 +18,16 @@
  *
  * The answer is a mapping of the fields keyed by name when the step declared
  * any, a bare string when it did not — what the engine's `resume()` takes
- * (F75). An empty answer can be sent, as on cloud's card before it. A refusal
- * (someone answered first) is said in the card.
+ * (F75). An empty free-text answer is never sent, by button or by key, on any
+ * page (F842, Naveen 2026-10-23: an empty "Send answer" on the run page resumed a
+ * run past its approval); every door of the API refuses one too. A form whose
+ * fields are left blank is still an answer. A refusal (someone answered first) is
+ * said in the card.
  *
- * The workflow editor answers in its setup card (M3a-2) with its own rules:
- * `requireAnswer` (an empty free-text answer is not sent, by button or by key —
- * Naveen's item 7), `submitOnEnter` (Enter sends, Shift+Enter is a new line, the
- * box grows with its lines) and `draft` (the editor keeps what was typed, so an
- * answer left half-written is still there when the card opens again).
+ * The workflow editor answers in its setup card (M3a-2) with two rules of its
+ * own: `submitOnEnter` (Enter sends, Shift+Enter is a new line, the box grows with
+ * its lines) and `draft` (the editor keeps what was typed, so an answer left
+ * half-written is still there when the card opens again).
  */
 import Link from 'next/link';
 import { useState } from 'react';
@@ -47,7 +49,7 @@ export type ApprovalDraft = {
 };
 
 export function ApprovalCard({
-    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = false,
+    run, onDone, onCancel, busy, openHref, showWorkflow = false, showStep = true, requireAnswer = true,
     submitOnEnter = false, draft,
 }: {
     run: RunRecord;
@@ -61,7 +63,7 @@ export function ApprovalCard({
     showWorkflow?: boolean;
     /** Name the step in the card's top line; off where the step's own header already does (the setup card). */
     showStep?: boolean;
-    /** An empty free-text answer cannot be sent (the workflow editor's rule). */
+    /** An empty free-text answer cannot be sent: on by default, every page (F842). */
     requireAnswer?: boolean;
     /** Enter sends the free-text answer; Shift+Enter is a new line. */
     submitOnEnter?: boolean;
@@ -97,7 +99,7 @@ export function ApprovalCard({
     }
 
     const locked = busy || sending !== null;
-    // Nothing to send: free text, and none typed, where the page asks for some.
+    // Nothing to send: free text, and none typed (F842).
     const empty = requireAnswer && !fields.length && !text.trim();
     // The flag's label as a button: "Approve payment", not "Approve payment?".
     const yesLabel = decision ? humanFieldLabel(decision).replace(/\s*\?+\s*$/, '') : '';

@@ -6,8 +6,13 @@ An API caller's answer to a person's question has to say something (F232).
 defaulted to `{}` and unknown fields were ignored, so a typo answered the
 question with nothing ("Round 0: {}"). Every v1 body now refuses a field it
 does not know (422 naming it, as cloud's v1 does), and the API doors — v1, v2
-and MCP's `answer_run` — refuse an empty answer. The app's own route and a
-channel reply are unchanged (Naveen, 2026-09-26).
+and MCP's `answer_run` — refuse an empty answer.
+
+**Since F842 every door does** (Naveen, 2026-10-23, superseding his 2026-09-26 call that a
+page may send one): on prod, "Send answer" with nothing typed resumed a run past its approval
+— the gate read "" as declined, a paid step ran on no changes and an unapproved reply was
+published. `answer_paused_run` refuses it, so the app's own route answers 422 in words and a
+blank channel reply is not taken as an answer. A form whose fields are left blank still is one.
 """
 from __future__ import annotations
 
@@ -101,3 +106,51 @@ class TestMcpAnswerRun:
                                                           "wait_seconds": 10}))
             assert done["status"] == "completed", done
 
+
+
+class TestTheAppAndAChannel:
+    """F842: the doors that used to take "" (the app's Answer control, a channel reply)."""
+
+    @pytest.mark.parametrize("body", [{"response": ""}, {"response": "   "}, {"response": {}},
+                                      {"response": {"response": ""}}, {},
+                                      {"response": {"question_id": "q_1", "response": " "}}])
+    async def test_the_app_refuses_an_empty_answer_and_the_question_stays_open(
+        self, client, paused_run, body,
+    ):
+        resp = await client.post(f"/api/orchestrations/runs/{paused_run}/human-input", json=body)
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["detail"] == EMPTY
+        assert await _status(paused_run) == "paused"
+
+    async def test_the_app_still_takes_a_form_left_blank(self, client, paused_run):
+        resp = await client.post(f"/api/orchestrations/runs/{paused_run}/human-input",
+                                 json={"response": {"note": ""}})
+        assert resp.status_code == 200, resp.text
+
+    async def test_the_shared_answer_path_refuses_it_before_anything_is_resumed(self, paused_run):
+        from types import SimpleNamespace
+
+        from core.orchestration.answers import EmptyAnswer, answer_paused_run
+
+        with pytest.raises(EmptyAnswer):
+            await answer_paused_run(SimpleNamespace(), paused_run, "  ")
+        assert await _status(paused_run) == "paused"
+
+    async def test_a_blank_channel_reply_is_not_an_answer(self, monkeypatch, paused_run):
+        """A reply of nothing but spaces is read as an ordinary message: the run keeps waiting."""
+        from types import SimpleNamespace
+
+        from core.messaging import manager as manager_mod
+
+        async def waiting_on(channel_id):
+            return paused_run
+
+        async def not_expired(run_id):
+            return False
+
+        monkeypatch.setattr(manager_mod, "find_run_waiting_on", waiting_on, raising=False)
+        monkeypatch.setattr(manager_mod, "question_expired", not_expired, raising=False)
+        m = manager_mod.MessagingManager.__new__(manager_mod.MessagingManager)
+        m.server_module = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace()))
+        assert await m.answer_from_channel("ch_1", "   ") is None
+        assert await _status(paused_run) == "paused"

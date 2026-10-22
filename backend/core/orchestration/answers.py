@@ -87,11 +87,16 @@ def refuse_empty(response: Any) -> None:
     blank does say something — it is what a form sends for a fielded question
     nobody filled in.
 
-    Called by the API doors (v1, v2, MCP's `answer_run`), not here in
-    `answer_paused_run`: the app's chat page can send an empty text answer to a
-    no-field question, and whether it should is the page's call (Naveen,
-    2026-09-26).
+    Every door refuses it: `answer_paused_run` calls it first (the app's Answer
+    control, a channel reply, v1, MCP's `answer_run`), and v2, which queues its
+    own job, calls it itself. Since F842 (Naveen, 2026-10-23, superseding his
+    2026-09-26 call that a page may send one): on prod an empty "Send answer"
+    resumed a run past its approval, which read "" as declined.
     """
+    if isinstance(response, dict) and "question_id" in response:
+        # A team question's answer names its question inside the mapping (TEAM1e): that is
+        # not an answer, so `{"question_id": q, "response": " "}` says nothing either (F842).
+        response = {k: v for k, v in response.items() if k != "question_id"}
     if _blank(response) or (
         isinstance(response, dict) and list(response) == ["response"] and _blank(response["response"])
     ):
@@ -222,10 +227,12 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
 
     Raises `RunNotWaiting` for a run that is not paused on a question,
     `RunAlreadyActive` when this process is already running it, `QuestionNotAsked`
-    for a question the paused run does not ask, and
-    `human_fields.BadAnswer` for an answer to an email, date, phone or dropdown
-    field that is not one (F455), before anything is queued or resumed.
+    for a question the paused run does not ask, `EmptyAnswer` for an answer that
+    says nothing (F842), and `human_fields.BadAnswer` for an answer to an email,
+    date, phone or dropdown field that is not one (F455), before anything is
+    queued or resumed.
     """
+    refuse_empty(response)
     try:
         row = await worker_run_row(app_state, run_id)
     except Exception:  # noqa: BLE001 — the store for the fleet is unreachable; treat as local

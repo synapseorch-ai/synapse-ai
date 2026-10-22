@@ -392,13 +392,16 @@ class MessagingManager:
         if await question_expired(run_id):
             from core.messaging.base import QuestionExpired
             raise QuestionExpired(run_id)
-        from core.orchestration.answers import RunAlreadyActive, RunNotWaiting, answer_paused_run
+        from core.orchestration.answers import EmptyAnswer, RunAlreadyActive, RunNotWaiting, answer_paused_run
 
         app = getattr(self.server_module, "app", None)
         try:
             await answer_paused_run(app.state, run_id, text)
         except (RunNotWaiting, RunAlreadyActive):
             # Answered a moment ago by someone else, in the app or here.
+            return None
+        except EmptyAnswer:
+            # A reply of nothing but spaces answers nothing (F842): an ordinary message, the run waits on.
             return None
         return run_id
 
