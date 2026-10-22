@@ -23,8 +23,9 @@ from core.native_builder import prompt_lint, seed
 #: before any passage moved into the library: 0edc6f5b…; SAI2-P2 (F799): the change route on a typed Change,
 #: 074d96f7…; F800: the analyst no longer told never to call a tool it does not hold, 2b9c8941…; a change's hand-over
 #: goes back through the door, 7eb7dec5…; a code step's error is said, 29c31610…; too many rounds end in words,
-#: 5fc3d1f8…; one new thing is made by the maker after its review.
-BUNDLE_SHA256 = "29341fcf1c93489af0b0cd7ee636722f1362a50cdbb0af704f2a8845cf040660"
+#: 5fc3d1f8…; one new thing is made by the maker after its review, 29341fcf…; the router reads one new thing on its
+#: own as `manage`.
+BUNDLE_SHA256 = "25218696a7439b44fd7e63107300cb7896910ab5953846cb6625a8e5e984df3c"
 
 
 def _sha(definitions) -> str:
