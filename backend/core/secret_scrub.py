@@ -37,6 +37,16 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     # `Bearer <token>`: the token only. A reference — `Bearer ${process.env.X}`,
     # `Bearer {{ global.X }}` — starts with a character the class leaves out.
     re.compile(r"(?i)(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})"),
+    # A value right after a credential label, said in prose ("the API key is X", "token: X", "client secret = X"),
+    # whatever its shape: a vendor's own key matched no shape above and reached a run (F896, SAI2-P2's chg-09). It
+    # must read like one: letters with digits, 8+ characters, starting with neither a quote nor a reference's `{`,
+    # `$` or `<`, and not a URL. A sentence about a key ("the key is set", "token is expired") has no such value.
+    re.compile(
+        r"(?i)(\b(?:api[\s_-]?key|access[\s_-]?token|auth(?:entication)?[\s_-]?token|client[\s_-]?secret|"
+        r"secret[\s_-]?key|secret|token|key)\b\s*(?:\bis\b|\bwas\b|[:=-])\s*)"
+        r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
+        r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{6,}[A-Za-z0-9=])"
+    ),
     # A quoted literal assigned to a name that says what it is. A value with a
     # space in it is prose or a placeholder, not a key; so is one already marked.
     re.compile(
