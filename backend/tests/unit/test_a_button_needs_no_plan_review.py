@@ -181,3 +181,15 @@ def test_the_failure_print_says_the_run_s_own_record():
     failed = _steps()["step_change_failed"]
     assert failed["type"] == "print" and failed["print_content"] == "{state.run_changes}"
     assert failed["output_key"] == "summary" and failed["next_step_id"] == "step_end"
+
+
+def test_a_change_that_goes_round_too_often_ends_in_words():
+    """Five rounds of questions or "change something" and the planner's step is spent: the run used to fail there with
+    no summary ("'Plan the Change' gave up after 5 attempts"). It goes to a Print that says nothing was changed and
+    how to start again (the branch review's finding 12)."""
+    steps = _steps()
+    planner = steps["step_change"]
+    assert planner["max_iterations"] >= 5
+    spent = steps[planner["on_exhausted_step_id"]]
+    assert spent["type"] == "print" and spent["output_key"] == "summary" and spent["next_step_id"] == "step_end"
+    assert "Nothing was changed" in spent["print_content"] and "{state." not in spent["print_content"]
