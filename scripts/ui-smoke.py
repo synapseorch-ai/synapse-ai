@@ -8860,7 +8860,9 @@ async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, th
     await ctx.route(re.compile(r".*/api/orchestrations/runs(\?.*)?$"),
                     _answer([_m2b_summary(r) for r in runs.values()]))
     for rid, run in runs.items():
-        await ctx.route(f"**/api/orchestrations/runs/{rid}", _answer(run))
+        # With or without `?definition=1`, which the run page has asked for since F443 (F820: a glob with no
+        # query left every run-page check reading "Run not found").
+        await ctx.route(re.compile(rf".*/api/orchestrations/runs/{rid}(\?.*)?$"), _answer(run))
         await ctx.route(f"**/api/orchestrations/runs/{rid}/children", _answer([]))
         await ctx.route(f"**/api/orchestrations/runs/{rid}/events/stream*",
                         _answer(_M2B_STREAM, content_type="text/event-stream"))
@@ -9030,7 +9032,7 @@ async def check_runanswer(browser) -> str:
             bad.append("the lone Yes / No is still a checkbox, not the two buttons")
         await card.get_by_role("textbox", name="Note for the ledger").fill("Paid on Friday")
         # The page reads the answered run from here on.
-        await ctx.route("**/api/orchestrations/runs/run_smoke_m2b_wait", _answer(answered))
+        await ctx.route(re.compile(r".*/api/orchestrations/runs/run_smoke_m2b_wait(\?.*)?$"), _answer(answered))
         await card.get_by_role("button", name="Approve payment").click()
         await page.get_by_text("Answer sent — the run is resuming.").wait_for(timeout=10_000)
         if sent != [{"response": {"approved": True, "note": "Paid on Friday"}}]:
