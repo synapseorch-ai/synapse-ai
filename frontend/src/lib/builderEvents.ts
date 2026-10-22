@@ -12,6 +12,8 @@
  * twice must not append the message twice.
  */
 
+import { reasonHeadline } from '@/lib/runErrors';
+
 export type BuilderMessageKind =
     | 'text'
     | 'banner'
@@ -454,12 +456,19 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                     { role: 'assistant', content: 'Stopped.', kind: 'text', key: `stopped-${seq}` },
                 );
             }
-            return append(
-                { ...state, messages: completeLastStep(state.messages), status: null,
-                  done: true, error: String(event.error ?? 'Something went wrong.'), pending: null },
-                { role: 'assistant', content: `**Something went wrong.** ${event.error ?? ''}`,
-                  kind: 'text', key: `error-${seq}` },
-            );
+            {
+                // A step's own words (`reason`, the engine's F195), as the run page shows them: `error` is the
+                // sanitised sentence, so a provider's refusal for the key's usage limit read as an internal error
+                // (F931). A traceback says its last line; an older engine's event has only `error`.
+                const said = typeof event.reason === 'string' && event.reason
+                    ? reasonHeadline(event.reason) : event.error;
+                return append(
+                    { ...state, messages: completeLastStep(state.messages), status: null,
+                      done: true, error: String(said ?? 'Something went wrong.'), pending: null },
+                    { role: 'assistant', content: `**Something went wrong.** ${said ?? ''}`,
+                      kind: 'text', key: `error-${seq}` },
+                );
+            }
 
         // Everything else — per-step `final`, reasoning, task lists, parallel
         // bookkeeping — belongs to the run view, not to a build conversation.
