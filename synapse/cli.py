@@ -1595,11 +1595,17 @@ def _get_current_version() -> str:
 
 
 def _parse_version(v: str) -> tuple:
-    v = v.lstrip("v")
-    try:
-        return tuple(int(x) for x in v.split("."))
-    except ValueError:
-        return (0,)
+    """A key that orders versions as PyPI does, pre-releases included (F826)."""
+    from synapse import versions
+
+    return versions.key(v)
+
+
+def _npm_version(v: str) -> str:
+    """The same version as npm spells it: `2.0.0rc1` → `2.0.0-rc1`."""
+    from synapse import versions
+
+    return versions.npm(v)
 
 
 def _install_method() -> str:
@@ -1692,7 +1698,7 @@ def _upgrade_command(version: str = "", extras=()):
         # The npm package decides which Synapse its `synapse` runs; upgrading
         # only the Python side would be undone at its next start.
         print(f"Synapse {target} is out. Upgrade it the way it was installed:")
-        print(f"  npm install -g synapse-orch-ai@{target}")
+        print(f"  npm install -g synapse-orch-ai@{_npm_version(target)}")
         if missing:
             print(f"  then: synapse upgrade --with {','.join(missing)}")
         return
