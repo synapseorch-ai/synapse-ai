@@ -76,7 +76,7 @@ _ACTS = (
     Op("board_add_card", "act", "board", fields=("title", "text"), required=("title",), verb="Add a card to"),
     Op("board_update_card", "act", "card", fields=("status", "result"), verb="Update"),
     Op("board_comment", "act", "card", fields=("text",), required=("text",), verb="Comment on"),
-    Op("board_create", "act", "board", fields=("text",), verb="Make the board"),
+    Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
 )
 
@@ -93,7 +93,7 @@ _WRITES = (
     Op("rename_schedule", "write", "schedule", "update_schedule", ("name",), ("name",), verb="Rename"),
     Op("delete_schedule", "delete", "schedule", "delete_schedule", verb="Delete"),
     Op("create_schedule", "create", "schedule", "create_schedule",
-       ("runs", "prompt", *_SCHEDULE_TIME, "description"), ("runs", "prompt"), verb="Make the schedule"),
+       ("runs", "prompt", *_SCHEDULE_TIME, "description"), ("runs", "prompt"), verb="Make"),
     Op("set_agent_model", "write", "agent", "update_agent", ("model",), ("model",), verb="Change the model of"),
     Op("set_agent_tools", "write", "agent", "update_agent", ("add", "remove"), any_of=True,
        verb="Change the tools of"),

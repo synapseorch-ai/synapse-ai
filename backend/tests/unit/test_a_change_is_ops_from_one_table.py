@@ -239,6 +239,20 @@ def _every_field(op_name):
     return {k: _EVERY[k] for k in C.OPS[op_name].fields}
 
 
+@pytest.mark.parametrize("op", list(C.OPS))
+def test_no_op_s_line_says_its_noun_twice(op):
+    """MCP2's re-check (C): `Make the schedule the schedule "Mondays"`. Every sentence that uses an op's verb names its
+    target's kind after it, so a verb never carries the noun itself."""
+    from core.native_builder.change_tools import _words
+
+    o = C.OPS[op]
+    kind = "workflow" if o.target == "workflow" else o.target.replace("_", " ")
+    assert f"the {kind}" not in o.verb, (op, o.verb)
+    fields = {k: _EVERY[k] for k in o.fields if k in _EVERY}
+    line = _words(o, {"name": "Mondays"}, fields, "")
+    assert line.count(f"the {kind}") == 1, line
+
+
 @pytest.mark.parametrize("op", [n for n, o in C.OPS.items() if o.is_write and not o.internal and o.kind != "delete"])
 def test_every_write_s_review_line_shows_what_its_call_sets(op):
     fields = _every_field(op)
