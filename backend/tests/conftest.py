@@ -173,12 +173,18 @@ def _restore_settings_provider():
     on the way out (test_shared_fleet's fleet did) left every later test that relied on that
     import on bare defaults while its writes went to the store: the semantic cache's tests
     then read no Embedding Model, 6 of 13 failing after test_mcp_boot_retry + test_shared_fleet.
-    F91 met the same class and `test_app` reinstalls; this covers every test, not one fixture."""
+    F91 met the same class and `test_app` reinstalls; this covers every test, not one fixture.
+
+    Only a provider that was there is put back. A test that found none and imported
+    `core.server` installed the process's own, once: putting back None undid that, and
+    left every later test on bare defaults — the class this fixture is for (found in
+    BF11's F854 run: the semantic cache's file, 9 of 13 failing run on its own)."""
     from core.config import get_settings_provider, set_settings_provider
 
     before = get_settings_provider()
     yield
-    set_settings_provider(before)
+    if before is not None:
+        set_settings_provider(before)
 
 
 # ── model CLI status isolation (autouse) ─────────────────────────────────────
