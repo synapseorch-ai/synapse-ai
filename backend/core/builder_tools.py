@@ -1776,6 +1776,18 @@ def _team_block(agent_type: Any, team: Any, *, new: bool) -> tuple[dict | None, 
         return None, f"Not saved: the team settings are not valid ({exc})."
 
 
+async def _workspace_catalogue(server_module) -> list:
+    """Every tool this workspace has, for the builder's discovery (`list_all_tools`, `get_tools_detail`).
+
+    Asked of the workspace, as `builder_guard`'s missing-tool check asks it (`{"tools": ["all"]}`), never of one
+    agent's list. It used to borrow the first non-system agent's: on a workspace whose first agent holds no tools,
+    the builder was told the workspace's own tools did not exist (F866, QA1c on production).
+    """
+    from core.tools import aggregate_all_tools
+    from core.routes.tools import load_custom_tools
+    return (await aggregate_all_tools(server_module, {"tools": ["all"]}, await load_custom_tools()))[0]
+
+
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
     if tool_name in _REGISTERED:  # a tool from its own module (`register_builder_tool`)
         return await _REGISTERED[tool_name](args, server_module, events)
@@ -1979,14 +1991,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     for t in tools_result.tools[:limit]
                 ]
             else:
-                from core.tools import aggregate_all_tools
-                from core.routes.tools import load_custom_tools
-                _agents = await load_user_agents()
-                active_agent = next((a for a in _agents if not a.get("system")), _agents[0] if _agents else {})
-                custom_tools = await load_custom_tools()
-                all_tools, _, _, _ = await aggregate_all_tools(
-                    server_module, active_agent, custom_tools
-                )
+                all_tools = await _workspace_catalogue(server_module)
                 return [
                     {"name": t.name, "description": (t.description or "")[:120]}
                     for t in all_tools[:limit]
@@ -1996,14 +2001,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
     elif tool_name == "get_tools_detail":
         try:
-            from core.tools import aggregate_all_tools
-            from core.routes.tools import load_custom_tools
-            _agents = await load_user_agents()
-            active_agent = next((a for a in _agents if not a.get("system")), _agents[0] if _agents else {})
-            custom_tools = await load_custom_tools()
-            all_tools, _, _, _ = await aggregate_all_tools(
-                server_module, active_agent, custom_tools
-            )
+            all_tools = await _workspace_catalogue(server_module)
             requested = set(args.get("tool_names", []))
             result = {}
             for t in all_tools:
