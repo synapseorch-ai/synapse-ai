@@ -164,6 +164,23 @@ def _isolate_notifications(tmp_path, monkeypatch):
     notif_mod.hub._terminal_notified.clear()
 
 
+# ── settings provider isolation (autouse) ────────────────────────────────────
+@pytest.fixture(autouse=True)
+def _restore_settings_provider():
+    """Put back the settings provider each test found (F816, BF11).
+
+    `core/server.py` installs it at import, once per process. A test that set it to None
+    on the way out (test_shared_fleet's fleet did) left every later test that relied on that
+    import on bare defaults while its writes went to the store: the semantic cache's tests
+    then read no Embedding Model, 6 of 13 failing after test_mcp_boot_retry + test_shared_fleet.
+    F91 met the same class and `test_app` reinstalls; this covers every test, not one fixture."""
+    from core.config import get_settings_provider, set_settings_provider
+
+    before = get_settings_provider()
+    yield
+    set_settings_provider(before)
+
+
 # ── model CLI status isolation (autouse) ─────────────────────────────────────
 @pytest.fixture(autouse=True)
 def _isolate_cli_status():
