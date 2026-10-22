@@ -1159,8 +1159,8 @@
                 "review": "step_manage_review",
                 "ask": "step_change_clarify",
                 "said": "step_change_said",
-                "steps": "step_fetch_existing",
-                "build": "step_plan_room"
+                "steps": "step_may_change",
+                "build": "step_may_change"
             },
             "switch_default_step_id": "step_change_said"
         },

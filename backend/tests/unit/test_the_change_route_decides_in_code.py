@@ -260,10 +260,14 @@ async def test_a_step_edit_goes_to_today_s_update_path_with_its_workflow(client,
                                "fields": {"what": "add an approval before the fetch"}}], run=run)
     assert out["outcome"] == "steps" and out["workflow"]["id"] == flow["id"]
     assert run.shared_state["current_orchestration_id"] == flow["id"]
+    # The rest of the run reads it as the update it is: the saver's route is `state.intent` (review finding 1).
+    assert run.shared_state["intent"] == "update"
 
 
 @pytest.mark.parametrize("kind", ["agent", "skill", "tool", "openapi"])
 async def test_making_something_new_goes_to_today_s_create_path(client, role, kind):
+    run = await _run()
     out, cards, _ = await _check([{"op": "create", "target": {"kind": kind, "name": "Mailchimp"},
-                                   "fields": {"what": "make it"}}])
+                                   "fields": {"what": "make it"}}], run=run)
     assert out["outcome"] == "build" and cards == [] and out["calls"] == []
+    assert run.shared_state["intent"] == "create"

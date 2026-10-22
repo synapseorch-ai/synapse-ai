@@ -505,13 +505,19 @@ async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
         if not found:
             return {**base, "outcome": "said",
                     "say": f"No workflow is called {_quoted(first['target'].get('name') or first['target'].get('id'))}."}
-        _, run = _run()
-        if run is not None:
-            run.shared_state["current_orchestration_id"] = found[0]["id"]
-            run.shared_state["current_orchestration_name"] = found[0]["name"]
+        _routed("update", current_orchestration_id=found[0]["id"], current_orchestration_name=found[0]["name"])
         return {**base, "outcome": "steps", "ops": handoffs, "workflow": {"id": found[0]["id"],
                                                                           "name": found[0]["name"]}}
+    _routed("create")
     return {**base, "outcome": "build", "ops": handoffs}
+
+
+def _routed(intent: str, **facts: str) -> None:
+    """The run goes on as the route it is handed to: `intent` is what the door (`step_may_change`, which the hand-over
+    passes through again: a builder's route), the update path's prompts and its saver (`step_save_route`) read."""
+    _, run = _run()
+    if run is not None:
+        run.shared_state.update(intent=intent, **facts)
 
 
 async def _card(checked: dict, *, stage: str, data: dict | None = None) -> None:

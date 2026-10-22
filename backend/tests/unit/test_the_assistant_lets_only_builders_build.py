@@ -89,3 +89,20 @@ def test_the_self_hosted_entry_says_its_one_person_may():
     from core.routes import builder
     source = inspect.getsource(builder.prepare_builder_run)
     assert '"may_change": True' in source and '"may_act": True' in source and '"asker_role": "owner"' in source
+
+
+@pytest.mark.parametrize("outcome, intent, then", [("steps", "update", "step_fetch_existing"),
+                                                   ("build", "create", "step_plan_room")])
+async def test_a_hand_over_goes_back_through_the_door_as_its_own_route(engine, outcome, intent, then):
+    """A change the change route hands over (a workflow's steps; something new) goes back through the door as the
+    route it is (SAI2-P2's review): an approver who reached the change route is told why, and never runs the build's
+    plan and review; a builder goes on to it with `intent` set, which its saver reads."""
+    import json
+
+    checked = json.dumps({"object": "change", "outcome": outcome})
+    assert await _next(engine, "step_check_route", {"change_checked": checked}) == "step_may_change"
+    approver = {"intent": intent, "may_change": False, "may_act": True}
+    assert await _next(engine, "step_may_change", approver) == "step_not_yours"
+    builder = {"intent": intent, "may_change": True, "may_act": True}
+    assert await _next(engine, "step_may_change", builder) == "step_change_route"
+    assert await _next(engine, "step_change_route", builder) == then
