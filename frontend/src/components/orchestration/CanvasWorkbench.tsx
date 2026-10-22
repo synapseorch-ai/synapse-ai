@@ -51,7 +51,7 @@ import {
 import { useElementBox, useMediaQuery, useReducedMotion } from './workbench/hooks';
 import { SetupCard } from './workbench/SetupCard';
 import { signalEdgeTypes, useRunEdges } from './workbench/signals';
-import { stepCommandGroups } from './workbench/stepCommands';
+import { stepCommandGroups, TRANSFORM_NEEDS_CODE } from './workbench/stepCommands';
 import { FLOAT, TopBar } from './workbench/TopBar';
 import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './workbench/types';
 
@@ -68,6 +68,8 @@ export interface CanvasWorkbenchProps {
     knowledgeEnabled?: boolean;
     selectedStepId: string | null;
     onSelectStep: (stepId: string | null) => void;
+    /** Whether this workspace's plan runs code (cloud's `features.code_execution`): absent, it does (F882). */
+    canRunCode?: boolean;
     /** The step's setup, as the product renders it: `StepConfigPanel frame="card"` with its own props. */
     renderStep: (step: StepConfig) => React.ReactNode;
     /** The workflow's settings, as the product composes them (`WorkflowSettingsPanel` and its sections). */
@@ -167,7 +169,8 @@ function subscribeCoarse(onChange: () => void) {
 }
 
 function Workbench({
-    orchestration, onChange, agents, workflowNames, knowledgeEnabled = false, selectedStepId, onSelectStep,
+    orchestration, onChange, agents, workflowNames, knowledgeEnabled = false, canRunCode = true, selectedStepId,
+    onSelectStep,
     renderStep, renderSettings, settingsAtOpen = false, board, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
     insetRight = 0, run, runStrip, runDrawer, lastRun,
 }: CanvasWorkbenchProps) {
@@ -374,13 +377,20 @@ function Workbench({
     const hiddenTypes = knowledgeEnabled ? undefined : KNOWLEDGE_STEP_TYPES;
     const [picker, setPicker] = useState(false);
     const addStep = graph.addStep;
+    // Where code does not run, Transform is shown and not offered, saying why (F882).
+    const disabledTypes = useMemo(
+        () => (canRunCode ? undefined : { transform: TRANSFORM_NEEDS_CODE }),
+        [canRunCode],
+    );
     const pickerGroups = useMemo(
-        () => stepCommandGroups({ onAdd: (t: StepType) => { addStep(t); }, hiddenTypes, grouped: true }),
-        [addStep, hiddenTypes],
+        () => stepCommandGroups({ onAdd: (t: StepType) => { addStep(t); }, hiddenTypes, disabledTypes, grouped: true }),
+        [addStep, hiddenTypes, disabledTypes],
     );
     const appGroup = useMemo(
-        () => stepCommandGroups({ onAdd: (t: StepType) => { addStep(t); }, hiddenTypes, grouped: false })[0],
-        [addStep, hiddenTypes],
+        () => stepCommandGroups({
+            onAdd: (t: StepType) => { addStep(t); }, hiddenTypes, disabledTypes, grouped: false,
+        })[0],
+        [addStep, hiddenTypes, disabledTypes],
     );
     useRegisterCommands('canvas-steps', readOnly ? null : appGroup);
 

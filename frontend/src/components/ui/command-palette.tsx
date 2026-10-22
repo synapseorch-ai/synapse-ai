@@ -40,6 +40,8 @@ export type CommandItem = {
    * page under it (a modal dialog keeps the page from pointer events).
    */
   drag?: { type: string; value: string };
+  /** Shown, with its `hint` saying why, but neither picked nor dragged (F882: a step the plan lacks). */
+  disabled?: boolean;
 };
 
 export type CommandGroup = { heading: string; items: CommandItem[] };
@@ -175,12 +177,13 @@ export function CommandPalette({
                         key={item.id}
                         value={item.id}
                         keywords={[item.label, item.hint ?? "", ...(item.keywords ?? [])]}
+                        disabled={item.disabled}
                         onSelect={() => {
                           setQuery("");
                           onOpenChange(false);
                           item.onSelect();
                         }}
-                        {...(item.drag
+                        {...(item.drag && !item.disabled
                           ? {
                               draggable: true,
                               onDragStart: (event: React.DragEvent) => {
@@ -198,7 +201,8 @@ export function CommandPalette({
                         className={cn(
                           "group grid cursor-pointer grid-cols-[1.75rem_minmax(0,1fr)_auto] items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm",
                           "data-[selected=true]:bg-surface-2",
-                          item.drag && "active:cursor-grabbing",
+                          item.drag && !item.disabled && "active:cursor-grabbing",
+                          "data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-60",
                         )}
                       >
                         <span className="grid size-7 place-items-center rounded-md bg-surface-2 text-text-muted group-data-[selected=true]:bg-bg">

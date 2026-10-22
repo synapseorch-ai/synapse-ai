@@ -15,12 +15,18 @@ import { STEP_DRAG_TYPE } from '../StepPalette';
 
 const CATEGORY_ORDER: StepCategory[] = ['Core', 'Logic', 'Data', 'I/O'];
 
-function item(type: StepType, idPrefix: string, onAdd: (type: StepType) => void): CommandItem {
+/** Why a Transform step cannot be added where code does not run: the step card's words and the list's (F882). */
+export const TRANSFORM_NEEDS_CODE = 'Runs Python — available on Team, Growth and Business.';
+
+function item(
+    type: StepType, idPrefix: string, onAdd: (type: StepType) => void, disabledBecause?: string,
+): CommandItem {
     const meta = STEP_TYPE_META[type];
     return {
         id: `${idPrefix}${type}`,
         label: meta.label,
-        hint: meta.blurb,
+        hint: disabledBecause ?? meta.blurb,
+        disabled: Boolean(disabledBecause),
         icon: <StepIcon type={type} className="size-7 [&_svg]:size-4" />,
         keywords: [type.replace('_', ' '), meta.category],
         onSelect: () => onAdd(type),
@@ -28,19 +34,25 @@ function item(type: StepType, idPrefix: string, onAdd: (type: StepType) => void)
     };
 }
 
-export function stepCommandGroups({ onAdd, hiddenTypes, grouped }: {
+export function stepCommandGroups({ onAdd, hiddenTypes, disabledTypes, grouped }: {
     onAdd: (type: StepType) => void;
     hiddenTypes?: readonly StepType[];
+    /**
+     * Types shown but not offered, each with why (F882): on a plan without code, Transform — offered, it was
+     * added and the whole workflow's Save then refused with a 402, though the step card's own picker knew.
+     */
+    disabledTypes?: Partial<Record<StepType, string>>;
     /** By category for the dock's list; one "Add a step" group for the app's ⌘K. */
     grouped: boolean;
 }): CommandGroup[] {
     const hidden = new Set(hiddenTypes ?? []);
     const types = (Object.keys(STEP_TYPE_META) as StepType[]).filter((t) => !hidden.has(t));
+    const make = (t: StepType, prefix: string) => item(t, prefix, onAdd, disabledTypes?.[t]);
     if (!grouped) {
-        return [{ heading: 'Add a step', items: types.map((t) => item(t, 'add-step:', onAdd)) }];
+        return [{ heading: 'Add a step', items: types.map((t) => make(t, 'add-step:')) }];
     }
     return CATEGORY_ORDER.map((category) => ({
         heading: category,
-        items: types.filter((t) => STEP_TYPE_META[t].category === category).map((t) => item(t, 'step:', onAdd)),
+        items: types.filter((t) => STEP_TYPE_META[t].category === category).map((t) => make(t, 'step:')),
     }));
 }

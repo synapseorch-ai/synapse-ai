@@ -31,6 +31,7 @@ import { STEP_SECTIONS } from './panel/steps';
 import { useAvailableTools } from './panel/use-available-tools';
 import { StepIcon } from '../run/StepIcon';
 import { agentKind } from './agentKind';
+import { TRANSFORM_NEEDS_CODE } from './workbench/stepCommands';
 
 interface StepConfigPanelProps {
     step: StepConfig;
@@ -260,7 +261,7 @@ export function StepConfigPanel({
                                 value: t,
                                 label: STEP_TYPE_META[t].label,
                                 hint: t === 'transform' && !canRunCode
-                                    ? 'Runs Python — available on Team, Growth and Business.'
+                                    ? TRANSFORM_NEEDS_CODE
                                     : STEP_TYPE_META[t].blurb,
                                 // Never disable the type this step already is: a
                                 // workflow that arrived with a transform must stay
