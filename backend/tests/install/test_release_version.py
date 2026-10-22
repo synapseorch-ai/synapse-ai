@@ -107,3 +107,9 @@ def test_pypi_and_the_installer_use_pypis_spelling(jobs):
     job = jobs["github-release"]
     assert "pypi.org/pypi/synapse-orch-ai/${{ needs.gate.outputs.pep440 }}/json" in _step(job, run="pypi.org")["run"]
     assert '--version "${{ needs.gate.outputs.pep440 }}"' in _step(job, run="build_installer.py")["run"]
+
+
+def test_a_hung_image_build_fails_within_ninety_minutes(jobs):
+    """F828: v1.9.2's combined image sat in "Build and push" for 4 h under GitHub's
+    default 6-hour limit (1.9.1's took 26 min, the re-run 28)."""
+    assert jobs["publish-docker"].get("timeout-minutes") == 90

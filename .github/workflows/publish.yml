@@ -262,6 +262,9 @@ jobs:
   publish-docker:
     runs-on: ubuntu-latest
     needs: [gate, plan-images]
+    # An image takes ~30 min (1.9.1: 26, 1.9.2's re-run: 28); 1.9.2's first build
+    # hung in "Build and push" for 4 h under the default 6-hour limit (F828).
+    timeout-minutes: 90
     strategy:
       fail-fast: false  # two images already pushed must not be cancelled by the third
       matrix:
