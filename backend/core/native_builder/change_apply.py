@@ -19,7 +19,8 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.native_builder import change_ops as C
-from core.native_builder.change_tools import CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, read, reviewed_of
+from core.native_builder.change_tools import (CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, candidates, read,
+                                              reviewed_of)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 #: The run-state keys the route reads: the check's answer and the review's.
@@ -107,8 +108,6 @@ def _moved_since(before: dict | None, now: dict | None) -> list[str]:
 
 async def _created_id(item: dict, result: Any) -> str | None:
     """What a create made: its id from the tool's answer, else the one thing of its kind with its name."""
-    from core.native_builder.change_tools import candidates
-
     kind = C.OPS[item["op"]].target
     try:
         parsed = json.loads(result) if isinstance(result, str) else result
@@ -121,9 +120,26 @@ async def _created_id(item: dict, result: Any) -> str | None:
                 for key in ("id", "orch_id", "agent_id", "schedule_id"):
                     if record.get(key):
                         return str(record[key])
-    name = (item["target"].get("name") or "").lower()
-    found = [i["id"] for i in await candidates(kind) or [] if i["name"].lower() == name]
+    found = await _named(item)
     return found[0] if len(found) == 1 else None
+
+
+async def _named(item: dict) -> list[str]:
+    """The ids of every thing of a create's kind that has its name now."""
+    name = (item["target"].get("name") or "").lower()
+    return [i["id"] for i in await candidates(C.OPS[item["op"]].target) or [] if i["name"].lower() == name]
+
+
+async def _made_since(item: dict) -> tuple[str | None, bool]:
+    """A create's name was free when it was checked, so a thing with it now was made since: by an earlier pass of this
+    apply (it reads as the call leaves it: the id), or by someone else (True: not made again under it). A restart or
+    another worker leaves no spent-once claim (OSS keeps them in memory, per process: MCP2's re-check, D), so this,
+    not the claim store, is what keeps a create made once."""
+    ids = await _named(item)
+    for found in ids:
+        if not C.differs(await read(C.OPS[item["op"]].target, found), item.get("expected")):
+            return found, False
+    return None, bool(ids)
 
 
 async def apply_change(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -154,6 +170,17 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                 applied.append({"op": op.name, "target": target, "says": item.get("says", ""),
                                 "before": item.get("before"), "fields": item.get("fields"), "already": True})
                 continue
+            if op.kind == "create":
+                made, taken = await _made_since(item)
+                if made:
+                    applied.append({"op": op.name, "target": {**target, "id": made}, "says": item.get("says", ""),
+                                    "before": item.get("before"), "fields": item.get("fields"), "already": True})
+                    continue
+                if taken:
+                    a = "an" if op.target[0] in "aeiou" else "a"
+                    failed.append(f"Not done: {a} {op.target} called {_quoted(target.get('name'))} was made since you "
+                                  "approved this, so I made no second one. Ask again to change it.")
+                    continue
             if op.kind != "create" and now is None:
                 failed.append(f"Not done: {label} is not there any more.")
                 continue

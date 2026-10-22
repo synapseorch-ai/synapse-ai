@@ -51,12 +51,19 @@ _store: ClaimStore = MemoryClaims()
 _secret: bytes | None = None
 
 
-#: How long an approved review's spent calls are remembered (F778): past any redelivery or resume of its apply.
+#: How long an approved review's spent calls are remembered (F778): past any redelivery or resume of its apply, where
+#: the store outlives the process (Redis in cloud).
 REVIEW_TTL_SECONDS = 7 * 24 * 3600
 
 
 async def claim_once(key: str, ttl: int) -> bool:
-    """True the first time `key` is claimed within `ttl` seconds: the store tokens use (Redis in cloud)."""
+    """True the first time `key` is claimed within `ttl` seconds: the store tokens use (Redis in cloud).
+
+    The default store is this process's memory: a restart forgets every claim, and another process (an OSS scale-mode
+    worker a job is redelivered to) never saw them. A token outlives neither its ten minutes nor a restart's signing
+    key, but an approved review does, so a caller that can run again after one (Synapse AI's `apply_change`, resumed
+    or redelivered) must find what it already did from live state first; this is its second guard, not its only one.
+    """
     return await _store.claim(key, ttl)
 
 

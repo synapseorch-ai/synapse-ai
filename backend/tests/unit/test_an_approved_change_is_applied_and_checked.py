@@ -295,6 +295,53 @@ async def test_an_apply_run_twice_makes_nothing_twice_and_says_it_was_done(clien
     assert [s["name"] for s in await schedules.load()].count("Mondays") == 1
 
 
+async def _new_schedule_checked(name="Mondays"):
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    run = await _run()
+    await _checked(run, [{"op": "create_schedule", "target": {"kind": "schedule", "name": name},
+                          "fields": {"runs": {"kind": "workflow", "id": flow["id"]}, "prompt": "Go",
+                                     "cron_expression": "0 9 * * 1"}}])
+    return run, flow
+
+
+async def test_a_create_run_again_after_a_restart_is_made_once(client):
+    """MCP2's re-check, D: OSS keeps its spent-once claims in memory, per process. A run failed by a restart and
+    resumed by the person, or a job redelivered to another worker (scale mode), runs `apply_change` again with no
+    claim left: a delete or a write finds its target as it leaves it, but a create would be made a second time. A
+    create finds what the earlier pass made, by name, and is done; the claim store is a second guard, not the only
+    one."""
+    from core.store import schedules
+
+    run, _ = await _new_schedule_checked()
+    _, first, _ = await _approve_and_apply(run)
+    assert first["applied"] == ["create_schedule"], first
+    confirm.set_claim_store(None)  # what a restart or another worker leaves
+    again, _ = await _call("apply_change", {}, run)
+    assert again["applied"] == ["create_schedule"] and again["failed"] == [], again
+    assert [s["name"] for s in await schedules.load()].count("Mondays") == 1
+
+
+async def test_a_name_taken_since_the_yes_is_not_made_again_under_it(client):
+    """Someone else made a schedule with the approved name, set otherwise, after the review: nothing is made, and it is
+    said; the other schedule is left as it is."""
+    from core.store import schedules
+
+    run, flow = await _new_schedule_checked()
+    await schedules.save({"id": "sched_theirs", "name": "Mondays", "enabled": True, "target_type": "orchestration",
+                          "target_id": flow["id"], "prompt": "Other", "schedule_type": "cron",
+                          "cron_expression": "0 7 * * 1"})
+    _, applied, _ = await _approve_and_apply(run)
+    assert applied["applied"] == [], applied
+    assert applied["failed"] == ['Not done: a schedule called "Mondays" was made since you approved this, so I made '
+                                 'no second one. Ask again to change it.'], applied
+    assert [s["id"] for s in await schedules.load() if s["name"] == "Mondays"] == ["sched_theirs"]
+    assert (await schedules.get("sched_theirs"))["cron_expression"] == "0 7 * * 1"
+
+
 @pytest.mark.parametrize("kind, writes, words", [
     ("skill", [{"kind": "skill", "action": "created", "id": "polite-replies", "name": "polite-replies"}], ""),
     ("tool", [{"kind": "tool", "action": "created", "id": "weather_forecast", "name": "weather_forecast"}],
