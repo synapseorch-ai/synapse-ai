@@ -152,6 +152,22 @@ class TestTheSaveRules:
         assert said is not None and "Workflow step 'step_again' runs this workflow" in said
         assert refusal({"id": "o1", "steps": [{"id": "s", "type": "workflow", "workflow_id": "o2"}]}, {}) is None
 
+    def test_every_workflow_this_product_ships_passes(self):
+        """Synapse AI's own definition and every example pack: a later edit that slips in an expression the
+        engine refuses would fail that step on every run (SAI2's condition, 2026-10-23)."""
+        import json
+        from pathlib import Path
+
+        from core.orchestration.save_rules import refusal
+
+        backend = Path(__file__).resolve().parents[2]
+        shipped = {"native_builder": json.loads((backend / "core/native_builder/orchestration.json").read_text())}
+        for pack in sorted((backend / "examples").glob("*.bundle.json")):
+            for orch in json.loads(pack.read_text()).get("orchestrations") or []:
+                shipped[f"{pack.name}:{orch.get('id')}"] = orch
+        assert len(shipped) > 5
+        assert {name: said for name, orch in shipped.items() if (said := refusal(orch, {}))} == {}
+
     def test_an_expression_that_is_only_a_typo_saves(self):
         """A typo is the validator's to report, as the builder's tools have always done."""
         from core.orchestration.save_rules import refusal
