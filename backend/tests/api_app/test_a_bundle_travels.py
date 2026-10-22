@@ -189,3 +189,6 @@ class TestASelfHostBundleTravels:
         r = await client.post("/api/import", json=request)
         assert r.status_code == 200, r.text
         assert len(r.json()["results"]["orchestrations"]) == len(bundle.get("orchestrations", []))
+        # Alone on a fresh install, nothing it names is missing (F790).
+        dangling = [w for w in r.json()["warnings"] if "isn't in this file or on this install" in str(w)]
+        assert dangling == [], dangling

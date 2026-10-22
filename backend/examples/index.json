@@ -36,9 +36,9 @@
       "orchestrations",
       "mcp_servers"
     ],
-    "agent_count": 7,
+    "agent_count": 9,
     "orchestration_count": 3,
-    "mcp_count": 2,
+    "mcp_count": 4,
     "tool_count": 0,
     "file": "developer_pack.bundle.json"
   },
@@ -51,7 +51,7 @@
       "orchestrations",
       "mcp_servers"
     ],
-    "agent_count": 4,
+    "agent_count": 5,
     "orchestration_count": 1,
     "mcp_count": 3,
     "tool_count": 0,
