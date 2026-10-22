@@ -435,10 +435,30 @@ async def create_or_update_orchestration(orch: OrchestrationIn):
     existing = await _get(orch.id)
 
     data = orch.model_dump()
+    await _refuse_to_save(data)
     data["updated_at"] = now
     data["created_at"] = (existing or {}).get("created_at", now)
     await save_orchestration(data)
     return data
+
+
+async def _refuse_to_save(orch: dict, extra_agents: dict | None = None) -> None:
+    """422 when the engine would refuse to run `orch` as written (F850, F853).
+
+    The builder's tools refused these before saving; the editor's save and an
+    import did not. `extra_agents` are agents saved alongside it (an import's).
+    """
+    from core.orchestration.save_rules import agent_ids, refusal
+    from core.store.resources import get_agent
+
+    agents = dict(extra_agents or {})
+    for aid in agent_ids(orch) - agents.keys():
+        found = await get_agent(aid)
+        if found:
+            agents[aid] = found
+    said = refusal(orch, agents)
+    if said:
+        raise HTTPException(status_code=422, detail=said)
 
 
 @router.delete("/api/orchestrations/{orch_id}")

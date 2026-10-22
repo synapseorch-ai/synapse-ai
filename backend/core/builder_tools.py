@@ -71,6 +71,7 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
     reached it — this one included — is a loop: every run would call itself
     again without end (F691).
     """
+    from core.orchestration.save_rules import loop_sentence
     from core.store.resources import get_orchestration
 
     called: list[dict] = []
@@ -90,13 +91,7 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
                 continue
             if child_id in chain:
                 looped = "this workflow" if child_id == orch.get("id") else f"the workflow '{child_id}' that calls it"
-                issues.append(
-                    f"{where}Workflow step '{s.get('id')}' runs {looped}: every run would call itself again, "
-                    f"without end. Point the step at another workflow." if direct else
-                    f"{where}Agent step '{s.get('id')}' uses workflow agent '{target.get('id')}', which runs "
-                    f"{looped}: every run would call itself again, without end. Point the step at the agent that "
-                    f"does the work, not at a workflow agent of this workflow."
-                )
+                issues.append(loop_sentence(s, target, looped, where))
                 continue
             if child_id in seen:
                 continue
@@ -252,32 +247,12 @@ def _refuse_knowledge_off(steps: list) -> dict | None:
     }
 
 
-#: The five step fields that carry an expression. `core.expressions` decides
-#: what one may contain; this is only the list of places to look.
-_EXPRESSION_FIELDS = (
-    "if_condition",
-    "switch_expression",
-    "loop_over",
-    "loop_while_condition",
-    "loop_break_condition",
-)
-
-
 def _expression_problems(steps: list, *, unsafe_only: bool) -> list[str]:
-    """Every expression problem in `steps`, as sentences naming step and field."""
-    from core import expressions
+    """Every expression problem in `steps`, as sentences naming step and field:
+    one rule with every door that saves a workflow (F850)."""
+    from core.orchestration.save_rules import expression_problems
 
-    look = expressions.unsafe_reason if unsafe_only else expressions.check_expression
-    found = []
-    for step in steps:
-        if not isinstance(step, dict):
-            continue
-        sid = step.get("id") or "?"
-        for field in _EXPRESSION_FIELDS:
-            reason = look(step.get(field))
-            if reason:
-                found.append(f"step '{sid}' {field}: {reason}")
-    return found
+    return expression_problems(steps, unsafe_only=unsafe_only)
 
 
 def _refuse_unsafe_expression(steps: list) -> dict | None:

@@ -2195,7 +2195,7 @@ class LoopStepExecutor:
                 # has since rewritten the source key.
                 items = saved.get("items")
                 if items is None:
-                    resolved, err = _eval_state_expr(step.loop_over, run.shared_state)
+                    resolved, err = _route_expr(step.loop_over, run.shared_state, "The Loop's list (loop_over)")
                     if err:
                         yield {"type": "step_warning", "orch_step_id": step.id,
                                "message": f"loop_over '{step.loop_over}' failed to evaluate: {err}"}
@@ -2273,8 +2273,9 @@ class LoopStepExecutor:
                                "message": f"Loop hit its {cap}-iteration ceiling"}
                         break
                     if mode == "while":
-                        keep_going, err = _eval_state_expr(
-                            step.loop_while_condition, run.shared_state, default=False)
+                        keep_going, err = _route_expr(
+                            step.loop_while_condition, run.shared_state, "The Loop's while condition",
+                            default=False)
                         if err:
                             yield {"type": "step_warning", "orch_step_id": step.id,
                                    "message": f"loop_while_condition failed to evaluate "
@@ -2512,8 +2513,9 @@ class LoopStepExecutor:
                     _log.warning(f"loop-progress checkpoint failed: {ckpt_err}")
 
                 if step.loop_break_condition:
-                    should_break, err = _eval_state_expr(
-                        step.loop_break_condition, run.shared_state, default=False)
+                    should_break, err = _route_expr(
+                        step.loop_break_condition, run.shared_state, "The Loop's break condition",
+                        default=False)
                     if err:
                         yield {"type": "step_warning", "orch_step_id": step.id,
                                "message": f"loop_break_condition failed to evaluate "
@@ -3048,13 +3050,32 @@ def _eval_state_expr(expr: str, state: dict, default=None):
     path ran from a chat message through prompt injection to arbitrary code in
     this process (S3).
 
-    A refused expression says so, and then behaves exactly like one that raised
-    — every call site below already has a documented answer for that, and a
-    self-hosted workflow should not stop running on the day this ships.
+    A refused expression says so here, for a caller that only reads (the
+    switch's "no case matched" sentence). A step that routes on one reads it
+    through `_route_expr`, which fails the step instead (F850).
     """
     result = _expressions.evaluate_expression(expr, state, default)
     if result.refused:
         return result.value, f"unsafe expression — {result.error}"
+    return result.value, result.error
+
+
+def _route_expr(expr: str, state: dict, what: str, default=None):
+    """`_eval_state_expr` for a step that decides on the answer: a *refused*
+    expression fails the step, naming `what` and why (F850).
+
+    A refused expression used to route like one that raised — an If/Else took
+    its false branch, a Switch its default — and the run read Completed (QA1b,
+    on prod). Refused is the author's mistake, not this run's data, so the step
+    stops rather than guess (Naveen, 2026-10-23). An allowed expression that
+    cannot read this run's state still returns its error for the caller's
+    documented answer: a key a run does not have yet is data.
+    """
+    result = _expressions.evaluate_expression(expr, state, default)
+    if result.refused:
+        raise RuntimeError(
+            f"{what} uses something this engine will not run: {result.error}. "
+            f"The step stops here rather than guess; change it, then Replay.")
     return result.value, result.error
 
 
@@ -3075,7 +3096,7 @@ class IfElseStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[IF/Else Condition] {condition}"}
 
-        raw, err = _eval_state_expr(condition, run.shared_state, default=False)
+        raw, err = _route_expr(condition, run.shared_state, "The If/Else condition", default=False)
         result = bool(raw)
         if err:
             _log.debug(f"IF_ELSE: ⚠ Condition eval failed: {err}")
@@ -3115,7 +3136,7 @@ class SwitchStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id,
                "prompt": f"[Switch Expression] {expression}"}
 
-        value, err = _eval_state_expr(expression, run.shared_state, default=None)
+        value, err = _route_expr(expression, run.shared_state, "The Switch expression", default=None)
         if err:
             _log.debug(f"SWITCH: ⚠ Expression eval failed: {err}")
             yield {"type": "step_warning", "orch_step_id": step.id,

@@ -17,6 +17,8 @@ export type KindAgent = {
     type?: string;
     team?: { mode?: string; at_once?: number; task_budget?: number; spend_limit_usd?: number | null } | null;
     delegate_agent_ids?: string[] | null;
+    /** A workflow agent's workflow. */
+    orchestration_id?: string | null;
 };
 
 export function agentKind(agent?: KindAgent | null): AgentKind {
@@ -51,9 +53,13 @@ export function kindHint(agent: KindAgent): string | undefined {
     return `Team · ${who}, ${kind === 'team' ? 'as a team' : 'one at a time'}`;
 }
 
-/** The Agent step's picker: agents, then Teams, then Workflows, each under its heading. */
-export function agentOptions(agents: KindAgent[]): ComboboxOption[] {
-    return [...agents]
+/**
+ * The Agent step's picker: agents, then Teams, then Workflows, each under its heading. A workflow agent of the
+ * workflow being edited is left out (F853): the step would run this workflow again on every run, and save refuses it.
+ */
+export function agentOptions(agents: KindAgent[], ownWorkflowId?: string): ComboboxOption[] {
+    return agents
+        .filter((a) => !(ownWorkflowId && agentKind(a) === 'workflow' && a.orchestration_id === ownWorkflowId))
         .map((a) => ({ a, group: GROUP[agentKind(a)] }))
         .sort((x, y) => GROUP_ORDER.indexOf(x.group) - GROUP_ORDER.indexOf(y.group))
         .map(({ a, group }) => ({ value: String(a.id ?? ''), label: String(a.name ?? a.id ?? ''), hint: kindHint(a), group }));

@@ -187,6 +187,7 @@ async def import_bundle(req: ImportRequest):
     selected_orchs = set(req.selected_orchestration_ids)
     imported_orchs: List[dict] = []
 
+    picked: List[dict] = []
     for index, orch in enumerate(bundle["orchestrations"]):
         if not isinstance(orch, dict) or bundle_key(orch, index) not in selected_orchs:
             continue
@@ -195,6 +196,20 @@ async def import_bundle(req: ImportRequest):
         if not oid or str(oid).startswith("#"):
             # Cloud's file before the envelope carried no workflow ids.
             oid = orch["id"] = new_id("orch")
+        picked.append(orch)
+
+    # A workflow the engine would refuse to run as written refuses the whole
+    # file, before anything is saved (F850, F853): the bundle's agents count,
+    # as they arrive with it.
+    from core.routes.orchestrations import _refuse_to_save
+
+    arriving = {a["id"]: a for a in bundle["agents"]
+                if isinstance(a, dict) and a.get("id") in set(req.selected_agent_ids)}
+    for orch in picked:
+        await _refuse_to_save(orch, arriving)
+
+    for orch in picked:
+        oid = orch["id"]
         replaced = oid in existing_orch_ids
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         if not replaced:

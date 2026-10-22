@@ -287,7 +287,7 @@ function AgentKindNote({ step, agents, tasksPriced }: Pick<StepSectionProps, 'st
 }
 
 function AgentSection(props: StepSectionProps) {
-    const { step, update, agents, showVaultHints } = props;
+    const { step, update, agents, orchestration, showVaultHints } = props;
     return (
         <div className="space-y-3">
             <Field label="Agent" required>
@@ -296,8 +296,9 @@ function AgentSection(props: StepSectionProps) {
                     aria-label="Agent"
                     value={step.agent_id}
                     onChange={(id) => update({ agent_id: id || undefined })}
-                    // Agents, Teams and Workflows, each in words (TEAM1e): never the stored type.
-                    options={agentOptions(agents)}
+                    // Agents, Teams and Workflows, each in words (TEAM1e): never the stored type. Never this
+                    // workflow's own agent (F853), as a Workflow step's picker never offers this workflow.
+                    options={agentOptions(agents, orchestration?.id)}
                     placeholder="Select an agent, a team or a workflow…"
                     searchPlaceholder="Search agents…"
                 />
