@@ -224,17 +224,21 @@ async def _usage(args: dict) -> dict:
     days = max(1, min(int(args.get("days") or 7), 90))
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
     workflows = await _workflow_names()
-    totals: dict[str, dict] = {}
-    for r in await list_runs(limit=1000):
-        if (r.get("started_at") or "") < since:
-            continue
+    from core.product_tools import run_cost
+
+    rows = [r for r in await list_runs(limit=1000) if (r.get("started_at") or "") >= since]
+    paid = await run_cost.costs(rows)
+    by_name: dict[str, list[dict]] = {}
+    for r in rows:
         name = workflows.get(r.get("orchestration_id")) or r.get("orchestration_id")
-        t = totals.setdefault(name, {"workflow": name, "runs": 0, "model_dollars": 0.0})
-        t["runs"] += 1
-        t["model_dollars"] = round(t["model_dollars"] + float(r.get("total_cost_usd") or 0), 6)
-    return {"items": _named(sorted(totals.values(), key=lambda t: -t["runs"]), args.get("name"), "workflow"),
+        by_name.setdefault(name, []).append(paid.get(r.get("run_id")) or run_cost._own(r))
+    # What each workflow's runs were paid, as the host counts it (F843): credits where it charges them.
+    totals = [{"workflow": name, "runs": len(figures), **run_cost.total(figures)} for name, figures in by_name.items()]
+    credited = any("credits" in t for t in totals)
+    return {"items": _named(sorted(totals, key=lambda t: -t["runs"]), args.get("name"), "workflow"),
             "window": f"the last {days} days (since {since[:10]})",
-            "note": "Self-hosted has no credits: a run costs what its model providers charge, estimated here."}
+            "note": "" if credited else
+            "Self-hosted has no credits: a run costs what its model providers charge, estimated here."}
 
 
 async def _plan(args: dict) -> dict:
@@ -332,10 +336,12 @@ async def _run(args: dict) -> dict:
     view = await _product_read("get_run", {"run_id": run_id})
     if "status" not in view:  # a refusal; a failed run's view carries its reason in `error` too (F756)
         return view
+    from core.product_tools import run_cost
+
     row = next(iter(r for r in await list_runs(limit=500) if r.get("run_id") == run_id), {})
+    paid = run_cost.total(list((await run_cost.costs([row])).values())) if row else {"model_dollars": 0.0}
     return {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),
-            "started_at": row.get("started_at"), "ended_at": row.get("ended_at"),
-            "model_dollars": round(float(row.get("total_cost_usd") or 0), 6)}
+            "started_at": row.get("started_at"), "ended_at": row.get("ended_at"), **paid}
 
 
 _SELF_HOSTED: dict[str, Reader] = {

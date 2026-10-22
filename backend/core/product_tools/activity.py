@@ -77,6 +77,9 @@ async def summarise_activity(caller: Any, args: dict[str, Any]) -> dict:
 
     schedules = [{"schedule": s.get("name"), "last_ran_at": s.get("last_run_at")} for s in await store.load()
                  if _after(s.get("last_run_at"), since)]
+    from core.product_tools import run_cost
+
+    paid = run_cost.total(list((await run_cost.costs(rows)).values()))
     return {
         "window": f"the last {days} day{'s' if days != 1 else ''} (since {since:%Y-%m-%d %H:%M} UTC)",
         "runs": counts,
@@ -87,7 +90,8 @@ async def summarise_activity(caller: Any, args: dict[str, Any]) -> dict:
         "running": [{"workflow": named(r), "run_id": r.get("run_id")} for r in rows
                     if r.get("status") == "running"][:20],
         "schedules_that_ran": schedules,
-        "model_dollars": round(sum(float(r.get("total_cost_usd") or 0) for r in rows), 6),
+        # What was paid, as the host counts it (F843): credits where it charges them, model dollars always.
+        **paid,
         "note": "Workflow runs only; chat conversations are in agent_activity. Tool calls an agent stopped on are in "
                 "what waits (`waiting`).",
     }
