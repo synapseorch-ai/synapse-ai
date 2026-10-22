@@ -989,6 +989,50 @@ async def check_phone(browser) -> str:
         await ctx.close()
 
 
+#: Each Section header with actions on a page: the title's width against the header's, and whether
+#: the actions sit below the title (their top under the title's bottom).
+SECTION_HEADERS = r"""
+() => [...document.querySelectorAll('section > header')]
+  .filter((h) => h.children.length === 2)
+  .map((h) => {
+    const [title, actions] = [...h.children].map((c) => c.getBoundingClientRect());
+    const head = h.getBoundingClientRect();
+    return {
+      text: (h.querySelector('h2')?.textContent || '').trim().slice(0, 40),
+      share: title.width / head.width,
+      below: actions.top >= title.bottom - 1,
+    };
+  })
+"""
+
+
+@check
+async def check_sectionphone(browser) -> str:
+    """At phone width a section's actions go under its title (F839): kept beside it, a wide control
+    squeezed the title and description into a ~90 px column (cloud's Settings → Plan at 390 px). Above
+    `sm` the header stays one line (M2g), which `layout` and the contrast checks see at desktop width."""
+    ctx = await browser.new_context(viewport={"width": PHONE[0], "height": PHONE[1]})
+    page = await ctx.new_page()
+    try:
+        bad: list[str] = []
+        seen = 0
+        for path in ("/settings/models", "/settings/api-keys", "/settings/scale"):
+            await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+            await asyncio.sleep(SETTLE)
+            for h in await page.evaluate(SECTION_HEADERS):
+                seen += 1
+                if not h["below"] or h["share"] < 0.6:
+                    bad.append(f"{path} '{h['text']}': title {h['share']:.0%} of the header, "
+                               f"actions {'below' if h['below'] else 'beside'} it")
+        if not seen:
+            raise AssertionError("no section header with actions was found to measure")
+        if bad:
+            raise AssertionError("; ".join(bad))
+        return f"{seen} section headers with actions at {PHONE[0]}px: the actions under the title"
+    finally:
+        await ctx.close()
+
+
 # ── builder context ──────────────────────────────────────────────────────────
 
 #: Enough of a stream to let the panel finish a turn without a model call.

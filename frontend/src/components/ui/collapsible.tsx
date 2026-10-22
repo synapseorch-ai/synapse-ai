@@ -67,8 +67,11 @@ export function Section({
       >
         <header
           className={cn(
-            // No wrap: a long description must not push the actions onto a line of their own (M2g).
-            "flex items-start justify-between gap-x-4",
+            // From `sm` up, no wrap: a long description must not push the actions onto a line of
+            // their own (M2g). Below it the actions go under the title instead: kept beside it, a
+            // wide control squeezed the title and description into a ~90 px column on a phone
+            // (F839, Settings → Plan's "Plans that grow with you" at 390 px).
+            "flex flex-col gap-y-3 sm:flex-row sm:items-start sm:justify-between sm:gap-x-4",
             plain ? "pb-3 pt-5" : "border-b border-border px-5 py-3.5",
           )}
         >
@@ -76,7 +79,9 @@ export function Section({
             <h2 className={cn("text-text", plain ? sectionClass : "text-sm font-semibold")}>{title}</h2>
             {description && <p className="mt-0.5 text-xs text-text-muted">{description}</p>}
           </div>
-          {actions && <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">{actions}</div>}
+          {actions && (
+            <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">{actions}</div>
+          )}
         </header>
         <div className={plain ? "pb-5" : "px-5 py-4"}>{children}</div>
       </section>
