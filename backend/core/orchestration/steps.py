@@ -780,6 +780,16 @@ class ToolCallFailed(RuntimeError):
         self.ran = ran
 
 
+def _final_refusal(exc: BaseException) -> bool:
+    """A refusal no argument the model writes can change, so another attempt is a paid model call for
+    the same answer (F851): the egress guard's — a blocked range, no host, not a URL, a scheme that is
+    not http. The URL's host is the tool's own (one the model would fill is refused when the tool is
+    saved). A host that could not be resolved is not final: DNS can fail for a moment."""
+    from core import egress_guard
+
+    return isinstance(exc, egress_guard.BlockedEgress) and not isinstance(exc, egress_guard.UnresolvedHost)
+
+
 class ToolStepExecutor:
     """Single forced tool call — lightweight direct LLM call (no full agent/ReAct stack).
 
@@ -1112,6 +1122,9 @@ class ToolStepExecutor:
             except Exception as e:
                 last_error = str(e) or type(e).__name__
                 _log.debug(f"TOOL STEP: ❌ tool execution failed turn={turn + 1}: {last_error}")
+                if _final_refusal(e):
+                    # No argument changes it (F851): the guard refused where the tool's own URL points.
+                    break
                 if may_have_reached(e) and not _repeatable:
                     # Not made again: the first may have booked, sent or charged (F737).
                     last_error = f"{last_error} — {MAY_HAVE_RUN}"
