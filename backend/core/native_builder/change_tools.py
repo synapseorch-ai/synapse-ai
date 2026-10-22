@@ -452,7 +452,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             # Whatever is made needs a name nothing has: an undo's re-create checks nothing took it since (F797).
             name = _text(target.get("name")) or _text(fields.get("name"))
             if any(i["name"].lower() == name.lower() for i in await candidates(op.target) or []):
-                item.update(status="refused", say=f"A {op.target} is already called {_quoted(name)}: "
+                article = "An" if op.target[0] in "aeiou" else "A"
+                item.update(status="refused", say=f"{article} {op.target} is already called {_quoted(name)}: "
                                                   + ("say another name." if not op.internal else
                                                      "so I can't bring the old one back under its name."))
                 continue
@@ -516,6 +517,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.kind != "create" and live is None:
             item.update(status="refused", say=f"The {op.target} {_quoted(target['name'])} is not there any more.")
             continue
+        if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
+            new_name = _text(fields.get("name"))
+            if any(i["id"] != target["id"] and i["name"].lower() == new_name.lower()
+                   for i in await candidates(op.target) or []):
+                article = "An" if op.target[0] in "aeiou" else "A"
+                item.update(status="refused", say=f"{article} {op.target} is already called {_quoted(new_name)}: "
+                                                  "say another name.")
+                continue
         if op.name == "set_agent_skills":
             refusal = await _skill_names(fields)
             if refusal:

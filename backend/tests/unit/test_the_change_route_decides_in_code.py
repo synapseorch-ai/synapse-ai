@@ -327,3 +327,13 @@ async def test_an_undo_and_other_ops_in_one_submit_are_sent_back_not_half_done(c
     out, _ = await _call("submit_change", {"undo_of": "builder_x", "ops": [
         {"op": "schedule_off", "target": {"kind": "schedule", "name": "nightly"}}]}, run)
     assert "undo_of alone" in out["error"]
+
+
+async def test_a_rename_to_a_name_something_has_is_said_before_the_review(client, role):
+    """Two of one name are what makes a person pick by id (F760): a rename does not make a second one, as a create
+    does not (the branch review's finding 14)."""
+    await _agent(name="Front desk")
+    other = await _agent(name="Reception")
+    out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "id": other["id"]},
+                               "fields": {"name": "front desk"}}])
+    assert out["outcome"] == "said" and out["say"] == 'An agent is already called "front desk": say another name.'
