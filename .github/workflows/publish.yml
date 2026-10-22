@@ -30,6 +30,15 @@ jobs:
   # entire release to PyPI, npm, and Docker Hub.
   gate:
     runs-on: ubuntu-latest
+    # What this tag publishes (scripts/release_version.py, F827): the version in
+    # PyPI's and npm's spelling, and whether it is a pre-release — which must not
+    # take npm `latest`, Docker `:latest` or GitHub's releases/latest.
+    outputs:
+      pep440: ${{ steps.rv.outputs.pep440 }}
+      npm: ${{ steps.rv.outputs.npm }}
+      docker: ${{ steps.rv.outputs.docker }}
+      prerelease: ${{ steps.rv.outputs.prerelease }}
+      npm_tag: ${{ steps.rv.outputs.npm_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,18 +58,13 @@ jobs:
           pip install -r backend/requirements-test.txt
 
       - name: Verify version matches the release tag
+        id: rv
         run: |
           # On workflow_dispatch GITHUB_REF_NAME is a branch, so take the version from
           # the input instead — that is the version actually being published.
-          TAG="${{ inputs.version || github.ref_name }}"
-          TAG="${TAG#v}"
-          PY=$(python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
-          NPM=$(python -c "import json,pathlib; print(json.loads(pathlib.Path('package.json').read_text())['version'])")
-          echo "tag=$TAG pyproject=$PY package.json=$NPM"
-          if [ "$PY" != "$TAG" ] || [ "$NPM" != "$TAG" ]; then
-            echo "::error::Version mismatch — tag=$TAG pyproject=$PY package.json=$NPM"
-            exit 1
-          fi
+          python scripts/release_version.py "${{ inputs.version || github.ref_name }}" > release-version.txt
+          cat release-version.txt
+          cat release-version.txt >> "$GITHUB_OUTPUT"
 
       - name: Run gate test suite
         run: |
@@ -166,7 +170,9 @@ jobs:
           done
 
       - name: Publish to npm
-        run: npm publish --access public
+        # A pre-release goes under `next`: `npm install -g synapse-orch-ai` keeps
+        # installing the last final release.
+        run: npm publish --access public --tag ${{ needs.gate.outputs.npm_tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -177,7 +183,7 @@ jobs:
   # which is why the release is made only once PyPI serves the version: marked
   # latest a minute early, every 1.x upgrade in that minute fails.
   github-release:
-    needs: [publish-python, publish-npm]
+    needs: [gate, publish-python, publish-npm]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
@@ -190,10 +196,11 @@ jobs:
           python-version: '3.11'
 
       - name: Wait until PyPI serves this version
+        # Under PyPI's own spelling: tag v2.0.0-rc1 is 2.0.0rc1 there.
         run: |
-          V="${GITHUB_REF_NAME#v}"
+          V="${{ needs.gate.outputs.pep440 }}"
           for i in $(seq 1 60); do
-            if curl -fsS "https://pypi.org/pypi/synapse-orch-ai/$V/json" >/dev/null; then
+            if curl -fsS "https://pypi.org/pypi/synapse-orch-ai/${{ needs.gate.outputs.pep440 }}/json" >/dev/null; then
               echo "PyPI serves $V"; exit 0
             fi
             sleep 20
@@ -201,18 +208,26 @@ jobs:
           echo "::error::PyPI does not serve $V after 20 minutes"; exit 1
 
       - name: Build the installer for this version
-        run: python scripts/build_installer.py --out dist --version "${GITHUB_REF_NAME#v}"
+        run: python scripts/build_installer.py --out dist --version "${{ needs.gate.outputs.pep440 }}"
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.gate.outputs.prerelease }}
         run: |
           files="dist/synapse-install.pyz dist/synapse-install.pyz.sha256 setup.sh setup.ps1"
+          # A pre-release never becomes releases/latest, which 1.x's `synapse upgrade`
+          # and both setup scripts follow; it is installed by its own release's links.
+          if [ "$PRERELEASE" = "true" ]; then kind=--prerelease; else kind=--latest; fi
+          # The release's text is its notes file when there is one — generated notes
+          # list every commit since the last tag (about 1,260 for 2.0.0).
+          notes=".github/release-notes/$GITHUB_REF_NAME.md"
+          if [ -f "$notes" ]; then body=(--notes-file "$notes"); else body=(--generate-notes); fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" $files --clobber
-            gh release edit "$GITHUB_REF_NAME" --latest
+            gh release edit "$GITHUB_REF_NAME" "$kind"
           else
-            gh release create "$GITHUB_REF_NAME" $files --latest --generate-notes
+            gh release create "$GITHUB_REF_NAME" $files "$kind" "${body[@]}"
           fi
 
   # Selects which images publish-docker builds. A job-level `if` cannot see the
@@ -268,12 +283,6 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Resolve version
-        id: version
-        run: |
-          V="${{ inputs.version || github.ref_name }}"
-          echo "VERSION=${V#v}" >> $GITHUB_OUTPUT
-
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v5
         with:
@@ -281,9 +290,11 @@ jobs:
           file: ${{ matrix.file }}
           platforms: linux/amd64,linux/arm64
           push: true
+          # `:latest` is the last final release; a pre-release gets its version tag
+          # only (the empty line is dropped).
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ steps.version.outputs.VERSION }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.image }}:${{ needs.gate.outputs.docker }}
+            ${{ needs.gate.outputs.prerelease != 'true' && format('{0}/{1}:latest', secrets.DOCKERHUB_USERNAME, matrix.image) || '' }}
           # Read the per-image cache docker-build.yml warms on master. Scoped because
           # an unscoped `type=gha` puts all three images in one index, which is both
           # useless (api-server is a different Python base than the other two, so it
