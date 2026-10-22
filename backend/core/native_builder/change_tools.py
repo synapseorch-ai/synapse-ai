@@ -173,8 +173,10 @@ async def candidates(kind: str) -> list[dict] | None:
     if kind == "skill":
         from core import skills
 
+        # The library's only: a change is made there (`update_skill`), and a library skill shadows a disk copy of the
+        # same name, which would otherwise be a second, identical option (the branch review's finding 6).
         return [{"id": s["name"], "name": s["name"], "detail": s.get("description") or ""}
-                for s in await skills.list_skills()]
+                for s in await skills.list_skills() if s.get("source") == "library"]
     if kind == "tool":
         from core.store.resources import load_tools
 
@@ -303,6 +305,17 @@ async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
     return [], None
 
 
+async def _not_found(kind: str, target: dict) -> str:
+    """Why nothing matches: there is none by that name, or (a skill) it is read from disk, where it is changed."""
+    wanted = target.get("name") or target.get("id") or ""
+    if kind == "skill":
+        from core import skills
+
+        if resolve([{"id": s["name"], "name": s["name"]} for s in skills.scan_disk_skills()], target):
+            return f"The skill {_quoted(wanted)} is read from a folder on disk, so it is changed there, not here."
+    return f"No {kind} is called {_quoted(wanted)}."
+
+
 async def _skill_names(fields: dict) -> str | None:
     """An agent's skills, named as `attach_skills` keeps them (lower case, hyphens: "Customer FAQ" is
     `customer-faq`), in place; and the refusal when one to add is no skill here (said now, not after the yes)."""
@@ -420,8 +433,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if items is not None:
                 found = resolve(items, target)
                 if not found:
-                    item.update(status="refused",
-                                say=f"No {op.target} is called {_quoted(target.get('name') or target.get('id'))}.")
+                    item.update(status="refused", say=await _not_found(op.target, target))
                     continue
                 if len(found) > 1:
                     item["status"] = "pick"

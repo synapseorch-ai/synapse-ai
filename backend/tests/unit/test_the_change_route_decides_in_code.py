@@ -271,3 +271,22 @@ async def test_making_something_new_goes_to_today_s_create_path(client, role, ki
                                    "fields": {"what": "make it"}}], run=run)
     assert out["outcome"] == "build" and cards == [] and out["calls"] == []
     assert run.shared_state["intent"] == "create"
+
+
+async def test_a_skill_is_changed_in_the_library_only(client, role, monkeypatch):
+    """A skill in the library and on disk is one skill to change, the library's (it shadows the disk copy); a skill
+    read only from disk is not changed here, and that is said before the review, not by `update_skill` after the yes
+    (the branch review's finding 6)."""
+    from core import skills
+
+    await skills.save_library([{"name": "triage", "description": "t", "body": "Old."}])
+    monkeypatch.setattr(skills, "scan_disk_skills", lambda: [
+        {"name": "triage", "description": "disk", "source": "disk"},
+        {"name": "local-notes", "description": "disk only", "source": "disk"}])
+    one, _, _ = await _check([{"op": "update_skill", "target": {"kind": "skill", "name": "triage"},
+                               "fields": {"body": "New."}}])
+    assert one["outcome"] == "review" and one["calls"] == [["update_skill", {"name": "triage", "body": "New."}]]
+    disk, _, _ = await _check([{"op": "update_skill", "target": {"kind": "skill", "name": "local-notes"},
+                                "fields": {"body": "New."}}])
+    assert disk["outcome"] == "said"
+    assert disk["say"] == 'The skill "local-notes" is read from a folder on disk, so it is changed there, not here.'
