@@ -27,6 +27,12 @@ class TestTheBundle:
         assert bundle["orchestration"]["system"] == SYSTEM_MARKER
         assert all(a["system"] == SYSTEM_MARKER for a in bundle["agents"])
 
+    def test_every_step_id_is_its_own(self):
+        """Two steps of one id: the engine's step map keeps the last, and every route to the first goes to the
+        second (SAI2-P2 nearly shipped a second `step_approval_route`)."""
+        ids = [s["id"] for s in bundled_definitions()["orchestration"]["steps"]]
+        assert len(ids) == len(set(ids)), sorted({i for i in ids if ids.count(i) > 1})
+
     def test_every_agent_names_its_role(self):
         """Ids are minted per organisation in the commercial edition, so a
         re-seed matches on the role. A missing one would orphan that agent."""
@@ -251,8 +257,13 @@ class TestOnlyTheApplyStepCanDestroy:
         def reaching(step_id):
             return [s for s in orch["steps"] if step_id in targets(s)]
 
-        # Only the approval reaches the apply, and only the gate reaches the approval.
-        assert [s["id"] for s in reaching("step_apply")] == ["step_change_approve"]
+        # Only the approval reaches the apply, through its own check (an approval that answered an error goes to
+        # say why, never on), and only the gate reaches the approval.
+        assert [s["id"] for s in reaching("step_apply")] == ["step_change_recorded"]
+        recorded = by_id["step_change_recorded"]
+        assert recorded["type"] == "if_else" and recorded["if_false_step_id"] == "step_apply"
+        assert recorded["if_true_step_id"] == "step_change_failed"
+        assert [s["id"] for s in reaching("step_change_recorded")] == ["step_change_approve"]
         [gate] = reaching("step_change_approve")
         # A gate decided in code (F754): the approval is only on its yes side, and its input came from a human.
         assert gate["type"] == "if_else"

@@ -86,7 +86,7 @@ def test_the_split_is_code_between_the_planner_and_its_review():
     assert check["type"] == "tool" and check["forced_tool"] == "check_change"
     assert check["tool_arguments"] == {"draft": "{{ state.change_draft }}"}  # set: no model reads the draft
     route = steps["step_check_route"]
-    assert route["type"] == "switch" and route["switch_expression"] == "state.change_checked.outcome"
+    assert route["type"] == "switch" and route["switch_expression"] == 'state.change_checked.outcome or "error"'
     assert route["switch_cases"]["review"] == "step_manage_review"
     assert route["switch_cases"]["said"] == "step_change_said"
 
@@ -158,3 +158,26 @@ def test_the_answer_still_puts_up_a_card_for_a_button_it_is_asked():
     answer = _steps()["step_answer"]
     assert "put the card up with `prepare_action`" in answer["prompt_template"]
     assert "manage_plan" not in answer["input_keys"] and "manage_plan" not in answer["prompt_template"]
+
+
+@pytest.mark.parametrize("state, step, then", [
+    ({"change_checked": json.dumps({"error": "Tool execution error: boom"})}, "step_check_route", "step_change_failed"),
+    ({"change_approval": json.dumps({"error": "Not done: you are no longer a member"})}, "step_change_recorded",
+     "step_change_failed"),
+    ({"change_approval": json.dumps({"approved": 1})}, "step_change_recorded", "step_apply"),
+    ({"change_applied": json.dumps({"error": "Not done: building needs the builder role"})}, "step_apply_route",
+     "step_change_failed"),
+    ({"change_applied": json.dumps({"object": "change_applied", "applied": ["rename_agent"], "failed": [],
+                                    "effect": ""})}, "step_apply_route", "step_change_summary"),
+])
+async def test_a_code_step_that_answers_only_an_error_says_why(engine, state, step, then):
+    """A check, an approval or an apply that the role door refused, or that raised, answers `{"error": …}` and none of
+    the fields the next Print reads; it goes to the one Print that says the run's own record, which names the last
+    thing that failed (`run_writes`), never a reference as text (the branch review's finding 4)."""
+    assert await _next(engine, step, state) == then
+
+
+def test_the_failure_print_says_the_run_s_own_record():
+    failed = _steps()["step_change_failed"]
+    assert failed["type"] == "print" and failed["print_content"] == "{state.run_changes}"
+    assert failed["output_key"] == "summary" and failed["next_step_id"] == "step_end"

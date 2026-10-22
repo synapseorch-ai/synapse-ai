@@ -229,8 +229,9 @@ class TestSeeHowImBuilt:
         # tool its plan names that nothing here provides: the gate, the Researcher, and the step that notes it (F763);
         # 40 with the gate that sends a research request after a findings card to the build (F766); 45 with the change
         # route on a typed Change (SAI2-P2): the plan, its two gates and the operator out, and the card read, the
-        # planner, its check and route, the question, what it says, the approval, the apply and its summary in.
-        assert legend["step_count"] == 45
+        # planner, its check and route, the question, what it says, the approval, the apply and its summary in; 48
+        # with the approval's and the apply's own checks and the one step that says why nothing changed.
+        assert legend["step_count"] == 48
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
