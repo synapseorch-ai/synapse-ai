@@ -303,6 +303,19 @@ async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
     return [], None
 
 
+async def _skill_names(fields: dict) -> str | None:
+    """An agent's skills, named as `attach_skills` keeps them (lower case, hyphens: "Customer FAQ" is
+    `customer-faq`), in place; and the refusal when one to add is no skill here (said now, not after the yes)."""
+    from core import skills
+
+    for key in ("add", "remove"):
+        if fields.get(key):
+            fields[key] = list(dict.fromkeys(skills.normalize_name(n) for n in fields[key]))
+    known = {s["name"] for s in await skills.list_skills()}
+    missing = [n for n in fields.get("add") or [] if n not in known]
+    return f"No skill is called {', '.join(_quoted(n) for n in missing)}." if missing else None
+
+
 def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
     """The before-image an undo needs, never a secret's value: the fields the op touches, or for a delete the
     record with its credentials, memory and bookkeeping left out (F797)."""
@@ -459,6 +472,11 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.kind != "create" and live is None:
             item.update(status="refused", say=f"The {op.target} {_quoted(target['name'])} is not there any more.")
             continue
+        if op.name == "set_agent_skills":
+            refusal = await _skill_names(fields)
+            if refusal:
+                item.update(status="refused", say=refusal)
+                continue
         want = C.expected(op, fields, live)
         if op.kind == "delete":
             used, refusal = await _used_by(op, target["id"])

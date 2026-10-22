@@ -249,3 +249,24 @@ async def test_two_ops_on_one_field_each_build_on_the_one_before(client):
     after = await _get(agent["id"])
     assert after["tools"] == ["web_search", "search_help"]
     assert after["tool_policy"] == {"destructive": "deny", "open_world": "confirm"}
+
+
+async def test_an_agent_s_skills_are_named_as_they_are_kept(client):
+    """`attach_skills` keeps a skill's name lower-case with hyphens: "Customer FAQ" is `customer-faq`. The check reads
+    the names the same way, so the change is made and found made, a remove in another case removes, and a skill that
+    does not exist is said before the review, not refused after the yes (the branch review's finding 5)."""
+    from core import skills
+
+    await skills.save_library([{"name": n, "description": n, "body": n} for n in ("triage", "customer-faq")])
+    agent = await _agent(name="Front desk", skills=["triage"])
+    run = await _run()
+    await _checked(run, [{"op": "set_agent_skills", "target": {"kind": "agent", "id": agent["id"]},
+                          "fields": {"add": ["Customer FAQ"], "remove": ["TRIAGE"]}}])
+    _, applied, _ = await _approve_and_apply(run)
+    assert applied["failed"] == [] and applied["applied"] == ["set_agent_skills"], applied
+    assert (await _get(agent["id"]))["skills"] == ["customer-faq"]
+
+    unknown, _ = await _call("check_change", {"draft": {"finish": "submit_change", "ops": [
+        {"op": "set_agent_skills", "target": {"kind": "agent", "id": agent["id"]},
+         "fields": {"add": ["Refund rules"]}}]}}, await _run())
+    assert unknown["outcome"] == "said" and unknown["say"] == 'No skill is called "refund-rules".'
