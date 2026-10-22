@@ -225,3 +225,27 @@ async def test_the_card_keeps_each_before_image_never_a_secret(client):
     assert second["before"] == {"name": "Front desk"}
     assert "sk-live" not in json.dumps(card.data)
 
+
+
+async def test_two_ops_on_one_field_each_build_on_the_one_before(client):
+    """"Give Front desk search_help and take away read_file" as two ops: each is checked against what the one before
+    it leaves, so both apply and the second neither undoes the first nor reads as changed since the review (the
+    branch review's finding 3)."""
+    from core.store.resources import save_tool
+
+    for name in ("read_file", "web_search", "search_help"):
+        await save_tool({"name": name, "description": name, "tool_type": "http", "method": "GET",
+                         "url": f"https://api.example.com/{name}", "headers": {}, "inputSchema": {"type": "object"}})
+    agent = await _agent(name="Front desk", tools=["read_file", "web_search"], tool_policy={})
+    run = await _run()
+    await _checked(run, [
+        {"op": "set_agent_tools", "target": {"kind": "agent", "id": agent["id"]}, "fields": {"add": ["search_help"]}},
+        {"op": "set_agent_tools", "target": {"kind": "agent", "id": agent["id"]}, "fields": {"remove": ["read_file"]}},
+        {"op": "set_tool_policy", "target": {"kind": "agent", "id": agent["id"]}, "fields": {"open_world": "confirm"}},
+        {"op": "set_tool_policy", "target": {"kind": "agent", "id": agent["id"]}, "fields": {"destructive": "deny"}},
+    ])
+    _, applied, _ = await _approve_and_apply(run)
+    assert applied["failed"] == [] and len(applied["applied"]) == 4, applied
+    after = await _get(agent["id"])
+    assert after["tools"] == ["web_search", "search_help"]
+    assert after["tool_policy"] == {"destructive": "deny", "open_world": "confirm"}

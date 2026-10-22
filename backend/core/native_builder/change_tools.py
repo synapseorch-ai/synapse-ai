@@ -424,6 +424,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         question = _pick_question(picks)
         return {**base, "outcome": "ask", "ops": checked, "picks": picks, "question": question}
 
+    # Each target is read once, and an op is checked against what the ops before it leave: two on one field (an add
+    # and a remove of tools, two policy rules) each build on the last, rather than the second undoing the first
+    # (the branch review's finding 3).
+    leaves: dict[tuple[str, str], dict | None] = {}
     for item in checked:
         if item.get("status") != "resolved":
             continue
@@ -445,7 +449,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             item.update(status="refused", say=f"{op.verb} the {op.target} {_quoted(target['name'])} needs the {need} "
                                               f"role; you are a {caller.role.label} in this workspace, so I can't.")
             continue
-        live = None if op.kind == "create" else await read(op.target, target["id"])
+        here = (op.target, target.get("id") or "")
+        if op.kind == "create":
+            live = None
+        elif here in leaves:
+            live = leaves[here]
+        else:
+            live = await read(op.target, target["id"])
         if op.kind != "create" and live is None:
             item.update(status="refused", say=f"The {op.target} {_quoted(target['name'])} is not there any more.")
             continue
@@ -463,6 +473,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=_words(op, target, fields, item["says"]))
+        if op.kind != "create":
+            leaves[here] = None if want is None else {**live, **want}
 
     ready = [i for i in checked if i["status"] == "ready"]
     said = " ".join([*notes, *([_said(checked)] if len(ready) < len(checked) or not ready else [])])
