@@ -52,7 +52,7 @@
         "change_clarify": {"type": "dict", "default": {}, "description": "The person's answer to the change planner's question or a which-one list"},
         "change_approval": {"type": "str", "default": "", "description": "`approve_change`'s answer: the person's yes recorded for exactly the calls the review showed (F778)"},
         "change_applied": {"type": "str", "default": "", "description": "`apply_change`'s answer: what was made, and in words what did not take effect"},
-        "change_made": {"type": "str", "default": "", "description": "The maker's own words on the one new thing it made after the review (SAI2-P2; P3 replaces it)"},
+        "change_made": {"type": "dict", "default": {}, "description": "What the maker's one create answered, or its `cannot` (E2: the step ends at the first that worked; SAI2-P2, P3 replaces it)"},
         "manage_decision": {"type": "str", "default": "", "description": "Router result: approved or revise"}
     },
     "max_total_turns": 150,
@@ -1571,7 +1571,13 @@
             "position_y": 700,
             "input_keys": [],
             "output_key": "change_made",
-            "finish_tools": [],
+            "finish_tools": [
+                "create_agent",
+                "create_skill",
+                "create_http_tool",
+                "import_openapi",
+                "cannot"
+            ],
             "next_step_id": "step_change_failed"
         },
         {

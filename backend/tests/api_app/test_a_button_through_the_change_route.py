@@ -138,3 +138,22 @@ async def test_a_new_skill_is_reviewed_then_made(client, builder, fake_llm):
     after = await stream(client, "/api/builder/resume", {"run_id": asked["run_id"], "response": {"feedback": "yes"}})
     assert (await skills.get_skill("polite-replies"))["body"].startswith("Answer patients politely")
     assert "polite-replies" in _summary(after).lower() or "Polite" in _summary(after), _summary(after)
+
+
+async def test_a_maker_that_would_go_on_making_makes_one(client, builder, fake_llm):
+    """P2's after-batch, cnt-05 on Gemini 3 Flash: one approved agent, and the maker called create_agent seven times.
+    Its step ends at the first create that worked (E2's finish tools), so a second call is never made."""
+    from core.store.resources import load_agents
+
+    fake_llm.script([route("manage"), tool_call("submit_change", ops=[
+        {"op": "create", "target": {"kind": "agent", "name": "Claude Builder"},
+         "fields": {"what": "an agent on Claude Opus that helps build workflows"}}])])
+    events = await stream(client, "/api/builder/chat", {"message": "Make an agent called Claude Builder"})
+    run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
+
+    made = dict(name="Claude Builder", description="Helps build workflows", type="conversational", tools=[],
+                system_prompt="You help build workflows.")
+    fake_llm.reset()
+    fake_llm.script([tool_call("create_agent", **made), tool_call("create_agent", **made), "Made it."])
+    await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "approve"}})
+    assert [a["name"] for a in await load_agents() if a.get("name") == "Claude Builder"] == ["Claude Builder"]

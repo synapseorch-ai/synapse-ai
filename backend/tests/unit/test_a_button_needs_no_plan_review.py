@@ -206,6 +206,9 @@ def test_a_new_thing_is_made_only_after_the_yes_and_only_with_the_four_create_to
     writes = {t for t in maker["tools"] if builder_access.KINDS.get(t) == "write"}
     assert writes == {"create_agent", "create_skill", "create_http_tool", "import_openapi"}
     assert make["next_step_id"] == "step_change_failed"  # the run's own record: what was made, or why not
+    # One thing, once: the step ends at its first create that worked (E2). On Gemini 3 Flash the maker called
+    # create_agent seven times for one approved agent (P2's after-batch, cnt-05) when only its prompt said "one call".
+    assert set(make["finish_tools"]) == {"create_agent", "create_skill", "create_http_tool", "import_openapi", "cannot"}
     reaching = [s["id"] for s in steps.values() if "step_make_new" in json.dumps(
         {k: s.get(k) for k in ("next_step_id", "switch_cases", "switch_default_step_id", "if_true_step_id",
                               "if_false_step_id", "route_map")})]
