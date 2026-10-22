@@ -473,7 +473,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
 
     if picks:
         question = _pick_question(picks)
-        return {**base, "outcome": "ask", "ops": checked, "picks": picks, "question": question}
+        out = {**base, "outcome": "ask", "ops": checked, "picks": picks, "question": question}
+        # The pick list waits on the person's card, where a later turn reads "the second one" from (P4's read_turn).
+        await _card(out, stage=WAITING, title=question.split("\n", 1)[0])
+        return out
 
     # Each target is read once, and an op is checked against what the ops before it leave: two on one field (an add
     # and a remove of tools, two policy rules) each build on the last, rather than the second undoing the first
@@ -591,7 +594,7 @@ def _routed(intent: str, **facts: str) -> None:
         run.shared_state.update(intent=intent, **facts)
 
 
-async def _card(checked: dict, *, stage: str, data: dict | None = None) -> None:
+async def _card(checked: dict, *, stage: str, data: dict | None = None, title: str = "") -> None:
     """Keep this change on Synapse AI's board, as its person's card (F776): a failure to write it never stops the
     change itself."""
     from core.boards import assistant
@@ -600,7 +603,7 @@ async def _card(checked: dict, *, stage: str, data: dict | None = None) -> None:
     if not run_id:
         return
     caller = _caller()
-    title = "; ".join(i.get("line") or i["op"] for i in checked.get("ops") or [] if i.get("status") == "ready")
+    title = title or "; ".join(i.get("line") or i["op"] for i in checked.get("ops") or [] if i.get("status") == "ready")
     try:
         await assistant.put(run_id, title=(title or "A change")[:200], stage=stage, owner_id=caller.user_id,
                             body=checked.get("review") or "", data=data or {"change": checked}, run_id=run_id)

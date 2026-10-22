@@ -306,3 +306,16 @@ async def test_a_change_that_would_write_a_key_is_refused_before_anything_keeps_
     assert out["outcome"] == "said" and out["calls"] == []
     assert "Keys never go in a change" in out["say"]
     assert "sk-live" not in json.dumps(out) and await assistant.card(run.run_id) is None
+
+
+async def test_a_which_one_question_is_kept_on_the_person_s_card(client, role):
+    """The pick list is what a later turn reads "the second one" from (P4's read_turn): it waits on the person's card,
+    where `read_change_context` finds it (the branch review's finding 11)."""
+    first = await _workflow(name="Patient reminders", description="front desk")
+    await _workflow(name="Patient reminders", description="billing")
+    out, _, _ = await _check([{"op": "run_workflow", "target": {"kind": "workflow", "name": "Patient reminders"}}])
+    assert out["outcome"] == "ask"
+    context, _ = await _call("read_change_context", {}, await _run(run_id="builder_next"))
+    waiting = context["waiting_pick"]
+    assert waiting["question"] == out["question"]
+    assert first["id"] in {o["id"] for o in waiting["picks"][0]["options"]}
