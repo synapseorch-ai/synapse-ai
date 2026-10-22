@@ -366,7 +366,11 @@ async def get_file(path: str):
     resolved = os.path.realpath(path)
     home_dir = os.path.expanduser("~")
     allowed_bases = [home_dir, DATA_DIR]
-    if not any(resolved.startswith(os.path.realpath(base)) for base in allowed_bases):
+    # `within`, not `startswith`: a sibling that starts with an allowed base's
+    # path is not inside it (S8).
+    from core.file_roots import within
+
+    if not within(resolved, allowed_bases):
         raise HTTPException(status_code=403, detail="Access denied: path outside allowed directories")
     if not os.path.exists(resolved) or not os.path.isfile(resolved):
         raise HTTPException(status_code=404, detail="File not found")

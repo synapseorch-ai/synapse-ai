@@ -14,7 +14,8 @@
  * Auth flow (per request):
  *   a. Check `synapse_session` cookie → verify JWT locally (no network call).
  *      This is only an optimization: it needs SYNAPSE_JWT_SECRET in this process.
- *   b. Check `synapse_auth_cache` cookie (60s TTL) → skip backend call if login is disabled
+ *   b. Check this process's own 60s cache of "login is disabled" → skip the backend
+ *      call. Never a cookie: the client could set one (S9, below).
  *   c. Fetch /api/auth/status from backend (server-side, internal token injected).
  *      The backend is the single owner of SYNAPSE_JWT_SECRET, so this call ALSO
  *      validates the session (via the forwarded X-Synapse-Session header) and
@@ -35,6 +36,13 @@ const AUTH_BYPASS_PREFIXES = [
     '/_next/',
     '/favicon',
 ];
+
+/**
+ * When this process last learned that login is off, plus 60s. Process memory,
+ * not a cookie: the client can set any cookie it likes (S9).
+ */
+const LOGIN_OFF_CACHE_MS = 60_000;
+let loginOffUntil = 0;
 
 function shouldBypassAuth(pathname: string): boolean {
     return AUTH_BYPASS_PREFIXES.some(p => pathname.startsWith(p));
@@ -61,6 +69,15 @@ export async function proxy(request: NextRequest) {
     if (internalToken) {
         requestHeaders.set('X-Synapse-Internal', internalToken);
     }
+    // And the session, which the backend checks for itself when login is on
+    // (S9): the internal token proves a request came through here, not that a
+    // signed-in person sent it. Only ever the browser's own cookie — a
+    // client-supplied header of the same name is replaced, never passed on.
+    requestHeaders.delete('X-Synapse-Session');
+    const forwardedSession = request.cookies.get('synapse_session')?.value;
+    if (forwardedSession) {
+        requestHeaders.set('X-Synapse-Session', forwardedSession);
+    }
 
     // Bypass auth check for login page, auth API, external API, and static assets
     if (shouldBypassAuth(pathname)) {
@@ -78,9 +95,11 @@ export async function proxy(request: NextRequest) {
         }
     }
 
-    // Cache hit: we already know login is not required (60s TTL)
-    const authCache = request.cookies.get('synapse_auth_cache')?.value;
-    if (authCache === 'no_auth_required') {
+    // Cache hit: this process asked the backend under a minute ago and login
+    // was off. S9: this used to be a `synapse_auth_cache=no_auth_required`
+    // cookie, and a client that set it itself skipped the gate on a
+    // login-protected install. Nothing the client sends reaches this cache.
+    if (Date.now() < loginOffUntil) {
         return NextResponse.next({ request: { headers: requestHeaders } });
     }
 
@@ -90,6 +109,7 @@ export async function proxy(request: NextRequest) {
     const backendUrl = process.env.BACKEND_URL || 'http://127.0.0.1:8765';
     let loginRequired = false;
     let authenticated = false;
+    let answered = false;
     try {
         const statusRes = await fetch(`${backendUrl}/api/auth/status`, {
             headers: {
@@ -103,6 +123,7 @@ export async function proxy(request: NextRequest) {
             const status = await statusRes.json();
             loginRequired = status.login_enabled === true && status.login_configured === true;
             authenticated = status.authenticated === true;
+            answered = true;
         }
     } catch {
         // Backend unreachable — fail open so we don't lock users out
@@ -111,17 +132,19 @@ export async function proxy(request: NextRequest) {
 
     // Not required, OR required but the backend validated our session → proceed.
     if (!loginRequired || authenticated) {
+        if (!loginRequired && answered) {
+            // Cache only the backend's own answer — never the fail-open guess.
+            // Cache only the "login disabled" result, for 60s, to avoid hitting
+            // the backend on every request. Do NOT cache `authenticated` — JWTs
+            // are stateless, so caching would delay logout taking effect. A
+            // login switched on inside the window is still enforced: the
+            // backend checks the session itself.
+            loginOffUntil = Date.now() + LOGIN_OFF_CACHE_MS;
+        }
         const res = NextResponse.next({ request: { headers: requestHeaders } });
-        if (!loginRequired) {
-            // Cache only the "login disabled" result for 60s to avoid hitting the
-            // backend on every request. Do NOT cache `authenticated` — JWTs are
-            // stateless, so caching would delay logout taking effect.
-            res.cookies.set('synapse_auth_cache', 'no_auth_required', {
-                httpOnly: true,
-                sameSite: 'lax',
-                maxAge: 60,
-                path: '/',
-            });
+        // Clear the cookie older builds set, so nothing still carries it.
+        if (request.cookies.has('synapse_auth_cache')) {
+            res.cookies.delete('synapse_auth_cache');
         }
         return res;
     }

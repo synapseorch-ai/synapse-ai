@@ -3,7 +3,7 @@
  * Proxies to backend, sets the synapse_session HttpOnly cookie on success.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
 
         const backendRes = await fetch(`${BACKEND_URL}/api/auth/login`, {
             method: 'POST',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
             body: JSON.stringify(body),
         });
 

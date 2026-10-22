@@ -23,6 +23,8 @@ server = Server("sandbox")
 
 # ── paths & limits ───────────────────────────────────────────────────────
 
+from core.file_roots import within
+
 VAULT_ROOT = Path(__file__).resolve().parent.parent / "data" / "vault"
 VAULT_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -47,7 +49,9 @@ def _err(msg: str) -> list[TextContent]:
 def _safe_path(relative: str) -> Path | None:
     """Resolve *relative* inside VAULT_ROOT; return None if it escapes."""
     target = (VAULT_ROOT / relative).resolve()
-    if not str(target).startswith(str(VAULT_ROOT)):
+    # `within`, not `startswith`: a sibling named `vault-old` starts with the
+    # vault's own path (S8).
+    if not within(target, [VAULT_ROOT]):
         return None
     return target
 
@@ -57,7 +61,7 @@ def _resolve(raw_path: str) -> Path | None:
     p = Path(raw_path)
     if p.is_absolute():
         resolved = p.resolve()
-        if not str(resolved).startswith(str(VAULT_ROOT)):
+        if not within(resolved, [VAULT_ROOT]):
             return None
         return resolved
     return _safe_path(raw_path)

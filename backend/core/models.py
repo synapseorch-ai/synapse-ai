@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ChatRequest(BaseModel):
@@ -72,7 +72,18 @@ class AgentActiveRequest(BaseModel):
 
 
 class Settings(BaseModel):
-    agent_name: str
+    """What `POST /api/settings` accepts — a patch, merged over what is stored.
+
+    Unknown fields are refused (422, naming them) rather than dropped (S11):
+    `allow_stdio_mcp` and `mcp_command_allowlist` were missing here, so saving
+    either answered 200 and changed nothing, and the stdio knob the security
+    advisory tells operators to turn off could never be turned off.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    # A default only so a patch need not carry it: the route merges with
+    # `exclude_unset`, so an unsent field never overwrites what is stored.
+    agent_name: str = "Synapse"
     model: str = "mistral" # Default model (Ollama or Cloud)
     mode: str = "local" # "local" | "cloud" | "bedrock"
     openai_key: str = ""
@@ -124,6 +135,13 @@ class Settings(BaseModel):
     allow_db_write: bool = False  # If False, only SELECT/SHOW/DESCRIBE queries allowed
     embed_code: bool = False  # If False, search_codebase is disabled and postgres not required
     bash_allowed_dirs: list[str] = []  # Extra dirs the bash tool can run commands in (repos + vault always included)
+    # stdio MCP servers launch local commands (GHSA-3j67-x3j8-r32x). Allowed by
+    # default for a local single-user install; scale mode forces it off
+    # (core/mcp_client.stdio_mcp_allowed). Settable only since S11.
+    allow_stdio_mcp: bool = True
+    # When non-empty, only these command basenames may run as stdio servers
+    # (e.g. ["npx", "uvx"]). Empty allows any command on PATH.
+    mcp_command_allowlist: list[str] = []
     report_agent_enabled: bool = True
     coding_agent_enabled: bool = True
     messaging_enabled: bool = True

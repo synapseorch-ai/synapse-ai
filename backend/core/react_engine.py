@@ -1371,6 +1371,14 @@ async def run_agent_step(
 
                             url = _re.sub(r"\{([^}]+)\}", _replace_placeholder, url)
 
+                            # Where this request is going, checked at the moment
+                            # it is sent — the same call the orchestration TOOL
+                            # step makes, through the same function, because a
+                            # control written twice is a control that drifts.
+                            from core import egress_guard as _egress
+
+                            await _egress.check_tool_url(url)
+
                             # Route args based on HTTP method:
                             # GET/DELETE → non-consumed args as query params (avoid double-sending path vars)
                             # POST/PUT   → full args always go in the body (path vars also stay in URL)

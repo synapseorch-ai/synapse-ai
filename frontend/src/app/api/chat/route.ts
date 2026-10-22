@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { BACKEND_URL, backendHeaders } from '@/lib/backend';
+import { BACKEND_URL, sessionHeaders } from '@/lib/backend';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +13,7 @@ export async function POST(req: Request) {
         // Since this runs on the server, localhost:8000 refers to the container's localhost
         const backendResponse = await fetch(`${BACKEND_URL}/chat`, {
             method: 'POST',
-            headers: backendHeaders(),
+            headers: await sessionHeaders(),
             body: JSON.stringify(body),
             // No manual abort signal -> Node.js default timeout (long)
         });

@@ -15,6 +15,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from psycopg_pool import ConnectionPool
 
+from core.file_roots import allowed_roots, refusal, within
+
 def _load_repo_paths() -> dict[str, str]:
     """Load repo_id → absolute_path mapping from repos.json (via core.config DATA_DIR)."""
     try:
@@ -27,27 +29,9 @@ def _load_repo_paths() -> dict[str, str]:
         return {}
 
 
-def _get_allowed_base_paths() -> list[str]:
-    """Return allowed base paths: all configured repo paths + vault directory."""
-    try:
-        from core.config import DATA_DIR
-        vault = os.path.join(DATA_DIR, "vault")
-    except Exception:
-        vault = None
-    paths = list(_load_repo_paths().values())
-    if vault:
-        paths.append(vault)
-    return paths
-
-
 def _is_path_allowed(path: str) -> bool:
-    """Return True if path resolves to within a configured repo or vault."""
-    resolved = os.path.realpath(path)
-    for base in _get_allowed_base_paths():
-        base_real = os.path.realpath(base)
-        if resolved == base_real or resolved.startswith(base_real + os.sep):
-            return True
-    return False
+    """True if `path` resolves inside a root agents may read (`core/file_roots.py`)."""
+    return within(path, allowed_roots())
 
 
 _pool: ConnectionPool | None = None
@@ -374,7 +358,13 @@ def _grep_folder(
         return [{"error": f"Not a directory: {folder_path}."}]
 
     glob_pat = os.path.join(resolved, "**", file_pattern) if recursive else os.path.join(resolved, file_pattern)
-    files = sorted(f for f in _glob.glob(glob_pat, recursive=recursive) if os.path.isfile(f))
+    # Only files inside the roots: `file_pattern` is joined onto the folder, so
+    # a `..` in it, or a symlink under it, would otherwise walk out (S5).
+    roots = allowed_roots()
+    files = sorted(
+        f for f in _glob.glob(glob_pat, recursive=recursive)
+        if os.path.isfile(f) and within(f, roots)
+    )
 
     all_results: list[dict] = []
     for fpath in files:
@@ -408,6 +398,9 @@ def _glob_files(
 
     import glob as _glob
 
+    # Only entries inside the roots: a `..` in `pattern`, or a symlink, would
+    # otherwise list what is outside (S5).
+    roots = allowed_roots()
     search_pattern = os.path.join(resolved, pattern)
     iterator = _glob.iglob(search_pattern, recursive=recursive)
 
@@ -415,6 +408,8 @@ def _glob_files(
     for p in iterator:
         name = os.path.basename(p)
         if not include_hidden and name.startswith("."):
+            continue
+        if not within(p, roots):
             continue
         if include_dirs or os.path.isfile(p):
             results.append(os.path.relpath(p, resolved))
@@ -480,6 +475,13 @@ def _read_file_by_lines(file_path: str, start_line: int = 1, end_line: int = 100
                 if os.path.exists(candidate):
                     resolved = candidate
 
+    # Checked on what was found, after every fallback above, and on the path
+    # as given when nothing was, so "not found" says nothing about outside (S5).
+    roots = allowed_roots()
+    if resolved and not within(resolved, roots):
+        return {"error": refusal(file_path)}
+    if not resolved and os.path.isabs(file_path) and not within(file_path, roots):
+        return {"error": refusal(file_path)}
     if not resolved or not os.path.exists(resolved):
         return {"error": f"File not found: {file_path}. Checked absolute path, vault directory, and passed repo."}
     if not os.path.isfile(resolved):

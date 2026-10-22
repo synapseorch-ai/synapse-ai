@@ -6,6 +6,7 @@ import os
 import asyncio
 import shutil
 import tempfile
+from html import escape
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException
@@ -495,6 +496,15 @@ async def reconnect_mcp_server(name: str):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _script_literal(value: str) -> str:
+    """`value` as a JS string literal that is safe inside an inline <script>.
+
+    `json.dumps` quotes a string but leaves `</script>` in it, which ends the
+    element wherever it appears — so every `<` becomes `\\u003c` (S7).
+    """
+    return json.dumps(value).replace("<", "\\u003c")
+
+
 @router.get("/api/mcp/oauth/callback", response_class=HTMLResponse)
 async def mcp_oauth_callback(code: str = None, state: str = None, error: str = None):
     """OAuth redirect URI.  Unblocks the waiting background connection task
@@ -504,10 +514,10 @@ async def mcp_oauth_callback(code: str = None, state: str = None, error: str = N
         err_msg = error or "Missing OAuth parameters"
         html = f"""
         <html><head><title>MCP Auth Failed</title></head><body>
-        <p style="font-family:sans-serif;color:#e55">OAuth failed: {err_msg}</p>
+        <p style="font-family:sans-serif;color:#e55">OAuth failed: {escape(err_msg)}</p>
         <script>
           if (window.opener) {{
-            window.opener.postMessage({{ type:'MCP_OAUTH_COMPLETE', success:false, error:{json.dumps(err_msg)} }}, '*');
+            window.opener.postMessage({{ type:'MCP_OAUTH_COMPLETE', success:false, error:{_script_literal(err_msg)} }}, '*');
             setTimeout(() => window.close(), 2000);
           }}
         </script>
@@ -541,11 +551,11 @@ async def mcp_oauth_callback(code: str = None, state: str = None, error: str = N
     </head><body>
     <div class="box">
       <div class="check">&#10003;</div>
-      <h2>Connected to {server_name}!</h2>
+      <h2>Connected to {escape(server_name)}!</h2>
       <p style="color:#888">This tab will close automatically…</p>
     </div>
     <script>
-      const name = {json.dumps(server_name)};
+      const name = {_script_literal(server_name)};
       if (window.opener) {{
         window.opener.postMessage({{ type:'MCP_OAUTH_COMPLETE', success:true, name }}, '*');
         setTimeout(() => window.close(), 1500);

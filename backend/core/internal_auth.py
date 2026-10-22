@@ -12,6 +12,8 @@ Rules:
 - /docs, /openapi.json, /redoc  → SKIP (FastAPI docs)
 - /auth/*            → SKIP (OAuth redirects; browser-navigated, cannot carry a header)
 - /api/*, /chat*     → REQUIRE X-Synapse-Internal header
+- When login is on, an internal request ALSO needs a valid session (S9) — see
+  `_needs_session` below.
 - If SYNAPSE_INTERNAL_TOKEN is not set → LOOPBACK-ONLY: allow requests whose
   direct peer is 127.0.0.1/::1 (local dev, same-container proxy) and 403 any
   remote caller. This closes the unauthenticated-RCE hole on network-exposed
@@ -48,6 +50,53 @@ _INTERNAL_ROOT_PREFIXES = ("/chat",)
 def _is_loopback(request: Request) -> bool:
     client = request.client
     return bool(client) and client.host in _LOOPBACK_HOSTS
+
+
+# ── The login gate's second layer (S9) ──────────────────────────────────────
+#
+# The Next proxy is the login gate, and it used to be the only one: past it the
+# proxy attaches the internal token, and the token was all this middleware
+# checked. The proxy skipped its gate for a `synapse_auth_cache=no_auth_required`
+# cookie the client could set itself, so one forged cookie opened a
+# login-protected install — settings, keys, even switching login off. The proxy
+# no longer trusts that cookie, and this makes sure no proxy mistake can open the
+# internal surface again: with login on, the caller must also show a session.
+
+#: Internal paths the proxy's gate lets through without a session, mirrored:
+#: login itself, and the widget (each call carries its own visitor token).
+#: `/api/v<N>` (an API key) and the OAuth callback are skipped before this runs.
+_SESSIONLESS_PREFIXES = ("/api/auth/", "/api/widget/")
+
+SESSION_HEADER = "X-Synapse-Session"
+SESSION_COOKIE = "synapse_session"
+
+
+def _login_required() -> bool:
+    """Login is on and set up — the proxy's own test (`/api/auth/status`)."""
+    from core.config import load_settings
+
+    s = load_settings()
+    return bool(
+        s.get("login_enabled") and s.get("login_username") and s.get("login_password_hash")
+    )
+
+
+def _session_user(token: str) -> str | None:
+    from core.user_auth import verify_session_token
+
+    return verify_session_token(token) if token else None
+
+
+def _needs_session(path: str) -> bool:
+    return not any(path.startswith(p) for p in _SESSIONLESS_PREFIXES)
+
+
+def _has_session(request: Request) -> bool:
+    token = request.headers.get(SESSION_HEADER) or request.cookies.get(SESSION_COOKIE) or ""
+    return _session_user(token) is not None
+
+
+_LOGIN_REQUIRED = JSONResponse(status_code=401, content={"detail": "Login required"})
 
 
 def _is_internal_root_route(path: str) -> bool:
@@ -101,19 +150,25 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
             # client hitting a token-less backend directly is rejected, so the
             # internal surface is never exposed unauthenticated over the network
             # even in a misconfigured/bare-metal deployment (GHSA-3j67-x3j8-r32x).
-            if _is_loopback(request):
-                return await call_next(request)
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Forbidden: internal token not configured"},
-            )
+            if not _is_loopback(request):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Forbidden: internal token not configured"},
+                )
+        else:
+            # Token configured → require the matching header.
+            provided = request.headers.get("X-Synapse-Internal", "")
+            if provided != self.token:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Forbidden"},
+                )
 
-        # Token configured → require the matching header.
-        provided = request.headers.get("X-Synapse-Internal", "")
-        if provided != self.token:
-            return JSONResponse(
-                status_code=403,
-                content={"detail": "Forbidden"},
-            )
+        # With login on, the token (or loopback) proves the request came
+        # through our proxy; it does not prove a signed-in person sent it (S9).
+        if _needs_session(path) and _login_required() and not _has_session(request):
+            return _LOGIN_REQUIRED
 
         return await call_next(request)
+
+
