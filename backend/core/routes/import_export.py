@@ -187,7 +187,7 @@ async def import_bundle(req: ImportRequest):
     selected_orchs = set(req.selected_orchestration_ids)
     imported_orchs: List[dict] = []
 
-    picked: List[dict] = []
+    picked: list[dict] = []
     for index, orch in enumerate(bundle["orchestrations"]):
         if not isinstance(orch, dict) or bundle_key(orch, index) not in selected_orchs:
             continue

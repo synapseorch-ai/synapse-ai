@@ -13,7 +13,6 @@ is the run that meets one already stored.
 import types
 
 import pytest
-
 from _fakes import seed as S
 
 SPLIT = "'urgent' if 'urgent' in str(state.classification).lower().splitlines()[-1] else 'routine'"
