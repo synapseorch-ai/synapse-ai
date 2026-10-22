@@ -182,10 +182,11 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     return None if isinstance(value, str) and value.strip() else f"`{key}` is text"
 
 
-def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any]) -> list[str]:
-    """What is wrong with one proposed op, one line each, for the model to fix (empty when nothing is)."""
+def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, internal: bool = False) -> list[str]:
+    """What is wrong with one proposed op, one line each, for the model to fix (empty when nothing is). `internal`:
+    code built it (an undo's re-create may be one), never a model."""
     op = OPS.get(op_name)
-    if op is None or op.internal:
+    if op is None or (op.internal and not internal):
         return [f"`{op_name}` is not an op. The ops are: {', '.join(PLANNER_OPS)}."]
     found: list[str] = []
     kind = (target or {}).get("kind")
@@ -200,12 +201,13 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any]) -> list
     if unknown:
         takes = f"it takes {', '.join(op.fields)}" if op.fields else "it takes no fields"
         found.append(f"`{op.name}` cannot set {', '.join(unknown)}: {takes}")
-    left_out = [k for k in op.required if fields.get(k) in (None, "", [], {})]
+    # A re-create may need an empty list (an agent with no tools); never a value the card did not keep.
+    left_out = [k for k in op.required if fields.get(k) is None or (not op.internal and fields.get(k) in ("", [], {}))]
     if left_out:
         found.append(f"`{op.name}` needs {', '.join(left_out)}")
     if op.any_of and not any(fields.get(k) not in (None, "", [], {}) for k in op.fields):
         found.append(f"`{op.name}` needs at least one of {', '.join(op.fields)}")
-    for key in op.fields:
+    for key in op.fields if not op.internal else ():  # a re-create's values are a stored record's; its tool checks them
         if key in fields and fields[key] not in (None, "", [], {}):
             if (why := _field_issue(op, key, fields[key])) is not None:
                 found.append(f"`{op.name}`: {why}")

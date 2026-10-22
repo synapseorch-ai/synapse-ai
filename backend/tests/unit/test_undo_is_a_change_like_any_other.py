@@ -271,3 +271,39 @@ async def test_a_tool_whose_address_held_a_key_is_said_to_be_so(client):
     first, _, _ = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "leaky"}}]})
     _, checked, _ = await _change({"undo_of": first.run_id})
     assert checked["outcome"] == "said" and "address held a key" in checked["say"]
+
+
+async def test_an_undo_s_ops_are_checked_like_any_and_said_once(client):
+    """The inverse ops go through the table's own field check (the branch review's finding 9): a value the card never
+    kept is not "put back" as the word None, a re-create that lacks what it needs is not shown for a yes it would
+    fail after, a re-create's line is not its whole record, and what can't be undone is said once."""
+    import json as _json
+
+    from core.boards import assistant
+
+    agent = await _agent(name="Front desk")
+    first, _, _ = await _change({"ops": [{"op": "rename_agent", "target": {"kind": "agent", "id": agent["id"]},
+                                          "fields": {"name": "Desk"}}]})
+    card = await assistant.card(first.run_id)
+    data = _json.loads(_json.dumps(card.data))
+    data["applied"][0]["before"] = {"name": None, "_not_kept": ["name"]}
+    await assistant.put(first.run_id, title=card.title, stage="changed", owner_id="u1", data=data)
+    _, checked, _ = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and checked["calls"] == []
+    assert (await _get(agent["id"]))["name"] == "Desk"
+
+    gone = await _agent(name="Support bot", system_prompt="Use sk-live-abcdefghijklmnopqrstuvwx1234 here.")
+    second, _, _ = await _change({"ops": [{"op": "delete_agent", "target": {"kind": "agent", "id": gone["id"]}}]})
+    _, back, _ = await _change({"undo_of": second.run_id})
+    assert back["outcome"] == "said" and back["calls"] == [], back
+    assert back["say"].count("Support bot") == 1
+
+    flow_text = "{\"id\": \"step_1\""
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    third, _, _ = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow", "id": flow["id"]}}]})
+    _, review, _ = await _change({"undo_of": third.run_id}, answer="no")
+    assert review["outcome"] == "review" and flow_text not in review["review"] and "null" not in review["review"]

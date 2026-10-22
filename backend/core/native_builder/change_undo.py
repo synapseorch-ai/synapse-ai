@@ -135,6 +135,12 @@ async def inverse_ops(key: str) -> tuple[list[dict], str | None, list[str]]:
     notes: list[str] = []
     for applied in reversed((card.data or {}).get("applied") or []):
         op, note = _inverse(applied)
+        if op is not None and C.issues(op["op"], op["target"], op["fields"], internal=True):
+            # Checked as any op is (the branch review's finding 9): a value the card never kept, a re-create short
+            # of what it needs, is not undone, rather than undone as the word None or refused after the yes.
+            target = applied.get("target") or {}
+            op, note = None, (f'the {target.get("kind")} "{target.get("name")}" can\'t be put back as it was: '
+                              "what it held before was not kept.")
         if op is not None:
             ops.append(op)
         if note:

@@ -267,6 +267,8 @@ def _words(op: C.Op, target: dict, fields: dict, says: str) -> str:
         detail = f"to {_quoted(fields['name'])}"
     elif op.name == "create_schedule":
         detail = f"to start {_quoted(fields['runs'].get('name') or fields['runs']['id'])}"
+    elif op.internal:
+        detail = ""  # an undo's re-create: its line says what it is, not its whole record
     else:
         shown = {k: v for k, v in fields.items() if k != "runs"}
         detail = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}"
@@ -533,7 +535,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             leaves[here] = None if want is None else {**live, **want}
 
     ready = [i for i in checked if i["status"] == "ready"]
-    said = " ".join([*notes, *([_said(checked)] if len(ready) < len(checked) or not ready else [])])
+    # What can't be undone is said once: on the review when there is one, else as the answer.
+    said = " ".join([*([] if ready else notes), *([_said(checked)] if len(ready) < len(checked) or not ready else [])])
     if not ready:
         return {**base, "outcome": "said", "ops": checked, "say": said}
     calls = [[i["call"]["tool"], i["call"]["args"]] for i in ready]
