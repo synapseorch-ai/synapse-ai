@@ -82,6 +82,7 @@ class Scratch:
     env: dict
     key: str = ""
     log: Path = field(default=None)
+    pid: int = 0
 
     def cli(self, *argv: str, key: bool = True, url: bool = True, stdin: str | None = None,
             env: dict | None = None, timeout: float = 120) -> Result:
@@ -118,6 +119,10 @@ def scratch(tmp_path_factory):
         "SYNAPSE_JWT_SECRET": "cli-e2e-jwt-secret-long-enough-for-hs256", "SYNAPSE_BACKEND_PORT": str(port),
         "SYNAPSE_CLI_CONFIG": str(root / "home" / "cli.json"), "OLLAMA_BASE_URL": "http://127.0.0.1:9",
         "SYNAPSE_TELEMETRY": "off", "PYTHONUNBUFFERED": "1",
+        # None of the bundled MCP servers (filesystem, browser, Google): the suite needs none, and
+        # each would npm-install into the scratch home, reach the network and, for the browser,
+        # launch Chrome, for as long as the session lasts (BF11, 2026-10-22).
+        "SYNAPSE_NATIVE_MCP": "off",
     }
     assert env["SYNAPSE_DB_URL"].endswith(str(db)) and str(db).startswith(str(root))
     (root / "home").mkdir()
@@ -127,7 +132,7 @@ def scratch(tmp_path_factory):
     backend = subprocess.Popen([sys.executable, "-m", "uvicorn", "core.server:app", "--host", "127.0.0.1",
                                 "--port", str(port), "--log-level", "warning"],
                                cwd=BACKEND, env=env, stdout=log.open("w"), stderr=subprocess.STDOUT)
-    s = Scratch(root=root, url=f"http://127.0.0.1:{port}", port=port, env=env, log=log)
+    s = Scratch(root=root, url=f"http://127.0.0.1:{port}", port=port, env=env, log=log, pid=backend.pid)
     try:
         _wait_until(lambda: httpx.get(f"http://127.0.0.1:{model_port}/v1/models", timeout=2).status_code == 200,
                     15, "The fake model")

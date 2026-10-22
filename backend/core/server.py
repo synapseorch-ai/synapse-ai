@@ -177,11 +177,21 @@ async def _get_google_oauth_env() -> dict[str, str]:
     return {}
 
 
+def _native_mcp_off() -> bool:
+    """`SYNAPSE_NATIVE_MCP=off`: start none of the bundled MCP servers (filesystem, browser,
+    Google). For a headless or test instance that must not npm-install them, reach the network or
+    launch a browser — the CLI's end-to-end suite starts its scratch backend so (BF11)."""
+    return os.environ.get("SYNAPSE_NATIVE_MCP", "").strip().lower() in ("off", "0", "false", "no")
+
+
 async def _build_native_mcp_servers() -> list[dict]:
     """
     Build the list of native MCP servers to connect at startup.
     Returns a list of dicts with keys: name, command, args, env (optional).
+    None at all under `SYNAPSE_NATIVE_MCP=off` (`_native_mcp_off`).
     """
+    if _native_mcp_off():
+        return []
     servers = []
 
     # --- Filesystem MCP Server ---
@@ -250,7 +260,10 @@ async def _connect_filesystem_mcp(label: str = "started") -> None:
 
     fs_cfg = next((c for c in await _build_native_mcp_servers() if c["name"] == "Filesystem"), None)
     if not fs_cfg:
-        print("Warning: Could not build Filesystem MCP config — skipping.")
+        if _native_mcp_off():
+            print("Filesystem MCP server off (SYNAPSE_NATIVE_MCP=off).")
+        else:
+            print("Warning: Could not build Filesystem MCP config — skipping.")
         return
 
     cmd = fs_cfg["command"]

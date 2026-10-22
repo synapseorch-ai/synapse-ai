@@ -244,3 +244,14 @@ class TestHelp:
                         "exit codes:"):
             assert heading in shown.out, heading
         assert "Other:" not in shown.out, "every command has its section"
+
+
+def test_the_scratch_backend_starts_no_bundled_mcp_server(scratch) -> None:
+    """`SYNAPSE_NATIVE_MCP=off` (BF11): no `npx` server under the scratch backend."""
+    import psutil
+
+    children = psutil.Process(scratch.pid).children(recursive=True)
+    bundled = [" ".join(c.cmdline()) for c in children
+               if any(n in " ".join(c.cmdline()) for n in ("npx", "@modelcontextprotocol", "@playwright/mcp",
+                                                          "workspace-mcp"))]
+    assert bundled == []
