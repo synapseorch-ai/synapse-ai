@@ -132,6 +132,40 @@ class FileTokenStorage(TokenStorage):
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+def tool_result_text(result: Any) -> str:
+    """The text an agent sees for an MCP CallToolResult.
+
+    A result is a list of content blocks, not one string. FastMCP sends a tool
+    that returns a list as one text block per item, and a tool that returns
+    nothing as no blocks. Every block is kept, in order, one per line: text as
+    is, an embedded text resource as its text, and anything an LLM cannot read
+    as text (image, audio, binary resource) as a short placeholder. With no
+    blocks, fall back to structuredContent, then to "".
+    """
+    parts: list[str] = []
+    for block in result.content or []:
+        kind = getattr(block, "type", None)
+        if kind == "text":
+            parts.append(block.text)
+        elif kind == "resource":
+            res = block.resource
+            text = getattr(res, "text", None)
+            parts.append(text if text is not None
+                         else f"[resource {res.uri} ({res.mimeType or 'binary'})]")
+        elif kind == "resource_link":
+            parts.append(f"[resource {block.uri}]")
+        elif kind in ("image", "audio"):
+            parts.append(f"[{kind} ({block.mimeType}) not shown]")
+        else:
+            parts.append(f"[{kind} content not shown]")
+    if parts:
+        return "\n".join(parts)
+    structured = getattr(result, "structuredContent", None)
+    if structured is not None:
+        return json.dumps(structured)
+    return ""
+
+
 def _make_oauth_provider(
     name: str,
     url: str,
