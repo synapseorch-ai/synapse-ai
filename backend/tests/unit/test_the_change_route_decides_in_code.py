@@ -136,7 +136,8 @@ async def test_a_rename_by_name_goes_to_the_review_with_code_s_words(client, rol
                                    "fields": {"name": "Harbor desk"}, "says": "rename it"}])
     assert out["outcome"] == "review" and cards == []
     assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"name": "Harbor desk"}}]]
-    assert out["review"] == '- Rename the agent "Front desk" — to "Harbor desk"; rename it'
+    # Code's words only: the planner's own "rename it" is not on a write's line (MCP2's note 3).
+    assert out["review"] == '- Rename the agent "Front desk" — to "Harbor desk"'
     assert out["digest"] and out["object"] == "change"
 
 

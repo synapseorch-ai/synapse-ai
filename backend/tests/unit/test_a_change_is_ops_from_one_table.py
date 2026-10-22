@@ -217,3 +217,50 @@ def test_a_time_the_save_takes_has_no_issue():
     assert C.issues("set_schedule", {"kind": "schedule", "id": "s"}, {"cron_expression": "0 3 * * *"}) == []
     assert C.issues("set_schedule", {"kind": "schedule", "id": "s"}, {"interval_unit": "hours"}) == []  # a part
     assert C.issues("update_workflow", {"kind": "workflow", "id": "w"}, {"max_run_credits": 3}) == []
+
+
+def _shown(value):
+    import json as _json
+
+    return value if isinstance(value, str) else _json.dumps(value, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("op, fields", [s for s in _samples() if not C.OPS[s[0]].internal
+                                        and C.OPS[s[0]].kind != "delete"])
+def test_every_write_s_review_line_shows_what_its_call_sets(op, fields):
+    """MCP2's review, finding 2: the person approves what is done. A new schedule's line said only what it starts,
+    though its call also sets the prompt and the time. Each write's line is now built from what its call leaves
+    (`expected`), and every value its call sends, but the target's own id, is in its line."""
+    from core.native_builder.change_tools import _words
+
+    o = C.OPS[op]
+    fields = dict(fields)
+    if "runs" in fields:
+        fields["runs"] = {**fields["runs"], "name": "Nightly digest"}
+    tool, args = C.call(o, "t1", fields, AGENT, name="N")
+    line = _words(o, {"name": "N", "id": "t1"}, fields, "", C.expected(o, fields, AGENT))
+    skip = {"orch_id", "agent_id", "schedule_id", "target_id", "target_type"}
+    sent = {**{k: v for k, v in args.items() if k != "fields"}, **(args.get("fields") or {})}
+    for key, value in sent.items():
+        if key in skip or value == "t1":
+            continue
+        assert _shown(value) in line, (op, key, value, line)
+    if op == "create_schedule":
+        assert '"Nightly digest"' in line or "Nightly digest" in line
+
+
+def test_an_undo_s_re_create_says_it_brings_back_what_was_there():
+    from core.native_builder.change_tools import _words
+
+    line = _words(C.OPS["restore_agent"], {"name": "Support bot"}, {"name": "Support bot", "system_prompt": "s"}, "",
+                  {"name": "Support bot"})
+    assert line == 'Bring back the agent "Support bot" — as it was before it was deleted'
+
+
+def test_the_planner_s_own_words_are_not_on_a_write_s_line():
+    """MCP2's note 3: code's facts and the model's gloss are told apart; a write's line is code's alone."""
+    from core.native_builder.change_tools import _words
+
+    o = C.OPS["rename_agent"]
+    assert _words(o, {"name": "Front desk"}, {"name": "Desk"}, "", {"name": "Desk"}) == \
+        'Rename the agent "Front desk" — to "Desk"'

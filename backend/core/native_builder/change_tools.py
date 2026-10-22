@@ -267,18 +267,25 @@ def _quoted(name: str) -> str:
     return f'"{name}"'
 
 
-def _words(op: C.Op, target: dict, fields: dict, says: str) -> str:
-    """One line of the review: what this op does, in code's words, then the person's."""
+def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = None) -> str:
+    """One line of the review, in code's words: what this op does and every value its call sets (MCP2's review: the
+    person approves what is done). Built from `want`, what the call leaves the target reading, the object the call
+    itself is built from; a new schedule says what it starts by name. `says` is code's own note (an undo's), never
+    the planner's gloss on a write."""
     kind = "workflow" if op.target == "workflow" else op.target.replace("_", " ")
     what = f"{op.verb} the {kind} {_quoted(target['name'])}"
     if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
         detail = f"to {_quoted(fields['name'])}"
-    elif op.name == "create_schedule":
-        detail = f"to start {_quoted(fields['runs'].get('name') or fields['runs']['id'])}"
     elif op.internal:
-        detail = ""  # an undo's re-create: its line says what it is, not its whole record
+        detail = "as it was before it was deleted"  # an undo's re-create, from the card's before-image
+    elif op.kind == "delete":
+        detail = ""
     else:
-        shown = {k: v for k, v in fields.items() if k != "runs"}
+        shown = dict(want if want is not None else {k: v for k, v in fields.items() if k != "runs"})
+        if op.name == "create_schedule":
+            runs = fields["runs"]
+            shown = {"starts": _quoted(runs.get("name") or runs["id"]),
+                     **{k: v for k, v in shown.items() if k not in ("target_type", "target_id")}}
         detail = ", ".join(f"{k}: {json.dumps(v, ensure_ascii=False) if not isinstance(v, str) else v}"
                            for k, v in shown.items())
     detail = "; ".join(p for p in (detail, says) if p)
@@ -569,7 +576,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             continue
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
-                    before=_keep(op, live, want), line=_words(op, target, fields, item["says"]))
+                    before=_keep(op, live, want), line=_words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
         if op.kind != "create":
             leaves[here] = None if want is None else {**live, **want}
 
