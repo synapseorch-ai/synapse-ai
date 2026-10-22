@@ -270,3 +270,26 @@ async def test_an_agent_s_skills_are_named_as_they_are_kept(client):
         {"op": "set_agent_skills", "target": {"kind": "agent", "id": agent["id"]},
          "fields": {"add": ["Refund rules"]}}]}}, await _run())
     assert unknown["outcome"] == "said" and unknown["say"] == 'No skill is called "refund-rules".'
+
+
+async def test_an_apply_run_twice_makes_nothing_twice_and_says_it_was_done(client):
+    """A redelivered job or a resumed step runs `apply_change` again for one approval (MCP2's finding 1): a new
+    schedule is made once, and the second pass reports it done, found by its effect check, not made again or
+    refused as "changed since"."""
+    from core.store import schedules
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    agent = await _agent(name="Front desk")
+    run = await _run()
+    await _checked(run, [
+        {"op": "create_schedule", "target": {"kind": "schedule", "name": "Mondays"},
+         "fields": {"runs": {"kind": "workflow", "id": flow["id"]}, "prompt": "Go", "cron_expression": "0 9 * * 1"}},
+        {"op": "rename_agent", "target": {"kind": "agent", "id": agent["id"]}, "fields": {"name": "Desk"}}])
+    _, first, _ = await _approve_and_apply(run)
+    assert first["applied"] == ["create_schedule", "rename_agent"], first
+    again, _ = await _call("apply_change", {}, run)
+    assert again["applied"] == ["create_schedule", "rename_agent"] and again["failed"] == [], again
+    assert [s["name"] for s in await schedules.load()].count("Mondays") == 1

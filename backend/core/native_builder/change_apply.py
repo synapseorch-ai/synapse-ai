@@ -20,7 +20,7 @@ from typing import Any
 from core.builder_tools import register_builder_tool
 from core.native_builder import change_ops as C
 from core.native_builder.change_tools import CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, read, reviewed_of
-from core.product_tools.errors import ToolRefusal
+from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 #: The run-state keys the route reads: the check's answer and the review's.
 CHECKED_KEY, REVIEW_ANSWER_KEY = "change_checked", "manage_review"
@@ -148,8 +148,19 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
             op, target = C.OPS[item["op"]], item["target"]
             label = f"the {op.target} {_quoted(target.get('name') or target.get('id'))}"
             now = None if op.kind == "create" else await read(op.target, target["id"])
+            if op.kind == "delete" and now is None:
+                # Gone, as the op asked: this apply ran before (a redelivered job, a resumed step) or someone else
+                # deleted it since. Either way there is nothing to do and nothing is undone.
+                applied.append({"op": op.name, "target": target, "says": item.get("says", ""),
+                                "before": item.get("before"), "fields": item.get("fields"), "already": True})
+                continue
             if op.kind != "create" and now is None:
                 failed.append(f"Not done: {label} is not there any more.")
+                continue
+            if op.kind not in ("create", "delete") and not C.differs(now, item.get("expected")):
+                # Already as the op leaves it (an apply run twice for one approval, MCP2's finding 1): done.
+                applied.append({"op": op.name, "target": target, "says": item.get("says", ""),
+                                "before": item.get("before"), "fields": item.get("fields"), "already": True})
                 continue
             if op.kind != "delete" and (moved := _moved_since(item.get("before"), now)):
                 failed.append(f"Not done: {label} changed since you approved this ({', '.join(moved)}), so I left "
@@ -159,6 +170,8 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
             try:
                 result = await registry.invoke(call["tool"], caller, call["args"], confirm_policy="approved_review",
                                                review=approval, reviewed=reviewed)
+            except AlreadySpent:
+                result = None  # made by an earlier pass of this apply: found and checked below, not made again
             except ToolRefusal as why:
                 failed.append(f"Not done: {label}: {why}")
                 continue

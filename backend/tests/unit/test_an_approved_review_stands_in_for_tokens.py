@@ -210,3 +210,37 @@ class TestTheAuditSaysWhatConfirmedIt:
         finally:
             hooks.set_audit(None)
         assert seen == [f"review:{review.digest[:16]}", "token", None]
+
+
+class TestAReviewCoversEachCallOnce:
+    """MCP2's review, finding 1: a token is spent once; a review's coverage was not. An apply step run twice for one
+    approval (a redelivered job, a resumed step) would make each covered call again. Each covered call is now spent
+    in the claim store, as a token's nonce is (Redis in cloud), and a second one is `AlreadySpent`."""
+
+    async def test_the_second_call_is_already_spent_and_does_nothing(self, monkeypatch):
+        from core.product_tools import confirm, hooks, registry
+        from core.product_tools.approved import approve
+        from core.product_tools.caller import Caller
+        from core.product_tools.errors import AlreadySpent
+        from core.product_tools.registry import ProductTool
+        from core.product_tools.roles import Role
+
+        confirm.set_claim_store(None)
+        made: list = []
+
+        async def handler(caller, args):
+            made.append(args)
+            return {"ok": True}
+
+        monkeypatch.setitem(registry._TOOLS, "make_it", ProductTool(
+            name="make_it", description="", input_schema={"type": "object"}, handler=handler, kind="act",
+            area="tests", min_role=Role.BUILDER, scope="build", irreversible=True))
+        person = Caller(role=Role.OWNER, via="assistant", user_id="u1")
+        obj = {"ops": [1]}
+        review = approve(obj, person, [("make_it", {"n": 1})])
+        await registry.invoke("make_it", person, {"n": 1}, confirm_policy="approved_review", review=review,
+                              reviewed=obj)
+        with pytest.raises(AlreadySpent):
+            await registry.invoke("make_it", person, {"n": 1}, confirm_policy="approved_review", review=review,
+                                  reviewed=obj)
+        assert made == [{"n": 1}]

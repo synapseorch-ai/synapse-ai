@@ -22,7 +22,7 @@ from core.product_tools import confirm, hooks
 from core.product_tools import caller as _caller_mod
 from core.product_tools import page as paging
 from core.product_tools.caller import Caller
-from core.product_tools.errors import ToolRefusal
+from core.product_tools.errors import AlreadySpent, ToolRefusal
 from core.product_tools.roles import Role
 
 __all__ = ["ProductTool", "ToolRefusal", "register", "unregister", "get", "all_tools", "for_caller", "invoke"]
@@ -230,6 +230,10 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
         confirmed_by = "token"
     if by_review:
         confirmed_by = f"review:{review.digest[:16]}"
+        # Spent once, as a token is (MCP2's review): an apply run twice for one approval makes nothing twice.
+        if not await confirm.claim_once(f"review:{review.digest}:{name}:{confirm.args_hash(args)}",
+                                        confirm.REVIEW_TTL_SECONDS):
+            raise AlreadySpent(f"{name}: the approved change already made this call.")
 
     # Bound for the handler and for the audit after it: a host's audit reads who acted from
     # `caller.current()` (cloud's principal rides on the caller).

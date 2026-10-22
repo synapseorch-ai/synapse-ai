@@ -51,6 +51,15 @@ _store: ClaimStore = MemoryClaims()
 _secret: bytes | None = None
 
 
+#: How long an approved review's spent calls are remembered (F778): past any redelivery or resume of its apply.
+REVIEW_TTL_SECONDS = 7 * 24 * 3600
+
+
+async def claim_once(key: str, ttl: int) -> bool:
+    """True the first time `key` is claimed within `ttl` seconds: the store tokens use (Redis in cloud)."""
+    return await _store.claim(key, ttl)
+
+
 def set_claim_store(store: ClaimStore | None) -> None:
     global _store
     _store = store if store is not None else MemoryClaims()

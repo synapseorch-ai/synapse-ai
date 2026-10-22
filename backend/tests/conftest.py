@@ -183,6 +183,17 @@ def _restore_settings_provider():
 
 # ── model CLI status isolation (autouse) ─────────────────────────────────────
 @pytest.fixture(autouse=True)
+def _fresh_claims():
+    """Every test spends confirm tokens and approved reviews in a store of its own (F778): a call one test's approval
+    made is not already made in the next."""
+    from core.product_tools import confirm
+
+    confirm.set_claim_store(None)
+    yield
+    confirm.set_claim_store(None)
+
+
+@pytest.fixture(autouse=True)
 def _no_model_list():
     """No test reads this machine's providers for the models a workspace can pick (`core.model_choices`, SAI2-P2):
     the list is a host's here, and a test that is about it sets one. With none, nothing is refused for its model."""
