@@ -162,8 +162,12 @@ async def save(name: str, items: list[dict], key_field: str = "id") -> None:
         await s.execute(stmt)
 
 
-async def load_one(name: str, default: dict | None = None) -> dict:
-    """A singleton document, or `default` when nothing is stored."""
+async def load_one(name: str, default: dict | None = None, *, resolve: bool = True) -> dict:
+    """A singleton document, or `default` when nothing is stored.
+
+    `resolve=False` returns it as stored, references and all: what
+    `core.variables` compares against to know which values were secrets (F854).
+    """
     from core.store import session
     from core.store.models import CollectionDB
 
@@ -179,7 +183,7 @@ async def load_one(name: str, default: dict | None = None) -> dict:
         ).scalar_one_or_none()
     if row is None:
         return dict(default or {})
-    return await _resolved(row.value)
+    return await _resolved(row.value) if resolve else row.value
 
 
 async def save_one(name: str, document: dict) -> None:

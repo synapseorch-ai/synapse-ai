@@ -45,6 +45,7 @@ import uuid
 from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, Callable, Iterator, Optional
 
+from core.events_public import DOOR_FRAME_TYPES, public_event
 from core.log import get_logger
 from core.tenancy import get_tenant
 
@@ -365,7 +366,20 @@ def frame(turn: ChatTurn, entry: Entry) -> str:
 
 
 def _frames(chunk) -> Iterator[tuple[dict, str]]:
-    """The events in one chunk a producer yielded (a dict, or SSE text)."""
+    """The events in one chunk a producer yielded (a dict, or SSE text), as a client may see them.
+
+    Every reader of a turn's log is a client's (`GET /chat/{id}/events`), and some
+    producers hand over the engine's events as they came — an approval's resume, a
+    schedule's (F854): only what `public_event` passes is kept.
+    """
+    for event, data in _raw_frames(chunk):
+        shown = public_event(event, also=DOOR_FRAME_TYPES)
+        if shown is None:
+            continue
+        yield shown, (data if shown == event else f"data: {json.dumps(shown, default=str)}\n\n")
+
+
+def _raw_frames(chunk) -> Iterator[tuple[dict, str]]:
     if isinstance(chunk, dict):
         yield chunk, f"data: {json.dumps(chunk, default=str)}\n\n"
         return

@@ -8,6 +8,8 @@ refused when it holds one. `core.native_builder.export` re-exports both names.
 from __future__ import annotations
 
 import re
+from contextvars import ContextVar
+from typing import Any
 
 #: What a credential is replaced with. The guide tells the builder that each
 #: one is a credential the export held, to be listed under "Not carried over".
@@ -67,3 +69,76 @@ def scrub_credentials(text: str) -> tuple[str, int]:
 def holds_credential(text: str) -> bool:
     """Whether `text` holds anything `scrub_credentials` would take out."""
     return bool(text) and any(pattern.search(text) for pattern in _CREDENTIALS)
+
+
+# ── Secret variables, by value (F854) ────────────────────────────────────────
+#
+# `{{ global.KEY }}` is rendered into prompts, tool requests and step templates
+# from `core.variables.load()`, and a variable whose stored value is a reference
+# (cloud's `synsec://`) comes back as its plaintext: the model and the tool need
+# it. Everything after that — an event a client follows, a log a member reads, a
+# step's recorded error, a checkpoint — must show the name, not the value. So
+# `variables.load()` holds the secrets it resolved for the task that read them,
+# and each place that stores or shows text scrubs them out. The engine drives a
+# run or a turn from one task (`iter_with_heartbeat`), so every such place in it
+# sees what its load held.
+
+#: A value shorter than this is not scrubbed: it would replace ordinary words.
+SECRET_MIN = 6
+
+_HELD: ContextVar[tuple[tuple[str, str], ...]] = ContextVar("held_secrets", default=())
+
+
+def secret_mark(name: str) -> str:
+    """What a secret's value is shown as."""
+    return f"‹secret: {name}›"
+
+
+def hold_secrets(secrets: dict[str, Any]) -> None:
+    """Scrub these `{name: value}` from everything this task stores or shows from now on."""
+    held = dict(_HELD.get())
+    held.update({k: v for k, v in secrets.items() if isinstance(v, str) and len(v) >= SECRET_MIN})
+    # Longest first: a secret that contains another is replaced whole.
+    _HELD.set(tuple(sorted(held.items(), key=lambda kv: -len(kv[1]))))
+
+
+def held_secrets() -> dict[str, str]:
+    return dict(_HELD.get())
+
+
+def scrub_secrets(text: str) -> str:
+    """`text` with each held secret's value replaced by its name."""
+    held = _HELD.get()
+    if not held or not isinstance(text, str):
+        return text
+    for name, value in held:
+        if value in text:
+            text = text.replace(value, secret_mark(name))
+    return text
+
+
+def scrub_secrets_in(value: Any) -> Any:
+    """`value` — an event, a snapshot — with every string in it scrubbed. The same object when nothing is held."""
+    held = _HELD.get()
+    if not held:
+        return value
+    if isinstance(value, str):
+        return scrub_secrets(value)
+    if isinstance(value, dict):
+        return {k: scrub_secrets_in(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_secrets_in(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(scrub_secrets_in(v) for v in value)
+    return value
+
+
+def reveal_secrets(text: str, values: dict[str, Any]) -> str:
+    """The inverse, for the engine's own use only: a scrubbed checkpoint's text with each
+    secret's current value put back, so a resumed turn reads what it was given."""
+    if not isinstance(text, str) or "‹secret: " not in text:
+        return text
+    for name, value in values.items():
+        if isinstance(value, str):
+            text = text.replace(secret_mark(name), value)
+    return text

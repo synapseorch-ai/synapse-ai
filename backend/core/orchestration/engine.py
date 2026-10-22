@@ -29,6 +29,7 @@ from .time_limits import CONTAINERS, OWN_BUDGET, deadline_scope, run_ceiling, st
 from .logger import OrchestrationLogger
 
 from core.log import get_logger
+from core.secret_scrub import scrub_secrets_in
 from core.telemetry import spans as _spans
 from core.orchestration import run_writes
 
@@ -580,6 +581,8 @@ class OrchestrationEngine:
                     # The step its model calls are made for (F461).
                     with anyio.fail_after(step_timeout), step_scope(run.run_id, step.id), deadline_scope(step_timeout):
                         async for event in executor.execute(step, run, self):
+                            # A secret variable rendered into a prompt leaves as its name (F854).
+                            event = scrub_secrets_in(event)
                             # Feed every event to the logger
                             if logger:
                                 logger.log_event(event)

@@ -51,7 +51,10 @@ def reason_of(exc: BaseException, limit: int = 300) -> str:
     exception keeps its name: "KeyError: 'x'" says nothing without it, and the
     run card reads a model's failure by "LLMError:" / "EmptyAnswer:".
     """
-    text = str(exc)[:limit]
+    from core.secret_scrub import scrub_secrets
+
+    # A tool's rendered URL or header can be in its error: recorded by name (F854).
+    text = scrub_secrets(str(exc))[:limit]
     return text if type(exc) is RuntimeError else f"{type(exc).__name__}: {text}"
 
 

@@ -20,7 +20,9 @@ from typing import AsyncGenerator
 
 from core.orchestration.journal import aclose_journal, broker, get_journal
 
+from core.events_public import public_event
 from core.log import get_logger
+from core.secret_scrub import scrub_secrets
 
 _log = get_logger(__name__)
 
@@ -84,6 +86,10 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
             # a cancel that lands while it is taken still ends the stream.
             async with run_lease.hold(run_id):
                 async for event in agen:
+                    # Every reader of the queue and the journal is a client's (F854).
+                    event = public_event(event)
+                    if event is None:
+                        continue
                     await _observe(run_id, event)
                     last_type = event.get("type")
                     await queue.put(event)
@@ -101,7 +107,7 @@ def spawn_engine_run(agen, run_id: str) -> tuple[asyncio.Task, asyncio.Queue]:
             last_type = event["type"]
             await queue.put(event)
         except Exception as e:
-            event = {"type": "orchestration_error", "error": str(e)}
+            event = {"type": "orchestration_error", "error": scrub_secrets(str(e))}
             await _observe(run_id, event)
             last_type = event["type"]
             await queue.put(event)

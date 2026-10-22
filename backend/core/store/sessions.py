@@ -128,8 +128,15 @@ async def load(agent_id: str | None = None) -> list[dict]:
 
 
 async def append_turn(session_id: str, agent_id: str, messages: list[dict]) -> None:
-    """Append messages to a session, creating it if this is the first turn."""
+    """Append messages to a session, creating it if this is the first turn.
+
+    A secret variable's value — an answer that echoes one, a call's arguments — is
+    kept by name: the conversation is read back by members and by the API (F854).
+    """
+    from core.secret_scrub import scrub_secrets_in
     from core.store.models import ChatSessionDB
+
+    messages = scrub_secrets_in(list(messages))
 
     async def write() -> None:
         async with _writing(session_id, agent_id) as s:

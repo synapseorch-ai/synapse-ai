@@ -213,7 +213,10 @@ async def maybe_compact(
 
     archive_path = _make_archive_path(session_id)
     try:
-        archive_path.write_text(context_block, encoding="utf-8")
+        from core.secret_scrub import scrub_secrets
+
+        # Stored: a secret variable a step's prompt rendered in is kept by name (F854).
+        archive_path.write_text(scrub_secrets(context_block), encoding="utf-8")
         _log.debug(f"🗄️  Compaction archive saved → {archive_path}")
     except Exception as exc:
         _log.warning(f"⚠️  Could not write compaction archive: {exc}")

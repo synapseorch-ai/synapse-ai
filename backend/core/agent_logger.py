@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from core.run_ids import new_run_id
+from core.secret_scrub import scrub_secrets
 
 #: Blob key prefix for finished logs. The blob store applies the tenant
 #: prefix itself; this used to be a flat prefix on a shared bucket.
@@ -114,12 +115,15 @@ class AgentLogger:
     # ── Core write ─────────────────────────────────────────────────
 
     def _write(self, text: str):
+        # Scrubbed here, in the caller's task, where its secrets are held (F854): the
+        # writer thread below sees none, and gets text already scrubbed.
+        text = scrub_secrets(text)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(text)
 
     def _write_bg(self, text: str):
         """Fire-and-forget: enqueue for the background writer thread."""
-        self._q.put(text)
+        self._q.put(scrub_secrets(text))
 
     def _drain(self):
         """Background thread: drains the write queue in order."""

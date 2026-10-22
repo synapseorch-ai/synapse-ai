@@ -119,6 +119,10 @@ class OrchestrationLogger:
 
     def _write(self, text: str):
         from core.orchestration.journal import _executor
+        from core.secret_scrub import scrub_secrets
+
+        # In the caller's task, where its secrets are held; the writer thread has none (F854).
+        text = scrub_secrets(text)
 
         def guarded():
             try:

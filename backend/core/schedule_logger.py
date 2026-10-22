@@ -127,6 +127,9 @@ class ScheduleLogger:
 
     def _write(self, text: str):
         """Sync write -- only call from the writer thread (via _write_bg) or startup."""
+        from core.secret_scrub import scrub_secrets
+
+        text = scrub_secrets(text)  # the startup banners' prompt (F854); a no-op on the writer thread
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(text)
 
@@ -138,6 +141,10 @@ class ScheduleLogger:
         landed after a later one — "AGENT RESPONSE" after the FINISHED banner.
         """
         from core.orchestration.journal import _executor
+        from core.secret_scrub import scrub_secrets
+
+        # In the caller's task, where its secrets are held; the writer thread has none (F854).
+        text = scrub_secrets(text)
         try:
             asyncio.get_running_loop()
         except RuntimeError:

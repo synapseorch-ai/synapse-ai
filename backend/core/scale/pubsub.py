@@ -12,6 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import AsyncGenerator
 
+from core.events_public import public_event
 from core.log import get_logger
 
 _log = get_logger(__name__)
@@ -104,6 +105,11 @@ class RunEventPublisher:
         self._published = 0
 
     async def publish(self, event: dict) -> None:
+        # Only what a client may see is written: every reader of this stream, and the
+        # run's archive copied from it, is a client's (F854).
+        event = public_event(event)
+        if event is None:
+            return
         payload = json.dumps(event, default=str)
         await self._redis.xadd(
             self._key,
@@ -160,6 +166,11 @@ class ChatEventPublisher:
         self._lock = asyncio.Lock()
 
     async def publish(self, event: dict) -> None:
+        # Only what a client may see is written: every reader of this stream is a
+        # client's — the chat panel, the API, the widget (F854).
+        event = public_event(event)
+        if event is None:
+            return
         if self._chat_turn is not None:
             event = {**event, "chat_turn": self._chat_turn}
         if event.get("type") == "answer_delta":

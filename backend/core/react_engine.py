@@ -25,6 +25,7 @@ from core.session import (
 )
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
+from core.secret_scrub import reveal_secrets as _reveal_secrets, scrub_secrets as _scrub_secrets, scrub_secrets_in as _scrub_secrets_in
 from core.answer_filter import AnswerFilter, strip_copied_digest
 from core.tool_call_shapes import calls_in, is_pseudo_format, leading_objects, parallel_calls
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
@@ -1764,7 +1765,9 @@ async def run_agent_step(
         replay has spent is never parked again."""
         snap = {
             "turn": next_turn,
-            "context_text": current_context_text[-200_000:],
+            # Stored, so a secret variable a step's prompt rendered in is kept by name;
+            # the resume below puts its value back (F854).
+            "context_text": _scrub_secrets(current_context_text[-200_000:]),
             "approved_calls": sorted(_approved_calls),
             "denied_calls": sorted(_denied_calls),
             "denied_reasons": dict(_denied_reasons),
@@ -1843,7 +1846,7 @@ async def run_agent_step(
     start_turn = 0
     _pending_refusal = locals().get("_refusal_text")
     if resume_state and resume_state.get("context_text"):
-        current_context_text = resume_state["context_text"] + (
+        current_context_text = _reveal_secrets(resume_state["context_text"], _global_variables) + (
             "\n[System: this task was interrupted and has been resumed. Continue from the "
             "last observation above; do not repeat tool calls that already succeeded.]\n"
         )
@@ -4299,6 +4302,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
                     _inbox.settle()
                 # Answered: what arrived after its last look goes back another way.
                 _helpers.redeliver(_inbox.conversation, _inbox.close())
+            # A secret variable rendered into the prompt leaves as its name (F854).
+            event = _scrub_secrets_in(event)
             _agent_log.log_event(event)
             yield event
     except asyncio.CancelledError:

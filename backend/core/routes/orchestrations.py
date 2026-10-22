@@ -529,18 +529,8 @@ async def run_orchestration(orch_id: str, request: Request):
     )
 
 
-#: State keys the engine keeps for itself — progress records, routing
-#: decisions, loop accumulators, execution memory. Named explicitly rather
-#: than "anything starting with _": a user's own state_schema key may start
-#: with an underscore, and that one is theirs to read back.
-_PRIVATE_STATE_PREFIXES = (
-    "_step_progress_", "_loop_progress_", "_parallel_progress_", "_exec_memory_",
-    "_routing_", "_loop_", "_if_decision_", "_switch_decision_",
-    # A delegate's step's tasks until its entry carries them (TEAM1d, `pauses.TASKS_KEY`).
-    "_step_tasks",
-    # Whom an assistant run works for (ASSIST1): the host's, never shown.
-    "_caller",
-)
+# The engine's own state keys, one list with every door's (F854).
+from core.events_public import PRIVATE_STATE_PREFIXES as _PRIVATE_STATE_PREFIXES  # noqa: E402
 
 
 def _public_run_view(run) -> dict:

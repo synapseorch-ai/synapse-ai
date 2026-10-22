@@ -32,7 +32,8 @@ def hook(monkeypatch):
 
 async def _publish(publisher, n: int) -> None:
     for i in range(n):
-        await publisher.publish({"type": "tick", "i": i})
+        # A type a client sees: the publisher writes nothing else (F854).
+        await publisher.publish({"type": "status", "i": i})
 
 
 async def test_the_hook_is_nudged_as_events_arrive(fake_redis, hook):

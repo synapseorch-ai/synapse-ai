@@ -27,10 +27,24 @@ def valid_key(key: str) -> bool:
 
 
 async def load() -> dict[str, Any]:
-    """The tenant's variables, `{key: value}`. Empty when none are set."""
+    """The tenant's variables, `{key: value}`. Empty when none are set.
+
+    A value the store's resolver swapped — a secret stored as a reference — is
+    held for this task (`core.secret_scrub.hold_secrets`), so whatever the task
+    then stores or shows names it rather than carrying its plaintext (F854).
+    """
+    from core.secret_scrub import hold_secrets
     from core.store import collections
 
-    document = await collections.load_one(COLLECTION, default={})
+    stored = await collections.load_one(COLLECTION, default={}, resolve=False)
+    document = await collections._resolved(stored)
+    values = _values(document)
+    raw = _values(stored)
+    hold_secrets({k: v for k, v in values.items() if k in raw and raw[k] != v})
+    return values
+
+
+def _values(document: Any) -> dict[str, Any]:
     values = document.get("values") if isinstance(document, dict) else None
     return dict(values) if isinstance(values, dict) else {}
 

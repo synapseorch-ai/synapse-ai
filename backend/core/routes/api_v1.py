@@ -38,6 +38,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.api_key_middleware import require_api_key
+from core.events_public import public_event
 from core.images import checked_images
 from core.models_schedule import ScheduleCreate, ScheduleUpdate
 from core.run_ids import new_run_id
@@ -606,7 +607,7 @@ async def answer_v1_question(session_id: str, *, approve: bool, reason: str = ""
 
 
 def _v1_drain(queue):
-    """A run's queued events as v1 SSE: `_log_*` held back, `done` after a pause or the end.
+    """A run's queued events as v1 SSE: only what a client sees (F854), `done` after a pause or the end.
 
     The run itself is spawned by the handler (`spawn_engine_run`); this only
     reads its queue, so a caller that stops reading leaves the run running (F49).
@@ -624,7 +625,8 @@ def _v1_drain(queue):
             if event is SENTINEL:
                 break
             etype = event.get("type", "")
-            if etype.startswith("_log_"):
+            event = public_event(event)  # the queue's events are already a client's; said here too (F854)
+            if event is None:
                 continue
             yield _format_sse_event(event)
             if etype == "human_input_required":

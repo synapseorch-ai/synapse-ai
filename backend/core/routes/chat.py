@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from core import chat_turns
+from core.events_public import public_event
 from core.models import ChatRequest, ChatResponse
 from pydantic import BaseModel, Field
 from core.react_engine import run_react_loop, parse_tool_call, iter_with_heartbeat  # noqa: F401 — re-export for backwards compat
@@ -278,6 +279,11 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 continue
             if etype == "_inbox_parked":
                 inbox_parked = event.get("state") or None
+                continue
+            # What is left is a client's: only what it may see, a finished run's state without
+            # the engine's own keys (F854).
+            event = public_event(event)
+            if event is None:
                 continue
             if etype in ("tool_execution", "tool_result"):
                 events_since_progress.append(event)
