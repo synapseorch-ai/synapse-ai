@@ -22,6 +22,7 @@ from core.session import (
 )
 from core.llm_providers import generate_response as llm_generate_response
 from core.tools import aggregate_all_tools, build_system_prompt, DEFAULT_TOOLS_BY_TYPE
+from core.mcp_client import tool_result_text
 from core.routes.agents import load_user_agents, get_active_agent_data
 from core.routes.tools import load_custom_tools
 
@@ -1481,7 +1482,7 @@ async def run_agent_step(
 
                     with _anyio.fail_after(_timeout.total_seconds() + 5):
                         result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout)
-                        raw_output = result.content[0].text
+                        raw_output = tool_result_text(result)
 
                     print(f"DEBUG MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'", flush=True)
 

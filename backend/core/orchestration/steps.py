@@ -485,6 +485,8 @@ class ToolStepExecutor:
     async def _execute_tool(self, tool_name: str, tool_args: dict, engine: "OrchestrationEngine") -> str:
         """Execute a tool via MCP session or Docker sandbox (custom Python tools)."""
         from datetime import timedelta
+
+        from core.mcp_client import tool_result_text
         server_module = engine.server_module
 
         # Native builder tools (create_orchestration, list_agents, etc.) —
@@ -502,7 +504,7 @@ class ToolStepExecutor:
                 result = await session.call_tool(
                     actual_tool_name, tool_args, read_timeout_seconds=timedelta(seconds=MCP_TOOL_CALL_TIMEOUT)
                 )
-                return result.content[0].text if result.content else ""
+                return tool_result_text(result)
         # Custom tools — Python or HTTP
         from core.routes.tools import load_custom_tools
         custom_tools = load_custom_tools()
