@@ -319,3 +319,11 @@ async def test_a_which_one_question_is_kept_on_the_person_s_card(client, role):
     waiting = context["waiting_pick"]
     assert waiting["question"] == out["question"]
     assert first["id"] in {o["id"] for o in waiting["picks"][0]["options"]}
+
+
+async def test_an_undo_and_other_ops_in_one_submit_are_sent_back_not_half_done(client):
+    """`undo_of` builds its own ops, so ops beside it were dropped without a word (the branch review's finding 14)."""
+    run = await _run()
+    out, _ = await _call("submit_change", {"undo_of": "builder_x", "ops": [
+        {"op": "schedule_off", "target": {"kind": "schedule", "name": "nightly"}}]}, run)
+    assert "undo_of alone" in out["error"]

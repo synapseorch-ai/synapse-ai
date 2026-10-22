@@ -133,6 +133,9 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
     undo_of = _text(args.get("undo_of"))
     if not ops and not undo_of:
         return {"error": "Send at least one op, or undo_of for \"undo that\"."}
+    if ops and undo_of:
+        return {"error": "Send undo_of alone (its ops are built from the change it undoes), or ops alone; then the "
+                         "rest as another change."}
     found: list[str] = []
     for n, op in enumerate(ops, 1):
         if not isinstance(op, dict):
