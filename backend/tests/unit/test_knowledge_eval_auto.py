@@ -95,9 +95,14 @@ class TestAfterASwitch:
         await jobs.drain(run_ingest_job)  # builds, then switches: knowledge.base.reindexed
         await settle()
         new = await snapshots.serving_snapshot(after)
-        latest = (await runs_of(ran_before.id))[-1]
-        assert (latest.started_by, latest.status) == ("settings", "completed")
-        assert [s["snapshot_id"] for s in latest.config["snapshots"]] == [new]
+        runs = await runs_of(ran_before.id)
+        latest = runs[-1]
+        # Every run of the set, so a failure in a full suite says which way it went: this has failed
+        # only there, under load, never alone or in 1,670 knowledge tests in order (BF11, 10-23).
+        seen = [(r.started_by, r.status, r.error, [s["snapshot_id"] for s in (r.config or {}).get("snapshots", [])])
+                for r in runs]
+        assert (latest.started_by, latest.status) == ("settings", "completed"), (seen, new, AUTO.waiting())
+        assert [s["snapshot_id"] for s in latest.config["snapshots"]] == [new], (seen, new)
         assert latest.config["judge"] is None
         assert await runs_of(never.id) == []
         assert [r.status for r in await runs_of(skipped.id)] == ["skipped"]
