@@ -342,18 +342,22 @@ async def test_a_name_taken_since_the_yes_is_not_made_again_under_it(client):
     assert (await schedules.get("sched_theirs"))["cron_expression"] == "0 7 * * 1"
 
 
-@pytest.mark.parametrize("kind, writes, words", [
-    ("skill", [{"kind": "skill", "action": "created", "id": "polite-replies", "name": "polite-replies"}], ""),
+@pytest.mark.parametrize("kind, writes, words, stage", [
+    ("skill", [{"kind": "skill", "action": "created", "id": "polite-replies", "name": "polite-replies"}], "",
+     "changed"),
     ("tool", [{"kind": "tool", "action": "created", "id": "weather_forecast", "name": "weather_forecast"}],
-     'It was made as the HTTP tool "weather_forecast" (you approved "Weather Forecast Tool").'),
+     'It was made as the HTTP tool "weather_forecast" (you approved "Weather Forecast Tool").', "set_aside"),
     ("agent", [{"kind": "skill", "action": "created", "id": "billing", "name": "billing"}],
-     'The agent "Weather Forecast Tool" you approved was not made; made instead: the skill "billing".'),
-    ("agent", [], 'The agent "Weather Forecast Tool" you approved was not made.'),
+     'The agent "Weather Forecast Tool" you approved was not made; made instead: the skill "billing".', "set_aside"),
+    ("agent", [], 'The agent "Weather Forecast Tool" you approved was not made.', "set_aside"),
 ])
-async def test_what_the_maker_made_is_held_to_what_was_approved(client, kind, writes, words):
+async def test_what_the_maker_made_is_held_to_what_was_approved(client, kind, writes, words, stage):
     """MCP2's note 5: the maker is a model calling create tools after the yes, outside the approval's digest. A code
     step reads what the run made (its own writes) and says plainly when it is not the approved thing: another name
-    (batch 2b: "Weather Forecast Tool" approved, `weather_forecast` saved), another kind, or nothing."""
+    (batch 2b: "Weather Forecast Tool" approved, `weather_forecast` saved), another kind, or nothing. The card is
+    `changed` only when the approved thing was made (MCP2's re-check, E: another name read as made as approved); what
+    was made is kept on it either way."""
+    from core.boards import assistant
     from core.orchestration.run_writes import WRITES_KEY
 
     name = "Polite replies" if kind == "skill" else "Weather Forecast Tool"
@@ -363,6 +367,9 @@ async def test_what_the_maker_made_is_held_to_what_was_approved(client, kind, wr
     run.shared_state[WRITES_KEY] = writes
     got, _ = await _call("check_made", {}, run)
     assert got["note"] == (" " + words if words else "")
+    card = await assistant.card(run.run_id)
+    assert card.stage == stage
+    assert card.data["made"] == [{"kind": w["kind"], "id": w["id"], "name": w["name"]} for w in writes]
 
 
 async def test_the_same_change_approved_again_is_made_again(client):

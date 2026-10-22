@@ -257,7 +257,8 @@ async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict
     saved_kind, said = _MADE.get(kind, (kind, kind))
     made = [w for w in state.get(WRITES_KEY) or [] if isinstance(w, dict) and w.get("action") == "created"]
     mine = [w for w in made if w.get("kind") == saved_kind]
-    if mine and (kind == "openapi" or any(_plain(w.get("name")) == _plain(name) for w in mine)):
+    as_approved = bool(mine) and (kind == "openapi" or any(_plain(w.get("name")) == _plain(name) for w in mine))
+    if as_approved:
         note = ""
     elif mine:
         note = f"It was made as the {said} {_quoted(mine[0].get('name'))} (you approved {_quoted(name)})."
@@ -266,7 +267,8 @@ async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict
         note = f"The {said} {_quoted(name)} you approved was not made; made instead: {others}."
     else:
         note = f"The {said} {_quoted(name)} you approved was not made."
-    await _card(checked, stage=CHANGED if mine else SET_ASIDE,
+    # `changed` is the approved thing made; another name or kind, or nothing, is set aside with what was made kept.
+    await _card(checked, stage=CHANGED if as_approved else SET_ASIDE,
                 data={"change": checked, "made": [{"kind": w.get("kind"), "id": w.get("id"), "name": w.get("name")}
                                                    for w in made]})
     return {"object": "change_made_check", "note": (" " + note) if note else ""}
