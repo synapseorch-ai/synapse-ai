@@ -242,3 +242,32 @@ async def test_a_deleted_http_tool_comes_back_without_its_headers(client):
     assert "enter its key again" in checked["review"] and undone["applied"] == ["restore_tool"], undone
     [back] = [t for t in await load_tools() if t["name"] == "mailchimp_lists"]
     assert back["url"] == "https://us1.api.mailchimp.com/3.0/lists" and not back.get("headers")
+
+
+async def test_a_deleted_tool_comes_back_in_its_own_group(client):
+    """A tool's `group` is its group's id (`grp_support`); `create_http_tool` takes a group's name. The undo brings it
+    back into the group it was in, not a new one named after the old id (the branch review's finding 8)."""
+    from core.routes.tools import _load_groups, _upsert_group
+    from core.store.resources import load_tools, save_tool
+
+    await _upsert_group({"id": "grp_support", "name": "Support", "description": ""})
+    await save_tool({"name": "ticket_lookup", "description": "Tickets", "tool_type": "http", "method": "GET",
+                     "url": "https://api.example.com/tickets", "headers": {}, "group": "grp_support",
+                     "inputSchema": {"type": "object", "properties": {}}})
+    first, _, _ = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "ticket_lookup"}}]})
+    _, _, undone = await _change({"undo_of": first.run_id})
+    assert undone["applied"] == ["restore_tool"], undone
+    [back] = [t for t in await load_tools() if t["name"] == "ticket_lookup"]
+    assert back["group"] == "grp_support"
+    assert [g["id"] for g in await _load_groups()] == ["grp_support"]
+
+
+async def test_a_tool_whose_address_held_a_key_is_said_to_be_so(client):
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "leaky", "description": "Leaky", "tool_type": "http", "method": "GET",
+                     "url": "https://api.example.com/x?api_key=sk-live-abcdefghijklmnopqrstuvwx1234", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    first, _, _ = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "leaky"}}]})
+    _, checked, _ = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and "address held a key" in checked["say"]

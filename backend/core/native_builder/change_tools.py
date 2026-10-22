@@ -318,6 +318,13 @@ async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
     return [], None
 
 
+async def _group_name(group_id: str) -> str | None:
+    """A tool group's name: a tool keeps its group's id, and `create_http_tool` takes the name (an undo's re-create)."""
+    from core.routes.tools import _load_groups
+
+    return next((g.get("name") for g in await _load_groups() if g["id"] == group_id), None)
+
+
 async def _not_found(kind: str, target: dict) -> str:
     """Why nothing matches: there is none by that name, or (a skill) it is read from disk, where it is changed."""
     wanted = target.get("name") or target.get("id") or ""
@@ -513,6 +520,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 item.update(status="refused", say=refusal)
                 continue
             item["used_by"] = used
+            if op.target == "tool" and live.get("group"):
+                live = {**live, "group_name": await _group_name(live["group"])}
         elif op.kind != "create" and not C.differs(live, want):
             item.update(status="noop", say=f"The {op.target} {_quoted(target['name'])} is already that way: "
                                            "nothing to change.")

@@ -107,11 +107,14 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
         return {"op": "restore_workflow", "target": {"kind": "workflow", "name": before.get("name")},
                 "fields": keep, "says": "undo: a new copy, without its run history"}, None
     if name == "delete_tool":
-        if before.get("tool_type") != "http" or not before.get("url"):
+        if before.get("tool_type") != "http":
             return None, f"{label} was not an HTTP tool, so it can't be made again from here."
+        if not before.get("url"):
+            return None, f"{label}'s address held a key, so it was not kept and the tool can't be made again."
+        # Its group by name, as `create_http_tool` takes it (the tool kept the group's id).
         keep = {"name": before.get("name"), "description": before.get("description") or before.get("name"),
                 "url": before["url"], "method": before.get("method"), "body_template": before.get("body"),
-                "group": before.get("group")}
+                "group": before.get("group_name")}
         if before.get("inputSchema"):
             keep["input_schema_json"] = json.dumps(before["inputSchema"])
         return {"op": "restore_tool", "target": {"kind": "tool", "name": before.get("name")}, "fields": keep,
