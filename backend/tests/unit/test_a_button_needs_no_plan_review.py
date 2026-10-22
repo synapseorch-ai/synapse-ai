@@ -205,7 +205,7 @@ def test_a_new_thing_is_made_only_after_the_yes_and_only_with_the_four_create_to
     maker = agents[make["agent_id"]]
     writes = {t for t in maker["tools"] if builder_access.KINDS.get(t) == "write"}
     assert writes == {"create_agent", "create_skill", "create_http_tool", "import_openapi"}
-    assert make["next_step_id"] == "step_change_failed"  # the run's own record: what was made, or why not
+    assert make["next_step_id"] == "step_check_made"  # what was made, held to what was approved (MCP2's note 5)
     # One thing, once: the step ends at its first create that worked (E2). On Gemini 3 Flash the maker called
     # create_agent seven times for one approved agent (P2's after-batch, cnt-05) when only its prompt said "one call".
     assert set(make["finish_tools"]) == {"create_agent", "create_skill", "create_http_tool", "import_openapi", "cannot"}
@@ -213,3 +213,13 @@ def test_a_new_thing_is_made_only_after_the_yes_and_only_with_the_four_create_to
         {k: s.get(k) for k in ("next_step_id", "switch_cases", "switch_default_step_id", "if_true_step_id",
                               "if_false_step_id", "route_map")})]
     assert reaching == [after]
+
+
+def test_what_the_maker_made_is_checked_then_said():
+    steps = _steps()
+    assert steps["step_make_new"]["next_step_id"] == "step_check_made"
+    check = steps["step_check_made"]
+    assert check["type"] == "tool" and check["forced_tool"] == "check_made" and check["tool_arguments"] == {}
+    said = steps[check["next_step_id"]]
+    assert said["type"] == "print" and said["print_content"] == "{state.run_changes}{state.change_made_check.note}"
+    assert said["output_key"] == "summary" and said["next_step_id"] == "step_end"

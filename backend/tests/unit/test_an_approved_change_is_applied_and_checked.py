@@ -293,3 +293,26 @@ async def test_an_apply_run_twice_makes_nothing_twice_and_says_it_was_done(clien
     again, _ = await _call("apply_change", {}, run)
     assert again["applied"] == ["create_schedule", "rename_agent"] and again["failed"] == [], again
     assert [s["name"] for s in await schedules.load()].count("Mondays") == 1
+
+
+@pytest.mark.parametrize("kind, writes, words", [
+    ("skill", [{"kind": "skill", "action": "created", "id": "polite-replies", "name": "polite-replies"}], ""),
+    ("tool", [{"kind": "tool", "action": "created", "id": "weather_forecast", "name": "weather_forecast"}],
+     'It was made as the HTTP tool "weather_forecast" (you approved "Weather Forecast Tool").'),
+    ("agent", [{"kind": "skill", "action": "created", "id": "billing", "name": "billing"}],
+     'The agent "Weather Forecast Tool" you approved was not made; made instead: the skill "billing".'),
+    ("agent", [], 'The agent "Weather Forecast Tool" you approved was not made.'),
+])
+async def test_what_the_maker_made_is_held_to_what_was_approved(client, kind, writes, words):
+    """MCP2's note 5: the maker is a model calling create tools after the yes, outside the approval's digest. A code
+    step reads what the run made (its own writes) and says plainly when it is not the approved thing: another name
+    (batch 2b: "Weather Forecast Tool" approved, `weather_forecast` saved), another kind, or nothing."""
+    from core.orchestration.run_writes import WRITES_KEY
+
+    name = "Polite replies" if kind == "skill" else "Weather Forecast Tool"
+    run = await _run()
+    run.shared_state["change_checked"] = json.dumps({"object": "change", "outcome": "create", "ops": [
+        {"op": "create", "kind": "create", "status": "ready", "target": {"kind": kind, "name": name}}]})
+    run.shared_state[WRITES_KEY] = writes
+    got, _ = await _call("check_made", {}, run)
+    assert got["note"] == (" " + words if words else "")

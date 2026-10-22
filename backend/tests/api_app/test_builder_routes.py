@@ -232,8 +232,8 @@ class TestSeeHowImBuilt:
         # planner, its check and route, the question, what it says, the approval, the apply and its summary in; 48
         # with the approval's and the apply's own checks and the one step that says why nothing changed; 49 with the
         # words a change ends in after too many rounds; 51 with one new thing made after its review (the switch
-        # after the yes, and the maker's step).
-        assert legend["step_count"] == 51
+        # after the yes, and the maker's step); 53 with the check of what the maker made and its words.
+        assert legend["step_count"] == 53
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}

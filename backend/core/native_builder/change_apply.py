@@ -203,6 +203,48 @@ def _no_effect(label: str, off: dict) -> str:
     return f"Not done as asked: after the change, {label}'s {parts}."
 
 
+#: What a made thing's `resource_saved` kind is, by the kind the review approved (an OpenAPI import makes tools).
+_MADE = {"agent": ("agent", "agent"), "skill": ("skill", "skill"), "tool": ("tool", "HTTP tool"),
+         "openapi": ("tool", "OpenAPI import")}
+_NOUNS = {"agent": "agent", "skill": "skill", "tool": "tool", "orchestration": "workflow", "schedule": "schedule"}
+
+
+def _plain(name: str) -> str:
+    return "".join(c for c in str(name or "").lower() if c.isalnum())
+
+
+async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """After the maker (MCP2's note 5): what the run made, from its own writes, held to the one new thing the person
+    approved. Another name, another kind, or nothing made is said in plain words; the card says how it ended."""
+    from core.orchestration.run_writes import WRITES_KEY
+
+    run_id, run = _run()
+    if run is None:
+        return {"object": "change_made_check", "note": ""}
+    state = run.shared_state
+    checked = checked_in(state)
+    approved = next((i for i in checked.get("ops") or [] if i.get("status") == "ready"), None)
+    if approved is None:
+        return {"object": "change_made_check", "note": ""}
+    kind, name = approved["target"].get("kind"), approved["target"].get("name") or ""
+    saved_kind, said = _MADE.get(kind, (kind, kind))
+    made = [w for w in state.get(WRITES_KEY) or [] if isinstance(w, dict) and w.get("action") == "created"]
+    mine = [w for w in made if w.get("kind") == saved_kind]
+    if mine and (kind == "openapi" or any(_plain(w.get("name")) == _plain(name) for w in mine)):
+        note = ""
+    elif mine:
+        note = f"It was made as the {said} {_quoted(mine[0].get('name'))} (you approved {_quoted(name)})."
+    elif made:
+        others = ", ".join(f"the {_NOUNS.get(w.get('kind'), w.get('kind'))} {_quoted(w.get('name'))}" for w in made)
+        note = f"The {said} {_quoted(name)} you approved was not made; made instead: {others}."
+    else:
+        note = f"The {said} {_quoted(name)} you approved was not made."
+    await _card(checked, stage=CHANGED if mine else SET_ASIDE,
+                data={"change": checked, "made": [{"kind": w.get("kind"), "id": w.get("id"), "name": w.get("name")}
+                                                   for w in made]})
+    return {"object": "change_made_check", "note": (" " + note) if note else ""}
+
+
 for _schema, _handler in (
     ({"type": "function", "function": {"name": "read_change_context", "description": (
         "Synapse AI's change route (code): the person's last applied change and a pick list still waiting."),
@@ -213,5 +255,8 @@ for _schema, _handler in (
     ({"type": "function", "function": {"name": "apply_change", "description": (
         "Synapse AI's change route (code): make the approved change and check it took effect."),
         "parameters": {"type": "object", "properties": {}}}}, apply_change),
+    ({"type": "function", "function": {"name": "check_made", "description": (
+        "Synapse AI's change route (code): hold what the maker made to the one new thing the person approved."),
+        "parameters": {"type": "object", "properties": {}}}}, check_made),
 ):
     register_builder_tool(_schema, _handler)

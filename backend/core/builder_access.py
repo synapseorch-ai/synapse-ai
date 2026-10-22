@@ -40,7 +40,7 @@ READS: frozenset[str] = frozenset({
 #: and then through the app's own doors under their own role.
 #: The change route's finish tools and its check (SAI2-P2) write only the run's own state, or put up an act's card.
 CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action", "submit_change",
-                                   "ask_person", "cannot", "check_change"})
+                                   "ask_person", "cannot", "check_change", "check_made"})
 
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",

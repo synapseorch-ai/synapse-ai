@@ -24,8 +24,9 @@ from core.native_builder import prompt_lint, seed
 #: 074d96f7…; F800: the analyst no longer told never to call a tool it does not hold, 2b9c8941…; a change's hand-over
 #: goes back through the door, 7eb7dec5…; a code step's error is said, 29c31610…; too many rounds end in words,
 #: 5fc3d1f8…; one new thing is made by the maker after its review, 29341fcf…; the router reads one new thing on its
-#: own as `manage`, 25218696…; the maker makes its one thing once (E2's finish tools).
-BUNDLE_SHA256 = "47fb48df9e5061bcc81f2bea1a703247269d1489a73dceedd59647d0d5e8f6ad"
+#: own as `manage`, 25218696…; the maker makes its one thing once (E2's finish tools), 47fb48df…; what it made is
+#: checked against what was approved.
+BUNDLE_SHA256 = "7bb7c0fb73a70096917dbd485c112cd974a8d2e6d77d6f1b683977d4a985b8bd"
 
 
 def _sha(definitions) -> str:
