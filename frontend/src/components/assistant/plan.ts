@@ -340,10 +340,6 @@ export function planDefinition(plan: Plan): { entry_step_id: string; steps: Reco
     return { entry_step_id: steps[0].id, steps };
 }
 
-/**
- * Read a plan question. `null` when no step can be read, and the card then
- * shows the words as they were asked.
- */
 // ── A change, from its own object (SAI2-P2, F798) ─────────────────────────────
 
 /** One op of Synapse AI's checked change, as its review's event carries it (`check_change`). */
@@ -380,7 +376,9 @@ export function changeOf(context: unknown): ChangeView | null {
 export function planFromChange(change: ChangeView, prompt: string): Plan | null {
     const ready = change.ops.filter((o) => o.status === 'ready' && o.line);
     if (!ready.length) return null;
-    const count = (name: string) => ready.filter((o) => (o.target?.name ?? '') === name).length;
+    // Two targets of one name, not two ops on one target, are told apart by id.
+    const count = (name: string) =>
+        new Set(ready.filter((o) => (o.target?.name ?? '') === name).map((o) => o.target?.id ?? '')).size;
     const steps: PlanStep[] = ready.map((o, i) => {
         const [what, ...how] = (o.line as string).split(' — ');
         const name = o.target?.name ?? '';
@@ -407,6 +405,10 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
     };
 }
 
+/**
+ * Read a plan question. `null` when no step can be read, and the card then
+ * shows the words as they were asked.
+ */
 export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null {
     const { body } = splitQuestion(prompt);
     if (!body) return null;
