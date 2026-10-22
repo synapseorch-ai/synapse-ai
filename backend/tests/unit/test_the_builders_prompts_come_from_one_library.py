@@ -22,8 +22,9 @@ from core.native_builder import prompt_lint, seed
 #: The expanded bundle. Change it only with a prompt change made on purpose, in the same commit. At v2.0 635a3967,
 #: before any passage moved into the library: 0edc6f5b…; SAI2-P2 (F799): the change route on a typed Change,
 #: 074d96f7…; F800: the analyst no longer told never to call a tool it does not hold, 2b9c8941…; a change's hand-over
-#: goes back through the door, 7eb7dec5…; a code step's error is said, 29c31610…; too many rounds end in words.
-BUNDLE_SHA256 = "5fc3d1f8fca40aff84884943c89df61560deecd8966b96e863a377f217633c7c"
+#: goes back through the door, 7eb7dec5…; a code step's error is said, 29c31610…; too many rounds end in words,
+#: 5fc3d1f8…; one new thing is made by the maker after its review.
+BUNDLE_SHA256 = "29341fcf1c93489af0b0cd7ee636722f1362a50cdbb0af704f2a8845cf040660"
 
 
 def _sha(definitions) -> str:

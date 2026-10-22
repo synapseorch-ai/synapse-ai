@@ -16,7 +16,7 @@ from core.orchestration.steps import _eval_state_expr
 GATES = {
     # gate: (the human step's output key, approved →, anything else →)
     "step_approval_route": ("review_feedback", "step_agents_needed", "step_draft_plan"),
-    "step_manage_route": ("manage_review", "step_change_approve", "step_change"),
+    "step_manage_route": ("manage_review", "step_after_yes", "step_change"),
 }
 
 YES = ["approve", "Approve", " approve ", "approved", "ok", "OK!", "okay", "yes", "Yes.", "looks good",

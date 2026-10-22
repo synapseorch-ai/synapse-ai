@@ -117,3 +117,24 @@ async def test_a_change_the_person_did_not_approve_is_planned_again_not_made(cli
     assert "0 11 * * 1" in asked["prompt"]
     assert "make it 11am instead" in json.dumps(fake_llm.calls[0], default=str)  # the planner read the reply
     assert (await store.get("sched_mon"))["cron_expression"] == "0 9 * * 1"
+
+
+async def test_a_new_skill_is_reviewed_then_made(client, builder, fake_llm):
+    """The hand-over probe's class (10-23): one new thing, made after its review by the maker, not planned as a
+    workflow and saved as nothing."""
+    from core import skills
+
+    fake_llm.script([route("manage"), tool_call("submit_change", ops=[
+        {"op": "create", "target": {"kind": "skill", "name": "Polite replies"},
+         "fields": {"what": "answer patients politely, in two sentences or fewer"}}])])
+    events = await stream(client, "/api/builder/chat", {"message": "Create a skill called Polite replies"})
+    [asked] = [e for e in events if e["type"] == "human_input_required"]
+    assert 'Make the skill "Polite replies"' in asked["prompt"]
+    assert await skills.get_skill("polite-replies") is None, "nothing is made before the yes"
+
+    fake_llm.reset()
+    fake_llm.script([tool_call("create_skill", name="polite-replies", description="Polite, short replies",
+                               body="Answer patients politely, in two sentences or fewer."), "Made it."])
+    after = await stream(client, "/api/builder/resume", {"run_id": asked["run_id"], "response": {"feedback": "yes"}})
+    assert (await skills.get_skill("polite-replies"))["body"].startswith("Answer patients politely")
+    assert "polite-replies" in _summary(after).lower() or "Polite" in _summary(after), _summary(after)

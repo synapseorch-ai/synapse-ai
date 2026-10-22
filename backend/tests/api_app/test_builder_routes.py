@@ -231,13 +231,15 @@ class TestSeeHowImBuilt:
         # route on a typed Change (SAI2-P2): the plan, its two gates and the operator out, and the card read, the
         # planner, its check and route, the question, what it says, the approval, the apply and its summary in; 48
         # with the approval's and the apply's own checks and the one step that says why nothing changed; 49 with the
-        # words a change ends in after too many rounds.
-        assert legend["step_count"] == 49
+        # words a change ends in after too many rounds; 51 with one new thing made after its review (the switch
+        # after the yes, and the maker's step).
+        assert legend["step_count"] == 51
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
         assert {a["role"] for a in legend["agents"]} == {
-            "analyst", "agent_creator", "saver_create", "saver_update", "change_planner", "reporter", "researcher",
+            "analyst", "agent_creator", "saver_create", "saver_update", "change_planner", "maker", "reporter",
+            "researcher",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2).
@@ -266,7 +268,7 @@ class TestSeeHowImBuilt:
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 8
+        assert len(result["agent_ids"]) == 9
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])

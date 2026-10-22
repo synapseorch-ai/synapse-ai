@@ -423,6 +423,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         return {**base, "outcome": "said", "ops": handoffs,
                 "say": f"Those are {len(handoffs)} separate requests ({asked}). Ask me for them one at a time, and "
                        "I'll take each in turn."}
+    if len(ops) == 1 and ops[0].get("op") == "create":
+        return await _a_new_thing(base, ops[0])
     if handoffs and len(handoffs) == len(ops):
         return await _handed_over(base, handoffs)
 
@@ -586,9 +588,46 @@ def _pick_question(picks: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+#: What one new thing is called on the review, and the registry tool that makes it (the maker step's own four).
+_NEW = {"agent": ("agent", "create_agent"), "skill": ("skill", "create_skill"), "tool": ("HTTP tool", "create_http_tool"),
+        "openapi": ("OpenAPI import", "import_openapi")}
+
+
+async def _a_new_thing(base: dict, raw: dict) -> dict:
+    """One new agent, skill, HTTP tool or OpenAPI import (Naveen, 10-23: today's create path made none of them, 0/6 in
+    the hand-over probe): shown on the review in code's words and, after the yes, made by the maker step, whose four
+    tools hold their own checks (F489, F769's host rule, TAG1, the Connect card). P3's build route replaces it."""
+    from core.product_tools import areas, registry
+
+    target, what = dict(raw.get("target") or {}), _text((raw.get("fields") or {}).get("what"))
+    kind, name = target.get("kind"), _text(target.get("name"))
+    said, tool_name = _NEW[kind]
+    item = {"op": "create", "kind": "create", "target": {"kind": kind, "name": name}, "fields": {"what": what},
+            "says": raw.get("says") or ""}
+    areas.ensure_loaded()
+    tool, caller = registry.get(tool_name), _caller()
+    if tool is None or not caller.role.can_act_as(tool.min_role):
+        need = tool.min_role.label if tool is not None else Role.BUILDER.label
+        return {**base, "outcome": "said", "ops": [item],
+                "say": f"Making a new {said} needs the {need} role; you are a {caller.role.label} in this workspace, "
+                       "so I can't."}
+    from core import skills
+
+    same = (lambda a, b: skills.normalize_name(a) == skills.normalize_name(b)) if kind == "skill" else (
+        lambda a, b: a.lower() == b.lower())
+    if kind in ("agent", "skill", "tool") and any(same(i["name"], name) for i in await candidates(kind) or []):
+        article = "An" if said[0] in "aeiou" else "A"
+        return {**base, "outcome": "said", "ops": [item],
+                "say": f"{article} {said} is already called {_quoted(name)}: say another name."}
+    item.update(status="ready", line=f"Make the {said} {_quoted(name)}" + (f" — {what}" if what else ""))
+    out = {**base, "outcome": "create", "ops": [item], "review": f"- {item['line']}"}
+    await _card(out, stage=WAITING)
+    return out
+
+
 async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
-    """`edit_steps` goes to today's update path with the workflow on it; `create` to today's create path (Naveen's
-    split, 10-22). Same turn: the person is not asked again."""
+    """`edit_steps` goes to today's update path with the workflow on it (Naveen's split, 10-22). Same turn: the person
+    is not asked again. (One new thing is `_a_new_thing`'s: the review, then the maker.)"""
     first = handoffs[0]
     if first["op"] == "edit_steps":
         found = resolve(await candidates("workflow") or [], first.get("target") or {})
@@ -602,8 +641,8 @@ async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
         _routed("update", current_orchestration_id=found[0]["id"], current_orchestration_name=found[0]["name"])
         return {**base, "outcome": "steps", "ops": handoffs, "workflow": {"id": found[0]["id"],
                                                                           "name": found[0]["name"]}}
-    _routed("create")
-    return {**base, "outcome": "build", "ops": handoffs}
+    return {**base, "outcome": "said", "ops": handoffs, "say": "I could not work out what to change. Say it again in "
+                                                               "other words."}
 
 
 def _routed(intent: str, **facts: str) -> None:

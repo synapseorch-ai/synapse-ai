@@ -91,8 +91,7 @@ def test_the_self_hosted_entry_says_its_one_person_may():
     assert '"may_change": True' in source and '"may_act": True' in source and '"asker_role": "owner"' in source
 
 
-@pytest.mark.parametrize("outcome, intent, then", [("steps", "update", "step_fetch_existing"),
-                                                   ("build", "create", "step_plan_room")])
+@pytest.mark.parametrize("outcome, intent, then", [("steps", "update", "step_fetch_existing")])
 async def test_a_hand_over_goes_back_through_the_door_as_its_own_route(engine, outcome, intent, then):
     """A change the change route hands over (a workflow's steps; something new) goes back through the door as the
     route it is (SAI2-P2's review): an approver who reached the change route is told why, and never runs the build's

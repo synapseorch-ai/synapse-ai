@@ -264,13 +264,29 @@ async def test_a_step_edit_goes_to_today_s_update_path_with_its_workflow(client,
     assert run.shared_state["intent"] == "update"
 
 
-@pytest.mark.parametrize("kind", ["agent", "skill", "tool", "openapi"])
-async def test_making_something_new_goes_to_today_s_create_path(client, role, kind):
+@pytest.mark.parametrize("kind, said", [("agent", "agent"), ("skill", "skill"), ("tool", "HTTP tool"),
+                                         ("openapi", "OpenAPI import")])
+async def test_making_one_new_thing_is_reviewed_then_made_by_the_maker(client, role, kind, said):
+    """Naveen, 10-23 (the hand-over probe: today's create path made none of a standalone tool, skill or agent, 0/6):
+    one new agent, skill, HTTP tool or OpenAPI import is shown on the review in code's words and, after the yes,
+    made by the maker step with those four tools only (P3's build route replaces it)."""
     run = await _run()
     out, cards, _ = await _check([{"op": "create", "target": {"kind": kind, "name": "Mailchimp"},
-                                   "fields": {"what": "make it"}}], run=run)
-    assert out["outcome"] == "build" and cards == [] and out["calls"] == []
-    assert run.shared_state["intent"] == "create"
+                                   "fields": {"what": "lists their audiences"}}], run=run)
+    assert out["outcome"] == "create" and cards == [] and out["calls"] == []
+    assert out["review"] == f'- Make the {said} "Mailchimp" — lists their audiences'
+    assert "intent" not in run.shared_state or run.shared_state["intent"] != "create"
+
+
+async def test_a_new_thing_needs_a_free_name_and_the_builder_role(client, role):
+    await _agent(name="Billing helper")
+    taken, _, _ = await _check([{"op": "create", "target": {"kind": "agent", "name": "billing helper"},
+                                 "fields": {"what": "answers billing questions"}}])
+    assert taken["outcome"] == "said" and "already called" in taken["say"]
+    role["role"] = Role.APPROVER
+    refused, _, _ = await _check([{"op": "create", "target": {"kind": "skill", "name": "Polite replies"},
+                                   "fields": {"what": "be polite"}}])
+    assert refused["outcome"] == "said" and "needs the builder role" in refused["say"]
 
 
 async def test_a_skill_is_changed_in_the_library_only(client, role, monkeypatch):

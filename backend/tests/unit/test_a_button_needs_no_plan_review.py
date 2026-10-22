@@ -193,3 +193,20 @@ def test_a_change_that_goes_round_too_often_ends_in_words():
     spent = steps[planner["on_exhausted_step_id"]]
     assert spent["type"] == "print" and spent["output_key"] == "summary" and spent["next_step_id"] == "step_end"
     assert "Nothing was changed" in spent["print_content"] and "{state." not in spent["print_content"]
+
+
+def test_a_new_thing_is_made_only_after_the_yes_and_only_with_the_four_create_tools():
+    steps, agents = _steps(), _agents()
+    assert steps["step_check_route"]["switch_cases"]["create"] == "step_manage_review"
+    after = steps["step_manage_route"]["if_true_step_id"]
+    assert steps[after]["type"] == "switch" and steps[after]["switch_cases"] == {"create": "step_make_new"}
+    assert steps[after]["switch_default_step_id"] == "step_change_approve"
+    make = steps["step_make_new"]
+    maker = agents[make["agent_id"]]
+    writes = {t for t in maker["tools"] if builder_access.KINDS.get(t) == "write"}
+    assert writes == {"create_agent", "create_skill", "create_http_tool", "import_openapi"}
+    assert make["next_step_id"] == "step_change_failed"  # the run's own record: what was made, or why not
+    reaching = [s["id"] for s in steps.values() if "step_make_new" in json.dumps(
+        {k: s.get(k) for k in ("next_step_id", "switch_cases", "switch_default_step_id", "if_true_step_id",
+                              "if_false_step_id", "route_map")})]
+    assert reaching == [after]

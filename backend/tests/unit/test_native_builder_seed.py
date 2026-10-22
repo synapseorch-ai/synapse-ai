@@ -38,7 +38,7 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "agent_creator", "analyst", "change_planner", "orchestrator",
+            "agent_creator", "analyst", "change_planner", "maker", "orchestrator",
             "reporter", "researcher", "saver_create", "saver_update",
         ]
 
@@ -138,7 +138,7 @@ class TestSeeding:
         result = await seed_native_builder()
         assert result["orchestration"] == "added"
         # 8 since the Researcher (F577, BWA1).
-        assert len(result["agents_added"]) == 8
+        assert len(result["agents_added"]) == 9
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration
@@ -264,10 +264,14 @@ class TestOnlyTheApplyStepCanDestroy:
         assert recorded["type"] == "if_else" and recorded["if_false_step_id"] == "step_apply"
         assert recorded["if_true_step_id"] == "step_change_failed"
         assert [s["id"] for s in reaching("step_change_recorded")] == ["step_change_approve"]
-        [gate] = reaching("step_change_approve")
+        # After the yes, a switch sends one new thing to the maker and every change to the approval: it is reached
+        # only from the gate's yes side.
+        [after] = reaching("step_change_approve")
+        assert after["id"] == "step_after_yes" and after["switch_default_step_id"] == "step_change_approve"
+        [gate] = reaching("step_after_yes")
         # A gate decided in code (F754): the approval is only on its yes side, and its input came from a human.
         assert gate["type"] == "if_else"
-        assert gate["if_true_step_id"] == "step_change_approve" != gate["if_false_step_id"], gate["id"]
+        assert gate["if_true_step_id"] == "step_after_yes" != gate["if_false_step_id"], gate["id"]
         feeders = reaching(gate["id"])
         assert feeders and all(by_id[f["id"]]["type"] == "human" for f in feeders), gate["id"]
 
