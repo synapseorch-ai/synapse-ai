@@ -2590,7 +2590,7 @@ def _state_value(state: dict, path: str) -> Any:
         if isinstance(cur, str):
             try:
                 cur = json.loads(cur)
-            except ValueError:
+            except (ValueError, RecursionError):  # nested too deep to read names nothing either
                 raise MissingStateRef(f"state.{path}") from None
         found, cur = _walk(cur, [part])
         if not found:

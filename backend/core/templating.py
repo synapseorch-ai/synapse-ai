@@ -45,7 +45,7 @@ def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
         if isinstance(cur, str) and cur.lstrip().startswith("{"):
             try:
                 parsed = json.loads(cur)
-            except ValueError:
+            except (ValueError, RecursionError):  # nested too deep to read is no object either
                 parsed = None
             if isinstance(parsed, dict):
                 cur = parsed

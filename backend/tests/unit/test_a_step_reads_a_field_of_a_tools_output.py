@@ -93,3 +93,23 @@ def test_a_model_s_prompt_reads_a_field_of_json_text_and_never_renders_it():
     assert _fill_task_template("{{ state.trap.say }}", state, {"API_KEY": "s3cret"}) == "{{ global.API_KEY }}"
     assert _fill_task_template("{{ state.plain.say }}", state, {}) == "{{ state.plain.say }}"
     assert _fill_task_template("{{ state.unset.say }}", state, {}) == ""
+
+
+def test_text_nested_too_deep_to_read_has_no_fields_and_fails_nothing():
+    """`json.loads` raises RecursionError, not ValueError, on text nested thousands deep: a step reading a field of
+    it reads nothing, as for any text that is not a JSON object (the branch review's finding 13)."""
+    from core.orchestration.context import _fill_task_template
+
+    deep = '{"a": ' * 100_000 + "1" + "}" * 100_000
+    state = {"deep": deep}
+    assert evaluate_expression("state.deep.a", state, "fallback").value == "fallback"
+    assert render_state_refs("{state.deep.a}", state) == "{state.deep.a}"
+    assert _fill_task_template("{{ state.deep.a }}", state, {}) == "{{ state.deep.a }}"
+    assert _fill_task_template("{state.deep.a}", state, {}) == "{state.deep.a}"
+
+
+def test_a_set_argument_into_text_nested_too_deep_names_nothing():
+    from core.orchestration.steps import MissingStateRef, render_tool_arguments
+
+    with pytest.raises(MissingStateRef):
+        render_tool_arguments({"x": "{{ state.deep.a }}"}, {"deep": '{"a": ' * 100_000 + "1" + "}" * 100_000})

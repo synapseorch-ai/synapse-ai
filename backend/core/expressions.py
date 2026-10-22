@@ -137,7 +137,7 @@ def _json_object(text: str) -> dict | None:
         return None
     try:
         parsed = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):  # nested too deep to read is no object either
         return None
     return parsed if isinstance(parsed, dict) else None
 
