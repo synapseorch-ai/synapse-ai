@@ -146,6 +146,20 @@ async def test_two_with_the_same_name_are_told_apart_by_their_ids():
     assert card["buttons"][0]["arguments"]["orchestration_id"] == "orch_second"
 
 
+@pytest.mark.parametrize("sent", ['C2 sched print (orch_second)', '"C2 sched print" (orch_second)',
+                                  ' "C2 sched print"  ( orch_second ) '])
+async def test_what_the_listing_printed_picks_it(sent):
+    """F760 again, on prod with Nova Pro (QA1c, 10-23): after the listing of two "Inbox triage" as `"name" (id)`, the
+    model sent `workflow: "Inbox triage (orch_…)"`, its own listing's form, and was told "No workflow is called …",
+    then listed again (6 calls). A selector takes back whatever its listing printed: the name and id together pick by
+    the id."""
+    await _workflow(id="orch_first", name="C2 sched print")
+    await _workflow(id="orch_second", name="C2 sched print")
+    await _assistant_run()
+    _, [card] = await _prepare({"action": "run_workflow", "workflow": sent, "message": "x"})
+    assert card["buttons"][0]["arguments"]["orchestration_id"] == "orch_second"
+
+
 async def test_a_schedule_named_twice_is_told_apart_the_same_way():
     from core.store import schedules as store
 

@@ -18,6 +18,7 @@ on the run page, where the approver role is checked.
 """
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
@@ -95,10 +96,27 @@ def _caller() -> Caller:
     return current_caller() or Caller(role=Role.OWNER, via="assistant")
 
 
+#: The id at the end of what a listing printed, `"name" (id)` or `name (id) — detail` (F760).
+_LISTED_ID = re.compile(r"\(\s*([^()\s]+)\s*\)")
+
+
+def listed(items: list[dict], wanted: str) -> dict | None:
+    """The item whose id `wanted` carries in brackets, as a listing printed it (F760, QA1c on prod: Nova Pro sent the
+    listing's own `"Inbox triage" (orch_…)` back and was told no workflow had that name). A bracket that is no item's
+    id is part of a name ("Invoice chaser (EU)"), and is left to the name."""
+    for found in reversed(_LISTED_ID.findall(wanted or "")):
+        match = [i for i in items if i.get("id") == found]
+        if len(match) == 1:
+            return match[0]
+    return None
+
+
 def _pick(items: list[dict], wanted: str, what: str, list_hint: str) -> dict:
     needle = (wanted or "").strip().lower()
     if not needle:
         raise _NotOffered(f"Say which {what}. {list_hint}")
+    if (by_listing := listed(items, wanted)) is not None:
+        return by_listing
     exact = [i for i in items if str(i.get("name") or "").lower() == needle or i.get("id") == wanted]
     if len(exact) == 1:
         return exact[0]

@@ -364,3 +364,13 @@ async def test_two_hand_overs_are_said_as_two_requests_not_one_followed(client, 
         {"op": "create", "target": {"kind": "skill", "name": "Polite replies"}, "fields": {"what": "a skill"}}])
     assert out["outcome"] == "said"
     assert "Invoice sync" in out["say"] and "Polite replies" in out["say"] and "one at a time" in out["say"]
+
+
+async def test_the_change_check_takes_back_what_its_pick_list_printed(client, role):
+    """The change route's question lists `1. "name" (id) — detail`; a target written back in that form, quoted or
+    not, picks by its id (QA1c's F760 data point, 10-23)."""
+    await _workflow(name="Patient reminders", description="front desk")
+    second = await _workflow(name="Patient reminders", description="billing")
+    for name in (f'Patient reminders ({second["id"]})', f'"Patient reminders" ({second["id"]}) — billing'):
+        out, [card], _ = await _check([{"op": "run_workflow", "target": {"kind": "workflow", "name": name}}])
+        assert card["buttons"][0]["arguments"]["orchestration_id"] == second["id"], name

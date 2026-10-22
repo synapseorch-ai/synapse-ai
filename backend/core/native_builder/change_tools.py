@@ -204,11 +204,16 @@ async def candidates(kind: str) -> list[dict] | None:
 def resolve(items: list[dict], target: dict) -> list[dict]:
     """The items `target` names: by id, else one exact name, else every name it is part of (F760's rule, as the
     act cards' `_pick`)."""
+    from core.builder_actions import listed
+
     wanted_id, wanted = _text(target.get("id")), _text(target.get("name")) or _text(target.get("id"))
     if wanted_id:
         by_id = [i for i in items if i["id"] == wanted_id]
         if by_id:
             return by_id
+    for text in (wanted_id, wanted):  # what a pick list printed, `"name" (id)`, picks by its id (F760)
+        if (by_listing := listed(items, text)) is not None:
+            return [by_listing]
     needle = wanted.lower()
     if not needle:
         return []
