@@ -292,7 +292,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
     if name == "create_schedule":
         runs = fields["runs"]
         return {"target_type": "orchestration" if runs["kind"] == "workflow" else "agent",
-                "target_id": runs["id"], "prompt": fields["prompt"], **_schedule_time(fields)}
+                "target_id": runs["id"], "prompt": fields["prompt"], **_schedule_time(fields),
+                **({"description": fields["description"]} if fields.get("description") else {})}
     if name == "set_agent_model":
         return {"model": str(fields["model"]).strip()}
     if name == "set_agent_tools":
@@ -321,8 +322,7 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
     if op.target == "workflow":
         return op.tool, {"orch_id": target_id, **after}
     if op.name == "create_schedule":
-        return op.tool, {"name": name, **after,
-                         **({"description": fields["description"]} if fields.get("description") else {})}
+        return op.tool, {"name": name, **after}
     if op.target == "schedule":
         return op.tool, {"schedule_id": target_id, **after}
     if op.name == "set_agent_skills":

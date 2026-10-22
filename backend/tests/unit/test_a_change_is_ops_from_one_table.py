@@ -225,18 +225,29 @@ def _shown(value):
     return value if isinstance(value, str) else _json.dumps(value, ensure_ascii=False)
 
 
-@pytest.mark.parametrize("op, fields", [s for s in _samples() if not C.OPS[s[0]].internal
-                                        and C.OPS[s[0]].kind != "delete"])
-def test_every_write_s_review_line_shows_what_its_call_sets(op, fields):
+#: A value for every field an op declares (MCP2's re-check, B: a hand-made sample that sets no `description` let
+#: a new schedule's line leave it out though its call sent it). Each is distinctive, so its presence is checked.
+_EVERY = {"name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND THE DIGEST", "model": "model-x",
+          "cron_expression": "0 3 * * *", "schedule_type": "cron", "interval_value": 6, "interval_unit": "hours",
+          "runs": {"kind": "workflow", "id": "w1", "name": "Nightly digest"}, "add": ["send_email"],
+          "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
+          "destructive": "confirm", "open_world": "deny", "undeclared": "allow", "max_total_turns": 7,
+          "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "body": "THE SKILL'S TEXT"}
+
+
+def _every_field(op_name):
+    return {k: _EVERY[k] for k in C.OPS[op_name].fields}
+
+
+@pytest.mark.parametrize("op", [n for n, o in C.OPS.items() if o.is_write and not o.internal and o.kind != "delete"])
+def test_every_write_s_review_line_shows_what_its_call_sets(op):
+    fields = _every_field(op)
     """MCP2's review, finding 2: the person approves what is done. A new schedule's line said only what it starts,
     though its call also sets the prompt and the time. Each write's line is now built from what its call leaves
     (`expected`), and every value its call sends, but the target's own id, is in its line."""
     from core.native_builder.change_tools import _words
 
     o = C.OPS[op]
-    fields = dict(fields)
-    if "runs" in fields:
-        fields["runs"] = {**fields["runs"], "name": "Nightly digest"}
     tool, args = C.call(o, "t1", fields, AGENT, name="N")
     line = _words(o, {"name": "N", "id": "t1"}, fields, "", C.expected(o, fields, AGENT))
     skip = {"orch_id", "agent_id", "schedule_id", "target_id", "target_type"}
