@@ -36,6 +36,19 @@ _log = get_logger(__name__)
 #: The board card's stage while a change waits for its person, and once it is done.
 WAITING, CHANGED, SET_ASIDE = "waiting", "changed", "set_aside"
 
+#: A change whose new value holds a key (or the door's mark where one was taken out of the person's message).
+KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. Add it on its own settings screen, "
+               "where it is stored encrypted, and if it was real, rotate it at the provider.")
+
+
+def _holds_a_key(fields: dict) -> bool:
+    from core.native_builder.export import CREDENTIAL_MARK
+    from core.secret_scrub import holds_credential
+
+    text = json.dumps(fields, default=str, ensure_ascii=False)
+    return holds_credential(text) or CREDENTIAL_MARK in text
+
+
 #: The review's lead-in is the definition's (`step_manage_review`, F754's words); these are what code adds.
 DELETE_NOTE = ("It can come back only as a new copy: a new id, without its run history or an agent's memory; a "
                "schedule comes back paused, and a tool's key is entered again on a card.")
@@ -403,6 +416,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         fields = dict(raw.get("fields") or {})
         item = {"op": op.name, "kind": op.kind, "target": target, "fields": fields, "says": raw.get("says") or ""}
         checked.append(item)
+        if _holds_a_key(fields):
+            # Nothing keeps it: not the review, its event, the card or this answer (the branch review's finding 7).
+            item.update(fields={}, says="", status="refused", say=KEY_REFUSAL)
+            continue
         if op.kind == "handoff":
             item.update(status="refused", say=f"{op.verb} {target.get('name') or ''} is its own request: ask me "
                                               "for it on its own once this is done.".replace("  ", " "))

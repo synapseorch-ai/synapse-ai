@@ -290,3 +290,19 @@ async def test_a_skill_is_changed_in_the_library_only(client, role, monkeypatch)
                                 "fields": {"body": "New."}}])
     assert disk["outcome"] == "said"
     assert disk["say"] == 'The skill "local-notes" is read from a folder on disk, so it is changed there, not here.'
+
+
+@pytest.mark.parametrize("prompt", ["Use key sk-live-abcdefghijklmnopqrstuvwx1234 for calls.",
+                                    "Use key ‹credential removed› for calls."])
+async def test_a_change_that_would_write_a_key_is_refused_before_anything_keeps_it(client, role, prompt):
+    """A key in a change's new value would sit on Synapse AI's board card, in the review's event and in the run's
+    state. The door already masks one the person types; one a model copies or invents is refused here, before the
+    review, and nothing keeps it (the branch review's finding 7)."""
+    from core.boards import assistant
+
+    agent = await _agent(name="Front desk")
+    out, _, run = await _check([{"op": "set_agent_instructions", "target": {"kind": "agent", "id": agent["id"]},
+                                 "fields": {"system_prompt": prompt}}])
+    assert out["outcome"] == "said" and out["calls"] == []
+    assert "Keys never go in a change" in out["say"]
+    assert "sk-live" not in json.dumps(out) and await assistant.card(run.run_id) is None
