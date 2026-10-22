@@ -316,3 +316,16 @@ async def test_what_the_maker_made_is_held_to_what_was_approved(client, kind, wr
     run.shared_state[WRITES_KEY] = writes
     got, _ = await _call("check_made", {}, run)
     assert got["note"] == (" " + words if words else "")
+
+
+async def test_the_same_change_approved_again_is_made_again(client):
+    """MCP2's re-check, A: the spent-once key held nothing unique to the yes, so a second approval of an identical
+    change (set it back, then set it again; undo, then redo) found its call already spent, and the person read "Not
+    done as asked" for a change they had just approved. Each yes is its own record, and is spent once."""
+    agent = await _agent(name="Front desk")
+    for name in ("Desk", "Front desk", "Desk"):
+        run = await _run()
+        await _checked(run, _rename(agent["id"], name))
+        _, applied, _ = await _approve_and_apply(run)
+        assert applied["applied"] == ["rename_agent"] and applied["failed"] == [], (name, applied)
+        assert (await _get(agent["id"]))["name"] == name

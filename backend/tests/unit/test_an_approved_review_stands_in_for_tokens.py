@@ -109,6 +109,8 @@ class TestItSurvivesAMove:
 
         moved = json.loads(json.dumps(state))   # what the store keeps
         assert review_mod.approved_review(moved) == _review()
+        # Its own id travels with it, so a resume spends the same yes (MCP2's re-check, A).
+        assert review_mod.approved_review(moved).id == state[review_mod.REVIEW_KEY]["id"] != ""
         assert review_mod.approved_review({}) is None
 
     async def test_through_the_runs_checkpoint(self, tool):
@@ -244,3 +246,10 @@ class TestAReviewCoversEachCallOnce:
             await registry.invoke("make_it", person, {"n": 1}, confirm_policy="approved_review", review=review,
                                   reviewed=obj)
         assert made == [{"n": 1}]
+
+
+def test_each_yes_is_its_own_though_the_change_is_the_same():
+    from core.product_tools.approved import approve
+
+    first, second = _review(), _review()
+    assert first == second and first.id != second.id  # one change, two approvals

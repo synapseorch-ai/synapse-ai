@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+import secrets
+from dataclasses import dataclass, field
 from typing import Any
 
 from core.product_tools.caller import Caller
@@ -35,9 +36,12 @@ class ApprovedReview:
     approver: str
     covers: frozenset[tuple[str, str]]
     run_id: str = ""
+    #: This yes's own id, minted when it is given: each call it covers is spent once under it (MCP2's re-check, A).
+    #: Two approvals of an identical change (set it back, then again; undo, then redo) share a digest, never an id.
+    id: str = field(default="", compare=False)
 
     def to_json(self) -> dict[str, Any]:
-        return {"digest": self.digest, "approver": self.approver, "run_id": self.run_id,
+        return {"id": self.id, "digest": self.digest, "approver": self.approver, "run_id": self.run_id,
                 "covers": sorted([tool, h] for tool, h in self.covers)}
 
     @classmethod
@@ -46,13 +50,14 @@ class ApprovedReview:
             return None
         covers = frozenset((str(t), str(h)) for t, h in raw.get("covers") or [] if t and h)
         return cls(digest=str(raw["digest"]), approver=str(raw["approver"]), covers=covers,
-                   run_id=str(raw.get("run_id") or ""))
+                   run_id=str(raw.get("run_id") or ""), id=str(raw.get("id") or raw["digest"]))
 
 
 def approve(obj: Any, caller: Caller, calls: list[tuple[str, dict[str, Any]]], *, run_id: str = "") -> ApprovedReview:
     """The record of `caller` saying yes to `obj`, which makes `calls`."""
     return ApprovedReview(digest=digest(obj), approver=caller.who,
-                          covers=frozenset((tool, args_hash(args)) for tool, args in calls), run_id=run_id)
+                          covers=frozenset((tool, args_hash(args)) for tool, args in calls), run_id=run_id,
+                          id=secrets.token_urlsafe(12))
 
 
 def uncovered(review: ApprovedReview | None, caller: Caller, tool: str, args: dict[str, Any], current: Any) -> str | None:

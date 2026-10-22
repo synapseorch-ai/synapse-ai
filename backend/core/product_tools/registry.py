@@ -231,7 +231,7 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
     if by_review:
         confirmed_by = f"review:{review.digest[:16]}"
         # Spent once, as a token is (MCP2's review): an apply run twice for one approval makes nothing twice.
-        if not await confirm.claim_once(f"review:{review.digest}:{name}:{confirm.args_hash(args)}",
+        if not await confirm.claim_once(f"review:{review.id or review.digest}:{name}:{confirm.args_hash(args)}",
                                         confirm.REVIEW_TTL_SECONDS):
             raise AlreadySpent(f"{name}: the approved change already made this call.")
 
