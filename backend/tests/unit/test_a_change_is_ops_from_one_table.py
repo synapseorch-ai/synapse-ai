@@ -195,3 +195,25 @@ def test_a_change_object_takes_the_new_kinds():
                                              "fields": {"what": "import their spec"}}]})
     assert [op.is_act for op in change.ops] == [False, False]
     assert change.has_writes
+
+
+@pytest.mark.parametrize("op, fields, words", [
+    ("create_schedule", {"runs": {"kind": "workflow", "id": "w1"}, "prompt": "Go"}, "needs its time"),
+    ("create_schedule", {"runs": {"kind": "workflow", "id": "w1"}, "prompt": "Go", "cron_expression": "every day"},
+     "not a valid cron expression"),
+    ("set_schedule", {"cron_expression": "61 * * * *"}, "not a valid cron expression"),
+    ("set_schedule", {"interval_value": 20000, "interval_unit": "minutes"}, "from 1 to 10,000"),
+    ("update_workflow", {"max_run_credits": 0.5}, "1 or more"),
+])
+def test_what_the_save_would_refuse_is_said_before_the_review(op, fields, words):
+    """The check uses the product's own rules (`models_schedule.validate_timing`, `run_cap.clean`), so nothing the
+    person approves is refused after the yes (the branch review's finding 10)."""
+    kind = "workflow" if op == "update_workflow" else "schedule"
+    found = C.issues(op, {"kind": kind, "name": "x"}, fields)
+    assert any(words in line for line in found), found
+
+
+def test_a_time_the_save_takes_has_no_issue():
+    assert C.issues("set_schedule", {"kind": "schedule", "id": "s"}, {"cron_expression": "0 3 * * *"}) == []
+    assert C.issues("set_schedule", {"kind": "schedule", "id": "s"}, {"interval_unit": "hours"}) == []  # a part
+    assert C.issues("update_workflow", {"kind": "workflow", "id": "w"}, {"max_run_credits": 3}) == []

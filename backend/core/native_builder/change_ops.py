@@ -211,7 +211,35 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
         if key in fields and fields[key] not in (None, "", [], {}):
             if (why := _field_issue(op, key, fields[key])) is not None:
                 found.append(f"`{op.name}`: {why}")
+    if not found and not op.internal:
+        found += [f"`{op.name}`: {why}" for why in _saved_as(op, fields)]
     return found
+
+
+def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
+    """What the save itself would refuse, by the product's own rules, said before the review rather than after the
+    yes (the branch review's finding 10): a schedule's time, a run cap."""
+    from core.models_schedule import ScheduleInvalid, validate_timing
+    from core.orchestration.run_cap import clean
+
+    out: list[str] = []
+    if op.name in ("set_schedule", "create_schedule"):
+        time = _schedule_time(fields)
+        whole = "cron_expression" in time or ("interval_value" in time and "interval_unit" in time)
+        if op.name == "create_schedule" and not whole:
+            out.append("a new schedule needs its time: cron_expression, or interval_value and interval_unit")
+        elif whole:
+            try:
+                validate_timing(time)
+            except ScheduleInvalid as why:
+                out.append(str(why))
+    for key in ("max_run_credits", "max_run_usd"):
+        if op.name == "update_workflow" and key in fields:
+            try:
+                clean(fields[key], credits=key == "max_run_credits")
+            except ValueError as why:
+                out.append(str(why))
+    return out
 
 
 # ── what an op calls, and what it leaves ──────────────────────────────────────────────────────────────────────────
