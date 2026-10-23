@@ -37,8 +37,8 @@ import { FailureCard } from './FailureCard';
 import { RunResult } from './RunResult';
 import { useRunHost } from './host';
 import {
-    bucketOf, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runWarnings, when, type Followed,
-    type NestedRun, type RunRecord,
+    bucketOf, CHARGE_RULE, chargeWords, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runWarnings,
+    when, type Followed, type NestedRun, type RunRecord,
 } from './model';
 import { NestedRuns } from './NestedRuns';
 import { RawEventLog } from './RawEventLog';
@@ -179,8 +179,10 @@ export function RunDetail({
                     <span>{stepsLine}</span>
                     <span><b className="font-semibold tabular-nums text-text">{run.tokens == null ? '—' : run.tokens.toLocaleString()}</b> tokens</span>
                     {run.creditsCharged != null && (
-                        <span title="What the run was charged: the greater of its steps and its minutes, and at least a credit">
+                        <span title={CHARGE_RULE}>
                             <b className="font-semibold tabular-nums text-text">{creditsText(run.creditsCharged)}</b> charged
+                            {/* Which half of the rule it was (F869): "2 credits charged · 2 started minutes active". */}
+                            {chargeWords(run) ? <span className="text-text-faint"> · {chargeWords(run)}</span> : null}
                             {capCredits ? <span className="text-text-faint"> · cap {creditsText(capCredits)}</span> : null}
                         </span>
                     )}

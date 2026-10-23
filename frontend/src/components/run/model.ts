@@ -160,6 +160,9 @@ export type RunRecord = {
     entryCredits?: (number | null)[];
     /** Cloud: what the run was charged, in credits; `null` while it runs. */
     creditsCharged?: number | null;
+    /** Cloud: which half of the charge rule it was charged by (`run_meter.charge_basis`, F869), and its active time. */
+    chargeBasis?: 'minimum' | 'steps' | 'minutes' | null;
+    activeSeconds?: number | null;
     /**
      * The workflow as the run started it — the steps it carries on with after a
      * pause, whatever was saved since (F443); after a Replay, what the Replay
@@ -848,6 +851,23 @@ export function resultOf(
         if (h.output_key && h.output_key in state) {
             return { key: h.output_key, value: state[h.output_key], from: h.step_name || h.step_id };
         }
+    }
+    return null;
+}
+
+/** How a run is charged, as cloud's meter charges it (`run_meter.millicredits_for`, F869). */
+export const CHARGE_RULE = 'A run is charged the greater of 1 credit, its steps, or its started minutes of active time.';
+
+/**
+ * Why the run cost what it did, beside its charge (F869): "the minimum", "its steps", "2 started minutes active".
+ * Null when the host did not say, so the page never explains a figure by a rule it was not charged by.
+ */
+export function chargeWords(run: Pick<RunRecord, 'chargeBasis' | 'activeSeconds'>): string | null {
+    if (run.chargeBasis === 'minimum') return 'the minimum';
+    if (run.chargeBasis === 'steps') return 'its steps';
+    if (run.chargeBasis === 'minutes' && run.activeSeconds != null) {
+        const n = Math.max(1, Math.ceil(run.activeSeconds / 60));
+        return `${n} started minute${n === 1 ? '' : 's'} active`;
     }
     return null;
 }
