@@ -36,8 +36,8 @@ import { ApprovalCard } from './ApprovalCard';
 import { FailureCard } from './FailureCard';
 import { useRunHost } from './host';
 import {
-    bucketOf, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, when, type Followed, type NestedRun,
-    type RunRecord,
+    bucketOf, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runWarnings, when, type Followed,
+    type NestedRun, type RunRecord,
 } from './model';
 import { NestedRuns } from './NestedRuns';
 import { RawEventLog } from './RawEventLog';
@@ -125,6 +125,8 @@ export function RunDetail({
     const asStepper = bucket === 'needs' || bucket === 'failed' || bucket === 'cancelled' || bucket === 'queued';
     const stateKeys = Object.keys(run.sharedState ?? {});
     const removed = removedLine(run, clock);
+    // Steps that ended with their plan open (F862): "Completed with warnings", the status itself unchanged.
+    const warnings = run.status === 'completed' ? runWarnings(run.history) : 0;
     const stepErrors = Object.fromEntries(run.history.filter((h) => h.error).map((h) => [h.step_id, String(h.error)]));
 
     const actions = (
@@ -162,7 +164,14 @@ export function RunDetail({
                 {notices}
 
                 <div className="flex flex-wrap items-center gap-x-[22px] gap-y-1.5 text-[13.5px] text-text-muted" aria-label="About this run">
-                    <StatusBadge status={run.status} waitingForHuman={run.waitingForHuman} />
+                    <span className="inline-flex items-center gap-1.5">
+                        <StatusBadge status={run.status} waitingForHuman={run.waitingForHuman} />
+                        {warnings > 0 && (
+                            <span className="text-sm font-medium text-text" title={`${warnings} ${warnings === 1 ? 'step' : 'steps'} ended with planned tasks still open: see the steps below`}>
+                                with warnings
+                            </span>
+                        )}
+                    </span>
                     {(run.startedAt || run.createdAt) && <When iso={run.startedAt || run.createdAt} clock={clock} />}
                     <span><b className="font-semibold tabular-nums text-text"><Took start={run.startedAt} end={run.endedAt} /></b> wall clock</span>
                     <span>{stepsLine}</span>

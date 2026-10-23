@@ -183,6 +183,7 @@ function SubLine({ row, usageModels }: { row: TimelineRow; usageModels?: string[
     const parts: React.ReactNode[] = [typeLabel(row.type)];
     if (usageModels?.length) parts.push(<span key="m" className="font-code" translate="no">{usageModels.join(', ')}</span>);
     if (row.status === 'failed') parts.push(<span key="f" className="font-medium text-danger">Failed</span>);
+    else if (row.leftOpen) parts.push(<span key="o" className="font-medium text-text">{row.leftOpen}</span>);
     else if (row.status === 'paused') parts.push(<span key="w" className="font-medium text-person-ink">Needs input</span>);
     else if (row.status === 'cancelled') parts.push('Cancelled');
     parts.push(row.duration === null ? 'running' : duration(row.duration));

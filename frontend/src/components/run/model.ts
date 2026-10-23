@@ -69,7 +69,23 @@ export type StepExecution = {
     error?: string | null;
     /** Where in `shared_state` the step put its result. Not the result itself. */
     output_key?: string | null;
+    /** An Agent step accepted with its own plan's tasks open, how many (F862). */
+    open_tasks?: number;
+    /** `turn_limit` when its last turn is what ended it (F862). */
+    ended?: string | null;
 };
+
+/** What a step that ended with its plan open says on its row (F862), or null. */
+export function leftOpenLine(h: StepExecution): string | null {
+    const n = Number(h.open_tasks) || 0;
+    if (n <= 0) return null;
+    return `Ended with ${n} open ${n === 1 ? 'task' : 'tasks'}${h.ended === 'turn_limit' ? ', at its turn limit' : ''}`;
+}
+
+/** The steps a run's history ended with their plan open: the header's "with warnings" (F862, Naveen). */
+export function runWarnings(history: StepExecution[]): number {
+    return history.filter((h) => leftOpenLine(h) !== null).length;
+}
 
 /**
  * What a step spent, by `step_id` (`step_usage`; each of its passes summed), or
@@ -334,6 +350,8 @@ export type TimelineRow = {
     nested?: NestedRun;
     /** Which run of a step this is, when it ran more than once (a loop body). */
     attempt?: number;
+    /** "Ended with 3 open tasks, at its turn limit" (F862). */
+    leftOpen?: string;
 };
 
 const toMs = (iso: string | null | undefined): number | null => {
@@ -402,6 +420,7 @@ export function timelineRows(
             duration,
             depth: depths.get(h.step_id) ?? 0,
             attempt: (counts.get(h.step_id) ?? 0) > 1 ? times : undefined,
+            leftOpen: leftOpenLine(h) ?? undefined,
             order: index,
         };
     });
