@@ -22,7 +22,7 @@ from _fakes import seed as S
 from core import builder_access, builder_tools
 from core.builder_tools import execute_builder_tool_with_events
 from core.models_orchestration import OrchestrationRun
-from core.native_builder import build_plan, review
+from core.native_builder import build_plan, build_save, review
 from core.orchestration.engine import live
 from core.orchestration.state import SharedState
 from core.product_tools import confirm, hooks
@@ -215,6 +215,34 @@ async def test_a_save_run_again_makes_nothing_twice(client):
     assert again["outcome"] == "saved" and not [e for e in events if e.get("type") == "resource_saved"]
     agents, flows, _ = await _workspace()
     assert sum(n == "Warning writer" for n in agents) == 1 and sum(n == "Rotterdam wind warning" for n in flows) == 1
+
+
+async def test_a_same_named_thing_made_since_the_yes_is_neither_used_nor_deleted(client):
+    """MCP2's finding 1: the save took any agent of the plan's name the workspace did not hold at the yes as its own,
+    by name alone; its workflow would run someone else's agent, and a later failure would delete it. Now the save
+    takes only what it recorded making itself, and a thing of that name made since the yes stops the build, said."""
+    run, _ = await _reviewed(_plan(CHECK, TELL, agents=[WRITER]))
+    await _yes(run, {"Warning writer": "Write it."})
+    await S.seed_agents([S.make_agent(id="agent_theirs", name="Warning writer", tools=["rotterdam_weather"])])
+    out, events = await _call("save_build", {}, run)
+    assert out["outcome"] == "stopped" and not [e for e in events if e.get("type") == "resource_saved"]
+    [stopped] = [e for e in events if e.get("type") == "build_stopped"]
+    assert 'an agent called "Warning writer" was made since you approved this' in stopped["reason"]
+    from core.store.resources import get_agent
+
+    assert (await get_agent("agent_theirs"))["tools"] == ["rotterdam_weather"]
+    _, flows, _ = await _workspace()
+    assert "Rotterdam wind warning" not in flows
+
+
+async def test_a_save_run_again_takes_only_what_it_recorded_making(client):
+    """A re-run (a resume, a redelivered job) reads the ids its own earlier pass recorded, never a name."""
+    run, _ = await _reviewed(_plan(CHECK, TELL, agents=[WRITER]))
+    await _yes(run, {"Warning writer": "Write it."})
+    assert (await _call("save_build", {}, run))[0]["outcome"] == "saved"
+    kept = run.step_progress[build_save.PROGRESS_KEY]
+    agents, flows, _ = await _workspace()
+    assert set(kept["made"].values()) == {agents["Warning writer"]["id"], flows["Rotterdam wind warning"]["id"]}
 
 
 async def test_an_update_is_saved_over_its_own_workflow(client):

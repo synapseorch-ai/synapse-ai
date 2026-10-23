@@ -12,8 +12,10 @@
   F867a) — then makes each call through `registry.invoke(approved_review)`, as the person: agents (members before
   their team), inner workflows (E3), the workflow (or, for an update, over its own id), its settings, boards and the
   schedule, made paused (F149/F150). F695's sink gives the run each `resource_saved`, so `run_writes` says what was
-  made. On a failure it removes what this pass made and says why (`build_stopped`). Run again after a restart, it
-  takes what an earlier pass made rather than making it twice. Afterwards it reads back what it saved.
+  made. It records each id it makes in the run's progress as it goes, so a re-run after a restart takes what it
+  recorded and never anything by name; a thing of the plan's name made since the yes stops it (MCP2's finding 1). On
+  a failure it removes only what it recorded making, and says why (`build_stopped`). Afterwards it reads back what
+  it saved.
 """
 from __future__ import annotations
 
@@ -232,24 +234,37 @@ def _issues_reason(issues: list[str]) -> str:
     return "Nothing was built: it would not pass validation: " + "; ".join(_issues_said(issues)) + "."
 
 
-async def _made_before(call: dict, made: dict[str, str], before: dict[str, list[str]]) -> str | None:
-    """What an earlier pass of this save made for `call`: a thing of its kind with its name that the workspace did
-    not hold at the yes (a restart forgets OSS's spent-once claims; MCP2's re-check, D)."""
+#: Where a save keeps what it has made, call by call, in the run's checkpointed progress: a re-run (a resume, a
+#: redelivered job) takes what it recorded making, by id, and never anything by name (MCP2's finding 1).
+PROGRESS_KEY = "build_save"
+
+
+async def _taken_since(call: dict, made: dict[str, str], before: dict[str, list[str]]) -> bool:
+    """Whether a thing of `call`'s kind and name was made since the yes by someone else: the workspace did not hold
+    it then, and this save did not record making it. Its name is no proof it is ours, so the build stops."""
     from core.routes.agents import load_user_agents
-    from core.store import schedules
     from core.store.resources import load_orchestrations
 
     if call["kind"] == "agent":
         rows, held = await load_user_agents(), before.get("agents") or []
     elif call["kind"] == "orchestration" and not call.get("update"):
         rows, held = await load_orchestrations(), before.get("workflows") or []
-    elif call["kind"] == "schedule":
-        target = _filled(call["args"].get("target_id"), made)
-        rows = [s for s in await schedules.load() if s.get("target_id") == target]
-        held = before.get("schedules") or []
     else:
-        return None
-    return next((r["id"] for r in rows if r.get("name") == call["name"] and r.get("id") not in held), None)
+        return False
+    ours = set(made.values())
+    return any(r.get("name") == call["name"] and r.get("id") not in held and r.get("id") not in ours for r in rows)
+
+
+async def _keep(run: Any, made: dict[str, str], done: list[tuple[str, str, str]], calls_done: list[int]) -> None:
+    """Record what this save has made so far, and checkpoint it before the next call."""
+    from core.orchestration.state import SharedState
+
+    run.step_progress[PROGRESS_KEY] = {"made": dict(made), "done": [list(d) for d in done],
+                                       "calls_done": list(calls_done)}
+    try:
+        await SharedState(run).checkpoint(columns=("step_progress",))
+    except Exception as exc:  # noqa: BLE001 — the record stays in the live run; a checkpoint store may be down
+        _log.warning("the save's progress for run %s was not checkpointed: %s", run.run_id, exc)
 
 
 def _id_of(call: dict, result: Any) -> str | None:
@@ -355,23 +370,28 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     before = (_obj(state.get(APPROVAL_KEY)) or {}).get("before") or {}
     caller = _caller()
     areas.ensure_loaded()
-    made: dict[str, str] = {}
-    done: list[tuple[str, str, str]] = []
+    kept = run.step_progress.get(PROGRESS_KEY) or {}
+    made: dict[str, str] = dict(kept.get("made") or {})
+    done: list[tuple[str, str, str]] = [tuple(d) for d in kept.get("done") or []]  # type: ignore[misc]
+    calls_done: list[int] = list(kept.get("calls_done") or [])
     failure = ""
     with build.using_module(server_module), build.collecting_events(events):
-        for call in calls:
-            earlier = await _made_before(call, made, before)
-            if earlier:
-                if call.get("makes"):
-                    made[call["makes"]] = earlier
-                done.append((call["kind"], earlier, call["name"]))
-                continue
+        for n, call in enumerate(calls):
+            if n in calls_done:
+                continue  # made by an earlier pass of this save, by the id it recorded
+            if await _taken_since(call, made, before):
+                noun = "a workflow" if call["kind"] == "orchestration" else "an agent"
+                failure = (f'{noun} called "{call["name"]}" was made since you approved this, so I made no second '
+                           "one")
+                break
             try:
                 result = await registry.invoke(call["tool"], caller, _filled(call["args"], made),
                                                confirm_policy="approved_review", review=approval, reviewed=reviewed,
                                                made={real: placeholder for placeholder, real in made.items()})
             except AlreadySpent:
-                result = None
+                failure = (f"{call['name']}: an earlier pass of this save made this call and did not record what it "
+                           "made")
+                break
             except ToolRefusal as why:
                 failure = f"{call['name']}: {why}"
                 break
@@ -382,7 +402,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             if isinstance(parsed, dict) and parsed.get("error"):
                 failure = f"{call['name']}: {parsed['error']}"
                 break
-            real = _id_of(call, parsed) or await _made_before(call, made, before)
+            real = _id_of(call, parsed)
             if call.get("makes"):
                 if not real:
                     failure = f"{call['name']}: it was not made"
@@ -390,9 +410,12 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                 made[call["makes"]] = real
             if real and call["kind"] in ("agent", "orchestration", "schedule", "board"):
                 done.append(("updated" if call.get("update") else call["kind"], real, call["name"]))
+            calls_done.append(n)
+            await _keep(run, made, done, calls_done)
     if failure:
         reason = " ".join(failure.split()).rstrip(". ")
         await _undo(done, state, events, reason)
+        run.step_progress.pop(PROGRESS_KEY, None)  # what it recorded is gone again
         return _stopped(events, f"Nothing was built: {reason}.")
     left = [c for c in calls if c.get("makes")]
     return {"outcome": "saved", "made": {c["name"]: made[c["makes"]] for c in left if c["makes"] in made},
