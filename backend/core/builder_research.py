@@ -301,14 +301,29 @@ def _registrable_name(host: str) -> str:
     return labels[-2] if len(labels) >= 2 else host
 
 
+#: Words a product's own domain often wraps its name in: `goshippo.com` for Shippo, `getcalendly`, `slackhq`. Only
+#: these, so a look-alike that wraps the name in anything else (`evilmailchimp.io`) is not the provider's own.
+_OWN_PREFIXES = ("go", "get", "try", "use", "join", "with")
+_OWN_SUFFIXES = ("hq", "app")
+
+
 def _providers_own_page(provider: str, host: str) -> bool:
-    """A page is the provider's own when its host carries the provider's whole name (`docs.goshippo.com` for
-    Shippo), or when the host's registrable name is the provider name's first word — a product on its company's
-    domain (Microsoft Teams on `learn.microsoft.com`; F667, Naveen's brand-word rule)."""
+    """A page is the provider's own when the host's registrable name (the label before the public suffix, where a
+    domain's owner is) is the provider's whole name (`mailchimp.com`), that name in a common product affix
+    (`goshippo.com` for Shippo), or the provider name's first word — a product on its company's domain (Microsoft
+    Teams on `learn.microsoft.com`; F667, Naveen's brand-word rule).
+
+    The name anywhere else in the host is not enough (SAI2, Naveen 2026-10-23): `mailchimp.evil.com`,
+    `evilmailchimp.io` and `stripe-docs.attacker.net` used to count, and P3b gives a person's key to the host this
+    rule calls the provider's own."""
+    name = _slug(_registrable_name(host))
     slug, words = _slug(provider), _words(provider)
-    if slug and slug in host.replace(".", "").replace("-", ""):
-        return True
-    return bool(words) and len(words[0]) >= 3 and _slug(_registrable_name(host)) == words[0]
+    if not name:
+        return False
+    for base in filter(None, (slug, words[0] if words and len(words[0]) >= 3 else "")):
+        if name == base or name in {p + base for p in _OWN_PREFIXES} or name in {base + s for s in _OWN_SUFFIXES}:
+            return True
+    return False
 
 
 async def report_findings(args: dict, server_module: Any, events: list[dict]) -> dict:
