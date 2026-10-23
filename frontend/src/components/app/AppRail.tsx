@@ -395,11 +395,14 @@ export function AppRail({
                             </button>
                         }
                     >
+                        {/* Settings here as well as on the rail (F904, Naveen): the menu is where people look for it. */}
+                        <MenuLink href={SETTINGS_HREF} icon={Settings} onClick={e => onNavigate(e, SETTINGS_HREF)}>Settings</MenuLink>
+                        <MenuSeparator />
                         <MenuSegment label="Theme" value={mode} options={THEME_OPTIONS} onChange={onModeChange} />
                         <MenuSeparator />
                         <MenuLabel>Help</MenuLabel>
                         <MenuLink href={DOCS_URL} icon={BookOpen} external>Documentation</MenuLink>
-                        <MenuLink href="/settings/support" icon={LifeBuoy}>Help &amp; support</MenuLink>
+                        <MenuLink href="/settings/support" icon={LifeBuoy} onClick={e => onNavigate(e, '/settings/support')}>Help &amp; support</MenuLink>
                         <MenuLink href={CHANGELOG_URL} icon={Megaphone} external>What&apos;s new</MenuLink>
                         {signOutShown && (
                             <>

@@ -189,6 +189,7 @@ export function MenuLink({
   icon: Icon,
   external = false,
   hint,
+  onClick,
 }: {
   href: string;
   children: React.ReactNode;
@@ -196,6 +197,8 @@ export function MenuLink({
   external?: boolean;
   /** Right-aligned, faint: a role, a shortcut, a count. */
   hint?: React.ReactNode;
+  /** An internal link's click, before it navigates: a shell's guard for unsaved work calls `preventDefault`. */
+  onClick?: React.MouseEventHandler<HTMLAnchorElement>;
 }) {
   const body = (
     <>
@@ -212,7 +215,7 @@ export function MenuLink({
           {body}
         </a>
       ) : (
-        <Link href={href} className={ITEM}>
+        <Link href={href} className={ITEM} onClick={onClick}>
           {body}
         </Link>
       )}
