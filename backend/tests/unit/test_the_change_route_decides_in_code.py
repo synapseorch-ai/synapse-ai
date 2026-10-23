@@ -505,3 +505,21 @@ async def test_a_rename_asked_for_without_its_name_is_asked_about(client, role):
          "fields": {"name": "Every night at 3"}}], run)
     assert out["outcome"] == "ask" and not out.get("calls")
     assert out["question"] == 'What should the schedule "Every night at 2" be called?'
+
+
+async def test_a_name_with_its_kind_that_also_starts_another_is_a_question(client, role):
+    """SAI2's review of F959 (5): agents "Support" and "Support agent for billing"; "the Support agent" went silently
+    to the billing one, a partial match, before the kind word was tried. Both are the person's to pick."""
+    await _agent(name="Support")
+    await _agent(name="Support agent for billing")
+    out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "name": "Support agent"},
+                               "fields": {"name": "Helpdesk"}}])
+    assert out["outcome"] == "ask"
+    assert sorted(o["name"] for o in out["picks"][0]["options"]) == ["Support", "Support agent for billing"]
+
+
+async def test_only_the_target_s_own_kind_word_is_set_aside(client, role):
+    await _agent(name="Nightly digest")
+    out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "name": "Nightly digest workflow"},
+                               "fields": {"name": "Digest"}}])
+    assert out["outcome"] == "said" and not out.get("calls")

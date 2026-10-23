@@ -263,16 +263,23 @@ def resolve(items: list[dict], target: dict) -> list[dict]:
     if not needle:
         return []
     exact = [i for i in items if i["name"].lower() == needle]
-    found = exact or [i for i in items if needle in i["name"].lower()]
-    if found:
-        return found
-    # "the Front desk agent": a name said with its kind after it (F959, Nova Pro). Only when nothing has the whole name.
-    bare = next((needle[: -len(word)].strip() for word in _KIND_WORDS if needle.endswith(" " + word)), "")
-    return resolve(items, {"name": bare}) if bare else []
+    if exact:
+        return exact
+    partial = [i for i in items if needle in i["name"].lower()]
+    # "the Front desk agent": a name said with its own kind after it (F959, Nova Pro). The name without it, exactly,
+    # sits beside what the whole name is part of: "Support agent" is "Support" or "Support agent for billing", a
+    # question, never the partial one alone (SAI2's review, 5). Only the target's own kind's word is set aside.
+    bare = next((needle[: -len(word)].strip() for word in _KIND_WORDS.get(target.get("kind"), ())
+                 if needle.endswith(" " + word)), "")
+    if not bare:
+        return partial
+    named = [i for i in items if i["name"].lower() == bare and i not in partial]
+    return (named + partial) or [i for i in items if bare in i["name"].lower()]
 
 
-#: The words a person puts after a name to say what it is: "the Front desk agent", "the Nightly digest workflow".
-_KIND_WORDS = ("agent", "workflow", "orchestration", "schedule", "tool", "skill")
+#: The words a person puts after a name to say what kind of thing it is: "the Front desk agent".
+_KIND_WORDS = {"agent": ("agent",), "workflow": ("workflow", "orchestration"), "schedule": ("schedule",),
+               "tool": ("tool",), "skill": ("skill",)}
 
 
 async def read(kind: str, target_id: str) -> dict | None:
