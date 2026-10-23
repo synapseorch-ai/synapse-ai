@@ -34,6 +34,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from core.answer_filter import readable_thought
 from core.models import ChatRequest
 
 # ---------------------------------------------------------------------------
@@ -247,8 +248,9 @@ _MEMBER_RECORD = frozenset({"id", "agent_id", "name", "task", "card_id", "model"
 
 def panel_text(items: list | None) -> list[str]:
     """A turn's reasoning or thoughts as a saved turn keeps them (U60): the
-    newest `PANEL_KEEP`, each clipped, none empty."""
-    kept = [str(t) for t in (items or []) if str(t or "").strip()]
+    newest `PANEL_KEEP`, each clipped, none empty, each as a person reads it
+    (F907: a call in words, no JSON blob, no copied digest)."""
+    kept = [t for t in (readable_thought(str(t or "")) for t in (items or [])) if t.strip()]
     return [_clip(t, PANEL_CHARS) for t in kept[-PANEL_KEEP:]]
 
 

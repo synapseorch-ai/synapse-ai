@@ -64,6 +64,84 @@ def strip_copied_digest(text: str) -> str:
     return text if cut < 0 else text[:cut].rstrip()
 
 
+#: A `<tool_call>` block, to its closing tag or the end.
+_TOOL_CALL_TAG = re.compile(r"<tool_call>(.*?)(?:</tool_call>|$)", re.IGNORECASE | re.DOTALL)
+#: A fence whose body is one JSON value, to its closing fence or the end.
+_JSON_FENCE = re.compile(r"```[\w-]*[ \t]*\n\s*([\[{].*?)\s*(?:```|$)", re.DOTALL)
+
+
+def _calls_of(value) -> list[dict]:
+    """The calls a JSON value is: one call, OpenAI's pseudo-format, or a list of either."""
+    if isinstance(value, list):
+        return [c for item in value for c in calls_in(item)]
+    return calls_in(value)
+
+
+def _is_blob(value) -> bool:
+    """A JSON value no person reads as thinking: a non-empty object, or a list of objects."""
+    if isinstance(value, dict):
+        return bool(value)
+    return isinstance(value, list) and bool(value) and all(isinstance(v, dict) for v in value)
+
+
+def readable_thought(text: str) -> str:
+    """A thought or a reasoning block as a person reads it (F907).
+
+    A model's reply is sent as a thought before the engine parses it, and a
+    provider's native calls reach it as `{"tool": …}` lines; some models also
+    write calls and schema-shaped JSON into their text and reasoning. Here a
+    call reads as "→ Called name" on its own line, any other JSON object (or a
+    list of them) is dropped with its fence or `<tool_call>` tag, and a copied
+    digest is cut (F559). Text with none of these is returned as written, so a
+    last thought still matches the answer it repeats (F102)."""
+    text = text or ""
+    cut = strip_copied_digest(text)
+    pieces: list[tuple[str, object]] = []   # ("text", s) | ("calls", [names]) — a dropped blob adds nothing
+    changed = False
+    i = 0
+    while i < len(cut):
+        tag, fence = _TOOL_CALL_TAG.search(cut, i), _JSON_FENCE.search(cut, i)
+        brace = min((p for p in (cut.find("{", i), cut.find("[", i)) if p >= 0), default=-1)
+        starts = [m.start() for m in (tag, fence) if m] + ([brace] if brace >= 0 else [])
+        if not starts:
+            break
+        at = min(starts)
+        if tag and tag.start() == at:
+            body, end = tag.group(1).strip(), tag.end()
+        elif fence and fence.start() == at:
+            body, end = fence.group(1), fence.end()
+        else:
+            body, end = None, None
+        try:
+            value, stop = _JSON.raw_decode(body if body is not None else cut, 0 if body is not None else at)
+        except json.JSONDecodeError:
+            value, stop = None, None
+        if body is not None and value is not None and body[stop:].strip():
+            value = None   # a fence or tag holding more than one JSON value is shown as written
+        calls = _calls_of(value) if value is not None else []
+        if not calls and not _is_blob(value):
+            pieces.append(("text", cut[i:at + 1]))
+            i = at + 1
+            continue
+        pieces.append(("text", cut[i:at]))
+        pieces.append(("calls", [c["tool"] for c in calls]))
+        changed = True
+        i = end if end is not None else stop
+    if not changed:
+        return cut
+    pieces.append(("text", cut[i:]))
+    out = ""
+    for kind, value in pieces:
+        if kind == "text":
+            # What a dropped blob or a call's line stood between: one line break, not two.
+            out += value[1:] if out.endswith("\n") and value.startswith("\n") else value
+        elif value:
+            if out and not out.endswith("\n"):
+                out = out.rstrip(" \t") + "\n"
+            out += "\n".join(f"→ Called {name}" for name in value) + "\n"
+    return "\n".join(line.rstrip() for line in out.splitlines()).strip()
+
+
 def _partial_heading_tail(text: str) -> int:
     """Length of a suffix of `text` that could still become a digest heading."""
     start = text.rfind("[")

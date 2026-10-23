@@ -85,7 +85,7 @@ class TestTheGateSnapshotsItself:
         assert card["tool_name"] == "danger" and executed == []
         assert events[events.index(card) - 1]["type"] == "_step_progress", "the snapshot comes just before the card"
         assert progress["reasoning"] == ["I need to clean."]
-        assert '"danger"' in progress["thoughts"][0]
+        assert progress["thoughts"][0] == "→ Called danger", "the call in words, never its JSON (F907)"
         assert "clean up" in progress["context_text"]
         assert progress["calls"] == [], "the call being asked about has not run"
 
@@ -279,7 +279,7 @@ class TestChat:
         assert asks == ["danger"]
         [turn] = await _get_conversation_history("s_bf2_g", ASKS)
         assert turn["reasoning"] == ["I need to clean.", "It is clean."]
-        assert turn["thoughts"] == ['{"tool": "danger", "arguments": {}}', "Cleaned."], "the asked call, said once"
+        assert turn["thoughts"] == ["→ Called danger", "Cleaned."], "the asked call, said once, in words (F907)"
 
 
 class TestTheFleet:

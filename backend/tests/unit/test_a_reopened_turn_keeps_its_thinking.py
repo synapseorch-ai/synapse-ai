@@ -46,7 +46,7 @@ class TestTheEngineSavesThem:
         [turn] = await _get_conversation_history("s_u60a", agent["id"])
         assert turn["reasoning"] == ["I should look it up.", "The tool found it."]
         assert len(turn["thoughts"]) == 2
-        assert '"lookup"' in turn["thoughts"][0]
+        assert turn["thoughts"][0] == "→ Called lookup", "the call in words, never its JSON (F907)"
         assert turn["thoughts"][1] == "It is found."
 
     async def test_a_turn_with_none_keeps_the_old_shape(self, fake_llm):
@@ -87,14 +87,14 @@ class TestTheEngineSavesThem:
         })
         [turn] = await _get_conversation_history("s_u60e", agent["id"])
         assert turn["reasoning"] == ["Before the pause.", "After."]
-        assert turn["thoughts"][0].startswith('{"tool"')
+        assert turn["thoughts"][0] == "→ Called lookup", "an older snapshot's raw call, saved in words (F907)"
 
     async def test_the_snapshot_carries_them_for_a_pause(self, fake_llm):
         _agent, events = await _run(fake_llm, "s_u60f", [
             "[REASONING]First.[/REASONING]" + tool_call("lookup"), "Done."], progress_events=True)
         [snap] = [e for e in events if e.get("type") == "_step_progress"]
         assert snap["reasoning"] == ["First."]
-        assert '"lookup"' in snap["thoughts"][0]
+        assert snap["thoughts"][0] == "→ Called lookup"
 
     async def test_they_are_never_sent_to_the_model(self, fake_llm):
         from core.session import get_recent_history_messages

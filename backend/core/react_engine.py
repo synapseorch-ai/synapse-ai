@@ -26,7 +26,7 @@ from core.session import (
 from core.llm_providers import LLMResult, generate_response_ex as llm_generate_response
 from core.model_wait import ModelWait
 from core.secret_scrub import reveal_secrets as _reveal_secrets, scrub_secrets as _scrub_secrets, scrub_secrets_in as _scrub_secrets_in
-from core.answer_filter import AnswerFilter, strip_copied_digest
+from core.answer_filter import AnswerFilter, readable_thought, strip_copied_digest
 from core.tool_call_shapes import calls_in, is_pseudo_format, leading_objects, parallel_calls
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
@@ -2445,10 +2445,13 @@ async def run_agent_step(
                         # a reply of `[REASONING]` alone is below.
                         _reasoning_retries += 1
                         _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
-                        _turn_reasoning.append(llm_err.reasoning)
+                        _shown = readable_thought(llm_err.reasoning)
+                        if _shown.strip():
+                            _turn_reasoning.append(_shown)
                         for _e in _unstream("reasoning_only"):
                             yield _e
-                        yield {"type": "llm_reasoning", "reasoning": llm_err.reasoning, "turn": turn + 1}
+                        if _shown.strip():
+                            yield {"type": "llm_reasoning", "reasoning": _shown, "turn": turn + 1}
                         current_context_text += _REASONING_ONLY_NUDGE
                         # The identical request again had the same odds (F863): a step less thinking.
                         _retry_effort = _a_step_lower(reasoning_effort)
@@ -2533,6 +2536,8 @@ async def run_agent_step(
             native_reasoning = (_llm_result.reasoning or "").strip()
             if native_reasoning:
                 reasoning_blocks = [native_reasoning, *reasoning_blocks]
+            # What a person reads: a call in words, no JSON blob (F907).
+            reasoning_blocks = [b for b in map(readable_thought, reasoning_blocks) if b.strip()]
 
             if reasoning_blocks:
                 _turn_reasoning.append("\n\n".join(reasoning_blocks))
@@ -2544,9 +2549,12 @@ async def run_agent_step(
 
             # A replayed call is the model's action from before the pause, which a
             # chat turn's gate snapshot already carries: said once, not twice.
-            if action_text.strip() and not (_replaying and not _workflow_step):
-                _turn_thoughts.append(action_text)
-                yield {"type": "llm_thought", "thought": action_text, "turn": turn + 1}
+            # The thought is the reply as a person reads it (F907); `action_text`
+            # itself is parsed below, unchanged.
+            thought = readable_thought(action_text)
+            if thought.strip() and not (_replaying and not _workflow_step):
+                _turn_thoughts.append(thought)
+                yield {"type": "llm_thought", "thought": thought, "turn": turn + 1}
 
             # Parse every tool call the LLM emitted in this response and execute
             # them sequentially before the next LLM turn.  This prevents partial
