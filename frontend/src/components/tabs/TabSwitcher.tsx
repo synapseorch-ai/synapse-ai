@@ -10,10 +10,9 @@ import * as RDialog from "@radix-ui/react-dialog";
 import { Plus, X } from "lucide-react";
 import * as React from "react";
 
-import { AppMark } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
-import { BadgeMark, type StripTab } from "./TabStrip";
+import { BadgeMark, TabTile, type StripTab } from "./TabStrip";
 import { BADGE_WORDS, activeTab, type TabBadge, type TabsState } from "./model";
 
 export function TabSwitcher<T extends StripTab>({
@@ -60,7 +59,7 @@ export function TabSwitcher<T extends StripTab>({
             className,
           )}
         >
-          {front && <AppMark name={front.tileName} seed={front.tileSeed} size="sm" className="size-[22px] rounded-md text-[11px]" />}
+          {front && <TabTile tab={front} size={22} />}
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-semibold text-text">{front ? titleOf(front) : untitled}</span>
             {front && <span className="block truncate text-xs text-text-faint">{subtitle(front)}</span>}
@@ -99,7 +98,7 @@ export function TabSwitcher<T extends StripTab>({
                     aria-current={t.id === state.activeId ? "true" : undefined}
                     className="flex min-h-[52px] min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left"
                   >
-                    <AppMark name={t.tileName} seed={t.tileSeed} size="sm" className="size-[22px] rounded-md text-[11px]" />
+                    <TabTile tab={t} size={22} />
                     <span className="min-w-0 flex-1">
                       <span className={cn("block truncate text-[15px] text-text", badge === "unread" ? "font-semibold" : "font-medium")}>
                         {titleOf(t)}

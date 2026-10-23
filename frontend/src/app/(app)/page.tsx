@@ -3324,9 +3324,9 @@ export default function Home() {
   }, ready);
 
   const stripTabs = useMemo<TabsState<ChatTab & StripTab>>(() => ({
-    tabs: state.tabs.map(t => ({ ...t, tileName: nameOf(t.agentId), tileSeed: t.agentId })),
+    tabs: state.tabs.map(t => ({ ...t, tileName: nameOf(t.agentId), tileSeed: t.agentId, tileMark: isBuilder(t.agentId) })),
     activeId: state.activeId,
-  }), [state, nameOf]);
+  }), [state, nameOf, isBuilder]);
 
   const frontId = front?.id;
   const changeFront = useCallback((edit: Partial<ChatTab>) => {

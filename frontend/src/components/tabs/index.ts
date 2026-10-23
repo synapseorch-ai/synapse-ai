@@ -5,7 +5,7 @@
  */
 
 export * from "./model";
-export { BadgeMark, TabStrip, type StripTab } from "./TabStrip";
+export { BadgeMark, TabStrip, TabTile, type StripTab } from "./TabStrip";
 export { NewTabMenu, type PickableAgent } from "./NewTabMenu";
 export { TabSwitcher } from "./TabSwitcher";
 export { SideRail, type RailPanel } from "./SideRail";

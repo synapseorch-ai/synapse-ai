@@ -16,7 +16,7 @@
 import { Check, ChevronDown, X } from "lucide-react";
 import * as React from "react";
 
-import { AppMark, Menu, MenuItem, Spinner } from "@/components/ui";
+import { AppMark, Mark, Menu, MenuItem, Spinner } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 import { BADGE_WORDS, splitVisible, type Tab, type TabBadge, type TabsState } from "./model";
@@ -31,6 +31,21 @@ export interface StripTab extends Tab {
   /** The agent or workflow the tab's tile is drawn from. */
   tileName: string;
   tileSeed?: string;
+  /** The product's own assistant: its mark, not a letter (the mark wherever the product acts). */
+  tileMark?: boolean;
+}
+
+/** A tab's tile: the product's mark for its assistant, else a lettered tile. The mark keeps its full form at 20 px. */
+export function TabTile({ tab, size = 18 }: { tab: StripTab; size?: number }) {
+  if (tab.tileMark) return <Mark size={Math.max(20, size)} className="shrink-0 text-accent" />;
+  return (
+    <AppMark
+      name={tab.tileName}
+      seed={tab.tileSeed}
+      size="sm"
+      className={size > 18 ? "size-[22px] rounded-md text-[11px]" : "size-[18px] rounded-[5px] text-[10px]"}
+    />
+  );
 }
 
 export function TabStrip<T extends StripTab>({
@@ -132,7 +147,7 @@ export function TabStrip<T extends StripTab>({
                 onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
                 className="flex h-full min-w-0 flex-1 items-center gap-2 pl-2.5 pr-1 text-left text-[13px]"
               >
-                <AppMark name={t.tileName} seed={t.tileSeed} size="sm" className="size-[18px] rounded-[5px] text-[10px]" />
+                <TabTile tab={t} />
                 <span
                   className={cn(
                     "min-w-0 flex-1 truncate",
@@ -179,7 +194,7 @@ export function TabStrip<T extends StripTab>({
         >
           {more.map((t) => (
             <MenuItem key={t.id} onSelect={() => onFocus(t.id)}>
-              <AppMark name={t.tileName} seed={t.tileSeed} size="sm" className="size-[18px] rounded-[5px] text-[10px]" />
+              <TabTile tab={t} />
               <span className="min-w-0 flex-1 truncate">{titleOf(t)}</span>
               <BadgeMark badge={badges[t.id] ?? "none"} />
             </MenuItem>

@@ -15,7 +15,7 @@ import { Command } from "cmdk";
 import { Plus, Search } from "lucide-react";
 import * as React from "react";
 
-import { AppMark, useOwnScroll } from "@/components/ui";
+import { AppMark, Mark, useOwnScroll } from "@/components/ui";
 import { cn } from "@/lib/cn";
 
 export interface PickableAgent {
@@ -119,7 +119,9 @@ function AgentRow({ agent, onPick }: { agent: PickableAgent; onPick: (id: string
       onSelect={() => onPick(agent.id)}
       className="flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm text-text outline-none data-[selected=true]:bg-surface-2"
     >
-      <AppMark name={agent.name} seed={agent.id} size="sm" className="size-6 text-[11px]" />
+      {agent.assistant
+        ? <Mark size={24} className="shrink-0 text-accent" />
+        : <AppMark name={agent.name} seed={agent.id} size="sm" className="size-6 text-[11px]" />}
       <span className="flex min-w-0 flex-col">
         <span className="truncate">{agent.name}</span>
         {agent.note && <span className="truncate text-xs text-text-faint">{agent.note}</span>}
