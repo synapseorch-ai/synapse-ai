@@ -281,7 +281,10 @@ API_SPEC_SCHEMA = {
         "endpoints": {"type": "array", "maxItems": 5, "items": {"type": "object", "properties": {
             "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
             "path": {"type": "string", "description": "From the base, e.g. /lists/{list_id}/members"},
-            "does": {"type": "string"}}, "required": ["method", "path", "does"]},
+            "does": {"type": "string"},
+            "tool": {"type": "string", "description": "A short tool name for this call, lowercase with _, e.g. "
+                                                      "send_campaign; the plan calls it by this name"}},
+            "required": ["method", "path", "does"]},
             "description": "The 1-5 calls the plan needs"},
         "docs_url": {"type": "string", "description": "The provider's own docs page you read for this"},
     },
@@ -479,6 +482,23 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
         if str(e.get("method") or "").upper() not in _METHODS or not p.startswith("/") or _climbs(p) \
                 or any(c in p for c in "?#:@") or any("{" in seg and not _PARAM.match(seg) for seg in p.split("/")):
             return None, f"an endpoint ({str(e.get('method') or '')} {p[:60]}) is not a method and a path under its base"
+    # A7: each endpoint names its tool, under the provider's name, so a plan's tool is one endpoint exactly.
+    slug, names = re.sub(r"[^a-z0-9]+", "_", provider.lower()).strip("_"), []
+    for e in endpoints:
+        given = e.get("tool")
+        if given is None:
+            words = [w for seg in str(e["path"]).lower().split("/") if seg and not seg.startswith("{")
+                     for w in re.split(r"[^a-z0-9]+", seg) if w]
+            given = "_".join([str(e["method"]).lower(), *words])
+        given = str(given)
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", given):
+            return None, f"its tool name {given[:40]!r} is not one word of lowercase letters, digits and _"
+        name = given if given.startswith(f"{slug}_") else f"{slug}_{given}"
+        if len(name) > 64:
+            return None, f"its tool name {name[:40]!r}… is longer than 64 characters"
+        names.append(name)
+    if len(set(names)) != len(names):
+        return None, "two of its endpoints share a tool name"
     docs = str(raw.get("docs_url") or "")
     if docs not in own_pages:
         return None, f"its docs page is not one read on {provider}'s own site"
@@ -487,8 +507,8 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
         **({"host_params": [{"name": str(p["name"]), "says": str(p.get("says") or "")[:160]} for p in params]}
            if params else {}),
         "auth": {"in": "header", "name": str(auth["name"]), "scheme": str(auth["scheme"])},
-        "endpoints": [{"method": str(e["method"]).upper(), "path": str(e["path"]), "does": str(e.get("does") or "")[:120]}
-                      for e in endpoints],
+        "endpoints": [{"method": str(e["method"]).upper(), "path": str(e["path"]), "does": str(e.get("does") or "")[:120],
+                       "tool": name} for e, name in zip(endpoints, names)],
         "docs_url": docs,
     }, ""
 

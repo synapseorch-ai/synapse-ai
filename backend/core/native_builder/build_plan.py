@@ -441,6 +441,27 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           "change of its own")
     if plan.agents and state.get("can_create_agents") is False:
         errors.append("agents: this conversation uses existing agents only; give each step one of theirs by id")
+    errors += _api_names(plan, state)
+    return errors
+
+
+def _api_names(plan: O.Plan, state: dict) -> list[str]:
+    """A tool that names a provider whose API was read, but none of its calls: the plan calls a read API's endpoint by
+    its tool's name, so code makes exactly that call (A7, F944)."""
+    from core.builder_research import _words
+
+    findings = _obj(state.get(FINDINGS_KEY))
+    errors = []
+    for option in (findings or {}).get("options") or [] if isinstance(findings, dict) else []:
+        spec = option.get("api") if isinstance(option.get("api"), dict) else None
+        tools = [e.get("tool") for e in (spec or {}).get("endpoints") or [] if e.get("tool")]
+        if not tools:
+            continue
+        provider = set(_words(str(option.get("provider") or "")))
+        for name in O.tool_names(plan):
+            if name not in tools and provider and provider <= set(_words(name.replace("_", " "))):
+                errors.append(f"`{name}`: {option.get('provider')}'s API was read; call it by its tools' names: "
+                              + ", ".join(f"`{t}`" for t in tools))
     return errors
 
 
@@ -560,15 +581,18 @@ def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
         words = set(_words(said.replace("_", " ")))
         for option in options:
             provider, how = str(option.get("provider") or ""), option.get("how")
-            if not provider or not set(_words(provider)) <= words:
+            spec = option.get("api") if isinstance(option.get("api"), dict) else None
+            # A7: a read API's call is named exactly, by its endpoint's tool; the status carries that one endpoint.
+            endpoint = next((e for e in (spec or {}).get("endpoints") or [] if e.get("tool") == name), None)
+            if endpoint is None and (not provider or not set(_words(provider)) <= words):
                 continue
             # The hand-off's table (P3B-HANDOFF.md, A6): a way in is found; a verdict of none is missing, with why.
-            spec = option.get("api") if isinstance(option.get("api"), dict) else None
             status, via = {"mcp": ("found", "mcp_server"), "catalog_app": ("found", "catalog_app"),
-                           "api": ("found", "http_tool" if spec else "none")}.get(how, ("missing", "none"))
+                           "api": ("found", "http_tool" if endpoint else "none")}.get(how, ("missing", "none"))
+            api = ({**{k: v for k, v in spec.items() if k != "endpoints"}, "endpoint": endpoint}
+                   if spec and endpoint else None)
             found[name] = O.ToolStatus(name=name, status=status, provider=provider, via=via,
-                                       detail=str(option.get("detail") or "") or None,
-                                       api=spec if via == "http_tool" else None)
+                                       detail=str(option.get("detail") or "") or None, api=api)
             break
     return found
 

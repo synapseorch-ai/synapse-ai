@@ -146,3 +146,27 @@ def test_the_researcher_is_told_the_spec():
     spec = props["api"]["properties"]
     assert set(spec) >= {"base_url", "host_params", "auth", "endpoints", "docs_url"}
     assert "{dc}" in spec["base_url"]["description"]
+
+
+# ── A7: each endpoint names its tool (P3B-HANDOFF.md, F944) ───────────────────────────────────────────────────────
+
+async def test_each_endpoint_names_its_tool_under_the_providers_name():
+    endpoints = [{"method": "POST", "path": "/campaigns/{campaign_id}/actions/send", "does": "Sends", "tool": "send_campaign"},
+                 {"method": "GET", "path": "/lists", "does": "Lists the audiences", "tool": "mailchimp_list_audiences"},
+                 {"method": "GET", "path": "/lists/{list_id}/members", "does": "Lists members"}]
+    found = await _report({**MAILCHIMP, "endpoints": endpoints})
+    assert [e["tool"] for e in found["api"]["endpoints"]] == [
+        "mailchimp_send_campaign", "mailchimp_list_audiences", "mailchimp_get_lists_members"]
+
+
+@pytest.mark.parametrize("tool", ["send campaign", "Send-It", "1send", "x" * 80])
+async def test_a_tool_name_is_an_identifier(tool):
+    found = await _report({**MAILCHIMP, "endpoints": [{"method": "GET", "path": "/lists", "does": "x", "tool": tool}]})
+    assert "api" not in found and "tool name" in found["detail"]
+
+
+async def test_two_endpoints_never_share_a_tool_name():
+    endpoints = [{"method": "GET", "path": "/lists", "does": "x", "tool": "lists"},
+                 {"method": "POST", "path": "/lists", "does": "y", "tool": "lists"}]
+    found = await _report({**MAILCHIMP, "endpoints": endpoints})
+    assert "api" not in found and "tool name" in found["detail"]

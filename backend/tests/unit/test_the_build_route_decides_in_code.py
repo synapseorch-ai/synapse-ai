@@ -553,12 +553,15 @@ async def test_a_none_verdict_is_missing_and_the_card_says_why(client):
 
 
 async def test_an_api_with_its_spec_is_found_as_a_tool_to_make(client):
+    # A7: the plan calls the endpoint by its tool's name, and the status carries that one endpoint.
+    spec = {**SPEC, "endpoints": [{**SPEC["endpoints"][0], "tool": "send_mailchimp_campaign"}]}
     findings = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "api", "detail": "REST",
-                                          "sources": ["https://mailchimp.com/developer/"], "api": SPEC}]}
+                                          "sources": ["https://mailchimp.com/developer/"], "api": spec}]}
     run = await _run(plan_findings=findings)
     out, _ = await _check(run, {"finish": "submit_plan", **_plan(SEND)})
     [tool] = out["plan"]["tools"]
-    assert (tool["status"], tool["via"]) == ("found", "http_tool") and tool["api"] == SPEC
+    assert (tool["status"], tool["via"]) == ("found", "http_tool")
+    assert tool["api"]["endpoint"] == spec["endpoints"][0]
     assert out["plan"]["missing"] == [] and out["plan"]["connections_needed"] == ["Mailchimp"]
 
 
@@ -570,3 +573,29 @@ async def test_an_api_lead_is_no_connection_yet(client):
     [tool] = out["plan"]["tools"]
     assert (tool["status"], tool["via"]) == ("found", "none")
     assert out["plan"]["connections_needed"] == [] and "find" in out["offers"]
+
+
+async def test_a_plan_tool_is_matched_to_exactly_one_endpoint_of_a_read_api(client):
+    """A7: the plan names the endpoint's tool; its status carries that one endpoint, never the whole spec."""
+    spec = {**SPEC, "endpoints": [
+        {"method": "POST", "path": "/campaigns/{campaign_id}/actions/send", "does": "Sends", "tool": "mailchimp_send_campaign"},
+        {"method": "GET", "path": "/lists", "does": "Lists", "tool": "mailchimp_list_audiences"}]}
+    findings = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "api", "detail": "REST",
+                                          "sources": ["https://mailchimp.com/developer/"], "api": spec}]}
+    run = await _run(plan_findings=findings)
+    send = {**SEND, "tool": "mailchimp_send_campaign"}
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(send)})
+    [tool] = out["plan"]["tools"]
+    assert (tool["status"], tool["via"]) == ("found", "http_tool")
+    assert tool["api"]["endpoint"] == spec["endpoints"][0] and "endpoints" not in tool["api"]
+    assert tool["api"]["base_url"] == spec["base_url"] and tool["api"]["auth"] == spec["auth"]
+
+
+async def test_a_plan_tool_naming_a_read_api_but_none_of_its_tools_goes_back_to_the_planner(client):
+    spec = {**SPEC, "endpoints": [
+        {"method": "POST", "path": "/campaigns/{campaign_id}/actions/send", "does": "Sends", "tool": "mailchimp_send_campaign"}]}
+    findings = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "api", "detail": "REST",
+                                          "sources": ["https://mailchimp.com/developer/"], "api": spec}]}
+    run = await _run(plan_findings=findings)
+    sent, _ = await _call("submit_plan", _plan(SEND), run)
+    assert "mailchimp_send_campaign" in sent["error"] and "send_mailchimp_campaign" in sent["error"]
