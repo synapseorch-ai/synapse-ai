@@ -8,6 +8,8 @@ anything. The rc is how 2.0.0 is tested before it ships (REL2, D312).
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 cli = pytest.importorskip("synapse.cli")
@@ -99,3 +101,65 @@ def test_an_npm_install_is_told_the_npm_spelling(monkeypatch, capsys):
     _world(monkeypatch, current="2.0.0rc1", latest="1.9.2", method="npm")
     cli._upgrade_command(version="2.0.0rc2")
     assert "npm install -g synapse-orch-ai@2.0.0-rc2" in capsys.readouterr().out
+
+
+# ── where `synapse upgrade` fetches the next installer (F830, F831) ──────────
+
+@pytest.fixture
+def fetches(monkeypatch, tmp_path):
+    """An installer-made home whose `synapse upgrade` downloads are recorded, not made."""
+    import hashlib
+
+    from synapse.installer import net
+
+    home = tmp_path / "home"
+    (home / "runtime").mkdir(parents=True)
+    uv = tmp_path / "uv"
+    uv.write_text("")
+    monkeypatch.setenv("SYNAPSE_HOME", str(home))
+    monkeypatch.setattr("synapse.installer.home.read_install", lambda h: {"uv": str(uv)})
+    monkeypatch.setattr(cli, "IS_WIN", False)
+    body = b"pyz"
+    urls = []
+
+    def download(url, dest, *a, **kw):
+        urls.append(url)
+        Path(dest).write_bytes(body)
+
+    def get_text(url, *a, **kw):
+        urls.append(url)
+        return hashlib.sha256(body).hexdigest() + "  synapse-install.pyz\n"
+
+    monkeypatch.setattr(net, "download", download)
+    monkeypatch.setattr(net, "get_text", get_text)
+    ran = []
+    monkeypatch.setattr(cli.os, "execv", lambda exe, cmd: ran.append(cmd))
+    return urls, ran
+
+
+@pytest.mark.parametrize("typed", ["2.0.0rc1", "2.0.0-rc1", "2.0.0-rc.1", "v2.0.0rc1"])
+def test_the_installer_is_fetched_from_the_tag_in_pypis_spelling(fetches, monkeypatch, typed):
+    """F830: one version, one release URL — the tag is `v2.0.0rc1` however it was typed."""
+    monkeypatch.delenv("SYNAPSE_RELEASES_URL", raising=False)
+    urls, ran = fetches
+    cli._upgrade_with_installer(typed)
+    base = "https://github.com/synapseorch-ai/synapse-ai/releases/download/v2.0.0rc1"
+    assert urls == [f"{base}/synapse-install.pyz", f"{base}/synapse-install.pyz.sha256"]
+    assert ran and ran[0][ran[0].index("--version") + 1] == "2.0.0rc1"
+
+
+def test_a_final_release_url_is_unchanged(fetches, monkeypatch):
+    monkeypatch.delenv("SYNAPSE_RELEASES_URL", raising=False)
+    urls, _ = fetches
+    cli._upgrade_with_installer("2.0.1")
+    assert urls[0] == "https://github.com/synapseorch-ai/synapse-ai/releases/download/v2.0.1/synapse-install.pyz"
+
+
+def test_a_local_release_folder_can_stand_in_for_github(fetches, monkeypatch):
+    """F831: SYNAPSE_RELEASES_URL lets a pre-release be upgraded from a folder served on
+    this machine, as SYNAPSE_INSTALLER_URL does for the setup scripts."""
+    monkeypatch.setenv("SYNAPSE_RELEASES_URL", "http://localhost:8799/releases/")
+    urls, _ = fetches
+    cli._upgrade_with_installer("2.0.0rc0.post1")
+    assert urls == ["http://localhost:8799/releases/download/v2.0.0rc0.post1/synapse-install.pyz",
+                    "http://localhost:8799/releases/download/v2.0.0rc0.post1/synapse-install.pyz.sha256"]

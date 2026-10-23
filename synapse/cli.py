@@ -1732,7 +1732,15 @@ def _upgrade_with_installer(target: str, extras=(), method: str = "uv") -> None:
         print("uv, which this install was made with, is missing. Reinstall with:")
         print(f"  curl -LsSf {RELEASES}/latest/download/setup.sh | bash")
         sys.exit(1)
-    base = f"{RELEASES}/download/v{target}"
+    from synapse import versions
+
+    # One version is one release, however it was typed: tags are PyPI's spelling
+    # (`v2.0.0rc1`, F830). SYNAPSE_RELEASES_URL stands in for GitHub's releases when
+    # a pre-release is tested from a local folder, as the setup scripts'
+    # SYNAPSE_INSTALLER_URL does (F831).
+    target = versions.pep440(target)
+    releases = (os.environ.get("SYNAPSE_RELEASES_URL") or RELEASES).rstrip("/")
+    base = f"{releases}/download/v{target}"
     pyz = home / "runtime" / f"synapse-install-{target}.pyz"
     with _Spinner(f"Getting Synapse {target}…"):
         try:
