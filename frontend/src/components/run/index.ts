@@ -44,7 +44,7 @@ export { TaskChecklist } from './TaskChecklist';
 export { TimeOfDay, Took, useClock, When } from './When';
 export { WorkflowList } from './WorkflowList';
 export {
-    cronWords, lastBucket, matchWorkflow, scheduleWords, sortWorkflows, triggerChip, urgencyOf, workflowRow, WORKFLOW_SORTS,
+    cronWords, zoneWords, lastBucket, matchWorkflow, scheduleWords, sortWorkflows, triggerChip, urgencyOf, workflowRow, WORKFLOW_SORTS,
     type ScheduleLike, type TriggerChip, type WorkflowLastRun, type WorkflowListRow, type WorkflowSort,
 } from './workflowList';
 export { LogHead, LogKinds, LogList, RunWord } from './LogList';

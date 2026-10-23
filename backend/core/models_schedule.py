@@ -12,6 +12,16 @@ class ScheduleInvalid(ValueError):
     """A schedule whose timing cannot run; the message says why, in a sentence (F197)."""
 
 
+def _is_timezone(name: str) -> bool:
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+    try:
+        ZoneInfo(str(name))
+    except (ZoneInfoNotFoundError, ValueError):
+        return False
+    return True
+
+
 def validate_timing(schedule: dict) -> None:
     """Refuse a schedule that cannot run, in cloud's words (F197).
 
@@ -20,6 +30,8 @@ def validate_timing(schedule: dict) -> None:
     with a 500. Only the fields its `schedule_type` reads are checked: the form
     clears the others, and a leftover cron on an interval schedule is never read.
     """
+    if (tz := schedule.get("timezone")) and not _is_timezone(tz):
+        raise ScheduleInvalid(f"'{tz}' is not a timezone name like America/New_York.")
     if schedule.get("schedule_type") == "interval":
         value, unit = schedule.get("interval_value"), schedule.get("interval_unit")
         if value is None or not unit:
@@ -51,6 +63,8 @@ class Schedule(BaseModel):
     interval_unit: Literal["minutes", "hours", "days"] | None = None
     # Cron fields
     cron_expression: str | None = None
+    #: The clock its cron is read on, as a name like America/New_York; none is UTC (F948, Naveen 10-23).
+    timezone: str | None = None
     missed_run_policy: Literal["run_immediately", "skip"] = "skip"
     # Server-computed state -- never trust client-provided values
     last_run_at: str | None = None
@@ -70,6 +84,8 @@ class ScheduleCreate(BaseModel):
     interval_unit: Literal["minutes", "hours", "days"] | None = None
     # Cron fields
     cron_expression: str | None = None
+    #: The clock its cron is read on, as a name like America/New_York; none is UTC (F948, Naveen 10-23).
+    timezone: str | None = None
     missed_run_policy: Literal["run_immediately", "skip"] = "skip"
 
 
@@ -84,4 +100,5 @@ class ScheduleUpdate(BaseModel):
     interval_value: int | None = None
     interval_unit: Literal["minutes", "hours", "days"] | None = None
     cron_expression: str | None = None
+    timezone: str | None = None
     missed_run_policy: Literal["run_immediately", "skip"] | None = None

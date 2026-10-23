@@ -16,6 +16,7 @@
  * `components/assistant/`.
  */
 import { roleOf, type StepRole } from '@/components/run/model';
+import { zoneWords } from '@/components/run/workflowList';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
 
 /** Which of the builder's questions a prompt is. */
@@ -531,7 +532,7 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
                 return detail ? { ...step, detail } : step;
             }),
         schedule: when
-            ? [cron ? `${when} (${cron}, UTC)` : when, view.plan.schedule?.input?.trim()
+            ? [cron ? `${when} (${cron}, ${zoneWords(view.plan.schedule?.timezone)})` : when, view.plan.schedule?.input?.trim()
                 ? `each run starting with: ${view.plan.schedule.input.trim()}` : ''].filter(Boolean).join(', ')
             : null,
         limits: [

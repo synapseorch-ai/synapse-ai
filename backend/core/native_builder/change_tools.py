@@ -602,6 +602,11 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if refusal:
                 item.update(status="refused", say=refusal)
                 continue
+        if (op.name in ("set_schedule", "create_schedule") and fields.get("cron_expression")
+                and not fields.get("timezone") and not (live or {}).get("timezone")):
+            # A time the person says is on the schedule's own clock, or, when it has none, on theirs (F948).
+            if tz := ((_run()[1].shared_state if _run()[1] else {}) or {}).get("person_timezone"):
+                fields["timezone"] = tz
         want = C.expected(op, fields, live)
         if op.kind == "delete":
             used, refusal = await _used_by(op, target["id"])

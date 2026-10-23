@@ -36,6 +36,15 @@ def _bullets(items: list[str], *, code: bool = False) -> str:
     return "\n".join(f"- `{i}`" if code else f"- {i}" for i in items)
 
 
+def zone_words(timezone: str | None) -> str:
+    """A schedule's clock in the card's words (F948): "New York time"; UTC for none. `workflowList.ts` `zoneWords`
+    says the same."""
+    tz = (timezone or "").strip()
+    if not tz or tz.upper() == "UTC":
+        return "UTC"
+    return tz.split("/")[-1].replace("_", " ") + " time"
+
+
 _SET_BY = {"build": "", "agent": " (its own tool policy)", "workspace": " (this workspace's tool policy)"}
 
 
@@ -90,7 +99,7 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()
         detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else "",
-                                       plan.schedule.timezone or "") if x)
+                                       zone_words(plan.schedule.timezone) if plan.schedule.timezone else "") if x)
         text = f"**When:** {when}" + (f" ({detail})" if detail else "")
         if (plan.schedule.input or "").strip():
             text += f"\n**Each run starts with:** {plan.schedule.input.strip()}"

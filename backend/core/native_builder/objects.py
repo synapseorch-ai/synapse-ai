@@ -69,7 +69,9 @@ class NewAgent(_Written):
 
 class Schedule(_Written):
     cron: str = Field(description="Five-field cron, e.g. 0 7 * * *")
-    timezone: str | None = None
+    timezone: str | None = Field(None, description="Only a timezone the person named, as a name like "
+                                                   "America/New_York: the cron is read on it. Left out, the schedule "
+                                                   "runs on the person's own clock")
     says: str = Field(description="The schedule in words, e.g. every day at 7:00")
     input: str | None = Field(None, description="What each scheduled run starts with: the task, with what it is "
                                                 "about (F155)")

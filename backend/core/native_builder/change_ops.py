@@ -80,7 +80,7 @@ _ACTS = (
     Op("board_delete", "act", "board", verb="Delete"),
 )
 
-_SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit")
+_SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
 
 _WRITES = (
     Op("rename_workflow", "write", "workflow", "set_orchestration_meta", ("name",), ("name",), verb="Rename"),
@@ -167,6 +167,11 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if ok else "`runs` is {kind: workflow | agent, id or name} of what the schedule starts"
     if key == "schedule_type":
         return None if value in ("cron", "interval") else "`schedule_type` is cron or interval"
+    if key == "timezone":
+        from core.models_schedule import _is_timezone
+
+        return None if isinstance(value, str) and _is_timezone(value) else \
+            "`timezone` is a timezone name like Europe/Amsterdam (leave it out for the person's own)"
     if key == "interval_unit":
         return None if value in ("minutes", "hours", "days") else "`interval_unit` is minutes, hours or days"
     if key in ("interval_value", "max_total_turns", "timeout_minutes"):

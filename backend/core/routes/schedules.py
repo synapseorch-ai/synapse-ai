@@ -26,7 +26,7 @@ def _get_manager(request: Request):
 # gets one answer on both products: 422 for timing it cannot run, 404 for a
 # target that is not there. Each `detail` is a sentence — the form toasts it.
 
-_TIMING_KEYS = {"schedule_type", "interval_value", "interval_unit", "cron_expression"}
+_TIMING_KEYS = {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"}
 _TARGET_KEYS = {"target_type", "target_id"}
 
 

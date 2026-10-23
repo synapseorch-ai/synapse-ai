@@ -21,7 +21,7 @@ import { useNavFlags } from '@/components/app/NavFlags';
 import { ScheduleBoard } from '@/components/boards/ScheduleBoard';
 import { OssBoardsHost } from '@/lib/boardsHost';
 import { useNotifications } from '@/components/notifications/NotificationProvider';
-import { cronWords, lastScheduledRun, ScheduleList, scheduleRow } from '@/components/run';
+import { cronWords, lastScheduledRun, ScheduleList, scheduleRow, zoneWords } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import {
     Button, buttonStyles, ConfirmDialog, Drawer, EmptyState, Field, IconButton, Input, Section, Segmented, Select, Switch,
@@ -44,6 +44,8 @@ interface Schedule {
     interval_value?: number;
     interval_unit?: 'minutes' | 'hours' | 'days';
     cron_expression?: string;
+    /** The clock its cron is read on (F948): the person's own when it is made here; none is UTC. */
+    timezone?: string | null;
     missed_run_policy?: 'run_immediately' | 'skip';
     last_run_at?: string | null;
     next_run_at?: string | null;
@@ -82,8 +84,18 @@ function emptyForm(): Form {
         interval_value: 30,
         interval_unit: 'minutes',
         cron_expression: '0 9 * * *',
+        // No picker (Naveen, 10-23): a schedule made here runs on its person's own clock.
+        timezone: browserTimezone(),
         missed_run_policy: 'skip',
     };
+}
+
+function browserTimezone(): string | null {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+    } catch {
+        return null;
+    }
 }
 
 // -- Main component -------------------------------------------------------
@@ -165,6 +177,8 @@ export const SchedulesTab = () => {
             interval_value: s.interval_value ?? 30,
             interval_unit: s.interval_unit ?? 'minutes',
             cron_expression: s.cron_expression ?? '0 9 * * *',
+            // Kept as it is: a schedule saved before F948 stays on UTC until it is made again.
+            timezone: s.timezone ?? null,
             missed_run_policy: s.missed_run_policy ?? 'skip',
         });
         // Try to derive cronHour from expression
@@ -552,15 +566,15 @@ export const SchedulesTab = () => {
                             {/* The hour, when the preset has one. */}
                             {!presetIsCustom && (
                                 <div className="flex items-center gap-3">
-                                    <span className="text-[13px] text-text-muted">At hour (UTC)</span>
+                                    <span className="text-[13px] text-text-muted">At hour ({zoneWords(form.timezone)})</span>
                                     <Select
                                         value={String(cronHour)}
                                         onChange={v => onCronHourChange(parseInt(v, 10))}
-                                        aria-label="Hour (UTC)"
+                                        aria-label={`Hour (${zoneWords(form.timezone)})`}
                                         className="w-36"
                                         options={Array.from({ length: 24 }, (_, i) => ({
                                             value: String(i),
-                                            label: `${i.toString().padStart(2, '0')}:00 UTC`,
+                                            label: `${i.toString().padStart(2, '0')}:00 ${zoneWords(form.timezone)}`,
                                         }))}
                                     />
                                 </div>
@@ -576,7 +590,7 @@ export const SchedulesTab = () => {
                                 />
                             </Field>
                             {form.cron_expression && (
-                                <p data-cron-words className="-mt-2 m-0 text-[13px] font-medium text-text">{cronWords(form.cron_expression)}</p>
+                                <p data-cron-words className="-mt-2 m-0 text-[13px] font-medium text-text">{cronWords(form.cron_expression, form.timezone)}</p>
                             )}
 
                             <fieldset className="m-0 grid gap-2 border-0 p-0">

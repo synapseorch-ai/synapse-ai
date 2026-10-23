@@ -3,8 +3,8 @@
  * tests share them: what starts a workflow (its trigger chip), its last run, and
  * the sorts the list offers. `WorkflowList` draws the rows.
  *
- * Schedules run in UTC in both products (the engine's `compute_next_run`), so a
- * schedule's time says so.
+ * A schedule's cron is read on its own clock (`timezone`, F948) or in UTC (the
+ * engine's `compute_next_run`, both products), and its time says which.
  */
 import { bucketOf, type RunBucket } from './model';
 import { templatePath } from './StepPath';
@@ -20,7 +20,16 @@ export type ScheduleLike = {
     interval_value?: number | null;
     interval_unit?: string | null;
     cron_expression?: string | null;
+    /** The clock its cron is read on, like America/New_York; none is UTC (F948). */
+    timezone?: string | null;
 };
+
+/** A timezone in a card's words: "New York time"; UTC for none. */
+export function zoneWords(timezone: string | null | undefined): string {
+    const tz = (timezone ?? '').trim();
+    if (!tz || tz.toUpperCase() === 'UTC') return 'UTC';
+    return `${tz.split('/').pop()!.replace(/_/g, ' ')} time`;
+}
 
 const DAYS = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
 
@@ -56,7 +65,13 @@ function dayList(dow: string): string | null {
  * words it gave before are unchanged). Anything else comes back as the
  * expression itself.
  */
-export function cronWords(expr: string | null | undefined): string {
+export function cronWords(expr: string | null | undefined, timezone?: string | null): string {
+    const words = utcCronWords(expr);
+    const zone = zoneWords(timezone);
+    return zone === 'UTC' ? words : words.replace(/ UTC\b/g, ` ${zone}`);
+}
+
+function utcCronWords(expr: string | null | undefined): string {
     const raw = (expr ?? '').trim();
     const parts = raw.split(/\s+/);
     if (parts.length !== 5) return raw;
@@ -66,7 +81,7 @@ export function cronWords(expr: string | null | undefined): string {
     // One month: the same words for that month ("January, daily 07:00 UTC").
     if (mon !== '*') {
         if (!isNum(mon) || Number(mon) < 1 || Number(mon) > 12 || dom !== '*' || dow !== '*') return raw;
-        const inner = cronWords(`${min} ${hour} * * *`);
+        const inner = utcCronWords(`${min} ${hour} * * *`);
         return inner.startsWith('Daily ') ? `${MONTHS[Number(mon) - 1]}, daily ${inner.slice(6)}` : raw;
     }
     const everyDay = dom === '*' && dow === '*';
@@ -111,7 +126,7 @@ export function scheduleWords(s: ScheduleLike): string {
         const unit = (s.interval_unit ?? 'minutes').replace(/s$/, '');
         return n === 1 ? `Every ${unit}` : `Every ${n} ${unit}s`;
     }
-    return cronWords(s.cron_expression);
+    return cronWords(s.cron_expression, s.timezone);
 }
 
 export type TriggerChip = {

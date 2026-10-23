@@ -286,7 +286,9 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
         schedule = {"name": plan.title, "description": plan.schedule.says, "enabled": False,
                     "target_type": "orchestration", "target_id": orch_id,
                     "prompt": plan.schedule.input or plan.summary, "schedule_type": "cron",
-                    "cron_expression": plan.schedule.cron.strip(), "missed_run_policy": "skip"}
+                    "cron_expression": plan.schedule.cron.strip(), "missed_run_policy": "skip",
+                    # Read on the person's clock (F948): the one they named, else their own; none is UTC.
+                    "timezone": plan.schedule.timezone or None}
         from core.models_schedule import ScheduleCreate, ScheduleInvalid, validate_timing
 
         try:

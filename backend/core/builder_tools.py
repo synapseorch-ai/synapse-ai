@@ -1361,6 +1361,9 @@ BUILDER_TOOL_SCHEMAS = [
                     "interval_value": {"type": "integer"},
                     "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
                     "cron_expression": {"type": "string", "description": "Standard 5-field cron, e.g. '0 8 * * 1-5'"},
+                    "timezone": {"type": "string", "description": (
+                        "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
+                        "one the person named, else their own. Leave it out for UTC")},
                 },
                 "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
             },
@@ -1404,7 +1407,10 @@ BUILDER_TOOL_SCHEMAS = [
                     "schedule_type": {"type": "string", "enum": ["interval", "cron"]},
                     "interval_value": {"type": "integer"},
                     "interval_unit": {"type": "string", "enum": ["minutes", "hours", "days"]},
-                    "cron_expression": {"type": "string", "description": "Standard 5-field cron, in UTC"},
+                    "cron_expression": {"type": "string", "description": "Standard 5-field cron, read in its timezone"},
+                    "timezone": {"type": "string", "description": (
+                        "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
+                        "one the person named, else their own. Leave it out for UTC")},
                 },
                 "required": ["schedule_id"],
             },
@@ -3012,7 +3018,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     return {"error": f"Agent '{patched.get('target_id')}' not found"}
             elif await _visible_orchestration(str(patched.get("target_id") or "")) is None:
                 return {"error": f"Orchestration '{patched.get('target_id')}' not found"}
-        if {"schedule_type", "interval_value", "interval_unit", "cron_expression"} & patch.keys():
+        if {"schedule_type", "interval_value", "interval_unit", "cron_expression", "timezone"} & patch.keys():
             try:
                 validate_timing(patched)
                 patched["next_run_at"] = _iso(compute_next_run(patched, _utc_now()))

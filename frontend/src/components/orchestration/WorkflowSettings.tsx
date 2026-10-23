@@ -13,6 +13,7 @@ import { CalendarClock, X } from 'lucide-react';
 import { Field, IconButton, Input, controlStyles } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { Orchestration } from '@/types/orchestration';
+import { zoneWords } from '@/components/run/workflowList';
 
 /** The card's frame for the settings: a header with close, and a scrolling body of sections. */
 export function WorkflowSettingsPanel({ name, onClose, children }: {
@@ -212,6 +213,7 @@ export type WorkflowSchedule = {
     interval_value?: number | null;
     interval_unit?: string | null;
     cron_expression?: string | null;
+    timezone?: string | null;
 };
 
 /** The schedules that start this workflow, read-only, with the way to change them. */
@@ -235,7 +237,7 @@ export function SchedulesList({ schedules, workflowId, href }: {
                                 <span className="block truncate text-text" translate="no">{s.name}</span>
                                 <span className="block truncate font-mono text-xs text-text-faint">
                                     {s.schedule_type === 'cron'
-                                        ? s.cron_expression
+                                        ? `${s.cron_expression ?? ''}${s.timezone ? ` · ${zoneWords(s.timezone)}` : ''}`
                                         : `every ${s.interval_value ?? '?'} ${s.interval_unit ?? ''}`.trim()}
                                 </span>
                             </span>

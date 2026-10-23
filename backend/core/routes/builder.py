@@ -70,8 +70,17 @@ class BuilderChatRequest(BaseModel):
     #: the run out of band rather than in `initial_state` — see
     #: `run_builder_stream` for why.
     images: list[str] = []
+    #: The person's own timezone, as the browser reports it (F948): a schedule they name no timezone for runs on it.
+    timezone: str | None = None
 
     _check_images = checked_images()
+
+
+def _person_timezone(name: str | None) -> str | None:
+    """The browser's timezone when it is one this server knows; else none, and a schedule runs in UTC."""
+    from core.models_schedule import _is_timezone
+
+    return name if name and _is_timezone(name) else None
 
 
 class BuilderResumeRequest(BaseModel):
@@ -289,6 +298,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         "chat_history": _format_history(request.history),
         "selected_agent_ids": list(request.selected_agent_ids or []),
         "can_create_agents": bool(request.can_create_agents),
+        "person_timezone": _person_timezone(request.timezone),
         # Knowledge's two step types, for the builder's prompts while Knowledge
         # is on; empty while off, so no workspace is offered steps that would
         # fail its runs (R1).

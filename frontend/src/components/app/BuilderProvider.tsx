@@ -556,6 +556,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                               images,
                               current_orchestration_id: currentOrchestrationId.current,
                               client_session_id: conversationId(),
+                              // A schedule the person names no timezone for runs on their own clock (F948).
+                              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                           }),
                       });
 

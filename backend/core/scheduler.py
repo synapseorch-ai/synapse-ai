@@ -9,6 +9,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 from core.store import schedules as schedule_store
 
@@ -77,11 +78,45 @@ def compute_next_run(schedule: dict, from_dt: datetime) -> datetime:
         # cron
         from croniter import croniter
         cron_expr = schedule.get("cron_expression") or "0 * * * *"
-        # croniter expects a naive datetime; strip tzinfo for calculation
-        naive = from_dt.replace(tzinfo=None)
-        cron = croniter(cron_expr, naive)
-        next_naive = cron.get_next(datetime)
-        return next_naive.replace(tzinfo=timezone.utc)
+        tz = (schedule.get("timezone") or "").strip()
+        if not tz or tz.upper() == "UTC":
+            # croniter expects a naive datetime; strip tzinfo for calculation
+            naive = from_dt.astimezone(timezone.utc).replace(tzinfo=None) if from_dt.tzinfo else from_dt
+            cron = croniter(cron_expr, naive)
+            next_naive = cron.get_next(datetime)
+            return next_naive.replace(tzinfo=timezone.utc)
+        return _next_on_local_clock(cron_expr, ZoneInfo(tz), from_dt)
+
+
+def _next_on_local_clock(cron_expr: str, zone: "ZoneInfo", from_dt: datetime) -> datetime:
+    """The cron read on `zone`'s wall clock, in UTC (F948): 4 PM in New York stays 4 PM through the clocks changing.
+
+    The two hours the clocks make awkward, by one rule: a wall time that does not exist that day (2:30 when they jump
+    from 2:00 to 3:00) runs at the first minute that does; a wall time that happens twice (1:30 when they fall back)
+    runs once, the first time.
+    """
+    from croniter import croniter
+
+    start = (from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)).astimezone(zone)
+    cron = croniter(cron_expr, start.replace(tzinfo=None))
+    for _ in range(1000):
+        wall = cron.get_next(datetime)
+        at = _existing(wall, zone).astimezone(timezone.utc)
+        # Past `from_dt` only: the wall time's first occurrence may already be behind it (the repeated hour).
+        if at > from_dt.astimezone(timezone.utc):
+            return at
+    raise ValueError(f"'{cron_expr}' has no next run in {zone.key}")
+
+
+def _existing(wall: datetime, zone: "ZoneInfo") -> datetime:
+    """A naive wall time on `zone`'s clock as the moment it names: its first occurrence (`fold=0`), or, if the clocks
+    skip it, the first minute after it that exists."""
+    for minute in range(0, 24 * 60):
+        candidate = wall + timedelta(minutes=minute)
+        aware = candidate.replace(tzinfo=zone)
+        if aware.astimezone(timezone.utc).astimezone(zone).replace(tzinfo=None) == candidate:
+            return aware
+    return wall.replace(tzinfo=zone)
 
 
 def _utc_now() -> datetime:

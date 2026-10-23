@@ -228,7 +228,7 @@ def _shown(value):
 #: A value for every field an op declares (MCP2's re-check, B: a hand-made sample that sets no `description` let
 #: a new schedule's line leave it out though its call sent it). Each is distinctive, so its presence is checked.
 _EVERY = {"name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND THE DIGEST", "model": "model-x",
-          "cron_expression": "0 3 * * *", "schedule_type": "cron", "interval_value": 6, "interval_unit": "hours",
+          "cron_expression": "0 3 * * *", "schedule_type": "cron", "timezone": "Europe/Amsterdam", "interval_value": 6, "interval_unit": "hours",
           "runs": {"kind": "workflow", "id": "w1", "name": "Nightly digest"}, "add": ["send_email"],
           "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
           "destructive": "confirm", "open_world": "deny", "undeclared": "allow", "max_total_turns": 7,

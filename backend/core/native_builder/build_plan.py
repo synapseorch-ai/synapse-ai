@@ -181,6 +181,8 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
                    if ws.boards_on else "Off in this workspace: no board tools."),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
+        # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
+        "person_timezone": state.get("person_timezone") or "UTC",
         "may_make_agents": state.get("can_create_agents") is not False,
         # What this product does and does not, so a `cannot` names the nearest thing that works (SAI2's review, nit).
         "capabilities": (await product_capabilities({}, server_module, []))["capabilities"],
@@ -324,6 +326,17 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state)
+    if plan.schedule:
+        # A schedule runs on its person's clock (F948, Naveen 10-23): the timezone they named, else their own (the
+        # browser's, sent with the turn); with neither, UTC.
+        from core.models_schedule import _is_timezone
+
+        named = (plan.schedule.timezone or "").strip()
+        if named and not _is_timezone(named):
+            errors.append(f"schedule.timezone: '{named}' is not a timezone name; write one like America/New_York, "
+                          "or leave it out for the person's own")
+        elif not named and state.get("person_timezone"):
+            plan.schedule = plan.schedule.model_copy(update={"timezone": state["person_timezone"]})
     if errors:
         return Examined(plan, errors)
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.
