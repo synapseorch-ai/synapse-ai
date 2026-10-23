@@ -15,9 +15,9 @@ from core.orchestration.steps import _eval_state_expr
 
 GATES = {
     # gate: (the human step's output key, approved →, anything else →)
-    # SAI2-P3: a yes goes on to the agents' instructions and the approval; anything else is read in code (build
-    # without, connected, or back to the planner with what the person said).
-    "step_approval_route": ("review_feedback", "step_agents_route", "step_plan_answer"),
+    # SAI2-P3: a yes goes straight to the approval (the agents' instructions were on the card); anything else is
+    # read in code (build without, connected, or back to the planner with what the person said).
+    "step_approval_route": ("review_feedback", "step_plan_approve", "step_plan_answer"),
     "step_manage_route": ("manage_review", "step_after_yes", "step_change"),
 }
 
@@ -65,8 +65,12 @@ def test_the_review_asks_for_the_words_the_gate_takes():
     redrafts."""
     import re
 
-    step = _steps()["step_human_review"]
-    named = re.findall(r"\*\*(\w+)\*\*|'([^']+)'", step["human_prompt"].split("---")[0])
+    # SAI2-P3: the build's lead-in is code's, following the card's offers (`build_plan.LEAD_BUILD`); the change
+    # review's is the definition's.
+    from core.native_builder.build_plan import LEAD_BUILD
+
+    assert _steps()["step_human_review"]["human_prompt"].startswith("{state.plan_checked.lead}")
+    named = re.findall(r"\*\*(\w+)\*\*|'([^']+)'", LEAD_BUILD)
     words = [a or b for a, b in named]
     assert "approve" in words
     gate = _steps()["step_approval_route"]

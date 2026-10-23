@@ -151,15 +151,22 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
     return {"finish": "submit_change", **change.model_dump(exclude_none=True)}
 
 
-#: A question that asks the person for a secret (chg-09: a key asked in chat was typed there and kept) …
+#: A question that asks the person for a secret (chg-09: a key asked in chat was typed there and kept): a key, a
+#: token, a password, a PIN or a code, or a login, as something of theirs or a service's. Not a count of tokens, a
+#: password reset or a licence to buy (SAI2's review, 17).
 _ASKS_SECRET = re.compile(
-    r"(?i)\b(?:(?:api|access|private|secret|license)[\s_-]?keys?|tokens?|secrets?|pass(?:word|wd|code|phrase)s?|"
-    r"credentials?|bearer|client[\s_-]?secret|(?:log|sign)[\s-]?in\s+details|auth(?:entication|orization)?\s+"
-    r"(?:header|code|details))\b")
-#: … or for how a service is reached (res-05: "Apps catalog, MCP URL or HTTP tool?"), which the lookup finds out.
+    r"(?i)\b(?:(?:api|access|private|secret|signing)[\s_-]?keys?|(?:api|access|auth|bearer|refresh|secret|personal)"
+    r"[\s_-]?tokens?|client[\s_-]?secret|credentials?|bearer|pass(?:word|wd|code|phrase)s?(?!\s+reset)|"
+    r"(?:2fa|mfa|otp|one[\s-]time|verification|security|access)\s+codes?|\bpin\b|"
+    r"(?:log|sign)[\s-]?in(?:\s+details)?\s+(?:for|to)\b|"
+    r"(?:your|their|its|the)\s+(?:[\w.-]+\s+){0,2}(?:keys?|tokens?|logins?)\b(?!\s+(?:dates?|points?|metrics?|"
+    r"words?|people|accounts?|questions?|steps?|results?)))")
+#: … or for how a service is reached (res-05: "Apps catalog, MCP URL or HTTP tool?"), which the lookup finds out. A
+#: "which one" question may still name an HTTP tool the workspace has.
 _ASKS_WAY_IN = re.compile(
-    r"(?i)\bhow\b.{0,80}?\b(?:connect\w*|integrat\w*|hook\w*\s+(?:it\s+)?up|authenticat\w*)\b|"
-    r"\b(?:mcp|http\s+tool|apps?\s+catalog\w*|webhooks?|integrat\w*\s+with)\b")
+    r"(?i)\bhow\b[^?]{0,80}?\b(?:connect(?:ed|ing)?|integrat(?:e|ed|ing)|hook(?:ed)?\s+(?:it\s+)?up|"
+    r"authenticat\w*)\b[^?]{0,40}?\b(?:to|with|into|via)\b|\b(?:mcp(?:\s+(?:server|url))?|apps?\s+catalog\w*|"
+    r"via\s+(?:its|their|the)\s+api|api\s+or\s+(?:a\s+)?webhook)\b|\bhttp\s+tool\b")
 SECRET_ASKED = ("Never ask the person for a key, a token or a password: a connection comes through a Connect card, "
                 "never through the chat. Ask only what the person alone knows.")
 WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a tool, and how it is reached, is "
@@ -177,16 +184,18 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     question = _text(args.get("question"))
     if not question:
         return {"error": "ask_person needs the question."}
-    if _ASKS_SECRET.search(question):
+    options = [o.strip() for o in args.get("options") or [] if isinstance(o, str) and o.strip()][:8]
+    asked = " / ".join([question, *options])
+    if _ASKS_SECRET.search(asked):
         return {"error": SECRET_ASKED}
-    if _ASKS_WAY_IN.search(question):
+    way_in = _ASKS_WAY_IN.search(asked)
+    if way_in and not (args.get("about") == "which" and way_in.group(0).lower().startswith("http tool")):
         return {"error": WAY_IN_ASKED}
     _, run = _run()
     asked = sum(1 for h in (run.step_history if run is not None else []) if h.get("step_id") in _ASKING_STEPS)
     if asked >= QUESTIONS:
         return {"error": ASKED_ENOUGH.format(n=asked)}
     about = args.get("about") if args.get("about") in ABOUT else "what"
-    options = [o.strip() for o in args.get("options") or [] if isinstance(o, str) and o.strip()][:8]
     return {"finish": "ask_person", "question": question, "about": about, "options": options}
 
 

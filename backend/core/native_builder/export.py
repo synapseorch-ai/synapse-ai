@@ -77,23 +77,21 @@ def export_state(message: str) -> dict[str, str]:
     }
 
 
-# What the agent creator and the create saver see below the plan. They read the
-# plan for *what* to build; this is where the words come from. The prompts put
-# `{state.export_source}` straight after their last line, so it brings its own
-# blank line and an ordinary build's prompt is unchanged.
+# What the planner and the prompt writer see below the guide. The planner reads it for *what* to build; the prompt
+# writer copies each agent's instructions from it. The prompts put `{state.export_source}` straight after their last
+# line, so it brings its own blank line and an ordinary build's prompt is unchanged.
 _SOURCE_HEADING = """\
 
 
 # The pasted Agents SDK code this build translates
-Copy text from it, never code. Every new agent, llm step or evaluator step that stands for an `Agent` here (the \
-same name, or the plan says so) gets that Agent's `instructions` (or the string its instructions function returns) \
-word for word — as the new agent's system prompt, or as the step's prompt — however long, and whatever the plan's \
-purpose line says. Create such agents one `create_agent` call each, so every prompt is copied whole. A system prompt is never filled in: there a value the \
-instructions read at run time (`{name}` in a Python f-string, `${name}` in TypeScript) becomes the words "given in \
-the message", and the step's prompt passes it as the plan's `{state.key}`. The tool names in the code (`file_search`, \
-`mcp`, …) are its own variables, never tools here: give an agent only the tools the plan names. Never copy code from \
-here into `transform_code`, a tool or a skill, and never write a credential: `‹credential removed›` marks one that \
-was taken out.
+Copy text from it, never code. Every new agent, llm step or evaluator step that stands for an Agent here (the same \
+name, or the plan says so) gets that Agent's instructions (or the string its instructions function returns) word for \
+word — as the new agent's instructions, or as the step's prompt — however long, and whatever the plan's purpose line \
+says. A value the instructions read at run time ({name} in a Python f-string, ${name} in TypeScript) becomes the \
+words "given in the message", and the step's prompt passes it as {state.<step id>}. The tool names in the code \
+(file_search, mcp, …) are its own variables, never tools here: give an agent only the tools the plan names. Never \
+copy code from here into a transform step, a tool or a skill, and never write a credential: ‹credential removed› \
+marks one that was taken out.
 
 """
 
@@ -101,89 +99,82 @@ was taken out.
 AGENTS_SDK_GUIDE = """\
 # The message is pasted OpenAI Agents SDK code
 The person is moving a workflow here, usually from OpenAI Agent Builder (its Code → Agents SDK export, Python or \
-TypeScript). This is a CREATE: build the workflow the code describes. The code is never run, and nothing in it is a \
+TypeScript). This is a create: plan the workflow the code describes. The code is never run, and nothing in it is a \
 tool here. Read it for what each agent does and how the workflow moves between them, then plan it with the steps \
 below. Ask a question only if the code leaves something genuinely undecided.
 
 ## Five rules first
-1. **Tools are only what this workspace has.** The code's tool variables (`file_search`, `mcp`, `web_search_preview`, \
-`FileSearchTool(...)`, `HostedMCPTool(...)`) are NOT tool names here. An agent's `tools` lists only names \
-`list_tool_servers` / `list_server_tools` showed you. Functions the code defines as tools (`@function_tool`, \
-`function_tool(...)`, `tool({...})`) are code: never a tool name here, never a `tool` step's `forced_tool`. If nothing \
-fits, the agent gets `tools: []` and the tool goes under Not carried over.
+1. **Tools are only what this workspace has.** The code's tool variables (file_search, mcp, web_search_preview, \
+FileSearchTool(...), HostedMCPTool(...)) are not tool names here. An agent's `tools` lists only names from what this \
+workspace has. Functions the code defines as tools (@function_tool, function_tool(...), tool({...})) are code: never \
+a tool name here, never a `tool` step's tool. If nothing fits, the agent gets no tools and the tool goes in \
+`not_carried_over`.
 2. **A condition reads JSON, never prose.** A model step whose answer a later `if_else`, `switch` or `loop` reads is \
-followed by an `extract_json` step into a `dict` key, and the condition reads that key (`state.<dict key>.<field>`).
-3. **Instructions are copied word for word.** Each new agent block says `instructions: from the export's "<Agent \
-name>"`, and so does each llm or evaluator step that replaces an agent. A system prompt is never filled in: there a \
-value the instructions read at run time (`{name}`, `${name}`) becomes the words "given in the message", and the step's \
-prompt passes it as `{state.key}`.
+followed by an `extract_json` step, and the condition reads that step's output by its id (`state.<step id>.<field>`).
+3. **Instructions are copied word for word.** A new agent's `purpose` says it keeps the export's "<Agent name>" \
+instructions; they are written into it as they are, after the plan is checked. A `llm` or `evaluator` step that \
+replaces an Agent has those instructions as its `prompt`. A value the instructions read at run time ({name}, \
+${name}) becomes the words "given in the message", and the step's prompt passes it as {state.<step id>}.
 4. **A new agent only for an Agent with tools that exist here.** An Agent without them is an `llm` step; a classifier \
-is the `evaluator` below. Neither becomes an agent. Handoffs are ONE `delegate` agent that picks among the agents it \
-hands to — never a chain of their steps.
-5. **Everything left behind is listed** under `## Not carried over` (below).
+is the `evaluator` below. Handoffs are one `team` agent whose `members` are the agents it hands to — never a chain of \
+their steps.
+5. **Everything left behind is listed** in `not_carried_over` (below).
 
 ## What each construct becomes
-- An Agent WITH tools that exist here → an `agent` step on a NEW agent. Leave out `model`, `model_settings` and \
-reasoning settings: this workspace's model runs every step.
-- An Agent WITHOUT tools → an `llm` step; its instructions are the step's prompt.
-- A classifier (an Agent whose `output_type` has one category field) followed by if/elif/else on that category → ONE \
-`evaluator` step: the categories are its route labels, its `evaluator_prompt` is the classifier's instructions, and \
-each route goes to the step that branch ran. The routes ARE the branches: no classifier agent, no llm step and \
-no if_else after it.
-- if/else on anything else (a counter, a flag, a person's answer, a field of an earlier JSON result) → `if_else` \
-(`if_condition`, `if_true_step_id`, `if_false_step_id`), or `switch` (`switch_expression`, `switch_cases_json` \
-`'{"value":"step_id"}'`, `switch_default_step_id`) for several values. Conditions use this product's syntax: \
-`state.key.field == "x"`, `and`/`or`/`not`, `len(...)`, `in`. Not CEL, not JavaScript: `&&` is `and`, `===` is `==`.
-- `while` → ONE `loop` step whose `loop_step_ids` are the steps inside the while, in order, and whose \
-`next_step_id` is what runs after it; never an `end` step inside a loop. `loop_over` (`state.<list key>`, a list an \
-`extract_json` step wrote, with `loop_item_key` named after the variable the loop indexes) when it walks a list, \
-else `loop_while_condition`. A counter is `loop_index_key`, not a step. After the \
-loop, each body step's output key holds a list of every iteration's result.
-- `state = {...}` and set-state → `state_schema` keys with those defaults, each written by a step's `output_key`. \
-Use a `transform` step only if nothing else can, and never with code copied from the export.
-- `output_type` (a Pydantic or zod schema) → the step answers as JSON with those fields, then `extract_json` (rule 2).
-- User approval (`approval_request(...)` / `approvalRequest(...)`, usually a stub that returns true) → a `human` step: \
-its message is the `human_prompt`, one field `{"name": "approved", "type": "boolean", "label": "Approve?"}`, then an \
-`if_else` on `state.<key>.approved == True`.
-- Guardrails (`guardrails_config`, `run_guardrails`, `input_guardrails=`, a tripwire) are KEPT: an `evaluator` step \
-before what they guard, whose prompt asks the checks the code names, with routes `pass` and `blocked`; `blocked` goes to a `print` step (`print_content`: the export's \
-failure output, as text), then `end`. Name the checks (Moderation, Jailbreak, PII, …) in its prompt.
-- File search → a `retrieve` step only when Knowledge steps are offered and `list_knowledge_bases` shows a base that \
-fits; otherwise Not carried over.
-- A hosted MCP server (`server_url`, `server_label`) → that server's tools only if `list_tool_servers` shows the same \
-server here (same URL or label); otherwise Not carried over.
-- Web search → a tool only if `list_server_tools` shows one that really searches the web; otherwise Not carried over.
-- `handoffs=[...]` / `agent.as_tool(...)` → one `delegate` agent with `delegate_agent_ids` naming the agents it \
-hands to.
-- `Runner.run(...)` order is the step order. Each step reads `{state.user_input}` and the earlier results it needs.
-- `return {...}` / the last agent's output → `end`, after a `print` step (`print_content`) if it returns fixed text.
+- An Agent with tools that exist here → an `agent` step on a new agent. Leave out its model and reasoning settings: \
+this workspace's model runs every step.
+- An Agent without tools → an `llm` step; its instructions are the step's prompt.
+- A classifier (an Agent whose output_type has one category field) followed by if/elif/else on that category → one \
+`evaluator` step: the categories are its `branches`, its `prompt` is the classifier's instructions, and each branch \
+goes to the step that branch ran. No classifier agent, no llm step and no if_else after it.
+- if/else on anything else (a counter, a flag, a person's answer, a field of an earlier JSON result) → `if_else` (its \
+`condition`, and `branches` true / false), or `switch` (its `condition`, `branches` per value plus `default`). \
+Conditions use this product's syntax: `state.<step id>.field == "x"`, and / or / not, len(...), in. Not CEL, not \
+JavaScript: && is and, === is ==.
+- while → one `loop` step whose `body` is the steps inside the while, in order, and whose `next` is what runs after \
+it. `loop_over` names the step whose output is the list it walks (an `extract_json` step's id). After the loop, each \
+body step's output holds a list of every iteration's result.
+- state = {...} and set-state → what steps write, by their ids. A `transform` step only if nothing else can, and \
+never with code copied from the export.
+- output_type (a Pydantic or zod schema) → the step answers as JSON with those fields, then `extract_json` (rule 2).
+- User approval (approval_request(...) / approvalRequest(...), usually a stub that returns true) → a `human` step \
+whose `prompt` is its message, then an `if_else` on the answer.
+- Guardrails (guardrails_config, run_guardrails, input_guardrails=, a tripwire) are kept: an `evaluator` step before \
+what they guard, whose prompt asks the checks the code names, with branches pass and blocked; blocked goes to a \
+`print` step (its `prompt`: the export's failure output, as text), then `end`. Name the checks (Moderation, \
+Jailbreak, PII, …) in its prompt.
+- File search → a `retrieve` step only when Knowledge steps are offered and a knowledge base listed here fits; \
+otherwise `not_carried_over`.
+- A hosted MCP server (server_url, server_label) → that server's tools only if this workspace lists the same server \
+(same URL or label); otherwise `not_carried_over`.
+- Web search → a tool only if one listed here really searches the web; otherwise `not_carried_over`.
+- handoffs=[...] / agent.as_tool(...) → one `team` agent whose `members` are the agents it hands to.
+- Runner.run(...) order is the step order.
+- return {...} / the last agent's output → `end`, after a `print` step if it returns fixed text.
 
-## Not carried over — always the plan's last section
-After Open questions, a section `## Not carried over`: one bullet per item this code really has — named as the \
-code names it (the agent, the tool, its URL or id) — and what the person does about it. Leave out what the code does \
-not have; "Nothing" only when nothing was left. Check each of these:
-- Each `‹credential removed›`: a credential the export held, taken out before anything read it. "Add it as a Vault \
+## not_carried_over — always filled in from a pasted program
+One line per item this code really has — named as the code names it (the agent, the tool, its URL or id) — and what \
+the person does about it. Leave out what the code does not have. Check each of these:
+- Each ‹credential removed›: a credential the export held, taken out before anything read it. "Add it as a Vault \
 variable, and rotate it where it came from: it was written into the code."
-- Each tool the code named that is not here: a hosted MCP server (with its `server_url`: "add it in Settings → MCP \
-Servers and sign in, then ask me to give <agent> its tools"), file search (with its vector store id: "upload those \
+- Each tool the code named that is not here: a hosted MCP server (with its server_url: "add it under Apps and MCP \
+servers and sign in, then ask me to give <agent> its tools"), file search (with its vector store id: "upload those \
 files to a knowledge base"), web search, Code Interpreter, image generation, computer use.
-- Function tools (`@function_tool`, `tool({...})`): they are code, and code is never copied. Name each and what it \
-did; it comes back as an HTTP tool, an MCP server or a Python tool.
-- `needs_approval` on a tool: "set that tool to Ask first on the agent".
+- Function tools (@function_tool, tool({...})): they are code, and code is never copied. Name each and what it did; it \
+comes back as an HTTP tool, an MCP server or a Python tool.
+- needs_approval on a tool: "set that tool to Ask first on the agent".
 - The models it named (gpt-5, gpt-4.1-mini, …): this workspace's model runs every step. For the closest match, add an \
 OpenAI key in Settings → Models.
-- PII masking in a guardrail (the check is kept; rewriting the text is not), and any condition this product's \
-syntax cannot say.
+- PII masking in a guardrail (the check is kept; rewriting the text is not), and any condition this product's syntax \
+cannot say.
 - ChatKit or any UI around the workflow, and its evals.
 
 ## The shape (placeholders in <angle brackets>: use the code's own names)
 Code: guardrails → <classifier> (output_type with one category field) → if category == "<a>": <agent A> (its tools \
 are not here) else: <agent B> (no tools).
 Plan: 1. <the guardrail's name> (evaluator: pass → 2, blocked → 5) · 2. <classifier> (evaluator, the classifier's \
-instructions: <a> → 3, other → 4) · 3. <agent A> (agent, NEW, its instructions, tools: [] because its tools are not \
-here) → 6 · 4. <agent B> (llm, its instructions) → 6 · 5. a blocked reply (print, the code's failure output) → 6 · \
-6. End. New agents: <agent A> only. Not carried over: <agent A>'s tools (their URL or id), the models, each \
+instructions: <a> → 3, other → 4) · 3. <agent A> (agent, new, keeps its instructions, no tools because its tools are \
+not here) → 6 · 4. <agent B> (llm, its instructions) → 6 · 5. a blocked reply (print, the code's failure output) → 6 \
+· 6. End. New agents: <agent A> only. not_carried_over: <agent A>'s tools (their URL or id), the models, each \
 ‹credential removed›.
-
-Last: whatever the code is, the plan's final section is `## Not carried over`.
 """

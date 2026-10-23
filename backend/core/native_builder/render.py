@@ -79,8 +79,20 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else "",
                                        plan.schedule.timezone or "") if x)
         text = f"**When:** {when}" + (f" ({detail})" if detail else "")
+        if (plan.schedule.input or "").strip():
+            text += f"\n**Each run starts with:** {plan.schedule.input.strip()}"
         text += "\nIt is made paused: turn it on under Schedules once you have checked what each run starts with."
         parts.append(f"## Schedule\n{text}")
+
+    caps = [f"{plan.caps.credits:g} credits" if plan.caps and plan.caps.credits is not None else "",
+            f"${plan.caps.dollars:g} of models" if plan.caps and plan.caps.dollars is not None else ""]
+    if any(caps):
+        parts.append("## Limits\nEach run is capped at " + " and ".join(c for c in caps if c) + ".")
+
+    code = [(s.name, (s.config or {}).get("transform_code")) for s in plan.steps if s.type == "transform"]
+    if any(c for _, c in code):
+        parts.append("## Code it runs\n" + "\n\n".join(f"**{name}**\n```python\n{c.strip()}\n```"
+                                                       for name, c in code if c))
 
     if plan.approvals.asks_first:
         parts.append("## Asks you first\n" + _bullets(plan.approvals.asks_first, code=True))

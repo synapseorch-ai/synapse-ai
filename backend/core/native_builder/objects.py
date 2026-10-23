@@ -121,9 +121,6 @@ class PlanDraft(_Written):
                                                                           "plan does not carry over")
     settings: dict[str, Any] | None = Field(None, description="Optional workflow settings by their engine names: "
                                                               "state_schema, result_key")
-    acts_without_asking: list[str] = Field(default_factory=list, description="Only tools the person said may act "
-                                                                             "without asking them first; every other "
-                                                                             "tool that acts asks first")
 
 
 # ── what code fills in ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -345,7 +342,8 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
     for s in plan.steps:
         if s.workflow and s.workflow not in flows:
             errors.append(f"step {s.id}: workflow '{s.workflow}' is neither in `inner_workflows` nor an existing id")
-    used = {s.workflow for s in plan.steps if s.workflow}
+    # Run by the workflow or by another of its inner workflows (a nested build's own chain).
+    used = {s.workflow for s in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)] if s.workflow}
     for w in plan.inner_workflows:
         if w.title not in used:
             errors.append(f"inner workflow '{w.title}' is never run: add a workflow step that runs it, or drop it")
@@ -398,7 +396,7 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     acting = [t.name for t in statuses if t.status == "present"
               and await builder_guard.acting_tool(t.name, server_module, custom) is not None]
     acting += [t.name for t in statuses if t.status == "found"]  # an outside service: it acts until shown otherwise
-    kept = set(plan.approvals.acts_without_asking) | set(plan.acts_without_asking)
+    kept = set(plan.approvals.acts_without_asking)
     out.approvals = Approvals(asks_first=[n for n in acting if n not in kept],
                               acts_without_asking=[n for n in acting if n in kept])
 

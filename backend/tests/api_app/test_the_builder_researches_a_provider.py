@@ -296,7 +296,9 @@ def test_find_who_can_on_the_plan_goes_to_research_by_the_words_alone(answer, re
     value, error = _eval_state_expr(branch["if_condition"], {"review_feedback": feedback}, default=False)
     assert error is None
     assert (branch["if_true_step_id"] if value else branch["if_false_step_id"]) == (
-        "step_research" if researches else "step_approval_route")
+        # SAI2-P3 (SAI2's review, 25): the build's own lookup, which goes back to the plan, not the research route,
+        # which ended the build.
+        "step_plan_research" if researches else "step_approval_route")
 
 
 def test_the_cards_words_are_the_words_the_branch_matches():
@@ -334,10 +336,15 @@ async def test_a_plan_answered_find_who_can_is_researched_and_builds_nothing(cli
         "Shippo has a public API with a test mode.\nShippo — api — an account and a key — https://docs.goshippo.com",
         tool_call("report_findings", goal="buy shipping labels", options=[
             {"provider": "Shippo", "how": "api", "sources": ["https://docs.goshippo.com"]}]),
+        tool_call("submit_plan", kind="create", title="Kit labels", summary="Labels for each kit.", steps=[
+            {"id": "kits", "type": "tool", "name": "List kits", "does": "Reads the kits", "tool": "list_kits"}]),
     ])
     after = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "find who can"}})
     steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
-    assert "Research a Provider" in steps and "Route: Approved or Revise" not in steps, steps
+    # The lookup, then back to the plan with what it found: the build goes on (SAI2's review, 25).
+    assert steps.index("Find Who Provides It") < steps.index("Plan the Build"), steps
+    assert "Route: Approved or Revise" not in steps and "Research a Provider" not in steps, steps
+    assert next(e for e in after if e["type"] == "human_input_required")["orch_step_id"] == "step_human_review"
     assert [e["options"][0]["provider"] for e in after if e["type"] == "research_findings"] == ["Shippo"]
     assert not [e for e in after if e["type"] == "resource_saved"], "research builds nothing"
 

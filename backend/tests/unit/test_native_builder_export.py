@@ -254,7 +254,7 @@ class TestTheBuildersPromptsReadIt:
 
 class TestTheGuide:
     def test_it_asks_for_what_was_left_behind(self):
-        assert "## Not carried over" in AGENTS_SDK_GUIDE
+        assert "`not_carried_over`" in AGENTS_SDK_GUIDE  # the Plan's own field (SAI2-P3)
         assert CREDENTIAL_MARK in AGENTS_SDK_GUIDE
 
     def test_it_never_turns_the_code_into_code_here(self):
@@ -262,7 +262,7 @@ class TestTheGuide:
         assert "code is never copied" in AGENTS_SDK_GUIDE
 
     @pytest.mark.parametrize("step_type", ["if_else", "switch", "loop", "human", "evaluator", "extract_json",
-                                           "retrieve", "delegate", "llm", "print"])
+                                           "retrieve", "team", "llm", "print"])
     def test_it_names_the_steps_the_constructs_become(self, step_type):
         assert f"`{step_type}`" in AGENTS_SDK_GUIDE
 
@@ -289,3 +289,22 @@ class TestNothingPastedCanBeRun:
                 continue
             assert agent.get("skip_default_tools") is True, agent["id"]
             assert set(agent.get("tools") or []) <= BUILDER_TOOL_NAMES, agent["id"]
+
+
+class TestTheGuideIsWrittenInThePlansWords:
+    """SAI2's review, 15: the guide fed the planner the old savers' engine fields and tools it does not hold (F800's
+    class, at run time). Every backticked name in the guide and the code's heading is a Plan field or a step type,
+    and none is a tool."""
+
+    def test_no_engine_field_and_no_tool(self):
+        import re
+
+        from core.native_builder import prompt_lint
+        from core.native_builder.export import _SOURCE_HEADING
+
+        text = AGENTS_SDK_GUIDE + _SOURCE_HEADING
+        for old in ("if_true_step_id", "switch_cases_json", "loop_step_ids", "evaluator_prompt", "print_content",
+                    "human_prompt", "delegate_agent_ids", "create_agent", "## Not carried over"):
+            assert old not in text, old
+        named = set(re.findall(r"`([a-z][a-z0-9_]+)`", text))
+        assert not named & prompt_lint.known_tools(), named & prompt_lint.known_tools()

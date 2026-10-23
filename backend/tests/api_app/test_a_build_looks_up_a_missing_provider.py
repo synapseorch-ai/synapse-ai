@@ -78,8 +78,9 @@ async def test_a_build_whose_tools_all_exist_is_not_researched(client, builder, 
 
 async def test_an_approved_build_that_still_needs_its_tool_says_which_and_what_to_connect(client, builder,
                                                                                             fake_llm):
-    """F768: a typed yes to a plan whose tool is not connected builds nothing and says which tool and what to
-    connect — the card never offered Build it (Naveen, 10-23), and the approval refuses it in code."""
+    """F768: a typed yes to a plan whose tool has no way in builds nothing: the card never offered Build it (Naveen,
+    10-23), the approval refuses it in code, and the person is back at the same review, which says which tool and
+    what to connect (SAI2's review, 18: no dead end, no model call)."""
     fake_llm.script(_stripe_script())
     events = await stream(client, "/api/builder/chat",
                           {"message": "When a treatment plan is accepted, send the patient a Stripe payment link"})
@@ -87,9 +88,8 @@ async def test_an_approved_build_that_still_needs_its_tool_says_which_and_what_t
 
     fake_llm.reset()
     after = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "approve"}})
-    from core.orchestration.state import SharedState
-
-    summary = (await SharedState.restore(run_id)).run.shared_state["summary"]
-    assert summary.startswith("Nothing was built:") and "`stripe_create_payment_link`" in summary, summary
-    assert "Connect an app or service that provides it" in summary and summary != "Nothing in your workspace changed."
+    again = next(e for e in after if e["type"] == "human_input_required")
+    assert again["orch_step_id"] == "step_human_review"
+    assert again["prompt"].startswith("Here is the proposed plan. It can't be built as it is yet")
+    assert "`stripe_create_payment_link`" in again["prompt"] and "Connect an app or service" in again["prompt"]
     assert not [e for e in after if e["type"] == "resource_saved"] and not fake_llm.calls

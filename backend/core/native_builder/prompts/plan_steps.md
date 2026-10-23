@@ -6,7 +6,7 @@ Each step has an `id` (short snake_case, unique), a `type`, a `name` a person re
 - `if_else`: `condition` is an expression over what earlier steps wrote, read by their step ids, e.g. `state.check_weather.wind_kmh > 40`; `branches` are `{"true": id, "false": id}`.
 - `switch`: `condition` is such an expression; `branches` map each of its values to a step id, plus `default`.
 - `evaluator`: a model judges and picks a branch; `prompt` says how to judge, `branches` map each label to a step id. Use it only where the choice is a judgement in words.
-- `loop`: `body` lists the step ids run each time; `loop_over` names the step whose output is the list, e.g. `fetch_emails`. Inside a body, route with a switch, never an evaluator.
+- `loop`: `body` lists the step ids run each time, one after another; `loop_over` names the step whose output is the list, e.g. `fetch_emails`. Nothing inside a body branches: branch after the loop, on what it wrote.
 - `parallel`: `body` lists the branches' first step ids; they meet at a `merge` step.
 - `workflow`: runs another workflow, by an existing workflow's id or a title from `inner_workflows`, which are saved first.
 - `retrieve` / `ingest`: search or fill knowledge bases, named by id in `config`.

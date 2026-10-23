@@ -443,7 +443,8 @@ async def acting_tool(name: str, server_module: Any, custom: list | None = None)
 
 
 async def unapproved(workflows: list[dict], agents: dict[str, dict], server_module: Any, *,
-                     made_agents: set[str], exempt: set[str], strict: bool = True) -> tuple[list[str], list[str]]:
+                     made_agents: set[str], exempt: set[str], strict: bool = True,
+                     own_steps: set[str] | None = None) -> tuple[list[str], list[str]]:
     """`(issues, warnings)`: tools that change something outside this workspace and can run with nobody approving.
 
     An approval is a Human step before a tool step on every path from the entry, or the agent's own policy asking
@@ -489,9 +490,12 @@ async def unapproved(workflows: list[dict], agents: dict[str, dict], server_modu
                 if name in exempt or step.get("id") not in unasked or (tool := await acting(name)) is None:
                     continue
                 if decide(tool, resolve_policy(agent, settings))[0] == "allow":
+                    # `own_steps`: on an update, only the steps it adds or changes are the build's own; what runs
+                    # today and is left as it is gets a warning, never a refusal (SAI2's review, 1).
                     say(f"Step '{label}' runs `{name}`, which changes something outside this workspace, with nobody "
                         "approving it first. Put a Human step before it; or, if the person said it may act without "
-                        "asking, the plan lists it under 'Acts without asking'.", True)
+                        "asking, the plan lists it under 'Acts without asking'.",
+                        own_steps is None or step.get("id") in own_steps)
             elif step.get("type") == "agent" and agent:
                 own = agent.get("id") in made_agents
                 tools = [t for t in agent.get("tools") or [] if isinstance(t, str)]

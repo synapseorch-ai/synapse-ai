@@ -323,7 +323,7 @@ class TestAParseFailureGoesSomewhereSafe:
         assert steps["step_manage_route"]["if_false_step_id"] == "step_change"
         # A no is read in code (SAI2-P3): an answer that cannot be read goes back to the planner, never on.
         answered = steps["step_plan_answer_route"]
-        assert answered["type"] == "switch" and answered["switch_default_step_id"] == "step_plan"
+        assert answered["type"] == "switch" and answered["switch_default_step_id"] == "step_plan_context"
         assert "step_save" not in answered["switch_cases"].values()
         # A build check whose outcome cannot be read says it failed and ends.
         checked = steps["step_plan_route"]
@@ -563,7 +563,8 @@ class TestWhatWasAskedForIsBuilt:
             return [
                 s for s in orch["steps"]
                 if target in [s.get("next_step_id"), s.get("if_true_step_id"),
-                              s.get("if_false_step_id"), *(s.get("route_map") or {}).values()]
+                              s.get("if_false_step_id"), *(s.get("route_map") or {}).values(),
+                              *(s.get("switch_cases") or {}).values(), s.get("switch_default_step_id")]
             ]
 
         # Walk back from the save to the start; every path passes the review.

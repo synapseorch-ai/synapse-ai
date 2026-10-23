@@ -1,8 +1,9 @@
 """Synapse AI's build route after the person's yes: the agents' instructions, the approval, and the save, in code
 (SAI2-P3, D300; F940, F941).
 
-* `submit_prompts` (the prompt writer's E2 finish): instructions for each of the Plan's new agents, by name. Written
-  after the yes and before the approval is recorded, so the approval covers the exact calls (Naveen, 10-23, Q2).
+* `submit_prompts` (the prompt writer's E2 finish): instructions for each of the Plan's new agents, by name, and what
+  each was written for. Written before the review, shown on the card and covered by the digest, so the person's yes
+  covers exactly what is saved (Naveen, 10-23, Q2 as revised after MCP2's review).
 * `approve_plan` (E1, on F754's yes side): checks the yes itself, that what waits is what the card showed (the digest
   `check_build` took), and that the card offered Build it; then records the person's approval of exactly the calls
   `save_build` makes (F778, `review.record_approval`), with placeholders for the ids the build makes (Q1, F940), and
@@ -25,14 +26,14 @@ from typing import Any
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core.native_builder import objects as O
-from core.native_builder.build_plan import (FINDINGS_KEY, MADE, _obj, _state, checked_in, dry_issues,
-                                            placeholder_mint, reviewed_of, workspace)
+from core.native_builder.build_plan import (FINDINGS_KEY, MADE, _obj, _state, agent_fingerprint, checked_in,
+                                            dry_issues, placeholder_mint, reviewed_of, workspace)
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 _log = get_logger(__name__)
 
-PROMPTS_KEY, ANSWER_KEY, APPROVAL_KEY = "agent_prompts", "review_feedback", "plan_approval"
+ANSWER_KEY, APPROVAL_KEY = "review_feedback", "plan_approval"
 EXISTING_KEY = "existing_orch"
 #: What a removal after a failed save says, beside the failure itself.
 UNDONE = "the build stopped before it was saved whole"
@@ -46,9 +47,9 @@ def _plan_of(checked: dict) -> O.Plan:
     return O.Plan.model_validate(checked.get("plan") or {})
 
 
-def _prompts(state: dict) -> dict[str, str]:
-    raw = _obj(state.get(PROMPTS_KEY))
-    raw = raw.get("prompts") if isinstance(raw, dict) and isinstance(raw.get("prompts"), dict) else raw
+def _prompts(checked: dict) -> dict[str, str]:
+    """The new agents' instructions the card showed (and the digest covers), never the run's working copy."""
+    raw = checked.get("prompts")
     return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
 
 
@@ -67,9 +68,11 @@ SUBMIT_PROMPTS = {"type": "function", "function": {
 
 
 async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> dict:
-    from core.secret_scrub import holds_credential
+    from core.native_builder.change_tools import _holds_a_key
 
-    names = [a.get("name") for a in (checked_in(_state()).get("plan") or {}).get("agents") or []]
+    checked = checked_in(_state())
+    agents = (checked.get("plan") or {}).get("agents") or []
+    names = [a.get("name") for a in agents]
     given = {_text(p.get("agent")): _text(p.get("instructions")) for p in args.get("prompts") or []
              if isinstance(p, dict)}
     unknown = [n for n in given if n not in names]
@@ -77,9 +80,11 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
     if unknown or empty:
         return {"error": "Write instructions for each of the plan's new agents, by its name: "
                          + ", ".join(f'"{n}"' for n in names) + "; and for no other."}
-    if any(holds_credential(text) for text in given.values()):
+    if _holds_a_key(given):  # a key, or the door's mark where one was (SAI2's review, 3)
         return {"error": "Instructions never hold a key, a token or a password: the agent's tools carry those."}
-    return {"finish": "submit_prompts", "prompts": given}
+    # What each was written for, so a plan revised since is written for again (`build_plan.prompts_for`).
+    written_for = {a["name"]: (checked.get("for") or {}).get(a["name"]) or agent_fingerprint(a) for a in agents}
+    return {"finish": "submit_prompts", "prompts": given, "for": written_for}
 
 
 # ── the calls a save makes ────────────────────────────────────────────────────────────────────────────────────────
@@ -105,7 +110,7 @@ def _workflow_call(tool: str, doc: dict, *, update: bool = False) -> dict:
 def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]:
     """Every call the save makes, in order, as the approval covers them: ids the build makes are placeholders. Pure,
     and the same each time for the same Plan: `approve_plan` records these, `save_build` makes them."""
-    from core.native_builder.build_plan import _orch_id
+    from core.native_builder.build_plan import _orch_id, inner_order
     from core.native_builder.compile import compile_plan
 
     compiled = compile_plan(plan, mint=placeholder_mint(), orch_id=_orch_id(plan, state))
@@ -117,7 +122,7 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
         args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy") if agent.get(k)}
         calls.append({"tool": "create_agent", "args": args, "makes": agent["id"], "kind": "agent",
                       "name": agent["name"]})
-    for inner in compiled.inner:
+    for inner in inner_order(compiled)[0]:  # each before any workflow of the build that runs it (SAI2's review, 2)
         calls.append(_workflow_call("create_orchestration", inner.orchestration))
     main = compiled.orchestration
     if plan.kind == "update":
@@ -197,15 +202,35 @@ async def approve_plan(args: dict, server_module: Any, events: list[dict]) -> di
     if digest(reviewed_of(checked)) != checked.get("digest"):
         return {"error": "What is waiting is not what the review showed, so nothing is built."}
     if "build" not in (checked.get("offers") or []):
-        return {"error": "Nothing was built: this plan can't be built as it is. "
-                         + (checked.get("say") or "It needs something first.")}
-    calls = save_calls(_plan_of(checked), _prompts(state), state)
+        # Back to the same review, with why (SAI2's review, 18): no call is spent, and the plan stays open.
+        return {"error": "This plan can't be built as it is yet. "
+                         + (checked.get("say") or "It needs something first."), "refused": "not_offered"}
+    calls = save_calls(_plan_of(checked), _prompts(checked), state)
     review.record_approval(state, reviewed_of(checked), _caller(), [(c["tool"], c["args"]) for c in calls],
                            run_id=run_id)
     return {"approved": len(calls), "before": await _ids_now()}
 
 
 # ── the save ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+_SHAPE = ("name", "description", "entry_step_id", "steps", "state_schema", "result_key", "max_total_turns",
+          "timeout_minutes", "max_run_credits", "max_run_usd")
+
+
+async def _moved_since_read(state: dict) -> str | None:
+    """The workflow's name when someone changed it after it was read for the review (P2's `_moved_since`, for a
+    whole workflow: SAI2's review, 12); None when it reads as it did."""
+    from core.store.resources import get_orchestration
+
+    read = _obj(state.get(EXISTING_KEY))
+    if not isinstance(read, dict) or not read.get("id"):
+        return None
+    now = await get_orchestration(read["id"])
+    if now is None:
+        return read.get("name") or read["id"]
+    shape = lambda o: json.dumps({k: o.get(k) for k in _SHAPE}, sort_keys=True, default=str)  # noqa: E731
+    return None if shape(now) == shape(read) else (now.get("name") or read["id"])
+
 
 def _stopped(events: list[dict], reason: str) -> dict:
     events.append({"type": "build_stopped", "reason": reason})
@@ -326,10 +351,14 @@ async def _read_back(calls: list[dict], made: dict[str, str]) -> str:
         if call["kind"] == "orchestration":
             real = made.get(call["makes"]) if call["makes"] else call["args"].get("orch_id")
             saved = await get_orchestration(real) if real else None
-            want = [s["id"] for s in json.loads(_filled(call["args"]["steps_json"], made))]
+            wanted = json.loads(_filled(call["args"]["steps_json"], made))
+            shape = lambda steps: sorted(  # noqa: E731
+                (s.get("id"), s.get("type"), s.get("forced_tool"), s.get("agent_id"), s.get("workflow_id"))
+                for s in steps)
             if saved is None:
                 said.append(f"the workflow \"{call['name']}\" is not there")
-            elif sorted(s.get("id") for s in saved.get("steps") or []) != sorted(want):
+            elif shape(saved.get("steps") or []) != shape(wanted):
+                # Each step's tool, agent and the workflow it runs, not only its id (SAI2's review, 24).
                 said.append(f"the workflow \"{call['name']}\" does not have the steps the plan has")
         if call["kind"] == "schedule":
             target = _filled(call["args"].get("target_id"), made)
@@ -364,8 +393,11 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)]
     if issues:
         return _stopped(events, _issues_reason(issues))
+    if plan.kind == "update" and (moved := await _moved_since_read(state)):
+        return _stopped(events, f"Nothing was changed: the workflow \"{moved}\" was changed since I read it for "
+                                "your review, so I left it as it is now. Ask again to change it.")
 
-    calls = save_calls(plan, _prompts(state), state)
+    calls = save_calls(plan, _prompts(checked), state)
     reviewed = reviewed_of(checked)
     before = (_obj(state.get(APPROVAL_KEY)) or {}).get("before") or {}
     caller = _caller()
@@ -395,6 +427,10 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             except ToolRefusal as why:
                 failure = f"{call['name']}: {why}"
                 break
+            except Exception as exc:  # noqa: BLE001 — anything else a handler raises still cleans up and is said
+                _log.warning("build save call %s failed: %s", call["tool"], exc)
+                failure = f"{call['name']}: it failed ({type(exc).__name__})"
+                break
             parsed = _obj(result)
             if isinstance(parsed, dict) and parsed.get("status") == "needs_confirmation":
                 failure = f"{call['name']}: your approval does not cover this call"
@@ -418,8 +454,9 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         run.step_progress.pop(PROGRESS_KEY, None)  # what it recorded is gone again
         return _stopped(events, f"Nothing was built: {reason}.")
     left = [c for c in calls if c.get("makes")]
+    notes = "".join(f" {n}" for n in checked.get("notes") or [])  # what the card said it does not do, said again
     return {"outcome": "saved", "made": {c["name"]: made[c["makes"]] for c in left if c["makes"] in made},
-            "effect": await _read_back(calls, made)}
+            "effect": await _read_back(calls, made) + notes}
 
 
 register_builder_tool(SUBMIT_PROMPTS, submit_prompts)

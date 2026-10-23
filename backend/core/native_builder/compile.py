@@ -300,7 +300,7 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
 
 
 async def validate(compiled: Compiled, plan: Plan, server_module: Any,
-                   existing_agents: dict[str, dict] | None = None) -> list[str]:
+                   existing_agents: dict[str, dict] | None = None, *, own_steps: set[str] | None = None) -> list[str]:
     """The checks that need the workspace, over the workflow and its inner ones: a tool nothing provides on a step
     (F489), set arguments that do not fit their tool (E1), and BWA1's decision 4 — nothing that changes something
     outside runs with nobody approving it, except what the Plan's "acts without asking" lets act. The issues are
@@ -313,7 +313,7 @@ async def validate(compiled: Compiled, plan: Plan, server_module: Any,
     found += await builder_guard.argument_issues(workflows, server_module)
     gaps, gap_warnings = await builder_guard.unapproved(
         workflows, agents, server_module, made_agents={a["id"] for a in compiled.agents},
-        exempt=set(plan.approvals.acts_without_asking), strict=True)
+        exempt=set(plan.approvals.acts_without_asking), strict=True, own_steps=own_steps)
     added = [*found, *gaps]
     compiled.issues += added
     compiled.warnings += [*warned, *gap_warnings]

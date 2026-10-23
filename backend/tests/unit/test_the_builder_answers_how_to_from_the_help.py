@@ -81,8 +81,12 @@ async def test_a_host_says_its_own():
         builder_help.set_help_index(None)
 
 
-def test_the_answering_agent_the_operator_and_the_analyst_hold_both():
-    from core.native_builder import bundled_definitions
-    for agent in bundled_definitions()["agents"]:
-        if agent["system_role"] in ("reporter", "operator", "requirements_analyst", "analyst"):
-            assert {"search_help", "product_capabilities"} <= set(agent["tools"]), agent["system_role"]
+def test_the_answering_agent_holds_both_and_the_planner_is_handed_the_capabilities():
+    """The reporter reads both; since SAI2-P3 the planner's pack carries the capabilities, read by code, so its
+    `cannot` names the nearest thing that works (the operator and the analyst are gone)."""
+    import inspect
+
+    from core.native_builder import build_plan, bundled_definitions
+    roles = {a["system_role"]: a for a in bundled_definitions()["agents"]}
+    assert {"search_help", "product_capabilities"} <= set(roles["reporter"]["tools"])
+    assert "product_capabilities" in inspect.getsource(build_plan.read_plan_context)

@@ -188,6 +188,9 @@ async def test_build_without_x_drops_its_steps_in_code_and_then_build_it_is_offe
     out, _ = await _check(run, draft)
     assert [s["id"] for s in out["plan"]["steps"]] == ["check", "tell"]
     assert out["offers"][0] == "build" and out["without"] == ["send_mailchimp_campaign"]
+    # A new draft from the planner (a re-plan) starts with none: X is never dropped again unasked.
+    replanned, _ = await _check(run, {**draft, "summary": "Send it after all."})
+    assert "send" in [s["id"] for s in replanned["plan"]["steps"]] and replanned["without"] == []
 
 
 @pytest.mark.parametrize("said, outcome", [
@@ -205,16 +208,17 @@ async def test_board_tools_are_an_agents_while_boards_are_on(client, boards):
     await boards(True)
     run = await _run()
     out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
-    assert out["outcome"] == "review" and "build" in out["offers"]
+    # Buildable: its new agent's instructions are written next, before the review (Q2).
+    assert out["outcome"] == "prompts" and [t["status"] for t in out["plan"]["tools"]] == ["present", "present"]
     as_a_step = {"id": "post", "type": "tool", "name": "Post it", "does": "x", "tool": "board_add"}
     sent, _ = await _call("submit_plan", _plan(CHECK, as_a_step), run)
     assert "board tools are an agent's" in sent["error"]
     await boards(False)
     run = await _run()
-    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
-    assert out["outcome"] == "research" and out["research"] == ["board_add"]
+    sent, _ = await _call("submit_plan", _plan(CHECK, post, agents=[poster]), run)
+    assert "Boards are off" in sent["error"] and "`board_add`" in sent["error"]  # never looked up as a provider
     sent, _ = await _call("submit_plan", _plan(CHECK, boards=[{"name": "Shipment delays"}]), run)
-    assert "Boards are off" in sent["error"]
+    assert "a plan makes no shared board" in sent["error"]
 
 
 async def test_an_update_applies_its_edits_to_the_workflow_as_it_is(client):
@@ -228,6 +232,10 @@ async def test_an_update_applies_its_edits_to_the_workflow_as_it_is(client):
     out, _ = await _check(run, {"finish": "submit_plan", **edits})
     assert out["outcome"] == "review" and out["plan"]["kind"] == "update"
     assert [s["id"] for s in out["plan"]["steps"]][:2] == ["check", "tell"]
+    # The card says what changes, not only the whole workflow (SAI2's review, 13).
+    assert out["changes"] == ['Change the step "Check the weather": what follows it',
+                              'Add the step "Draft the warning" (agent): Drafts a delay warning']
+    assert "## What changes" in out["review"]
 
 
 async def test_the_planner_s_question_and_cannot_are_passed_on(client):
@@ -279,3 +287,135 @@ def test_the_cards_build_without_words_are_what_the_answer_reads():
     cards = (Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/cards.tsx").read_text()
     for offer in ("offers.includes('build')", "o.startsWith('without:')", "offers.includes('find')"):
         assert offer in cards, offer
+
+
+async def test_a_shared_board_the_plan_names_is_said_to_be_out_of_reach_and_never_made_again(client, boards):
+    """SAI2's review: Dana's "let me approve it before it goes on the Shipment delays board". The agent posts to its
+    workflow's own board; giving a workflow a shared board's access has no tool yet, so the card says so plainly and
+    no second "Shipment delays" is made."""
+    from core.store.boards import create_shared_board
+
+    await boards(True)
+    await create_shared_board("Shipment delays")
+    run = await _run()
+    post = {"id": "post", "type": "agent", "name": "Post it", "does": "Posts the warning on the Shipment delays board",
+            "agent": "agent_desk"}
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post)})
+    assert out["plan"]["boards"] == []
+    assert 'not to "Shipment delays"' in out["say"] and "## Boards" in out["review"]
+    assert out["notes"] and "can't do yet" in out["notes"][0]
+
+
+async def test_a_plan_holding_a_key_is_sent_back(client):
+    """SAI2's review, 14: a key in a step's prompt would be saved with the workflow."""
+    from core.native_builder.export import CREDENTIAL_MARK
+
+    run = await _run()
+    keyed = {**TELL, "prompt": "Use the key sk_live_" + "Z" * 24 + " to post."}
+    sent, _ = await _call("submit_plan", _plan(CHECK, keyed), run)
+    assert "holds a key" in sent["error"]
+    marked = {**TELL, "prompt": f"Use the key {CREDENTIAL_MARK} to post."}
+    sent, _ = await _call("submit_plan", _plan(CHECK, marked), run)
+    assert "holds a key" in sent["error"]
+
+
+async def test_an_update_is_not_refused_for_what_already_runs_only_for_what_it_adds(client):
+    """SAI2's review, 1: an existing workflow with an ungated step that acts runs today; an edit elsewhere in it is
+    not refused for that step, while an acting step the edit adds is held to decision 4."""
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "post_update", "description": "Posts an update outside.", "tool_type": "http",
+                     "method": "POST", "url": "https://api.example.com/post", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    existing = {"id": "orch_live", "name": "Live", "description": "", "entry_step_id": "post", "steps": [
+        {"id": "post", "name": "Post", "type": "tool", "forced_tool": "post_update", "output_key": "post",
+         "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    run = await _run(intent="update", existing_orch=existing, current_orchestration_id="orch_live")
+    edit = {"kind": "update", "title": "Live", "summary": "s", "edits": [{"op": "add_step", "after": "post", "step": {
+        "id": "note", "type": "llm", "name": "Note it", "does": "x", "prompt": "Note what was posted."}}]}
+    out, _ = await _check(run, {"finish": "submit_plan", **edit})
+    assert out["outcome"] == "review" and "build" in out["offers"], out.get("say")
+    adds = {**edit, "edits": [{"op": "add_step", "after": "post", "step": {
+        "id": "again", "type": "tool", "name": "Post again", "does": "x", "tool": "post_update"}}]}
+    sent, _ = await _call("submit_plan", adds, run)
+    assert "Post again" in sent["error"] and "Human step" in sent["error"]
+
+
+def test_build_without_keeps_the_rest_of_a_branch():
+    """SAI2's review, 5: `true → post → log` without `post` is `true → log`, not `true → end`; inner ones too."""
+    from core.native_builder import objects as O
+
+    steps = [{"id": "windy", "type": "if_else", "name": "Windy?", "does": "x", "condition": "state.check.wind > 40",
+              "branches": {"true": "post", "false": "end"}},
+             {"id": "post", "type": "tool", "name": "Post", "does": "x", "tool": "slack_post"},
+             {"id": "log", "type": "llm", "name": "Log", "does": "x", "prompt": "p"}]
+    plan = O.Plan.from_draft({"kind": "create", "title": "t", "summary": "s", "steps": steps,
+                              "inner_workflows": [{"title": "I", "does": "i", "steps": steps}]})
+    out = build_plan._without(plan, ["slack_post"])
+    for got in (out.steps, out.inner_workflows[0].steps):
+        by_id = {s.id: s for s in got}
+        assert "post" not in by_id and by_id["windy"].branches == {"true": "log", "false": "end"}
+
+
+async def test_only_the_person_lets_a_tool_act_without_asking(client):
+    """SAI2's review, 11 (BWA1's decision 4): the planner can't move a tool out of "asks you first"; the person's
+    press on the card does, read in code, and it holds while the tool is in the plan."""
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "post_update", "description": "Posts an update outside.", "tool_type": "http",
+                     "method": "POST", "url": "https://api.example.com/post", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    run = await _run()
+    ask = {"id": "ok", "type": "human", "name": "Approve", "does": "x", "prompt": "Post it?"}
+    post = {"id": "post", "type": "tool", "name": "Post", "does": "x", "tool": "post_update"}
+    draft = {"finish": "submit_plan", **_plan(CHECK, ask, post), "acts_without_asking": ["post_update"]}
+    out, _ = await _check(run, draft)
+    assert out["plan"]["approvals"]["asks_first"] == ["post_update"] and "alone:post_update" in out["offers"]
+    run.shared_state["review_feedback"] = {"feedback": "let post_update act without asking"}
+    answer, _ = await _call("read_plan_answer", {}, run)
+    assert answer == {"outcome": "alone", "alone": ["post_update"]}
+    run.shared_state[build_plan.ANSWER_KEY] = answer
+    moved, _ = await _check(run, draft)
+    assert moved["plan"]["approvals"] == {"asks_first": [], "acts_without_asking": ["post_update"]}
+
+
+def test_the_cards_let_it_act_words_are_what_the_answer_reads():
+    import re
+    from pathlib import Path
+
+    plan_ts = (Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/plan.ts").read_text()
+    template = re.search(r"export function aloneWords\(tool: string\): string \{\s*return `([^`]+)`;", plan_ts)
+    assert template and build_plan._ALONE.match(template.group(1).replace("${tool}", "post_update"))
+
+
+async def test_a_question_round_keeps_what_was_found_and_every_answer(client):
+    """SAI2's review, 22: an ask dropped the lookup and the cards offered (so both ran again), and only the last
+    answer reached the planner."""
+    run = await _run()
+    run.shared_state[build_plan.CHECKED_KEY] = {"object": "plan", "outcome": "ask", "question": "Which list?",
+                                                "research": ["send_x"], "offered": ["notion"], "asked": [
+                                                    {"question": "When?", "answer": "Mondays"}]}
+    run.shared_state["human_response"] = {"answer": "Patients"}
+    out, _ = await _check(run, {"finish": "ask_person", "question": "Who approves?", "about": "who"})
+    assert out["research"] == ["send_x"] and out["offered"] == ["notion"]
+    assert out["asked"] == [{"question": "When?", "answer": "Mondays"}, {"question": "Which list?",
+                                                                         "answer": "Patients"}]
+
+
+async def test_an_update_neither_doubles_a_schedule_nor_turns_into_a_create(client):
+    """SAI2's review, 23."""
+    from core.store import schedules
+
+    existing = {"id": "orch_wind", "name": "Wind", "description": "", "entry_step_id": "check", "steps": [
+        {"id": "check", "name": "Check the weather", "type": "tool", "forced_tool": "rotterdam_weather",
+         "output_key": "check", "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    await schedules.save({"id": "sch_wind", "name": "Wind", "target_type": "orchestration", "target_id": "orch_wind",
+                          "schedule_type": "cron", "cron_expression": "0 8 * * *", "enabled": False, "prompt": "x"})
+    run = await _run(intent="update", existing_orch=existing, current_orchestration_id="orch_wind")
+    timed = {"kind": "update", "title": "Wind", "summary": "s", "schedule": {"cron": "0 9 * * *", "says": "at 9"},
+             "edits": [{"op": "set_meta", "fields": {"summary": "s"}}]}
+    assert "already runs on a schedule" in (await _call("submit_plan", timed, run))[0]["error"]
+    assert "write kind update" in (await _call("submit_plan", _plan(CHECK), run))[0]["error"]
+    unread = await _run(intent="update", current_orchestration_id="orch_gone")
+    out, _ = await _check(unread, {"finish": "submit_plan", **_plan(CHECK)})
+    assert out["outcome"] == "said" and "could not read the workflow" in out["say"]

@@ -353,3 +353,17 @@ def test_a_loop_over_a_step_goes_through_what_that_step_wrote(over, reads):
         {"id": "say", "type": "llm", "name": "Say", "does": "x", "prompt": "Say it."}]})
     loop = next(s for s in compile_plan(plan, mint=_counter()).orchestration["steps"] if s["id"] == "each")
     assert loop["loop_over"] == reads
+
+
+
+def test_the_card_shows_the_caps_what_a_scheduled_run_starts_with_and_the_code_it_runs():
+    """SAI2's review, 19: what the approval covers is on the card (CAP1, F155, a transform's code)."""
+    plan = O.Plan.from_draft({"kind": "create", "title": "t", "summary": "s",
+                              "steps": [{"id": "shape", "type": "transform", "name": "Shape", "does": "x",
+                                         "config": {"transform_code": "result = len(state.x)"}}],
+                              "schedule": {"cron": "0 9 * * 1", "says": "Mondays at 9", "input": "Last week's notes"},
+                              "caps": {"credits": 5, "dollars": 0.5}})
+    text = render(plan)
+    assert "**Each run starts with:** Last week's notes" in text
+    assert "## Limits\nEach run is capped at 5 credits and $0.5 of models." in text
+    assert "result = len(state.x)" in text

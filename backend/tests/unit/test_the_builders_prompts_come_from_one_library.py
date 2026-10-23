@@ -27,8 +27,10 @@ from core.native_builder import prompt_lint, seed
 #: own as `manage`, 25218696…; the maker makes its one thing once (E2's finish tools), 47fb48df…; what it made is
 #: checked against what was approved, 7bb7c0fb…; SAI2-P3 (F942): the build route on the typed Plan — the planner and
 #: the prompt writer in, the analyst, the agent creator and both savers out, with the four passages only they read,
-#: 51bda0e8…; the planner's step allows 8 passes (five questions, a lookup and a re-plan after a connection).
-BUNDLE_SHA256 = "20cbae84b5e7696511ae98fbd4d0fe25bcb5a42ffe818999a0596bf6243d590e"
+#: 51bda0e8…; the planner's step allows 8 passes (five questions, a lookup and a re-plan after a connection),
+#: 20cbae84…; the new agents' instructions are written before the review (Naveen, Q2 as revised on MCP2's review),
+#: and SAI2's review of P3a: the lead-in follows the offers, the loop rule, a no re-reads the pack, Q&A kept.
+BUNDLE_SHA256 = "2deb6b5d6f343e45321efb56e6de690f79e404aa5e5db3a42d2d9b830275427b"
 
 
 def _sha(definitions) -> str:

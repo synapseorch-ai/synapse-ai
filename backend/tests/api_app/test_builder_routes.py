@@ -235,8 +235,9 @@ class TestSeeHowImBuilt:
         # build route on the typed Plan (SAI2-P3): the analyst, its clarify gate, the drafter, the redraft and
         # research gates, the agents gate, the agent creator, the save gate, both savers and finish_build out (11), and
         # the pack, the planner, the check's route and its three endings, the no read in code and its route, the new
-        # agents gate and their instructions, the approval and its check, the refusal, the save and its ending in (15).
-        assert legend["step_count"] == 57
+        # agents gate and their instructions, the approval and its check, the refusal, the save and its ending in (15);
+        # 56 since the instructions are written before the review (Naveen, Q2 as revised): no gate after the yes.
+        assert legend["step_count"] == 56
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
