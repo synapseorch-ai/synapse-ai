@@ -52,6 +52,7 @@ async def _ask(args):
     "What is your login for the patient portal?",
     "What's the PIN for the account?",
     "What 2FA code did you get?",
+    "What's the Stripe secret?",
 ])
 async def test_a_question_asking_for_a_secret_is_sent_back_to_a_connect_card(client, question):
     out = await _ask({"question": question, "about": "what"})
@@ -82,6 +83,7 @@ async def test_a_question_asking_how_to_connect_is_sent_back_to_the_lookup(clien
     ("How many license keys does each new hire need?", "how_much"),
     ("Which HTTP tool do you mean, the old one or the new one?", "which"),
     ("Should the summary include the CRM notes it integrates with?", "what"),
+    ("Which pin should the map use for the clinic?", "which"),
 ])
 async def test_a_question_only_the_person_can_answer_is_asked(client, question, about):
     out = await _ask({"question": question, "about": about})

@@ -564,7 +564,7 @@
             "max_turns": 1,
             "timeout_seconds": 120,
             "allowed_tools": null,
-            "max_iterations": 5,
+            "max_iterations": 8,
             "position_x": 300,
             "position_y": 0,
             "input_keys": [
@@ -572,7 +572,8 @@
             ],
             "output_key": "plan_context",
             "tool_arguments": {},
-            "next_step_id": "step_plan"
+            "next_step_id": "step_plan",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan",
@@ -771,7 +772,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "max_iterations": 5,
+            "max_iterations": 8,
             "position_x": 1800,
             "position_y": 200,
             "input_keys": [
@@ -779,7 +780,8 @@
             ],
             "output_key": "plan_answer",
             "tool_arguments": {},
-            "next_step_id": "step_plan_answer_route"
+            "next_step_id": "step_plan_answer_route",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_answer_route",
@@ -804,7 +806,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "max_iterations": 5,
+            "max_iterations": 8,
             "position_x": 1800,
             "position_y": 350,
             "input_keys": [
@@ -817,7 +819,8 @@
                 "connected": "step_plan_context",
                 "revise": "step_plan_context"
             },
-            "switch_default_step_id": "step_plan_context"
+            "switch_default_step_id": "step_plan_context",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_agent_prompts",
@@ -850,7 +853,8 @@
             "finish_tools": [
                 "submit_prompts"
             ],
-            "next_step_id": "step_check_plan"
+            "next_step_id": "step_check_plan",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_approve",
@@ -1095,7 +1099,8 @@
             "next_step_id": "step_review_research",
             "max_iterations": 5,
             "position_x": 1500,
-            "position_y": 0
+            "position_y": 0,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_review_research",

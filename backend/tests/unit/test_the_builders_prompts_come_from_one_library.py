@@ -30,7 +30,8 @@ from core.native_builder import prompt_lint, seed
 #: 51bda0e8…; the planner's step allows 8 passes (five questions, a lookup and a re-plan after a connection),
 #: 20cbae84…; the new agents' instructions are written before the review (Naveen, Q2 as revised on MCP2's review),
 #: and SAI2's review of P3a: the lead-in follows the offers, the loop rule, a no re-reads the pack, Q&A kept.
-BUNDLE_SHA256 = "2deb6b5d6f343e45321efb56e6de690f79e404aa5e5db3a42d2d9b830275427b"
+#: SAI2's re-check: the review, the prompt writer, the pack and the answer steps end in words at their caps, 2deb6b5d….
+BUNDLE_SHA256 = "83b25cbb5284781a77a7d0485556d6e34a645af9ebe00db732d7228095da033a"
 
 
 def _sha(definitions) -> str:

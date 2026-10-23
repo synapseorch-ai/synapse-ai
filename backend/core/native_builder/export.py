@@ -91,7 +91,7 @@ says. A value the instructions read at run time ({name} in a Python f-string, ${
 words "given in the message", and the step's prompt passes it as {state.<step id>}. The tool names in the code \
 (file_search, mcp, …) are its own variables, never tools here: give an agent only the tools the plan names. Never \
 copy code from here into a transform step, a tool or a skill, and never write a credential: ‹credential removed› \
-marks one that was taken out.
+marks one that was taken out: where it stands in instructions you copy, write "the key it held" instead.
 
 """
 
@@ -155,8 +155,9 @@ otherwise `not_carried_over`.
 ## not_carried_over — always filled in from a pasted program
 One line per item this code really has — named as the code names it (the agent, the tool, its URL or id) — and what \
 the person does about it. Leave out what the code does not have. Check each of these:
-- Each ‹credential removed›: a credential the export held, taken out before anything read it. "Add it as a Vault \
-variable, and rotate it where it came from: it was written into the code."
+- Each credential the export held, taken out before anything read it (‹credential removed› marks it in the code): \
+name it as "the key it held" (never the mark itself). "Add it as a Vault variable, and rotate it where it came from: \
+it was written into the code."
 - Each tool the code named that is not here: a hosted MCP server (with its server_url: "add it under Apps and MCP \
 servers and sign in, then ask me to give <agent> its tools"), file search (with its vector store id: "upload those \
 files to a knowledge base"), web search, Code Interpreter, image generation, computer use.

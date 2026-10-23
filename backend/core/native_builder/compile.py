@@ -311,9 +311,15 @@ async def validate(compiled: Compiled, plan: Plan, server_module: Any,
     agents = dict(existing_agents or {}) | {a["id"]: a for a in compiled.agents}
     found, warned = await builder_guard.missing_in(workflows, agents, server_module)
     found += await builder_guard.argument_issues(workflows, server_module)
+    made = {a["id"] for a in compiled.agents}
+    exempt = set(plan.approvals.acts_without_asking)
+    # `own_steps` scopes an update's own workflow only: a build's inner workflows are new, so wholly its own (SAI2's
+    # re-check of blocker 1).
     gaps, gap_warnings = await builder_guard.unapproved(
-        workflows, agents, server_module, made_agents={a["id"] for a in compiled.agents},
-        exempt=set(plan.approvals.acts_without_asking), strict=True, own_steps=own_steps)
+        workflows[:1], agents, server_module, made_agents=made, exempt=exempt, strict=True, own_steps=own_steps)
+    inner_gaps, inner_warnings = await builder_guard.unapproved(
+        workflows[1:], agents, server_module, made_agents=made, exempt=exempt, strict=True)
+    gaps, gap_warnings = [*gaps, *inner_gaps], [*gap_warnings, *inner_warnings]
     added = [*found, *gaps]
     compiled.issues += added
     compiled.warnings += [*warned, *gap_warnings]

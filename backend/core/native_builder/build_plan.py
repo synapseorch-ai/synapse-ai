@@ -304,8 +304,13 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     plan = _without(plan, without or [])
     from core.native_builder.change_tools import _holds_a_key
+    from core.secret_scrub import holds_credential
 
-    if _holds_a_key(plan.model_dump()):
+    # What the plan writes, never what the workflow already held (SAI2's re-check: an update of a workflow holding a
+    # key-like string must still be possible); `not_carried_over` may name where a pasted export's key was.
+    written = _written(plan, base)
+    if _holds_a_key({k: v for k, v in written.items() if k != "not_carried_over"}) or holds_credential(
+            json.dumps(written.get("not_carried_over") or [], ensure_ascii=False)):
         # A key pasted into a prompt, an argument or a schedule's input would be saved with the workflow (P2's rule;
         # SAI2's review, 14).
         return Examined(plan, ["The plan holds a key, a token or a password, or the mark where one was removed: "
@@ -326,6 +331,17 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     filled = await O.fill(plan, server_module, found=_found(plan, state))
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues)
+
+
+def _written(plan: O.Plan, base: O.Plan | None) -> dict:
+    """What the plan itself writes: the whole plan on a create; on an update, the steps it adds or changes and its
+    own parts, never the workflow's steps left as they are."""
+    dumped = plan.model_dump()
+    if base is None or plan.kind != "update":
+        return dumped
+    before = {s.id: s.model_dump() for s in base.steps}
+    dumped["steps"] = [s for s in dumped["steps"] if before.get(s["id"]) != s]
+    return dumped
 
 
 async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:

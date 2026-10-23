@@ -414,3 +414,25 @@ async def test_instructions_or_a_plan_holding_the_placeholder_mark_are_refused(c
     assert "@made:" in sent["error"]
     sent, _ = await _call("submit_plan", _plan(CHECK, {**TELL, "prompt": "Say @made:x."}, agents=[WRITER]), run)
     assert "@made:" in sent["error"]
+
+
+
+async def test_an_exception_mid_save_removes_what_this_pass_made_and_says_why(client, monkeypatch):
+    """SAI2's review, 9 (committed as a test on its re-check)."""
+    from core.product_tools import registry
+
+    real = registry.invoke
+
+    async def breaks(name, *a, **k):
+        if name == "create_orchestration":
+            raise RuntimeError("the store went away")
+        return await real(name, *a, **k)
+
+    monkeypatch.setattr(registry, "invoke", breaks)
+    run, _ = await _reviewed(_plan(CHECK, TELL, agents=[WRITER]))
+    await _yes(run)
+    out, events = await _call("save_build", {}, run)
+    assert out["outcome"] == "stopped" and "RuntimeError" in out["reason"]
+    agents, _, _ = await _workspace()
+    assert "Warning writer" not in agents
+    assert [e["kind"] for e in events if e.get("action") == "deleted"] == ["agent"]

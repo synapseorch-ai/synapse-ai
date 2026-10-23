@@ -195,6 +195,7 @@ async def test_build_without_x_drops_its_steps_in_code_and_then_build_it_is_offe
 
 @pytest.mark.parametrize("said, outcome", [
     ("Connected Notion.", "connected"), ("Saved the X-Api-Key for t.", "connected"),
+    ("Signed in to Notion.", "connected"),
     ("Make it run at 9 instead", "revise"), ("build without nothing", "revise")])
 async def test_a_review_answer_that_is_not_a_yes_is_read_in_code(client, said, outcome):
     run = await _run(review_feedback={"feedback": said})
@@ -419,3 +420,43 @@ async def test_an_update_neither_doubles_a_schedule_nor_turns_into_a_create(clie
     unread = await _run(intent="update", current_orchestration_id="orch_gone")
     out, _ = await _check(unread, {"finish": "submit_plan", **_plan(CHECK)})
     assert out["outcome"] == "said" and "could not read the workflow" in out["say"]
+
+
+async def test_an_updates_new_inner_workflow_is_held_whole_to_decision_4(client):
+    """SAI2's re-check of blocker 1: the update's scope is the open workflow's; an inner workflow the update makes is
+    new, so all its own."""
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "post_update", "description": "Posts an update outside.", "tool_type": "http",
+                     "method": "POST", "url": "https://api.example.com/post", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    existing = {"id": "orch_live", "name": "Live", "description": "", "entry_step_id": "check", "steps": [
+        {"id": "check", "name": "Check the weather", "type": "tool", "forced_tool": "rotterdam_weather",
+         "output_key": "check", "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    run = await _run(intent="update", existing_orch=existing, current_orchestration_id="orch_live")
+    edit = {"kind": "update", "title": "Live", "summary": "s",
+            "inner_workflows": [{"title": "Poster", "does": "posts", "steps": [
+                {"id": "post", "type": "tool", "name": "Post", "does": "x", "tool": "post_update"}]}],
+            "edits": [{"op": "add_step", "after": "check", "step": {
+                "id": "run_poster", "type": "workflow", "name": "Run the poster", "does": "x", "workflow": "Poster"}}]}
+    sent, _ = await _call("submit_plan", edit, run)
+    assert "Post" in sent["error"] and "Human step" in sent["error"]
+
+
+async def test_an_update_of_a_workflow_already_holding_a_key_like_string_is_still_possible(client):
+    existing = {"id": "orch_live", "name": "Live", "description": "", "entry_step_id": "say", "steps": [
+        {"id": "say", "name": "Say", "type": "llm", "prompt_template": "Mention sk_live_" + "Z" * 24 + " never.",
+         "output_key": "say", "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    run = await _run(intent="update", existing_orch=existing, current_orchestration_id="orch_live")
+    edit = {"kind": "update", "title": "Live", "summary": "s", "edits": [{"op": "set_meta", "fields": {
+        "title": "Live 2"}}]}
+    out, _ = await _call("submit_plan", edit, run)
+    assert out.get("finish") == "submit_plan", out
+
+
+async def test_a_pasted_exports_removed_key_may_be_named_in_what_is_not_carried_over(client):
+    from core.native_builder.export import CREDENTIAL_MARK
+
+    run = await _run()
+    out, _ = await _call("submit_plan", _plan(CHECK, not_carried_over=[f"The key it held ({CREDENTIAL_MARK})"]), run)
+    assert out.get("finish") == "submit_plan", out

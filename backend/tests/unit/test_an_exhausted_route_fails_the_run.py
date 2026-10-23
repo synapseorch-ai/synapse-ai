@@ -268,8 +268,11 @@ class TestTheBuildersOwnCycles:
         for _ in range(4):
             assert await driver.answer("run_brev5", {"feedback": "change it", "next": "review"}) == "paused"
 
-        assert await driver.answer("run_brev5", {"feedback": "change it again", "next": "review"}) == "failed"
-        assert "gave up after 5 attempts" in (await _run("run_brev5")).step_history[-1]["error"]
+        # SAI2's re-check: the review's sixth showing ends the build in words, as the planner's own cap does.
+        assert await driver.answer("run_brev5", {"feedback": "change it again", "next": "review"}) == "completed"
+        run = await _run("run_brev5")
+        assert run.step_history[-1]["step_id"] in ("step_plan_rounds", "step_end")
+        assert "went back and forth on this plan" in str(run.shared_state.get("summary"))
 
 
 class TestTheBundledFlows:

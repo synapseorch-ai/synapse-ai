@@ -157,9 +157,9 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
 _ASKS_SECRET = re.compile(
     r"(?i)\b(?:(?:api|access|private|secret|signing)[\s_-]?keys?|(?:api|access|auth|bearer|refresh|secret|personal)"
     r"[\s_-]?tokens?|client[\s_-]?secret|credentials?|bearer|pass(?:word|wd|code|phrase)s?(?!\s+reset)|"
-    r"(?:2fa|mfa|otp|one[\s-]time|verification|security|access)\s+codes?|\bpin\b|"
+    r"(?:2fa|mfa|otp|one[\s-]time|verification|security|access)\s+codes?|(?-i:\bPIN\b)|pin\s+(?:code|number)s?|"
     r"(?:log|sign)[\s-]?in(?:\s+details)?\s+(?:for|to)\b|"
-    r"(?:your|their|its|the)\s+(?:[\w.-]+\s+){0,2}(?:keys?|tokens?|logins?)\b(?!\s+(?:dates?|points?|metrics?|"
+    r"(?:your|their|its|the)\s+(?:[\w.-]+\s+){0,2}(?:keys?|tokens?|logins?|secrets?)\b(?!\s+(?:dates?|points?|metrics?|"
     r"words?|people|accounts?|questions?|steps?|results?)))")
 #: … or for how a service is reached (res-05: "Apps catalog, MCP URL or HTTP tool?"), which the lookup finds out. A
 #: "which one" question may still name an HTTP tool the workspace has.
