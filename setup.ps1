@@ -16,6 +16,18 @@
 #
 # No `exit` anywhere: under `irm | iex` it would close the user's window.
 
+# The installer's published sha256, as uppercase hex. Read from a file, not from
+# Invoke-WebRequest's .Content: GitHub serves release assets as
+# application/octet-stream, which makes .Content a byte array, and splitting that
+# gave "51" (F833).
+function Get-PublishedSha256 {
+    param([string]$Uri, [string]$Path)
+    Invoke-WebRequest -UseBasicParsing -Uri $Uri -OutFile $Path
+    $text = [System.IO.File]::ReadAllText($Path)
+    Remove-Item $Path
+    return (($text.Trim() -split '\s+')[0]).ToUpper()
+}
+
 function Install-Synapse {
     param([string[]]$Arguments)
 
@@ -59,9 +71,9 @@ function Install-Synapse {
         if (-not $pyz) {
             $pyz = Join-Path $runtime 'synapse-install.pyz'
             Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile "$pyz.part"
-            $expected = ((Invoke-WebRequest -UseBasicParsing -Uri "$url.sha256").Content -split '\s+')[0]
+            $expected = Get-PublishedSha256 -Uri "$url.sha256" -Path "$pyz.sha256"
             $actual = (Get-FileHash -Algorithm SHA256 -Path "$pyz.part").Hash
-            if ($actual -ne $expected.ToUpper()) {
+            if ($actual -ne $expected) {
                 Remove-Item "$pyz.part"
                 throw 'The installer did not match its published checksum. Nothing was installed.'
             }
