@@ -37,9 +37,9 @@ _log = get_logger(__name__)
 #: The board card's stage while a change waits for its person, and once it is done.
 WAITING, CHANGED, SET_ASIDE = "waiting", "changed", "set_aside"
 
-#: What the person is told when the change planner ended in words, not with a finish (F958): a request outside its ops.
-FALLBACK_CANNOT = ("I can't make that change from here: it isn't one of the changes I can make. You can do it on its "
-                   "own page.")
+#: What the person is told when the change planner ended in words, not with a finish (F958). Neutral: code knows only
+#: that no change came of it, not why (a request outside the ops, or a model that answered in words anyway).
+FALLBACK_CANNOT = "I couldn't turn that into a change I can make here. Say it another way, or do it on its own page."
 
 #: A change whose new value holds a key (or the door's mark where one was taken out of the person's message).
 KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. Add it on its own settings screen, "
@@ -501,8 +501,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             question += "\n" + "\n".join(f"{n}. {o}" for n, o in enumerate(options, 1))
         return {**base, "outcome": "ask", "question": question}
     if finish == "cannot" and draft.get("fallback"):
-        # The planner answered in words, not with a finish: what it asked for is no op here (F958, a channel's
-        # agent). Code's words, never the model's, which said "Done, it's moved" of a change nobody made.
+        # The planner answered in words, not with a finish (F958: a channel's agent, which no op re-points). Code's
+        # words, never the model's, which said "Done, it's moved" of a change nobody made.
         return {**base, "outcome": "said", "say": FALLBACK_CANNOT}
     if finish == "cannot":
         return {**base, "outcome": "said", "say": f"{draft.get('why', '').rstrip('.')}. {draft.get('nearest', '')}"
