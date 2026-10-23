@@ -11879,6 +11879,23 @@ window.fetch = function (input, init) {
 };
 """
 
+#: The run page's team routes (TEAM1e), recorded and answered: a member's Stop and Message, the lead's message, and
+#: the run's own cancel, which a member's Stop must never call.
+RUN_TEAM_ROUTES_STUB = r"""
+window.__calls = [];
+const _runTeamFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  if (/\/api\/orchestrations\/runs\/[^?]*\/(members\/[^/?]+\/(stop|message)|lead\/message|cancel)$/.test(url)) {
+    window.__calls.push({url: url, method: method, body: (init && init.body) || ''});
+    return Promise.resolve(new Response(JSON.stringify({stopped: true, delivered: true}), {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  return _runTeamFetch(input, init);
+};
+"""
+
 ANA = {"member_id": "m_ana", "member_name": "Supplier analyst"}
 BEN = {"member_id": "m_ben", "member_name": "Invoice clerk"}
 TEAM_SUMMARY = {"tasks": [
@@ -12178,11 +12195,14 @@ async def check_teamparked(browser) -> str:
 
 @check
 async def check_teamrun(browser) -> str:
-    """The run page draws a Team step's task list and lanes from its events (TEAM1b; fed in TEAM1e)."""
+    """The run page draws a Team step's task list and lanes from its events, and each lane's Stop and Message reach
+    that member of this run alone (TEAM1b; fed and given routes in TEAM1e, D290; F1013)."""
     oid = f"orch_uismoke_teamrun_{int(time.time())}"
+    rid = f"run_uismoke_teamrun_{int(time.time())}"
     api("/api/orchestrations", "POST", human_gate_orchestration(oid))
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.add_init_script(RUNLOG_STUB)
+    await ctx.add_init_script(RUN_TEAM_ROUTES_STUB)
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
@@ -12192,7 +12212,10 @@ async def check_teamrun(browser) -> str:
             if await page.evaluate("() => !!window.__run.raw"):
                 break
             await asyncio.sleep(0.1)
-        for event in _team_frames():
+        # The engine's first event names the run: what a lane's Stop and Message address.
+        start = {"type": "orchestration_start", "run_id": rid, "orchestration_id": oid,
+                 "orchestration_name": "UI smoke team run"}
+        for event in [start, *_team_frames()]:
             await page.evaluate(f"() => window.__run.raw({json.dumps(event)})")
         lane = page.get_by_role("region", name="Member: Supplier analyst", exact=True)
         await lane.wait_for(timeout=10_000)
@@ -12200,15 +12223,30 @@ async def check_teamrun(browser) -> str:
         await asyncio.sleep(0.3)
         if "late_deliveries" not in await lane.inner_text():
             raise AssertionError("the run page's lane does not show the member's call")
-        if await lane.get_by_role("button", name=re.compile("^(Stop|Message) ")).count():
-            raise AssertionError("the run page offers Message or Stop before TEAM1e gives it routes")
         log = await page.evaluate("() => (document.querySelector('[data-run-log]') || {}).innerText || ''")
         if "late_deliveries" in log:
             raise AssertionError("a member's call is written into the step's log as the step's own")
+
+        run_path = rf"/api/orchestrations/runs/{re.escape(rid)}"
+        await lane.get_by_role("button", name="Stop Supplier analyst").click()
+        if not await _called(page, rf"{run_path}/members/m_ana/stop$"):
+            raise AssertionError(f"a lane's Stop did not ask this run for that member alone: "
+                                 f"{await page.evaluate('() => window.__calls')}")
+        if await _called(page, r"/cancel$", tries=3):
+            raise AssertionError("a member's Stop cancelled the whole run")
+
+        ben = page.get_by_role("region", name="Member: Invoice clerk", exact=True)
+        await ben.get_by_role("button", name=re.compile("^Invoice clerk")).click()
+        await ben.get_by_role("button", name="Message Invoice clerk").click()
+        await ben.get_by_label("Your message to Invoice clerk").fill("List them separately")
+        await ben.get_by_label("Your message to Invoice clerk").press("Enter")
+        sent = await _called(page, rf"{run_path}/members/m_ben/message$")
+        if not sent or "List them separately" not in sent["body"]:
+            raise AssertionError(f"a lane's Message did not reach that member of this run: {sent}")
     finally:
         await ctx.close()
         drop_fixture(oid)
-    return "the run page draws a team's tasks and lanes from its events, without Message or Stop yet"
+    return "the run page draws a team's tasks and lanes from its events; a lane's Stop and Message reach that member of this run alone"
 
 
 if __name__ == "__main__":
