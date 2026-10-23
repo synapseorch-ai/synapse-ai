@@ -3756,6 +3756,354 @@ async def check_chatleave(browser) -> str:
     return "leaving mid-turn asks nothing and stops nothing"
 
 
+# ── chat tabs (TABS1, D319) ──────────────────────────────────────────────────
+
+#: Chat's network for several tabs, over CHAT_STUB. Streams are also kept by
+#: conversation (`post:<session>`, `events:<session>`), histories and statuses
+#: are answered per session from `window.__histories` / `window.__status`, a
+#: turn's body is recorded, and an aborted read is noted and its stream broken —
+#: the way a real fetch's body dies when its signal aborts.
+TABS_STUB = r"""
+window.__histories = {};
+window.__status = {};
+window.__bodies = [];
+window.__aborted = [];
+const _tabsInner = window.fetch;
+const _json = (v) => Promise.resolve(new Response(JSON.stringify(v), {
+  status: 200, headers: {'Content-Type': 'application/json'},
+}));
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  if (url.includes('/api/sessions/status') && method === 'POST') {
+    const asked = JSON.parse((init && init.body) || '{"sessions": []}').sessions || [];
+    window.__calls.push({url: url, method: method, ids: asked.map((s) => s.session_id)});
+    return _json({sessions: asked.map((s) => Object.assign({
+      session_id: s.session_id, agent_id: s.agent_id, running: false, automated: false,
+      pending_approval: false, turn_count: 0, last_updated: null,
+    }, window.__status[s.session_id] || {}))});
+  }
+  const h = /\/api\/sessions\/([^/?]+)\/history/.exec(url);
+  if (h && window.__histories[decodeURIComponent(h[1])]) {
+    window.__calls.push({url: url, method: method});
+    return _json(window.__histories[decodeURIComponent(h[1])]);
+  }
+  let name = null;
+  if (url.includes('/api/chat/stream') && init && init.body) {
+    const body = JSON.parse(init.body);
+    window.__bodies.push(body);
+    name = 'post:' + body.session_id;
+  }
+  const ev = /\/api\/chat\/([^/?]+)\/events/.exec(url);
+  if (ev) name = 'events:' + decodeURIComponent(ev[1]);
+  const answered = _tabsInner(input, init);
+  if (name) {
+    const plain = name.startsWith('post:') ? 'post' : 'events';
+    window.__streams[name] = window.__streams[plain];
+    const signal = init && init.signal;
+    if (signal) signal.addEventListener('abort', () => {
+      window.__aborted.push(name);
+      const s = window.__streams[name];
+      if (s) s.fail();
+    });
+  }
+  return answered;
+};
+"""
+
+TAB_ALPHA, TAB_BETA = "agent_uismoke_tab_alpha", "agent_uismoke_tab_beta"
+
+
+def _tab_agents() -> None:
+    api("/api/agents", "POST", _agent(TAB_ALPHA, "UI smoke Tab Alpha"))
+    api("/api/agents", "POST", _agent(TAB_BETA, "UI smoke Tab Beta"))
+
+
+async def _tabs_page(browser, session_id: str, agent_id: str = TAB_ALPHA, width=WIDE, histories: dict | None = None,
+                     status: dict | None = None):
+    """A chat page whose first tab is `session_id` under `agent_id`, the way a page before tabs left it.
+
+    `histories` and `status` are set again on every load, so they hold across a reload.
+    """
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    await ctx.add_init_script(CHAT_STUB)
+    await ctx.add_init_script(TABS_STUB)
+    await ctx.add_init_script(
+        f"try {{ if (!sessionStorage.getItem('uismokeSeeded')) {{"
+        f" localStorage.setItem('synapseSessionId', {json.dumps(session_id)});"
+        f" localStorage.setItem('synapseAgentId', {json.dumps(agent_id)});"
+        f" sessionStorage.setItem('uismokeSeeded', '1'); }} }} catch (e) {{}}"
+        + (f"\nwindow.__histories = {json.dumps(histories)};" if histories else "")
+        + (f"\nwindow.__status = {json.dumps(status)};" if status else ""))
+    page = await ctx.new_page()
+    await page.goto(APP, wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE)
+    return ctx, page
+
+
+def _strip(page):
+    return page.get_by_role("tablist", name="Open conversations")
+
+
+async def _tab_titles(page) -> list[str]:
+    return [t.strip() for t in await _strip(page).get_by_role("tab").all_inner_texts()]
+
+
+async def _new_tab(page, agent_name: str) -> None:
+    await page.get_by_role("button", name="New tab").click()
+    await page.get_by_role("option", name=re.compile(re.escape(agent_name))).first.click()
+    await asyncio.sleep(0.8)
+
+
+async def _send(page, text: str) -> None:
+    box = page.locator("main textarea").last
+    await box.fill(text)
+    await box.press("Enter")
+
+
+async def _wait(page, js: str, tries: int = 40) -> bool:
+    for _ in range(tries):
+        if await page.evaluate(js):
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+@check
+async def check_tabsonestream(browser) -> str:
+    """A turn running in one tab survives a switch to another, read once, and only the front tab streams (TABS1).
+
+    Ten tabs each holding a stream would stall the page: plain HTTP allows about
+    six connections per host. So a tab going behind stops reading — never the
+    turn — and coming back reads its turn again from the start, drawing the
+    question and the answer exactly once.
+    """
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, "uismoke-tab-a")
+    try:
+        await _send(page, "first tab question")
+        await _stream_open(page, "post")
+        await page.evaluate(
+            f"() => window.__streams.post.push({json.dumps(_frame({'type': 'status', 'message': 'working'}, 'ta-1'))})")
+        await asyncio.sleep(0.3)
+
+        await _new_tab(page, "UI smoke Tab Beta")
+        if not await _wait(page, "() => window.__aborted.includes('post:uismoke-tab-a')"):
+            raise AssertionError("tab A kept reading its turn behind tab B")
+        calls = await page.evaluate("() => window.__calls")
+        if any("/cancel" in c["url"] for c in calls):
+            raise AssertionError("switching tabs stopped the running turn")
+
+        # Behind, A learns it is working from the one status read, not a stream.
+        await page.evaluate("() => { window.__status['uismoke-tab-a'] = {running: true}; }")
+        tab_a = _strip(page).get_by_role("tab", name=re.compile("first tab question"))
+        for _ in range(40):
+            if "working" in ((await tab_a.get_attribute("aria-label")) or (await tab_a.inner_text())).lower():
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise AssertionError("the tab behind never showed that its turn is working")
+
+        await _send(page, "second tab question")
+        await _wait(page, "() => window.__bodies.length >= 2")
+        bodies = await page.evaluate("() => window.__bodies")
+        if bodies[-1].get("agent_id") != TAB_BETA:
+            raise AssertionError(f"tab B sent to {bodies[-1].get('agent_id')!r}, not its own agent")
+        if bodies[-1].get("session_id") == "uismoke-tab-a":
+            raise AssertionError("tab B wrote into tab A's conversation")
+        behind = [c for c in await page.evaluate("() => window.__calls")
+                  if "/events" in c["url"] and "uismoke-tab-a" in c["url"]]
+        if behind:
+            raise AssertionError("tab A opened a stream while behind")
+
+        # Back to A: its turn is read again from the start, and the answer lands once.
+        await page.evaluate("""() => { window.__histories['uismoke-tab-a'] = {turns: [], pending_approval: null,
+            running: {turn_id: 'ta', message: 'first tab question', started_at: 0, cursor: 'ta-0'}}; }""")
+        await tab_a.click()
+        await _stream_open(page, "events:uismoke-tab-a")
+        frames = _frame({"type": "response", "content": "the first tab's answer"}, "ta-2") + _frame({"type": "done"}, "ta-3")
+        await page.evaluate(f"() => window.__streams['events:uismoke-tab-a'].push({json.dumps(frames)})")
+        if not await _on_screen(page, "the first tab's answer"):
+            raise AssertionError("the running turn's answer never reached its tab")
+        await asyncio.sleep(1.0)
+        text = await page.evaluate("() => document.querySelector('main').innerText")
+        follows = [c["url"] for c in await page.evaluate("() => window.__calls") if "/events" in c["url"]]
+    finally:
+        await ctx.close()
+    for shown in ("first tab question", "the first tab's answer"):
+        if text.count(shown) != 1:
+            raise AssertionError(f"{shown!r} is in the conversation {text.count(shown)} times")
+    if "second tab question" in text:
+        raise AssertionError("tab B's message shows in tab A")
+    if not any("after=ta-0" in u for u in follows):
+        raise AssertionError(f"tab A's turn was not read again from its start: {follows}")
+    return "a switch stops reading, never the turn; the tab behind reads its state from one poll; back, the answer lands once"
+
+
+@check
+async def check_tabsneedsyou(browser) -> str:
+    """A tab behind waiting on the person says so, and its question is asked once when it comes forward (TABS1)."""
+    _tab_agents()
+    card = {"tool_name": "send_email", "tool_args": {"to": "accounts@northwind.example"}, "approval_id": "ap_tab",
+            "category": "external", "message": "send the reminders",
+            "prompt": "The agent wants to run **send_email**", "fields": []}
+    ctx, page = await _tabs_page(browser, "uismoke-tab-ask", histories={
+        "uismoke-tab-ask": {"turns": [], "pending_approval": card, "running": None}})
+    try:
+        if not await _on_screen(page, "send_email"):
+            raise AssertionError("the waiting question did not show in its own tab")
+        await _new_tab(page, "UI smoke Tab Beta")
+        await page.evaluate("() => { window.__status['uismoke-tab-ask'] = {pending_approval: true}; }")
+        asking = _strip(page).get_by_role("tab").first
+        for _ in range(40):
+            if "needs you" in ((await asking.get_attribute("aria-label")) or "").lower():
+                break
+            await asyncio.sleep(0.5)
+        else:
+            raise AssertionError("the tab behind never said it needs the person")
+        await asking.click()
+        await asyncio.sleep(1.5)
+        text = await page.evaluate("() => document.querySelector('main').innerText")
+    finally:
+        await ctx.close()
+    if text.count("send_email") < 1:
+        raise AssertionError("the question was lost on the way back")
+    approve = text.lower().count("approve")
+    if approve > 2:
+        raise AssertionError(f"the question is asked more than once ({approve} approve buttons' worth of text)")
+    return "a tab behind waiting on the person says 'needs you'; back, its question is asked once"
+
+
+@check
+async def check_tabsrestore(browser) -> str:
+    """Open tabs, their order and the front one come back after a reload (TABS1)."""
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, "uismoke-tab-r1", histories={
+        "uismoke-tab-r1": {"turns": [{"user": "the restored first", "assistant": "kept", "tools": [], "timestamp": ""}],
+                           "pending_approval": None, "running": None}})
+    try:
+        await _new_tab(page, "UI smoke Tab Beta")
+        before = await _tab_titles(page)
+        await page.reload(wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        after = await _tab_titles(page)
+        front = await _strip(page).get_by_role("tab", selected=True).inner_text()
+    finally:
+        await ctx.close()
+    if len(before) != 2 or after != before:
+        raise AssertionError(f"tabs before the reload {before}, after {after}")
+    if "Beta" not in front and "New" not in front:
+        raise AssertionError(f"the front tab did not come back in front: {front!r}")
+    return "two tabs and the front one survive a reload"
+
+
+@check
+async def check_tabsdeeplink(browser) -> str:
+    """A link to a conversation opens it in a tab, or brings its open tab forward (TABS1)."""
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, "uismoke-tab-d1", histories={
+        "uismoke-tab-d2": {"turns": [{"user": "linked conversation", "assistant": "here", "tools": [], "timestamp": ""}],
+                           "pending_approval": None, "running": None}})
+    try:
+        await page.goto(f"{APP}/?session=uismoke-tab-d2&agent={TAB_BETA}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        once = await _tab_titles(page)
+        if not await _on_screen(page, "linked conversation"):
+            raise AssertionError("the linked conversation did not open")
+        await page.goto(f"{APP}/?session=uismoke-tab-d2&agent={TAB_BETA}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        twice = await _tab_titles(page)
+    finally:
+        await ctx.close()
+    if len(once) != 2 or len(twice) != 2:
+        raise AssertionError(f"the link opened a tab each time: {once} then {twice}")
+    return "a link opens its conversation in a tab once, then brings that tab forward"
+
+
+@check
+async def check_tabskeys(browser) -> str:
+    """Alt+T opens a new tab's picker, Alt+1…9 jumps, Alt+W closes; the browser's own keys stay the browser's (TABS1)."""
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, "uismoke-tab-k1")
+    try:
+        await _new_tab(page, "UI smoke Tab Beta")
+        await page.keyboard.press("Alt+1")
+        await asyncio.sleep(0.6)
+        first = await _strip(page).get_by_role("tab", selected=True).inner_text()
+        await page.keyboard.press("Alt+t")
+        await asyncio.sleep(0.5)
+        picker = await page.get_by_role("dialog", name="Start a conversation with").count()
+        await page.keyboard.press("Escape")
+        await page.keyboard.press("Alt+2")
+        await asyncio.sleep(0.4)
+        await page.keyboard.press("Alt+w")
+        await asyncio.sleep(0.6)
+        left = await _tab_titles(page)
+    finally:
+        await ctx.close()
+    if "Beta" in first:
+        raise AssertionError("Alt+1 did not bring the first tab forward")
+    if not picker:
+        raise AssertionError("Alt+T did not open the new tab's agent picker")
+    if len(left) != 1:
+        raise AssertionError(f"Alt+W did not close the front tab: {left}")
+    return "Alt+T, Alt+1…9 and Alt+W drive the strip"
+
+
+@check
+async def check_tabscap(browser) -> str:
+    """Ten tabs at most: the oldest idle one closes, and a working one never does (TABS1)."""
+    _tab_agents()
+    # The first tab works the whole time, across every load; it must survive the cap.
+    ctx, page = await _tabs_page(browser, "uismoke-tab-c0", status={"uismoke-tab-c0": {"running": True}})
+    try:
+        for i in range(1, 11):
+            await page.goto(f"{APP}/?session=uismoke-tab-c{i}&agent={TAB_ALPHA}", wait_until="domcontentloaded")
+            await asyncio.sleep(1.2)
+        await asyncio.sleep(SETTLE)
+        # What the page saved is what is open: the strip shows what fits and keeps the rest behind "N more".
+        sessions = await page.evaluate("""() => Object.keys(localStorage).filter(k => k.startsWith('synapseTabs:') && k.endsWith(':chat'))
+            .flatMap(k => (JSON.parse(localStorage.getItem(k) || '{}').tabs || []).map(t => t.sessionId))""")
+        more = await page.get_by_role("button", name=re.compile(r"^\d+ more")).count()
+    finally:
+        await ctx.close()
+    if len(sessions) != 10:
+        raise AssertionError(f"{len(sessions)} tabs are open, not the cap of 10")
+    if "uismoke-tab-c0" not in sessions:
+        raise AssertionError("the cap closed the tab whose turn was working")
+    if "uismoke-tab-c1" in sessions:
+        raise AssertionError("the cap did not close the oldest idle tab")
+    if not more:
+        raise AssertionError("ten tabs fit the strip at 1600 px with no 'N more'")
+    return "ten tabs at most; the oldest idle one closed, the working one kept, the rest behind 'N more'"
+
+
+@check
+async def check_tabsphone(browser) -> str:
+    """On a phone the strip gives way to one switcher that opens a sheet of every tab (TABS1)."""
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, "uismoke-tab-p1", width=PHONE)
+    try:
+        if await _strip(page).is_visible():
+            raise AssertionError("the tab strip shows at phone width")
+        switcher = page.get_by_role("button", name=re.compile(r"^Switch tab"))
+        await switcher.click()
+        sheet = page.get_by_role("dialog", name=re.compile(r"open tabs$"))
+        await sheet.wait_for(timeout=5_000)
+        await sheet.get_by_role("button", name=re.compile("New tab")).click()
+        await page.get_by_role("option", name=re.compile("UI smoke Tab Beta")).first.click()
+        await asyncio.sleep(0.8)
+        label = await switcher.get_attribute("aria-label") or ""
+        overflow = await page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth + 1")
+    finally:
+        await ctx.close()
+    if "2 open" not in label:
+        raise AssertionError(f"the switcher does not count two tabs: {label!r}")
+    if overflow:
+        raise AssertionError("the page scrolls sideways at phone width")
+    return "the phone switcher counts the tabs and its sheet opens a new one"
+
+
 @check
 async def check_cancelanswer(browser) -> str:
     """A cancelled run does not go on asking for an answer (F141).
@@ -4373,10 +4721,12 @@ async def check_newchatrace(browser) -> str:
 
     The reopen applied its conversation whenever its history arrived: pressed
     before that, New Chat emptied the page, the old conversation was drawn
-    back over it, and the next message went into the old conversation.
+    back over it, and the next message went into the old conversation. Since
+    TABS1 a new chat is a new tab, opened here while the first is reopening.
     """
     history = {"turns": [{"user": "an old question", "assistant": "an old answer", "tools": [], "timestamp": ""}],
                "pending_approval": None, "running": None}
+    _tab_agents()
     ctx, page = await _chat_page(browser, "uismoke-old-conversation", history, extra_init=HOLD_HISTORY)
     try:
         for _ in range(40):
@@ -4385,7 +4735,8 @@ async def check_newchatrace(browser) -> str:
             await asyncio.sleep(0.1)
         else:
             raise AssertionError("the page never asked for its conversation's history")
-        await page.get_by_role("button", name="New Chat").click()
+        # A new chat is a new tab since TABS1: opened while the first tab is still reopening.
+        await _new_tab(page, "UI smoke Tab Beta")
         await asyncio.sleep(0.3)
         await page.evaluate("() => window.__releaseHistory()")
         await asyncio.sleep(1.0)
@@ -6320,14 +6671,18 @@ async def check_morerows(browser) -> str:
 
         await page.goto(f"{APP}/", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE + 1.0)
+        # History is on the rail since TABS1; its drawer is the kit's.
         await page.get_by_role("button", name=re.compile("history", re.I)).first.click()
-        drawer = page.get_by_role("dialog", name="Chat history")
+        drawer = page.get_by_role("dialog", name="History")
         try:
             await drawer.wait_for(timeout=10_000)
         except Exception:
             raise AssertionError("the chat History drawer is not a named dialog")
-        focused = await page.evaluate("() => document.activeElement.getAttribute('aria-label')")
-        if focused != "Close chat history":
+        await asyncio.sleep(0.3)
+        inside = await page.evaluate(
+            "() => !!document.activeElement && !!document.activeElement.closest('[role=dialog]')")
+        if not inside:
+            focused = await page.evaluate("() => document.activeElement && document.activeElement.getAttribute('aria-label')")
             raise AssertionError(f"opening History leaves focus on {focused!r}, not in the drawer")
         if not await drawer.get_by_role("button", name=re.compile("smoke question")).count():
             raise AssertionError("a History row is not a control a keyboard can reach")

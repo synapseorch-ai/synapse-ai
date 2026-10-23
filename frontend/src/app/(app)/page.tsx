@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
-import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square, Users } from 'lucide-react';
+import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Pin, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square, Users } from 'lucide-react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Command } from 'cmdk';
 
@@ -14,7 +14,13 @@ import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { BuilderConversation } from '@/components/app/BuilderPanel';
-import { Button, IconButton, Markdown, PageFrameHeader, useOwnScroll } from '@/components/ui';
+import { Button, IconButton, Markdown, PageHeaderSlot, Spinner, useOwnScroll } from '@/components/ui';
+import {
+  MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, openTab, restoreChatTabs, restorePins,
+  useChatTabs, useTabShortcuts,
+  type ChatTab, type PickableAgent, type Pin as TabPin, type RailPanel, type SavedChatTabs, type StripTab, type TabStatus,
+  type TabsState,
+} from '@/components/tabs';
 import {
   AgentAvatar, AgentIntro, AgentTurn, Composer, composerPillClass, HelperLanes, HelperNote, PillAvatar, RunChip, UserBubble,
   agentFromHelper, foldHelpers, isHelperEvent, laneFromRecord, toolsUsedBesideLanes, type HelperLaneData,
@@ -841,16 +847,34 @@ function generateSessionId() {
   return c?.randomUUID?.() ?? `sess_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-export default function Home() {
-  const [sessionId, setSessionId] = useState(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('synapseSessionId') || generateSessionId();
-    }
-    return generateSessionId();
-  });
+/** A tab's title: the conversation's first question, on one line. */
+function tabTitle(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+}
+
+/**
+ * One tab's conversation (TABS1, D319). The shell mounts only the tab in
+ * front, keyed by the tab: a tab going behind unmounts, which stops *reading*
+ * its turn and nothing else, and one coming forward mounts and reopens its
+ * conversation from the server — a turn still being written is followed from
+ * its start, as a reload does (F49). So a switch can neither drop nor repeat a
+ * turn, an approval, a helper or a team: each is drawn from what the server
+ * holds.
+ */
+function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
+  tab: ChatTab;
+  /** Its title, its draft, or — before its first message — its agent changed. */
+  onChange: (change: Partial<ChatTab>) => void;
+  /** Whether a turn is on screen: the front tab's badge. */
+  onBusy: (busy: boolean) => void;
+  /** Another agent was picked once this conversation had started: that agent opens in a tab of its own. */
+  onOpenAgent: (agentId: string) => void;
+}) {
+  const [sessionId, setSessionId] = useState(tab.sessionId);
 
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(tab.draft ?? '');
   const [isLoading, setIsLoading] = useState(false);
   const [agentName, setAgentName] = useState('Loading...');
   // Whether the name came from the active agent. The workspace's own name, from
@@ -869,13 +893,15 @@ export default function Home() {
   // The answer as the model writes it (U72), shown in the working row until
   // `response` puts the answer of record in its place.
   const [draftAnswer, setDraftAnswer] = useState('');
-  const [currentAgentId, setCurrentAgentId] = useState<string | null>(null);
+  // The tab's agent. The workspace's "active agent" is only where a new tab starts; a tab keeps its own (TABS1).
+  const [currentAgentId, setCurrentAgentId] = useState<string | null>(tab.agentId);
   // The agent as it is now, for work that outlives the render that started it (a background helper's follow-up).
-  const currentAgentIdRef = useRef<string | null>(null);
+  const currentAgentIdRef = useRef<string | null>(tab.agentId);
   useEffect(() => { currentAgentIdRef.current = currentAgentId; }, [currentAgentId]);
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
+  // The conversation is being read back from the server, or that read failed: never the empty
+  // state meanwhile, which read as a conversation with nothing in it (F873's class).
+  const [opening, setOpening] = useState(true);
+  const [openFailed, setOpenFailed] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -1043,13 +1069,21 @@ export default function Home() {
     scrollToBottom();
   }, [messages]);
 
-  // Save current session to localStorage whenever it changes
+  // What the shell is told, through refs: a parent's new callback each render is not a change here.
+  const onChangeRef = useRef(onChange);
+  const onBusyRef = useRef(onBusy);
+  useEffect(() => { onChangeRef.current = onChange; onBusyRef.current = onBusy; });
+  // The tab's title is the conversation's first question, as History's row is.
+  const firstQuestion = messages.find(m => m.role === 'user' && !m.data?.automated)?.content ?? '';
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('synapseSessionId', sessionId);
-      if (currentAgentId) localStorage.setItem('synapseAgentId', currentAgentId);
-    }
-  }, [sessionId, currentAgentId]);
+    if (firstQuestion) onChangeRef.current({ title: tabTitle(firstQuestion) });
+  }, [firstQuestion]);
+  useEffect(() => { onBusyRef.current(isLoading); }, [isLoading]);
+  // The composer's words go with the tab when it goes behind, and come back with it.
+  const inputRef = useRef(input);
+  useEffect(() => { inputRef.current = input; }, [input]);
+  // Once it has been on screen, a fresh tab's conversation is the server's to read back.
+  useEffect(() => () => { onChangeRef.current({ draft: inputRef.current, fresh: false }); }, []);
 
   // Leaving closes this page's stream and nothing else. The turn runs on the
   // server whether or not anyone is reading, its answer is saved to the
@@ -1086,16 +1120,6 @@ export default function Home() {
 
 
 
-  // Fetch sessions list
-  const fetchSessions = useCallback(async () => {
-    setSessionsLoading(true);
-    try {
-      const res = await fetch('/api/sessions');
-      if (res.ok) setSessions(await res.json());
-    } catch (e) { console.error('[Sessions] fetch error', e); }
-    finally { setSessionsLoading(false); }
-  }, []);
-
   /**
    * Put a stored conversation back on the screen — all of what is open in it.
    *
@@ -1121,11 +1145,15 @@ export default function Home() {
     try {
       const url = `/api/sessions/${encodeURIComponent(sid)}/history${agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''}`;
       const res = await fetch(url);
-      if (!res.ok) return null;
+      if (!res.ok) {
+        if (epoch === conversationEpochRef.current) setOpenFailed(true);
+        return null;
+      }
       const data = await res.json();
       // Another conversation was put on screen while this one loaded (F188),
       // or a turn started here meanwhile, which the page shows live (F552).
       if (epoch !== conversationEpochRef.current || since !== turnsStartedRef.current) return null;
+      setOpenFailed(false);
       const turns: SessionTurn[] = data.turns || [];
       const parked: ParkedApproval | null = data.pending_approval ?? null;
       const running: RunningTurn | null = data.running ?? null;
@@ -1201,6 +1229,7 @@ export default function Home() {
       return running;
     } catch (e) {
       console.error('[Sessions] reopen error', e);
+      if (epoch === conversationEpochRef.current) setOpenFailed(true);
       return null;
     }
   };
@@ -1219,26 +1248,16 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
 
-  // Helper to refresh status
-  // Escape closes the History drawer: its backdrop closes it on a click, and a
-  // keyboard had no way out at all (F236).
-  useEffect(() => {
-    if (!isHistoryOpen) return;
-    const close = (e: KeyboardEvent) => { if (e.key === 'Escape') setIsHistoryOpen(false); };
-    document.addEventListener('keydown', close);
-    return () => document.removeEventListener('keydown', close);
-  }, [isHistoryOpen]);
-
   const refreshSystemStatus = () => {
     fetch('/api/status').then(r => r.json()).then(d => {
       setSystemStatus(d);
-      // Sync agent name with active agent from status to fix initial render mismatch
-      if (d.active_agent_id && d.agents && d.agents[d.active_agent_id]) {
-        const info = d.agents[d.active_agent_id];
-        const name = typeof info === 'string' ? d.active_agent_id : info.name;
+      // The name of this tab's agent. It used to be set from the workspace's active agent — and the
+      // conversation's agent with it, so a read could move a conversation to another agent (TABS1).
+      const id = currentAgentIdRef.current;
+      const info = id ? d.agents?.[id] : undefined;
+      if (id && info) {
         agentNamedRef.current = true;
-        setAgentName(name);
-        setCurrentAgentId(d.active_agent_id);
+        setAgentName(typeof info === 'string' ? id : info.name);
       }
     }).catch(console.error);
   };
@@ -1273,33 +1292,44 @@ export default function Home() {
       })
       .catch(() => { if (!agentNamedRef.current) setAgentName('Offline'); });
 
-    // 2. Restore last used agent, then its conversation
-    const initAgent = async () => {
-      // Taken before anything is awaited: New Chat pressed while this runs
-      // moves it, and the old conversation is then not drawn back (F188).
-      const epoch = conversationEpochRef.current;
-      // And a message sent while this runs: its turn is drawn live, never again from here (F552).
-      const since = turnsStartedRef.current;
-      const savedAgent = typeof window !== 'undefined' ? localStorage.getItem('synapseAgentId') : null;
-      const savedSession = typeof window !== 'undefined' ? localStorage.getItem('synapseSessionId') : null;
-      if (savedAgent) {
-        try {
-          await fetch('/api/agents/active', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ agent_id: savedAgent }),
-          });
-        } catch (e) {
-          console.error('Failed to restore last agent', e);
-        }
-      }
-      refreshSystemStatus();
-      if (savedSession && epoch === conversationEpochRef.current) await reopenConversation(savedSession, savedAgent, epoch, since);
-    };
-
+    // 2. The tab's agent, then its conversation
     initAgent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Put this tab's conversation on screen: its agent made the workspace's active one — so the model
+   * line and anything else that reads it say the same agent — then the conversation as the server
+   * holds it, a running turn followed from its start (F49). A tab coming forward does exactly what a
+   * reload does.
+   */
+  const initAgent = async () => {
+    // Taken before anything is awaited: a switch of agent while this runs
+    // moves it, and the old conversation is then not drawn back (F188).
+    const epoch = conversationEpochRef.current;
+    // And a message sent while this runs: its turn is drawn live, never again from here (F552).
+    const since = turnsStartedRef.current;
+    setOpening(true);
+    setOpenFailed(false);
+    try {
+      await fetch('/api/agents/active', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: tab.agentId }),
+      });
+    } catch (e) {
+      console.error('Failed to make the tab\'s agent the active one', e);
+    }
+    refreshSystemStatus();
+    try {
+      // A tab opened just now holds a new conversation: nothing on the server to read back.
+      if (!tab.fresh && epoch === conversationEpochRef.current) {
+        await reopenConversation(tab.sessionId, tab.agentId, epoch, since);
+      }
+    } finally {
+      setOpening(false);
+    }
+  };
 
   /**
    * Stop *reading* the turn on screen — never the turn.
@@ -1319,54 +1349,16 @@ export default function Home() {
     setEditingIndex(null);
   };
 
-  const handleNewChat = () => {
-    conversationEpochRef.current += 1;
-    stopReading();
-    setSessionId(generateSessionId());
-    setMessages([]);
-  };
-
-  const handleRefresh = () => {
-    refreshSystemStatus();
-    if (isHistoryOpen) fetchSessions();
-  };
-
-  const handleOpenHistory = () => {
-    setIsHistoryOpen(true);
-    fetchSessions();
-  };
-
-  const handleSelectSession = async (s: SessionSummary) => {
-    const epoch = ++conversationEpochRef.current;
-    setIsHistoryOpen(false);
-    stopReading();
-    await reopenConversation(s.session_id, s.agent_id, epoch);
-    // Switch agent if needed
-    if (s.agent_id && s.agent_id !== currentAgentId) {
-      try {
-        await fetch('/api/agents/active', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent_id: s.agent_id }),
-        });
-        refreshSystemStatus();
-      } catch { }
-    }
-  };
-
-  // A conversation is a session *and* an agent: one session id can hold several
-  // (F296). Delete removed one row on the server and every row with that session
-  // id from the list, and the highlight marked all of them.
-  const isOpenConversation = (s: SessionSummary) =>
-    s.session_id === sessionId && (s.agent_id || 'default') === (currentAgentId || 'default');
-
-  const handleDeleteSession = async (e: React.MouseEvent, s: SessionSummary) => {
-    e.stopPropagation();
-    await fetch(`/api/sessions/${s.session_id}?agent_id=${s.agent_id}`, { method: 'DELETE' });
-    setSessions(prev => prev.filter(x => !(x.session_id === s.session_id && x.agent_id === s.agent_id)));
-  };
-
   const handleSwitchAgent = async (agentId: string) => {
+    if (agentId === currentAgentId) return;
+    // A conversation keeps its agent (TABS1): once it has started — or when it is Synapse AI's, the
+    // builder's one conversation — another agent opens in a tab of its own, and so does Synapse AI.
+    const picked = systemStatus?.agents?.[agentId];
+    const pickedBuilder = typeof picked === 'object' && picked !== null && picked.type === 'builder';
+    if (isAssistant || pickedBuilder || isLoading || messages.length > 0) {
+      onOpenAgent(agentId);
+      return;
+    }
     // The new agent's conversation replaces whatever is still loading.
     conversationEpochRef.current += 1;
     try {
@@ -1399,7 +1391,10 @@ export default function Home() {
         // Generate new session for the new agent — isolates context. A turn the
         // old agent is still writing carries on in its own conversation.
         stopReading();
-        setSessionId(generateSessionId());
+        const next = generateSessionId();
+        setSessionId(next);
+        // The tab is now this agent's conversation, and is saved as such.
+        onChangeRef.current({ agentId, sessionId: next, title: '' });
 
         // Clear chat messages for clean agent context (no system bubble)
         setMessages([]);
@@ -2913,174 +2908,25 @@ export default function Home() {
       Workflow{workflowStepCount !== null && <> · {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</>}
     </span>
   ) : systemStatus ? (
-    <span className="truncate" title={[provider, systemStatus.model].filter(Boolean).join(' · ')}>
-      {provider && <span className="hidden sm:inline">{provider} · </span>}{systemStatus.model || 'Loading...'}
+    <span className="flex min-w-0 items-center gap-1.5" title={[provider, systemStatus.model].filter(Boolean).join(' · ')}>
+      {/* Whether the model can answer (F182), where the page's header used to say it. */}
+      <span
+        className={cn(
+          "size-2 shrink-0 rounded-full",
+          systemStatus.model_ready === true ? "bg-success" : systemStatus.model_ready === false ? "bg-warning" : "bg-text-faint",
+        )}
+        title={systemStatus.model_problem || undefined}
+        aria-hidden
+      />
+      <span className="truncate">
+        {provider && <span className="hidden sm:inline">{provider} · </span>}{systemStatus.model || 'Loading...'}
+      </span>
     </span>
   ) : null;
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
-
-      {/* ── History Drawer ────────────────────────────────────────────────── */}
-      {isHistoryOpen && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 cursor-pointer bg-scrim/60 backdrop-blur-sm"
-            onClick={() => setIsHistoryOpen(false)}
-          />
-          {/* Panel */}
-          <div role="dialog" aria-label="Chat history" className="relative z-10 flex h-full w-80 max-w-full flex-col border-r border-border bg-surface shadow-elevated">
-            {/* Header */}
-            <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-3">
-              <div className="flex items-center gap-2">
-                <History className="h-4 w-4 text-text-faint" aria-hidden />
-                <span className="text-sm font-semibold text-text">Chat History</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={fetchSessions}
-                  disabled={sessionsLoading}
-                  className="rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
-                  title="Refresh sessions"
-                >
-                  <RefreshCw className={cn("h-3.5 w-3.5", sessionsLoading && "animate-spin")} />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsHistoryOpen(false)}
-                  aria-label="Close chat history"
-                  title="Close chat history"
-                  // Focus lands in the drawer on open, so a keyboard is not left
-                  // behind it on the page (F236).
-                  autoFocus
-                  className="rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
-                >
-                  <X className="h-3.5 w-3.5" aria-hidden />
-                </button>
-              </div>
-            </div>
-
-            {/* Session List */}
-            <div className="custom-scrollbar flex-1 overflow-y-auto">
-              {sessionsLoading && sessions.length === 0 && (
-                <div className="flex items-center justify-center py-10 text-xs text-text-faint">Loading...</div>
-              )}
-              {!sessionsLoading && sessions.length === 0 && (
-                <div className="flex flex-col items-center justify-center gap-2 py-10">
-                  <Clock className="h-8 w-8 text-text-faint" />
-                  <span className="text-xs text-text-faint">No chat history yet</span>
-                </div>
-              )}
-              {sessions.map(s => (
-                // The row is a button, so a keyboard opens a conversation as a
-                // click does; Delete is its sibling, named and shown on focus (F236).
-                <div
-                  key={`${s.agent_id}_${s.session_id}`}
-                  className={cn(
-                    "group relative border-b border-border transition-colors hover:bg-row-hover",
-                    isOpenConversation(s) && "bg-surface-2"
-                  )}
-                >
-                  {/* Active indicator */}
-                  {isOpenConversation(s) && (
-                    <div className="absolute bottom-0 left-0 top-0 w-0.5 bg-accent" />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleSelectSession(s)}
-                    aria-current={isOpenConversation(s) ? 'true' : undefined}
-                    className="block w-full px-4 py-3 pr-9 text-left"
-                  >
-                    <span className="mb-1 flex items-start justify-between gap-2">
-                      {/* The agent's name, not its id in capitals (U59). The id
-                          stays for an agent that has since been deleted, and
-                          as the tooltip. */}
-                      <span
-                        className="truncate text-xs font-medium text-text-faint"
-                        title={s.agent_id || 'default'}
-                      >
-                        {systemStatus?.agents?.[s.agent_id]?.name || s.agent_id || 'default'}
-                      </span>
-                      <span className="shrink-0 text-xs text-text-faint">
-                        {formatRelativeTime(s.last_updated)}
-                      </span>
-                    </span>
-                    <span className="block line-clamp-2 text-[13px] leading-5 text-text">
-                      {s.first_user_message || '(no messages)'}
-                    </span>
-                    {s.last_response && (
-                      <span className="mt-1 block truncate text-xs text-text-faint">
-                        ↩ {s.last_response.slice(0, 80)}{s.last_response.length > 80 ? '…' : ''}
-                      </span>
-                    )}
-                    <span className="mt-1 block text-xs text-text-faint">
-                      {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteSession(e, s)}
-                    className="absolute right-3 top-2.5 rounded-md p-0.5 text-text-faint opacity-0 transition-all hover:text-danger group-focus-within:opacity-100 group-hover:opacity-100"
-                    aria-label={`Delete the conversation "${(s.first_user_message || 'no messages').slice(0, 40)}"`}
-                    title="Delete session"
-                  >
-                    <Trash2 className="h-3 w-3" aria-hidden />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            {/* Footer — new chat shortcut */}
-            <div className="shrink-0 border-t border-border px-4 py-3">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => { setIsHistoryOpen(false); handleNewChat(); }}
-                className="w-full"
-              >
-                <Plus className="h-3.5 w-3.5" aria-hidden />
-                New Chat
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="relative flex w-full flex-1 flex-col">
-        {/* The page frame's header (M1a): "Chat", where every title is, and the
-            agent it talks to — with the model's state — on the line under it.
-            The agent itself is picked in the composer, which also says which
-            model answers (M2c). The "?" comes from the shell's slot. */}
-        <PageFrameHeader
-          bleed
-          eyebrow="Build"
-          title="Chat"
-          description={
-            <span className="flex min-w-0 items-center gap-2">
-              <span
-                className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  systemStatus?.model_ready === true ? "bg-success"
-                    : systemStatus?.model_ready === false ? "bg-warning" : "bg-text-faint",
-                )}
-                title={systemStatus?.model_problem || undefined}
-              />
-              <span className="min-w-0 truncate" title={agentName}>{agentName}</span>
-            </span>
-          }
-          actions={
-            <div className="flex items-center gap-1">
-              <IconButton icon={Plus} label="New Chat" onClick={handleNewChat} />
-              <IconButton icon={History} label="Chat History" onClick={handleOpenHistory} />
-            </div>
-          }
-        />
-
-        {/* Running / paused orchestrations — click through to the live run view */}
-        <ActiveRunsBanner />
 
         {/* Synapse AI, the default agent (ASSIST1, D291): its own conversation in place, the panel's, with its
             cards; the composer's pill is still the agent picker. Any other agent is this page's chat. */}
@@ -3093,7 +2939,7 @@ export default function Home() {
                   agents={systemStatus?.agents
                     ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
                     : []}
-                  activeId={systemStatus?.active_agent_id}
+                  activeId={currentAgentId}
                   activeName={agentName}
                   onPick={handleSwitchAgent}
                 />
@@ -3104,7 +2950,26 @@ export default function Home() {
         {/* Chat Area */}
         <div className="custom-scrollbar relative flex-1 overflow-y-auto scroll-smooth">
 
-          {messages.length === 0 && !isLoading ? (
+          {messages.length === 0 && !isLoading && (opening || openFailed) ? (
+            /* The conversation is being read back, or the read failed: never the empty
+               state, which reads as a conversation with nothing in it (F873's class). */
+            <div role="status" className="flex h-full flex-col items-center justify-center gap-3 px-6 text-sm text-text-muted">
+              {openFailed ? (
+                <>
+                  <span>This conversation couldn&apos;t be opened.</span>
+                  <Button type="button" variant="secondary" size="sm" onClick={() => { void initAgent(); }}>
+                    <RotateCcw className="h-3 w-3" aria-hidden />
+                    Try again
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Spinner size={20} />
+                  <span>Opening the conversation…</span>
+                </>
+              )}
+            </div>
+          ) : messages.length === 0 && !isLoading ? (
             /* ── Welcome Screen ── */
             <WelcomeScreen
               agentName={agentName}
@@ -3167,7 +3032,7 @@ export default function Home() {
 
         {/* Input Area. It used to be lifted clear of the AI builder's corner
             launcher (F181); the launcher is retired (M2c), so it sits at the bottom. */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-bg via-bg to-transparent px-3 pb-4 pt-6 md:px-6 md:pb-5">
+        <div data-tour="chat-composer" className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-bg via-bg to-transparent px-3 pb-4 pt-6 md:px-6 md:pb-5">
           <div className="mx-auto w-full max-w-3xl">
             {/* The turn ended without an answer: the bar says which of the two
                 things happened, because they read very differently — one is the
@@ -3279,7 +3144,7 @@ export default function Home() {
                   agents={systemStatus?.agents
                     ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
                     : []}
-                  activeId={systemStatus?.active_agent_id}
+                  activeId={currentAgentId}
                   activeName={agentName}
                   onPick={handleSwitchAgent}
                 />
@@ -3300,6 +3165,428 @@ export default function Home() {
         </div>
         </>)}
       </div>
+    </div>
+  );
+}
+
+// ─── The tabs (TABS1, D319) ─────────────────────────────────────────────────
+
+/** Where this browser keeps its open tabs and pins. Self-hosted has one sign-in, so one set. */
+const TABS_KEY = 'synapseTabs:chat';
+
+function readSavedTabs(): SavedChatTabs | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TABS_KEY) || 'null');
+    return raw ? { state: restoreChatTabs(raw), pins: restorePins(raw) } : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveTabs({ state, pins }: SavedChatTabs) {
+  try {
+    // A draft is kept with its tab here: this browser typed it.
+    localStorage.setItem(TABS_KEY, JSON.stringify({
+      tabs: state.tabs.map(({ fresh: _page, ...kept }) => kept), activeId: state.activeId, pins,
+    }));
+  } catch { /* a full or blocked storage: the tabs last this page's life */ }
+}
+
+/** One status read for every open tab (`POST /api/sessions/status`). */
+async function readTabStatus(tabs: ChatTab[]): Promise<Record<string, TabStatus>> {
+  const res = await fetch('/api/sessions/status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessions: tabs.map(t => ({ session_id: t.sessionId, agent_id: t.agentId })) }),
+  });
+  if (!res.ok) return {};
+  const rows: { session_id: string; agent_id: string; running: boolean; automated?: boolean; pending_approval: boolean;
+                turn_count: number; last_updated: string | null }[] = (await res.json()).sessions ?? [];
+  const byKey = new Map(rows.map(r => [chatKey(r.session_id, r.agent_id), r]));
+  const out: Record<string, TabStatus> = {};
+  for (const t of tabs) {
+    const r = byKey.get(t.key);
+    if (r) out[t.id] = { running: r.running, automated: !!r.automated, pendingApproval: r.pending_approval,
+                         turnCount: r.turn_count, lastUpdated: r.last_updated };
+  }
+  return out;
+}
+
+/** The agents a tab can be opened with: Synapse AI first, never the builder's own machinery. */
+function pickableAgents(status: SystemStatus | null): PickableAgent[] {
+  return Object.entries(status?.agents ?? {})
+    .filter(([id]) => !id.startsWith('agent_native_builder'))
+    .map(([id, info]) => {
+      const named = typeof info === 'object' && info !== null;
+      return {
+        id,
+        name: named ? info.name : id,
+        assistant: named && info.type === 'builder',
+        note: named && info.type === 'orchestrator' ? 'A workflow' : null,
+      };
+    })
+    .sort((a, b) => Number(b.assistant) - Number(a.assistant));
+}
+
+const onPhone = () => window.matchMedia('(max-width: 767px)').matches;
+
+/**
+ * Chat: several conversations open at once, as tabs (TABS1, D319).
+ *
+ * The shell holds the tabs (`useChatTabs`, shared with cloud) and the right
+ * rail's History, Pinned and Search. It mounts only the conversation in front
+ * (`ChatConversation`): plain HTTP gives a page about six connections per host,
+ * so only that tab streams, and the others learn how they stand from one short
+ * read for all of them.
+ */
+export default function Home() {
+  const router = useRouter();
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
+  // Which new-tab picker is open: the strip's, or the phone row's.
+  const [picker, setPicker] = useState<'strip' | 'phone' | null>(null);
+  const [panel, setPanel] = useState<RailPanel | null>(null);
+  // A link to a conversation (`/?session=…&agent=…`), opened once the tabs are read.
+  const [link, setLink] = useState<{ sessionId: string; agentId: string } | null>(null);
+
+  const isBuilder = useCallback((agentId: string) => {
+    const info = systemStatus?.agents?.[agentId];
+    return typeof info === 'object' && info !== null && info.type === 'builder';
+  }, [systemStatus]);
+  const tabs = useChatTabs({
+    load: async () => readSavedTabs(),
+    save: saveTabs,
+    readStatus: readTabStatus,
+    isAssistant: isBuilder,
+    newSessionId: generateSessionId,
+  });
+  const { ready, start, make, state, front, pins, badges, statusLoaded, notice, setNotice } = tabs;
+
+  const agents = useMemo(() => pickableAgents(systemStatus), [systemStatus]);
+  const nameOf = useCallback((agentId: string) => {
+    const info = systemStatus?.agents?.[agentId];
+    return typeof info === 'object' && info !== null ? info.name : agentId;
+  }, [systemStatus]);
+
+  // Read the tabs this browser kept. The page before tabs kept one conversation in two keys: it
+  // becomes the first tab, once. With nothing at all, one new tab with the workspace's agent.
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const status: SystemStatus | null = await fetch('/api/status').then(r => (r.ok ? r.json() : null)).catch(() => null);
+      if (!live) return;
+      setSystemStatus(status);
+      let oldSession: string | null = null;
+      let oldAgent: string | null = null;
+      try {
+        oldSession = localStorage.getItem('synapseSessionId');
+        oldAgent = localStorage.getItem('synapseAgentId') || status?.active_agent_id || null;
+        localStorage.removeItem('synapseSessionId');
+        localStorage.removeItem('synapseAgentId');
+      } catch { /* storage blocked: nothing was kept */ }
+      const asked = new URLSearchParams(window.location.search);
+      const session = asked.get('session');
+      const agent = asked.get('agent');
+      if (session && agent) setLink({ sessionId: session, agentId: agent });
+      await start(kept => {
+        let next = kept;
+        if (next.tabs.length === 0 && oldSession && oldAgent) next = openTab(next, make(oldSession, oldAgent)).state;
+        if (next.tabs.length === 0 && status?.active_agent_id) {
+          next = openTab(next, make(generateSessionId(), status.active_agent_id, '', true)).state;
+        }
+        return next;
+      });
+    })();
+    return () => { live = false; };
+  }, [start, make]);
+
+  // The link, once the tabs are read — and, at the cap, once it is known which tabs are busy.
+  useEffect(() => {
+    if (!ready || !link) return;
+    if (state.tabs.length >= MAX_TABS && !statusLoaded) return;
+    tabs.openConversation(link.sessionId, link.agentId);
+    setLink(null);
+    router.replace('/', { scroll: false });
+  }, [ready, link, state.tabs.length, statusLoaded, tabs, router]);
+
+  useTabShortcuts((key) => {
+    if (key.kind === 'new') setPicker(onPhone() ? 'phone' : 'strip');
+    else if (key.kind === 'close') { if (state.activeId) tabs.close(state.activeId); }
+    else if (state.tabs[key.index]) tabs.focus(state.tabs[key.index].id);
+  }, ready);
+
+  const stripTabs = useMemo<TabsState<ChatTab & StripTab>>(() => ({
+    tabs: state.tabs.map(t => ({ ...t, tileName: nameOf(t.agentId), tileSeed: t.agentId })),
+    activeId: state.activeId,
+  }), [state, nameOf]);
+
+  const frontId = front?.id;
+  const changeFront = useCallback((edit: Partial<ChatTab>) => {
+    if (frontId) tabs.change(frontId, edit);
+  }, [frontId, tabs]);
+
+  return (
+    <div className="flex h-full min-h-0 overflow-hidden">
+      <div className="relative flex min-w-0 flex-1 flex-col">
+        {/* The strip where the page's title was: the tabs are the page's title now. */}
+        <div data-tour="chat-tabs" className="hidden shrink-0 items-end gap-2 border-b border-border px-4 pt-3 md:flex md:px-6">
+          {ready && (
+            <TabStrip
+              label="Open conversations"
+              state={stripTabs}
+              badges={badges}
+              onFocus={tabs.focus}
+              onClose={tabs.close}
+              onMove={tabs.move}
+              untitled="New chat"
+              newTab={(
+                <NewTabMenu
+                  agents={agents}
+                  onPick={tabs.openAgent}
+                  open={picker === 'strip'}
+                  onOpenChange={o => setPicker(o ? 'strip' : null)}
+                  tour={{ button: 'chat-new-tab', list: 'chat-agent' }}
+                />
+              )}
+            />
+          )}
+          <div className="mb-1.5 shrink-0"><PageHeaderSlot /></div>
+        </div>
+        {/* A phone: one switcher where the strip would be (F927). */}
+        <div className="flex shrink-0 items-center gap-1 border-b border-border px-3 py-2.5 md:hidden">
+          {ready && (
+            <TabSwitcher
+              state={stripTabs}
+              badges={badges}
+              onFocus={tabs.focus}
+              onClose={tabs.close}
+              onNew={() => setPicker('phone')}
+              untitled="New chat"
+              subtitle={t => nameOf(t.agentId)}
+              tour="chat-tab-switcher"
+              className="min-w-0 flex-1"
+            />
+          )}
+          <NewTabMenu
+            agents={agents}
+            onPick={tabs.openAgent}
+            open={picker === 'phone'}
+            onOpenChange={o => setPicker(o ? 'phone' : null)}
+            className="size-11"
+          />
+          <IconButton icon={History} label="History" onClick={() => setPanel('history')} />
+        </div>
+
+        {/* Running / paused orchestrations — click through to the live run view */}
+        <ActiveRunsBanner />
+
+        {notice && (
+          <div role="status" className="mx-auto mt-3 flex w-full max-w-3xl items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs text-text-muted">
+            <span className="min-w-0 flex-1">{notice}</span>
+            <IconButton icon={X} label="Dismiss" size="sm" onClick={() => setNotice(null)} />
+          </div>
+        )}
+
+        {front && (
+          <ChatConversation
+            key={front.id}
+            tab={front}
+            onChange={changeFront}
+            onBusy={tabs.setFrontBusy}
+            onOpenAgent={tabs.openAgent}
+          />
+        )}
+      </div>
+
+      <SideRail
+        open={panel}
+        onOpen={setPanel}
+        tour="chat-rail"
+        className="hidden border-l border-border px-1.5 md:flex"
+        descriptions={{
+          history: 'Opening one puts it in a tab, or goes to its tab if it is open.',
+          pinned: 'Conversations you pinned, to find again.',
+          search: 'Any question or answer in your conversations.',
+        }}
+        render={(which) => (
+          <ConversationList
+            which={which}
+            tabs={state.tabs}
+            frontKey={front?.key ?? null}
+            pins={pins}
+            nameOf={nameOf}
+            onOpen={(s) => { setPanel(null); tabs.openConversation(s.session_id, s.agent_id, tabTitle(s.first_user_message || '')); }}
+            onTogglePin={tabs.togglePin}
+            onNewChat={() => { setPanel(null); setPicker(onPhone() ? 'phone' : 'strip'); }}
+          />
+        )}
+      />
+    </div>
+  );
+}
+
+/**
+ * History, Pinned or Search, in the rail's drawer (F926). History keeps what its
+ * drawer had: each conversation's agent, when, its first question and last
+ * answer, its turns, Refresh, Delete, and New chat. Search asks the server, so
+ * a conversation the list hasn't drawn is still found.
+ */
+function ConversationList({ which, tabs, frontKey, pins, nameOf, onOpen, onTogglePin, onNewChat }: {
+  which: RailPanel;
+  tabs: ChatTab[];
+  frontKey: string | null;
+  pins: TabPin[];
+  nameOf: (agentId: string) => string;
+  onOpen: (s: SessionSummary) => void;
+  onTogglePin: (pin: TabPin) => void;
+  onNewChat: () => void;
+}) {
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [query, setQuery] = useState('');
+  const [nonce, setNonce] = useState(0);
+  const words = which === 'search' ? query.trim() : '';
+
+  useEffect(() => {
+    if (which === 'search' && !words) { setSessions([]); return; }
+    let live = true;
+    setLoading(true);
+    const wait = setTimeout(() => {
+      fetch(words ? `/api/sessions?q=${encodeURIComponent(words)}` : '/api/sessions')
+        .then(r => (r.ok ? r.json() : []))
+        .then(list => { if (live) setSessions(Array.isArray(list) ? list : []); })
+        .catch(e => console.error('[Sessions] fetch error', e))
+        .finally(() => { if (live) setLoading(false); });
+    }, words ? 250 : 0);
+    return () => { live = false; clearTimeout(wait); };
+  }, [which, words, nonce]);
+
+  const pinned = (s: SessionSummary) => pins.some(p => p.sessionId === s.session_id && p.agentId === s.agent_id);
+  const openKeys = new Set(tabs.map(t => t.key));
+  const shown = which === 'pinned'
+    ? pins.map(p => sessions.find(s => s.session_id === p.sessionId && s.agent_id === p.agentId)).filter((s): s is SessionSummary => !!s)
+    : sessions;
+
+  const remove = async (s: SessionSummary) => {
+    await fetch(`/api/sessions/${s.session_id}?agent_id=${s.agent_id}`, { method: 'DELETE' });
+    setSessions(prev => prev.filter(x => !(x.session_id === s.session_id && x.agent_id === s.agent_id)));
+    if (pinned(s)) onTogglePin({ sessionId: s.session_id, agentId: s.agent_id });
+  };
+
+  return (
+    <div className="-mx-5 -my-4 flex min-h-full flex-col">
+      {which === 'search' && (
+        <div className="border-b border-border px-4 py-3">
+          <input
+            type="search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            aria-label="Search your conversations"
+            placeholder="Search your conversations"
+            autoFocus
+            className="h-9 w-full rounded-md border border-border bg-surface px-3 text-sm text-text placeholder:text-text-faint"
+          />
+        </div>
+      )}
+      {which === 'history' && (
+        <div className="flex justify-end border-b border-border px-3 py-1.5">
+          <button
+            type="button"
+            onClick={() => setNonce(n => n + 1)}
+            disabled={loading}
+            className="rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text"
+            title="Refresh sessions"
+            aria-label="Refresh sessions"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          </button>
+        </div>
+      )}
+      <div className="flex-1">
+        {loading && shown.length === 0 && (
+          <div className="flex items-center justify-center py-10 text-xs text-text-faint">Loading...</div>
+        )}
+        {!loading && shown.length === 0 && (
+          <div className="flex flex-col items-center justify-center gap-2 py-10">
+            <Clock className="h-8 w-8 text-text-faint" />
+            <span className="text-xs text-text-faint">
+              {which === 'pinned' ? 'Nothing pinned yet' : which === 'search' ? (words ? 'Nothing matches' : 'Type to search') : 'No chat history yet'}
+            </span>
+          </div>
+        )}
+        {shown.map(s => {
+          const key = chatKey(s.session_id, s.agent_id);
+          const isFront = key === frontKey;
+          const isPinned = pinned(s);
+          return (
+            // The row is a button, so a keyboard opens a conversation as a click does; Pin and
+            // Delete are its siblings, named and shown on focus (F236).
+            <div
+              key={`${s.agent_id}_${s.session_id}`}
+              className={cn("group relative border-b border-border transition-colors hover:bg-row-hover", isFront && "bg-surface-2")}
+            >
+              {isFront && <div className="absolute bottom-0 left-0 top-0 w-0.5 bg-accent" />}
+              <button
+                type="button"
+                onClick={() => onOpen(s)}
+                aria-current={isFront ? 'true' : undefined}
+                className="block w-full px-4 py-3 pr-16 text-left"
+              >
+                <span className="mb-1 flex items-start justify-between gap-2">
+                  {/* The agent's name, not its id in capitals (U59); the id stays for a deleted agent, and as the tooltip. */}
+                  <span className="truncate text-xs font-medium text-text-faint" title={s.agent_id || 'default'}>
+                    {nameOf(s.agent_id) || s.agent_id || 'default'}
+                    {openKeys.has(key) && !isFront && <span className="font-normal"> · open in a tab</span>}
+                  </span>
+                  <span className="shrink-0 text-xs text-text-faint">{formatRelativeTime(s.last_updated)}</span>
+                </span>
+                <span className="block line-clamp-2 text-[13px] leading-5 text-text">
+                  {s.first_user_message || '(no messages)'}
+                </span>
+                {s.last_response && (
+                  <span className="mt-1 block truncate text-xs text-text-faint">
+                    ↩ {s.last_response.slice(0, 80)}{s.last_response.length > 80 ? '…' : ''}
+                  </span>
+                )}
+                <span className="mt-1 block text-xs text-text-faint">
+                  {s.turn_count} turn{s.turn_count !== 1 ? 's' : ''}
+                </span>
+              </button>
+              <div className="absolute right-3 top-2.5 flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => onTogglePin({ sessionId: s.session_id, agentId: s.agent_id })}
+                  aria-pressed={isPinned}
+                  className={cn(
+                    "rounded-md p-0.5 transition-all hover:text-text group-focus-within:opacity-100 group-hover:opacity-100",
+                    isPinned ? "text-accent-ink opacity-100" : "text-text-faint opacity-0",
+                  )}
+                  aria-label={`${isPinned ? 'Unpin' : 'Pin'} the conversation "${(s.first_user_message || 'no messages').slice(0, 40)}"`}
+                  title={isPinned ? 'Unpin' : 'Pin'}
+                >
+                  <Pin className="h-3 w-3" aria-hidden />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { void remove(s); }}
+                  className="rounded-md p-0.5 text-text-faint opacity-0 transition-all hover:text-danger group-focus-within:opacity-100 group-hover:opacity-100"
+                  aria-label={`Delete the conversation "${(s.first_user_message || 'no messages').slice(0, 40)}"`}
+                  title="Delete session"
+                >
+                  <Trash2 className="h-3 w-3" aria-hidden />
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {which === 'history' && (
+        <div className="sticky bottom-0 shrink-0 border-t border-border bg-surface px-4 py-3">
+          <Button type="button" variant="secondary" size="sm" onClick={onNewChat} className="w-full">
+            <Plus className="h-3.5 w-3.5" aria-hidden />
+            New Chat
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -11,6 +11,7 @@
  * chat's history; Clear starts a new one, and so does opening another agent.
  */
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AgentTestPanel, agentContext, endTest, newTurn, reduceTest, type TestEvent, type TestTurn } from '@/components/assistant';
@@ -44,6 +45,7 @@ export function AgentTest({
     className?: string;
 }) {
     const agentId: string | null = agent?.id ?? null;
+    const router = useRouter();
     const [turns, setTurns] = useState<TestTurn[]>([]);
     const [input, setInput] = useState('');
     const [busy, setBusy] = useState(false);
@@ -139,12 +141,11 @@ export function AgentTest({
     const chatLink = agentId ? (
         <Link
             href="/"
-            onClick={() => {
-                // Chat opens the conversation it finds here, as it does on a reload.
-                try {
-                    localStorage.setItem('synapseSessionId', session.current);
-                    localStorage.setItem('synapseAgentId', agentId);
-                } catch { /* private window: chat opens on its own conversation */ }
+            onClick={(e) => {
+                // Chat opens this conversation in a tab, or brings its tab forward (TABS1). Read at the
+                // click: the test's conversation is a ref, and a new test moves it without a render.
+                e.preventDefault();
+                router.push(`/?session=${encodeURIComponent(session.current)}&agent=${encodeURIComponent(agentId)}`);
             }}
             className="font-medium text-accent-ink underline underline-offset-2"
         >
