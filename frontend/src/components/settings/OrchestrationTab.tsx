@@ -34,6 +34,8 @@ import type { KnowledgeBaseOption } from '../orchestration/panel/shared';
 import { knowledgeApi, useKnowledgeEnabled } from '@/lib/knowledge';
 import { useHelpTopic } from '@/components/help';
 import { ConfirmationModal } from './ConfirmationModal';
+import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
+import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
 import { ToastNotification } from './ToastNotification';
 import { isLiveRun, type RunSummary } from '@/components/runs/summary';
 import {
@@ -309,6 +311,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         ? `It embeds each prompt with ${embeddingModel}, the Embedding Model in Settings → Models.`
         : 'No Embedding Model is set in Settings → Models, so only exact match runs.';
     const [saving, setSaving] = useState(false);
+    // A save the server refused as made from a stale copy or of a deleted workflow (F871), for the workflow it was
+    // of: the bar says it until it is settled, and the dialog offers the ways on.
+    const [refused, setRefused] = useState<{ id: string; problem: SaveProblem; open: boolean } | null>(null);
     const [toast, setToast] = useState<{ show: boolean; message: string; type: 'success' | 'warning' | 'error' } | null>(null);
     const showToast = (message: string, type: 'success' | 'warning' | 'error' = 'success') => {
         setToast({ show: true, message, type });
@@ -795,16 +800,21 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // Always saves — a half-built draft must be saveable — but names the
     // outcome either way. Configuration errors surface as node badges and a
     // toast here; they only *block* at Run.
-    const handleSave = async () => {
+    // F871: it says what it read (`If-Match`), so a save from a stale copy, or of a workflow deleted meanwhile, is
+    // refused rather than written over the other or brought back. `seen` overrides that: the time a 409 named, to
+    // keep mine; null, to save without the check (save as a new workflow).
+    const handleSave = async (opts?: { seen: string | null }) => {
         if (!draft) return;
         setSaving(true);
         try {
+            const read = opts ? { updated_at: opts.seen } : draft;
             const res = await fetch('/api/orchestrations', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...ifMatch(read) },
                 body: JSON.stringify(draft),
             });
             if (res.ok) {
+                setRefused(null);
                 const saved = await res.json();
                 const idx = orchestrations.findIndex(o => o.id === saved.id);
                 if (idx >= 0) {
@@ -823,13 +833,36 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                 }
             } else {
                 const err = await res.json().catch(() => null);
-                showToast(`Save failed: ${err?.detail || `HTTP ${res.status}`}`, 'error');
+                const problem = saveProblem(res.status, err?.detail);
+                if (problem) {
+                    setRefused({ id: draft.id, problem, open: true });
+                    return;
+                }
+                const said = typeof err?.detail === 'string' ? err.detail : err?.detail?.message;
+                showToast(`Save failed: ${said || `HTTP ${res.status}`}`, 'error');
             }
         } catch {
             showToast('Save failed — could not reach the server', 'error');
         } finally {
             setSaving(false);
         }
+    };
+    const saveRefused = refused && draft && refused.id === draft.id ? refused : null;
+    const reloadTheirs = async () => {
+        if (!draft) return;
+        const res = await fetch(`/api/orchestrations/${encodeURIComponent(draft.id)}`).catch(() => null);
+        if (!res?.ok) {
+            showToast('Could not load their version. Try again.', 'error');
+            return;
+        }
+        setRefused(null);
+        await loadSavedOrchestration(await res.json());
+    };
+    const discardDeleted = () => {
+        const gone = draft?.id;
+        setRefused(null);
+        setOrchestrations((prev) => prev.filter((o) => o.id !== gone));
+        backToList();
     };
 
     // --- Delete orchestration ---
@@ -1639,7 +1672,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         undo,
         redo,
         onDuplicate: duplicateSelectedStep,
-        onSave: handleSave,
+        onSave: () => void handleSave(),
     });
 
     // --- Deploy as agent ---
@@ -1705,6 +1738,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     setConfirmDeleteOrchId(null);
                 }}
                 onClose={() => setConfirmDeleteOrchId(null)}
+            />
+
+            <SaveConflictDialog
+                problem={saveRefused?.open ? saveRefused.problem : null}
+                busy={saving}
+                onReload={() => void reloadTheirs()}
+                onKeepMine={() => saveRefused?.problem.kind === 'changed' && void handleSave({ seen: saveRefused.problem.at })}
+                onSaveAsNew={() => void handleSave({ seen: null })}
+                onDiscard={discardDeleted}
+                onClose={() => setRefused((r) => (r ? { ...r, open: false } : r))}
             />
 
             <ConfirmationModal
@@ -1948,7 +1991,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 remove: deleteStep,
                             }}
                             history={{ undo, redo, canUndo, canRedo }}
-                            save={{ dirty, saving, onSave: handleSave }}
+                            save={{ dirty, saving, onSave: () => void handleSave(), problem: problemLabel(saveRefused?.problem ?? null) }}
                             onBack={() => guardLeave(backToList)}
                             switcher={
                                 <Combobox

@@ -88,7 +88,7 @@ export interface CanvasWorkbenchProps {
         remove: (stepId: string) => void;
     };
     history: { undo: () => void; redo: () => void; canUndo: boolean; canRedo: boolean };
-    save: { dirty: boolean; saving: boolean; onSave: () => void };
+    save: { dirty: boolean; saving: boolean; onSave: () => void; problem?: string | null };
     onBack: () => void;
     /**
      * A person who may look but not change anything (cloud's viewer): no edits on
@@ -533,6 +533,7 @@ function Workbench({
                 dirty={save.dirty}
                 saving={save.saving}
                 onSave={save.onSave}
+                saveProblem={save.problem}
                 issues={issues}
                 onIssue={onIssue}
                 onChangeWithAI={changeWithAI}

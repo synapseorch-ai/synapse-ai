@@ -18,7 +18,7 @@ export const FLOAT = 'rounded-[10px] border border-border bg-surface shadow-elev
 
 export function TopBar({
     name, onRename, onBack, readOnly = false, switcher,
-    dirty, saving, onSave,
+    dirty, saving, onSave, saveProblem,
     issues, onIssue,
     onChangeWithAI,
     phase, onRun, onStop, blocked, runInput, lastRun,
@@ -34,6 +34,8 @@ export function TopBar({
     dirty: boolean;
     saving: boolean;
     onSave: () => void;
+    /** A refused save's state, "Changed elsewhere" / "Deleted elsewhere", in place of "Unsaved changes" (F871). */
+    saveProblem?: string | null;
     issues: WorkbenchIssue[];
     onIssue: (issue: WorkbenchIssue) => void;
     onChangeWithAI?: () => void;
@@ -102,8 +104,8 @@ export function TopBar({
                 {!readOnly && <>
                 <span className="mx-1 h-5 w-px shrink-0 bg-border" aria-hidden />
                 {!phone && (
-                    <span className="hidden whitespace-nowrap px-1 text-xs text-text-faint lg:inline" aria-live="polite">
-                        {dirty ? 'Unsaved changes' : 'Saved'}
+                    <span className={cn('hidden whitespace-nowrap px-1 text-xs lg:inline', saveProblem ? 'font-medium text-danger' : 'text-text-faint')} aria-live="polite">
+                        {saveProblem ?? (dirty ? 'Unsaved changes' : 'Saved')}
                     </span>
                 )}
                 <Button
