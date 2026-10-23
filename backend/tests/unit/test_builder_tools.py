@@ -1407,6 +1407,89 @@ class TestABuildThatStopsLeavesNothingBehind:
         assert await get_orchestration(made["orchestration"]["id"]) is not None
 
 
+class TestARolledBackBuildSaysWhatNeverValidated:
+    """F867 (QA1c on prod, S6, Nova Pro): a build whose workflow never validated was rolled back with "it never
+    passed validation" and nothing else, after 26 tool calls and $0.32; the validator had said why ("Step 'Post to
+    Board' calls the tool 'board', which nothing here provides…") and the person never read it. The stopgap, inside
+    SAI2's four conditions: the last validation's first three issues, in the validator's own words, on the rollback's
+    line; the rollback, the run's status and the events' types unchanged."""
+
+    async def _broken(self, server, run_id, steps=4):
+        from core.builder_tools import execute_builder_tool_with_events
+
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": "Weather warning", "entry_step_id": "step_1"}, server, run_id)
+        orch_id = made["orchestration"]["id"]
+        for n in range(1, steps + 1):
+            await call_in_run("add_single_step", {
+                "orch_id": orch_id, "step_id": f"step_{n}", "name": f"Step {n}", "type": "llm",
+                "prompt_template": "Say hi.", "output_key": f"out_{n}", "next_step_id": f"step_missing_{n}"},
+                server, run_id)
+        verdict = await call_in_run("validate_orchestration", {"orch_id": orch_id}, server, run_id)
+        output, events = await execute_builder_tool_with_events("finish_build", {}, server, run_id=run_id)
+        return orch_id, verdict, json.loads(output), events
+
+    async def test_the_rollback_line_carries_the_first_three_issues_in_the_validators_words(self, server):
+        from core.orchestration import run_writes
+
+        orch_id, verdict, done, events = await self._broken(server, "run_f867")
+        assert not verdict["ok"] and len(verdict["issues"]) >= 4
+        assert done["removed"] == [orch_id], "the rollback is unchanged"
+        [gone] = [e for e in events if e.get("type") == "resource_saved" and e.get("kind") == "orchestration"]
+        assert gone["action"] == "deleted"
+        state: dict = {}
+        run_writes.record(state, {**gone, "action": "created"})
+        run_writes.record(state, gone)
+        said = state["run_changes"]
+        assert said.startswith('Removed the workflow "Weather warning" again: it never passed validation: ')
+        first, fourth = verdict["issues"][:3], verdict["issues"][3]
+        assert all(issue.rstrip(".") in said for issue in first)
+        assert fourth.rstrip(".") not in said
+        assert ".." not in said and said.endswith(".")
+
+    def test_what_a_person_can_act_on_comes_first(self):
+        from core.builder_tools import _issues_said
+
+        wiring = [f"Step 'step_{n}' next_step_id 'step_end' points to unknown step." for n in range(3)]
+        tool = ("Step 'Post to Board' calls the tool 'board', which nothing here provides: its first run would fail. "
+                "Use a tool that exists, or create it first.")
+        assert _issues_said([*wiring, tool]) == [tool.rstrip("."), *(w.rstrip(".") for w in wiring[:2])]
+
+    async def test_no_new_event_type(self, server):
+        _, _, _, events = await self._broken(server, "run_f867_events")
+        assert {e.get("type") for e in events} <= {"resource_saved", "build_stopped"}
+
+    async def test_a_build_that_passes_keeps_no_issues(self, server):
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": "Fixed", "entry_step_id": "step_end"}, server, "run_f867_ok")
+        orch_id = made["orchestration"]["id"]
+        await call_in_run("add_single_step", {"orch_id": orch_id, "step_id": "step_x", "name": "X", "type": "llm",
+                                              "prompt_template": "Hi.", "output_key": "x",
+                                              "next_step_id": "step_missing"}, server, "run_f867_ok")
+        assert not (await call_in_run("validate_orchestration", {"orch_id": orch_id}, server, "run_f867_ok"))["ok"]
+        await call_in_run("remove_step", {"orch_id": orch_id, "step_id": "step_x"}, server, "run_f867_ok")
+        await call_in_run("add_single_step", {"orch_id": orch_id, "step_id": "step_end", "name": "End",
+                                              "type": "end"}, server, "run_f867_ok")
+        assert (await call_in_run("validate_orchestration", {"orch_id": orch_id}, server, "run_f867_ok"))["ok"]
+        from core.store.resources import get_orchestration
+        kept = await get_orchestration(orch_id)
+        assert "building_run" not in kept and "building_issues" not in kept
+
+    async def test_a_build_that_never_validated_at_all_keeps_todays_words(self, server):
+        made = await call_in_run("create_orchestration_skeleton",
+                                 {"name": "Half", "entry_step_id": "step_a"}, server, "run_f867_none")
+        from core.builder_tools import execute_builder_tool_with_events
+        from core.orchestration import run_writes
+
+        _, events = await execute_builder_tool_with_events("finish_build", {}, server, run_id="run_f867_none")
+        state: dict = {}
+        for e in [{"type": "resource_saved", "kind": "orchestration", "action": "created",
+                   "id": made["orchestration"]["id"], "name": "Half"}, *events]:
+            if e.get("type") == "resource_saved":
+                run_writes.record(state, e)
+        assert state["run_changes"] == 'Removed the workflow "Half" again: it never passed validation.'
+
+
 class TestANestedBuildKeepsItsInnerWorkflow:
     """F429 (C2, D200), S1. A two-level build: the builder made the inner
     "C2 Vendor check", deployed it, made the outer "C2 Vendor review" calling its

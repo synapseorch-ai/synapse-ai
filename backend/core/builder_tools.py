@@ -1685,6 +1685,22 @@ async def _orphaned_agents(run: str, removed: list[str]) -> list[dict]:
             and ("agent", w.get("id")) not in gone]
 
 
+#: An issue a person can act on (connect a tool, make an agent) names what is missing in these words (F489, F264).
+_ACTIONABLE = ("which nothing here provides", "which does not exist")
+
+
+def _issues_said(issues: list) -> list[str]:
+    """A failed validation's first three issues as a rollback says them (F867, SAI2's conditions): the validator's
+    own words, what a person can act on first (SAI2: three wiring issues ahead of the missing tool read as
+    plumbing), each cut to a sentence's length, without the closing stop the line adds."""
+    ordered = sorted(issues, key=lambda issue: 0 if any(m in str(issue) for m in _ACTIONABLE) else 1)
+    said = []
+    for issue in ordered[:3]:
+        text = " ".join(str(issue).split()).rstrip(". ")
+        said.append(text if len(text) <= 160 else text[:159].rsplit(" ", 1)[0] + "…")
+    return said
+
+
 async def _why_nothing_was_built(run: str, removed: list[str]) -> str:
     """Why `run`'s build saved no workflow, when its plan check still names what nothing here provides (F768): the
     tools, the provider its research found for them, and what to do. "" when it saved one, or for another reason."""
@@ -2583,8 +2599,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         verdict = {**verdict, "ok": not issues, "issues": issues}
         if verdict["ok"]:
             for workflow in (orch, *ours):
+                workflow.pop("building_issues", None)
                 if workflow.pop("building_run", None) is not None:
                     await save_orchestration(workflow)  # finished: `finish_build` keeps it
+        elif run is not None and orch.get("building_run") == run:
+            # Kept with the build in the making, for `finish_build`'s line if it is rolled back (F867).
+            said = _issues_said(issues)
+            if orch.get("building_issues") != said:
+                orch["building_issues"] = said
+                await save_orchestration(orch)
         return verdict
 
     elif tool_name == "finish_build":
@@ -2608,11 +2631,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                                                   ("a schedule runs it", orch["id"] in scheduled)) if holds]
                 if reasons:
                     orch.pop("building_run", None)
+                    orch.pop("building_issues", None)
                     await save_orchestration(orch)
                     kept.append({"id": orch["id"], "name": orch.get("name"), "reason": " and ".join(reasons)})
                     continue
                 await _delete_orch(orch["id"])
-                _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"))
+                # Why, in the validator's words (F867): the person cannot fix what they are not told.
+                said = orch.get("building_issues") or []
+                _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"),
+                      reason=("it never passed validation: " + "; ".join(said)) if said else None)
                 removed.append(orch["id"])
                 removed_names.append(orch.get("name") or orch["id"])
         if run is not None:

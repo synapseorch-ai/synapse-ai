@@ -41,7 +41,8 @@ def record(state: dict, event: dict) -> None:
     entry: dict[str, Any] = {"kind": event.get("kind"), "action": event.get("action"),
                              "id": event.get("id"), "name": event.get("name") or event.get("id")}
     if event.get("reason"):
-        entry["reason"] = str(event["reason"])[:200]
+        # Room for a rollback's three validation issues (F867).
+        entry["reason"] = str(event["reason"])[:600]
     if entry["kind"] == "schedule" and resource:
         entry["enabled"] = bool(resource.get("enabled"))
         if resource.get("cron_expression"):
