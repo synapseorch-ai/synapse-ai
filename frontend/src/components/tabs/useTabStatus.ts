@@ -5,8 +5,10 @@
  *
  * Only the tab in front streams: plain HTTP gives a page about six connections
  * per host, so ten tabs each holding one would stall it. The rest are read
- * together, every few seconds while one of them is working and every half
- * minute otherwise, and not at all while the browser tab is hidden. Each read
+ * together: at once when another tab comes to the front, every few seconds
+ * while one of them is working, every ten otherwise — a question waiting on
+ * the person shouldn't wait long to say so — and not at all while the browser
+ * tab is hidden. Each read
  * is compared with the last, and what a tab behind earned in between (done,
  * unread) is handed to `onMark`.
  */
@@ -16,7 +18,7 @@ import * as React from "react";
 import { markBetween, type Tab, type TabMark, type TabStatus } from "./model";
 
 const BUSY_EVERY = 4_000;
-const IDLE_EVERY = 30_000;
+const IDLE_EVERY = 10_000;
 
 export function useTabStatus<T extends Tab>({
   tabs,
@@ -37,8 +39,8 @@ export function useTabStatus<T extends Tab>({
   React.useEffect(() => { latest.current = { tabs, activeId, read, onMark }; });
   const [nudge, setNudge] = React.useState(0);
 
-  // Which tabs there are, as one string: a read starts again when one opens or closes.
-  const ids = tabs.map((t) => t.id).join("|");
+  // Which tabs there are, and which is in front: a read starts again when one opens, closes or comes forward.
+  const ids = `${tabs.map((t) => t.id).join("|")}>${activeId ?? ""}`;
 
   React.useEffect(() => {
     let live = true;

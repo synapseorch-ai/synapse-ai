@@ -31,7 +31,7 @@ export function TabSwitcher<T extends StripTab>({
   badges: Record<string, TabBadge>;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
-  /** Called after the sheet has closed: the new tab's picker opens where the person can see it. */
+  /** Called once the sheet has closed: the new tab's picker opens where the person can see it. */
   onNew: () => void;
   untitled?: string;
   /** The faint line under a tab's title: its agent's name. */
@@ -40,6 +40,9 @@ export function TabSwitcher<T extends StripTab>({
   className?: string;
 }) {
   const [open, setOpen] = React.useState(false);
+  // New tab, asked from the sheet: the picker opens once the sheet has closed. Focus going back to the switcher
+  // would land outside the picker the moment it opened, and close it.
+  const newAfterClose = React.useRef(false);
   const front = activeTab(state);
   const count = state.tabs.length;
   const waiting = state.tabs.some((t) => t.id !== state.activeId && badges[t.id] === "needs-you");
@@ -72,6 +75,12 @@ export function TabSwitcher<T extends StripTab>({
         <RDialog.Overlay className="fixed inset-0 z-50 bg-scrim/40" />
         <RDialog.Content
           aria-describedby={undefined}
+          onCloseAutoFocus={(e) => {
+            if (!newAfterClose.current) return;
+            newAfterClose.current = false;
+            e.preventDefault();
+            onNew();
+          }}
           className="fixed inset-x-0 bottom-0 z-50 flex max-h-[80dvh] flex-col gap-1 rounded-t-[18px] bg-surface px-3 pb-5 pt-2 shadow-elevated"
         >
           <span aria-hidden className="mx-auto mb-2.5 mt-1 h-1 w-10 rounded-full bg-border-strong" />
@@ -115,7 +124,7 @@ export function TabSwitcher<T extends StripTab>({
           </div>
           <button
             type="button"
-            onClick={() => { setOpen(false); setTimeout(onNew, 0); }}
+            onClick={() => { newAfterClose.current = true; setOpen(false); }}
             className="flex min-h-[52px] items-center gap-3 rounded-[10px] px-3 text-[15px] font-semibold text-accent-ink hover:bg-row-hover"
           >
             <span className="grid size-[22px] place-items-center"><Plus className="size-[18px]" aria-hidden /></span>

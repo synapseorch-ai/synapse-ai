@@ -1312,11 +1312,15 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
     setOpening(true);
     setOpenFailed(false);
     try {
-      await fetch('/api/agents/active', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: tab.agentId }),
-      });
+      // Written only when it differs: coming forward is a read, and most tabs share the workspace's agent.
+      const status: SystemStatus | null = await fetch('/api/status').then(r => (r.ok ? r.json() : null));
+      if (status && status.active_agent_id !== tab.agentId) {
+        await fetch('/api/agents/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_id: tab.agentId }),
+        });
+      }
     } catch (e) {
       console.error('Failed to make the tab\'s agent the active one', e);
     }

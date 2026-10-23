@@ -3633,7 +3633,12 @@ async def check_openrace(browser) -> str:
         if not await _on_screen(page, "HP-2041 shipped inside 30 days."):
             raise AssertionError("the turn's answer never showed")
         await asyncio.sleep(1.0)
-        text = await page.evaluate("() => document.body.innerText")
+        # On screen in the conversation; since TABS1 the tab's title is its first question too.
+        text = await page.evaluate("""() => {
+            const all = document.body.innerText;
+            const strip = [...document.querySelectorAll('[role=tablist]')].map(e => e.innerText).join('\\n');
+            return all.replace(strip, '');
+        }""")
         calls = await page.evaluate("() => window.__calls")
     finally:
         await ctx.close()
@@ -3926,7 +3931,12 @@ async def check_tabsonestream(browser) -> str:
         if not await _on_screen(page, "the first tab's answer"):
             raise AssertionError("the running turn's answer never reached its tab")
         await asyncio.sleep(1.0)
-        text = await page.evaluate("() => document.querySelector('main').innerText")
+        # The conversation, not the strip: a tab's title is its first question.
+        text = await page.evaluate("""() => {
+            const main = document.querySelector('main').innerText;
+            const strip = [...document.querySelectorAll('[role=tablist]')].map(e => e.innerText).join('\\n');
+            return main.replace(strip, '');
+        }""")
         follows = [c["url"] for c in await page.evaluate("() => window.__calls") if "/events" in c["url"]]
     finally:
         await ctx.close()
