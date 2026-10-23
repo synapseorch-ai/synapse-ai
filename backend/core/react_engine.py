@@ -2606,7 +2606,9 @@ async def run_agent_step(
                            )}
                     continue
                 if _open:
-                    yield {"type": "tasks_incomplete", "tasks": [dict(t) for t in _open]}
+                    # Whether its last turn is what ended it (F862): no event said the turn limit was reached.
+                    yield {"type": "tasks_incomplete", "tasks": [dict(t) for t in _open],
+                           "turn_limit": turn + 1 >= max_turns}
 
                 # ── A reply that was all reasoning is not an answer (F305) ───
                 # `[REASONING]` blocks and nothing else, or a reply cut off

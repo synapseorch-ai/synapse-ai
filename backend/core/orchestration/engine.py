@@ -722,8 +722,9 @@ class OrchestrationEngine:
 
                 # Record step completion
                 step_duration = round(time.time() - step_start_time, 2)
+                taken = take_tasks(run.shared_state, step.id)
                 end_step(run.step_history, {
-                    **take_tasks(run.shared_state, step.id),
+                    **taken,
                     "step_id": step.id,
                     "step_name": step.name,
                     "step_type": step.type.value,
@@ -761,6 +762,8 @@ class OrchestrationEngine:
                     "orch_step_id": step.id,
                     "step_name": step.name,
                     "duration_seconds": step_duration,
+                    # Its plan left open, and whether its turn limit ended it (F862).
+                    **{k: taken[k] for k in ("open_tasks", "ended") if k in taken},
                 }
 
                 # `strict_state_types`: text that would not become the type its
@@ -922,11 +925,14 @@ class OrchestrationEngine:
 
         final_output = self._build_final_response(run, getattr(self.orch, "result_key", "") or "")
 
+        # The steps that ended with their plan open (F862): "Completed with warnings", the status unchanged.
+        warnings = sum(1 for h in run.step_history if isinstance(h, dict) and h.get("open_tasks"))
         yield {
             "type": "orchestration_complete",
             "run_id": run.run_id,
             "status": run.status,
             "final_state": run.shared_state,
+            **({"warnings": warnings} if warnings else {}),
         }
 
         yield {

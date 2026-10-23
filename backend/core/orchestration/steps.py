@@ -17,7 +17,7 @@ from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
-from .pauses import count_task, end_step, progress_key as _progress_key, take_tasks
+from .pauses import count_task, end_step, note_left_open, progress_key as _progress_key, take_tasks
 from .step_usage import exact_window, step_scope
 from .run_error import reason_of, set_run_error
 from .run_gate import stop_reason
@@ -461,6 +461,10 @@ class AgentStepExecutor:
                     continue
                 execution_events.append(event)
                 agent_log.log_event(event)
+                if event.get("type") == "tasks_incomplete":
+                    # Accepted with its plan open (F862): its entry says so, and the run reads "with warnings".
+                    note_left_open(run.shared_state, step.id, len(event.get("tasks") or []),
+                                   turn_limit=bool(event.get("turn_limit")))
                 if event.get("type") == "final" and event.get("no_answer"):
                     # The loop's words in place of an answer (the repeat guard,
                     # out of turns): not the step's output, and not shown as

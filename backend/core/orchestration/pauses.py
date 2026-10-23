@@ -111,15 +111,37 @@ def count_task(shared_state: dict, step_id: str) -> None:
     counts[step_id] = int(counts.get(step_id) or 0) + 1
 
 
+#: An Agent step whose answer was accepted with its own plan's tasks open (F862): how many, and whether its last turn
+#: is what ended it, moved onto the entry with its counted tasks. Not priced: `tasks` alone is.
+LEFT_OPEN_KEY = "_step_tasks_left_open"  # under `_step_tasks`, so no client and no run memory sees it
+
+
+def note_left_open(shared_state: dict, step_id: str, open_tasks: int, *, turn_limit: bool) -> None:
+    """This step's execution ended with `open_tasks` of its plan open (`LEFT_OPEN_KEY`)."""
+    left = shared_state.get(LEFT_OPEN_KEY)
+    if not isinstance(left, dict):
+        left = shared_state[LEFT_OPEN_KEY] = {}
+    left[step_id] = {"open_tasks": int(open_tasks), **({"ended": "turn_limit"} if turn_limit else {})}
+
+
 def take_tasks(shared_state: dict, step_id: str) -> dict:
-    """The step's counted tasks as its entry's fields, `{"tasks": n}` or nothing, off the run's state."""
+    """The step's counted tasks as its entry's fields, `{"tasks": n}` or nothing, off the run's state — and the plan
+    it left open, `{"open_tasks": n, "ended": "turn_limit"}` (F862)."""
+    fields: dict = {}
+    left = shared_state.get(LEFT_OPEN_KEY)
+    if isinstance(left, dict):
+        mine = left.pop(step_id, None)
+        if isinstance(mine, dict) and int(mine.get("open_tasks") or 0) > 0:
+            fields.update(mine)
+        if not left:
+            shared_state.pop(LEFT_OPEN_KEY, None)
     counts = shared_state.get(TASKS_KEY)
     if not isinstance(counts, dict):
-        return {}
+        return fields
     n = int(counts.pop(step_id, 0) or 0)
     if not counts:
         shared_state.pop(TASKS_KEY, None)
-    return {"tasks": n} if n > 0 else {}
+    return {"tasks": n, **fields} if n > 0 else fields
 
 
 def record_pause(step_history: list, entry: dict) -> None:
