@@ -103,4 +103,9 @@ async def test_the_inner_workflow_survives_the_build_and_its_parent_finds_it(cli
     assert not [e for e in ran if "not found" in str(e.get("error", ""))], ran
     finished = next(e for e in ran if e["type"] == "orchestration_complete")
     assert finished["status"] == "completed", finished
-    assert "sub_orchestration" in str(ran)  # the inner workflow ran
+    # The inner workflow ran: its step's execution memory records the call. Read from the run's
+    # own state — the stream no longer carries the engine's state keys (F854).
+    from core.orchestration.state import SharedState
+
+    kept = (await SharedState.restore(finished["run_id"])).run.shared_state
+    assert "sub_orchestration" in str(kept)
