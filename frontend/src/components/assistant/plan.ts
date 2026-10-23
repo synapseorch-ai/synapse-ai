@@ -16,7 +16,7 @@
  * `components/assistant/`.
  */
 import { roleOf, type StepRole } from '@/components/run/model';
-import { zoneWords } from '@/components/run/workflowList';
+import { scheduleWords, zoneWords } from '@/components/run/workflowList';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
 
 /** Which of the builder's questions a prompt is. */
@@ -364,6 +364,92 @@ export interface ChangeOpView {
     line?: string;
     /** For a delete: what uses its target, by name. */
     used_by?: string[];
+    /** The op's values as proposed, what the target reads after it, and before: the card says them in words (F1010). */
+    fields?: Record<string, unknown>;
+    expected?: Record<string, unknown> | null;
+    before?: Record<string, unknown> | null;
+}
+
+const list = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+
+/** What an add or a remove leaves different, in words: "Adds send_email; removes read_file". */
+function diffWords(was: string[], now: string[]): string | null {
+    const added = now.filter((n) => !was.includes(n));
+    const removed = was.filter((n) => !now.includes(n));
+    const parts = [added.length ? `adds ${added.join(', ')}` : '', removed.length ? `removes ${removed.join(', ')}` : '']
+        .filter(Boolean);
+    return parts.length ? sentence(parts) : null;
+}
+
+function sentence(parts: string[]): string {
+    const text = parts.join('; ');
+    return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** A tool-policy decision as what the agent then does with `what`. */
+const POLICY: Record<string, (what: string) => string> = {
+    confirm: (what) => `asks first before ${what}`,
+    deny: (what) => `never does ${what}`,
+    allow: (what) => `does ${what} without asking`,
+    inherit: (what) => `${what} follows the workspace's rule`,
+};
+const POLICY_SCOPE: Record<string, string> = {
+    destructive: 'anything destructive', open_world: 'anything that reaches outside', undeclared: 'anything untagged',
+};
+
+/**
+ * An op's values in words, for its row (F1010, Naveen 10-24): a schedule on its own clock, a model, tools and
+ * skills by name, a policy as what the agent does, limits as limits. `null` keeps code's own words: the review's
+ * exact text, the same in the card's fold, is what the person approves either way.
+ */
+export function valueWords(o: ChangeOpView): string | null {
+    const want = o.expected ?? {};
+    const was = o.before ?? {};
+    switch (o.op) {
+        case 'set_schedule':
+        case 'create_schedule': {
+            const timing = { ...was, ...want } as Record<string, unknown>;
+            const when = scheduleWords({
+                id: '', schedule_type: String(timing.schedule_type ?? 'cron'),
+                cron_expression: (timing.cron_expression as string) ?? null,
+                interval_value: (timing.interval_value as number) ?? null,
+                interval_unit: (timing.interval_unit as string) ?? null, timezone: (timing.timezone as string) ?? null,
+            });
+            if (o.op === 'set_schedule') return when || null;
+            const runs = (o.fields?.runs ?? {}) as { name?: string; id?: string };
+            const prompt = String(want.prompt ?? '').trim();
+            return [`Starts "${runs.name ?? runs.id ?? ''}"`, when, prompt ? `with the message "${prompt}"` : '']
+                .filter(Boolean).join(', ');
+        }
+        case 'set_agent_model':
+            return want.model ? `Uses ${String(want.model)}` : null;
+        case 'set_agent_tools':
+            return diffWords(list(was.tools), list(want.tools));
+        case 'set_agent_skills':
+            return diffWords(list(was.skills), list(want.skills));
+        case 'set_agent_instructions':
+            return 'New instructions (all of it below)';
+        case 'set_tool_policy': {
+            const now = (want.tool_policy ?? {}) as Record<string, string>;
+            const before = (was.tool_policy ?? {}) as Record<string, string>;
+            const parts = Object.entries(now)
+                .filter(([key, rule]) => before[key] !== rule && POLICY[rule])
+                .map(([key, rule]) => POLICY[rule](key.startsWith('tool:') ? key.slice(5) : (POLICY_SCOPE[key] ?? key)));
+            return parts.length ? sentence(parts) : null;
+        }
+        case 'update_workflow': {
+            const parts = [
+                want.max_run_credits != null ? `at most ${want.max_run_credits} credits a run` : '',
+                want.max_run_usd != null ? `at most $${Number(want.max_run_usd).toFixed(2)} a run` : '',
+                want.timeout_minutes != null ? `stops after ${want.timeout_minutes} minutes` : '',
+                want.max_total_turns != null ? `at most ${want.max_total_turns} turns` : '',
+            ].filter(Boolean);
+            return parts.length && Object.keys(want).every((k) =>
+                ['max_run_credits', 'max_run_usd', 'timeout_minutes', 'max_total_turns'].includes(k)) ? sentence(parts) : null;
+        }
+        default:
+            return null;
+    }
 }
 
 /** The checked change a review carries when its object is one (`context.object === 'change'`). */
@@ -400,7 +486,7 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         const uses = deletes
             ? `${o.used_by?.length ? `Used by ${o.used_by.join(', ')}.` : 'Nothing uses it.'} It can come back only as a new copy.`
             : '';
-        const detail = [how.join(' — '), uses].filter(Boolean).join(' ');
+        const detail = [deletes ? how.join(' — ') : (valueWords(o) ?? how.join(' — ')), uses].filter(Boolean).join(' ');
         return {
             n: i + 1,
             name: deletes ? `Deletes: the ${o.target?.kind ?? ''} "${name}"${id}` : `${what}${id}`,
