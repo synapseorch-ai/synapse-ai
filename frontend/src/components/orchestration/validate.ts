@@ -77,18 +77,34 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
     }
 
     // --- Duplicate output keys ---
+    // Only writers that can both run in one run (F932): one after the other,
+    // round a loop, or in one loop body. Writers on an If/Else's, a Switch's
+    // or an Evaluator's separate branches never both run, and a later writer
+    // that reads the key it writes is revising it, not overwriting it blind.
+    const byId = new Map(orch.steps.map((x) => [x.id, x]));
     const outputOwners = new Map<string, string[]>();
     for (const s of orch.steps) {
         if (s.output_key) outputOwners.set(s.output_key, [...(outputOwners.get(s.output_key) || []), s.id]);
     }
+    const reach = new Map<string, Set<string>>();
+    const reachOf = (id: string) => reach.get(id) ?? reach.set(id, reachableFrom([id], byId, false)).get(id)!;
     for (const [key, owners] of outputOwners) {
-        if (owners.length > 1) {
-            for (const id of owners) add(id, warning(`Output key “${key}” is written by ${owners.length} steps — later runs overwrite earlier ones`));
+        if (owners.length < 2) continue;
+        const clash = new Set<string>();
+        for (const a of owners) {
+            for (const b of owners) {
+                if (a === b || !reachOf(a).has(b)) continue;
+                const later = byId.get(b)!;
+                if (promptReads(later).has(key) || (later.input_keys || []).includes(key)) continue;
+                clash.add(a).add(b);
+            }
+        }
+        for (const id of owners) {
+            if (clash.has(id)) add(id, warning(`Output key “${key}” is written by ${clash.size} steps — later runs overwrite earlier ones`));
         }
     }
 
     // --- Per step ---
-    const byId = new Map(orch.steps.map((x) => [x.id, x]));
     for (const s of orch.steps) {
         // Any step may name where a route to it goes at its Max iterations (F248).
         checkTarget(s.id, s.on_exhausted_step_id, '“When it reaches the limit”');
@@ -312,25 +328,7 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
 
     // --- Reachability from the entry point ---
     if (orch.entry_step_id && ids.has(orch.entry_step_id) && orch.steps.length > 1) {
-        const reachable = new Set<string>();
-        const queue = [orch.entry_step_id];
-        const stepById = new Map(orch.steps.map((s) => [s.id, s]));
-        while (queue.length) {
-            const id = queue.pop()!;
-            if (reachable.has(id)) continue;
-            reachable.add(id);
-            const s = stepById.get(id);
-            if (!s) continue;
-            const targets: (string | null | undefined)[] = [
-                s.next_step_id, s.if_true_step_id, s.if_false_step_id, s.switch_default_step_id,
-                s.on_exhausted_step_id,
-                ...Object.values(s.route_map || {}),
-                ...Object.values(s.switch_cases || {}),
-                ...(s.loop_step_ids || []),
-                ...(s.parallel_branches || []).flat(),
-            ];
-            for (const t of targets) if (t && ids.has(t)) queue.push(t);
-        }
+        const reachable = reachableFrom([orch.entry_step_id], byId, true);
         for (const s of orch.steps) {
             if (!reachable.has(s.id)) add(s.id, warning('Unreachable from the entry point'));
         }
@@ -350,6 +348,39 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
         }
     }
     return { byStep, global, errorCount, warningCount };
+}
+
+/**
+ * The steps a run can go on to from `starts`, by every edge a step has. A step
+ * in a Loop's body also goes on to the body's next step, and the last one back
+ * to its Loop, which runs the body again or moves on. `withStarts` keeps the
+ * starts themselves; without it a start is in the set only if a cycle returns to it.
+ */
+function reachableFrom(starts: string[], byId: Map<string, StepConfig>, withStarts: boolean): Set<string> {
+    const bodyNext = new Map<string, string>();
+    for (const s of byId.values()) {
+        if (s.type !== 'loop') continue;
+        const body = (s.loop_step_ids || []).filter((b) => byId.has(b));
+        body.forEach((sid, i) => bodyNext.set(sid, body[i + 1] ?? s.id));
+    }
+    const successors = (s: StepConfig): (string | null | undefined)[] => [
+        s.next_step_id, s.if_true_step_id, s.if_false_step_id, s.switch_default_step_id,
+        s.on_exhausted_step_id,
+        ...Object.values(s.route_map || {}),
+        ...Object.values(s.switch_cases || {}),
+        ...(s.loop_step_ids || []),
+        ...(s.parallel_branches || []).flat(),
+        bodyNext.get(s.id),
+    ];
+    const reached = new Set<string>();
+    const queue = withStarts ? [...starts] : starts.flatMap((id) => (byId.has(id) ? successors(byId.get(id)!) : []));
+    while (queue.length) {
+        const id = queue.pop();
+        if (!id || !byId.has(id) || reached.has(id)) continue;
+        reached.add(id);
+        for (const t of successors(byId.get(id)!)) if (t && !reached.has(t)) queue.push(t);
+    }
+    return reached;
 }
 
 /** The steps each branch runs, as the engine resolves them: a branch listing one
