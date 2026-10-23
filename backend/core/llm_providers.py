@@ -1433,6 +1433,20 @@ def _openai_compat_extract(msg: dict, provider: str = "The model",
     raise _empty_answer(provider, reasoning=reasoning, stop_reason=finish_reason)
 
 
+def _only_reasoning(provider: str, stop_reason) -> str:
+    """The words for a reply of thinking and nothing else, naming the control that fits why it stopped (F863).
+
+    Cut off at the cap, a bigger cap is the fix. A model that ended its own reply after thinking was not short of
+    room: QA1c's Haiku 4.5 had 4,096 tokens left for its answer, was told to raise the cap, and the raised cap is
+    what then priced a Team step out of its run (F865). Unknown stays as it was, cap first.
+    """
+    if _normalise_stop_reason(getattr(stop_reason, "name", None) or stop_reason) == "stop":
+        return (f"Error: {provider} returned only reasoning — it ended its reply after thinking, with no answer. "
+                "Lower the reasoning effort (Settings → Models, or the agent's own).")
+    return (f"Error: {provider} returned only reasoning — it spent its whole response thinking. Raise "
+            "Max response length (Settings → Models, or the agent's own) or lower the reasoning effort.")
+
+
 def _extract_anthropic_response(response) -> tuple[str, str]:
     """Split an Anthropic SDK response into (text, reasoning).
 
@@ -1480,11 +1494,7 @@ def _extract_anthropic_response(response) -> tuple[str, str]:
         return answer, reasoning
 
     if reasoning:
-        raise EmptyAnswer(
-            "Error: Anthropic returned only reasoning — it spent its whole response thinking. Raise "
-            "Max response length (Settings → Models, or the agent's own) or lower the reasoning effort.",
-            reasoning=reasoning,
-        )
+        raise EmptyAnswer(_only_reasoning("Anthropic", getattr(response, "stop_reason", None)), reasoning=reasoning)
 
     raise EmptyAnswer("Error: Anthropic returned no usable content.")
 
@@ -2167,11 +2177,7 @@ def _extract_gemini_response(response) -> tuple[str, str]:
     # because an empty string reads to the loop as a finished final response.
     # And say so as a failure, not as the answer (F133).
     if reasoning:
-        raise EmptyAnswer(
-            "Error: Gemini returned only reasoning — it spent its whole response thinking. Raise "
-            "Max response length (Settings → Models, or the agent's own) or lower the reasoning effort.",
-            reasoning=reasoning,
-        )
+        raise EmptyAnswer(_only_reasoning("Gemini", candidate.finish_reason), reasoning=reasoning)
 
     raise EmptyAnswer("Error: Gemini returned no usable content.")
 

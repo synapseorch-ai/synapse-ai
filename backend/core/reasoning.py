@@ -326,6 +326,14 @@ def normalise(effort: str | None, fallback: str = DEFAULT_EFFORT) -> str:
     return value if value in EFFORT else fallback
 
 
+def a_step_lower(effort: str | None) -> str:
+    """The rung below `effort` ("off" stays "off"), unset reading as the default.
+
+    What a reply that was all reasoning is asked again with (F863): the same request again had the same odds.
+    """
+    return EFFORT[max(0, EFFORT.index(normalise(effort)) - 1)]
+
+
 def listed_kind(model: str, listed: Any = None) -> str | None:
     """This model's kind in a deployment's `reasoning_models`, or None.
 

@@ -1132,7 +1132,7 @@ async def run_agent_step(
     # half of the Reason-Act protocol the system prompt teaches, so it is
     # computed once here rather than per turn: it sits in the prompt-cache
     # prefix, and a value that moved between turns would cost every cache hit.
-    from core.reasoning import plan_for as _plan_for
+    from core.reasoning import a_step_lower as _a_step_lower, plan_for as _plan_for
     _native_reasoning = _plan_for(
         current_model, reasoning_effort, 0, current_settings.get("reasoning_models")
     ) is not None
@@ -1543,7 +1543,7 @@ async def run_agent_step(
 
     async def generate_response(prompt_msg, sys_prompt, tools=None, history_messages=None, memory_context_text="",
                                 images_for_turn=None, tool_name_for_log=None,
-                                prompt_blocks=None, volatile_tail=None) -> LLMResult:
+                                prompt_blocks=None, volatile_tail=None, effort=None) -> LLMResult:
         """One LLM call, always as an LLMResult.
 
         A test double (or an older embedder patch) that returns a bare string
@@ -1555,7 +1555,8 @@ async def run_agent_step(
             sys_prompt=sys_prompt,
             mode=mode,
             current_model=current_model,
-            reasoning_effort=reasoning_effort,
+            # A retry after a reply of only reasoning asks a step lower, for that call (F863).
+            reasoning_effort=effort or reasoning_effort,
             # The agent's own response cap (F263); None leaves it to the workspace.
             max_output_tokens=active_agent.get("max_output_tokens"),
             current_settings=current_settings,
@@ -1741,6 +1742,7 @@ async def run_agent_step(
     _truncation_retries = 0  # consecutive responses cut off at the output limit
     _parse_retries = 0        # consecutive responses that looked like a tool call and were not
     _reasoning_retries = 0    # replies that were all reasoning, asked for again (F305)
+    _retry_effort: str | None = None  # the effort that retry asks with, a step lower, for one call (F863)
     # Approvals carried across a pause: a call the user allowed runs once, a
     # call they refused becomes a refusal the model reads.
     _approved_calls: set[str] = set(resume_state.get("approved_calls") or []) if resume_state else set()
@@ -2381,6 +2383,7 @@ async def run_agent_step(
                     # few seconds, and a provider retry is reported as it
                     # happens. Awaited bare, a hung call was minutes of silence
                     # on a run that went on to finish (see core/model_wait.py).
+                    _effort_now, _retry_effort = _retry_effort, None
                     _wait = ModelWait(generate_response(
                         full_prompt, active_sys_prompt,
                         tools=ollama_tools, history_messages=active_history,
@@ -2390,7 +2393,7 @@ async def run_agent_step(
                         # to the screenshot it had been asked about.
                         images_for_turn=images,
                         tool_name_for_log=last_tool_logged,
-                        prompt_blocks=prompt_blocks, volatile_tail=volatile_tail,
+                        prompt_blocks=prompt_blocks, volatile_tail=volatile_tail, effort=_effort_now,
                     ), deltas=stream_answer, side=_team)
                     _answer_filter = AnswerFilter() if stream_answer else None
                     _answer_turn = turn + 1
@@ -2419,7 +2422,10 @@ async def run_agent_step(
                             yield _e
                         yield {"type": "llm_reasoning", "reasoning": llm_err.reasoning, "turn": turn + 1}
                         current_context_text += _REASONING_ONLY_NUDGE
-                        yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
+                        # The identical request again had the same odds (F863): a step less thinking.
+                        _retry_effort = _a_step_lower(reasoning_effort)
+                        yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries,
+                               "effort": _retry_effort}
                         continue
                     if not (_thought_only and llm_err.stop_reason == "max_tokens"):
                         _llm_duration = round(time.time() - _llm_start, 1)
@@ -2614,9 +2620,11 @@ async def run_agent_step(
                         _reasoning_retries += 1
                         _log.warning(f"⚠️ Reply was all reasoning (retry {_reasoning_retries}/{MAX_REASONING_RETRIES})")
                         current_context_text += _REASONING_ONLY_NUDGE
+                        _retry_effort = _a_step_lower(reasoning_effort)
                         for _e in _unstream("reasoning_only"):
                             yield _e
-                        yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries}
+                        yield {"type": "reasoning_only", "turn": turn + 1, "retry": _reasoning_retries,
+                               "effort": _retry_effort}
                         continue
                     for _e in _unstream("error"):
                         yield _e
