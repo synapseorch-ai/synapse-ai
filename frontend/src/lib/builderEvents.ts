@@ -282,6 +282,31 @@ export function previewInWords(preview: string): string {
     }
 }
 
+/**
+ * A tool result's words for the trail, or '' when it is only data (F933): the trail drew
+ * "↳ [{"name": "time", …" and `{"_not_found": […]}` as code. A card's `say` or a refusal's
+ * `error` is read out of its JSON first (`previewInWords`); the chip still names the tool.
+ */
+function trailPreview(preview: string): string {
+    const words = previewInWords(preview);
+    return /^\s*[[{]/.test(words) ? '' : words;
+}
+
+/** The steps that only choose a branch: the panel shows what the builder did, never how it branched (F933). */
+const ROUTING_STEP_TYPES = new Set(['evaluator', 'if_else', 'switch']);
+
+/**
+ * Whether the trail draws `message` (F899, F933). A running step is the working line under
+ * the conversation, not a row of its own, so one loader moves; it joins the trail once done.
+ * A route (an older conversation's) and a result that is only data draw nothing.
+ */
+export function shownInTrail(message: BuilderMessage): boolean {
+    if (message.kind === 'step_progress') return message.stepStatus === 'complete';
+    if (message.kind === 'routing') return false;
+    if (message.kind === 'tool_result') return !!message.toolPreview;
+    return true;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): BuilderState {
     const type: string = event?.type ?? '';
@@ -291,21 +316,24 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         case 'orchestration_start':
             return { ...state, runId: event.run_id ?? state.runId, done: false, error: null };
 
-        case 'step_start':
+        case 'step_start': {
+            const moved: BuilderState = {
+                ...state,
+                messages: completeLastStep(state.messages),
+                // Another step starting means the question was answered.
+                pending:
+                    state.pending && state.pending.stepId !== (event.orch_step_id ?? null)
+                        ? null
+                        : state.pending,
+            };
+            // A routing step ("Route: What Was Asked") is neither a line nor the working line (F933).
+            if (ROUTING_STEP_TYPES.has(event.step_type)) return moved;
             return append(
-                {
-                    ...state,
-                    messages: completeLastStep(state.messages),
-                    status: event.step_name ?? null,
-                    // Another step starting means the question was answered.
-                    pending:
-                        state.pending && state.pending.stepId !== (event.orch_step_id ?? null)
-                            ? null
-                            : state.pending,
-                },
+                { ...moved, status: event.step_name ?? null },
                 { role: 'assistant', content: '', kind: 'step_progress', key,
                   stepName: event.step_name ?? '', stepStatus: 'running' },
             );
+        }
 
         case 'step_complete':
             return { ...state, messages: completeLastStep(state.messages) };
@@ -323,7 +351,7 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         case 'tool_result':
             return append(state, {
                 role: 'assistant', content: '', kind: 'tool_result', key,
-                toolName: event.tool_name ?? '', toolPreview: previewInWords(String(event.preview ?? '')),
+                toolName: event.tool_name ?? '', toolPreview: trailPreview(String(event.preview ?? '')),
             });
 
         case 'resource_saved': {
@@ -339,32 +367,15 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
 
         // Each routing step speaks twice: its executor announces its own
         // result (`evaluator_decision`, `if_decision`, `switch_decision`), then
-        // the engine's router says where the run goes (`routing_decision`,
-        // with the routing step's `step_type`). A bubble for both drew every
-        // decision twice — "→ create → create". The router's is the one that
-        // says where the run went; the run log still shows both, on purpose.
-        //
-        // The one case this drops: an evaluator whose label is not in its
-        // `route_map` falls through to `next_step_id` and the router says
-        // nothing, so no bubble — the run continuing is visible anyway.
+        // the engine's router says where the run goes (`routing_decision`).
+        // The panel drew the router's as "→ case create" and "→ true": the
+        // builder's branch decisions, which are its own business (F933). The
+        // panel shows what the builder did; the run log keeps every decision.
         case 'evaluator_decision':
         case 'if_decision':
         case 'switch_decision':
-            return state;
-
         case 'routing_decision':
-            return append(state, {
-                role: 'assistant', content: '', kind: 'routing', key,
-                // Every branch must yield something truthy: BuilderPanel
-                // renders a routing bubble only when `routingDecision` is, so
-                // an empty string drops the line rather than showing it blank.
-                // A switch that took its default has `decision: null` — that
-                // is "default", not "nothing".
-                routingDecision:
-                    event.step_type === 'switch'
-                        ? `case ${event.decision ?? 'default'}`
-                        : String(event.decision ?? ''),
-            });
+            return state;
 
         case 'human_input_required':
             return append(

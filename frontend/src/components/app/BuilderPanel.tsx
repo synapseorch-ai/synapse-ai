@@ -44,14 +44,22 @@ import {
     AttachmentError,
     useImageAttachments,
 } from '@/components/app/ImageAttachments';
-import { Combobox, Hint, Mark, Markdown, Spinner } from '@/components/ui';
-import { isPlanReview, type BuilderMessage } from '@/lib/builderEvents';
+import { Combobox, Hint, Mark, Markdown } from '@/components/ui';
+import { isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
 
 /** Empty `sessionModel` means "follow the workspace builder model". */
 const DEFAULT_SENTINEL = '__default__';
 
+
+/**
+ * The panel's avatar, and the column the turns' words start in: a slot the
+ * mark's own size, then AgentTurn's gap-3. The working line, the trail and the
+ * banners line up on it (F899: the trail sat 8 px right of the working line).
+ */
+const AVATAR = 20;
+const TEXT_INSET = 'pl-8';
 
 function isActivity(message: BuilderMessage): boolean {
     return (
@@ -73,16 +81,12 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
     const latest = events[events.length - 1];
 
     const renderEvent = (message: BuilderMessage, i: number) => {
+        // A step is drawn once done; while it runs it is the working line (F899).
         if (message.kind === 'step_progress') {
-            const done = message.stepStatus === 'complete';
             return (
-                <div key={i} className="flex items-center gap-2 py-0.5 pl-1">
-                    {done
-                        ? <CheckCircle2 size={14} className="shrink-0 text-success" aria-hidden />
-                        : <Spinner size={16} className="shrink-0 text-machine" />}
-                    <span className={cn('truncate text-xs', done ? 'text-text-faint' : 'text-text-muted')}>
-                        {message.stepName}
-                    </span>
+                <div key={i} className="flex items-center gap-2 py-0.5">
+                    <CheckCircle2 size={14} className="shrink-0 text-success" aria-hidden />
+                    <span className="truncate text-xs text-text-faint">{message.stepName}</span>
                 </div>
             );
         }
@@ -105,16 +109,8 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
             const preview = (message.toolPreview || '').slice(0, 180);
             const truncated = (message.toolPreview || '').length > 180;
             return (
-                <div key={i} className="truncate py-0.5 pl-6 font-code text-2xs text-text-faint">
+                <div key={i} className="truncate py-0.5 pl-6 text-2xs text-text-faint">
                     ↳ {preview}{truncated ? '…' : ''}
-                </div>
-            );
-        }
-        if (message.kind === 'routing' && message.routingDecision) {
-            return (
-                <div key={i} className="flex items-center gap-1.5 py-0.5 pl-1">
-                    <span className="text-xs text-text-faint" aria-hidden>→</span>
-                    <span className="font-code text-2xs text-text-muted">{message.routingDecision}</span>
                 </div>
             );
         }
@@ -225,6 +221,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
     const groups: Group[] = [];
     let buffer: BuilderMessage[] = [];
     for (const message of state.messages) {
+        if (isActivity(message) && !shownInTrail(message)) continue;
         if (isActivity(message)) {
             buffer.push(message);
         } else {
@@ -246,7 +243,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                     {groups.map((group, i) => {
                         if (group.type === 'activity') {
                             return (
-                                <div key={`activity-${i}`} className="pl-10">
+                                <div key={`activity-${i}`} className={TEXT_INSET}>
                                     <ActivityGroup events={group.events} isLive={streaming && i === groups.length - 1} />
                                 </div>
                             );
@@ -270,7 +267,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                                 <div
                                     key={message.key}
                                     className={cn(
-                                        'ml-10 flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]',
+                                        'ml-8 flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]',
                                         gone
                                             ? 'border-border bg-surface-2 text-text-muted'
                                             : 'border-success/40 bg-success-subtle text-text',
@@ -283,7 +280,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                         }
                         if (message.kind === 'connect' && message.connect) {
                             return (
-                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
                                     <ConnectCard
                                         spec={message.connect}
                                         connector={selfHostedConnector}
@@ -294,14 +291,14 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                         }
                         if (message.kind === 'action' && message.action) {
                             return (
-                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
                                     <ActionCard spec={message.action} actor={selfHostedActor} />
                                 </AgentTurn>
                             );
                         }
                         if (message.kind === 'findings' && message.findings) {
                             return (
-                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
                                     <FindingsCard findings={message.findings} />
                                 </AgentTurn>
                             );
@@ -311,7 +308,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                             const kind = questionKind(message.stepId, message.content);
                             const onStop = open ? () => void stop() : undefined;
                             return (
-                                <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                                <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
                                     {kind === 'build' || kind === 'change' ? (
                                         <PlanCard
                                             prompt={message.content}
@@ -341,7 +338,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                             );
                         }
                         return (
-                            <AgentTurn key={message.key} density={density} avatar={<Mark size={20} compact={false} className="text-accent" aria-hidden />}>
+                            <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
                                 <Markdown className="text-sm leading-relaxed">{message.content}</Markdown>
                             </AgentTurn>
                         );
@@ -349,7 +346,7 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
 
                     {streaming && state.status && (
                         // Working: the mark in the avatar's slot, and what it is doing.
-                        <AgentTurn working size={20} density={density}>
+                        <AgentTurn working size={AVATAR} density={density}>
                             <span className="text-xs text-text-muted">{state.status}</span>
                         </AgentTurn>
                     )}
