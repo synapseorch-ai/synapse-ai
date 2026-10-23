@@ -454,6 +454,10 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
         return None, "its base URL is not https"
     if m is None:
         return None, "its base URL carries a query or a fragment"
+    if "@" in m.group(1):
+        return None, "its base URL carries a login, which I can't keep safely"
+    if ":" in m.group(1):
+        return None, "its base URL names a port"
     labels, path = m.group(1).lower().split("."), m.group(2) or ""
     marked = [i for i, label in enumerate(labels) if "{" in label or "}" in label]
     if marked and (marked != [0] or not _PARAM.match(labels[0])):

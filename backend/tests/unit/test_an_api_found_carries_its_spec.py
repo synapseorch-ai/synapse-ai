@@ -81,6 +81,10 @@ async def test_the_registrys_anchors_are_own_domains_too():
     ("https://{region}.api.mailchimp.com/3.0", "host_params"),  # a placeholder the spec does not name
     ("https://{dc}.api.mailchimp.com/3.0/../admin", "climb"),   # A5, in base_url's own path
     ("https://{dc}.api.mailchimp.com/3.0?apikey=abc", "query"),
+    # SAI2's review of 5e006e33: a login rides in a URL, and the stored tool would keep it.
+    ("https://user@api.mailchimp.com/3.0", "login"),
+    ("https://user:pass@api.mailchimp.com/3.0", "login"),
+    ("https://api.mailchimp.com:8443/3.0", "port"),
 ])
 async def test_a_base_url_off_the_providers_own_host_is_never_used(base_url, why):
     found = await _report({**MAILCHIMP, "base_url": base_url})
