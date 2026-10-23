@@ -65,6 +65,18 @@ export function agentOptions(agents: KindAgent[], ownWorkflowId?: string): Combo
         .map(({ a, group }) => ({ value: String(a.id ?? ''), label: String(a.name ?? a.id ?? ''), hint: kindHint(a), group }));
 }
 
+/**
+ * Where the Agent step's pick is edited, for its "Open in a new tab" link (F903): an agent or a Team in Agents, a
+ * workflow wrapped as an agent in Workflows. The same routes in both products; null when there is nothing to open.
+ */
+export function agentEditHref(agent?: KindAgent | null): string | null {
+    if (!agent?.id) return null;
+    if (agentKind(agent) === 'workflow') {
+        return agent.orchestration_id ? `/workflows?id=${encodeURIComponent(agent.orchestration_id)}` : null;
+    }
+    return `/agents?id=${encodeURIComponent(agent.id)}`;
+}
+
 /** A Team agent's settings as it runs them: its own, else the defaults a Team agent starts with. */
 export function teamSettings(agent: KindAgent) {
     const team = agent.team ?? {};

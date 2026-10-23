@@ -8,8 +8,8 @@
  */
 
 import { useEffect, useState, type ReactNode } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
-import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea } from '@/components/ui';
+import { ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
 import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
 import type { IngestSettings, RetrieveSettings, StepConfig, StepType } from '@/types/orchestration';
@@ -19,7 +19,7 @@ import {
 } from './shared';
 import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
-import { agentKind, agentOptions, memberNames, teamSettings, type KindAgent } from '../agentKind';
+import { agentEditHref, agentKind, agentOptions, KIND_WORD, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
 import { argumentRows, withArgument, type ToolWithSchema } from '../toolArguments';
 import { toolsRestricted } from '../allowedTools';
@@ -292,6 +292,24 @@ function AgentKindNote({ step, agents, tasksPriced }: Pick<StepSectionProps, 'st
     );
 }
 
+/** "Open “Invoice chaser” in a new tab" under the picker (F903): edit the pick without leaving the workflow. */
+function OpenPicked({ agent }: { agent?: KindAgent }) {
+    const href = agentEditHref(agent);
+    if (!href || !agent) return null;
+    return (
+        <TextLink
+            external
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="-mt-1.5 inline-flex items-center gap-1 text-xs"
+        >
+            Open {KIND_WORD[agentKind(agent)].toLowerCase()} “{agent.name || agent.id}” in a new tab
+            <ExternalLink className="size-3" aria-hidden />
+        </TextLink>
+    );
+}
+
 function AgentSection(props: StepSectionProps) {
     const { step, update, agents, orchestration, showVaultHints } = props;
     return (
@@ -309,6 +327,7 @@ function AgentSection(props: StepSectionProps) {
                     searchPlaceholder="Search agents…"
                 />
             </Field>
+            <OpenPicked agent={agents.find((a: KindAgent) => a.id === step.agent_id)} />
             <AgentKindNote step={step} agents={agents} tasksPriced={props.tasksPriced} />
             <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
                 <MarkdownEditor
