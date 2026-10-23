@@ -426,8 +426,13 @@ async def acting_tool(name: str, server_module: Any, custom: list | None = None)
     """The tool `name` when it changes something outside this workspace, else None: one that declares it only reads,
     one nothing provides (F489's to say), or one a lookup cannot reach. Anything undeclared acts, as the policy
     treats it; an outside server's own claim to only read is not believed (TAG1)."""
+    from core.builder_access import READS
     from core.tools import resolve_one_tool, tool_hints
 
+    if name in READS:
+        # The builder's own reads (the role door's list): they read, and change nothing. Undeclared under TAG1, they
+        # read as acting, and a plan reading the week's runs was held to ask a person first (SAI2-P3's after-batch).
+        return None
     if custom is None:
         from core.routes.tools import load_custom_tools
 

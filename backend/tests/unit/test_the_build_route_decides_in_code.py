@@ -506,3 +506,22 @@ async def test_an_update_is_held_only_on_steps_it_adds_or_changes(client):
     adds = {**rename, "edits": [{"op": "add_step", "after": "ask", "step": {
         "id": "again", "type": "human", "name": "Again", "does": "x", "prompt": "Paste your Shopify access token"}}]}
     assert "never asked for a key" in (await _call("submit_plan", adds, run))[0]["error"]
+
+
+async def test_the_builders_own_reads_never_count_as_acting(client):
+    """Measured (SAI2-P3's after-batch, bld-05 on Haiku 4.5): `list_recent_runs` declares no TAG1 tags, so decision 4
+    read it as acting; the planner asked the person whether a read may run without approval, round after round. A
+    builder tool the role door files as a read (`builder_access.READS`) only reads; a tool that acts still acts."""
+    from core import builder_guard
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "post_update", "description": "Posts an update outside.", "tool_type": "http",
+                     "method": "POST", "url": "https://api.example.com/post", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}})
+    assert await builder_guard.acting_tool("list_recent_runs", _Server()) is None
+    assert await builder_guard.acting_tool("post_update", _Server()) is not None
+    run = await _run()
+    reads = {"id": "runs", "type": "tool", "name": "Recent runs", "does": "Lists the week's runs",
+             "tool": "list_recent_runs"}
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(reads)})
+    assert out["outcome"] == "review" and out["plan"]["approvals"]["asks_first"] == []
