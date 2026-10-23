@@ -191,10 +191,10 @@ async def create_custom_tools_bulk(payload: dict):
     for t in tools:
         if not isinstance(t, dict) or not t.get("name"):
             raise HTTPException(status_code=400, detail="Each tool must be an object with a 'name'.")
-    for t in tools:
-        await _keep_lock(t)
+    # An import is the person's act, but its file may be someone else's: a lock it moves is said on its result.
+    notes = [f"`{t['name']}`: {note}" for t in tools if (note := await _keep_lock(t))]
     await _upsert_custom_tools(tools)
-    return {"status": "success", "imported": len(tools)}
+    return {"status": "success", "imported": len(tools), **({"notes": notes} if notes else {})}
 
 
 # ── Tool groups ───────────────────────────────────────────────────────────────

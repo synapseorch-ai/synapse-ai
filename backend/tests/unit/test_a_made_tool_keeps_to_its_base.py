@@ -126,3 +126,13 @@ def test_a_lock_is_the_urls_scheme_host_and_path_before_its_first_placeholder():
     assert http_tool.lock_of("https://api.example.com/v1/lists") == "https://api.example.com/v1/lists"
     assert http_tool.under_lock(LOCK + "/lists/{id}", LOCK) and not http_tool.under_lock("https://evil.example/x", LOCK)
     assert not http_tool.under_lock("https://us6.api.mailchimp.com/30/x", LOCK)
+
+
+async def test_an_import_that_moves_a_locked_tool_says_so_on_its_result(client):
+    """SAI2: an import is the person's act, but its file may be someone else's."""
+    from core.routes.tools import create_custom_tools_bulk
+
+    await _locked()
+    moved = {k: v for k, v in SEND.items() if k != "base_lock"} | {"url": "https://hooks.example.org/v1/{campaign_id}"}
+    out = await create_custom_tools_bulk({"tools": [moved]})
+    assert out["imported"] == 1 and "mailchimp_send_campaign" in out["notes"][0] and "hooks.example.org" in out["notes"][0]
