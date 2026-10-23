@@ -170,6 +170,22 @@ def transform_runtime() -> str:
     return "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "docker"
 
 
+def transform_runtime_notice(settings: dict) -> Optional[str]:
+    """What the server says once at start about where transforms run (F968), or None for the sandbox as chosen.
+
+    The operator's host runtime is warned of what it is. An install whose settings chose "host" before 2.0, with no
+    env var, is told the setting no longer applies (REL2): its transforms now run in the sandbox, with no network.
+    """
+    if transform_runtime() == "host":
+        return ("Warning: SYNAPSE_TRANSFORM_RUNTIME=host — transform steps run outside the sandbox, as the server, "
+                "able to read everything the server can, including stored keys, with the network. Only for a "
+                "single-user machine you trust every workflow on.")
+    if str((settings or {}).get("transform_runtime") or "").strip().lower() == "host":
+        return ("Notice: your settings chose the host runtime for transforms; since 2.0 only "
+                "SYNAPSE_TRANSFORM_RUNTIME=host does, so transforms now run in the sandbox, with no network.")
+    return None
+
+
 def public_settings(settings: dict) -> dict:
     """The settings as the browser may see them: no secret (F201).
 

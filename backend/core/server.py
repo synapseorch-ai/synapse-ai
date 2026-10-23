@@ -487,13 +487,17 @@ def _log_security_posture() -> None:
 async def lifespan(app: FastAPI):
     global exit_stack
     print("Starting Multi-Agent Orchestrator...")
-    # The host runtime is the operator's choice (F968): said once at start, in the words the settings use.
-    from core.routes.settings import transform_runtime as _transform_runtime
+    # Where transforms run (F968), said once at start: the operator's host runtime, or a stored "host" from before
+    # 2.0 that no longer applies.
+    try:
+        from core.config import load_settings as _load_settings
+        from core.routes.settings import transform_runtime_notice
 
-    if _transform_runtime() == "host":
-        print("Warning: SYNAPSE_TRANSFORM_RUNTIME=host — transform steps run outside the sandbox, as the server, "
-              "able to read everything the server can, including stored keys, with the network. Only for a "
-              "single-user machine you trust every workflow on.")
+        _notice = transform_runtime_notice(_load_settings())
+        if _notice:
+            print(_notice)
+    except Exception as e:  # noqa: BLE001 — a notice never stops the server
+        print(f"Warning: transform runtime notice skipped: {e}")
     exit_stack = AsyncExitStack()
 
     # Synapse's own MCP endpoint (D125). Entered first, so it is closed last and

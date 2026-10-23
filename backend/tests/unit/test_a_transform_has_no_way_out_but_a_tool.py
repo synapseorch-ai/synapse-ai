@@ -136,3 +136,25 @@ class TestTheHostRunnersEnvironment:
         assert not [k for k in env if k.startswith("SYNAPSE_")]
         assert env.get("HF_HOME") == "/models", "what host exists for still flows"
         assert "PATH" in env
+
+
+class TestAnUpgradedInstallIsTold:
+    """REL2: an install whose settings chose "host" before 2.0 now runs its transforms in the sandbox, with no
+    network; its GPU transforms would just start failing. Said once at start."""
+
+    def test_a_stored_host_without_the_env_var_is_told(self, monkeypatch):
+        from core.routes.settings import transform_runtime_notice
+        monkeypatch.delenv("SYNAPSE_TRANSFORM_RUNTIME", raising=False)
+        said = transform_runtime_notice({"transform_runtime": "host"})
+        assert said and "since 2.0 only SYNAPSE_TRANSFORM_RUNTIME=host does" in said
+
+    def test_the_operators_host_is_warned_of_what_it_is(self, monkeypatch):
+        from core.routes.settings import transform_runtime_notice
+        monkeypatch.setenv("SYNAPSE_TRANSFORM_RUNTIME", "host")
+        said = transform_runtime_notice({"transform_runtime": "docker"})
+        assert said and "including stored keys" in said
+
+    def test_a_sandboxed_install_hears_nothing(self, monkeypatch):
+        from core.routes.settings import transform_runtime_notice
+        monkeypatch.delenv("SYNAPSE_TRANSFORM_RUNTIME", raising=False)
+        assert transform_runtime_notice({"transform_runtime": "docker"}) is None
