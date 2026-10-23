@@ -153,7 +153,8 @@ async def test_an_api_only_provider_has_no_way_in_yet_so_build_it_is_never_offer
             "tool": "send_mailchimp_campaign"}
     out, events = await _check(run, {"finish": "submit_plan", **_plan(send)})
     assert out["outcome"] == "review" and "build" not in out["offers"]
-    assert "without:send_mailchimp_campaign" in out["offers"] and "find" not in out["offers"]
+    # A lead (P3b's hand-off, A6): its calls are not read yet, so "Find who can" reads them; Build it waits.
+    assert "without:send_mailchimp_campaign" in out["offers"] and "find" in out["offers"]
     assert "public API" in out["say"] and not [e for e in events if e.get("type") == "connection_needed"]
 
 
@@ -525,3 +526,47 @@ async def test_the_builders_own_reads_never_count_as_acting(client):
              "tool": "list_recent_runs"}
     out, _ = await _check(run, {"finish": "submit_plan", **_plan(reads)})
     assert out["outcome"] == "review" and out["plan"]["approvals"]["asks_first"] == []
+
+
+# ── P3b's hand-off, read (P3B-HANDOFF.md, A6) ─────────────────────────────────────────────────────────────────────
+
+SEND = {"id": "send", "type": "tool", "name": "Send it", "does": "Sends the Mailchimp newsletter",
+        "tool": "send_mailchimp_campaign"}
+SPEC = {"base_url": "https://{dc}.api.mailchimp.com/3.0", "host_params": [{"name": "dc", "says": "after the dash"}],
+        "auth": {"in": "header", "name": "Authorization", "scheme": "Bearer"},
+        "endpoints": [{"method": "POST", "path": "/campaigns/{campaign_id}/actions/send", "does": "Sends"}],
+        "docs_url": "https://mailchimp.com/developer/"}
+
+
+async def test_a_none_verdict_is_missing_and_the_card_says_why(client):
+    """SAI2's A6: `none` / `unclear` are missing (F489's issue, F768's list, "Missing here"), with the research's why."""
+    findings = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "none",
+                                          "detail": "partners only, no public API",
+                                          "sources": ["https://mailchimp.com/developer/"]}]}
+    run = await _run(plan_findings=findings)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(SEND)})
+    [tool] = out["plan"]["tools"]
+    assert (tool["status"], tool["via"], tool["provider"]) == ("missing", "none", "Mailchimp")
+    assert out["plan"]["missing"] == ["send_mailchimp_campaign"]
+    assert "partners only, no public API" in out["say"] and "build" not in out["offers"]
+    assert {"without:send_mailchimp_campaign", "find"} <= set(out["offers"])
+
+
+async def test_an_api_with_its_spec_is_found_as_a_tool_to_make(client):
+    findings = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "api", "detail": "REST",
+                                          "sources": ["https://mailchimp.com/developer/"], "api": SPEC}]}
+    run = await _run(plan_findings=findings)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(SEND)})
+    [tool] = out["plan"]["tools"]
+    assert (tool["status"], tool["via"]) == ("found", "http_tool") and tool["api"] == SPEC
+    assert out["plan"]["missing"] == [] and out["plan"]["connections_needed"] == ["Mailchimp"]
+
+
+async def test_an_api_lead_is_no_connection_yet(client):
+    findings = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "api", "detail": "REST",
+                                          "sources": ["https://mailchimp.com/developer/"]}]}
+    run = await _run(plan_findings=findings)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(SEND)})
+    [tool] = out["plan"]["tools"]
+    assert (tool["status"], tool["via"]) == ("found", "none")
+    assert out["plan"]["connections_needed"] == [] and "find" in out["offers"]

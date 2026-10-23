@@ -560,10 +560,16 @@ def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
         words = set(_words(said.replace("_", " ")))
         for option in options:
             provider, how = str(option.get("provider") or ""), option.get("how")
-            if provider and how in ("mcp", "api") and set(_words(provider)) <= words:
-                via = "mcp_server" if how == "mcp" else "http_tool"
-                found[name] = O.ToolStatus(name=name, status="found", provider=provider, via=via)
-                break
+            if not provider or not set(_words(provider)) <= words:
+                continue
+            # The hand-off's table (P3B-HANDOFF.md, A6): a way in is found; a verdict of none is missing, with why.
+            spec = option.get("api") if isinstance(option.get("api"), dict) else None
+            status, via = {"mcp": ("found", "mcp_server"), "catalog_app": ("found", "catalog_app"),
+                           "api": ("found", "http_tool" if spec else "none")}.get(how, ("missing", "none"))
+            found[name] = O.ToolStatus(name=name, status=status, provider=provider, via=via,
+                                       detail=str(option.get("detail") or "") or None,
+                                       api=spec if via == "http_tool" else None)
+            break
     return found
 
 
@@ -863,13 +869,24 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
-    no_way, connect, said = [], [], []
+    no_way, connect, said, leads = [], [], [], []
     for t in plan.tools:
-        if t.status == "missing":
+        if t.status == "missing" and t.provider:
+            # The research's verdict, with why (A6): no way in that it could find.
+            no_way.append(t.name)
+            said.append(f"`{t.name}`: {t.provider}: {(t.detail or 'no public way in that I could find').rstrip('.')}. "
+                        "Connect an app or service that provides it, or build without it.")
+        elif t.status == "missing":
             no_way.append(t.name)
             said.append(f"`{t.name}`: nothing in this workspace provides it" + (
                 ", and the lookup found nobody who does" if looked else "")
                 + ". Connect an app or service that provides it, or build without it.")
+        elif t.status == "found" and t.via == "none":
+            # A lead (A6): an API whose calls the research has not read yet; "Find who can" reads them.
+            no_way.append(t.name)
+            leads.append(t.name)
+            said.append(f"`{t.name}`: {t.provider} has a public API, but I haven't read how to call it yet: find "
+                        "who can, to read its docs, or build without it.")
         elif t.status == "found" and t.via == "http_tool" and not MAKES_HTTP_TOOLS:
             no_way.append(t.name)
             said.append(f"`{t.name}`: {t.provider} has a public API, but I can't make a tool for it here yet: build "
@@ -912,7 +929,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     lifts = {g.tool for g in plan.gates if g.decision == "confirm" and g.set_by == "build"}
     offers += [f"alone:{n}" for n in plan.approvals.asks_first if n not in no_way and n not in connect
                and (n in lifts or n not in gated)]
-    if no_way and not looked:
+    if no_way and (not looked or leads or any(t.status == "missing" and t.provider for t in plan.tools)):
         offers.append("find")
     offers += ["change", "stop"]
 

@@ -257,6 +257,37 @@ register_builder_tool(REGISTRY_SCHEMA, search_mcp_registry)
 
 # ── The findings ────────────────────────────────────────────────────────────────────────────────────────────────────
 
+#: An `api` option's spec, read off the provider's own docs (F943): enough for code to make the tool, with no model.
+API_SPEC_SCHEMA = {
+    "type": "object",
+    "description": (
+        "For how=api only, when you read the provider's own API docs: what code needs to make the tool. Leave it "
+        "out when you did not read the endpoints."
+    ),
+    "properties": {
+        "base_url": {"type": "string", "description": (
+            "The API's base, https, on the provider's own domain, e.g. https://api.example.com/v3. Where the host "
+            "has a part that differs per account, write it as one {param} at the start of the host, e.g. "
+            "https://{dc}.api.mailchimp.com/3.0, and explain it in host_params")},
+        "host_params": {"type": "array", "items": {"type": "object", "properties": {
+            "name": {"type": "string"}, "says": {"type": "string", "description": "Where the person finds it"}},
+            "required": ["name", "says"]}},
+        "auth": {"type": "object", "properties": {
+            "in": {"type": "string", "enum": ["header", "query"]},
+            "name": {"type": "string", "description": "The header's name, e.g. Authorization or X-Api-Key"},
+            "scheme": {"type": "string", "enum": ["Bearer", "Token", "Basic", ""],
+                       "description": "What comes before the key in the header; empty for the key alone"}},
+            "required": ["in", "name", "scheme"]},
+        "endpoints": {"type": "array", "maxItems": 5, "items": {"type": "object", "properties": {
+            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+            "path": {"type": "string", "description": "From the base, e.g. /lists/{list_id}/members"},
+            "does": {"type": "string"}}, "required": ["method", "path", "does"]},
+            "description": "The 1-5 calls the plan needs"},
+        "docs_url": {"type": "string", "description": "The provider's own docs page you read for this"},
+    },
+    "required": ["base_url", "auth", "endpoints", "docs_url"],
+}
+
 FINDINGS_SCHEMA = {
     "type": "function",
     "function": {
@@ -281,6 +312,7 @@ FINDINGS_SCHEMA = {
                             "detail": {"type": "string", "description": "One sentence: what it does here"},
                             "needs": {"type": "string", "description": "An account, a key, partner approval…"},
                             "sources": {"type": "array", "items": {"type": "string"}, "description": "URLs read"},
+                            "api": API_SPEC_SCHEMA,
                         },
                         "required": ["provider", "how"],
                     },
@@ -381,6 +413,82 @@ def _providers_own_page(provider: str, host: str, anchors: set[str] | list[str] 
     return False
 
 
+_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+_SCHEMES = frozenset({"Bearer", "Token", ""})
+_PARAM = re.compile(r"^\{[A-Za-z_][A-Za-z0-9_]*\}$")
+_TOKEN = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+#: Two auths are a verdict, not a spec to read again (the hand-off's A4): no way in here yet.
+_NO_WAY = {"query": "this API takes its key in the URL, which I can't keep safely",
+           "basic": "it signs in with a username and password, which I can't take on a card yet"}
+
+
+def _climbs(path: str) -> bool:
+    """A path that could leave its base: `..`, `//` or an encoded slash or dot (the hand-off's A5)."""
+    low = path.lower()
+    return ".." in path or "//" in path or "%2f" in low or "%2e" in low or "%5c" in low or "\\" in path
+
+
+def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: list[str]
+                   ) -> tuple[dict | None, str]:
+    """`(spec, "")` when an `api` option's spec can make a tool, on the provider's own host only; else
+    `(None, why)`, where `why` is one of `_NO_WAY`'s keys for a verdict, or a sentence (F943; P3B-HANDOFF.md)."""
+    import json as _json
+
+    from core.secret_scrub import holds_credential
+
+    if not isinstance(raw, dict):
+        return None, "it was not a spec"
+    if holds_credential(_json.dumps(raw, ensure_ascii=False)):
+        return None, "it held a key, so I kept none of it"
+    auth = raw.get("auth") if isinstance(raw.get("auth"), dict) else {}
+    if auth.get("in") == "query":
+        return None, "query"
+    if auth.get("scheme") == "Basic":
+        return None, "basic"
+    if auth.get("in") != "header" or not _TOKEN.match(str(auth.get("name") or "")) or \
+            auth.get("scheme") not in _SCHEMES:
+        return None, "its auth is not a header with Bearer, Token or the key alone"
+    base = str(raw.get("base_url") or "").strip()
+    m = re.match(r"^https://([^/?#]+)(/[^?#]*)?$", base)
+    if not base.startswith("https://"):
+        return None, "its base URL is not https"
+    if m is None:
+        return None, "its base URL carries a query or a fragment"
+    labels, path = m.group(1).lower().split("."), m.group(2) or ""
+    marked = [i for i, label in enumerate(labels) if "{" in label or "}" in label]
+    if marked and (marked != [0] or not _PARAM.match(labels[0])):
+        return None, "a placeholder may only be the leftmost part of its host, once"
+    host = ".".join(labels[1:] if marked else labels)
+    if "." not in host or _registrable_domain(host) not in own_domains:
+        return None, f"its base URL is not on {provider}'s own domain"
+    params = [p for p in raw.get("host_params") or [] if isinstance(p, dict)]
+    named = {str(p.get("name") or "") for p in params}
+    if (marked and labels[0][1:-1] not in {n.lower() for n in named}) or (params and not marked) or len(params) > 1:
+        return None, "its host_params do not match the placeholder in its base URL"
+    if _climbs(path):
+        return None, "its base URL's path could climb out of it"
+    endpoints = [e for e in raw.get("endpoints") or [] if isinstance(e, dict)]
+    if not 1 <= len(endpoints) <= 5 or len(endpoints) != len(raw.get("endpoints") or []):
+        return None, "it needs one to five endpoints"
+    for e in endpoints:
+        p = str(e.get("path") or "")
+        if str(e.get("method") or "").upper() not in _METHODS or not p.startswith("/") or _climbs(p) \
+                or any(c in p for c in "?#:@") or any("{" in seg and not _PARAM.match(seg) for seg in p.split("/")):
+            return None, f"an endpoint ({str(e.get('method') or '')} {p[:60]}) is not a method and a path under its base"
+    docs = str(raw.get("docs_url") or "")
+    if docs not in own_pages:
+        return None, f"its docs page is not one read on {provider}'s own site"
+    return {
+        "base_url": base,
+        **({"host_params": [{"name": str(p["name"]), "says": str(p.get("says") or "")[:160]} for p in params]}
+           if params else {}),
+        "auth": {"in": "header", "name": str(auth["name"]), "scheme": str(auth["scheme"])},
+        "endpoints": [{"method": str(e["method"]).upper(), "path": str(e["path"]), "does": str(e.get("does") or "")[:120]}
+                      for e in endpoints],
+        "docs_url": docs,
+    }, ""
+
+
 async def report_findings(args: dict, server_module: Any, events: list[dict]) -> dict:
     seen = _evidence()
     options = []
@@ -403,8 +511,23 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
         if how == "mcp":
             # Its own server, as the Registry listed it: the verdict's source.
             sources = [seen["own_mcp"][_slug(provider)], *[x for x in sources if x != seen["own_mcp"][_slug(provider)]]]
-        options.append({"provider": provider, "how": how, "detail": str(raw.get("detail") or "")[:300],
-                        "needs": str(raw.get("needs") or "")[:200], "sources": sources[:5]})
+        # The provider's own domains, by code (the hand-off's A3): its Registry anchors and the own pages read.
+        own_domains = sorted({*((seen.get("own_domains") or {}).get(_slug(provider)) or []),
+                              *(_registrable_domain(_host(s)) for s in own_pages)})
+        detail = str(raw.get("detail") or "")
+        option = {"provider": provider, "how": how, "detail": detail[:300], "needs": str(raw.get("needs") or "")[:200],
+                  "sources": sources[:5], "own_domains": own_domains}
+        if how == "api" and raw.get("api") is not None:
+            # A spec code can make the tool from, on the provider's own host only (F943); a failing one is dropped,
+            # and the option stays a lead, never half-used. Two auths are no way in here yet: a verdict.
+            spec, why = check_api_spec(raw.get("api"), provider, own_domains, own_pages)
+            if spec is not None:
+                option["api"] = spec
+            elif why in _NO_WAY:
+                option.update(how="unclear", detail=f"{_NO_WAY[why]}. {detail}"[:300])
+            else:
+                option["detail"] = f"{detail[:180]} (Its API spec was not used: {why}.)".strip()[:300]
+        options.append(option)
     if not options:
         return {"error": "Give at least one option, with its provider and how it would connect."}
     findings = {"goal": str(args.get("goal") or "")[:200], "options": options}

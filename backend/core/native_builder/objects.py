@@ -133,6 +133,10 @@ class ToolStatus(BaseModel):
     status: Literal["present", "found", "missing"]
     provider: str | None = None
     via: Literal["catalog_app", "mcp_server", "http_tool", "none"] = "none"
+    #: What the research said of it: why a provider has no way in, for the card (the hand-off's A6).
+    detail: str | None = None
+    #: `http_tool`: the API spec the research read, to make the tool from (F943, F944).
+    api: dict | None = None
 
 
 class Approvals(BaseModel):
@@ -508,12 +512,15 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
         if await exists(name):
             statuses.append(ToolStatus(name=name, status="present"))
         elif found and name in found:
-            statuses.append(found[name].model_copy(update={"name": name, "status": "found"}))
+            # The research's verdict: found (connect first), or missing with why (`none` / `unclear`, A6).
+            statuses.append(found[name].model_copy(update={"name": name}))
         else:
             statuses.append(ToolStatus(name=name, status="missing"))
     out.tools = statuses
     out.missing = [t.name for t in statuses if t.status == "missing"]
-    out.connections_needed = list(dict.fromkeys(t.provider or t.name for t in statuses if t.status == "found"))
+    # A lead (`api` with no spec yet, via none) has no connection to make until its spec is read (A6).
+    out.connections_needed = list(dict.fromkeys(t.provider or t.name for t in statuses
+                                                if t.status == "found" and t.via != "none"))
 
     acting = [t.name for t in statuses if t.status == "present"
               and await builder_guard.acting_tool(t.name, server_module, custom) is not None]
