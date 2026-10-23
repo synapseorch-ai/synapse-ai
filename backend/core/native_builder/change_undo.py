@@ -83,8 +83,8 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
     if name == "delete_schedule":
         runs = {"kind": "workflow" if before.get("target_type") == "orchestration" else "agent",
                 "id": before.get("target_id")}
-        time = {k: before[k] for k in ("schedule_type", "cron_expression", "interval_value", "interval_unit")
-                if before.get(k) is not None}
+        # Its time as the op table says a time is, its timezone with it (F948): no list of its own to fall behind.
+        time = {k: before[k] for k in C._SCHEDULE_TIME if before.get(k) is not None}
         return {"op": "create_schedule", "target": {"kind": "schedule", "name": before.get("name")},
                 "fields": {"runs": runs, "prompt": before.get("prompt") or "", **time},
                 "says": "undo: it comes back as a new copy, paused"}, None

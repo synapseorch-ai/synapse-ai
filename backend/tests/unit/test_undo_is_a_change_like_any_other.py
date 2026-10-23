@@ -186,6 +186,25 @@ async def test_a_deleted_schedule_comes_back_paused(client):
     assert back["enabled"] is False and back["cron_expression"] == "0 2 * * *" and back["id"] != "sched_n"
 
 
+
+async def test_a_deleted_schedule_comes_back_on_its_own_clock(client):
+    """F948 (SAI2-P3): a schedule keeps its person's local time (`timezone`). Its undo re-creates it from the card's
+    before-image, and the time it comes back with is on that same clock, not UTC."""
+    from core.store import schedules
+    from core.store.resources import save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Nightly digest")
+    await save_orchestration(flow)
+    await schedules.save({"id": "sched_tz", "name": "Every night at 2", "enabled": True, "target_type":
+                          "orchestration", "target_id": flow["id"], "prompt": "Go", "schedule_type": "cron",
+                          "cron_expression": "0 2 * * *", "timezone": "Europe/Amsterdam"})
+    first, _, _ = await _change({"ops": [{"op": "delete_schedule", "target": {"kind": "schedule", "id": "sched_tz"}}]})
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert undone["applied"] == ["create_schedule"], undone
+    [back] = [s for s in await schedules.load() if s["name"] == "Every night at 2"]
+    assert back["cron_expression"] == "0 2 * * *" and back["timezone"] == "Europe/Amsterdam"
+
 async def test_a_name_taken_since_stops_the_re_create(client):
     agent = await _agent(name="Support bot")
     first, _, _ = await _change({"ops": [{"op": "delete_agent", "target": {"kind": "agent", "id": agent["id"]}}]})
