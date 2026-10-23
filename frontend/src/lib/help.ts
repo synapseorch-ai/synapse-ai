@@ -166,13 +166,15 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     chat: {
         title: 'Chat',
-        summary: 'Talk to one agent at a time and watch it work: its thinking, the tools it calls and what they return. Conversations are kept for you to pick up again.',
+        summary: 'Talk to your agents and watch them work: their thinking, the tools they call and what they return. Each conversation is a tab, so several can be open and working at once, and every one is kept for you to pick up again.',
         steps: [
-            'Click the agent’s name at the foot of the message box and pick who to talk to; switching agents starts a new conversation.',
+            'Click + beside the tabs, or press Alt+T, and pick who to talk to: the conversation opens in a tab of its own. Alt+1 to 9 goes to a tab, Alt+W closes the one in front, and a tab can be dragged to another place.',
+            'A tab keeps its agent. Picking another agent at the foot of the message box changes it while the conversation is empty, and opens the agent in a new tab once it has started. Synapse AI has one tab, the same conversation as its side panel.',
+            'A tab behind keeps working: it shows a spinner while its agent works, an amber dot when it needs you, a tick when your answer has arrived, and a bold title with a dot when a message you didn’t ask for has. Up to 10 tabs stay open; past that the one you used least long ago closes, never one that is working or waiting on you.',
             'Type your message and press Enter; Shift+Enter adds a line, and “Stop” halts the agent.',
             'An agent that can send helpers shows each one as a line beside its answer, with its own “Stop” while it works; open the line to see what it did, and “Save as agent” there opens a new agent made from it, saved only when you click “Save”. One sent to work in the background posts its result here when it finishes, marked “From your helper”; helpers that finish close together post one reply between them.',
             'Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.',
-            'Click + for a new chat, or the history button to reopen or delete an earlier one.',
+            'History, Pinned and Search are on the right: open an earlier conversation in a tab, pin one to find it again, search every question and answer, or delete one. On a phone, the button above the conversation lists your tabs.',
         ],
         media: { id: 'chat/oss-home', alt: 'Chat: a conversation with the Order desk agent, whose name sits at the foot of the message box.' },
         guide: '/guides/start/chat',
