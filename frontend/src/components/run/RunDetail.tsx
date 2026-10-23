@@ -163,7 +163,8 @@ export function RunDetail({
             <div className="grid gap-7">
                 {notices}
 
-                <div className="flex flex-wrap items-center gap-x-[22px] gap-y-1.5 text-[13.5px] text-text-muted" aria-label="About this run">
+                {/* Each fact keeps to one line; the strip wraps between them, never inside one (F898). */}
+                <div className="flex flex-wrap items-center gap-x-[22px] gap-y-1.5 text-[13.5px] text-text-muted [&>*]:whitespace-nowrap" aria-label="About this run">
                     <span className="inline-flex items-center gap-1.5">
                         <StatusBadge status={run.status} waitingForHuman={run.waitingForHuman} />
                         {warnings > 0 && (

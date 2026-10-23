@@ -281,7 +281,7 @@ function Row({
                 className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-text-faint sm:flex-nowrap"
             >
                 {/* The phone's line 1 has no room for these. */}
-                <span className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:hidden">
+                <span className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:hidden [&>*]:whitespace-nowrap">
                     <TriggerChip row={row} />
                     <span className="text-text-muted"><LastRun row={row} clock={clock} /></span>
                     {run?.startedAt && <span className="tabular-nums"><Took start={run.startedAt} end={run.endedAt} /></span>}

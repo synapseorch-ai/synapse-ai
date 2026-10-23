@@ -9,7 +9,7 @@ import { cn } from '@/lib/cn';
 import { reasonHeadline } from '@/lib/runErrors';
 import { Spinner } from '@/components/ui';
 import { StepIcon } from '../run/StepIcon';
-import { creditsText, duration, money } from '../run/model';
+import { pillText } from '../run/model';
 import { roleOf } from './roles';
 import { KIND_WORD, type AgentKind } from './agentKind';
 
@@ -289,7 +289,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             {runDetail && live && (
                 <span
                     data-run-pill={runStatus}
-                    className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium leading-none text-text-muted"
+                    className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 whitespace-nowrap rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium leading-none text-text-muted"
                 >
                     {runStatus === 'running' ? (
                         <>
@@ -325,13 +325,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
  * spent where the run prices steps. Over the bottom border, like the live pill.
  */
 function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
-    const took = time.seconds !== null ? duration(time.seconds) : null;
-    const parts = [
-        time.times ? `${time.times}×` : null,
-        took,
-        time.credits ? creditsText(time.credits) : null,
-        time.costUsd !== undefined && time.costUsd !== null ? money(time.costUsd) : null,
-    ].filter(Boolean).join(' · ');
+    const { short: parts, full } = pillText(time);
     const lead = time.state === 'done'
         ? <Check className="size-3 text-success" aria-hidden />
         : time.state === 'failed'
@@ -349,8 +343,8 @@ function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
         <span
             data-run-pill={time.state}
             data-step-seconds={time.seconds ?? undefined}
-            title={`Last run: ${word.toLowerCase()}${parts ? `, ${parts}` : ''}`}
-            className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium tabular-nums leading-none text-text-muted"
+            title={`Last run: ${word.toLowerCase()}${full ? `, ${full}` : ''}`}
+            className="pointer-events-none absolute -bottom-[9px] right-3 inline-flex h-[18px] items-center gap-1 whitespace-nowrap rounded-full border border-border bg-surface px-1.5 text-[10.5px] font-medium tabular-nums leading-none text-text-muted"
         >
             {lead}
             {parts || word}

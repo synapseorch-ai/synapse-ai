@@ -791,6 +791,46 @@ export function duration(seconds: number | null | undefined): string {
     return `${d} ${d === 1 ? 'day' : 'days'}`;
 }
 
+/** A large figure in one short word: 1.2k, 3.4M (F898). */
+function thousands(n: number): string {
+    return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${(n / 1000).toFixed(1)}k`;
+}
+
+/** "9.5s", "59m 59s", "23h 59m", "400d": `duration` where a line has no room for its words (F898). */
+function shortDuration(seconds: number): string {
+    const s = Math.max(0, seconds);
+    if (s < 10) { const r = Math.round(s * 10) / 10; return `${r % 1 === 0 ? r.toFixed(0) : r.toFixed(1)}s`; }
+    if (s < 60) return `${Math.round(s)}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) { const r = Math.round(s - m * 60); return r ? `${m}m ${r}s` : `${m}m`; }
+    const h = Math.floor(m / 60);
+    if (h < 24) { const r = m - h * 60; return r ? `${h}h ${r}m` : `${h}h`; }
+    return `${Math.floor(h / 24)}d`;
+}
+
+/**
+ * A step's last-run pill (F898): `short` for the pill, which sits on the step's bottom border and must stay one
+ * line however long the run or large the spend, and `full` for its title. Naveen saw a long run's minutes and cost
+ * push the pill onto a second line, out of its 18 px.
+ */
+export function pillText(time: Pick<StepTime, 'seconds' | 'times' | 'costUsd' | 'credits'>): { short: string; full: string } {
+    const times = time.times ? `${time.times}×` : null;
+    const cost = time.costUsd !== undefined && time.costUsd !== null ? time.costUsd : null;
+    const full = [
+        times,
+        time.seconds !== null ? duration(time.seconds) : null,
+        time.credits ? creditsText(time.credits) : null,
+        cost !== null ? money(cost) : null,
+    ].filter(Boolean).join(' · ');
+    const short = [
+        times,
+        time.seconds !== null ? shortDuration(time.seconds) : null,
+        time.credits ? (time.credits >= 1000 ? `${thousands(time.credits)} credits` : creditsText(time.credits)) : null,
+        cost !== null ? (cost >= 1000 ? `$${thousands(cost)}` : money(cost)) : null,
+    ].filter(Boolean).join(' · ');
+    return { short, full };
+}
+
 /** Seconds between two instants; to `now` when it has not ended. */
 export function elapsed(start: string | null | undefined, end: string | null | undefined, now: number): number | null {
     const a = toMs(start);
