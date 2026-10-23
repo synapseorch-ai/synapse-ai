@@ -82,6 +82,8 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
                          + ", ".join(f'"{n}"' for n in names) + "; and for no other."}
     if _holds_a_key(given):  # a key, or the door's mark where one was (SAI2's review, 3)
         return {"error": "Instructions never hold a key, a token or a password: the agent's tools carry those."}
+    if any(MADE in text for text in given.values()):
+        return {"error": f"Instructions never hold the text {MADE}: it is how the save names an id it has yet to make."}
     # What each was written for, so a plan revised since is written for again (`build_plan.prompts_for`).
     written_for = {a["name"]: (checked.get("for") or {}).get(a["name"]) or agent_fingerprint(a) for a in agents}
     return {"finish": "submit_prompts", "prompts": given, "for": written_for}
@@ -280,11 +282,13 @@ async def _taken_since(call: dict, made: dict[str, str], before: dict[str, list[
     return any(r.get("name") == call["name"] and r.get("id") not in held and r.get("id") not in ours for r in rows)
 
 
-async def _keep(run: Any, made: dict[str, str], done: list[tuple[str, str, str]], calls_done: list[int]) -> None:
-    """Record what this save has made so far, and checkpoint it before the next call."""
+async def _keep(run: Any, approval_id: str, made: dict[str, str], done: list[tuple[str, str, str]],
+                calls_done: list[int]) -> None:
+    """Record what this save has made so far, under the approval it saves for, and checkpoint it before the next
+    call."""
     from core.orchestration.state import SharedState
 
-    run.step_progress[PROGRESS_KEY] = {"made": dict(made), "done": [list(d) for d in done],
+    run.step_progress[PROGRESS_KEY] = {"approval": approval_id, "made": dict(made), "done": [list(d) for d in done],
                                        "calls_done": list(calls_done)}
     try:
         await SharedState(run).checkpoint(columns=("step_progress",))
@@ -403,6 +407,8 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     caller = _caller()
     areas.ensure_loaded()
     kept = run.step_progress.get(PROGRESS_KEY) or {}
+    if kept.get("approval") != approval.id:
+        kept = {}  # another yes's record: this approval's save starts clean (MCP2's note 1)
     made: dict[str, str] = dict(kept.get("made") or {})
     done: list[tuple[str, str, str]] = [tuple(d) for d in kept.get("done") or []]  # type: ignore[misc]
     calls_done: list[int] = list(kept.get("calls_done") or [])
@@ -413,8 +419,10 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                 continue  # made by an earlier pass of this save, by the id it recorded
             if await _taken_since(call, made, before):
                 noun = "a workflow" if call["kind"] == "orchestration" else "an agent"
-                failure = (f'{noun} called "{call["name"]}" was made since you approved this, so I made no second '
-                           "one")
+                # Its own, unrecorded (a worker that stopped between a make and its record), or someone else's:
+                # neither is taken, and nothing is blamed (MCP2's note 2).
+                failure = (f'{noun} called "{call["name"]}" is there now that was not at your yes; it may be one an '
+                           "interrupted save made, so I made nothing more")
                 break
             try:
                 result = await registry.invoke(call["tool"], caller, _filled(call["args"], made),
@@ -447,7 +455,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             if real and call["kind"] in ("agent", "orchestration", "schedule", "board"):
                 done.append(("updated" if call.get("update") else call["kind"], real, call["name"]))
             calls_done.append(n)
-            await _keep(run, made, done, calls_done)
+            await _keep(run, approval.id, made, done, calls_done)
     if failure:
         reason = " ".join(failure.split()).rstrip(". ")
         await _undo(done, state, events, reason)

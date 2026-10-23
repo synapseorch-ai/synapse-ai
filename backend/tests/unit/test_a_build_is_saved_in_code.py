@@ -278,7 +278,8 @@ async def test_a_same_named_thing_made_since_the_yes_is_neither_used_nor_deleted
     out, events = await _call("save_build", {}, run)
     assert out["outcome"] == "stopped" and not [e for e in events if e.get("type") == "resource_saved"]
     [stopped] = [e for e in events if e.get("type") == "build_stopped"]
-    assert 'an agent called "Warning writer" was made since you approved this' in stopped["reason"]
+    assert 'an agent called "Warning writer" is there now that was not at your yes' in stopped["reason"]
+    assert "interrupted" in stopped["reason"], "no blame: it may be one an interrupted save made (MCP2's note 2)"
     from core.store.resources import get_agent
 
     assert (await get_agent("agent_theirs"))["tools"] == ["rotterdam_weather"]
@@ -292,6 +293,7 @@ async def test_a_save_run_again_takes_only_what_it_recorded_making(client):
     await _yes(run)
     assert (await _call("save_build", {}, run))[0]["outcome"] == "saved"
     kept = run.step_progress[build_save.PROGRESS_KEY]
+    assert kept["approval"] == review.approved_review(run.shared_state).id  # keyed by the yes (MCP2's note 1)
     agents, flows, _ = await _workspace()
     assert set(kept["made"].values()) == {agents["Warning writer"]["id"], flows["Rotterdam wind warning"]["id"]}
 
@@ -390,3 +392,25 @@ def test_nothing_rewrites_what_was_approved_between_the_review_and_the_save():
     assert writes_between(orch, "step_plan_approve", "step_save", keys) == []
     # The check and the prompt writer write them, before the review: a path back through them brings a new review.
     assert writes_between(orch, "step_human_review", "step_save", {"plan_approval"}) == ["step_plan_approve"]
+
+
+
+async def test_a_new_yes_in_the_run_starts_its_save_clean(client):
+    """MCP2's note 1: the save's record belongs to the approval it saved under; another yes never skips by it."""
+    run, _ = await _reviewed(_plan(CHECK, TELL, agents=[WRITER]))
+    await _yes(run)
+    run.step_progress[build_save.PROGRESS_KEY] = {"approval": "an-older-yes", "made": {}, "done": [],
+                                                  "calls_done": [0, 1]}
+    out, events = await _call("save_build", {}, run)
+    assert out["outcome"] == "saved"
+    assert [e["kind"] for e in events if e.get("type") == "resource_saved"] == ["agent", "orchestration"]
+
+
+async def test_instructions_or_a_plan_holding_the_placeholder_mark_are_refused(client):
+    """MCP2's note 3: "@made:" in what is saved would leave every call uncovered and stop the save confusingly."""
+    run, _ = await _reviewed(_plan(CHECK, TELL, agents=[WRITER]))
+    sent, _ = await _call("submit_prompts", {"prompts": [{"agent": "Warning writer",
+                                                          "instructions": "Mention @made:agent:1 to them."}]}, run)
+    assert "@made:" in sent["error"]
+    sent, _ = await _call("submit_plan", _plan(CHECK, {**TELL, "prompt": "Say @made:x."}, agents=[WRITER]), run)
+    assert "@made:" in sent["error"]

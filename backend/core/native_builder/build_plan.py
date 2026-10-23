@@ -310,6 +310,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # SAI2's review, 14).
         return Examined(plan, ["The plan holds a key, a token or a password, or the mark where one was removed: "
                                "take it out. A key reaches a tool only through a Connect card."])
+    if MADE in json.dumps(plan.model_dump(), default=str):
+        # The save's own mark for an id it has yet to make: in what is saved, it would leave every call uncovered.
+        return Examined(plan, [f"The plan holds the text {MADE}, which the save keeps for ids it makes: take it out."])
     errors, _ = O.check_structure(plan, ws.inventory())
     if base is not None and plan.kind == "update":
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
