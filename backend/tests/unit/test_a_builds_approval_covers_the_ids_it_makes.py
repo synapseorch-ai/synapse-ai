@@ -73,3 +73,12 @@ def test_the_map_is_a_host_argument_and_never_a_model_s():
 
     assert "made" in inspect.signature(registry.invoke).parameters
     assert inspect.signature(registry.invoke).parameters["made"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+async def test_a_call_still_holding_a_placeholder_is_never_covered(tool):
+    """MCP2's finding 2: a placeholder the save did not fill (an ordering slip) hashes as approved, and would save a
+    workflow naming an agent "@made:agent:1". A call is never made with one."""
+    out = await _invoke(dict(CALL[1]))
+    assert out["status"] == "needs_confirmation" and tool == []
+    assert "placeholder" in approved.uncovered(approved.approve(PLAN, _ana(), [CALL]), _ana(), CALL[0],
+                                               dict(CALL[1]), PLAN)

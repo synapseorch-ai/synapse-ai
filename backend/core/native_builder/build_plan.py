@@ -29,6 +29,7 @@ from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core.native_builder import objects as O
 from core.native_builder.change_tools import _caller, _run
+from core.product_tools.approved import PLACEHOLDER
 
 _log = get_logger(__name__)
 
@@ -38,7 +39,7 @@ DRAFT_KEY, CHECKED_KEY, FINDINGS_KEY, EXISTING_KEY, ANSWER_KEY = (
 
 #: The prefix of an id a build mints when it saves (Naveen, 10-23, Q1). It never occurs in a real id, so the
 #: approval can cover each save call with the placeholders it will be made with (F940).
-MADE = "@made:"
+MADE = PLACEHOLDER
 
 #: Whether the build makes an HTTP tool from the lookup's API spec after the yes (P3b, F944). Until then an
 #: API-only provider has no way in here.

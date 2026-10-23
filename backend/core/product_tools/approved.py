@@ -64,6 +64,10 @@ def approve(obj: Any, caller: Caller, calls: list[tuple[str, dict[str, Any]]], *
                           id=secrets.token_urlsafe(12))
 
 
+#: How a build's approval writes an id its save will make (`native_builder.build_plan.MADE`). No real id holds it.
+PLACEHOLDER = "@made:"
+
+
 def as_approved(args: Any, made: dict[str, str] | None) -> Any:
     """`args` with each id in `made` (an id the save made → its placeholder) written back as its placeholder,
     wherever it stands as a whole id: inside a JSON string too, as a workflow's steps carry its agents."""
@@ -89,6 +93,9 @@ def uncovered(review: ApprovedReview | None, caller: Caller, tool: str, args: di
     """Why this call is not covered by the review, or None when it is. `made`: see `as_approved`."""
     if review is None:
         return "no approved review"
+    if PLACEHOLDER in json.dumps(args, default=str):
+        # A placeholder the save did not fill hashes as approved; a call is never made with one (MCP2's finding 2).
+        return "a call still holds a placeholder for an id the build has not made"
     if digest(current) != review.digest:
         return "what was approved has changed since"
     if caller.who != review.approver:
