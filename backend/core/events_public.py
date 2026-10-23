@@ -54,6 +54,9 @@ PUBLIC_EVENT_TYPES = frozenset({
 INTERNAL_EVENT_TYPES = frozenset({
     "_log_llm_call", "_log_prompt", "_log_evaluator", "_log_tool_step_llm",
     "_step_progress", "_inbox_parked", "_model_delta", "_model_restart",
+    # Why a build stopped (F768): the engine keeps it in the run's record (`run_writes.note_stopped`) and the summary
+    # says it; no client reads the event itself.
+    "build_stopped",
 })
 
 #: A door's own frames, built from public events after its own narrowing: v1 chat's
