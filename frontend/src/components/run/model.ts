@@ -791,6 +791,34 @@ export function duration(seconds: number | null | undefined): string {
     return `${d} ${d === 1 ? 'day' : 'days'}`;
 }
 
+/** Step types whose output is not what a run made: a person's answer, a route, an End (`results.NOT_CONTENT`). */
+export const NOT_CONTENT: readonly string[] = ['human', 'evaluator', 'end'];
+
+/**
+ * What the run made (F901): the engine's own rule, `core/orchestration/results.py` `result_of` (F249) — the
+ * workflow's `result_key` when the run wrote it, else the last step that produced content. An entry with no type
+ * (an older record) counts as content. `from` is the step that wrote it; null when the run made nothing.
+ */
+export function resultOf(
+    run: Pick<RunRecord, 'history' | 'sharedState'>,
+    workflow: Pick<Orchestration, 'result_key'> | null | undefined,
+): { key: string; value: unknown; from?: string } | null {
+    const state = run.sharedState || {};
+    const writer = (key: string) => [...run.history].reverse().find((h) => h.output_key === key);
+    const named = workflow?.result_key;
+    if (named && named in state) {
+        const h = writer(named);
+        return { key: named, value: state[named], from: h ? h.step_name || h.step_id : undefined };
+    }
+    for (const h of [...run.history].reverse()) {
+        if (h.step_type && NOT_CONTENT.includes(h.step_type)) continue;
+        if (h.output_key && h.output_key in state) {
+            return { key: h.output_key, value: state[h.output_key], from: h.step_name || h.step_id };
+        }
+    }
+    return null;
+}
+
 /** A large figure in one short word: 1.2k, 3.4M (F898). */
 function thousands(n: number): string {
     return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${(n / 1000).toFixed(1)}k`;

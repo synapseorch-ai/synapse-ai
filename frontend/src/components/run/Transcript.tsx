@@ -27,10 +27,9 @@
  * Each product reads the text its own way (`load`) and throws the sentence to
  * show when it can't.
  */
-import { Check, Copy } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { Button, ErrorNote } from '@/components/ui';
+import { CopyButton, ErrorNote } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 /** First match wins, so the specific markers sit above the generic rule lines. */
@@ -86,7 +85,6 @@ export function Transcript({
 }) {
     // What was read, and for which id: anything older than `id` is still loading.
     const [read, setRead] = useState<{ id: string; text: string | null; error: string } | null>(null);
-    const [copied, setCopied] = useState(false);
     const bodyRef = useRef<HTMLPreElement>(null);
     // The newest `load`, without reading again each time a parent re-renders.
     const loadRef = useRef(load);
@@ -128,17 +126,6 @@ export function Transcript({
         target?.scrollIntoView({ block: 'start', behavior: 'smooth' });
     }
 
-    async function copy() {
-        if (!text) return;
-        try {
-            await navigator.clipboard.writeText(text);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-        } catch {
-            // No clipboard (an insecure origin): the text is still on screen to select.
-        }
-    }
-
     if (loading) return <p className="text-sm text-text-muted">Reading the transcript…</p>;
     if (error) return <ErrorNote>{error}</ErrorNote>;
     if (text === null) return null;
@@ -149,10 +136,7 @@ export function Transcript({
                 <span className="text-xs tabular-nums text-text-faint">
                     {lines.length.toLocaleString()} lines · {(text.length / 1024).toFixed(1)} KB
                 </span>
-                <Button variant="secondary" size="sm" onClick={copy}>
-                    {copied ? <Check className="size-4" aria-hidden /> : <Copy className="size-4" aria-hidden />}
-                    {copied ? 'Copied' : 'Copy'}
-                </Button>
+                <CopyButton text={text} />
             </div>
 
             {/* Every model call, step and tool call in order, as a jump list. */}

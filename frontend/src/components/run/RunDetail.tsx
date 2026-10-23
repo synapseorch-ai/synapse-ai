@@ -34,6 +34,7 @@ import type { Orchestration } from '@/types/orchestration';
 
 import { ApprovalCard } from './ApprovalCard';
 import { FailureCard } from './FailureCard';
+import { RunResult } from './RunResult';
 import { useRunHost } from './host';
 import {
     bucketOf, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runWarnings, when, type Followed,
@@ -189,6 +190,8 @@ export function RunDetail({
                     </span>
                 </div>
 
+                {/* The answer first (F901): the path and every output stay below it. */}
+                {run.status === 'completed' && <RunResult run={run} workflow={drawn} />}
                 {stopped && <FailureCard run={run} nested={nested} onReplay={replay} busy={busy} />}
                 {asking && (
                     <ApprovalCard

@@ -26,6 +26,7 @@ export { AppMark, tileHue } from "./app-mark";
 export { Badge, Tag, type BadgeTone } from "./badge";
 export { BrandLoader, Mark, Spinner, Wordmark } from "./brand";
 export { Card, CardBody, CardFooter } from "./card";
+export { CopyButton } from "./copy-button";
 export { EmptyState, ErrorNote, SuccessNote } from "./feedback";
 export { controlStyles, type ControlSize } from "./control-styles";
 export { Field, FieldRow, Input, SearchInput, Textarea } from "./input";
