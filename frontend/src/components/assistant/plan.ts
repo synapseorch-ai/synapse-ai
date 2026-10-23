@@ -427,6 +427,43 @@ export interface PlanObjectStep {
     workflow?: string | null;
 }
 
+/** One approval the run asks for, or one block: who, before which tool, and what set it (F964). */
+export interface PlanGate {
+    who: string;
+    tool: string;
+    decision: 'confirm' | 'deny';
+    set_by: 'build' | 'agent' | 'workspace';
+    kind?: 'agent' | 'step';
+}
+
+/** A gate as the card says it: the words `render.gate_words` writes on the review. */
+export function gateWords(gate: PlanGate): string {
+    const who = gate.kind === 'step' ? `The step "${gate.who}"` : gate.who;
+    if (gate.decision === 'deny') {
+        const whose = gate.set_by === 'agent' ? 'its own tool policy' : "this workspace's tool policy";
+        return `${who} can't use \`${gate.tool}\`: ${whose} blocks it`;
+    }
+    const by = gate.set_by === 'agent' ? ' (its own tool policy)'
+        : gate.set_by === 'workspace' ? " (this workspace's tool policy)" : '';
+    return `${who} asks you before \`${gate.tool}\`, each time${by}`;
+}
+
+/** What asks first, by who asks (F964), then a tool a Human step approves, then what is blocked. */
+function asksOf(view: PlanObjectView): string | null {
+    const gates = view.plan.gates ?? [];
+    const confirms = gates.filter((g) => g.decision === 'confirm');
+    const byGate = new Set(confirms.map((g) => g.tool));
+    const lines = [
+        ...confirms.map(gateWords),
+        ...(view.plan.approvals?.asks_first ?? []).filter((t) => !byGate.has(t)).map((t) => `\`${t}\``),
+        ...gates.filter((g) => g.decision === 'deny').map(gateWords),
+    ];
+    if (!lines.length) return null;
+    const human = view.plan.steps.some((s) => s.type === 'human');
+    return lines.map((l) => `- ${l}`).join('\n')
+        + (confirms.length && human ? '\n\nThese are asked as well as the Human steps above.' : '');
+}
+
 /** The checked plan a build's review carries when its object is one (`context.object === 'plan'`). */
 export interface PlanObjectView {
     object: 'plan';
@@ -442,6 +479,8 @@ export interface PlanObjectView {
         questions?: string[];
         not_carried_over?: string[];
         approvals?: { asks_first?: string[]; acts_without_asking?: string[] };
+        /** Every approval the run asks for and every block, as the engine's policy decides them (F964). */
+        gates?: PlanGate[];
         tools?: { name: string; status: string; provider?: string | null; via?: string }[];
     };
     /** What the card offers (decision 2, Naveen 10-23): no `build` while a tool has no way in. */
@@ -503,7 +542,7 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
         openQuestions: bullets(view.plan.questions),
         notCarried: bullets(view.plan.not_carried_over),
         needs: view.say?.trim() || null,
-        asksFirst: bullets(view.plan.approvals?.asks_first, true),
+        asksFirst: asksOf(view),
         actsAlone: bullets(view.plan.approvals?.acts_without_asking, true),
         offers: view.offers,
         agentInstructions: Object.entries(view.prompts ?? {})

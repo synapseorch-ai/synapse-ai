@@ -239,6 +239,26 @@ def _stopped(events: list[dict], reason: str) -> dict:
     return {"outcome": "stopped", "reason": reason, "effect": ""}
 
 
+def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
+    """Each approval or block that is not what the card said, in the card's words: was, and is."""
+    from core.native_builder.render import gate_words
+
+    def key(g: O.Gate) -> tuple[str, str]:
+        return g.who, g.tool
+
+    was, is_ = {key(g): g for g in reviewed}, {key(g): g for g in now}
+    out = []
+    for k in dict.fromkeys([*was, *is_]):
+        before, after = was.get(k), is_.get(k)
+        if before == after:
+            continue
+        name = f"{k[0]} and `{k[1]}`"
+        out.append(f"{name}: the card said \"{gate_words(before)}\", now "
+                   + (f"\"{gate_words(after)}\"" if after else "it acts without asking") if before
+                   else f"{name}: now \"{gate_words(after)}\"")
+    return out
+
+
 def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
     """F768's words, from the Plan's own tool status and the lookup's findings."""
     findings = _obj(state.get(FINDINGS_KEY)) or {}
@@ -394,6 +414,11 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     gone = [t.name for t in now.tools if t.status != "present"]
     if gone:
         return _stopped(events, _why_missing(gone, plan, state))
+    if moved := _gates_moved(plan.gates, now.gates):
+        # The card promised what the run asks for (F964; SAI2's point 3): a policy changed since is not what was
+        # approved.
+        return _stopped(events, "Nothing was built: what the run asks you for changed since your yes — "
+                                + "; ".join(moved) + ". Ask again to see the plan as it is now.")
     issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)]
     if issues:
         return _stopped(events, _issues_reason(issues))

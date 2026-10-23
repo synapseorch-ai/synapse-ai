@@ -328,9 +328,26 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         return Examined(plan, errors)
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
-    filled = await O.fill(plan, server_module, found=_found(plan, state))
+    filled = await O.fill(plan, server_module, found=_found(plan, state), agents=ws.agents)
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
+    issues += blocked(filled)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues)
+
+
+def blocked(plan: O.Plan) -> list[str]:
+    """A tool the plan uses that a policy blocks: the run could not call it, so the plan cannot be built as it is
+    (F964; SAI2's point 1: a block is not an approval). A reused agent's other blocked tools are said on the card."""
+    named = set(O.tool_names(plan))
+    return [f"{_WHOSE[g.set_by].format(who=g.who)} blocks `{g.tool}` for "
+            + (f'the step "{g.who}"' if g.kind == "step" else g.who)
+            + (": change it in Settings, or leave it out" if g.set_by == "workspace"
+               else ": change it on the agent, or leave it out")
+            for g in plan.gates if g.decision == "deny" and (g.tool in named or g.kind == "step")]
+
+
+#: What set a gate, in the card's words.
+_WHOSE = {"workspace": "this workspace's tool policy", "agent": "{who}'s own tool policy",
+          "build": "this build"}
 
 
 def _written(plan: O.Plan, base: O.Plan | None) -> dict:
@@ -796,7 +813,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 "for": {a.name: agent_fingerprint(a.model_dump()) for a in plan.agents}}
     offers = ["build"] if buildable else []
     offers += [f"without:{n}" for n in [*no_way, *connect]]
-    offers += [f"alone:{n}" for n in plan.approvals.asks_first if n not in no_way and n not in connect]
+    # Only where a press changes what the run asks: an agent's or the workspace's own policy still asks (F964, 2).
+    held = {g.tool for g in plan.gates if g.set_by != "build"}
+    offers += [f"alone:{n}" for n in plan.approvals.asks_first if n not in no_way and n not in connect
+               and n not in held]
     if no_way and not looked:
         offers.append("find")
     offers += ["change", "stop"]
@@ -862,8 +882,9 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
     let = _ALONE.match(answer)
     if let:
         named = let.group("what").strip(" `'\"").lower()
-        asks = ((checked_in(state).get("plan") or {}).get("approvals") or {}).get("asks_first") or []
-        picked = [t for t in asks if t.lower() == named]
+        checked = checked_in(state)
+        asks = ((checked.get("plan") or {}).get("approvals") or {}).get("asks_first") or []
+        picked = [t for t in asks if t.lower() == named and f"alone:{t}" in (checked.get("offers") or [])]
         if picked:
             return {"outcome": "alone", "alone": picked}
     m = _WITHOUT.match(answer)

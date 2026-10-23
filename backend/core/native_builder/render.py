@@ -8,7 +8,7 @@ is left out** — never "(cron expression: )", never "None".
 """
 from __future__ import annotations
 
-from core.native_builder.objects import Plan, Step
+from core.native_builder.objects import Gate, Plan, Step
 
 _TYPE_WORDS = {"agent": "agent", "llm": "llm", "tool": "tool", "evaluator": "evaluator", "parallel": "parallel",
                "merge": "merge", "loop": "loop", "human": "human", "transform": "transform",
@@ -34,6 +34,19 @@ def _step_line(n: int, step: Step, agent_names: dict[str, str], inner: set[str])
 
 def _bullets(items: list[str], *, code: bool = False) -> str:
     return "\n".join(f"- `{i}`" if code else f"- {i}" for i in items)
+
+
+_SET_BY = {"build": "", "agent": " (its own tool policy)", "workspace": " (this workspace's tool policy)"}
+
+
+def gate_words(gate: Gate) -> str:
+    """One approval or block as the card says it (F964): "Vault Clerk asks you before `vault_write`, each time (its own
+    tool policy)"; `plan.ts` `gateWords` says the same."""
+    who = f'The step "{gate.who}"' if gate.kind == "step" else gate.who
+    if gate.decision == "deny":
+        whose = "its own tool policy" if gate.set_by == "agent" else "this workspace's tool policy"
+        return f"{who} can't use `{gate.tool}`: {whose} blocks it"
+    return f"{who} asks you before `{gate.tool}`, each time{_SET_BY[gate.set_by]}"
 
 
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
@@ -94,8 +107,17 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         parts.append("## Code it runs\n" + "\n\n".join(f"**{name}**\n```python\n{c.strip()}\n```"
                                                        for name, c in code if c))
 
-    if plan.approvals.asks_first:
-        parts.append("## Asks you first\n" + _bullets(plan.approvals.asks_first, code=True))
+    confirms = [g for g in plan.gates if g.decision == "confirm"]
+    asks = [gate_words(g) for g in confirms]
+    asks += [f"`{t}`" for t in plan.approvals.asks_first if t not in {g.tool for g in confirms}]
+    if asks:
+        text = "## Asks you first\n" + _bullets(asks)
+        if confirms and any(s.type == "human" for s in [*plan.steps, *(x for w in plan.inner_workflows
+                                                                         for x in w.steps)]):
+            text += "\n\nThese are asked as well as the Human steps above."
+        parts.append(text)
+    if denies := [g for g in plan.gates if g.decision == "deny"]:
+        parts.append("## Blocked here\n" + _bullets([gate_words(g) for g in denies]))
     if plan.approvals.acts_without_asking:
         parts.append("## Acts without asking\n" + _bullets(plan.approvals.acts_without_asking, code=True))
 

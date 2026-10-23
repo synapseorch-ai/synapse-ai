@@ -140,6 +140,18 @@ class Approvals(BaseModel):
     acts_without_asking: list[str] = Field(default_factory=list)
 
 
+class Gate(BaseModel):
+    """One approval the run asks for, or one block: who (an agent's name, or a Tool step's), before which tool, and
+    what set it — this build (a new agent's confirm), the agent's own tool policy, or the workspace's (F964)."""
+
+    who: str
+    tool: str
+    decision: Literal["confirm", "deny"]
+    set_by: Literal["build", "agent", "workspace"]
+    #: `step`: a Tool step's own call, decided by the workspace's policy (and its agent's, if it names one).
+    kind: Literal["agent", "step"] = "agent"
+
+
 class Plan(PlanDraft):
     """A PlanDraft with what code knows about it. Only `from_draft` and `fill` make one from a model's output."""
 
@@ -151,6 +163,8 @@ class Plan(PlanDraft):
     missing: list[str] = Field(default_factory=list)
     #: Why the plan does not fit the workspace's plan (cloud's F154), or None.
     room: str | None = None
+    #: Every approval the run will ask for, and every block, as the engine's policy decides them (F964).
+    gates: list[Gate] = Field(default_factory=list)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":
@@ -362,7 +376,78 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
     return errors, sorted(set(notes))
 
 
-async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] | None = None) -> Plan:
+async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str, dict] | None,
+                 asks: set[str]) -> list[Gate]:
+    """What the run will ask for and what it blocks, decided as the engine decides each call
+    (`tool_policy.decide(tool, resolve_policy(agent, settings))`): for the plan's new agents (with the confirm the
+    compile gives each tool in `asks`), the agents it reuses (every tool they hold, under their own policy) and its
+    Tool steps (F964; REL2's demo)."""
+    from core.config import load_settings
+    from core.tool_policy import decide, resolve_policy
+    from core.tools import resolve_one_tool
+
+    if agents is None:
+        from core.routes.agents import load_user_agents
+
+        agents = {a["id"]: a for a in await load_user_agents() if a.get("id")}
+    settings = load_settings()
+    resolved: dict[str, Any] = {}
+
+    async def tool(name: str):
+        if name not in resolved:
+            try:
+                resolved[name] = await resolve_one_tool(server_module, name, {"tools": [name]}, custom)
+            except Exception:  # noqa: BLE001 — a lookup that cannot run decides nothing
+                resolved[name] = None
+        return resolved[name]
+
+    def set_by(agent: dict | None, category: str) -> str:
+        own = (agent or {}).get("tool_policy") or {}
+        key = "undeclared" if category == "changes" else category
+        return "agent" if category == "tool" or own.get(key) in ("confirm", "deny") else "workspace"
+
+    gates: list[Gate] = []
+
+    def add(who: str, name: str, decision: str, by: str, kind: str = "agent") -> None:
+        if decision in ("confirm", "deny") and not any(g.who == who and g.tool == name for g in gates):
+            gates.append(Gate(who=who, tool=name, decision=decision, set_by=by, kind=kind))
+
+    new = {a.name: a for a in plan.agents}
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    refs = [s.agent for s in steps if s.type == "agent" and s.agent]
+    for ref in refs:  # a team's members run too, each under its own policy
+        if ref in new and new[ref].type == "team":
+            refs += [m for m in new[ref].members if m not in refs]
+    for ref in dict.fromkeys(refs):
+        if ref in new:
+            for name in new[ref].tools:
+                if (t := await tool(name)) is None:
+                    continue
+                inherited, _ = decide(t, resolve_policy({}, settings))
+                if inherited == "deny":
+                    add(ref, name, "deny", "workspace")
+                elif name in asks:
+                    add(ref, name, "confirm", "build" if inherited == "allow" else "workspace")
+                else:
+                    add(ref, name, inherited, "workspace")
+        elif (agent := agents.get(ref)) is not None:
+            policy = resolve_policy(agent, settings)
+            for name in agent.get("tools") or []:
+                if not isinstance(name, str) or name == "all" or name.startswith("group:"):
+                    continue
+                if (t := await tool(name)) is not None:
+                    decision, category = decide(t, policy)
+                    add(agent.get("name") or ref, name, decision, set_by(agent, category))
+    for s in steps:
+        if s.type == "tool" and s.tool and (t := await tool(s.tool)) is not None:
+            agent = agents.get(s.agent) if s.agent else None
+            decision, category = decide(t, resolve_policy(agent, settings))
+            add(s.name, s.tool, decision, set_by(agent, category), "step")
+    return gates
+
+
+async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] | None = None,
+               agents: dict[str, dict] | None = None) -> Plan:
     """What code knows about a plan, written onto it (a copy): each tool's status, its approvals, what is missing,
     the connections it needs, and whether it fits the workspace's plan.
 
@@ -371,7 +456,8 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
       saved as a step's tool).
     * **Approvals**: every present tool that changes something outside asks first (TAG1's tags, as
       `builder_guard.unapproved` reads them), unless the person already moved it to act without asking — a choice
-      kept across fills while the tool is still in the plan.
+      kept across fills while the tool is still in the plan. The **gates** are each approval the run will ask for
+      and each block, by who asks (`_gates`, F964): the person's choice lifts the build's own confirm only.
     * **Plan room** is the host's check (cloud's F154; self-hosted has none).
     """
     from core import builder_guard
@@ -397,8 +483,15 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
               and await builder_guard.acting_tool(t.name, server_module, custom) is not None]
     acting += [t.name for t in statuses if t.status == "found"]  # an outside service: it acts until shown otherwise
     kept = set(plan.approvals.acts_without_asking)
-    out.approvals = Approvals(asks_first=[n for n in acting if n not in kept],
-                              acts_without_asking=[n for n in acting if n in kept])
+    out.gates = await _gates(out, server_module, custom, agents, asks={n for n in acting if n not in kept})
+    # The person's "act without asking" lifts this build's own confirm only: what an agent's or the workspace's
+    # policy asks still asks, and what it blocks is no approval at all (F964).
+    held = {g.tool for g in out.gates if g.decision == "confirm" and g.set_by != "build"}
+    denied = {g.tool for g in out.gates if g.decision == "deny"}
+    asks = [n for n in acting if n not in denied and (n not in kept or n in held)]
+    asks += [g.tool for g in out.gates if g.decision == "confirm" and g.tool not in asks]
+    out.approvals = Approvals(asks_first=list(dict.fromkeys(asks)),
+                              acts_without_asking=[n for n in acting if n in kept and n not in held | denied])
 
     out.room = None
     if _room_check is not None:
