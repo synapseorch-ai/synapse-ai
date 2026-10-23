@@ -403,7 +403,8 @@ async def test_a_rename_nobody_asked_for_is_left_out_and_said(client, role):
     assert out["outcome"] == "review"
     assert [c[0] for c in out["calls"]] == ["update_schedule"]
     assert "name" not in out["calls"][0][1]
-    assert out["say"] == 'I left out renaming the schedule "Every night at 2": you didn\'t ask for that.'
+    assert out["say"] == ('I left out renaming the schedule "Every night at 2" to "Every night at 3": tell me the new '
+                          'name if you want it.')
 
 
 async def test_an_unasked_rename_alone_is_asked_about_not_reviewed(client, role):
@@ -489,3 +490,18 @@ async def test_a_name_from_an_earlier_turn_is_the_person_s_but_not_one_i_suggest
     out, _, _ = await _check([{"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
                                "fields": {"name": "Nightly run"}}], suggested)
     assert out["outcome"] != "review", "a name only the assistant said is not the person's"
+
+
+async def test_a_rename_asked_for_without_its_name_is_asked_about(client, role):
+    """SAI2's review of F960 (2): "move it to 3am and update its name to match" asks for a rename without saying the
+    name, and the planner's "Every night at 3" is not their words: they are asked the name, never told they did not
+    ask for it."""
+    await _schedule()
+    run = await _run(user_message="Move the every night at 2 schedule to 3am and update its name to match")
+    out, _, _ = await _check([
+        {"op": "set_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+         "fields": {"cron_expression": "0 3 * * *"}},
+        {"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+         "fields": {"name": "Every night at 3"}}], run)
+    assert out["outcome"] == "ask" and not out.get("calls")
+    assert out["question"] == 'What should the schedule "Every night at 2" be called?'

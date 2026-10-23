@@ -383,6 +383,9 @@ def _persons_words(state: dict) -> str:
 #: One turn of `chat_history` (`role: content`, one per line, as the builder's route writes it).
 _TURN = re.compile(r"^(?P<role>user|assistant|system): (?P<said>.*(?:\n(?!(?:user|assistant|system): ).*)*)", re.M)
 
+#: Words that ask for a new name without saying it ("update its name to match").
+_RENAME_WORDS = frozenset({"rename", "renamed", "name", "named", "call", "called", "title", "retitle"})
+
 #: Where the run keeps what the person answered and replied, each once, in order.
 HEARD_KEY = "change_heard"
 
@@ -638,8 +641,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if not draft.get("undo_of") and f" {_plain_words(new_name)} " not in f" {words} ":
                 # A new name is the person's words or it is not proposed (F960: "move it to 3am" came back renamed
                 # "Every night at 3"). An undo's rename back is code's, from the card, so it is not asked for again.
-                item.update(status="left_out", say=f"I left out renaming the {op.target} {_quoted(target['name'])}: "
-                                                   "you didn't ask for that.")
+                # Asked for without its name ("update its name to match"): asked, not dropped (SAI2's review, 2).
+                item.update(status="ask_name" if _RENAME_WORDS & set(words.split()) else "left_out",
+                            say=f"I left out renaming the {op.target} {_quoted(target['name'])} to "
+                                f"{_quoted(new_name)}: tell me the new name if you want it.")
                 continue
             if any(i["id"] != target["id"] and i["name"].lower() == new_name.lower()
                    for i in await candidates(op.target) or []):
@@ -690,9 +695,11 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             leaves[here] = None if want is None else {**live, **want}
 
     ready = [i for i in checked if i["status"] == "ready"]
-    if not ready and checked and all(i["status"] == "left_out" for i in checked):
-        # Only a rename, and no new name in their words: asked, rather than said and dropped (Naveen, 10-23).
-        first = checked[0]
+    unnamed = [i for i in checked if i["status"] == "ask_name"]
+    if unnamed or (not ready and checked and all(i["status"] == "left_out" for i in checked)):
+        # A rename they asked for without its name, or only a rename and no new name in their words: asked, rather
+        # than said and dropped (Naveen, 10-23).
+        first = (unnamed or checked)[0]
         return {**base, "outcome": "ask", "ops": checked,
                 "question": f"What should the {C.OPS[first['op']].target} {_quoted(first['target']['name'])} be "
                             "called?"}
