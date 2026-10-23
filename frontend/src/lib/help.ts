@@ -463,7 +463,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.',
             'Remove the key in Settings → API keys whenever you want to cut the tool off.',
         ],
-        guide: '/api/mcp-server',
+        guide: '/guides/developers/mcp',
     },
     import_export: {
         title: 'Import / Export',

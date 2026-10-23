@@ -178,6 +178,7 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
             </Step>
 
             <Step n={4 + stepOffset} title="Check it works">
+                {/* hydration-safe: `connectedAt` is only ever set after mount, by the poll, so no server render formats it. */}
                 {connectedAt ? (
                     <p className="flex items-center gap-2 text-sm font-medium text-text" role="status">
                         <Check className="size-4 text-success" aria-hidden />
@@ -202,7 +203,7 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
                 </ul>
                 <p className="text-xs text-text-faint">
                     Deleting stays in this app. More in{' '}
-                    <TextLink external href={host.guideHref} target="_blank" rel="noopener noreferrer">the MCP server guide</TextLink>.
+                    <TextLink external href={host.guideHref} target="_blank" rel="noopener noreferrer">the guide to connecting AI tools</TextLink>.
                 </p>
             </Step>
         </div>

@@ -40,7 +40,7 @@ export function AiToolsScreen() {
             return { id: data.id, key: data.key };
         },
         lastUsed,
-        guideHref: `${DOCS_BASE}/api/mcp-server`,
+        guideHref: `${DOCS_BASE}/guides/developers/mcp`,
     }), [origin, lastUsed]);
 
     return (

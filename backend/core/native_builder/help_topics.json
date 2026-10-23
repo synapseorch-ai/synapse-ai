@@ -26,7 +26,7 @@
    "Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.",
    "Remove the key in Settings → API keys whenever you want to cut the tool off."
   ],
-  "guide": "/api/mcp-server",
+  "guide": "/guides/developers/mcp",
   "where": {
    "label": "AI tools",
    "href": "/ai-tools"
