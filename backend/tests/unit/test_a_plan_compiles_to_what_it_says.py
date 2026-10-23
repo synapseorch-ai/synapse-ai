@@ -109,7 +109,7 @@ class TestWhatModelsPlanned:
     def test_most_compile_clean(self):
         clean = sum(not compile_plan(p, existing_agents=HARBOR_AGENTS, mint=_counter()).all_issues()
                     for _, p in MODEL_PLANS)
-        assert clean >= 81
+        assert clean >= 84
 
     @pytest.mark.parametrize("name,plan", MODEL_PLANS[:40], ids=[p[0] for p in MODEL_PLANS[:40]])
     def test_compiling_what_it_reads_back_changes_nothing(self, name, plan):
@@ -341,3 +341,15 @@ class TestTheCardsText:
     def test_a_nested_plans_inner_workflow_is_its_own_section(self):
         text = render(O.Plan.from_draft(SW1["E1"]))
         assert "## Not carried over" in text and "hosted MCP servers" in text
+
+
+@pytest.mark.parametrize("over, reads", [("fetch", "state.fetch"), ("fetch.output", "state.fetch"),
+                                         ("fetch.items", "state.fetch.items"), ("state.fetch", "state.fetch"),
+                                         ("emails", "emails")])
+def test_a_loop_over_a_step_goes_through_what_that_step_wrote(over, reads):
+    plan, _ = O.read({"kind": "create", "title": "t", "summary": "s", "steps": [
+        {"id": "fetch", "type": "tool", "name": "Fetch", "does": "x", "tool": "get_weather"},
+        {"id": "each", "type": "loop", "name": "Each", "does": "x", "loop_over": over, "body": ["say"]},
+        {"id": "say", "type": "llm", "name": "Say", "does": "x", "prompt": "Say it."}]})
+    loop = next(s for s in compile_plan(plan, mint=_counter()).orchestration["steps"] if s["id"] == "each")
+    assert loop["loop_over"] == reads

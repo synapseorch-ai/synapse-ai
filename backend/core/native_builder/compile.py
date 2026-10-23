@@ -187,6 +187,16 @@ def _workflow(title: str, summary: str, steps: list[Step], settings: dict[str, A
     if end_id is not None:
         explicit.setdefault(end_id, set())
     _wire(engine, explicit)
+    # A loop over a step names that step (P0's plans: `loop_over: "fetch_emails"`, `"fetch_emails.output"`); what it
+    # goes through is what the step wrote, which code knows. Anything else is the loop's own expression, checked as
+    # one.
+    written = {s["id"]: s.get("output_key") for s in engine if s.get("output_key")}
+    for s in engine:
+        over = s.get("loop_over").strip() if s["type"] == "loop" and isinstance(s.get("loop_over"), str) else ""
+        head, _, rest = over.partition(".")
+        if head in written:
+            rest = "" if rest in ("output", "result", "results") else rest
+            s["loop_over"] = f"state.{written[head]}" + (f".{rest}" if rest else "")
     orch: dict[str, Any] = {"id": orch_id, "name": title, "description": summary,
                             "entry_step_id": steps[0].id if steps else "", "steps": engine}
     for key, value in (settings or {}).items():

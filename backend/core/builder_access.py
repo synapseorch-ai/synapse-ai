@@ -34,13 +34,15 @@ READS: frozenset[str] = frozenset({
     "list_custom_tools", "list_skills", "list_knowledge_bases", "get_skill", "list_schedules", "list_variables",
     "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities", "check_plan",
     "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "read_change_context",
+    "read_plan_context", "read_plan_answer",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,
 #: and then through the app's own doors under their own role.
-#: The change route's finish tools and its check (SAI2-P2) write only the run's own state, or put up an act's card.
+#: The change route's finish tools and its check (SAI2-P2) write only the run's own state, or put up an act's card;
+#: so do the build route's (SAI2-P3).
 CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action", "submit_change",
-                                   "ask_person", "cannot", "check_change", "check_made"})
+                                   "ask_person", "cannot", "check_change", "check_made", "submit_plan", "check_build"})
 
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",

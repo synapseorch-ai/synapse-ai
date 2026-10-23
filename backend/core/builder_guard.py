@@ -34,11 +34,17 @@ def _engine_provides() -> frozenset[str]:
     alias, and "Can send helpers"' `spawn_subtask` (SUB1a). `resolve_one_tool` resolves none of them, so each read as
     a tool nothing provides — every agent that sends helpers was told so (F549). From the engine's own names, as
     cloud's `unknown_tool_names` counts them."""
+    from core.boards import TOOL_NAMES as BOARD_TOOLS
+    from core.boards.config import boards_enabled
     from core.spawn_subtask import SPAWN_SUBTASK_TOOL_NAME
     from core.task_list import LEGACY_TASK_TOOL_ALIAS, TASK_TOOL_NAME
     from core.visitor import ENGINE_TOOLS
 
-    return frozenset({*ENGINE_TOOLS, TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, SPAWN_SUBTASK_TOOL_NAME})
+    # While Boards are on, every agent step in a workflow has the board tools on its workflow's own board
+    # (`boards.resolve.turn_boards`): no catalogue lists them, and a build that asked to post to a board read them as
+    # missing and invented a "Board" provider (F866b, QA1c).
+    boards = BOARD_TOOLS if boards_enabled() else ()
+    return frozenset({*ENGINE_TOOLS, TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, SPAWN_SUBTASK_TOOL_NAME, *boards})
 
 
 async def _resolver(server_module: Any):
@@ -102,6 +108,8 @@ async def unknown(names: list[Any], server_module: Any) -> dict | None:
 
 async def missing_in(workflows: list[dict], agents: dict[str, dict], server_module: Any) -> tuple[list[str], list[str]]:
     """`(issues, warnings)` for tools the workflows' steps or agents name that nothing provides."""
+    from core.boards import TOOL_NAMES as board_tools  # an agent's turn has them, never a Tool step's
+
     exists = await _resolver(server_module)
     issues: list[str] = []
     warnings: list[str] = []
@@ -110,7 +118,10 @@ async def missing_in(workflows: list[dict], agents: dict[str, dict], server_modu
         for step in workflow.get("steps") or []:
             label = step.get("name") or step.get("id")
             forced = step.get("forced_tool")
-            if isinstance(forced, str) and forced and not await exists(forced):
+            if isinstance(forced, str) and forced in board_tools:
+                issues.append(f"Step '{label}' calls the board tool '{forced}' as a Tool step, which has no board: "
+                              "board tools are an agent's. Give it to the agent of an agent step.")
+            elif isinstance(forced, str) and forced and not await exists(forced):
                 issues.append(f"Step '{label}' calls the tool '{forced}', which nothing here provides: its first run "
                               "would fail. Use a tool that exists, or create it first.")
             agent_id = step.get("agent_id") or ""
