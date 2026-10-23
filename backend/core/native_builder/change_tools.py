@@ -24,6 +24,7 @@ The model never sees a token, an approval or another model's prose: the review i
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from core.builder_tools import register_builder_tool
@@ -99,11 +100,12 @@ SUBMIT = {"type": "function", "function": {
 
 ASK = {"type": "function", "function": {
     "name": "ask_person",
-    "description": ("Finish with one question that only the person can answer: which one they mean, what time, or "
-                    "what value. Never ask what reading the workspace would tell you."),
+    "description": ("Finish with one question that only the person can answer: which one they mean, what time, "
+                    "what value, who, or how much. Never ask what reading the workspace or a lookup would tell you, "
+                    "and never for a key or how to connect a service: those come through a Connect card."),
     "parameters": {"type": "object", "properties": {
         "question": {"type": "string"},
-        "about": {"type": "string", "enum": ["which", "when", "what"]},
+        "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
         "options": {"type": "array", "items": {"type": "string"}, "description": "The choices, when there are "
                                                                                  "a few."},
     }, "required": ["question", "about"]},
@@ -149,11 +151,31 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
     return {"finish": "submit_change", **change.model_dump(exclude_none=True)}
 
 
+#: A question that asks the person for a secret (chg-09: a key asked in chat was typed there and kept) …
+_ASKS_SECRET = re.compile(
+    r"(?i)\b(?:(?:api|access|private|secret|license)[\s_-]?keys?|tokens?|secrets?|pass(?:word|wd|code|phrase)s?|"
+    r"credentials?|bearer|client[\s_-]?secret|(?:log|sign)[\s-]?in\s+details|auth(?:entication|orization)?\s+"
+    r"(?:header|code|details))\b")
+#: … or for how a service is reached (res-05: "Apps catalog, MCP URL or HTTP tool?"), which the lookup finds out.
+_ASKS_WAY_IN = re.compile(
+    r"(?i)\bhow\b.{0,80}?\b(?:connect\w*|integrat\w*|hook\w*\s+(?:it\s+)?up|authenticat\w*)\b|"
+    r"\b(?:mcp|http\s+tool|apps?\s+catalog\w*|webhooks?|integrat\w*\s+with)\b")
+SECRET_ASKED = ("Never ask the person for a key, a token or a password: a connection comes through a Connect card, "
+                "never through the chat. Ask only what the person alone knows.")
+WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a tool, and how it is reached, is "
+                "looked up, not asked. Ask only what the person alone knows.")
+ABOUT = ("which", "when", "what", "who", "how_much")
+
+
 async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict:
     question = _text(args.get("question"))
     if not question:
         return {"error": "ask_person needs the question."}
-    about = args.get("about") if args.get("about") in ("which", "when", "what") else "what"
+    if _ASKS_SECRET.search(question):
+        return {"error": SECRET_ASKED}
+    if _ASKS_WAY_IN.search(question):
+        return {"error": WAY_IN_ASKED}
+    about = args.get("about") if args.get("about") in ABOUT else "what"
     options = [o.strip() for o in args.get("options") or [] if isinstance(o, str) and o.strip()][:8]
     return {"finish": "ask_person", "question": question, "about": about, "options": options}
 
