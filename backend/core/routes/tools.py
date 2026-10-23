@@ -158,8 +158,28 @@ async def create_custom_tool(tool: dict, request: Request = None):  # type: igno
         if seen is not None:
             current = (await row_stamps("tools", [name])).get(name)
             refuse_if_stale(seen, current, exists=current is not None, noun="tool")
+        note = await _keep_lock(tool)
         await _upsert_custom_tools([tool])
-    return {"status": "success", "tool": {**tool, "updated_at": (await row_stamps("tools", [name])).get(name)}}
+    return {"status": "success", "tool": {**tool, "updated_at": (await row_stamps("tools", [name])).get(name)},
+            **({"note": note} if note else {})}
+
+
+async def _keep_lock(tool: dict) -> str | None:
+    """A tool made from a read API keeps its lock across a person's save (F944, A8): an editor that does not send it
+    never drops it; a URL the person moves off it is theirs, so the lock follows their URL, and the save says so."""
+    from core.http_tool import lock_of, under_lock
+    from core.store.resources import load_tools
+
+    before = next((t for t in await load_tools() if t.get("name") == tool.get("name")), None)
+    lock = str(tool.get("base_lock") or (before or {}).get("base_lock") or "")
+    if not lock:
+        return None
+    url = str(tool.get("url") or "")
+    if under_lock(url, lock):
+        tool["base_lock"] = lock
+        return None
+    tool["base_lock"] = lock_of(url)
+    return f"This tool now keeps to {tool['base_lock']}, the address you gave it, instead of {lock}."
 
 
 @router.post("/api/tools/custom/bulk")
@@ -171,6 +191,8 @@ async def create_custom_tools_bulk(payload: dict):
     for t in tools:
         if not isinstance(t, dict) or not t.get("name"):
             raise HTTPException(status_code=400, detail="Each tool must be an object with a 'name'.")
+    for t in tools:
+        await _keep_lock(t)
     await _upsert_custom_tools(tools)
     return {"status": "success", "imported": len(tools)}
 

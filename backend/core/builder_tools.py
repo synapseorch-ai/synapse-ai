@@ -2742,6 +2742,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # server's are (F488, TAG1). Replacing a tool the person tagged starts from their tags.
         from core.store.resources import load_tools
         before = next((t for t in await load_tools() if t.get("name") == name), None)
+        # A tool made from a read API keeps to its base (F944, A8): only code writes a lock, and a builder never
+        # moves a locked tool off it; replacing it carries the lock forward.
+        from core.http_tool import under_lock
+        lock = str(args.get("base_lock") or (before or {}).get("base_lock") or "")
+        if lock and not under_lock(url, lock):
+            return {"error": f"`{name}` was made for {lock}, and keeps to that API: a tool for another address is a "
+                             "new tool, under another name."}
+        if lock:
+            tool["base_lock"] = lock
         claimed = {t: args[t] for t in ("read_only", "destructive", "idempotent", "open_world") if t in args}
         await save_tool(_builder_tags(tool, before, claimed))
         _emit(events, "tool", "created", name, name, tool)

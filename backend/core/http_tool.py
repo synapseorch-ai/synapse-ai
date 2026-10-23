@@ -40,6 +40,26 @@ class NotConnected(ValueError):
 _UNCONNECTED = re.compile(r"__[a-z0-9_]+__")
 
 
+def lock_of(url: str) -> str:
+    """The base a tool's URL keeps to: its scheme, host and path up to its first `{placeholder}` segment."""
+    from urllib.parse import urlsplit
+
+    got = urlsplit(url.partition("?")[0])
+    path = "/".join(seg for seg in got.path.split("/")[:next(
+        (i for i, seg in enumerate(got.path.split("/")) if "{" in seg), None)]).rstrip("/")
+    return f"{got.scheme}://{got.netloc}{path}"
+
+
+def under_lock(url: str, lock: str) -> bool:
+    """Whether a tool's URL (a template) stays on its lock: the same scheme, host and port, a path at or under."""
+    from urllib.parse import urlsplit
+
+    got, locked = urlsplit(url.partition("?")[0]), urlsplit(lock)
+    under = locked.path.rstrip("/")
+    return ((got.scheme, got.netloc.lower()) == (locked.scheme, locked.netloc.lower())
+            and (got.path.rstrip("/") == under or got.path.startswith(under + "/")))
+
+
 def _render_locked(url: str, args: dict[str, Any], global_variables: dict[str, Any],
                    lock: str) -> tuple[str, set[str]]:
     """A made tool's URL (F944's A8; opt-in by `base_lock`), on top of F1014's rule for every tool (each value

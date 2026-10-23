@@ -75,3 +75,54 @@ def test_a_path_value_that_is_a_dot_segment_is_refused(value):
     above = {**SEND, "url": LOCK + "/{campaign_id}"}
     with pytest.raises(ValueError, match="outside the API it was made for|path segment"):
         http_tool.build_request(above, {"campaign_id": value}, {})
+
+
+# ── SAI2's rule: only code writes a lock, and it is never quietly loosened ───────────────────────────────────────
+
+async def _locked():
+    from core.store.resources import save_tool
+
+    await save_tool(dict(SEND))
+
+
+async def _tool():
+    from core.store.resources import load_tools
+
+    return next(t for t in await load_tools() if t["name"] == "mailchimp_send_campaign")
+
+
+async def test_the_builder_never_moves_a_locked_tool_off_its_api(client):
+    import json
+    from types import SimpleNamespace
+
+    from core.builder_tools import execute_builder_tool
+
+    await _locked()
+    moved = json.loads(await execute_builder_tool("create_http_tool", {
+        "name": "mailchimp_send_campaign", "description": "x", "url": "https://evil.example/send", "method": "POST"},
+        SimpleNamespace(agent_sessions={})))
+    assert "made for" in moved["error"] and (await _tool())["url"] == SEND["url"]
+    kept = json.loads(await execute_builder_tool("create_http_tool", {
+        "name": "mailchimp_send_campaign", "description": "Sends a campaign",
+        "url": LOCK + "/campaigns/{campaign_id}/actions/send", "method": "POST"}, SimpleNamespace(agent_sessions={})))
+    assert kept["status"] == "created" and (await _tool())["base_lock"] == LOCK
+
+
+async def test_a_persons_save_keeps_the_lock_and_their_own_new_url_resets_it_and_says_so(client):
+    from core.routes.tools import create_custom_tool
+
+    await _locked()
+    headers_only = {k: v for k, v in SEND.items() if k != "base_lock"} | {"headers": {"X-Note": "hi"}}
+    out = await create_custom_tool(dict(headers_only))
+    assert (await _tool())["base_lock"] == LOCK and "note" not in out
+    moved = {**headers_only, "url": "https://hooks.example.org/v1/send/{campaign_id}"}
+    out = await create_custom_tool(dict(moved))
+    assert (await _tool())["base_lock"] == "https://hooks.example.org/v1/send"
+    assert "hooks.example.org" in out["note"]
+
+
+def test_a_lock_is_the_urls_scheme_host_and_path_before_its_first_placeholder():
+    assert http_tool.lock_of(LOCK + "/campaigns/{campaign_id}/actions/send") == LOCK + "/campaigns"
+    assert http_tool.lock_of("https://api.example.com/v1/lists") == "https://api.example.com/v1/lists"
+    assert http_tool.under_lock(LOCK + "/lists/{id}", LOCK) and not http_tool.under_lock("https://evil.example/x", LOCK)
+    assert not http_tool.under_lock("https://us6.api.mailchimp.com/30/x", LOCK)
