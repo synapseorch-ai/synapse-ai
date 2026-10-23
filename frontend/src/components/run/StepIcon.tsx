@@ -24,10 +24,8 @@ const GROUND: Record<StepRole, string> = {
 };
 
 /** A step type's own name ("If / Else"), or the type as stored. */
-export function typeLabel(type: string): string {
-    if (type === 'nested') return 'Nested run';
-    return STEP_TYPE_META[type as StepType]?.label ?? type;
-}
+// In `model.ts` since F955 (a step's line is ordered there, with no React); said here for the run screens.
+export { typeLabel } from './model';
 
 /** An Agent step's icon by what it holds (TEAM1e): people for a Team, the workflow glyph for a Workflow. */
 const KIND_ICONS: Record<string, React.FC<{ className?: string }>> = {

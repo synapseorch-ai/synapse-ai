@@ -17,7 +17,7 @@
  * - the "Followed the saved workflow" line
  * - dates ("Today 7:25 PM"), durations ("1 min 30 s") and money (`$0` when free)
  */
-import type { Orchestration, StepConfig, StepType } from '@/types/orchestration';
+import { STEP_TYPE_META, type Orchestration, type StepConfig, type StepType } from '@/types/orchestration';
 
 import { humanFieldType } from '../orchestration/humanFields';
 
@@ -825,6 +825,31 @@ export function stepResult(
     const usage = run.stepUsage?.[stepId];
     if (!hasDetail(step, state, usage)) return null;
     return { step, output: outputOf(step, state), usage };
+}
+
+/** A step type in words: "Agent", "Nested run". */
+export function typeLabel(type: string): string {
+    if (type === 'nested') return 'Nested run';
+    return STEP_TYPE_META[type as StepType]?.label ?? type;
+}
+
+/**
+ * A step's line under its name on the run page, in order (F955): what it is, what happened to it, the models it
+ * used, its time. What happened comes before the models: F862's "Ended with 3 open tasks" was cut to "Ended with
+ * 3 open t…" behind them, and the outcome is what the line is read for.
+ */
+export function subLineParts(
+    row: Pick<TimelineRow, 'type' | 'status' | 'duration' | 'leftOpen'>,
+    usageModels?: string[],
+): { kind: 'type' | 'outcome' | 'models' | 'time'; text: string; tone?: 'danger' | 'strong' | 'person' }[] {
+    const parts: ReturnType<typeof subLineParts> = [{ kind: 'type', text: typeLabel(row.type) }];
+    if (row.status === 'failed') parts.push({ kind: 'outcome', text: 'Failed', tone: 'danger' });
+    else if (row.leftOpen) parts.push({ kind: 'outcome', text: row.leftOpen, tone: 'strong' });
+    else if (row.status === 'paused') parts.push({ kind: 'outcome', text: 'Needs input', tone: 'person' });
+    else if (row.status === 'cancelled') parts.push({ kind: 'outcome', text: 'Cancelled' });
+    if (usageModels?.length) parts.push({ kind: 'models', text: usageModels.join(', ') });
+    parts.push({ kind: 'time', text: row.duration === null ? 'running' : duration(row.duration) });
+    return parts;
 }
 
 /** Step types whose output is not what a run made: a person's answer, a route, an End (`results.NOT_CONTENT`). */

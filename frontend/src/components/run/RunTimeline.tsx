@@ -20,11 +20,10 @@ import type { Orchestration } from '@/types/orchestration';
 
 import { useRunHost } from './host';
 import {
-    creditsText, entrySpend, duration, isLive, money, ordinal, ROLE_LABEL, ticks, timelineRows,
+    creditsText, entrySpend, duration, isLive, money, ordinal, ROLE_LABEL, subLineParts, ticks, timelineRows,
     type NestedRun, type RunRecord, type StepRole, type TimelineRow,
 } from './model';
 import { StepDetail, hasDetail } from './StepDetail';
-import { typeLabel } from './StepIcon';
 import { useClock } from './When';
 
 const BAR: Record<StepRole, string> = {
@@ -180,12 +179,13 @@ function SubLine({ row, usageModels }: { row: TimelineRow; usageModels?: string[
         const n = row.nested;
         return <>Nested run · <span className={cn(n.status === 'failed' && 'font-medium text-danger')}>{n.status}</span> · {n.steps_completed} step{n.steps_completed === 1 ? '' : 's'}</>;
     }
-    const parts: React.ReactNode[] = [typeLabel(row.type)];
-    if (usageModels?.length) parts.push(<span key="m" className="font-code" translate="no">{usageModels.join(', ')}</span>);
-    if (row.status === 'failed') parts.push(<span key="f" className="font-medium text-danger">Failed</span>);
-    else if (row.leftOpen) parts.push(<span key="o" className="font-medium text-text">{row.leftOpen}</span>);
-    else if (row.status === 'paused') parts.push(<span key="w" className="font-medium text-person-ink">Needs input</span>);
-    else if (row.status === 'cancelled') parts.push('Cancelled');
-    parts.push(row.duration === null ? 'running' : duration(row.duration));
-    return <>{parts.map((p, i) => <span key={i}>{i ? ' · ' : ''}{p}</span>)}</>;
+    const tones = { danger: 'font-medium text-danger', strong: 'font-medium text-text', person: 'font-medium text-person-ink' };
+    return <>{subLineParts(row, usageModels).map((p, i) => (
+        <span key={i}>
+            {i ? ' · ' : ''}
+            {p.kind === 'models'
+                ? <span className="font-code" translate="no">{p.text}</span>
+                : p.tone ? <span className={tones[p.tone]}>{p.text}</span> : p.text}
+        </span>
+    ))}</>;
 }
