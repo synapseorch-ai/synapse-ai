@@ -87,3 +87,32 @@ async def test_a_tool_steps_model_naming_it_so_runs_the_steps_tool(fake_llm, mon
     events = [e async for e in OrchestrationEngine(Orchestration.model_validate(orch), server).run("go", run_id="r_f779")]
     assert calls == ["clock"]
     assert [e for e in events if e.get("type") == "orchestration_complete"][-1]["status"] == "completed"
+
+
+async def test_an_external_servers_tool_named_so_runs_it_among_many(fake_llm):
+    """F895 (GW1's probe, 2026-10-22): Gemini 3 Flash named `default_api:google-workspace__sheets_delete_rows` with 46
+    tools on offer. The probe ran on 0310a33f, before F779; this pins the external `server__tool` shape, hyphen and
+    all, in a long list."""
+    from core.react_engine import run_agent_step
+
+    ran = []
+
+    async def executor(name, args):
+        ran.append((name, args))
+        return json.dumps({"deleted": 2})
+
+    def tool(name):
+        return {"type": "function", "function": {"name": name, "description": name, "parameters": {
+            "type": "object", "properties": {"sheet": {"type": "string"}}}}}
+
+    names = [f"google-workspace__tool_{i}" for i in range(44)] + [
+        "google-workspace__sheets_delete_rows", "google-workspace__calendar_delete_event"]
+    agent = S.make_agent(tools=["all"], skip_default_tools=True)
+    fake_llm.script(['{"tool": "default_api:google-workspace__sheets_delete_rows", "arguments": {"sheet": "Q3"}}',
+                     "Deleted two rows."])
+    events = [e async for e in run_agent_step(
+        message="Delete the empty rows in Q3.", agent_id=agent["id"], session_id="s_f895",
+        server_module=types.SimpleNamespace(agent_sessions={}, memory_store=None, tool_router={}),
+        agent_override=agent, tools_override=[tool(n) for n in names], tool_executor=executor, max_turns=4)]
+    assert ran == [("google-workspace__sheets_delete_rows", {"sheet": "Q3"})]
+    assert [e for e in events if e.get("type") == "final"][-1]["response"] == "Deleted two rows."
