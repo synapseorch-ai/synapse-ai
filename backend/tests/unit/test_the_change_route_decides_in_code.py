@@ -532,3 +532,15 @@ def test_the_person_s_words_keep_every_letter_and_mark():
 
     assert _plain_words("“रात्रि  सारांश”") == "रात्रि सारांश"
     assert _plain_words("Nightly-digest, v2!") == "nightly digest v2"
+
+
+async def test_a_schedule_s_time_change_carries_its_own_clock(client, role):
+    """F1010's shots: "Monday invoices" runs on Amsterdam time, and the change card said "Mondays 10:00 UTC". A time
+    change sets no timezone, so the op's before-image (only what it sets) never told the card the schedule's own
+    clock. It keeps it, so the card says the new time where the schedule runs it."""
+    await _schedule(timezone="Europe/Amsterdam")
+    out, _, _ = await _check([{"op": "set_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+                               "fields": {"cron_expression": "0 3 * * *"}}])
+    [op] = [o for o in out["ops"] if o["status"] == "ready"]
+    assert op["before"]["timezone"] == "Europe/Amsterdam"
+    assert "timezone" not in op["call"]["args"], "the call sets only what it sets"

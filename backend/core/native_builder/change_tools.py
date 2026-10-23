@@ -474,6 +474,9 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
         return None
     if want is not None:
         kept = {k: record.get(k) for k in want}
+        if op.target == "schedule" and any(k in C._SCHEDULE_TIME for k in want):
+            # The clock its time is on, though a time change does not set it: the card says the new time there (F1010).
+            kept.setdefault("timezone", record.get("timezone"))
     else:
         kept = {k: v for k, v in record.items()
                 if k not in ("memory", "created_at", "updated_at", "last_run_at", "next_run_at", "headers")}
