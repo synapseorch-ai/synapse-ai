@@ -606,16 +606,20 @@ async def render_session_history(session_id: str, agent_id: str | None, turn: An
     return _clip("\n".join(parts), SESSION_HISTORY_MAX_CHARS)
 
 
-async def list_chat_sessions(agent_id: str | None = None) -> list[dict]:
+async def list_chat_sessions(agent_id: str | None = None, containing: str | None = None) -> list[dict]:
     """
     List all persisted chat sessions, sorted by last_updated descending.
-    Optionally filter by agent_id.
+    Optionally filter by agent_id, and to those with `containing` (already
+    case-folded) in any turn's question or answer.
     """
     from core.store import sessions as store
 
     sessions = []
     for row in await store.load(agent_id=agent_id):
         turns = _turns(row["messages"])
+        if containing and not any(containing in str(t.get(side) or "").casefold()
+                                  for t in turns for side in ("user", "assistant")):
+            continue
         sessions.append({
             "session_id": row["session_id"],
             "agent_id": row["agent_id"],

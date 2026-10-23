@@ -3,6 +3,8 @@ Session history REST API.
 
 GET  /api/sessions                          → list all sessions (sorted by last_updated desc)
 GET  /api/sessions?agent_id={id}            → filter by agent
+GET  /api/sessions?q={text}                 → only those whose questions or answers contain it
+POST /api/sessions/status                   → how each of up to 10 open chat tabs stands
 GET  /api/sessions/{session_id}/history     → full turn list for a session
 GET  /api/sessions/{session_id}/snapshot    → {last_response, last_updated}
 DELETE /api/sessions/{session_id}           → delete a session
@@ -10,11 +12,12 @@ POST /api/sessions/{session_id}/last-turn/pop → take the last turn back (retry
 """
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core import chat_turns
 
 from core.session import (
+    _turns,
     list_chat_sessions,
     _get_conversation_history,
     get_last_response_snapshot,
@@ -59,10 +62,61 @@ def _a_runs_own(session: dict) -> bool:
 
 
 @router.get("/api/sessions")
-async def get_sessions(agent_id: str | None = Query(default=None)):
-    """List the person's chat sessions, newest first."""
-    return [s for s in await list_chat_sessions(agent_id=agent_id)
+async def get_sessions(agent_id: str | None = Query(default=None),
+                       q: str | None = Query(default=None, max_length=200)):
+    """List the person's chat sessions, newest first.
+
+    `q` is History's search (TABS1, F926). It asks here, not in the page, so a
+    conversation the drawer hasn't drawn is still found: any question or answer
+    in any turn, ignoring case.
+    """
+    words = (q or "").strip().casefold()
+    return [s for s in await list_chat_sessions(agent_id=agent_id, containing=words or None)
             if not _the_builders_own(s) and not _a_runs_own(s) and not _an_api_turns_own(s)]
+
+
+#: The most tabs a person keeps open in one area (TABS1); the status read takes no more.
+MAX_TABS = 10
+
+
+class TabSession(BaseModel):
+    session_id: str = Field(min_length=1, max_length=255)
+    agent_id: str = Field(min_length=1, max_length=255)
+
+
+class TabStatusRequest(BaseModel):
+    sessions: list[TabSession] = Field(max_length=MAX_TABS)
+
+
+@router.post("/api/sessions/status")
+async def get_sessions_status(body: TabStatusRequest):
+    """How each open chat tab's conversation stands, in one request (TABS1, F925).
+
+    Only the tab in front streams: plain HTTP allows a page about six
+    connections per host, so the others ask here. A tab is one conversation —
+    a session under one agent — so a turn another agent runs in the same
+    session id (one id carried every agent's chat before tabs) isn't this
+    tab's. A conversation with no row yet (its first turn is saved when it
+    ends) still gets one, so no tab is left without an answer.
+    """
+    from core.store import sessions as store
+
+    rows = []
+    for tab in body.sessions:
+        saved = await store.get(tab.session_id, tab.agent_id)
+        turn = chat_turns.live(tab.session_id)
+        pending = await store.get_pending_approval(tab.session_id, tab.agent_id)
+        running = turn is not None and turn.agent_key in (tab.agent_id, "default")
+        rows.append({
+            "session_id": tab.session_id, "agent_id": tab.agent_id,
+            "running": running,
+            # A turn the person didn't send (a helper's follow-up): its end is news, not their answer.
+            "automated": running and bool(turn.automated),
+            "pending_approval": pending is not None,
+            "turn_count": len(_turns(saved["messages"])) if saved else 0,
+            "last_updated": saved["last_updated"] if saved else None,
+        })
+    return {"sessions": rows}
 
 
 async def _background_helpers_as_they_are(turns: list[dict]) -> None:
