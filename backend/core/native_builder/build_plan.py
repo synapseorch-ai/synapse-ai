@@ -232,6 +232,8 @@ class Examined:
     issues: list[str] = field(default_factory=list)
     #: Tools a policy blocks where the plan uses them, with why: the person's to change, never the planner's (F964).
     blocks: dict[str, str] = field(default_factory=dict)
+    #: What code changed in the plan and the card says (F944: a tool name already taken, made as `_2`).
+    notes: list[str] = field(default_factory=list)
 
 
 def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
@@ -343,10 +345,11 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         return Examined(plan, errors)
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
-    filled = await O.fill(plan, server_module, found=_found(plan, state), agents=ws.agents)
+    plan, renamed, room_notes = await _make_room(plan, state)
+    filled = await O.fill(plan, server_module, found=_found(plan, state, renamed), agents=ws.agents)
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
-                    blocks=blocked(filled, state))
+                    blocks=blocked(filled, state), notes=room_notes)
 
 
 def blocked(plan: O.Plan, state: dict) -> dict[str, str]:
@@ -565,7 +568,48 @@ def reaches_out(code: str) -> tuple[str, str] | None:
     return None
 
 
-def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
+async def _make_room(plan: O.Plan, state: dict) -> tuple[O.Plan, dict[str, str], list[str]]:
+    """A read API's tool whose name is already taken here (F944; SAI2's addition 1): the same provider's own HTTP tool
+    (its URL on one of the provider's own domains) is the one used; anything else is left alone, never adopted or
+    overwritten, and this build makes its own as `<name>_2`, which the plan's steps and agents then call. Returns the
+    plan, `{new name: the endpoint's}` and the card's notes."""
+    from core.builder_research import _host, _registrable_domain
+    from core.store.resources import load_tools
+
+    findings = _obj(state.get(FINDINGS_KEY))
+    owned: dict[str, set[str]] = {}
+    for option in (findings or {}).get("options") or [] if isinstance(findings, dict) else []:
+        spec = option.get("api") if isinstance(option.get("api"), dict) else None
+        for e in (spec or {}).get("endpoints") or []:
+            if e.get("tool"):
+                owned[e["tool"]] = {str(d) for d in option.get("own_domains") or []}
+    used = set(O.tool_names(plan))
+    if not owned or not used & owned.keys():
+        return plan, {}, []
+    tools = {t.get("name"): t for t in await load_tools()}
+    renames: dict[str, str] = {}
+    for name in sorted(used & owned.keys()):
+        taken = tools.get(name)
+        if taken is None or (taken.get("tool_type") == "http"
+                             and _registrable_domain(_host(str(taken.get("url") or ""))) in owned[name]):
+            continue
+        n = 2
+        while f"{name}_{n}" in tools or f"{name}_{n}" in used:
+            n += 1
+        renames[name] = f"{name}_{n}"
+    if not renames:
+        return plan, {}, []
+    out = plan.model_copy(deep=True)
+    for step in [*out.steps, *(x for w in out.inner_workflows for x in w.steps)]:
+        if step.tool in renames:
+            step.tool = renames[step.tool]
+    out.agents = [a.model_copy(update={"tools": [renames.get(t, t) for t in a.tools]}) for a in out.agents]
+    notes = [f"`{old}` is already a tool here, from somewhere else, so this build makes its own as `{new}` and leaves "
+             "that one as it is." for old, new in renames.items()]
+    return out, {new: old for old, new in renames.items()}, notes
+
+
+def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> dict[str, O.ToolStatus]:
     """What the lookup found for each tool the Plan names, by the provider's name in the tool's own name or in the
     words of the steps and agents that use it (F763's match, on the Plan's own fields)."""
     from core.builder_research import _words
@@ -583,7 +627,8 @@ def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
             provider, how = str(option.get("provider") or ""), option.get("how")
             spec = option.get("api") if isinstance(option.get("api"), dict) else None
             # A7: a read API's call is named exactly, by its endpoint's tool; the status carries that one endpoint.
-            endpoint = next((e for e in (spec or {}).get("endpoints") or [] if e.get("tool") == name), None)
+            endpoint = next((e for e in (spec or {}).get("endpoints") or []
+                             if e.get("tool") == (renamed or {}).get(name, name)), None)
             if endpoint is None and (not provider or not set(_words(provider)) <= words):
                 continue
             # The hand-off's table (P3B-HANDOFF.md, A6): a way in is found; a verdict of none is missing, with why.
@@ -935,6 +980,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     if found.errors:
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]
+    said += found.notes
     # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)

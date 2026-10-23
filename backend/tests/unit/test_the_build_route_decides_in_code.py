@@ -599,3 +599,41 @@ async def test_a_plan_tool_naming_a_read_api_but_none_of_its_tools_goes_back_to_
     run = await _run(plan_findings=findings)
     sent, _ = await _call("submit_plan", _plan(SEND), run)
     assert "mailchimp_send_campaign" in sent["error"] and "send_mailchimp_campaign" in sent["error"]
+
+
+# ── F944, SAI2's addition 1: a tool name already taken ────────────────────────────────────────────────────────────
+
+NAMED = {**SPEC, "endpoints": [{**SPEC["endpoints"][0], "tool": "mailchimp_send_campaign"}]}
+FOUND_NAMED = {"goal": "x", "options": [{"provider": "Mailchimp", "how": "api", "detail": "REST",
+                                         "sources": ["https://mailchimp.com/developer/"],
+                                         "own_domains": ["mailchimp.com"], "api": NAMED}]}
+
+
+async def _taken(url):
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "mailchimp_send_campaign", "description": "Someone's own.", "tool_type": "http",
+                     "method": "POST", "url": url, "headers": {}, "inputSchema": {"type": "object", "properties": {}}})
+
+
+async def test_a_same_named_tool_from_elsewhere_is_left_alone_and_the_build_makes_its_own(client):
+    await _taken("https://hooks.example.org/send")
+    run = await _run(plan_findings=FOUND_NAMED)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan({**SEND, "tool": "mailchimp_send_campaign"})})
+    [step] = [s for s in out["plan"]["steps"] if s["id"] == "send"]
+    assert step["tool"] == "mailchimp_send_campaign_2"
+    [tool] = out["plan"]["tools"]
+    assert (tool["name"], tool["status"], tool["via"]) == ("mailchimp_send_campaign_2", "found", "http_tool")
+    assert "`mailchimp_send_campaign` is already a tool here" in out["say"]
+    from core.store.resources import load_tools
+
+    [kept] = [t for t in await load_tools() if t["name"] == "mailchimp_send_campaign"]
+    assert kept["url"] == "https://hooks.example.org/send", "never adopted, never overwritten"
+
+
+async def test_a_same_named_tool_of_the_same_provider_is_the_one_used(client):
+    await _taken("https://us6.api.mailchimp.com/3.0/campaigns/{campaign_id}/actions/send")
+    run = await _run(plan_findings=FOUND_NAMED)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan({**SEND, "tool": "mailchimp_send_campaign"})})
+    [tool] = out["plan"]["tools"]
+    assert (tool["name"], tool["status"]) == ("mailchimp_send_campaign", "present")
