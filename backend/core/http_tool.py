@@ -32,6 +32,38 @@ from core import templating
 _SINGLE = re.compile(r"\{([^{}]+)\}")
 
 
+class NotConnected(ValueError):
+    """A made tool whose account part (`__dc__` in its host) is not filled in yet: it is never called (F944, A8)."""
+
+
+#: A host part a made tool keeps until its Connect card fills it: never filled from arguments, not a DNS label.
+_UNCONNECTED = re.compile(r"__[a-z0-9_]+__")
+
+
+def _render_locked(url: str, args: dict[str, Any], global_variables: dict[str, Any],
+                   lock: str) -> tuple[str, set[str]]:
+    """A made tool's URL (F944's A8; opt-in by `base_lock`), on top of F1014's rule for every tool (each value
+    percent-encoded, never raw here, and the host the template's): a tool not connected yet is never called, and the
+    URL it renders keeps the lock's scheme, host and port and a path at or under the lock's, with no `.` or `..`
+    segment (which encoding leaves as written) and no fragment, or it is not sent."""
+    from urllib.parse import urlsplit
+
+    locked = urlsplit(lock)
+    if _UNCONNECTED.search(locked.hostname or ""):
+        raise NotConnected("This tool is not connected yet: its account part is filled in on its Connect card; "
+                           "connect it first.")
+    # A made tool's template has no fragment; one is never sent.
+    rendered, consumed = render_url(url.partition("#")[0], args, global_variables)
+    got = urlsplit(rendered)
+    under = locked.path.rstrip("/")
+    segments = got.path.split("/")
+    if ((got.scheme, got.hostname, got.port) != (locked.scheme, locked.hostname, locked.port)
+            or not (got.path.rstrip("/") == under or got.path.startswith(under + "/"))
+            or "." in segments or ".." in segments or got.fragment):
+        raise ValueError("This tool's call went outside the API it was made for, so it was not sent.")
+    return rendered, consumed
+
+
 class MissingArgument(ValueError):
     """The call left out an argument the tool's URL, a header or its body names (F196).
 
@@ -295,7 +327,11 @@ def build_request(
         raise MissingArgument(sorted(missing), places)
 
     context = {"global": global_variables, "args": args}
-    url, consumed = render_url(url, args, global_variables, url_values=tool.get("url_values"))
+    if tool.get("base_lock"):
+        # A tool the build made from a read API keeps to its base too (F944, A8): beyond F1014's rule for every tool.
+        url, consumed = _render_locked(url, args, global_variables, str(tool["base_lock"]))
+    else:
+        url, consumed = render_url(url, args, global_variables, url_values=tool.get("url_values"))
     headers = templating.render_mapping(raw_headers, context, bare="args")
     body, body_consumed = templating.request_body(
         template, args, {"global": global_variables}
