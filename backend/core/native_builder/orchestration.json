@@ -49,6 +49,7 @@
         "change_draft": {"type": "dict", "default": {}, "description": "The change planner's finish: submit_change, ask_person or cannot (E2)"},
         "change_checked": {"type": "str", "default": "", "description": "`check_change`'s answer: each op checked, the cards put up, the exact calls, the review's words and where the route goes (`outcome`)"},
         "change_clarify": {"type": "dict", "default": {}, "description": "The person's answer to the change planner's question or a which-one list"},
+        "change_heard": {"type": "list", "default": [], "description": "What the person answered and replied this run, each once: the words a rename's new name must come from (F960)"},
         "change_approval": {"type": "str", "default": "", "description": "`approve_change`'s answer: the person's yes recorded for exactly the calls the review showed (F778)"},
         "change_applied": {"type": "str", "default": "", "description": "`apply_change`'s answer: what was made, and in words what did not take effect"},
         "change_made": {"type": "dict", "default": {}, "description": "What the maker's one create answered, or its `cannot` (E2: the step ends at the first that worked; SAI2-P2, P3 replaces it)"},

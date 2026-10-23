@@ -458,3 +458,34 @@ async def test_two_that_match_without_the_kind_word_are_still_a_question(client,
                                "target": {"kind": "workflow", "name": "Nightly digest workflow"},
                                "fields": {"name": "Digest"}}])
     assert out["outcome"] == "ask" and len(out["picks"][0]["options"]) == 2
+
+
+async def test_a_name_given_before_a_pick_is_still_the_person_s(client, role):
+    """SAI2's review of F960 (1): "rename the Nightly digest" → asked the name → "Morning digest" → two match, so a pick
+    → "the second one". The last answer replaced the first, and the name they gave was left out as unasked."""
+    await _workflow(name="Nightly digest for sales")
+    second = await _workflow(name="Nightly digest for support")
+    run = await _run(user_message="rename the nightly digest", change_clarify={"answer": "Morning digest"})
+    rename = [{"op": "rename_workflow", "target": {"kind": "workflow", "name": "Nightly digest"},
+               "fields": {"name": "Morning digest"}}]
+    first, _, _ = await _check(rename, run)
+    assert first["outcome"] == "ask" and first["picks"], first
+    run.shared_state["change_clarify"] = {"answer": "the second one"}
+    out, _, _ = await _check([{**rename[0], "target": {"kind": "workflow", "id": second["id"]}}], run)
+    assert out["outcome"] == "review", out
+    assert out["calls"] == [["set_orchestration_meta", {"orch_id": second["id"], "name": "Morning digest"}]]
+
+
+async def test_a_name_from_an_earlier_turn_is_the_person_s_but_not_one_i_suggested(client, role):
+    await _schedule()
+    asked = await _run(user_message="yes, do it",
+                       chat_history="user: rename the every night at 2 schedule to Nightly run\nassistant: Sure.")
+    out, _, _ = await _check([{"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+                               "fields": {"name": "Nightly run"}}], asked)
+    assert out["outcome"] == "review", out
+    suggested = await _run(run_id="builder_chg2", user_message="yes, do it",
+                           chat_history="user: tidy the every night at 2 schedule\nassistant: Shall I call it "
+                                        "Nightly run?")
+    out, _, _ = await _check([{"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+                               "fields": {"name": "Nightly run"}}], suggested)
+    assert out["outcome"] != "review", "a name only the assistant said is not the person's"

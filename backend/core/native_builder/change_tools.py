@@ -372,13 +372,30 @@ def _plain_words(text: Any) -> str:
 
 
 def _persons_words(state: dict) -> str:
-    """What the person said this turn: their message, their answer to the planner's question, their reply to the
-    review."""
+    """What the person has said in this conversation: this message, their own earlier turns (never the assistant's),
+    and every answer to the planner's questions and reply to a review this run has heard (`HEARD_KEY`, kept by
+    `_heard`: a pick's "the second one" no longer replaces the name they gave before it, SAI2's review)."""
+    history = str(state.get("chat_history") or "")
+    theirs = [m.group("said") for m in _TURN.finditer(history) if m.group("role") == "user"]
+    return " ".join(_plain_words(w) for w in (state.get("user_message"), *theirs, *(state.get(HEARD_KEY) or [])))
+
+
+#: One turn of `chat_history` (`role: content`, one per line, as the builder's route writes it).
+_TURN = re.compile(r"^(?P<role>user|assistant|system): (?P<said>.*(?:\n(?!(?:user|assistant|system): ).*)*)", re.M)
+
+#: Where the run keeps what the person answered and replied, each once, in order.
+HEARD_KEY = "change_heard"
+
+
+def _heard(state: dict) -> None:
+    """Keep this pass's answer to the planner and reply to the review with the run's earlier ones."""
     clarify, review = state.get("change_clarify"), state.get("manage_review")
-    return " ".join(_plain_words(w) for w in (
-        state.get("user_message"),
-        clarify.get("answer") if isinstance(clarify, dict) else clarify,
-        review.get("feedback") if isinstance(review, dict) else review))
+    heard = list(state.get(HEARD_KEY) or [])
+    for said in (clarify.get("answer") if isinstance(clarify, dict) else clarify,
+                 review.get("feedback") if isinstance(review, dict) else review):
+        if isinstance(said, str) and said.strip() and said not in heard:
+            heard.append(said)
+    state[HEARD_KEY] = heard
 
 
 async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
@@ -516,7 +533,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     caller = _caller()
     areas.ensure_loaded()
     _, run = _run()
-    words = _persons_words(run.shared_state if run is not None else {})
+    state = run.shared_state if run is not None else {}
+    _heard(state)
+    words = _persons_words(state)
     checked: list[dict] = []
     picks: list[dict] = []
     for n, raw in enumerate(ops):
