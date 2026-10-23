@@ -28,6 +28,7 @@ export function AiToolsScreen() {
         mcpUrl: `${origin}/api/v1/mcp`,
         desktop: 'stdio',
         logos: { claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg' },
+        // A key here can do all a person here can; there is no run-only kind to choose.
         makeKey: async (name: string) => {
             const res = await fetch('/api/settings/api-keys', {
                 method: 'POST',

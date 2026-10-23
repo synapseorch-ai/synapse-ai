@@ -16,7 +16,7 @@
 import { Check } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 
-import { AppMark, Button, CopyButton, ErrorNote, Field, Input, TextLink } from '@/components/ui';
+import { AppMark, Button, Checkbox, CopyButton, ErrorNote, Field, Input, TextLink } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { AI_CLIENTS, WHAT_TO_ASK, needsKey, snippetFor, type AiClientId, type DesktopRoute } from './clients';
@@ -29,7 +29,9 @@ export type ConnectHost = {
     /** This product's logo paths. */
     logos: { claude: string; openai: string };
     /** Makes a key named for the tool. Null when this person can't make keys here (cloud: owners and admins). */
-    makeKey: ((name: string) => Promise<{ id: string; key: string }>) | null;
+    makeKey: ((name: string, canBuild: boolean) => Promise<{ id: string; key: string }>) | null;
+    /** Keys here only run things unless made to build too (cloud, F847): offer that choice, with its trade-off. */
+    buildChoice?: boolean;
     /** When a key last authenticated, or null if never. */
     lastUsed: (id: string) => Promise<string | null>;
     /** Who to ask for a key, when `makeKey` is null. */
@@ -54,6 +56,7 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
     const [made, setMade] = useState<{ id: string; key: string; name: string } | null>(null);
     const [pasted, setPasted] = useState('');
     const [making, setMaking] = useState(false);
+    const [canBuild, setCanBuild] = useState(false);
     const [problem, setProblem] = useState('');
     const key = made?.key ?? pasted.trim();
     const snippet = snippetFor(client.id, { url: host.mcpUrl, key, desktop: host.desktop });
@@ -64,7 +67,7 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
         setMaking(true);
         try {
             // Named for the tool it was made for; it works for any of them, so switching keeps it.
-            setMade({ ...(await host.makeKey(client.label)), name: client.label });
+            setMade({ ...(await host.makeKey(client.label, canBuild)), name: client.label });
         } catch (err) {
             setProblem(err instanceof Error ? err.message : 'The key could not be made.');
         } finally {
@@ -116,7 +119,21 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
                             setup before you leave.
                         </p>
                     ) : host.makeKey ? (
-                        <Button onClick={() => void makeKey()} loading={making}>Make a key for {client.label}</Button>
+                        <div className="space-y-3">
+                            {host.buildChoice && (
+                                <label className="flex items-start gap-2.5 text-sm">
+                                    <Checkbox checked={canBuild} onChange={setCanBuild} label="Can also build" className="mt-0.5" />
+                                    <span>
+                                        <span className="font-medium text-text">Can also build</span>
+                                        <span className="block text-xs text-text-faint">
+                                            On: {client.label} can also create and change agents and workflows. Off: it
+                                            runs them, answers their questions and reads results, and changes nothing.
+                                        </span>
+                                    </span>
+                                </label>
+                            )}
+                            <Button onClick={() => void makeKey()} loading={making}>Make a key for {client.label}</Button>
+                        </div>
                     ) : (
                         <p className="text-sm text-text-muted">{host.askForKey ?? 'Ask an owner or admin of this workspace for a key.'}</p>
                     )}
