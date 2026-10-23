@@ -32,8 +32,9 @@ from core.native_builder import prompt_lint, seed
 #: and SAI2's review of P3a: the lead-in follows the offers, the loop rule, a no re-reads the pack, Q&A kept.
 #: SAI2's re-check: the review, the prompt writer, the pack and the answer steps end in words at their caps, 2deb6b5d…;
 #: on F951's anchors, 83b25cbb…; a transform sets `result` and reaches no service itself (F947; SAI2's review, S6),
-#: 63467c47…; SAI2-P2's F958: the change planner falls back to `cannot`, b5678c1d…; F960: what the person said is kept across the run (`change_heard`), 2f537dfd….
-BUNDLE_SHA256 = "2f537dfd209d8ae1b7e13229a8708c88db2898f3ec954fee79e3d6463461da80"
+#: 63467c47…; SAI2-P2's F958: the change planner falls back to `cannot`, b5678c1d…; F960: what the person said is kept across the run (`change_heard`), 2f537dfd…;
+#: P3b: the build's own researcher finishes on report_findings (E2), its shared passages in the library, 1ecd661d….
+BUNDLE_SHA256 = "1ecd661d30a6387df96adbb09a1d9a77dbd8a33c8bcefed603435f0a5eeb4501"
 
 
 def _sha(definitions) -> str:

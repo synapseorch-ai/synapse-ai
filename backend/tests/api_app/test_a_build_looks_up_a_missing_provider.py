@@ -25,8 +25,7 @@ def _stripe_script():
     return [
         route("create"),                                                       # step_intent
         tool_call("submit_plan", **STRIPE_PLAN),                               # step_plan (the planner's finish)
-        "Stripe has its own MCP server.\nStripe — mcp — a Stripe account — https://mcp.stripe.com",  # researcher
-        tool_call("report_findings", goal="send a payment link", options=[      # step_plan_findings
+        tool_call("report_findings", goal="send a payment link", options=[      # the researcher's finish (E2)
             {"provider": "Stripe", "how": "mcp", "needs": "A Stripe account"}]),
         tool_call("submit_plan", **{**STRIPE_PLAN, "questions": ["Connect Stripe first."]}),  # step_plan again
     ]
@@ -37,7 +36,7 @@ async def test_a_build_naming_a_missing_tool_finds_who_provides_it_before_the_re
     events = await stream(client, "/api/builder/chat",
                           {"message": "When a treatment plan is accepted, send the patient a Stripe payment link"})
     order = [e.get("orch_step_id") for e in events if e["type"] == "step_start"]
-    assert order.index("step_plan_research") < order.index("step_plan_findings") < order.index("step_human_review")
+    assert order.index("step_plan_research") < order.index("step_human_review") and "step_plan_findings" not in order
     assert order.count("step_plan") == 2 and order.count("step_plan_research") == 1
     assert [e["options"][0]["provider"] for e in events if e["type"] == "research_findings"] == ["Stripe"]
     asked = next(e for e in events if e["type"] == "human_input_required")

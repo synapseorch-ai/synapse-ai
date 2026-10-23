@@ -38,7 +38,8 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "change_planner", "maker", "orchestrator", "planner", "prompt_writer", "reporter", "researcher",
+            "change_planner", "maker", "orchestrator", "plan_researcher", "planner", "prompt_writer", "reporter",
+            "researcher",
         ]
 
     def test_the_version_is_stable_and_moves_with_the_content(self):
@@ -142,8 +143,9 @@ class TestSeeding:
         result = await seed_native_builder()
         assert result["orchestration"] == "added"
         # 8 since the Researcher (F577, BWA1); 9 with P2's change planner and maker; 7 since P3's planner and
-        # prompt writer took the analyst's, the agent creator's and both savers' places.
-        assert len(result["agents_added"]) == 7
+        # prompt writer took the analyst's, the agent creator's and both savers' places; 8 with P3b's plan researcher
+        # (the build's own, an E2 finish on report_findings; P5 may fold the two researchers into one).
+        assert len(result["agents_added"]) == 8
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration

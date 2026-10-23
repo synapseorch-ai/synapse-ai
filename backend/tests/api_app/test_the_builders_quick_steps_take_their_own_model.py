@@ -61,7 +61,8 @@ def test_the_builders_quick_steps_are_its_routing_and_its_one_call_look_ups():
     quick = {s["id"] for s in steps if s.get("model_role") == "quick"}
     evaluators = {s["id"] for s in steps if s["type"] == "evaluator"}
     assert evaluators <= quick and "step_intent" in quick
-    assert quick - evaluators == {"step_howto", "step_connect", "step_cantdo", "step_findings", "step_plan_findings"}
+    # P3b: the build's researcher notes its own findings (E2), so step_plan_findings and its quick call are gone.
+    assert quick - evaluators == {"step_howto", "step_connect", "step_cantdo", "step_findings"}
     assert not [s["id"] for s in steps if s["type"] == "tool" and s.get("tool_arguments") is not None
                 and s.get("model_role")], "a code step calls no model, quick or not"
     assert all(s["type"] in ("evaluator", "tool") for s in steps if s["id"] in quick)
