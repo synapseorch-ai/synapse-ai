@@ -349,7 +349,17 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     from core.boards import TOOL_NAMES
 
     errors = []
+    from core.native_builder.change_tools import _ASKS_SECRET, _ASKS_WAY_IN
+
     for s in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if s.type == "human":
+            # What a run asks its person is kept in the run: never a key, a password or how to connect a service
+            # (gpt-oss on dev planned "connect your Xero account by providing the API key" as a step; SAI2, 10-23).
+            asked = " / ".join([s.prompt or "", json.dumps((s.config or {}).get("human_fields") or [])])
+            if _ASKS_SECRET.search(asked) or _ASKS_WAY_IN.search(asked):
+                errors.append(f"step {s.id}: a person is never asked for a key, a password or how to connect a "
+                              "service while a workflow runs: a key is added in Settings → Vault or on a Connect "
+                              "card. Ask only what the person alone knows.")
         if s.type == "tool" and s.tool in TOOL_NAMES:
             errors.append(f"step {s.id}: board tools are an agent's, not a Tool step's: give `{s.tool}` to the "
                           "agent of an agent step")

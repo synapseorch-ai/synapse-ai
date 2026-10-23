@@ -460,3 +460,34 @@ async def test_a_pasted_exports_removed_key_may_be_named_in_what_is_not_carried_
     run = await _run()
     out, _ = await _call("submit_plan", _plan(CHECK, not_carried_over=[f"The key it held ({CREDENTIAL_MARK})"]), run)
     assert out.get("finish") == "submit_plan", out
+
+
+@pytest.mark.parametrize("prompt, fields", [
+    ("Please connect your Xero account by providing the API key", []),
+    ("Ready to sync?", [{"name": "token", "type": "string", "label": "Your Xero access token"}]),
+])
+async def test_a_human_step_never_asks_for_a_key_at_run_time(client, prompt, fields):
+    """SAI2, 10-23 (gpt-oss on dev, chg-09): the plan put a Human step asking for the API key before the fetch; the
+    answer would be kept in the run. ask_person's rule, held over a step's prompt and fields."""
+    run = await _run()
+    ask = {"id": "key", "type": "human", "name": "Key", "does": "x", "prompt": prompt,
+           **({"config": {"human_fields": fields}} if fields else {})}
+    sent, _ = await _call("submit_plan", _plan(ask, CHECK), run)
+    assert "never asked for a key" in sent["error"]
+
+
+def test_a_rename_only_update_makes_nothing_but_the_rename():
+    """SAI2, 10-23 (Nova on dev, effect-03): a rename made an agent "Rename Orchestration" on the old route."""
+    from core.native_builder import objects as O
+    from core.native_builder.build_save import save_calls
+
+    existing = {"id": "orch_nd", "name": "Nightly digest", "description": "", "entry_step_id": "a", "steps": [
+        {"id": "a", "name": "A", "type": "llm", "prompt_template": "p", "output_key": "a", "next_step_id": "done"},
+        {"id": "done", "name": "End", "type": "end"}]}
+    from core.native_builder.compile import apply_edits, plan_from_workflow
+
+    rename = O.Edit(op="set_meta", fields={"title": "Daily summary"})
+    plan, problems = apply_edits(plan_from_workflow(existing), [rename])
+    assert problems == []
+    calls = save_calls(plan, {}, {"intent": "update", "existing_orch": existing})
+    assert [(c["tool"], c["args"].get("name")) for c in calls] == [("update_orchestration", "Daily summary")]
