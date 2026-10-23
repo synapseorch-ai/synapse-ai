@@ -37,7 +37,7 @@ import { FailureCard } from './FailureCard';
 import { RunResult } from './RunResult';
 import { useRunHost } from './host';
 import {
-    bucketOf, CHARGE_RULE, chargeWords, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runWarnings,
+    bucketOf, CHARGE_RULE, chargeWords, creditsText, followedLine, money, pathOrder, REMOVED_NOTE, removedLine, runTotals, runWarnings,
     when, type Followed, type NestedRun, type RunRecord,
 } from './model';
 import { NestedRuns } from './NestedRuns';
@@ -123,6 +123,7 @@ export function RunDetail({
     const followed = followedLine(run, drawn, (iso) => when(iso, clock), run.definition ? workflow : undefined);
     const asking = bucket === 'needs' && run.status === 'paused' && Boolean(run.humanPrompt);
     const stopped = run.status === 'failed' || run.status === 'cancelled';
+    const totals = runTotals(run);
     const asStepper = bucket === 'needs' || bucket === 'failed' || bucket === 'cancelled' || bucket === 'queued';
     const stateKeys = Object.keys(run.sharedState ?? {});
     const removed = removedLine(run, clock);
@@ -177,7 +178,8 @@ export function RunDetail({
                     {(run.startedAt || run.createdAt) && <When iso={run.startedAt || run.createdAt} clock={clock} />}
                     <span><b className="font-semibold tabular-nums text-text"><Took start={run.startedAt} end={run.endedAt} /></b> wall clock</span>
                     <span>{stepsLine}</span>
-                    <span><b className="font-semibold tabular-nums text-text">{run.tokens == null ? '—' : run.tokens.toLocaleString()}</b> tokens</span>
+                    {/* Open, what its steps have spent so far: the run's own totals come at its end (F961). */}
+                    <span><b className="font-semibold tabular-nums text-text">{totals.tokens == null ? '—' : totals.tokens.toLocaleString()}</b> tokens{totals.soFar ? ' so far' : ''}</span>
                     {run.creditsCharged != null && (
                         <span title={CHARGE_RULE}>
                             <b className="font-semibold tabular-nums text-text">{creditsText(run.creditsCharged)}</b> charged
@@ -187,7 +189,7 @@ export function RunDetail({
                         </span>
                     )}
                     <span title={run.costHint}>
-                        <b className="font-semibold tabular-nums text-text">{money(run.costUsd)}</b> model cost
+                        <b className="font-semibold tabular-nums text-text">{money(totals.costUsd)}</b> model cost{totals.soFar ? ' so far' : ''}
                         {capUsd ? <span className="text-text-faint"> · cap {money(capUsd)}</span> : null}
                     </span>
                 </div>

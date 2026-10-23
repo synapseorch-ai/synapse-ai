@@ -827,6 +827,27 @@ export function stepResult(
     return { step, output: outputOf(step, state), usage };
 }
 
+/**
+ * A run's tokens and model cost as the page says them (F961). The run's own totals are summed at its end, so a run
+ * still open (running, or waiting on a person) read "0 tokens · $0 model cost" over steps that had spent real
+ * money; open, the totals are its steps' usage so far (never less than the run's own), and `soFar` says so. A step
+ * whose model has no price leaves the cost unknown, as the run's own does.
+ */
+export function runTotals(
+    run: Pick<RunRecord, 'status' | 'tokens' | 'costUsd' | 'stepUsage'>,
+): { tokens: number | null; costUsd: number | null; soFar: boolean } {
+    const steps = Object.values(run.stepUsage ?? {});
+    if (!isLive(run.status) || steps.length === 0) return { tokens: run.tokens, costUsd: run.costUsd, soFar: false };
+    const tokens = steps.reduce((sum, u) => sum + (u.tokens || 0), 0);
+    const unpriced = steps.some((u) => u.cost_usd === null);
+    const cost = steps.reduce((sum, u) => sum + (u.cost_usd ?? 0), 0);
+    return {
+        tokens: Math.max(tokens, run.tokens ?? 0),
+        costUsd: unpriced ? (run.costUsd || null) : Math.max(cost, run.costUsd ?? 0),
+        soFar: true,
+    };
+}
+
 /** A step type in words: "Agent", "Nested run". */
 export function typeLabel(type: string): string {
     if (type === 'nested') return 'Nested run';
