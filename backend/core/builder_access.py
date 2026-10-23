@@ -42,7 +42,8 @@ READS: frozenset[str] = frozenset({
 #: The change route's finish tools and its check (SAI2-P2) write only the run's own state, or put up an act's card;
 #: so do the build route's (SAI2-P3).
 CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action", "submit_change",
-                                   "ask_person", "cannot", "check_change", "check_made", "submit_plan", "check_build"})
+                                   "ask_person", "cannot", "check_change", "check_made", "submit_plan", "check_build",
+                                   "submit_prompts"})
 
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",
@@ -50,7 +51,7 @@ WRITES: frozenset[str] = frozenset({
     "remove_step", "add_single_step", "add_multiple_steps", "create_http_tool", "import_openapi",
     "delete_custom_tool", "create_skill", "update_skill", "attach_skills", "finish_build", "create_schedule",
     "set_schedule_enabled", "update_schedule", "delete_schedule", "delete_agent", "delete_orchestration",
-    "approve_change", "apply_change",
+    "approve_change", "apply_change", "approve_plan", "save_build",
 })
 
 KINDS: dict[str, str] = {**{n: "read" for n in READS}, **{n: "card" for n in CARDS}, **{n: "write" for n in WRITES}}

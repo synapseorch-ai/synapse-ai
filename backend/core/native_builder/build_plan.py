@@ -280,6 +280,8 @@ def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           "use an `llm` step to reshape data")
         if s.type in ("retrieve", "ingest") and ws.kbs is None:
             errors.append(f"step {s.id}: Knowledge is off in this workspace, so there are no {s.type} steps")
+    if plan.boards and not ws.boards_on:
+        errors.append("boards: Boards are off in this workspace, so a plan makes no boards")
     if plan.agents and state.get("can_create_agents") is False:
         errors.append("agents: this conversation uses existing agents only; give each step one of theirs by id")
     return errors

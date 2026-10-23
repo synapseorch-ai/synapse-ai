@@ -213,6 +213,8 @@ async def test_board_tools_are_an_agents_while_boards_are_on(client, boards):
     run = await _run()
     out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
     assert out["outcome"] == "research" and out["research"] == ["board_add"]
+    sent, _ = await _call("submit_plan", _plan(CHECK, boards=[{"name": "Shipment delays"}]), run)
+    assert "Boards are off" in sent["error"]
 
 
 async def test_an_update_applies_its_edits_to_the_workflow_as_it_is(client):
