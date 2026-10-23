@@ -122,6 +122,18 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
     return None, f"{label} can't be undone from here."
 
 
+async def _unsaveable(fields: dict) -> str | None:
+    """Why no door would save this workflow now (`save_rules`, F850/F853), in its words; None when one would."""
+    from core.orchestration.save_rules import agent_ids, refusal
+    from core.store.resources import get_agent
+
+    orch = {"name": fields.get("name"), "steps": json.loads(fields.get("steps_json") or "[]"),
+            "entry_step_id": fields.get("entry_step_id")}
+    agents = {aid: found for aid in agent_ids(orch) if (found := await get_agent(aid))}
+    said = refusal(orch, agents)
+    return said.removeprefix("Refusing to save: ") if said else None
+
+
 async def inverse_ops(key: str) -> tuple[list[dict], str | None, list[str]]:
     """(the ops that undo change `key`, newest first; why there are none; what they cannot bring back)."""
     from core.boards import assistant
@@ -141,6 +153,10 @@ async def inverse_ops(key: str) -> tuple[list[dict], str | None, list[str]]:
             target = applied.get("target") or {}
             op, note = None, (f'the {target.get("kind")} "{target.get("name")}" can\'t be put back as it was: '
                               "what it held before was not kept.")
+        if op is not None and op["op"] == "restore_workflow" and (said := await _unsaveable(op["fields"])):
+            # Saved before F850 by a door that checked nothing: the save would refuse it after the yes, so the review
+            # never promises it (each save door asks `save_rules`, and so does this).
+            op, note = None, f'the workflow "{op["target"].get("name")}" can\'t be brought back as it was: {said}'
         if op is not None:
             ops.append(op)
         if note:

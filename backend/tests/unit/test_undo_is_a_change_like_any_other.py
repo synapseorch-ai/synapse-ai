@@ -228,6 +228,28 @@ async def test_a_deleted_workflow_comes_back_as_a_new_copy(client):
     assert back["max_run_credits"] == 3
 
 
+async def test_a_workflow_no_door_would_save_now_is_not_promised_back(client):
+    """A workflow saved before F850 by a door that checked nothing (the editor, an import) holds an expression the
+    engine refuses. Deleted, its undo was reviewed as "Bring back", approved, then refused by the save. Each door asks
+    `save_rules.refusal` now, and so does undo, before any review: said in the door's own words, nothing to approve."""
+    from core.store.resources import load_orchestrations, save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    flow = make_orchestration(name="Router", steps=[
+        {"id": "step_1", "name": "Pick", "type": "switch", "switch_expression": "state.__class__", "cases": {},
+         "default_step_id": None}], entry_step_id="step_1")
+    await save_orchestration(flow)  # as a door before F850 saved it: unchecked
+    first, _, done = await _change({"ops": [{"op": "delete_workflow", "target": {"kind": "workflow",
+                                                                                 "id": flow["id"]}}]})
+    assert done["applied"] == ["delete_workflow"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert checked["outcome"] == "said" and undone is None, checked
+    assert checked["say"].startswith('the workflow "Router" can\'t be brought back as it was: '), checked["say"]
+    assert "An expression uses something this engine will not run" in checked["say"]
+    assert "Refusing to save" not in checked["say"]
+    assert not [o for o in await load_orchestrations() if o.get("name") == "Router"]
+
+
 async def test_a_deleted_http_tool_comes_back_without_its_headers(client):
     from core.store.resources import load_tools, save_tool
 
