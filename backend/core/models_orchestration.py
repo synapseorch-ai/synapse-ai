@@ -158,6 +158,14 @@ class StepConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _a_fallback_only_with_finish_tools(self):
+        """`finish_fallback` is what a step that finishes with a tool ends with otherwise (F958): nothing without
+        them."""
+        if self.finish_fallback is not None and not self.finish_tools:
+            raise ValueError(f"finish_fallback needs finish_tools; step '{self.id}' has none.")
+        return self
+
+    @model_validator(mode="after")
     def _arguments_only_on_a_tool_step(self):
         """`tool_arguments` is read by the Tool step and nowhere else: refused elsewhere, as `pass_images` is."""
         if self.tool_arguments is not None and self.type != StepType.TOOL:
@@ -173,6 +181,10 @@ class StepConfig(BaseModel):
     #: succeeds, and the step's output is that call's result as an object, not the agent's prose. Each must be among
     #: the agent's tools. Empty, the default, is an agent step as before.
     finish_tools: list[str] = []
+    #: AGENT -- what the step's output is when the agent still answers in words after its one reminder (F958): an
+    #: object, marked `"fallback": true`, so the next step knows it is code's and not the agent's finish. Only with
+    #: `finish_tools`; None, the default, fails the step as before. A turn limit or a spend stop still fails it.
+    finish_fallback: dict[str, Any] | None = None
 
     # TOOL — forced single tool call with ReAct retry
     forced_tool: str | None = None  # Tool name for TOOL type steps

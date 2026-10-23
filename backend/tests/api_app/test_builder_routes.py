@@ -411,13 +411,20 @@ class TestAChangeThatChangesNothingHasNothingToApprove:
 
     async def test_a_planner_that_never_finishes_does_nothing(self, client, builder, fake_llm):
         """It used to be an evaluator that could not parse its own reply, falling back to the review. A planner that
-        answers in words twice (one reminder, E2) ends the run with nothing reviewed and nothing done."""
+        answers in words twice (one reminder, E2) ends the run with nothing reviewed and nothing done. Since F958 the
+        step ends in code's `cannot` (its `finish_fallback`), which the check says in our words, rather than failing
+        with the engine's sentence: the check runs, the apply never does, and nothing is saved."""
+        from core.native_builder.change_tools import FALLBACK_CANNOT
+
         fake_llm.script([route("manage"), "I would delete it.", "Yes, delete it."])
         events = await stream(client, "/api/builder/chat", {"message": "delete something"})
 
         assert not [e for e in events if e["type"] == "human_input_required"]
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-        assert "Check the Change" not in steps and "Apply the Change" not in steps
+        assert "Apply the Change" not in steps
+        assert not [e for e in events if e.get("type") == "resource_saved"]
+        done = next(e for e in events if e["type"] == "orchestration_complete")
+        assert done["final_state"]["summary"] == FALLBACK_CANNOT
 
 
 class TestAnAttachmentReachesTheStepAndNothingElse:

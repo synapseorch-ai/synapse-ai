@@ -32,8 +32,8 @@ from core.native_builder import prompt_lint, seed
 #: and SAI2's review of P3a: the lead-in follows the offers, the loop rule, a no re-reads the pack, Q&A kept.
 #: SAI2's re-check: the review, the prompt writer, the pack and the answer steps end in words at their caps, 2deb6b5d…;
 #: on F951's anchors, 83b25cbb…; a transform sets `result` and reaches no service itself (F947; SAI2's review, S6),
-#: 63467c47….
-BUNDLE_SHA256 = "63467c47fd913fc7c3a2cddb067e7691de1d34e18b2f5ac9eb331e8c14029ec3"
+#: 63467c47…; SAI2-P2's F958: the change planner falls back to `cannot`, b5678c1d….
+BUNDLE_SHA256 = "b5678c1d149d4a9291e3b50d83aa2ab84a4f5e3b932e9c76339dd1cd9dac95ad"
 
 
 def _sha(definitions) -> str:

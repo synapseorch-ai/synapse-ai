@@ -157,3 +157,18 @@ async def test_a_maker_that_would_go_on_making_makes_one(client, builder, fake_l
     fake_llm.script([tool_call("create_agent", **made), tool_call("create_agent", **made), "Made it."])
     await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "approve"}})
     assert [a["name"] for a in await load_agents() if a.get("name") == "Claude Builder"] == ["Claude Builder"]
+
+
+async def test_a_change_the_planner_has_no_op_for_is_said_in_our_words(client, builder, fake_llm):
+    """F958 (P2's dev after-pass, chg-05 on Nova Pro and gpt-oss): "re-point the Patient chat channel" has no op, so
+    the planner answered in words twice and the person read "Agent step 'Plan the Change' ended without calling
+    submit_change or ask_person or cannot…". The step ends in code's `cannot` instead, said in our words."""
+    fake_llm.script([route("manage"), "I'll move the channel to the new agent for you.", "Done, it's moved."])
+    events = await stream(client, "/api/builder/chat",
+                          {"message": "Point the Patient chat channel at the Triage agent"})
+
+    said = _summary(events)
+    assert said == ("I can't make that change from here: it isn't one of the changes I can make. You can do it on "
+                    "its own page.")
+    assert "ended without calling" not in json.dumps(events)
+    assert not [e for e in events if e.get("type") in ("orchestration_error", "step_error")]

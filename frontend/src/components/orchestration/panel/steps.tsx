@@ -188,7 +188,11 @@ function FinishTools({ step, update, agents, availableTools }: StepSectionProps)
                     size="sm"
                     aria-label="How the step finishes"
                     value={byTool ? 'tool' : 'reply'}
-                    onChange={(v) => update({ finish_tools: v === 'tool' ? (offered[0] ? [offered[0]] : []) : undefined })}
+                    onChange={(v) => update(v === 'tool'
+                        ? { finish_tools: offered[0] ? [offered[0]] : [] }
+                        // What it ends with otherwise (F958) means nothing with no finish tools: the save
+                        // would refuse it.
+                        : { finish_tools: undefined, finish_fallback: undefined })}
                     options={[
                         { value: 'reply', label: 'With its reply', hint: 'The agent’s answer in words is the output' },
                         { value: 'tool', label: 'By calling a tool', hint: 'The tool’s result, an object, is the output' },
@@ -199,7 +203,8 @@ function FinishTools({ step, update, agents, availableTools }: StepSectionProps)
                 <div data-testid="finish-tools">
                     <KeyChips
                         value={chosen}
-                        onChange={(names) => update({ finish_tools: names.length ? names : undefined })}
+                        onChange={(names) => update(names.length ? { finish_tools: names }
+                            : { finish_tools: undefined, finish_fallback: undefined })}
                         suggestions={offered}
                         inputLabel="Add a tool it finishes with"
                         placeholder="Add a tool by name…"

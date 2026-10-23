@@ -231,6 +231,40 @@ class TestInAWorkflow:
         assert "submit_plan" in said
 
 
+    async def test_a_fallback_is_the_output_when_it_still_answers_in_words(self, fake_llm, monkeypatch):
+        """F958 (P2's dev after-pass, chg-05): a request outside what the change planner can propose had it answer in
+        words twice, the step failed, and the person read the engine's sentence. A step may name the object it ends
+        with then (`finish_fallback`, off by default): code's output, marked as the fallback, never the words."""
+        from core.models_orchestration import Orchestration
+        from core.orchestration.engine import OrchestrationEngine
+        import core.react_engine as re_mod
+
+        real = re_mod.run_agent_step
+
+        def with_tools(*args, **kwargs):
+            kwargs.update(tools_override=[SUBMIT], tool_executor=_Tools())
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(re_mod, "run_agent_step", with_tools)
+        agent = S.make_agent(id="agent_e2b", tools=["submit_plan"], skip_default_tools=True)
+        await S.seed_agents([agent])
+        orch = S.make_orchestration(id="orch_e2b", entry_step_id="plan", steps=[
+            {"id": "plan", "name": "Plan", "type": "agent", "agent_id": "agent_e2b", "prompt_template": "plan it",
+             "finish_tools": ["submit_plan"], "finish_fallback": {"finish": "cannot"}, "output_key": "plan",
+             "next_step_id": None}])
+        await S.seed_orchestrations([orch])
+        fake_llm.script(["A plan in words.", "Still words."])
+
+        events = [e async for e in OrchestrationEngine(
+            Orchestration.model_validate(orch),
+            types.SimpleNamespace(agent_sessions={"x": object()}, memory_store=None, tool_router={})).run(
+            "go", run_id="run_e2b")]
+
+        done = [e for e in events if e.get("type") == "orchestration_complete"]
+        assert done[-1]["status"] == "completed"
+        assert done[-1]["final_state"]["plan"] == {"finish": "cannot", "fallback": True}
+
+
 class TestOnlyAnAgentStepTakesThem:
     def test_finish_tools_on_another_step_type_are_refused(self):
         from pydantic import ValidationError
@@ -240,6 +274,16 @@ class TestOnlyAnAgentStepTakesThem:
         with pytest.raises(ValidationError, match="finish_tools"):
             StepConfig(id="l", name="L", type="llm", finish_tools=["x"])
         assert StepConfig(id="a", name="A", type="agent", finish_tools=["x"]).finish_tools == ["x"]
+
+    def test_a_fallback_needs_finish_tools(self):
+        from pydantic import ValidationError
+
+        from core.models_orchestration import StepConfig
+
+        with pytest.raises(ValidationError, match="finish_fallback"):
+            StepConfig(id="a", name="A", type="agent", finish_fallback={"finish": "cannot"})
+        step = StepConfig(id="a", name="A", type="agent", finish_tools=["x"], finish_fallback={"finish": "x"})
+        assert step.finish_fallback == {"finish": "x"}
 
     def test_the_validator_wants_them_among_the_agents_tools(self):
         from core.builder_tools import _validate_orchestration

@@ -69,6 +69,9 @@ export interface StepConfig {
 
     /** AGENT — the tools the step finishes with (E2); its output is that call's result. Unset: its reply. */
     finish_tools?: string[];
+    /** AGENT — the step's output when it still answers in words after its reminder (F958), marked `fallback`. Only
+     *  with finish_tools; unset, such a step fails as before. */
+    finish_fallback?: Record<string, unknown>;
 
     // TOOL — forced single tool call
     forced_tool?: string;

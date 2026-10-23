@@ -1241,6 +1241,9 @@
                 "ask_person",
                 "cannot"
             ],
+            "finish_fallback": {
+                "finish": "cannot"
+            },
             "next_step_id": "step_check_change"
         },
         {

@@ -491,6 +491,10 @@ class AgentStepExecutor:
                 from core.boards import resolve as _board_resolve
                 await _board_resolve.release(board_holder, settings=None, why="the step ended")
 
+        if no_answer is not None and no_answer.get("why") == "no_finish" and step.finish_fallback is not None:
+            # It answered in words after its reminder, and the step says what it ends with then (F958): code's object,
+            # marked so, never the agent's words as if they were its finish.
+            final_response, no_answer = {**step.finish_fallback, "fallback": True}, None
         if no_answer is not None:
             # A turn that ended without an answer fails the step with why, as a
             # failed child, an exhausted route or a loop over its cap does: in
