@@ -8,7 +8,9 @@ builder's words in a 422.
 """
 from _fakes import seed as S
 
-SPLIT = "'urgent' if 'urgent' in str(state.classification).lower().splitlines()[-1] else 'routine'"
+# QA1b's expression used `.splitlines()`; F957 offers it now, so the refused example is a method that stays out
+# (`.zfill`: its size is the caller's). The rule tested is the same.
+SPLIT = "'urgent' if 'urgent' in str(state.classification).lower().zfill(9) else 'routine'"
 
 
 def _routed(oid, expression):
@@ -45,7 +47,7 @@ class TestTheEditorsSave:
         assert resp.status_code == 422, resp.text
         detail = resp.json()["detail"]
         assert detail.startswith("Refusing to save:")
-        assert "step 'step_route' switch_expression: .splitlines(…) is not one of the methods available here" in detail
+        assert "step 'step_route' switch_expression: .zfill(…) is not one of the methods available here" in detail
         assert (await client.get("/api/orchestrations/orch_f850_save")).status_code == 404
 
     async def test_an_expression_it_runs_saves(self, client):

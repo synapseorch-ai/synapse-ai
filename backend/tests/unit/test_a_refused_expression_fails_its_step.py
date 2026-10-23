@@ -15,8 +15,10 @@ import types
 import pytest
 from _fakes import seed as S
 
-SPLIT = "'urgent' if 'urgent' in str(state.classification).lower().splitlines()[-1] else 'routine'"
-REFUSED = ".splitlines(…) is not one of the methods available here"
+# QA1b's expression used `.splitlines()`; F957 offers it now, so the refused example is a method that stays out
+# (`.zfill`: its size is the caller's). The rule tested is the same.
+SPLIT = "'urgent' if 'urgent' in str(state.classification).lower().zfill(9) else 'routine'"
+REFUSED = ".zfill(…) is not one of the methods available here"
 
 
 def _server():
@@ -67,7 +69,7 @@ def _switch(expression):
 
 class TestARefusedExpression:
     async def test_an_if_else_fails_and_takes_neither_branch(self):
-        events = await _run(_if_else("str(state.classification).splitlines() == []"),
+        events = await _run(_if_else("str(state.classification).zfill(9) == ''"),
                             initial_state={"classification": "urgent"})
 
         assert _status(events) == "failed"
@@ -85,9 +87,9 @@ class TestARefusedExpression:
         assert not _reached(events, "routine")
 
     @pytest.mark.parametrize(("field", "expr", "words"), [
-        ("loop_over", "state.items.splitlines()", "Loop's list"),
-        ("loop_while_condition", "state.items.splitlines() != []", "Loop's while condition"),
-        ("loop_break_condition", "state.items.splitlines() == []", "Loop's break condition"),
+        ("loop_over", "state.items.zfill(9)", "Loop's list"),
+        ("loop_while_condition", "state.items.zfill(9) != ''", "Loop's while condition"),
+        ("loop_break_condition", "state.items.zfill(9) == ''", "Loop's break condition"),
     ])
     async def test_a_loop_fails_on_any_of_its_three(self, field, expr, words):
         loop = {"id": "loop1", "name": "Each", "type": "loop", "loop_step_ids": ["body"],

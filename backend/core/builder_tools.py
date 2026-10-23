@@ -271,12 +271,14 @@ def _refuse_unsafe_expression(steps: list) -> dict | None:
     problems = _expression_problems(steps, unsafe_only=True)
     if not problems:
         return None
+    from core.expressions import vocabulary_sentence
+
     return {
         "error": (
             "Refusing to save: an expression uses something this engine will not run. "
             + " ".join(problems)
-            + " An expression reads `state` with dots, compares and combines values, "
-            "and may call str/int/len and the common string methods — nothing else."
+            # What it may use, from the tables that decide it (F957).
+            + " " + vocabulary_sentence()
         )
     }
 

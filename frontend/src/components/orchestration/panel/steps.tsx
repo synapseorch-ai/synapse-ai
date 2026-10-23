@@ -17,6 +17,7 @@ import {
     KeyChips, LocalInput, ModelSelect, Note, StateKeyHelper, StepTargetSelect, intOrUndefined,
     type KnowledgeBaseOption, type StepSectionProps, type WorkflowOption,
 } from './shared';
+import { ExpressionVocabulary } from './ExpressionVocabulary';
 import { PythonEditor } from './PythonEditor';
 import { agentKind, agentOptions, memberNames, teamSettings, type KindAgent } from '../agentKind';
 import { HUMAN_FIELD_TYPES, humanFieldOptions, humanFieldType } from '../humanFields';
@@ -820,6 +821,8 @@ function LoopSection({ step, update, otherSteps }: StepSectionProps) {
                     onCommit={(v) => update({ loop_break_condition: v || undefined })}
                 />
             </Field>
+            {/* The collection, while and break fields are all expressions (F957). */}
+            <ExpressionVocabulary />
 
             <Field label="Max iterations" hint="Hard ceiling, whichever mode is used">
                 <Input
@@ -1110,6 +1113,7 @@ function IfElseSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                     placeholder="state.result.flag == True"
                 />
             </Field>
+            <ExpressionVocabulary />
             <StateKeyHelper stateKeys={stateKeys} onInsert={(token) => update({ if_condition: ((step.if_condition || '') + ' ' + token).trimStart() })} />
             <Field label="True path">
                 <StepTargetSelect
@@ -1147,6 +1151,7 @@ function SwitchSection({ step, update, otherSteps, stateKeys }: StepSectionProps
                     placeholder="state.result.status"
                 />
             </Field>
+            <ExpressionVocabulary />
             <StateKeyHelper stateKeys={stateKeys} onInsert={(token) => update({ switch_expression: ((step.switch_expression || '') + ' ' + token).trimStart() })} />
             <div className="space-y-2">
                 <span className="block text-sm font-medium text-text">Cases <span className="text-xs font-normal text-text-faint">(value → target step)</span></span>

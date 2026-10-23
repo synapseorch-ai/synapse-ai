@@ -160,13 +160,55 @@ def _raw(value: Any) -> Any:
 
 _STATE = 'state'
 
-#: The eleven callables, carried over unchanged. The `'None'/'True'/'False'`
-#: entries the old namespace also held were dead weight: since 3.8 those parse
-#: to `ast.Constant` and are never looked up as names.
+def _items(value: Any, name: str) -> list | tuple | str:
+    """What `sorted`/`sum`/`reversed`/`enumerate` walk: a list, tuple or text, a
+    dict's keys — never more than `_MAX_ITEMS` of them (F957, under F965's caps)."""
+    value = _raw(value)
+    if isinstance(value, dict):
+        value = list(value)
+    if not isinstance(value, (list, tuple, str)):
+        raise TypeError(f'{name}(…) takes a list, a tuple or text')
+    if len(value) > _MAX_ITEMS:
+        raise ExpressionRefused(
+            f'{name}(…) of {len(value):,} items; an expression may take at most {_MAX_ITEMS:,}')
+    return value
+
+
+def _sorted(items: Any) -> list:
+    """No `key`: keyword arguments are refused, and a key is a callable."""
+    return sorted(_items(items, 'sorted'))
+
+
+def _sum(*args: Any) -> int | float:
+    """Numbers only, and no start: `sum(lists, [])` copies quadratically."""
+    if len(args) != 1:
+        raise ExpressionRefused('sum(…) takes one list of numbers, and no start')
+    items = _items(args[0], 'sum')
+    if not all(type(x) in (int, float, bool) for x in items):
+        raise ExpressionRefused('sum(…) adds numbers only')
+    return sum(items)
+
+
+def _reversed(items: Any) -> list:
+    """A list, not an iterator: plain data only."""
+    return list(reversed(_items(items, 'reversed')))
+
+
+def _enumerate(items: Any) -> list:
+    """A list of `(index, item)` pairs, not an iterator: plain data only."""
+    return list(enumerate(_items(items, 'enumerate')))
+
+
+#: The callables an expression may name. The first eleven were carried over from
+#: the old namespace; `sorted`, `sum`, `any`, `all`, `reversed` and `enumerate`
+#: came with F957, each returning plain data and walking at most `_MAX_ITEMS`
+#: (REL2's review, 2026-10-24). `range` stays out: its size is the caller's.
 _FUNCS = {
     'len': len, 'int': int, 'float': float, 'str': str,
     'bool': bool, 'list': list, 'dict': dict, 'abs': abs,
     'min': min, 'max': max, 'round': round,
+    'sorted': _sorted, 'sum': _sum, 'any': any, 'all': all,
+    'reversed': _reversed, 'enumerate': _enumerate,
 }
 
 #: Keyed by (exact type, name) and holding the *unbound* function, which is what
@@ -180,7 +222,11 @@ _METHODS: dict[tuple[type, str], Any] = {
         (str, (
             'lower upper strip lstrip rstrip startswith endswith split rsplit '
             'join replace count find title capitalize casefold isdigit isalpha '
-            'isnumeric removeprefix removesuffix'
+            'isnumeric removeprefix removesuffix '
+            # F957: read-only, plain-data results; `splitlines` is sized first like `split`.
+            # `format`/`format_map` reach attributes and the padding methods' size is the
+            # caller's: they stay out.
+            'splitlines partition rpartition isupper islower isspace isalnum index rfind rindex'
         ).split()),
         (dict, ('get', 'keys', 'values', 'items')),
         (list, ('index', 'count')),
@@ -372,7 +418,7 @@ def _guard_repeat(left: Any, right: Any) -> None:
 #: Functions that walk their arguments (counted against the budget); `len`, `abs`,
 #: `bool`, `int`, `float` and `round` do not. Methods walk their receiver, but for
 #: these three, which look at one end or one key.
-_SCANNING = frozenset({min, max, list, dict, str})
+_SCANNING = frozenset({min, max, list, dict, str, _sorted, _sum, any, all, _reversed, _enumerate})
 _CONSTANT_TIME = frozenset({'startswith', 'endswith', 'get'})
 
 
@@ -404,6 +450,18 @@ def _join_size(receiver: str, args: list) -> tuple[int, int]:
 
 
 _WORD = re.compile(r"\S+")
+#: What `str.splitlines` breaks on; `\r\n` is one break.
+_LINE_BREAKS = '\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029'
+
+
+def _splitlines_items(receiver: str) -> int:
+    """Lines `splitlines` would make, counted before it makes them (F957): each
+    break character counted in C, a `\r\n` once. At most one more than the
+    breaks, which is the bound that matters."""
+    if len(receiver) <= _MAX_ITEMS:
+        return len(receiver)  # a bound: a line holds at least one character or break
+    breaks = sum(receiver.count(ch) for ch in _LINE_BREAKS) - receiver.count('\r\n')
+    return breaks + 1
 
 
 def _split_items(receiver: str, args: list) -> int:
@@ -540,7 +598,7 @@ class _Walk:
 
     def _presize(self, name: str, receiver: Any, args: list) -> None:
         """Refuse a method whose result would be too big, before it is made (F965)."""
-        if not isinstance(receiver, str) or not args and name not in ('split', 'rsplit'):
+        if not isinstance(receiver, str) or not args and name not in ('split', 'rsplit', 'splitlines'):
             return
         if name == 'replace' and len(args) >= 2:
             size = _replace_size(receiver, args)
@@ -556,8 +614,8 @@ class _Walk:
                     f'.join(…) would make {size:,} characters; an expression may make '
                     f'at most {max(_MAX_ITEMS, read):,}')
             self._spend(read + size)
-        elif name in ('split', 'rsplit'):
-            items = _split_items(receiver, args)
+        elif name in ('split', 'rsplit', 'splitlines'):
+            items = _splitlines_items(receiver) if name == 'splitlines' else _split_items(receiver, args)
             if items > _MAX_ITEMS:
                 raise ExpressionRefused(
                     f'.{name}(…) would make {items:,} items; an expression may make '
@@ -642,6 +700,34 @@ _DISPATCH = {
     ast.IfExp: _Walk._ifexp, ast.Tuple: _Walk._tuple,
     ast.List: _Walk._list, ast.Set: _Walk._set, ast.Dict: _Walk._dict,
 }
+
+
+# ── What an expression may use, said once (F957) ─────────────────────────────
+
+_TYPE_WORDS = {str: 'text', dict: 'a dict', list: 'a list', tuple: 'a tuple'}
+
+
+def vocabulary() -> dict:
+    """The functions and methods an expression may call, from the tables that
+    decide it: what the editor shows under an expression field and what the
+    builder is told, so neither can say otherwise."""
+    methods: dict[str, list[str]] = {}
+    for (kind, name) in _METHODS:
+        methods.setdefault(kind.__name__, []).append(name)
+    return {
+        'functions': sorted(_FUNCS),
+        'methods': {kind: sorted(names) for kind, names in methods.items()},
+    }
+
+
+def vocabulary_sentence() -> str:
+    """`vocabulary()` in one sentence, for a refusal and a prompt."""
+    vocab = vocabulary()
+    parts = [f"on {_TYPE_WORDS[kind]}: " + ", ".join(f".{m}" for m in names)
+             for kind, names in vocab['methods'].items()
+             for kind in [next(t for t in _TYPE_WORDS if t.__name__ == kind)]]
+    return ("An expression reads `state` with dots, compares and combines values, and may call "
+            + ", ".join(vocab['functions']) + "; and the methods " + "; ".join(parts) + ".")
 
 
 # ── The three questions callers ask ──────────────────────────────────────────

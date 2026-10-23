@@ -87,10 +87,11 @@ def refusal(orch: dict, agents: dict) -> str | None:
     unsafe = expression_problems(orch.get("steps") or [], unsafe_only=True)
     parts = []
     if unsafe:
+        from core.expressions import vocabulary_sentence
+
         parts.append(
             "An expression uses something this engine will not run. " + " ".join(p.rstrip(".") + "." for p in unsafe)
-            + " An expression reads `state` with dots, compares and combines values, "
-            "and may call str/int/len and the common string methods — nothing else."
+            + " " + vocabulary_sentence()  # what it may use, from the tables that decide it (F957)
         )
     parts += self_calls(orch, agents)
     if not parts:
