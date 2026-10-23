@@ -173,3 +173,34 @@ async def test_a_change_the_planner_has_no_op_for_is_said_in_our_words(client, b
     assert said == "I couldn't turn that into a change I can make here. Say it another way, or do it on its own page."
     assert "ended without calling" not in json.dumps(events)
     assert not [e for e in events if e.get("type") in ("orchestration_error", "step_error")]
+
+
+async def test_a_name_given_before_a_pick_survives_both_pauses(client, builder, fake_llm):
+    """SAI2's re-check of F960 (1): what the person answered is kept on the run across its pauses, not only in one
+    process's memory. Asked the name, they say "Morning digest"; two workflows match, so a pick pauses it again; their
+    "the second one" must not leave the name they gave out as unasked."""
+    from core.store.resources import load_orchestrations, save_orchestration
+    from tests._fakes.seed import make_orchestration
+
+    for oid, name in (("orch_nd_sales", "Nightly digest for sales"), ("orch_nd_support", "Nightly digest for support")):
+        await save_orchestration(make_orchestration(id=oid, name=name))
+    rename = {"op": "rename_workflow", "fields": {"name": "Morning digest"}}
+    fake_llm.script([route("manage"), tool_call("ask_person", question="What should it be called?", about="what")])
+    first = await stream(client, "/api/builder/chat", {"message": "rename the nightly digest"})
+    run_id = next(e for e in first if e["type"] == "human_input_required")["run_id"]
+
+    fake_llm.reset()
+    fake_llm.script([tool_call("submit_change", ops=[{**rename, "target": {"kind": "workflow",
+                                                                           "name": "Nightly digest"}}])])
+    second = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"answer": "Morning digest"}})
+    assert "Which one do you mean?" in next(e for e in second if e["type"] == "human_input_required")["prompt"]
+
+    fake_llm.reset()
+    fake_llm.script([tool_call("submit_change", ops=[{**rename, "target": {"kind": "workflow",
+                                                                           "id": "orch_nd_support"}}])])
+    third = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"answer": "the second one"}})
+    [review] = [e for e in third if e["type"] == "human_input_required"]
+    assert review["orch_step_id"] == "step_manage_review", review
+    assert 'Rename the workflow "Nightly digest for support" — to "Morning digest"' in review["prompt"]
+    assert [o["name"] for o in await load_orchestrations() if o["id"] == "orch_nd_support"] == [
+        "Nightly digest for support"], "nothing is renamed before the yes"
