@@ -20,7 +20,8 @@ export type BoardSummary = {
     id: string | null;
     scope: BoardScope;
     scope_id: string;
-    /** A shared board's name; a workflow's or a schedule's name for its own board. */
+    /** A shared board's name; a workflow's or a schedule's name for its own board, said as deleted when its
+     *  workflow or schedule is gone ("Invoice chaser (deleted workflow)", never an id: F872). */
     name: string;
     description: string;
     created_by: Actor;

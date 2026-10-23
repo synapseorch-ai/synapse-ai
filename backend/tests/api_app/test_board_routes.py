@@ -85,6 +85,32 @@ class TestTheBoardsList:
         assert (rows[wf.id]["open"], rows[wf.id]["claimed"]) == (1, 1)
         assert body["shared_used"] == 1 and body["shared_limit"] is None
 
+    async def test_a_deleted_workflows_board_keeps_its_name(self, on, world):
+        """F872 (QA1d): it was listed as "orch_01a163fc… (deleted)", its raw id. Self-hosted deletes the workflow's
+        row, and its runs keep its definition (F443), so its newest run names it."""
+        from core.store import session
+        from core.store.models import OrchestrationRunDB
+        from core.store.resources import delete_orchestration
+
+        wf = await store.get_or_create_scoped_board("workflow", "wf_triage")
+        async with session() as s:
+            s.add(OrchestrationRunDB(run_id="run_f872", orchestration_id="wf_triage", status="completed",
+                                     shared_state={}, step_history=[],
+                                     definition={"id": "wf_triage", "name": "Invoice triage"}))
+        await delete_orchestration("wf_triage")
+        row = {b["id"]: b for b in (await on.get("/api/boards")).json()["boards"]}[wf.id]
+        assert row["owner_gone"] is True
+        assert row["name"] == "Invoice triage (deleted workflow)"
+
+    async def test_a_gone_owner_never_shows_its_id(self, on, world):
+        """Nothing kept its name (a schedule's row is deleted with it; a workflow never run): said in words."""
+        wf = await store.get_or_create_scoped_board("workflow", "orch_01a163fcc773")
+        sch = await store.get_or_create_scoped_board("schedule", "sch_01a163fcc774")
+        rows = {b["id"]: b for b in (await on.get("/api/boards")).json()["boards"]}
+        assert rows[wf.id]["name"] == "A deleted workflow's board"
+        assert rows[sch.id]["name"] == "A deleted schedule's board"
+        assert not any("01a163fcc77" in b["name"] for b in rows.values())
+
     async def test_a_deleted_workflows_board_says_so_and_can_go(self, on, world):
         from core.store.resources import delete_orchestration
 

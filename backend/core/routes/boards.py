@@ -84,7 +84,33 @@ async def _directory():
     workflows = {str(o["id"]): str(o.get("name") or o["id"]) for o in await load_orchestrations() if o.get("id")}
     rows = {str(s["id"]): {"name": s.get("name") or s["id"], "target_type": s.get("target_type") or "agent",
                            "target_id": s.get("target_id")} for s in await schedules.load() if s.get("id")}
-    return Directory(agents=agents, workflows=workflows, schedules=rows)
+    return Directory(agents=agents, workflows=workflows, schedules=rows, gone=await _gone_workflows(set(workflows)))
+
+
+async def _gone_workflows(live: set[str]) -> dict[tuple[str, str], str]:
+    """A deleted workflow's last name, for its board (F872). Self-hosted deletes the workflow's row; its runs keep
+    the definition they ran (F443), so the newest names it."""
+    from sqlalchemy import select
+
+    from core.store import boards as board_store, session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    ids = {b.scope_id for b in await board_store.list_boards("workflow") if b.scope_id and b.scope_id not in live}
+    if not ids:
+        return {}
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.orchestration_id, OrchestrationRunDB.definition)
+            .where(OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.orchestration_id.in_(ids),
+                   OrchestrationRunDB.definition.is_not(None))
+            .order_by(OrchestrationRunDB.created_at))).all()
+    names: dict[tuple[str, str], str] = {}
+    for orch_id, definition in rows:   # oldest first, so the newest run's name stands
+        name = definition.get("name") if isinstance(definition, dict) else None
+        if name:
+            names[("workflow", orch_id)] = str(name)
+    return names
 
 
 async def _current_run(board) -> dict[str, Any] | None:

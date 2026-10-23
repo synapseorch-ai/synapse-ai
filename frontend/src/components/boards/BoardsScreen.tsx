@@ -145,7 +145,7 @@ function BoardLink({ board, current, onPick }: { board: BoardSummary; current: b
                     'hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-accent',
                     current ? 'bg-surface-2 font-medium text-text' : 'text-text-muted',
                 )}>
-                <span className="min-w-0 flex-1 truncate">{board.owner_gone ? `${board.name} (deleted)` : board.name}</span>
+                <span className="min-w-0 flex-1 truncate">{board.name}</span>
                 <span className="shrink-0 font-mono text-2xs tabular-nums text-text-faint">{live}</span>
             </button>
         </li>

@@ -45,6 +45,8 @@ class Directory:
     agents: dict[str, str] = field(default_factory=dict)
     workflows: dict[str, str] = field(default_factory=dict)
     schedules: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The last names of owners that are gone, by (kind, id): a deleted workflow's board says whose it was (F872).
+    gone: dict[tuple[str, str], str] = field(default_factory=dict)
 
     def name_of(self, kind: str, principal_id: str) -> str | None:
         if kind == "agent":
@@ -65,7 +67,10 @@ def _board_out(board: store.Board, directory: Directory, counts: tuple[int, int]
     if board.scope != "shared":
         owner = directory.name_of(board.scope, board.scope_id)
         gone = owner is None
-        out["name"] = owner or board.scope_id
+        # Never its owner's raw id (F872): the owner's last name, or what it was, in words.
+        last = directory.gone.get((board.scope, board.scope_id)) if gone else None
+        out["name"] = (owner if not gone else f"{last} (deleted {board.scope})" if last
+                       else f"A deleted {board.scope}'s board")
     out.update(owner_gone=gone, open=counts[0], claimed=counts[1])
     return out
 

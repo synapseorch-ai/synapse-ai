@@ -172,7 +172,7 @@ export function BoardView({ boardRef, layout = 'page', onDeleted, onChanged }: {
                 <header className="flex flex-wrap items-start gap-3">
                     <div className="min-w-0 flex-1">
                         <h3 className="truncate text-lg font-semibold tracking-[-0.01em] text-text">
-                            {board.owner_gone ? `${board.name} (deleted ${board.scope})` : board.name}
+                            {board.name}
                         </h3>
                         <p className="text-sm text-text-muted">
                             {shared ? (board.description || 'A shared board: only what its list names can use it.')
