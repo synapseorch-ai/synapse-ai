@@ -23,6 +23,7 @@ export function HelpButton({ className }: { className?: string }) {
             aria-expanded={help.open}
             onClick={() => help.setOpen(true)}
             className={className}
+            data-tour="help"
         />
     );
 }

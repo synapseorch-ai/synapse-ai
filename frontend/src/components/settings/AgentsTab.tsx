@@ -506,7 +506,7 @@ export const AgentsTab = ({
             />
 
             {/* ── The list ─────────────────────────────────────────────── */}
-            <aside aria-label="Your agents" className="flex max-h-[40vh] shrink-0 flex-col border-b border-border md:max-h-none md:w-64 md:border-b-0 md:border-r">
+            <aside aria-label="Your agents" data-tour="agents-list" className="flex max-h-[40vh] shrink-0 flex-col border-b border-border md:max-h-none md:w-64 md:border-b-0 md:border-r">
                 {Array.isArray(agents) && agents.length > 4 && (
                     <div className="px-3 pb-2 pt-3">
                         <SearchInput

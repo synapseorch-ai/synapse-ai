@@ -225,7 +225,7 @@ export function AgentsScreen() {
             actions={(
                 // New agent, and beside it the other way to make one: describe it
                 // and let the AI write it (it was the list's sparkle; Naveen, M2d).
-                <div className="flex items-center">
+                <div className="flex items-center" data-tour="agents-new">
                     <Button size="sm" onClick={newAgent} aria-label="Create New Agent" title="Create New Agent" className="rounded-r-none">
                         <Plus className="size-4" aria-hidden /> New agent
                     </Button>

@@ -45,6 +45,21 @@ export type HelpTopic = {
     guide: string;
 };
 
+/**
+ * One stop of a page's guided tour (GUIDE1, D318, F919): the part it lights up, named by its `data-tour` anchor,
+ * and what that part is for. Naveen: "a highlighter will highlight a section and explain what we can do with this
+ * ... and they just click next".
+ */
+export type TourStep = {
+    /** The `data-tour` value on the element (a kit prop may set it; `test_every_tour_step_has_its_anchor`). */
+    anchor: string;
+    title: string;
+    body: string;
+};
+
+/** A page's tour. Raising `version` shows it once more to people who saw the old one. */
+export type Tour = { version: number; steps: TourStep[] };
+
 export type HelpHost = {
     /** The docs site, with no trailing slash. */
     docsBase: string;
@@ -55,6 +70,8 @@ export type HelpHost = {
     topicFor: (pathname: string) => string | null;
     /** A topic id that always exists: what the panel says on a page it has no topic for. */
     fallback: string;
+    /** Guided tours, keyed by topic id: shown once on a page's first visit, and again from the "?" panel. */
+    tours?: Record<string, Tour>;
 };
 
 export const DOCS_BASE = 'https://docs.synapseorch.com';
@@ -76,6 +93,9 @@ export type HelpState = {
     /** The topic the panel shows now, and its id. */
     topicId: string;
     topic: HelpTopic | undefined;
+    /** This page's tour, when it has one, and a way to run it now (the panel's "Take the tour"). */
+    tour: Tour | undefined;
+    startTour: () => void;
 };
 
 /** `null` outside a `HelpProvider`, which is how the "?" knows not to draw itself. */

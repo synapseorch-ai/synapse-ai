@@ -10,11 +10,13 @@
  * and it is drawn only once its still has loaded, so one that fails, or is not
  * published yet, never shows a frame at all (F900). Under reduced motion a clip is shown as its still, and the clip
  * itself is never fetched.
+ *
+ * A page with a guided tour (GUIDE1, F919) offers it again here: "Take the tour" closes the panel and runs it.
  */
 import { Pause, Play } from 'lucide-react';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
-import { Drawer, TextLink, buttonStyles } from '@/components/ui';
+import { Button, Drawer, TextLink, buttonStyles } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { useHelp, type HelpMedia } from './host';
@@ -22,7 +24,7 @@ import { useHelp, type HelpMedia } from './host';
 export function HelpPanel() {
     const help = useHelp();
     if (!help?.topic) return null;
-    const { host, open, setOpen, topic } = help;
+    const { host, open, setOpen, topic, tour, startTour } = help;
     return (
         <Drawer
             open={open}
@@ -30,16 +32,19 @@ export function HelpPanel() {
             title={topic.title}
             description={topic.summary}
             footer={
-                <TextLink
-                    external
-                    href={`${host.docsBase}${topic.guide}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm font-medium"
-                >
-                    Read the guide <span aria-hidden>→</span>
-                    <span className="sr-only"> (opens in a new tab)</span>
-                </TextLink>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <TextLink
+                        external
+                        href={`${host.docsBase}${topic.guide}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-sm font-medium"
+                    >
+                        Read the guide <span aria-hidden>→</span>
+                        <span className="sr-only"> (opens in a new tab)</span>
+                    </TextLink>
+                    {tour && <Button size="sm" variant="secondary" onClick={startTour}>Take the tour</Button>}
+                </div>
             }
         >
             <div className="space-y-5">

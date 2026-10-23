@@ -9,6 +9,7 @@
 import { DEFAULT_HELP_HOST, type HelpHost } from '@/components/help';
 import { HELP_FALLBACK, HELP_TOPICS } from '@/lib/help';
 import { navEntryFor } from '@/lib/nav';
+import { TOURS } from '@/lib/tours';
 
 export const ossHelpHost: HelpHost = {
     ...DEFAULT_HELP_HOST,
@@ -18,4 +19,5 @@ export const ossHelpHost: HelpHost = {
         return id && HELP_TOPICS[id] ? id : null;
     },
     fallback: HELP_FALLBACK,
+    tours: TOURS,
 };

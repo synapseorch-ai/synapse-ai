@@ -1797,13 +1797,13 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                 actions={
                     <>
                         {/* On a phone the two secondary actions are their icons, named; the row must fit 400 px. */}
-                        <LinkButton href="/templates" variant="secondary" aria-label="Templates">
+                        <LinkButton href="/templates" variant="secondary" aria-label="Templates" data-tour="workflows-templates">
                             <LayoutTemplate className="size-4" aria-hidden /> <span className="hidden sm:inline">Templates</span>
                         </LinkButton>
-                        <Button variant="secondary" onClick={() => openBuilder()} aria-label="Build with AI">
+                        <Button variant="secondary" onClick={() => openBuilder()} aria-label="Build with AI" data-tour="workflows-build">
                             <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
                         </Button>
-                        <Button onClick={createNew}>
+                        <Button onClick={createNew} data-tour="workflows-new">
                             <Plus className="size-4" aria-hidden /> New workflow
                         </Button>
                     </>
@@ -1838,7 +1838,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     )}
 
                     {/* The list and its run views, as the runs list's pills (M2b). */}
-                    <div role="group" aria-label="Show" className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1 py-0.5 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:p-0">
+                    <div role="group" aria-label="Show" data-tour="workflows-views" className="-mx-1 flex items-center gap-1.5 overflow-x-auto px-1 py-0.5 sm:mx-0 sm:flex-wrap sm:overflow-visible sm:p-0">
                         {views.map(v => (
                             <button
                                 key={v.id}
