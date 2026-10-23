@@ -449,7 +449,8 @@ async def acting_tool(name: str, server_module: Any, custom: list | None = None)
 
 async def unapproved(workflows: list[dict], agents: dict[str, dict], server_module: Any, *,
                      made_agents: set[str], exempt: set[str], strict: bool = True,
-                     own_steps: set[str] | None = None) -> tuple[list[str], list[str]]:
+                     own_steps: set[str] | None = None,
+                     to_make: dict[str, str] | None = None) -> tuple[list[str], list[str]]:
     """`(issues, warnings)`: tools that change something outside this workspace and can run with nobody approving.
 
     An approval is a Human step before a tool step on every path from the entry, or the agent's own policy asking
@@ -469,6 +470,12 @@ async def unapproved(workflows: list[dict], agents: dict[str, dict], server_modu
     warnings: list[str] = []
 
     async def acting(name: str):
+        if name in (to_make or {}):
+            # A tool the build makes after the yes (F944): not here to read yet, so held by its method, as its tags
+            # will be: a GET only reads; anything else acts and is approved like any tool that acts.
+            from types import SimpleNamespace
+
+            return None if to_make[name] == "GET" else SimpleNamespace(name=name, annotations=None, trusted=True)
         return await acting_tool(name, server_module, custom)
 
     def say(message: str, own: bool) -> None:

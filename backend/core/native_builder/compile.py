@@ -303,6 +303,9 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
 
 async def validate(compiled: Compiled, plan: Plan, server_module: Any,
                    existing_agents: dict[str, dict] | None = None, *, own_steps: set[str] | None = None) -> list[str]:
+    # A read API's tools the build makes after the yes, by method: held to decision 4 now, not after (F944).
+    to_make = {t.name: str((t.api or {}).get("endpoint", {}).get("method") or "POST").upper()
+               for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api}
     """The checks that need the workspace, over the workflow and its inner ones: a tool nothing provides on a step
     (F489), set arguments that do not fit their tool (E1), and BWA1's decision 4 — nothing that changes something
     outside runs with nobody approving it, except what the Plan's "acts without asking" lets act. The issues are
@@ -318,9 +321,10 @@ async def validate(compiled: Compiled, plan: Plan, server_module: Any,
     # `own_steps` scopes an update's own workflow only: a build's inner workflows are new, so wholly its own (SAI2's
     # re-check of blocker 1).
     gaps, gap_warnings = await builder_guard.unapproved(
-        workflows[:1], agents, server_module, made_agents=made, exempt=exempt, strict=True, own_steps=own_steps)
+        workflows[:1], agents, server_module, made_agents=made, exempt=exempt, strict=True, own_steps=own_steps,
+        to_make=to_make)
     inner_gaps, inner_warnings = await builder_guard.unapproved(
-        workflows[1:], agents, server_module, made_agents=made, exempt=exempt, strict=True)
+        workflows[1:], agents, server_module, made_agents=made, exempt=exempt, strict=True, to_make=to_make)
     gaps, gap_warnings = [*gaps, *inner_gaps], [*gap_warnings, *inner_warnings]
     added = [*found, *gaps]
     compiled.issues += added

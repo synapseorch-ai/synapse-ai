@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from core.builder_tools import register_builder_tool
@@ -116,7 +117,8 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
     from core.native_builder.compile import compile_plan
 
     compiled = compile_plan(plan, mint=placeholder_mint(), orch_id=_orch_id(plan, state))
-    calls: list[dict] = []
+    # A read API's tools first (F944): `step_make_tools` makes them, and the person connects them, before the rest.
+    calls: list[dict] = [_tool_call(t) for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api]
     for agent in sorted(compiled.agents, key=lambda a: a.get("type") == "delegate"):  # members before their team
         args: dict[str, Any] = {"name": agent["name"], "description": agent.get("description") or "",
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
@@ -144,6 +146,34 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
                       "args": {k: v for k, v in compiled.schedule.items() if k in _SCHEDULE_ARGS and v is not None},
                       "makes": None, "kind": "schedule", "name": compiled.schedule["name"]})
     return calls
+
+
+#: A host part a made tool keeps until its Connect card fills it: never filled from arguments (A8).
+def _unfilled(base_url: str) -> str:
+    return re.sub(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", lambda m: f"__{m.group(1).lower()}__", base_url, count=1)
+
+
+def _tool_call(status: O.ToolStatus) -> dict:
+    """One endpoint of a read API as the `create_http_tool` call that makes it (F944): its URL on the provider's own
+    host with its account part kept as `__dc__`, its base locked (A8), its arguments the path's placeholders and, for a
+    call that sends, a `body`; its tags from its method, which claims only tighten."""
+    api, endpoint = status.api or {}, (status.api or {}).get("endpoint") or {}
+    base = _unfilled(str(api.get("base_url") or "")).rstrip("/")
+    method, path = str(endpoint.get("method") or "GET").upper(), str(endpoint.get("path") or "")
+    params = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path)
+    properties: dict[str, Any] = {p: {"type": "string"} for p in params}
+    args: dict[str, Any] = {"name": status.name, "method": method, "url": base + path, "base_lock": base,
+                            "group": status.provider or "",
+                            "description": f"{endpoint.get('does') or status.name} ({status.provider}: {method} {path})"}
+    if method in ("POST", "PUT", "PATCH"):
+        properties["body"] = {"type": "object", "description": f"The JSON it sends, as {api.get('docs_url')} says"}
+        args["body_template"] = "{{body}}"
+    if method == "GET":
+        args["read_only"] = True
+    elif method == "DELETE":
+        args["destructive"] = True
+    args["input_schema_json"] = json.dumps({"type": "object", "properties": properties, "required": params})
+    return {"tool": "create_http_tool", "args": args, "makes": None, "kind": "tool", "name": status.name}
 
 
 def _keep_places(doc: dict, existing: Any) -> None:
@@ -292,6 +322,11 @@ async def _taken_since(call: dict, made: dict[str, str], before: dict[str, list[
     from core.routes.agents import load_user_agents
     from core.store.resources import load_orchestrations
 
+    if call["kind"] == "tool":
+        # A tool named so since the check (where a taken name was made `_2`) is someone else's: never overwritten.
+        from core.store.resources import load_tools
+
+        return any(t.get("name") == call["name"] and t.get("name") not in made.values() for t in await load_tools())
     if call["kind"] == "agent":
         rows, held = await load_user_agents(), before.get("agents") or []
     elif call["kind"] == "orchestration" and not call.get("update"):
@@ -356,6 +391,11 @@ async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict
                 _emit(events, "schedule", "deleted", real, name, reason=reason)
             elif kind == "board":
                 await board_store.delete_board(real)
+            elif kind == "tool":
+                from core.store.resources import delete_tool_named
+
+                await delete_tool_named(real)
+                _emit(events, "tool", "deleted", real, name, reason=reason)
         except Exception as exc:  # noqa: BLE001 — one removal that fails never stops the others
             _log.warning("could not remove %s %s after a stopped build: %s", kind, real, exc)
 
@@ -409,9 +449,12 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         return _stopped(events, "Nothing was built: the plan was not approved.")
     plan = _plan_of(checked)
 
-    # The workspace again, before the first write: what the yes saw may have changed since.
-    now = await O.fill(plan, server_module)
-    gone = [t.name for t in now.tools if t.status != "present"]
+    # The workspace again, before the first write: what the yes saw may have changed since. A read API's tools are
+    # this build's own to make (F944), so they are found, not gone.
+    only = str(args.get("only") or "")
+    making = {t.name: t for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api}
+    now = await O.fill(plan, server_module, found=making)
+    gone = [t.name for t in now.tools if t.status != "present" and t.name not in making]
     if gone:
         return _stopped(events, _why_missing(gone, plan, state))
     if moved := _gates_moved(plan.gates, now.gates):
@@ -419,7 +462,9 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         # approved.
         return _stopped(events, "Nothing was built: what the run asks you for changed since your yes — "
                                 + "; ".join(moved) + ". Ask again to see the plan as it is now.")
-    issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)]
+    issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)
+              # A tool this build makes is not there until `step_make_tools` makes it (F944).
+              if not ("nothing here provides" in i and any(f"'{n}'" in i or f"`{n}`" in i for n in making))]
     if issues:
         return _stopped(events, _issues_reason(issues))
     if plan.kind == "update" and (moved := await _moved_since_read(state)):
@@ -442,6 +487,8 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         for n, call in enumerate(calls):
             if n in calls_done:
                 continue  # made by an earlier pass of this save, by the id it recorded
+            if only == "tools" and call["kind"] != "tool":
+                break  # `step_make_tools`: the tools only; the rest after the person connects them (F944)
             if await _taken_since(call, made, before):
                 noun = "a workflow" if call["kind"] == "orchestration" else "an agent"
                 # Its own, unrecorded (a worker that stopped between a make and its record), or someone else's:
@@ -477,7 +524,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                     failure = f"{call['name']}: it was not made"
                     break
                 made[call["makes"]] = real
-            if real and call["kind"] in ("agent", "orchestration", "schedule", "board"):
+            if real and call["kind"] in ("agent", "orchestration", "schedule", "board", "tool"):
                 done.append(("updated" if call.get("update") else call["kind"], real, call["name"]))
             calls_done.append(n)
             await _keep(run, approval.id, made, done, calls_done)
@@ -486,6 +533,8 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         await _undo(done, state, events, reason)
         run.step_progress.pop(PROGRESS_KEY, None)  # what it recorded is gone again
         return _stopped(events, f"Nothing was built: {reason}.")
+    if only == "tools":
+        return {"outcome": "tools_made", "tools": [c["name"] for c in calls if c["kind"] == "tool"]}
     left = [c for c in calls if c.get("makes")]
     notes = "".join(f" {n}" for n in checked.get("notes") or [])  # what the card said it does not do, said again
     return {"outcome": "saved", "made": {c["name"]: made[c["makes"]] for c in left if c["makes"] in made},

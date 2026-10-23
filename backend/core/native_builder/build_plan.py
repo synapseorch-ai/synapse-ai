@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -938,7 +939,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
-    no_way, connect, said, leads = [], [], [], []
+    no_way, connect, said, leads, makes = [], [], [], [], []
     for t in plan.tools:
         if t.status == "missing" and t.provider:
             # The research's verdict, with why (A6): no way in that it could find.
@@ -960,6 +961,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             no_way.append(t.name)
             said.append(f"`{t.name}`: {t.provider} has a public API, but I can't make a tool for it here yet: build "
                         "without it, or connect a server that provides it.")
+        elif t.status == "found" and t.via == "http_tool":
+            # The build makes it after the yes, on the provider's own host, and asks for its key then (F944).
+            makes.append(t)
         elif t.status == "found":
             connect.append(t.name)
             app = _app_for(t.provider or "", catalog)
@@ -1016,6 +1020,12 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         review += "\n## Can't be saved yet\n" + "\n".join(f"- {e}" for e in found.errors) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
+    if makes:
+        # What the person says yes to: each call, its host and its path, made only from this approved spec (F944).
+        review += "\n## The tools it makes\n" + "\n".join(
+            f"- `{t.name}`: {t.api['endpoint']['method']} {t.api['endpoint']['path']} on "
+            f"{urlsplit(t.api['base_url']).hostname} ({t.provider}). You give it your key on a card after your yes."
+            for t in makes if t.api) + "\n"
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,
            "research": prior.get("research") or [], "notes": board_notes, "changes": changes,
