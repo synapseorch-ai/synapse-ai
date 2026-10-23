@@ -217,13 +217,13 @@ _DEFAULTS = {
         # ~50–80% cost reduction on multi-turn agents at the cost of a 25% write
         # surcharge on the first turn. Disable only if a provider misbehaves.
         "prompt_cache_enabled": True,
-        # Transform step Python execution runtime.
-        # "docker" (default): runs in the sandbox-python container — 512 MB / 1 CPU /
-        # 60s, isolated from the host.
-        # "host": runs as a subprocess on the host with full RAM, GPU, filesystem,
-        # and network access. Required for HuggingFace / RecursiveMAS workflows that
-        # need torch + GPU but removes the sandbox security boundary. Self-hosted
-        # single-user deployments only.
+        # Transform step Python execution runtime — kept for old settings files and shown read-only;
+        # it no longer chooses anything (F968). Transforms run in the sandbox-python container
+        # (512 MB / 1 CPU / 60s) with no network. The host runtime (full RAM, GPU, filesystem,
+        # network; for HuggingFace / RecursiveMAS on one machine) is the server operator's choice
+        # alone: SYNAPSE_TRANSFORM_RUNTIME=host in the server's environment. It runs transforms as
+        # the server, able to read everything the server can, including stored keys: only for a
+        # single-user machine you trust every workflow on. POST /api/settings refuses "host".
         "transform_runtime": "docker",
         "allow_db_write": False,
         # Tool policy's deployment-wide floor — see core/tool_policy.py. Empty

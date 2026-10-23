@@ -461,6 +461,12 @@ async def _warnings(orchs: List[dict], agents: List[dict], tool_names: List[str]
                                                      "in this file or on this install."))
     for orch in orchs:
         for step in orch.get("steps") or []:
+            if isinstance(step, dict) and step.get("type") == "transform" and str(step.get("transform_code") or "").strip():
+                # Code from a file: said, so it is read before it runs (F968). It runs with no network on the
+                # sandbox; on a server started with the host runtime, as the server.
+                out.append(_warning("orchestrations", orch,
+                                    f"Its step {step.get('name') or step.get('id')} runs Python from this file. "
+                                    "Read it before running the workflow."))
             used = step.get("agent_id") if isinstance(step, dict) else None
             if used and used not in agent_ids:
                 out.append(_warning("orchestrations", orch,

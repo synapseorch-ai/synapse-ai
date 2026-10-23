@@ -387,6 +387,38 @@ export function ImportView({ preloadedBundle, onReset, onImportSuccess, onNaviga
           </div>
         )}
 
+        {/* Code from this file, in its workflows' Transform steps (F968): listed with the code itself, read before
+            it runs. Computed from the file, not its `has_python_tools` flag, which counts only tools. */}
+        {(() => {
+          const coded = (bundle.orchestrations || []).flatMap(orch =>
+            (orch.steps || [])
+              .filter(st => st.type === 'transform' && String(st.transform_code || '').trim())
+              .map(st => ({ orch: orch.name || orch.id, step: st.name || st.id, code: String(st.transform_code) })));
+          if (!coded.length) return null;
+          return (
+            <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
+              <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <p className="text-text text-sm font-semibold">Code steps included</p>
+                <p className="text-text-muted text-xs mt-1">
+                  These Transform steps run Python from this file. Read each one before running its workflow: here it
+                  runs in the sandbox with no network.
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {coded.map((c, i) => (
+                    <li key={i}>
+                      <details>
+                        <summary className="cursor-pointer text-xs text-text">{c.orch} · {c.step}</summary>
+                        <pre className="mt-1 max-h-48 overflow-auto rounded bg-surface p-2 font-code text-xs text-text-muted">{c.code}</pre>
+                      </details>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          );
+        })()}
+
         {bundle.has_python_tools && (
           <div className="flex items-start gap-3 p-4 border border-border bg-surface-2 rounded-md">
             <AlertTriangle className="h-4 w-4 text-text flex-shrink-0 mt-0.5" />

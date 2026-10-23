@@ -250,7 +250,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             gemini_cli_models: geminiCliModels,
             codex_cli_models: codexCliModels,
             github_copilot_cli_models: githubCopilotCliModels,
-            transform_runtime: transformRuntime,
             bedrock_api_key: bedrockApiKey,
             aws_region: awsRegion,
             sql_connection_string: sqlConnectionString,
@@ -625,7 +624,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         bashAllowedDirs={bashAllowedDirs}
                         setBashAllowedDirs={setBashAllowedDirs}
                         transformRuntime={transformRuntime}
-                        setTransformRuntime={setTransformRuntime}
                         loginEnabled={loginEnabled}
                         loginUsername={loginUsername}
                         setLoginUsername={setLoginUsername}

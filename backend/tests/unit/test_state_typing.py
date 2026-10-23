@@ -39,7 +39,9 @@ def _host_transforms(monkeypatch):
     """Run transform steps in the host subprocess runtime — no Docker needed."""
     import core.config as config
     monkeypatch.setattr(config, "load_settings",
-                        lambda: {"transform_runtime": "host", "model": "mistral"})
+                        lambda: {"model": "mistral"})
+    # The host runtime is the server operator's choice since F968, never a stored setting.
+    monkeypatch.setenv("SYNAPSE_TRANSFORM_RUNTIME", "host")
 
 
 def _final_state(events):

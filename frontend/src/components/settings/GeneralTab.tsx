@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { Button, ConfirmDialog, Input, Label, Modal, Section, Spinner, Switch } from '@/components/ui';
+import { Button, ConfirmDialog, Input, Label, Section, Spinner, Switch } from '@/components/ui';
 import { FIELD_LABEL, FORM } from './form';
 import { SaveBar } from './SaveBar';
 import { ToolPolicyFields, type ToolPolicy } from './ToolPolicy';
@@ -74,8 +74,8 @@ interface GeneralTabProps {
     setEmbedCode: (v: boolean) => void;
     bashAllowedDirs: string[];
     setBashAllowedDirs: (v: string[]) => void;
+    /** Where this server runs Transform steps: its operator's choice, shown, never set here (F968). */
     transformRuntime: 'docker' | 'host';
-    setTransformRuntime: (v: 'docker' | 'host') => void;
     /** Whether login is on, as saved. Only a successful save changes it. */
     loginEnabled: boolean;
     loginUsername: string;
@@ -100,7 +100,7 @@ export function GeneralTab({
     toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
-    transformRuntime, setTransformRuntime,
+    transformRuntime,
     loginEnabled,
     loginUsername, setLoginUsername,
     onSaveLogin, isLoginSaving,
@@ -131,7 +131,6 @@ export function GeneralTab({
 
     // Confirmation modal shown when user tries to flip transform runtime to "host".
     // Going back to "docker" doesn't need confirmation (safe default).
-    const [showHostRuntimeModal, setShowHostRuntimeModal] = useState(false);
 
     useEffect(() => { setVaultDraft(String(vaultThreshold)); }, [vaultThreshold]);
     useEffect(() => { setCompactDraft(String(autoCompactThreshold)); }, [autoCompactThreshold]);
@@ -525,71 +524,35 @@ export function GeneralTab({
                 </div>
             </Section>
 
-            {/* Transform Step Python Runtime */}
+            {/* Transform Step Python Runtime — the server operator's, never a setting (F968) */}
             <Section {...S} title="Transform step Python runtime">
-                <div className="space-y-3">
-                    <SwitchRow label="Run Transform steps on the host" checked={transformRuntime === 'host'}
-                        onChange={() => {
-                            if (transformRuntime === 'docker') {
-                                setShowHostRuntimeModal(true);
-                            } else {
-                                setTransformRuntime('docker');
-                            }
-                        }}>
-                        Where Transform-step Python code runs. <strong className="font-medium text-text">Docker</strong> (default) sandboxes execution with 512 MB / 1 CPU / 60s caps and no GPU access — safe but limited.
-                        <strong className="font-medium text-text"> Host</strong> runs Python directly on the host with full RAM, GPU, filesystem, and network.
-                    </SwitchRow>
-                    {transformRuntime === 'host' && (
+                <div className="space-y-3 text-sm text-text-muted">
+                    {transformRuntime === 'host' ? (
                         <Note>
                             <p className="flex items-start gap-2">
                                 <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                                <span><strong>Host mode active.</strong> Any Python in any Transform step now runs unsandboxed with full backend permissions. Only use on self-hosted instances you control.</span>
+                                <span>
+                                    <strong>This server runs Transform steps on the host</strong> (it was started with{' '}
+                                    <code className="font-code text-text">SYNAPSE_TRANSFORM_RUNTIME=host</code>): outside the
+                                    sandbox, as the server, able to read everything the server can, including stored keys,
+                                    with the network. Only for a single-user machine you trust every workflow on.
+                                </span>
                             </p>
                         </Note>
+                    ) : (
+                        <p>
+                            Transform steps run in a Docker sandbox: 512 MB, one CPU, up to a minute, and no network.
+                            Reach outside through a tool step and pass the result in.
+                        </p>
                     )}
+                    <p className="text-text-faint">
+                        Set by whoever runs the server, not here: starting it with{' '}
+                        <code className="font-code text-text">SYNAPSE_TRANSFORM_RUNTIME=host</code> runs Transform steps on
+                        the host (full RAM, any GPU) — outside the sandbox, as the server, able to read everything the
+                        server can, including stored keys. Only for a single-user machine you trust every workflow on.
+                    </p>
                 </div>
             </Section>
-
-            {/* Host-mode confirmation modal */}
-            {showHostRuntimeModal && (
-                <Modal
-                    open
-                    onClose={() => setShowHostRuntimeModal(false)}
-                    title="Enable host-mode Transform execution?"
-                    description="This removes the Docker sandbox from Transform steps."
-                    footer={
-                        <>
-                            <Button variant="secondary" onClick={() => setShowHostRuntimeModal(false)}>
-                                Cancel
-                            </Button>
-                            <Button
-                                variant="danger"
-                                onClick={() => {
-                                    setTransformRuntime('host');
-                                    setShowHostRuntimeModal(false);
-                                }}
-                            >
-                                I understand — enable host mode
-                            </Button>
-                        </>
-                    }
-                >
-                    <div className="space-y-2 text-sm leading-relaxed text-text-muted">
-                        <p>With host mode on, Transform-step Python code runs as a subprocess on the host machine with:</p>
-                        <ul className="list-inside list-disc space-y-1 pl-1 text-text-faint">
-                            <li>Full backend filesystem access (including <code className="font-code text-text">backend/data/</code>)</li>
-                            <li>Full network access</li>
-                            <li>Access to any GPU and all host RAM</li>
-                            <li>The same permissions as the Synapse backend process</li>
-                        </ul>
-                        <p className="pt-1 text-warning">
-                            Only enable this on a self-hosted instance you control. It is the wrong
-                            choice for any deployment where untrusted code or untrusted users can
-                            reach the Transform step.
-                        </p>
-                    </div>
-                </Modal>
-            )}
 
             {/* Login & Security */}
             <Section {...S} title="Login & security">

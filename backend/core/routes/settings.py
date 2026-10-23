@@ -157,6 +157,19 @@ async def get_onboarding_models():
     }
 
 
+#: Why `transform_runtime: "host"` is refused here (F968): the operator starts the server with it.
+HOST_RUNTIME_REFUSED = (
+    "transform_runtime 'host' isn't set here: start the server with SYNAPSE_TRANSFORM_RUNTIME=host to run "
+    "transform steps outside the sandbox. It runs them as the server, able to read everything the server can, "
+    "including stored keys: only for a single-user machine you trust every workflow on."
+)
+
+
+def transform_runtime() -> str:
+    """Where this server runs transform steps: "host" only when its operator started it so, else the sandbox."""
+    return "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "docker"
+
+
 def public_settings(settings: dict) -> dict:
     """The settings as the browser may see them: no secret (F201).
 
@@ -167,6 +180,8 @@ def public_settings(settings: dict) -> dict:
     """
     view = dict(settings)
     view.pop("login_password_hash", None)
+    # Where transforms run is the server operator's (F968): what this server runs, not a stored choice.
+    view["transform_runtime"] = transform_runtime()
     for name in SECRET_SETTINGS:
         value = str(view.get(name) or "")
         view[name] = ""
@@ -218,6 +233,11 @@ async def update_settings(settings: Settings):
             data.pop(name)
     for name in clear:
         data[name] = ""
+
+    # The host runtime runs a transform as the server: its operator's choice alone, refused by name (F968).
+    if str(data.get("transform_runtime") or "").strip().lower() == "host":
+        raise HTTPException(status_code=422, detail=HOST_RUNTIME_REFUSED)
+    data.pop("transform_runtime", None)
 
     existing = load_settings()
     # Never overwrite the bcrypt hash via the general settings endpoint

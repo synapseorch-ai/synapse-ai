@@ -121,7 +121,9 @@ class TestTransformStep:
         # Run the transform in the host subprocess runtime (no Docker needed).
         import core.config as config
         monkeypatch.setattr(config, "load_settings",
-                            lambda: {"transform_runtime": "host", "model": "mistral"})
+                            lambda: {"model": "mistral"})
+        # The host runtime is the server operator's choice since F968, never a stored setting.
+        monkeypatch.setenv("SYNAPSE_TRANSFORM_RUNTIME", "host")
         orch = S.make_orchestration(
             entry_step_id="t",
             steps=[{"id": "t", "name": "Double", "type": "transform",
@@ -152,7 +154,9 @@ class TestAFailingStepFailsTheRun:
         import core.config as config
         from core.orchestration.state import SharedState
         monkeypatch.setattr(config, "load_settings",
-                            lambda: {"transform_runtime": "host", "model": "mistral"})
+                            lambda: {"model": "mistral"})
+        # The host runtime is the server operator's choice since F968, never a stored setting.
+        monkeypatch.setenv("SYNAPSE_TRANSFORM_RUNTIME", "host")
         orch = S.make_orchestration(
             id="orch_transform_raises", entry_step_id="t",
             steps=[{"id": "t", "name": "Boom", "type": "transform",

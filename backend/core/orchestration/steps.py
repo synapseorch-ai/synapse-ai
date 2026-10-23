@@ -2723,6 +2723,17 @@ class HumanStepExecutor:
         }
 
 
+#: What a transform that reached for the network is told (F968): 1.x gave it the internet.
+TRANSFORM_NO_NETWORK = "Transforms have no network since 2.0: fetch with a tool step and pass the result in."
+
+#: How a failed connection or lookup reads in a transform's stderr, on Linux, macOS and Windows.
+_NO_NETWORK_ERRORS = re.compile(
+    r"Temporary failure in name resolution|Name or service not known|nodename nor servname|"
+    r"No address associated with hostname|getaddrinfo failed|Network is unreachable|"
+    r"\[Errno -[235]\]|\[Errno 101\]|ConnectionError|NewConnectionError|URLError",
+)
+
+
 class TransformStepExecutor:
     """Run sandboxed Python code to transform shared state."""
 
@@ -2768,23 +2779,29 @@ class TransformStepExecutor:
     async def _run(self, code: str, state: dict, timeout: int = 30):
         """Run the transform through a code runner and return `result`.
 
-        `transform_runtime` picks the runner: `"host"` means the escape hatch
-        that runs the script as a subprocess of this process, anything else
-        means whatever the deployment registered — the Docker sandbox in the
-        shipped product. The setting keeps its old vocabulary (`"docker"` still
-        selects the registered runner) so an existing configuration is not
-        invalidated by the fact that the sandbox no longer has to be Docker.
+        The runner is whatever the deployment registered — the Docker sandbox in
+        the shipped product — unless the server's operator started it with
+        `SYNAPSE_TRANSFORM_RUNTIME=host`: the escape hatch that runs the script
+        as a subprocess of this process (`core.execution.HostRunner`). Only the
+        operator's environment chooses it, never a stored setting (F968): any
+        client of `POST /api/settings` could pick it, and it runs code as the
+        server.
 
-        A deployment that must not offer the host runtime pins the setting;
-        `core.execution.HostRunner`'s docstring says why it is a named runner
-        rather than a branch hidden in here.
+        A transform has no network on the engine's own sandbox (F968): its code
+        comes from a person, a builder or an imported file, and tools are the
+        way out. A runner a deployment registers decides its own network from
+        the same request, as before (cloud's grants an org's allowed domains);
+        the host runtime cannot block it, which is why it is the operator's
+        explicit choice.
         """
-        from core.config import load_settings
-        from core.execution import ExecRequest, HostRunner, Network, get_runner, wrap_transform
+        import os
+
+        from core.execution import DockerRunner, ExecRequest, HostRunner, Network, get_runner, wrap_transform
         from core.execution.scripts import transform_failure, transform_line_offset
 
-        runtime = (load_settings().get("transform_runtime") or "docker").strip().lower()
+        runtime = "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "sandbox"
         runner = HostRunner() if runtime == "host" else get_runner()
+        network = Network.NONE if isinstance(runner, DockerRunner) else Network.INTERNET
 
         # The sandbox is capped at a minute because it is the shared path; the
         # host runtime lifts that itself, because model loading is minutes and
@@ -2795,7 +2812,7 @@ class TransformStepExecutor:
 
         result = await runner.run(ExecRequest(
             code=wrap_transform(code, state),
-            network=Network.INTERNET,
+            network=network,
             timeout_s=capped,
             vault_path=_vault_root(),
             max_stdout=1_000_000,
@@ -2807,8 +2824,12 @@ class TransformStepExecutor:
             # Your line, its source and what it raised — not the wrapper's line,
             # the runner's temp path and the whole traceback (F407).
             label = "Transform (host)" if runtime == "host" else "Transform"
-            raise RuntimeError(transform_failure(
-                result.stderr, code, transform_line_offset(state), result.exit_code, label=label))
+            said = transform_failure(
+                result.stderr, code, transform_line_offset(state), result.exit_code, label=label)
+            if network is Network.NONE and _NO_NETWORK_ERRORS.search(result.stderr or ""):
+                # It reached for the network it no longer has: said, not left as a bare resolve error (F968).
+                said = f"{said} {TRANSFORM_NO_NETWORK}"
+            raise RuntimeError(said)
 
         return self._parse_script_output(result.stdout)
 

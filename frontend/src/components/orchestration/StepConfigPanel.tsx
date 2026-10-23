@@ -110,8 +110,9 @@ interface StepConfigPanelProps {
 // The engine asks the runner for the internet (`Network.INTERNET` in the
 // Transform executor), and a Transform in the Docker sandbox did open a socket
 // when measured — this said "no network" (F70).
+// F968: a transform has no network; host is the server operator's (SYNAPSE_TRANSFORM_RUNTIME=host), not a setting.
 const SELF_HOSTED_RUNNER_NOTE =
-    'Runs in Docker by default (512MB RAM, up to a minute, with internet access); switch to host mode in Settings → General to lift the sandbox.';
+    'Runs in a Docker sandbox (512MB RAM, up to a minute) with no network: reach outside through a tool step and pass the result in.';
 
 // F327: it embeds with the Embedding Model; with none set it never matches.
 const SELF_HOSTED_SEMANTIC_NOTE =

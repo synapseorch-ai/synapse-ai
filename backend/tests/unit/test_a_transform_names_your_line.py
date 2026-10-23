@@ -104,7 +104,9 @@ class TestTheRun:
         from core.orchestration.engine import OrchestrationEngine
         from core.orchestration.run_error import failure_reason
         from core.orchestration.state import SharedState
-        monkeypatch.setattr(config, "load_settings", lambda: {"transform_runtime": "host", "model": "mistral"})
+        monkeypatch.setattr(config, "load_settings", lambda: {"model": "mistral"})
+        # The host runtime is the server operator's choice since F968, never a stored setting.
+        monkeypatch.setenv("SYNAPSE_TRANSFORM_RUNTIME", "host")
         orch = S.make_orchestration(id="orch_f407", entry_step_id="t", steps=[
             {"id": "t", "name": "Check totals", "type": "transform", "transform_code": CODE,
              "output_key": "out", "timeout_seconds": 30, "next_step_id": None}])

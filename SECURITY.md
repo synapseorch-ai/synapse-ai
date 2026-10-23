@@ -55,7 +55,14 @@ who can reach the instance:
 - **stdio MCP servers** — registering one runs a local command. Disable with `allow_stdio_mcp`, or
   restrict with `mcp_command_allowlist`. Force-disabled in scale mode.
 - **Custom Python tools** and the **`transform` step** — run customer-authored Python. The Docker
-  runtime sandboxes them; `transform_runtime: "host"` deliberately does not.
+  runtime sandboxes them. A transform runs with **no network** (since 2.0): it reaches outside through
+  a tool step. A transform's code from an imported bundle is listed in the import's preview and
+  warnings.
+- **`SYNAPSE_TRANSFORM_RUNTIME=host`** — set only in the server's environment, never through settings
+  (`POST /api/settings` refuses it). It runs transforms outside the sandbox, **as the server, able to
+  read everything the server can, including stored keys, with the network**; their environment is cut
+  to a short allowlist (no tokens, keys, secrets or URLs). Only for a single-user machine you trust
+  every workflow on.
 - **The `bash` tool** and **`execute_python`** — run commands on the host or in a container.
 
 **Agents are subject to prompt injection.** Any content an agent reads — a web page, a document, a
