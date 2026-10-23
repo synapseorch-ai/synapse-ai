@@ -82,9 +82,8 @@ class TestTheStreamIsTheEnginesOwn:
         """The panel answers on /api/builder/resume, which needs the run id and
         the field name — both come from the engine's own event."""
         fake_llm.script([
-            "create",           # step_intent
-            "What should it do?",  # analyst
-            "clarify",          # step_clarify_route
+            route("create"),    # step_intent
+            tool_call("ask_person", question="What should it do?", about="what"),  # the planner's finish (E2)
         ])
         events = await stream(client, "/api/builder/chat", {"message": "build something"})
 
@@ -232,14 +231,17 @@ class TestSeeHowImBuilt:
         # planner, its check and route, the question, what it says, the approval, the apply and its summary in; 48
         # with the approval's and the apply's own checks and the one step that says why nothing changed; 49 with the
         # words a change ends in after too many rounds; 51 with one new thing made after its review (the switch
-        # after the yes, and the maker's step); 53 with the check of what the maker made and its words.
-        assert legend["step_count"] == 53
+        # after the yes, and the maker's step); 53 with the check of what the maker made and its words; 57 with the
+        # build route on the typed Plan (SAI2-P3): the analyst, its clarify gate, the drafter, the redraft and
+        # research gates, the agents gate, the agent creator, the save gate, both savers and finish_build out (11), and
+        # the pack, the planner, the check's route and its three endings, the no read in code and its route, the new
+        # agents gate and their instructions, the approval and its check, the refusal, the save and its ending in (15).
+        assert legend["step_count"] == 57
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
         assert {a["role"] for a in legend["agents"]} == {
-            "analyst", "agent_creator", "saver_create", "saver_update", "change_planner", "maker", "reporter",
-            "researcher",
+            "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2).
@@ -268,7 +270,7 @@ class TestSeeHowImBuilt:
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 9
+        assert len(result["agent_ids"]) == 7
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
@@ -637,7 +639,8 @@ class TestTheBuilderKnowsWhatYouMean:
         await save_orchestration(previous)
 
         # Started the way the previous release started it: no target keys at all.
-        fake_llm.script([route("create"), "What should the new step check?", route("clarify")])
+        fake_llm.script([route("create"),
+                         tool_call("ask_person", question="What should the new step check?", about="what")])
         engine = OrchestrationEngine(Orchestration.model_validate(previous), server)
         events = [e async for e in engine.run(
             initial_input="add a step",
@@ -652,17 +655,16 @@ class TestTheBuilderKnowsWhatYouMean:
 
         fake_llm.reset()
         fake_llm.script([
-            "Requirements: check the final JSON has quality and content.",  # step_understand
-            route("draft"),                                                   # step_clarify_route
-            "## Overview\nOne new step.",                                     # step_draft_plan
-            tool_call("check_plan"),                                          # step_check_plan's arguments (F492)
+            tool_call("submit_plan", kind="create", title="Quality check", summary="One new step.", steps=[
+                {"id": "check", "type": "llm", "name": "Check it", "does": "Checks quality and content",
+                 "prompt": "Check the final JSON for quality and content."}]),  # the planner's finish (E2)
         ])
         after = await stream(client, "/api/builder/resume", {
             "run_id": asked["run_id"], "response": {"answer": "quality and content"},
         })
 
         steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
-        draft = next(s["name"] for s in shipped["steps"] if s["id"] == "step_draft_plan")
+        draft = next(s["name"] for s in shipped["steps"] if s["id"] == "step_plan")
         assert draft in steps, steps
         assert next(e for e in after if e["type"] == "human_input_required")
         assert not [e for e in after if e["type"] in ("orchestration_error", "step_error")]
@@ -697,10 +699,15 @@ class TestTheRunIsDrivenByThePump:
         """
         started, release = asyncio.Event(), asyncio.Event()
 
+        calls = {"n": 0}
+
         async def gate(*args, **kwargs):
             started.set()
             await release.wait()
-            return "create"
+            calls["n"] += 1
+            # The router, then the planner's finish (E2): a question, so the run pauses for the person.
+            return route("create") if calls["n"] == 1 else tool_call(
+                "ask_person", question="What should it do?", about="what")
 
         import core.llm_providers as _llm
         import core.react_engine as _re

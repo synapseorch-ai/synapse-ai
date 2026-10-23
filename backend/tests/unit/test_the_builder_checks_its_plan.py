@@ -10,7 +10,8 @@ in the workspace with nothing to run them. These pin:
   forced tool, and only the reused agents' ids (a new agent's placeholder id is not one);
 - `check_plan` checks each with the run's own lookup: the first time something is missing the plan is redrafted,
   after that the person reads what is missing in a "Missing here" section on the plan card;
-- the builder runs the check between the draft and the review, and its review shows the section;
+- the builder runs the check between the plan and the review, and its review shows what is missing (since SAI2-P3
+  in code, `check_build`, on the typed Plan; `check_plan` stays for runs paused on the old definition, F443);
 - `finish_build` removes the agents a run made when it saved no workflow, with the reason, and keeps agents a
   workflow uses.
 """
@@ -155,13 +156,15 @@ async def test_a_plan_with_no_sections_reads_every_name_as_used():
     assert "the build will stop there" in got["section"]
 
 
-def test_the_check_step_hands_its_model_the_plan_to_list_the_tools_from():
+def test_the_check_step_hands_the_check_the_planners_own_plan_with_no_model():
+    """Since SAI2-P3 nothing reads tool names out of prose: the check is code on the planner's typed finish."""
     from core.builder_guard import CHECK_PLAN_SCHEMA
     from core.native_builder import bundled_definitions
 
     step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_check_plan")
-    assert step["forced_tool"] == "check_plan" and step["model_role"] == "quick"
-    assert "plan_draft" in step["input_keys"] and "{state.plan_draft}" in step["prompt_template"]
+    assert step["forced_tool"] == "check_build" and "model_role" not in step
+    assert step["tool_arguments"] == {"draft": "{{ state.plan_draft }}"} and step["prompt_template"] == ""
+    # The old check stays, unchanged, for a run paused on the old definition (F443).
     assert CHECK_PLAN_SCHEMA["function"]["parameters"]["properties"]["tools"]["type"] == "array"
 
 
@@ -185,32 +188,38 @@ async def test_a_plan_using_only_what_exists_passes_quietly():
     assert (got["redraft"], got["missing_tools"], got["note"], got["section"]) == (False, [], "", "")
 
 
-def test_the_builder_checks_between_the_draft_and_the_review():
+def test_the_builder_checks_between_the_plan_and_the_review():
     from core.native_builder import bundled_definitions
 
     orch = bundled_definitions()["orchestration"]
     steps = {s["id"]: s for s in orch["steps"]}
-    assert steps["step_draft_plan"]["next_step_id"] == "step_check_plan"
-    assert steps["step_check_plan"]["forced_tool"] == "check_plan"
-    assert steps["step_check_plan"]["output_key"] == "plan_check"
-    assert steps["step_plan_checked"]["if_true_step_id"] == "step_draft_plan"
-    assert steps["step_plan_checked"]["if_false_step_id"] == "step_human_review"
-    assert steps["step_human_review"]["human_prompt"].endswith("{state.plan_check.section}")
-    assert orch["state_schema"]["plan_check"]["type"] == "dict"
-    assert "plan_check" in steps["step_draft_plan"]["input_keys"]
+    assert steps["step_plan"]["next_step_id"] == "step_check_plan"
+    assert steps["step_check_plan"]["output_key"] == "plan_checked"
+    assert steps["step_check_plan"]["next_step_id"] == "step_plan_route"
+    assert steps["step_plan_route"]["switch_cases"]["review"] == "step_human_review"
+    review = steps["step_human_review"]
+    assert review["human_prompt"].endswith("{state.plan_checked.review}\n\n{state.plan_checked.say}")
+    assert review["input_keys"][0] == "plan_checked"  # its typed context, the card's object (F795)
+    assert orch["state_schema"]["plan_checked"]["type"] == "str"  # JSON text, read field by field (F801)
+    assert "{{ state.plan_checked.say }}" in steps["step_plan"]["prompt_template"]
 
 
-@pytest.mark.parametrize("redraft,goes_to", [(True, "step_draft_plan"), (False, "step_human_review")])
-def test_the_check_routes_the_plan_as_the_engine_evaluates_it(redraft, goes_to):
-    """Evaluated as the engine does: an unknown name (`true`) is an error, which counts as false — the browser pass
-    caught exactly that, the plan going to review with a redraft asked for."""
+@pytest.mark.parametrize("outcome,goes_to", [
+    ("review", "step_human_review"), ("ask", "step_human_clarify"), ("research", "step_plan_research"),
+    ("said", "step_plan_said"), (None, "step_build_failed")])
+@pytest.mark.parametrize("as_text", [False, True])
+def test_the_check_routes_the_plan_as_the_engine_evaluates_it(outcome, goes_to, as_text):
+    """Evaluated as the engine does, on the object as state holds it (JSON text, F801) or as a dict: an outcome it
+    cannot read says the check failed and ends; it never falls to the review."""
     from core.native_builder import bundled_definitions
     from core.orchestration.steps import _eval_state_expr
 
-    step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_plan_checked")
-    value, error = _eval_state_expr(step["if_condition"], {"plan_check": {"redraft": redraft}}, default=False)
+    step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_plan_route")
+    checked = {"object": "plan", **({"outcome": outcome} if outcome else {"error": "boom"})}
+    value, error = _eval_state_expr(step["switch_expression"],
+                                    {"plan_checked": json.dumps(checked) if as_text else checked}, default=None)
     assert error is None
-    assert (step["if_true_step_id"] if value else step["if_false_step_id"]) == goes_to
+    assert step["switch_cases"].get(str(value), step["switch_default_step_id"]) == goes_to
 
 
 async def test_a_far_name_is_not_offered_as_the_nearest():

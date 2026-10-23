@@ -9,7 +9,9 @@ said what has no real tool "becomes an Open question, not a step" — so the dra
 
 Naveen (2026-10-20): the Researcher runs on check_plan's own list of missing tools — decided in code, never the
 analyst's words — once, before the redraft; the build still waits until the app is connected, and a Connect card
-makes that one click.
+makes that one click. Since SAI2-P3 that list is `check_build`'s, read off the typed Plan's tool status, and the
+research goes back to the planner (`test_the_build_route_decides_in_code`); `check_plan` stays for a run paused on
+the old definition (F443).
 """
 from __future__ import annotations
 
@@ -73,31 +75,31 @@ async def test_the_redraft_note_keeps_what_a_provider_may_supply():
 
 
 @pytest.mark.parametrize("state, goes_to", [
-    ({"plan_check": {"research": ["stripe_create_payment_link"], "redraft": True}}, "step_plan_research"),
-    ({"plan_check": {"research": [], "redraft": True}}, "step_plan_checked"),
-    ({"plan_check": {"redraft": False}}, "step_plan_checked"),
-    ({"plan_check": None}, "step_plan_checked"),   # unreadable → false, as the engine evaluates it
+    ({"plan_checked": {"outcome": "research", "research": ["stripe_create_payment_link"]}}, "step_plan_research"),
+    ({"plan_checked": {"outcome": "review", "research": ["stripe_create_payment_link"]}}, "step_human_review"),
+    ({"plan_checked": {"outcome": "review"}}, "step_human_review"),
+    ({"plan_checked": None}, "step_build_failed"),   # unreadable: said, never researched or reviewed
 ])
 def test_the_check_goes_to_the_researcher_only_on_its_own_list(state, goes_to):
     steps = _steps()
-    assert steps["step_check_plan"]["next_step_id"] == "step_plan_needs_research"
-    gate = steps["step_plan_needs_research"]
-    assert gate["type"] == "if_else"
-    value, _ = _eval_state_expr(gate["if_condition"], state, default=False)
-    assert (gate["if_true_step_id"] if value else gate["if_false_step_id"]) == goes_to
+    assert steps["step_check_plan"]["next_step_id"] == "step_plan_route"
+    route = steps["step_plan_route"]
+    assert route["type"] == "switch"
+    value, _ = _eval_state_expr(route["switch_expression"], state, default=None)
+    assert route["switch_cases"].get(str(value), route["switch_default_step_id"]) == goes_to
 
 
-def test_the_researcher_reports_and_the_drafter_reads_the_findings():
+def test_the_researcher_reports_and_the_planner_reads_the_findings():
     steps = _steps()
-    research, findings, draft = steps["step_plan_research"], steps["step_plan_findings"], steps["step_draft_plan"]
+    research, findings, plan = steps["step_plan_research"], steps["step_plan_findings"], steps["step_plan"]
     assert research["type"] == "agent" and research["agent_id"] == "agent_native_builder_researcher"
-    assert {"requirements", "plan_check"} <= set(research["input_keys"])
-    assert "{state.plan_check.research}" in research["prompt_template"]
+    assert "{state.plan_checked.research}" in research["prompt_template"]
+    assert "{state.plan_draft.summary}" in research["prompt_template"]  # what the build is for, in the plan's words
     assert research["next_step_id"] == "step_plan_findings"
     assert findings["forced_tool"] == "report_findings" and findings["output_key"] == "plan_findings"
     assert "plan_research" in findings["input_keys"] and "search_help" not in findings["prompt_template"]
-    assert findings["next_step_id"] == "step_draft_plan"
-    assert "plan_findings" in draft["input_keys"] and "{state.plan_findings}" in draft["prompt_template"]
+    assert findings["next_step_id"] == "step_plan"
+    assert "{state.plan_findings}" in plan["prompt_template"]
     schema = bundled_definitions()["orchestration"]["state_schema"]
     assert schema["plan_research"]["type"] == "str" and schema["plan_findings"]["type"] == "dict"
 
@@ -110,7 +112,7 @@ def test_nothing_on_the_way_to_the_redraft_can_write():
     writes = {"create_agents", "finish_build", "create_orchestration", "update_orchestration", "create_http_tool",
               "create_schedule", "update_agent", "create_agent", "prepare_action"}
     sid, seen = "step_plan_research", []
-    while sid != "step_draft_plan":
+    while sid != "step_plan":
         step = steps[sid]
         seen.append(sid)
         tools = set(agents[step["agent_id"]]["tools"]) if step.get("agent_id") else {step.get("forced_tool")}

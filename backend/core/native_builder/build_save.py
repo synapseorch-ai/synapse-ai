@@ -195,7 +195,8 @@ async def approve_plan(args: dict, server_module: Any, events: list[dict]) -> di
     if digest(reviewed_of(checked)) != checked.get("digest"):
         return {"error": "What is waiting is not what the review showed, so nothing is built."}
     if "build" not in (checked.get("offers") or []):
-        return {"error": "This plan can't be built as it is: " + (checked.get("say") or "it needs something first.")}
+        return {"error": "Nothing was built: this plan can't be built as it is. "
+                         + (checked.get("say") or "It needs something first.")}
     calls = save_calls(_plan_of(checked), _prompts(state), state)
     review.record_approval(state, reviewed_of(checked), _caller(), [(c["tool"], c["args"]) for c in calls],
                            run_id=run_id)

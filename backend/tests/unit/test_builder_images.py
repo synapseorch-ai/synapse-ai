@@ -31,14 +31,14 @@ class TestOptingIn:
         assert StepConfig(id="s", name="S", type=StepType.AGENT).pass_images is False
 
     def test_the_builder_asks_on_exactly_two_steps(self):
-        """The analyst, who may be shown a picture of what to build, and the
-        reporter, who may be asked what one is. Not the savers, and not the
-        operator — they would pay for tokens they cannot use."""
+        """The planner, who may be shown a picture of what to build, and the
+        reporter, who may be asked what one is. Not the prompt writer, and not
+        the change planner — they would pay for tokens they cannot use."""
         from core.native_builder import bundled_definitions
 
         steps = bundled_definitions()["orchestration"]["steps"]
         opted = {s["id"] for s in steps if s.get("pass_images")}
-        assert opted == {"step_understand", "step_answer"}
+        assert opted == {"step_plan", "step_answer"}
 
     def test_the_field_survives_a_round_trip(self):
         """Orchestrations are stored as JSON, so a new field only exists if the

@@ -12,10 +12,10 @@ A change is a list of ops, each `{op, target: {kind, id | name}, fields}` (`obje
   check after (`differs`);
 * **what undoes it** (`inverse`), from the target as it was.
 
-Two ops hand the request to another route instead: `edit_steps` (a workflow's steps: today's update path, P3's
-later) and `create` (a new agent, skill, HTTP tool or OpenAPI import: today's create path, which holds those tools'
-checks — F769's host rule, TAG1's method defaults, the Connect card, F489; Naveen's split, 10-22). Neither is a
-second way to make those things.
+Two ops hand the request to another route instead: `edit_steps` (a workflow's steps: the build route's update
+path, on the typed Plan since P3) and `create` (a new agent, skill, HTTP tool or OpenAPI import: today's create
+path, which holds those tools' checks — F769's host rule, TAG1's method defaults, the Connect card, F489; Naveen's
+split, 10-22). Neither is a second way to make those things.
 """
 from __future__ import annotations
 

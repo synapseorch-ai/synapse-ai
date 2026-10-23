@@ -1,1 +1,0 @@
-A sub-workflow step runs another orchestration through its deployed agent: when the plan names the orchestration (an `orch_…` id) rather than an agent, or `get_agent` finds none for it, call `deploy_orchestration(orch_id)` and use the `agent_id` it returns. An `orch_…` id is never an agent_id.

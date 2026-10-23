@@ -24,7 +24,7 @@ import pytest
 
 from _fakes import seed as S
 from core.native_builder import seed_native_builder
-from test_builder_routes import stream
+from test_builder_routes import route, stream, tool_call
 
 
 @pytest.fixture
@@ -32,7 +32,8 @@ async def builder():
     await seed_native_builder()
 
 
-ASK = ["create", "What should it do?", "clarify"]  # step_intent, analyst, clarify route
+# The router, then the planner's finish (E2, SAI2-P3): its question, which the panel answers.
+ASK = [route("create"), tool_call("ask_person", question="What should it do?", about="what")]
 
 
 async def _park(client, fake_llm, message: str = "build something", cid: str = "conv-back") -> dict:

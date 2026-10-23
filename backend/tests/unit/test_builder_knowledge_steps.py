@@ -221,10 +221,12 @@ class TestTheBuildersPrompts:
         orch = bundled_definitions()["orchestration"]
         assert orch["state_schema"]["knowledge_steps"]["default"] == ""
         steps = self._steps()
-        for sid in ("step_understand", "step_draft_plan", "step_save_create", "step_save_update"):
-            assert "{state.knowledge_steps}" in steps[sid]["prompt_template"], sid
-        analyst = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_analyst")
-        assert "list_knowledge_bases" in analyst["tools"]
+        # SAI2-P3: the planner writes the Plan, and code reads the knowledge bases for it, by id, into its pack.
+        assert "{state.knowledge_steps}" in steps["step_plan"]["prompt_template"]
+        import inspect
+
+        from core.native_builder import build_plan
+        assert "knowledge_bases" in inspect.getsource(build_plan.read_plan_context)
 
     @pytest.mark.parametrize("palette", [False, True])
     def test_off_the_prompt_says_nothing_of_the_two_steps(self, palette):
@@ -232,8 +234,8 @@ class TestTheBuildersPrompts:
         from core.orchestration.context import _fill_task_template
 
         state = {"knowledge_steps": KNOWLEDGE_STEPS_PALETTE if palette else ""}
-        drafted = _fill_task_template(self._steps()["step_draft_plan"]["prompt_template"], state, {})
-        assert ("**retrieve**" in drafted) is palette and ("retrieve_kb_ids" in drafted) is palette
+        drafted = _fill_task_template(self._steps()["step_plan"]["prompt_template"], state, {})
+        assert ("**retrieve**" in drafted) is palette and ('"kb_ids"' in drafted) is palette
 
     async def test_the_run_starts_with_the_palette_only_while_on(self, monkeypatch):
         from core.native_builder import KNOWLEDGE_STEPS_PALETTE

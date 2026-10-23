@@ -77,6 +77,18 @@ async def test_a_question_only_the_person_can_answer_is_asked(client, question, 
     assert out == {"finish": "ask_person", "question": question, "about": about, "options": []}
 
 
+async def test_after_five_questions_the_planner_goes_on_with_what_it_has(client):
+    run = OrchestrationRun(run_id="builder_ask5", orchestration_id="orch_native_builder",
+                           shared_state={builder_access.CALLER_KEY: {"user_id": "u1"}},
+                           step_history=[{"step_id": "step_human_clarify", "status": "completed"}] * 5)
+    await SharedState(run).checkpoint()
+    with live(run):
+        raw, _ = await execute_builder_tool_with_events("ask_person", {"question": "Which list?", "about": "which"},
+                                                        _Server(), run_id=run.run_id)
+    out = json.loads(raw) if isinstance(raw, str) else raw
+    assert "asked the person 5 questions" in out["error"]
+
+
 async def test_an_unknown_about_reads_as_what(client):
     out = await _ask({"question": "What should the summary include?", "about": "credentials"})
     assert out["about"] == "what"

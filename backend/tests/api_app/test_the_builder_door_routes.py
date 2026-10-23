@@ -20,7 +20,7 @@ import pytest
 from core.native_builder import seed_native_builder
 from core.native_builder.door import CREDENTIAL_MARK, MASKED_NOTICE, NOT_KEPT, REFUSALS
 
-from test_builder_routes import route, stream
+from test_builder_routes import route, stream, tool_call
 
 VISA = "4242" * 4
 STRIPE = "sk_" + "test_" + "Z" * 24
@@ -78,8 +78,17 @@ class TestThePanelsChat:
 
 
 class TestTheAnswerDoors:
+    @pytest.fixture(autouse=True)
+    def asked_before_f937(self, monkeypatch):
+        """Since F937 (SAI2-P3) Synapse AI never asks for a key or a password; these runs stand for one paused on a
+        release before it (F443: a run finishes on its own definition), whose question did. The door still holds."""
+        import re
+
+        from core.native_builder import change_tools
+        monkeypatch.setattr(change_tools, "_ASKS_SECRET", re.compile(r"(?!)"))
+
     async def _paused(self, client, fake_llm, question: str) -> str:
-        fake_llm.script([route("create"), question, route("clarify")])
+        fake_llm.script([route("create"), tool_call("ask_person", question=question, about="what")])
         events = await stream(client, "/api/builder/chat", {"message": "build something"})
         asked = next(e for e in events if e["type"] == "human_input_required")
         return asked["run_id"]
@@ -99,7 +108,7 @@ class TestTheAnswerDoors:
 
     async def test_a_key_in_an_answer_is_masked_and_the_run_goes_on(self, client, builder, fake_llm):
         run_id = await self._paused(client, fake_llm, "Paste your booking API key so I can add it.")
-        fake_llm.set_default(route("draft"))
+        fake_llm.set_default(tool_call("ask_person", question="Which booking system is it?", about="which"))
         events = await stream(client, "/api/builder/resume", {
             "run_id": run_id, "response": {"answer": "dbk_live_" + "Q" * 8}})
         assert events[0]["reason"] == "masked" and events[0]["kept"] == CREDENTIAL_MARK

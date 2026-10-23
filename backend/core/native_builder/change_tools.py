@@ -165,6 +165,12 @@ SECRET_ASKED = ("Never ask the person for a key, a token or a password: a connec
 WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a tool, and how it is reached, is "
                 "looked up, not asked. Ask only what the person alone knows.")
 ABOUT = ("which", "when", "what", "who", "how_much")
+#: How many questions one run asks before it goes on with what it has (the clarify cycle's old cap, now in code).
+QUESTIONS = 5
+ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know, and put what is still "
+                "open under the plan's questions.")
+#: The steps that put a planner's question to the person.
+_ASKING_STEPS = ("step_human_clarify", "step_change_clarify")
 
 
 async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -175,6 +181,10 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
         return {"error": SECRET_ASKED}
     if _ASKS_WAY_IN.search(question):
         return {"error": WAY_IN_ASKED}
+    _, run = _run()
+    asked = sum(1 for h in (run.step_history if run is not None else []) if h.get("step_id") in _ASKING_STEPS)
+    if asked >= QUESTIONS:
+        return {"error": ASKED_ENOUGH.format(n=asked)}
     about = args.get("about") if args.get("about") in ABOUT else "what"
     options = [o.strip() for o in args.get("options") or [] if isinstance(o, str) and o.strip()][:8]
     return {"finish": "ask_person", "question": question, "about": about, "options": options}
@@ -669,8 +679,8 @@ async def _a_new_thing(base: dict, raw: dict) -> dict:
 
 
 async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
-    """`edit_steps` goes to today's update path with the workflow on it (Naveen's split, 10-22). Same turn: the person
-    is not asked again. (One new thing is `_a_new_thing`'s: the review, then the maker.)"""
+    """`edit_steps` goes to the build route's update path with the workflow on it (Naveen's split, 10-22). Same turn:
+    the person is not asked again. (One new thing is `_a_new_thing`'s: the review, then the maker.)"""
     first = handoffs[0]
     if first["op"] == "edit_steps":
         found = resolve(await candidates("workflow") or [], first.get("target") or {})
@@ -690,7 +700,8 @@ async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
 
 def _routed(intent: str, **facts: str) -> None:
     """The run goes on as the route it is handed to: `intent` is what the door (`step_may_change`, which the hand-over
-    passes through again: a builder's route), the update path's prompts and its saver (`step_save_route`) read."""
+    passes through again: a builder's route) and the build route's update path (SAI2-P3: its pack reads the open
+    workflow) read."""
     _, run = _run()
     if run is not None:
         run.shared_state.update(intent=intent, **facts)

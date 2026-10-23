@@ -1,0 +1,15 @@
+Each step has an `id` (short snake_case, unique), a `type`, a `name` a person reads, and `does` (one sentence). By type:
+- `agent`: an agent works with its tools; `agent` is a new agent's name from `agents` or an existing agent's id; `prompt` is what it is asked.
+- `llm`: one model call with no tools, for writing or reshaping text; `prompt` is the instruction.
+- `tool`: calls one tool with no model; `tool` is its exact name.
+- `human`: waits for a person; `prompt` is what they are asked. A check the person wants before something goes out ("a summary I can check before it goes to the client") is a human step right before the step that sends it.
+- `if_else`: `condition` is an expression over what earlier steps wrote, read by their step ids, e.g. `state.check_weather.wind_kmh > 40`; `branches` are `{"true": id, "false": id}`.
+- `switch`: `condition` is such an expression; `branches` map each of its values to a step id, plus `default`.
+- `evaluator`: a model judges and picks a branch; `prompt` says how to judge, `branches` map each label to a step id. Use it only where the choice is a judgement in words.
+- `loop`: `body` lists the step ids run each time; `loop_over` names the step whose output is the list, e.g. `fetch_emails`. Inside a body, route with a switch, never an evaluator.
+- `parallel`: `body` lists the branches' first step ids; they meet at a `merge` step.
+- `workflow`: runs another workflow, by an existing workflow's id or a title from `inner_workflows`, which are saved first.
+- `retrieve` / `ingest`: search or fill knowledge bases, named by id in `config`.
+- `transform`: Python in `config.transform_code`, only where the workspace runs code.
+- `end`: ends the run.
+A step with no `next` goes on to the next step in the list, and the last one ends the run. A step's output is kept under its id, which is how later steps and conditions read it.

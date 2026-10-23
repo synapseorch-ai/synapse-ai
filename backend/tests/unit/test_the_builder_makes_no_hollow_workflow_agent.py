@@ -115,23 +115,31 @@ class TestTheAgentsRoute:
 
 
 class TestTheBuilderIsToldHowToNest:
-    def test_the_plan_prompt_and_the_cheatsheet(self):
+    """Since E3 (F770) a workflow runs another through a Workflow step, by its id; since SAI2-P3 the planner is told so,
+    and the save makes the inner workflow first and never a workflow agent for it."""
+
+    def test_the_planner_is_told_and_the_cheatsheet_still_says_extract_json(self):
         from core.native_builder import STEP_TYPE_CHEATSHEET, bundled_definitions
-        plan = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_draft_plan")
-        assert "deploy_orchestration" in plan["prompt_template"]
+        planner = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_planner")
+        assert "`workflow`: runs another workflow" in planner["system_prompt"]
+        assert "`inner_workflows`, which are saved first" in planner["system_prompt"]
         assert "**extract_json**" in STEP_TYPE_CHEATSHEET
 
-    def test_the_agent_creator_can_deploy(self):
-        from core.native_builder import bundled_definitions
-        creator = next(a for a in bundled_definitions()["agents"] if "creator" in a["id"].lower()
-                       or a.get("name", "").lower().startswith("agent creator"))
-        assert "deploy_orchestration" in creator["tools"]
+    def test_a_nested_plan_saves_its_inner_workflow_first_and_runs_it_by_its_id(self):
+        import json
 
-    def test_the_savers_can_deploy(self):
-        """A plan that needs no new agents skips the Agent Creator: a saver meeting a
-        sub-workflow the plan names by its orchestration deploys it itself (measured:
-        without it, the saver stopped, "Topic Writer Orchestrator … could not be found")."""
+        from core.native_builder import objects as O
+        from core.native_builder.build_save import save_calls
+        plan = O.Plan.from_draft({"kind": "create", "title": "Outer", "summary": "s", "inner_workflows": [
+            {"title": "Inner", "does": "x", "steps": [{"id": "a", "type": "llm", "name": "A", "does": "x",
+                                                      "prompt": "p"}]}], "steps": [
+            {"id": "run_inner", "type": "workflow", "name": "Run it", "does": "x", "workflow": "Inner"}]})
+        inner, outer = save_calls(plan, {}, {})
+        assert (inner["tool"], inner["name"]) == ("create_orchestration", "Inner")
+        assert outer["tool"] == "create_orchestration"
+        [step] = [s for s in json.loads(outer["args"]["steps_json"]) if s["id"] == "run_inner"]
+        assert step["type"] == "workflow" and step["workflow_id"] == inner["makes"]
+
+    def test_no_builder_agent_makes_a_workflow_agent(self):
         from core.native_builder import bundled_definitions
-        savers = [a for a in bundled_definitions()["agents"] if "saver" in a["id"]]
-        assert savers and all("deploy_orchestration" in a["tools"] for a in savers)
-        assert all("deploy_orchestration(orch_id)" in a["system_prompt"] for a in savers)
+        assert not [a["id"] for a in bundled_definitions()["agents"] if "deploy_orchestration" in a.get("tools", [])]

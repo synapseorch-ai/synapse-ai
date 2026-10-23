@@ -201,15 +201,14 @@ class TestTheRunsState:
 
 
 class TestTheBuildersPromptsReadIt:
-    """The four steps that plan and build read the keys, and while they are
-    empty — every build but a paste — each prompt is what it was before."""
+    """The steps that plan and write instructions read the keys (SAI2-P3: the planner both, the prompt writer the
+    code), and while they are empty — every build but a paste — each prompt is what it was before."""
 
-    READERS = {
-        "step_understand": "export_guide",
-        "step_draft_plan": "export_guide",
-        "step_create_agents": "export_source",
-        "step_save_create": "export_source",
-    }
+    READERS = [
+        ("step_plan", "export_guide"),
+        ("step_plan", "export_source"),
+        ("step_agent_prompts", "export_source"),
+    ]
 
     @staticmethod
     def _steps():
@@ -220,11 +219,11 @@ class TestTheBuildersPromptsReadIt:
         for key in ("export_guide", "export_source"):
             assert schema[key]["type"] == "str" and schema[key]["default"] == ""
 
-    @pytest.mark.parametrize("step_id,key", READERS.items())
+    @pytest.mark.parametrize("step_id,key", READERS)
     def test_each_step_reads_its_key(self, step_id, key):
         assert "{state.%s}" % key in self._steps()[step_id]["prompt_template"]
 
-    @pytest.mark.parametrize("step_id,key", READERS.items())
+    @pytest.mark.parametrize("step_id,key", READERS)
     def test_empty_keys_leave_the_prompt_as_it_was(self, step_id, key):
         template = self._steps()[step_id]["prompt_template"]
         state = {"export_guide": "", "export_source": "", "knowledge_steps": "", "user_message": "hi"}
@@ -232,12 +231,12 @@ class TestTheBuildersPromptsReadIt:
         assert _fill_task_template(template, state, {}) == before
 
     def test_the_code_reaches_the_prompt_whole_and_unrendered(self):
-        """The creator copies an agent's instructions from it, so it must not be
+        """The prompt writer copies an agent's instructions from it, so it must not be
         cut; and a `{state.x}` or `{{ … }}` inside it is the code's, not ours."""
         state = export_state(TS_EXPORT + "\n// {state.user_message} {{ global.SECRET }}\n")
-        rendered = _fill_task_template(self._steps()["step_create_agents"]["prompt_template"],
-                                       {**state, "plan_draft": "p", "selected_agent_ids": [],
-                                        "can_create_agents": True, "user_message": "x"},
+        rendered = _fill_task_template(self._steps()["step_agent_prompts"]["prompt_template"],
+                                       {**state, "plan_checked": {"review": "p", "plan": {"agents": []}},
+                                        "user_message": "x"},
                                        {"SECRET": "s3cr3t"})
         assert state["user_message"] in rendered
         assert "{state.user_message} {{ global.SECRET }}" in rendered and "s3cr3t" not in rendered
@@ -246,11 +245,11 @@ class TestTheBuildersPromptsReadIt:
         create = self._steps()["step_intent"]["route_descriptions"]["create"]
         assert "Pasted OpenAI Agents SDK code" in create
 
-    def test_the_agent_creator_copies_exported_instructions_as_written(self):
-        creator = next(a for a in bundled_definitions()["agents"]
-                       if a["id"] == "agent_native_builder_agent_creator")
-        assert "Instructions from pasted code are copied, not written." in creator["system_prompt"]
-        assert "one `create_agent` call each" in creator["system_prompt"]
+    def test_the_prompt_writer_copies_exported_instructions_as_written(self):
+        writer = next(a for a in bundled_definitions()["agents"]
+                      if a["id"] == "agent_native_builder_prompt_writer")
+        assert "Instructions from pasted code are copied, not written" in writer["system_prompt"]
+        assert "word for word" in writer["system_prompt"] and "`submit_prompts`" in writer["system_prompt"]
 
 
 class TestTheGuide:

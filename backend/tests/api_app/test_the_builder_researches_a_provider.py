@@ -316,12 +316,15 @@ def test_the_cards_words_are_the_words_the_branch_matches():
 
 
 async def test_a_plan_answered_find_who_can_is_researched_and_builds_nothing(client, builder, fake_llm):
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "list_kits", "description": "The retainer kits waiting to ship.", "tool_type": "http",
+                     "method": "GET", "url": "https://kits.example/v1/waiting", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}})
     fake_llm.script([
         route("create"),                                                   # step_intent
-        "Requirements: buy a shipping label for each retainer kit.",       # step_understand
-        route("draft"),                                                    # step_clarify_route
-        "## Plan\nBuy a label with `shippo_buy_label` for each kit.",      # step_draft_plan
-        tool_call("check_plan"),                                           # step_check_plan
+        tool_call("submit_plan", kind="create", title="Kit labels", summary="Labels for each kit.", steps=[
+            {"id": "kits", "type": "tool", "name": "List kits", "does": "Reads the kits", "tool": "list_kits"}]),
     ])
     events = await stream(client, "/api/builder/chat", {"message": "Buy shipping labels for our retainer kits"})
     run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]

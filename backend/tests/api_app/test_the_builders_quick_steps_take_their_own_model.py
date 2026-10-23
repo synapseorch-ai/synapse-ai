@@ -54,15 +54,16 @@ def test_no_role_or_a_role_not_mapped_leaves_the_runs_model(roles):
 
 
 def test_the_builders_quick_steps_are_its_routing_and_its_one_call_look_ups():
-    """Every routing evaluator, and the tool steps that only write one call's arguments (F492's plan check, the
-    how-to, connect and can't-do look-ups, the findings card, and the build's own note of who provides a missing
-    tool, F763): never a step that plans, writes or answers."""
+    """Every routing evaluator, and the tool steps that only write one call's arguments (the how-to, connect and
+    can't-do look-ups, the findings card, and the build's own note of who provides a missing tool, F763): never a
+    step that plans, writes or answers. The build's plan check is code since SAI2-P3, with no model at all."""
     steps = bundled_definitions()["orchestration"]["steps"]
     quick = {s["id"] for s in steps if s.get("model_role") == "quick"}
     evaluators = {s["id"] for s in steps if s["type"] == "evaluator"}
     assert evaluators <= quick and "step_intent" in quick
-    assert quick - evaluators == {"step_check_plan", "step_howto", "step_connect", "step_cantdo", "step_findings",
-                                  "step_plan_findings"}
+    assert quick - evaluators == {"step_howto", "step_connect", "step_cantdo", "step_findings", "step_plan_findings"}
+    assert not [s["id"] for s in steps if s["type"] == "tool" and s.get("tool_arguments") is not None
+                and s.get("model_role")], "a code step calls no model, quick or not"
     assert all(s["type"] in ("evaluator", "tool") for s in steps if s["id"] in quick)
 
 

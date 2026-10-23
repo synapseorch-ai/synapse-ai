@@ -445,7 +445,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         if t.status == "missing":
             no_way.append(t.name)
             said.append(f"`{t.name}`: nothing in this workspace provides it" + (
-                ", and the lookup found nobody who does." if looked else "."))
+                ", and the lookup found nobody who does" if looked else "")
+                + ". Connect an app or service that provides it, or build without it.")
         elif t.status == "found" and t.via == "http_tool" and not MAKES_HTTP_TOOLS:
             no_way.append(t.name)
             said.append(f"`{t.name}`: {t.provider} has a public API, but I can't make a tool for it here yet: build "

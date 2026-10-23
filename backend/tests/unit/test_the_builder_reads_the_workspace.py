@@ -133,10 +133,10 @@ async def test_a_reader_that_fails_says_so_and_an_unknown_topic_is_refused():
     assert "topic must be one of" in (await _read(topic="passwords"))["error"]
 
 
-def test_the_answering_agent_the_change_planner_and_the_analyst_hold_it():
+def test_the_answering_agent_the_change_planner_and_the_planner_hold_it():
     from core.native_builder import bundled_definitions
     held = {a["system_role"] for a in bundled_definitions()["agents"] if "read_workspace" in (a.get("tools") or [])}
-    assert {"reporter", "change_planner", "analyst"} <= held, held
+    assert {"reporter", "change_planner", "planner"} <= held, held
 
 
 @pytest.mark.parametrize("topic", ["runs", "usage", "agents", "workflows"])

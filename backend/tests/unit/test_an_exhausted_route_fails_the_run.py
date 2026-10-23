@@ -191,6 +191,15 @@ class TestAtTheAnswerThatRoutesThere:
 
 
 # ── the native AI builder's own cycles ───────────────────────────────────────
+#: What the build route's code steps answer in the graph (SAI2-P3): the check's outcome is whatever the person's last
+#: answer scripts as `next`, a no is a revision, and the approval goes through. Everything else prints its id.
+_SCRIPTED = {
+    "step_check_plan": '{"outcome": "{state.human_response.next}"}',
+    "step_plan_answer": '{"outcome": "revise"}',
+    "step_plan_approve": '{"approved": 1}',
+}
+
+
 def _builder_graph() -> dict:
     """The bundled builder orchestration with its routing intact — every id,
     route, cap and fallback — and each agent, LLM and tool step replaced by a
@@ -203,7 +212,8 @@ def _builder_graph() -> dict:
     for s in orch["steps"]:
         if s["type"] in ("agent", "llm", "tool"):
             s = {"id": s["id"], "name": s.get("name", s["id"]), "type": "print",
-                 "print_content": s["id"], "output_key": s.get("output_key") or f"o_{s['id']}",
+                 "print_content": _SCRIPTED.get(s["id"], s["id"]),
+                 "output_key": s.get("output_key") or f"o_{s['id']}",
                  "next_step_id": s.get("next_step_id"), "max_iterations": s.get("max_iterations", 3),
                  **({"on_exhausted_step_id": s["on_exhausted_step_id"]} if s.get("on_exhausted_step_id") else {})}
         steps.append(s)
@@ -216,44 +226,49 @@ def _route(label):
 
 
 class TestTheBuildersOwnCycles:
-    async def _start(self, driver, fake_llm, script, run_id):
-        fake_llm.script([_route(x) for x in script])
+    """Since SAI2-P3 the only model on these routes is the router: the planner's own choice to ask or to submit is
+    scripted here as the check's outcome (`_SCRIPTED`), and the cycles' caps are what is tested. The planner's own
+    bound — no sixth question in one run — is `ask_person`'s (`test_synapse_ai_asks_no_secret_and_no_way_in`)."""
+
+    async def _start(self, driver, fake_llm, run_id, first="ask"):
+        fake_llm.script([_route("create")])
         return await driver.start(_builder_graph(), run_id,
-                                  initial_state={"plan_room": {"orchestrations_left": 1}})
+                                  initial_state={"plan_room": {"orchestrations_left": 1},
+                                                 "human_response": {"next": first}})
 
     async def test_five_clarifications_then_it_plans_with_what_it_has(self, driver, fake_llm):
-        assert await self._start(driver, fake_llm, ["create"] + ["clarify"] * 5, "run_bclar") == "paused"
+        assert await self._start(driver, fake_llm, "run_bclar") == "paused"
         for n in range(1, 5):
-            assert await driver.answer("run_bclar", {"answer": f"detail {n}"}) == "paused"
+            assert await driver.answer("run_bclar", {"answer": f"detail {n}", "next": "ask"}) == "paused"
             assert (await _run("run_bclar")).current_step_id == "step_human_clarify"
 
-        # The fifth answer: the builder reads it, stops asking and drafts the plan.
-        assert await driver.answer("run_bclar", {"answer": "detail 5"}) == "paused"
+        # The fifth answer: the planner reads it and plans with what it has.
+        assert await driver.answer("run_bclar", {"answer": "detail 5", "next": "review"}) == "paused"
         run = await _run("run_bclar")
         assert run.current_step_id == "step_human_review"
         ran = [h["step_id"] for h in run.step_history]
-        assert ran.count("step_understand") == 6        # every answer was read
-        assert ran.count("step_clarify_route") == 5
-        assert "step_draft_plan" in ran
+        assert ran.count("step_plan") == 6              # every answer was read
+        assert ran.count("step_human_clarify") == 5
+        assert ran.count("step_check_plan") == 6
 
     async def test_four_revisions_then_approval_saves(self, driver, fake_llm):
-        assert await self._start(driver, fake_llm, ["create", "draft"], "run_brev") == "paused"
+        assert await self._start(driver, fake_llm, "run_brev", first="review") == "paused"
         for _ in range(4):
-            # approval is decided in code (F754): "change it" redrafts without a model call
-            assert await driver.answer("run_brev", {"feedback": "change it"}) == "paused"
+            # approval is decided in code (F754): "change it" goes back to the planner, read in code
+            assert await driver.answer("run_brev", {"feedback": "change it", "next": "review"}) == "paused"
             assert (await _run("run_brev")).current_step_id == "step_human_review"
 
-        fake_llm.script([_route("no"), _route("create")])
         assert await driver.answer("run_brev", {"feedback": "approve"}) == "completed"
-        run = await _run("run_brev")
-        assert "step_save_create" in [h["step_id"] for h in run.step_history]
+        ran = [h["step_id"] for h in (await _run("run_brev")).step_history]
+        assert ran.index("step_plan_approve") < ran.index("step_save") < ran.index("step_build_done")
+        assert ran.count("step_plan_answer") == 4
 
     async def test_a_fifth_revision_gives_up_and_says_so(self, driver, fake_llm):
-        assert await self._start(driver, fake_llm, ["create", "draft"], "run_brev5") == "paused"
+        assert await self._start(driver, fake_llm, "run_brev5", first="review") == "paused"
         for _ in range(4):
-            assert await driver.answer("run_brev5", {"feedback": "change it"}) == "paused"
+            assert await driver.answer("run_brev5", {"feedback": "change it", "next": "review"}) == "paused"
 
-        assert await driver.answer("run_brev5", {"feedback": "change it again"}) == "failed"
+        assert await driver.answer("run_brev5", {"feedback": "change it again", "next": "review"}) == "failed"
         assert "gave up after 5 attempts" in (await _run("run_brev5")).step_history[-1]["error"]
 
 

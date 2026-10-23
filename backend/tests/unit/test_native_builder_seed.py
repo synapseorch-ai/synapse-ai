@@ -1,4 +1,4 @@
-"""The builder ships as data: an orchestration and five sub-agents.
+"""The builder ships as data: an orchestration and its sub-agents.
 
 Two properties matter and neither was tested. It has to seed without touching
 anything else in the store — it used to replace the whole tenant on every
@@ -38,8 +38,7 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "agent_creator", "analyst", "change_planner", "maker", "orchestrator",
-            "reporter", "researcher", "saver_create", "saver_update",
+            "change_planner", "maker", "orchestrator", "planner", "prompt_writer", "reporter", "researcher",
         ]
 
     def test_the_version_is_stable_and_moves_with_the_content(self):
@@ -111,7 +110,13 @@ class TestTheSchemaSaysWhatTheStepsWrite:
                          f"but resume() writes every answer there")
         assert not wrong, "; ".join(sorted(set(wrong)))
 
-    def test_a_saver_finishing_with_done_is_not_a_typing_failure(self):
+    @pytest.mark.parametrize("step_id,key,value", [
+        # The planner finishes on a tool (E2): its Plan is an object. The save (E1) answers in JSON text.
+        ("step_plan", "plan_draft", {"finish": "submit_plan", "kind": "create", "title": "t"}),
+        ("step_save", "build_saved", '{"outcome": "saved", "made": {}, "effect": ""}'),
+        ("step_plan_full", "final_orch", "STOPPED: the plan is full"),
+    ])
+    def test_what_the_build_route_writes_is_not_a_typing_failure(self, step_id, key, value):
         import types
 
         from core.models_orchestration import Orchestration, OrchestrationRun
@@ -123,22 +128,22 @@ class TestTheSchemaSaysWhatTheStepsWrite:
         run = OrchestrationRun(run_id="builder_f52", orchestration_id=orch.id,
                                shared_state=engine._init_state("build me something"))
         before = dict(run.shared_state)
-        run.shared_state["final_orch"] = "DONE"
+        run.shared_state[key] = value
 
-        warnings, unconvertible = engine._type_written_state(
-            run, engine.step_map["step_save_create"], before)
+        warnings, unconvertible = engine._type_written_state(run, engine.step_map[step_id], before)
 
         assert warnings == []
         assert unconvertible == []
-        assert run.shared_state["final_orch"] == "DONE"
+        assert run.shared_state[key] == value
 
 
 class TestSeeding:
     async def test_it_installs_the_builder(self):
         result = await seed_native_builder()
         assert result["orchestration"] == "added"
-        # 8 since the Researcher (F577, BWA1).
-        assert len(result["agents_added"]) == 9
+        # 8 since the Researcher (F577, BWA1); 9 with P2's change planner and maker; 7 since P3's planner and
+        # prompt writer took the analyst's, the agent creator's and both savers' places.
+        assert len(result["agents_added"]) == 7
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration
@@ -166,12 +171,12 @@ class TestSeeding:
         await seed_native_builder()
         from core.store.resources import get_agent, save_agent
 
-        agent = await get_agent("agent_native_builder_analyst")
+        agent = await get_agent("agent_native_builder_planner")
         await save_agent({**agent, "system_prompt": "drifted"})
 
         result = await seed_native_builder()
-        assert result["agents_updated"] == ["agent_native_builder_analyst"]
-        assert (await get_agent("agent_native_builder_analyst"))["system_prompt"] != "drifted"
+        assert result["agents_updated"] == ["agent_native_builder_planner"]
+        assert (await get_agent("agent_native_builder_planner"))["system_prompt"] != "drifted"
 
     async def test_agents_from_older_releases_are_purged(self):
         await S.seed_agents([S.make_agent(id="agent_native_builder_planner_create")])
@@ -224,15 +229,21 @@ class TestOnlyTheApplyStepCanDestroy:
             assert not held, f"{agent['system_role']} holds {held}"
 
     def test_the_apply_step_makes_all_of_them(self):
-        """Every delete is a change op, and the one step that makes a change's calls is `step_apply`; no other
-        step forces a write."""
+        """Every delete is a change op, and the one step that makes a change's calls is `step_apply`. The only
+        other steps that force a write are the two approvals, which write the run's own record, and the build's
+        save (SAI2-P3), which makes, never deletes: its calls are only these."""
         from core.builder_access import WRITES
-        from core.native_builder import change_ops
+        from core.native_builder import build_save, change_ops
 
         assert self.DESTRUCTIVE <= set(change_ops.WRITE_TOOLS)
         writing = {s["id"] for s in bundled_definitions()["orchestration"]["steps"]
                    if s["type"] == "tool" and s.get("forced_tool") in WRITES}
-        assert writing == {"step_finish_build", "step_change_approve", "step_apply"}
+        assert writing == {"step_plan_approve", "step_save", "step_change_approve", "step_apply"}
+        import inspect
+        source = inspect.getsource(build_save.save_calls)
+        made = {"create_agent", "create_orchestration", "update_orchestration", "set_orchestration_meta",
+                "create_board", "create_schedule"}
+        assert {t for t in made if f'"{t}"' in source} == made and "delete" not in source
 
     def test_nothing_inherits_the_default_tool_set_by_accident(self):
         """A sub-agent that does not skip the defaults gets every tool in the
@@ -308,8 +319,16 @@ class TestAParseFailureGoesSomewhereSafe:
         # (`IfElseStepExecutor`): their false side is the redraft, never the saver or the apply.
         from core.native_builder import bundled_definitions
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
-        assert steps["step_approval_route"]["if_false_step_id"] == "step_draft_plan"
+        assert steps["step_approval_route"]["if_false_step_id"] == "step_plan_answer"
         assert steps["step_manage_route"]["if_false_step_id"] == "step_change"
+        # A no is read in code (SAI2-P3): an answer that cannot be read goes back to the planner, never on.
+        answered = steps["step_plan_answer_route"]
+        assert answered["type"] == "switch" and answered["switch_default_step_id"] == "step_plan"
+        assert "step_save" not in answered["switch_cases"].values()
+        # A build check whose outcome cannot be read says it failed and ends.
+        checked = steps["step_plan_route"]
+        assert checked["type"] == "switch" and checked["switch_default_step_id"] == "step_build_failed"
+        assert steps["step_build_failed"]["next_step_id"] == "step_end"
         # The change route's own split is code too (SAI2-P2): a check whose outcome cannot be read says what it
         # found and ends; it never falls to the review, let alone the apply.
         route = steps["step_check_route"]
@@ -417,31 +436,46 @@ class TestAServerNameIsNotACapability:
     answers questions about GitHub repositories. The Agent Creator and the
     Create Saver both saw the real description later and bound it anyway.
 
-    `list_tool_servers` now carries each server's own tools, and these rules
-    are what tell the agents to read them.
+    Since SAI2-P3 the planner chooses every tool from the workspace's catalogue as code reads it, each with its own
+    description, and these rules tell it to choose by that; nothing after it binds a tool the plan did not name.
     """
 
     @staticmethod
     def _prompt(role):
         for agent in bundled_definitions()["agents"]:
-            if agent["id"].endswith(role):
+            if agent["system_role"] == role:
                 return agent["system_prompt"]
         raise AssertionError(f"no agent for {role}")
 
-    def test_the_analyst_is_told_a_name_is_not_a_capability(self):
-        prompt = self._prompt("analyst")
-        assert "NAME is not its capability" in prompt
+    def test_the_planner_is_told_a_name_is_not_a_capability(self):
+        prompt = self._prompt("planner")
+        assert "A tool's name is not its capability" in prompt
         assert "deepwiki" in prompt, "the rule names the case it came from"
 
-    def test_the_analyst_is_told_that_nothing_fitting_is_an_answer(self):
-        assert "If nothing fits, say so plainly" in self._prompt("analyst")
+    def test_the_planner_is_told_that_nothing_fitting_is_an_answer(self):
+        assert "If nothing here does the job" in self._prompt("planner")
 
-    def test_everyone_who_binds_a_tool_stops_on_a_mismatch(self):
-        # The analyst proposes; these three are the ones that write the binding.
-        for role in ("agent_creator", "saver_create", "saver_update"):
-            prompt = self._prompt(role)
-            assert "must match what the plan asked for" in prompt, role
-            assert "do not bind it because the server's name sounded right" in prompt, role
+    async def test_the_pack_gives_each_tool_its_own_description(self):
+        from core.native_builder.build_plan import read_plan_context
+        from core.store.resources import save_tool
+
+        await save_tool({"name": "deepwiki_ask", "description": "Answers questions about a GitHub repository.",
+                         "tool_type": "http", "method": "GET", "url": "https://w.example/ask", "headers": {},
+                         "inputSchema": {"type": "object", "properties": {}}})
+        pack = await read_plan_context({}, type("S", (), {"agent_sessions": {}, "tool_router": {}})(), [])
+        assert {"name": "deepwiki_ask", "does": "Answers questions about a GitHub repository."} in pack["tools"]
+
+    def test_what_binds_a_tool_is_code_and_binds_only_what_the_plan_named(self):
+        from core.native_builder import objects as O
+        from core.native_builder.build_save import save_calls
+
+        plan = O.Plan.from_draft({"kind": "create", "title": "t", "summary": "s", "steps": [
+            {"id": "ask", "type": "tool", "name": "Ask", "does": "x", "tool": "deepwiki_ask"}]})
+        [call] = save_calls(plan, {}, {})
+        steps = json.loads(call["args"]["steps_json"])
+        assert [s.get("forced_tool") for s in steps if s["type"] == "tool"] == ["deepwiki_ask"]
+        assert not {a["system_role"] for a in bundled_definitions()["agents"]} & {
+            "agent_creator", "saver_create", "saver_update"}
 
 
 class TestWhatWasAskedForIsBuilt:
@@ -462,7 +496,7 @@ class TestWhatWasAskedForIsBuilt:
     @staticmethod
     def _agent(role):
         for agent in bundled_definitions()["agents"]:
-            if agent["id"].endswith(role):
+            if agent["system_role"] == role:
                 return agent
         raise AssertionError(f"no agent for {role}")
 
@@ -471,35 +505,51 @@ class TestWhatWasAskedForIsBuilt:
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
         return steps[step_id]
 
-    def test_the_analyst_is_told_a_check_before_it_goes_out_is_a_checkpoint(self):
-        prompt = self._agent("analyst")["system_prompt"]
+    def test_the_planner_is_told_a_check_before_it_goes_out_is_a_checkpoint(self):
+        prompt = self._agent("planner")["system_prompt"]
         assert "before it goes to the client" in prompt, "the rule names the case it came from"
-        assert "is a human checkpoint" in prompt
+        assert "is a human step right before the step that sends it" in prompt
 
-    def test_the_analyst_writes_down_a_cadence(self):
-        prompt = self._agent("analyst")["system_prompt"]
-        assert "- **Schedule**:" in prompt
+    def test_the_planner_writes_down_a_cadence(self):
+        prompt = self._agent("planner")["system_prompt"]
         # A scheduled run starts with no person to type its input: the cadence
         # and what each run starts with are asked for together.
-        assert "what each scheduled run starts with" in prompt
+        assert "Add a schedule only when the person named when it runs" in prompt
+        assert "what each run starts with" in prompt
 
-    def test_the_plan_has_a_step_for_every_checkpoint_and_a_schedule_section(self):
-        prompt = self._step("step_draft_plan")["prompt_template"]
-        assert "Every human checkpoint in the requirements becomes a `human` step" in prompt
-        assert "## Schedule" in prompt
-        assert "Omit this section when the requirements name no cadence" in prompt
+    def test_the_plan_has_a_place_for_a_schedule_and_the_card_shows_it_only_when_there_is_one(self):
+        from core.native_builder import objects as O
+        from core.native_builder.render import render
 
-    def test_the_create_saver_can_make_the_schedule_and_nothing_more(self):
-        tools = set(self._agent("saver_create")["tools"])
-        # A new orchestration has no schedule to find, so no listing either.
-        assert "create_schedule" in tools
-        assert not {"list_schedules", "set_schedule_enabled", "delete_schedule"} & tools
+        assert set(O.Schedule.model_fields) >= {"cron", "says", "input"}
+        base = {"kind": "create", "title": "t", "summary": "s", "steps": [
+            {"id": "a", "type": "llm", "name": "A", "does": "x", "prompt": "p"}]}
+        scheduled = {**base, "schedule": {"cron": "0 9 * * 1", "says": "Mondays"}}
+        assert "## Schedule" in render(O.Plan.from_draft(scheduled))
+        assert "## Schedule" not in render(O.Plan.from_draft(base))
 
-    def test_the_create_saver_schedules_only_what_the_plan_says_after_it_validates(self):
-        prompt = self._agent("saver_create")["system_prompt"]
-        assert "PHASE 4: Schedule" in prompt
-        assert "Only if the plan has a `## Schedule` section" in prompt
-        assert prompt.index("PHASE 3") < prompt.index("PHASE 4: Schedule")
+    def test_the_save_can_make_the_schedule_and_nothing_more(self):
+        from core.native_builder import objects as O
+        from core.native_builder.build_save import save_calls
+
+        base = {"kind": "create", "title": "t", "summary": "s", "steps": [
+            {"id": "a", "type": "llm", "name": "A", "does": "x", "prompt": "p"}]}
+        tools = [c["tool"] for c in save_calls(O.Plan.from_draft(
+            {**base, "schedule": {"cron": "0 9 * * 1", "says": "Mondays", "input": "This week's notes"}}), {}, {})]
+        assert tools == ["create_orchestration", "create_schedule"]
+        assert not {"list_schedules", "set_schedule_enabled", "delete_schedule", "update_schedule"} & set(tools)
+        assert [c["tool"] for c in save_calls(O.Plan.from_draft(base), {}, {})] == ["create_orchestration"]
+
+    def test_the_save_schedules_only_what_the_plan_says_after_the_workflow(self):
+        from core.native_builder import objects as O
+        from core.native_builder.build_save import save_calls
+
+        plan = O.Plan.from_draft({"kind": "create", "title": "t", "summary": "s", "steps": [
+            {"id": "a", "type": "llm", "name": "A", "does": "x", "prompt": "p"}],
+            "schedule": {"cron": "0 9 * * 1", "says": "Mondays", "input": "This week's notes"}})
+        made, sched = save_calls(plan, {}, {})
+        assert sched["args"]["target_id"] == made["makes"] and "enabled" not in sched["args"]
+        assert sched["args"]["prompt"] == "This week's notes"
 
     def test_a_schedule_is_made_only_after_a_person_approved_the_plan(self):
         """A schedule is standing spend. The create saver is reached only
@@ -516,8 +566,8 @@ class TestWhatWasAskedForIsBuilt:
                               s.get("if_false_step_id"), *(s.get("route_map") or {}).values()]
             ]
 
-        # Walk back from the saver to the start; every path passes the review.
-        seen, frontier = set(), ["step_save_create"]
+        # Walk back from the save to the start; every path passes the review.
+        seen, frontier = set(), ["step_save"]
         while frontier:
             current = frontier.pop()
             for s in into(current):
@@ -525,7 +575,7 @@ class TestWhatWasAskedForIsBuilt:
                     continue
                 seen.add(s["id"])
                 frontier.append(s["id"])
-        assert "step_intent" not in seen, "the create saver is reachable without the review"
+        assert seen and "step_intent" not in seen, "the save is reachable without the review"
         assert steps["step_human_review"]["type"] == "human"
 
     def test_the_summary_names_a_schedule_it_made(self):
@@ -541,7 +591,8 @@ class TestWhatWasAskedForIsBuilt:
         said = state["run_changes"]
         assert '"Friday report"' in said and '"0 16 * * 5" (UTC)' in said
         assert "paused: turn it on under Schedules" in said
-        assert "SCHEDULED (paused)" in self._agent("saver_create")["system_prompt"]
+        # The build's own ending says the same record, with what reading it back found after it.
+        assert self._step("step_build_done")["print_content"] == "{state.run_changes}{state.build_saved.effect}"
 
 
 class TestAFullPlanAndAStoppedBuild:
@@ -565,7 +616,7 @@ class TestAFullPlanAndAStoppedBuild:
         assert self._lands(steps, "create") == "step_plan_room"
         room = steps["step_plan_room"]
         assert room["type"] == "if_else"
-        assert room["if_true_step_id"] == "step_understand"
+        assert room["if_true_step_id"] == "step_plan_context"
         full = steps[room["if_false_step_id"]]
         assert full["type"] == "print" and full["output_key"] == "final_orch"
         assert "{state.plan_room.reason}" in full["print_content"]
@@ -577,9 +628,11 @@ class TestAFullPlanAndAStoppedBuild:
         # An update adds no orchestration; only a create is checked.
         assert self._lands(self._steps(), "update") == "step_fetch_existing"
 
-    def test_the_create_saver_is_followed_by_finish_build(self):
+    def test_the_save_cleans_up_after_itself_and_its_ending_says_what_it_did(self):
+        """`finish_build`'s job (F156: what a stopped build started is removed) is the save's own now: it removes
+        what its pass made and says why (`test_a_build_is_saved_in_code`)."""
         steps = self._steps()
-        assert steps["step_save_create"]["next_step_id"] == "step_finish_build"
-        finish = steps["step_finish_build"]
-        assert (finish["type"], finish["forced_tool"]) == ("tool", "finish_build")
-        assert finish["next_step_id"] == "step_summarize"
+        save = steps["step_save"]
+        assert (save["type"], save["forced_tool"], save["next_step_id"]) == ("tool", "save_build", "step_build_done")
+        assert steps["step_build_done"]["next_step_id"] == "step_end"
+        assert "finish_build" not in {s.get("forced_tool") for s in steps.values()}

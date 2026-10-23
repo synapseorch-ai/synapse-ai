@@ -1,6 +1,9 @@
-"""Through the engine: a build naming a tool nothing here provides runs the Researcher before its redraft, and the
-redraft reads what it found (F763, BWA1, D274). A build whose tools all exist is not researched."""
+"""Through the engine: a build naming a tool nothing here provides runs the Researcher before the plan is redrafted,
+and the planner reads what it found (F763, BWA1, D274). A build whose tools all exist is not researched. Since
+SAI2-P3 the planner writes the Plan once per pass and the check is code."""
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -13,85 +16,80 @@ async def builder():
     await seed_native_builder()
 
 
-STRIPE_PLAN = ("## Steps\n1. **Create Payment Link** (tool step) — forced tool `stripe_create_payment_link`. "
-               "Next: end.")
+STRIPE_PLAN = {"kind": "create", "title": "Payment link", "summary": "Send a Stripe payment link.", "steps": [
+    {"id": "link", "type": "tool", "name": "Create Payment Link", "does": "Makes a Stripe payment link",
+     "tool": "stripe_create_payment_link"}]}
 
 
-async def test_a_build_naming_a_missing_tool_finds_who_provides_it_before_the_review(client, builder, fake_llm):
-    fake_llm.script([
+def _stripe_script():
+    return [
         route("create"),                                                       # step_intent
-        "Requirements: when a treatment plan is accepted, send a Stripe payment link.",   # step_understand
-        route("draft"),                                                        # step_clarify_route
-        STRIPE_PLAN,                                                           # step_draft_plan
-        tool_call("check_plan", tools=["stripe_create_payment_link"]),         # step_check_plan (first)
+        tool_call("submit_plan", **STRIPE_PLAN),                               # step_plan (the planner's finish)
         "Stripe has its own MCP server.\nStripe — mcp — a Stripe account — https://mcp.stripe.com",  # researcher
         tool_call("report_findings", goal="send a payment link", options=[      # step_plan_findings
             {"provider": "Stripe", "how": "mcp", "needs": "A Stripe account"}]),
-        STRIPE_PLAN + "\n\n## Open questions\n- Connect Stripe first.",         # step_draft_plan (redraft)
-        tool_call("check_plan", tools=["stripe_create_payment_link"]),         # step_check_plan (second)
-    ])
+        tool_call("submit_plan", **{**STRIPE_PLAN, "questions": ["Connect Stripe first."]}),  # step_plan again
+    ]
+
+
+async def test_a_build_naming_a_missing_tool_finds_who_provides_it_before_the_review(client, builder, fake_llm):
+    fake_llm.script(_stripe_script())
     events = await stream(client, "/api/builder/chat",
                           {"message": "When a treatment plan is accepted, send the patient a Stripe payment link"})
     order = [e.get("orch_step_id") for e in events if e["type"] == "step_start"]
     assert order.index("step_plan_research") < order.index("step_plan_findings") < order.index("step_human_review")
-    assert order.count("step_draft_plan") == 2 and order.count("step_plan_research") == 1
+    assert order.count("step_plan") == 2 and order.count("step_plan_research") == 1
     assert [e["options"][0]["provider"] for e in events if e["type"] == "research_findings"] == ["Stripe"]
-    assert any(e["type"] == "human_input_required" for e in events), "the person still reviews the plan"
+    asked = next(e for e in events if e["type"] == "human_input_required")
+    assert asked["context"]["object"] == "plan", "the person reviews the plan, drawn from its object"
     assert not [e for e in events if e["type"] == "resource_saved"], "nothing is built before the review"
 
     from core.orchestration.state import SharedState
 
-    run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
-    state = (await SharedState.restore(run_id)).run.shared_state
+    state = (await SharedState.restore(asked["run_id"])).run.shared_state
     assert isinstance(state["plan_findings"], dict) and state["plan_findings"]["options"][0]["provider"] == "Stripe"
-    assert state["plan_check"]["research"] == [] and state["plan_check"]["checks"] == 2
+    checked = json.loads(state["plan_checked"]) if isinstance(state["plan_checked"], str) else state["plan_checked"]
+    assert checked["outcome"] == "review" and checked["checks"] == 2
+    # The fake researcher read no page and searched no registry, so its "mcp" is unclear (F577): the tool is still
+    # missing, and the card offers building without it, never Build it.
+    [tool] = checked["plan"]["tools"]
+    assert tool["status"] == "missing" and "build" not in checked["offers"]
+    assert "without:stripe_create_payment_link" in checked["offers"]
 
-    redraft_prompt = [c for c in fake_llm.calls if "Plan Drafter" in str(c.get("prompt_msg") or c.get("sys_prompt"))][-1]
-    assert "Stripe" in str(redraft_prompt.get("prompt_msg")) and "mcp" in str(redraft_prompt.get("prompt_msg"))
+    replanned = [c for c in fake_llm.calls
+                 if "Planner for Synapse AI" in str(c.get("sys_prompt")) + str(c.get("prompt_msg"))][-1]
+    said = str(replanned.get("prompt_msg"))
+    assert "'provider': 'Stripe'" in said and "'how': 'unclear'" in said, "the planner reads what the lookup found"
 
 
 async def test_a_build_whose_tools_all_exist_is_not_researched(client, builder, fake_llm):
-    plan = "## Steps\n1. **List** (tool step) — forced tool `list_agents`. Next: end."
-    fake_llm.script([
-        route("create"),
-        "Requirements: list the agents.",
-        route("draft"),
-        plan,
-        tool_call("check_plan", tools=["list_agents"]),
-    ])
-    events = await stream(client, "/api/builder/chat", {"message": "Build a workflow that lists my agents"})
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "rotterdam_weather", "description": "Today's weather in Rotterdam.", "tool_type": "http",
+                     "method": "GET", "url": "https://api.weather.example/v1/rotterdam", "headers": {},
+                     "inputSchema": {"type": "object", "properties": {}}, "annotations": {"readOnlyHint": True}})
+    plan = {"kind": "create", "title": "Weather", "summary": "Read the weather.", "steps": [
+        {"id": "read", "type": "tool", "name": "Read", "does": "Reads the weather", "tool": "rotterdam_weather"}]}
+    fake_llm.script([route("create"), tool_call("submit_plan", **plan)])
+    events = await stream(client, "/api/builder/chat", {"message": "Build a workflow that reads today's weather"})
     order = [e.get("orch_step_id") for e in events if e["type"] == "step_start"]
     assert "step_plan_research" not in order and "step_human_review" in order
 
 
-async def test_an_approved_build_that_stops_at_the_missing_tool_says_which_and_what_to_connect(client, builder,
-                                                                                                fake_llm):
-    """F768: through the engine, the stopped build's words come from finish_build's own reading of the run."""
-    fake_llm.script([
-        route("create"),
-        "Requirements: when a treatment plan is accepted, send a Stripe payment link.",
-        route("draft"),
-        STRIPE_PLAN,
-        tool_call("check_plan", tools=["stripe_create_payment_link"]),
-        "Stripe has its own MCP server.\nStripe — mcp — a Stripe account — https://mcp.stripe.com",
-        tool_call("report_findings", goal="send a payment link", options=[{"provider": "Stripe", "how": "mcp"}]),
-        STRIPE_PLAN + "\n\n## Open questions\n- Connect Stripe first.",
-        tool_call("check_plan", tools=["stripe_create_payment_link"]),
-    ])
+async def test_an_approved_build_that_still_needs_its_tool_says_which_and_what_to_connect(client, builder,
+                                                                                            fake_llm):
+    """F768: a typed yes to a plan whose tool is not connected builds nothing and says which tool and what to
+    connect — the card never offered Build it (Naveen, 10-23), and the approval refuses it in code."""
+    fake_llm.script(_stripe_script())
     events = await stream(client, "/api/builder/chat",
                           {"message": "When a treatment plan is accepted, send the patient a Stripe payment link"})
     run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
 
     fake_llm.reset()
-    fake_llm.script([
-        route("no"),                         # step_agents_needed
-        route("create"),                     # step_save_route
-        "Tool not found",                    # step_save_create: the saver stops, as on dev
-        tool_call("finish_build"),           # step_finish_build
-    ])
-    await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "approve"}})
+    after = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "approve"}})
     from core.orchestration.state import SharedState
 
     summary = (await SharedState.restore(run_id)).run.shared_state["summary"]
     assert summary.startswith("Nothing was built:") and "`stripe_create_payment_link`" in summary, summary
-    assert "build it again" in summary and summary != "Nothing in your workspace changed."
+    assert "Connect an app or service that provides it" in summary and summary != "Nothing in your workspace changed."
+    assert not [e for e in after if e["type"] == "resource_saved"] and not fake_llm.calls

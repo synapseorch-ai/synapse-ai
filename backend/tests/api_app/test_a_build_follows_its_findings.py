@@ -5,7 +5,8 @@ set up the workflow to send a Stripe payment link", or "approve" — was routed 
 the build. The router had no sign that the provider was already found, and its research route wins "even when
 worded as build". Naveen: after findings, a research-shaped request goes to build, with `plan_findings` from the same
 record. The previous turn's findings come into the turn's state in code; the router's `research` then goes to the
-build, and the drafter plans from them (F763's look-up does not run again for what is already found).
+build, and the planner plans from them (F763's look-up does not run again for what is already found; since SAI2-P3
+that is `check_build`'s own decision).
 """
 from __future__ import annotations
 
@@ -59,21 +60,33 @@ def test_research_after_findings_goes_to_the_build_through_the_role_door(state, 
     assert steps["step_change_route"]["switch_default_step_id"] == "step_plan_room"
 
 
-def test_a_build_with_findings_already_does_not_look_them_up_again():
-    gate = _steps()["step_plan_needs_research"]
-    state = {"plan_check": {"research": ["stripe_create_payment_link"]}, "plan_findings": STRIPE}
-    value, _ = _eval_state_expr(gate["if_condition"], state, default=False)
-    assert value is False
-    value, _ = _eval_state_expr(gate["if_condition"], {**state, "plan_findings": {}}, default=False)
-    assert value is True
+@pytest.mark.parametrize("findings, outcome", [(STRIPE, "review"), ({}, "research")])
+async def test_a_build_with_findings_already_does_not_look_them_up_again(client, findings, outcome):
+    from core import builder_access
+    from core.builder_tools import execute_builder_tool_with_events
+    from core.models_orchestration import OrchestrationRun
+    from core.orchestration.engine import live
+    from core.orchestration.state import SharedState
+
+    run = OrchestrationRun(run_id="builder_f766", orchestration_id="orch_native_builder", shared_state={
+        builder_access.CALLER_KEY: {"user_id": "u1"}, "intent": "create", "plan_findings": findings})
+    await SharedState(run).checkpoint()
+    draft = {"finish": "submit_plan", "kind": "create", "title": "Payment link", "summary": "s", "steps": [
+        {"id": "link", "type": "tool", "name": "Link", "does": "x", "tool": "stripe_create_payment_link"}]}
+    server = type("S", (), {"agent_sessions": {}, "tool_router": {}})()
+    with live(run):
+        raw, _ = await execute_builder_tool_with_events("check_build", {"draft": draft}, server, run_id=run.run_id)
+    assert json.loads(raw)["outcome"] == outcome
 
 
-def test_the_analyst_and_the_drafter_read_the_findings():
-    steps = _steps()
-    assert "plan_findings" in steps["step_understand"]["input_keys"]
-    assert "plan_findings" in steps["step_draft_plan"]["input_keys"]
+def test_the_planner_and_the_check_read_the_findings():
+    import inspect
+
+    from core.native_builder import build_plan
+    assert "{state.plan_findings}" in _steps()["step_plan"]["prompt_template"]
+    assert build_plan.FINDINGS_KEY == "plan_findings" and "FINDINGS_KEY" in inspect.getsource(build_plan._found)
     schema = bundled_definitions()["orchestration"]["state_schema"]
-    assert schema["prior_findings"]["type"] == "dict"
+    assert schema["prior_findings"]["type"] == "dict" and schema["plan_findings"]["type"] == "dict"
 
 
 @pytest.fixture
@@ -81,7 +94,9 @@ async def builder():
     await seed_native_builder()
 
 
-PLAN = "## Steps\n1. **Create Payment Link** (tool step) — forced tool `stripe_create_payment_link`. Next: end."
+PLAN = {"kind": "create", "title": "Payment link", "summary": "Send a Stripe payment link.", "steps": [
+    {"id": "link", "type": "tool", "name": "Create Payment Link", "does": "Makes a Stripe payment link",
+     "tool": "stripe_create_payment_link"}]}
 
 
 async def test_go_ahead_after_the_findings_builds_from_them(client, builder, fake_llm):
@@ -98,22 +113,18 @@ async def test_go_ahead_after_the_findings_builds_from_them(client, builder, fak
     fake_llm.reset()
     fake_llm.script([
         route("research"),                                     # the router still reads it as research
-        "Requirements: send a Stripe payment link when a plan is accepted.",   # step_understand
-        route("draft"),                                        # step_clarify_route
-        PLAN,                                                  # step_draft_plan
-        tool_call("check_plan", tools=["stripe_create_payment_link"]),
-        PLAN + "\n\n## Open questions\n- Connect Stripe first.",               # the redraft
-        tool_call("check_plan", tools=["stripe_create_payment_link"]),
+        tool_call("submit_plan", **PLAN),                      # the planner's finish (E2)
     ])
     second = await stream(client, "/api/builder/chat",
                           {"message": "Please go ahead and set up the workflow to send the Stripe link", **conv})
     order = [e.get("orch_step_id") for e in second if e["type"] == "step_start"]
     assert "step_research" not in order and "step_plan_research" not in order, order
-    assert order.index("step_may_change") < order.index("step_understand") < order.index("step_human_review")
-    drafts = [c for c in fake_llm.calls if "Plan Drafter" in str(c.get("prompt_msg") or c.get("sys_prompt"))]
+    assert order.index("step_may_change") < order.index("step_plan") < order.index("step_human_review")
+    plans = [c for c in fake_llm.calls
+             if "Planner for Synapse AI" in str(c.get("sys_prompt")) + str(c.get("prompt_msg"))]
     # The findings as the first turn recorded them (its sources only what that run read): the goal and the provider.
-    first_draft = str(drafts[0].get("prompt_msg")) if drafts else ""
-    assert "send a payment link" in first_draft and "Stripe" in first_draft, "the first draft already has them"
+    first_plan = str(plans[0].get("prompt_msg")) if plans else ""
+    assert "send a payment link" in first_plan and "Stripe" in first_plan, "the first plan already has them"
     assert not [e for e in second if e["type"] == "resource_saved"], "the person still reviews the plan first"
 
 
