@@ -448,10 +448,11 @@ async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dic
 
 
 #: What a changed step's line names, by the Plan field that changed.
-_FIELD_WORDS = {"type": "its type", "name": "its name", "does": "what it does", "agent": "its agent",
-                "tool": "its tool", "prompt": "its prompt", "next": "what follows it", "branches": "its branches",
-                "condition": "its condition", "loop_over": "what it loops over", "body": "its body",
-                "workflow": "the workflow it runs", "config": "its settings"}
+#: (Keyword arguments, not a literal: `"type": "…"` in code reads as an event type to F854's event census.)
+_FIELD_WORDS = dict(type="its type", name="its name", does="what it does", agent="its agent", tool="its tool",
+                    prompt="its prompt", next="what follows it", branches="its branches", condition="its condition",
+                    loop_over="what it loops over", body="its body", workflow="the workflow it runs",
+                    config="its settings")
 
 
 def changes_of(plan: O.Plan, state: dict) -> list[str]:
