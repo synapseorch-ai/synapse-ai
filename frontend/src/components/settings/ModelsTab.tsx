@@ -54,14 +54,15 @@ interface ModelsTabProps {
 
 
 /**
- * The providers in three plain groups (Naveen, PROV1): who makes the models, who
- * hosts others' models, and what runs on your own machine or server. Every card
- * is in one; a provider missing from these lists still shows, at the end.
+ * The providers in plain groups (Naveen, PROV1), each saying what it is for (GUIDE1, F912: "grouping heading can
+ * be better"): who makes the models, who hosts others', what runs on hardware you control, and the CLIs you are
+ * signed in to. Every card is in one (a test holds it); a provider missing from these lists still shows, at the end.
  */
-const PROVIDER_GROUPS: { title: string; ids: string[] }[] = [
-    { title: 'Model makers', ids: ['openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'mistral', 'moonshot', 'qwen', 'zai', 'minimax'] },
-    { title: 'Hosts', ids: ['bedrock', 'openrouter', 'groq', 'cerebras', 'together', 'fireworks', 'nvidia'] },
-    { title: 'On your machine or server', ids: ['ollama', 'openai_compatible', 'local_compatible', 'huggingface', 'anthropic_cli', 'gemini_cli', 'codex_cli', 'github_copilot_cli'] },
+const PROVIDER_GROUPS: { title: string; blurb: string; ids: string[] }[] = [
+    { title: 'Model makers', blurb: 'A key from the company that makes the model.', ids: ['openai', 'anthropic', 'gemini', 'grok', 'deepseek', 'mistral', 'moonshot', 'qwen', 'zai', 'minimax'] },
+    { title: 'Hosts', blurb: 'One key for many models made by others. Any OpenAI-compatible service goes here too.', ids: ['bedrock', 'openrouter', 'groq', 'cerebras', 'together', 'fireworks', 'nvidia', 'openai_compatible'] },
+    { title: 'Your own machine or server', blurb: 'Models on hardware you control: nothing to pay per call, and nothing leaves it.', ids: ['ollama', 'local_compatible', 'huggingface'] },
+    { title: 'CLI models', blurb: "Use the Claude, Gemini, Codex or Copilot CLI you're signed in to on this machine. No key needed.", ids: ['anthropic_cli', 'gemini_cli', 'codex_cli', 'github_copilot_cli'] },
 ];
 const GROUPED = new Set(PROVIDER_GROUPS.flatMap(g => g.ids));
 const PROVIDER_SECTIONS = PROVIDER_GROUPS.map((g, i) => ({
@@ -254,8 +255,49 @@ export const ModelsTab = ({
 
     return (
         <div>
-            {/* Cloud's order (Naveen, PROV1): what the workspace uses first, then Knowledge, then the
-                providers that make the models callable, then the rerankers. */}
+            {/* The keys first (Naveen, GUIDE1 F912; was PROV1's defaults-first order): a new workspace has
+                nothing for Defaults to pick until a provider is in. Then Defaults, Knowledge, the rerankers. */}
+            {/* Provider cards, cloud's card synced (PROV1): each saves and removes its own key. */}
+            <Section variant="plain" collapsible={false} title="Providers"
+                description="Bring your own keys. Add a key for any provider below, or use a model on your own machine or a CLI you're signed in to, and its models show up wherever you pick a model. Keys are kept in this install and never shown again: only a fragment, so you can tell which is in place."
+                actions={
+                    <Button variant="secondary" size="sm" onClick={onRefresh} loading={loadingModels}>
+                        <RefreshCw className="size-3.5" aria-hidden /> Refresh
+                    </Button>
+                }>
+                <div className={`${FORM} space-y-6`}>
+                    {PROVIDER_SECTIONS.map(group => (
+                    <div key={group.title} className="space-y-2" data-provider-group={group.title}>
+                    <div>
+                        <h3 className="text-xs font-medium text-text">{group.title}</h3>
+                        <p className="mt-0.5 text-xs text-text-faint">{group.blurb}</p>
+                    </div>
+                    {group.ids.filter(key => key in PROVIDER_META).map(key => {
+                        const providerData = providers[key] || { available: false, models: [] };
+                        const secret = secretOf(key);
+                        const stored = secret ? secrets[secret] : undefined;
+                        return (
+                            <ProviderCard
+                                key={key}
+                                meta={cardMeta(key)}
+                                {...cardStatus(key, providerData)}
+                                error={providerData.error}
+                                keyState={stored ? { set: stored.set, hint: stored.hint ? `…${stored.hint}` : null } : undefined}
+                                keyLabel={KEY_LABELS[key]}
+                                onSaveKey={secret ? (v: string) => saveSecret(secret, v) : undefined}
+                                onRemoveKey={secret ? async () => { await removeSecret(secret); } : undefined}
+                                extras={extrasFor(key, providerData)}
+                                models={key === 'ollama' ? [] : providerData.models}
+                                open={expandedProvider === key}
+                                onToggle={() => setExpandedProvider(expandedProvider === key ? null : key)}
+                            />
+                        );
+                    })}
+                    </div>
+                    ))}
+                </div>
+            </Section>
+
             <Section variant="plain" collapsible={false} title="Defaults"
                 description="What an agent or a step uses when it names no model of its own.">
               <div className={`${FORM} space-y-5`}>
@@ -370,48 +412,10 @@ export const ModelsTab = ({
                 embeddingModel={embeddingModel} chatModel={selectedModel} />
 
             {/* The form's one save, at its foot under the last field, on the right of its column: no rule
-                of its own, so it reads as part of Defaults and Knowledge, not a section before Providers. */}
+                of its own, so it reads as part of Defaults and Knowledge, not a section before the rerankers. */}
             <div className={`${FORM} flex justify-end pb-5`}>
                 <Button onClick={onSave} loading={isSaving}>{isSaving ? 'Saving…' : 'Save changes'}</Button>
             </div>
-
-            {/* Provider cards, cloud's card synced (PROV1): each saves and removes its own key. */}
-            <Section variant="plain" collapsible={false} title="Providers"
-                description="Keys are kept in this install and never shown again — only a fragment, so you can tell which is in place. Bring as many as you have."
-                actions={
-                    <Button variant="secondary" size="sm" onClick={onRefresh} loading={loadingModels}>
-                        <RefreshCw className="size-3.5" aria-hidden /> Refresh
-                    </Button>
-                }>
-                <div className={`${FORM} space-y-6`}>
-                    {PROVIDER_SECTIONS.map(group => (
-                    <div key={group.title} className="space-y-2" data-provider-group={group.title}>
-                    <h3 className="text-xs font-medium text-text-muted">{group.title}</h3>
-                    {group.ids.filter(key => key in PROVIDER_META).map(key => {
-                        const providerData = providers[key] || { available: false, models: [] };
-                        const secret = secretOf(key);
-                        const stored = secret ? secrets[secret] : undefined;
-                        return (
-                            <ProviderCard
-                                key={key}
-                                meta={cardMeta(key)}
-                                {...cardStatus(key, providerData)}
-                                error={providerData.error}
-                                keyState={stored ? { set: stored.set, hint: stored.hint ? `…${stored.hint}` : null } : undefined}
-                                keyLabel={KEY_LABELS[key]}
-                                onSaveKey={secret ? (v: string) => saveSecret(secret, v) : undefined}
-                                onRemoveKey={secret ? async () => { await removeSecret(secret); } : undefined}
-                                extras={extrasFor(key, providerData)}
-                                models={key === 'ollama' ? [] : providerData.models}
-                                open={expandedProvider === key}
-                                onToggle={() => setExpandedProvider(expandedProvider === key ? null : key)}
-                            />
-                        );
-                    })}
-                    </div>
-                    ))}
-                </div>
-            </Section>
 
             <KnowledgeModels part="rerankers" value={knowledgeModels} onChange={setKnowledgeModels} providers={providers}
                 rerankListings={rerankListings}

@@ -289,9 +289,9 @@
  },
  "models": {
   "title": "Models",
-  "summary": "Connect model providers and choose the models the workspace uses. Agents with no model of their own use the default.",
+  "summary": "Bring your own keys for the model providers you use, then choose the models the workspace uses. Agents with no model of their own use the default.",
   "steps": [
-   "Under “Providers”, open one and paste its key; the link inside says where to get one.",
+   "Under “Providers”, click “Add key” on one and paste its key; the link inside says where to get one. Local models and CLI models need no key.",
    "A provider with a model count is ready; “No key configured”, “Not running” or “Not installed” says what it needs.",
    "Choose the “Default model”, and a “Builder model” if Synapse AI should use another.",
    "Set “Reasoning effort” and “Max response length” for agents that set neither.",

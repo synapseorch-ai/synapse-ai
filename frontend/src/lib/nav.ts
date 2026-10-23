@@ -214,7 +214,7 @@ export const SETTINGS_NAV: NavGroup[] = [
             },
             {
                 id: 'models', label: 'Models', href: '/settings/models', icon: Cpu,
-                blurb: 'Pick a provider and model, and hold their API keys.',
+                blurb: 'Add your own model keys, and choose the models agents use.',
             },
             {
                 id: 'personal_details', label: 'Personal details', href: '/settings/personal_details', icon: Shield,

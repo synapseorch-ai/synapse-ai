@@ -19,7 +19,7 @@
  */
 
 import { AlertTriangle, Check, ChevronDown, ExternalLink, Eye, EyeOff, Trash2 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { AppMark, Button, ConfirmDialog, ErrorNote, Field, IconButton, Input } from "@/components/ui";
 import { cn } from "@/lib/cn";
@@ -96,6 +96,13 @@ export function ProviderCard({
   const [problem, setProblem] = useState("");
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const saved = keyState?.set === true;
+  // A card that takes a key and has none says so before it is opened, and opening it puts the cursor in the key
+  // box (GUIDE1, F912: "it's not that evident where to add the key").
+  const wantsKey = Boolean(onSaveKey) && canEdit && !saved && !live;
+  const keyInput = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (open && wantsKey) keyInput.current?.focus();
+  }, [open, wantsKey]);
 
   async function save() {
     if (!onSaveKey) return;
@@ -160,6 +167,11 @@ export function ProviderCard({
 
         <span className="flex shrink-0 items-center gap-2">
           {error && <AlertTriangle className="size-3.5 text-warning" aria-hidden />}
+          {wantsKey && !open && (
+            <span className="rounded-md border border-border-strong bg-surface px-2 py-0.5 text-xs font-medium text-text">
+              Add key
+            </span>
+          )}
           {saved && keyState?.hint && (
             <span className="font-mono text-2xs text-text-muted" title="A fragment of the stored key">
               {keyState.hint}
@@ -223,6 +235,7 @@ export function ProviderCard({
               <span className="flex gap-2">
                 <span className="relative flex-1">
                   <Input
+                    ref={keyInput}
                     type={visible ? "text" : "password"}
                     value={value}
                     autoComplete="off"
