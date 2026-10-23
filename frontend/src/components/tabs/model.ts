@@ -34,6 +34,8 @@ export interface ChatTab extends Tab {
   draft?: string;
   /** Set while the tab is behind, cleared when it comes to the front. */
   mark?: TabMark;
+  /** It went behind while its turn ran: the next answer there is the person's own (done), not news. */
+  awaiting?: boolean;
   /**
    * Opened just now with a new conversation: there is nothing on the server to
    * read back yet. Never saved, so a reloaded tab always reads its conversation.
@@ -105,9 +107,10 @@ export function focusTab<T extends Tab>(state: TabsState<T>, id: string, now: nu
 }
 
 function withoutMark<T extends Tab>(tab: T): T {
-  if (!('mark' in tab)) return tab;
-  const next = { ...tab } as T & { mark?: TabMark };
+  if (!('mark' in tab) && !('awaiting' in tab)) return tab;
+  const next = { ...tab } as T & { mark?: TabMark; awaiting?: boolean };
   delete next.mark;
+  delete next.awaiting;
   return next;
 }
 
@@ -200,10 +203,13 @@ export interface TabStatus {
  * unread — the conversation moved on with a message they didn't start.
  * A tab in front earns nothing: the person is reading it.
  */
-export function markBetween(before: TabStatus | undefined, now: TabStatus, inFront: boolean): TabMark | null {
+export function markBetween(
+  before: TabStatus | undefined, now: TabStatus, inFront: boolean, awaiting = false,
+): TabMark | null {
   if (inFront || !before || now.running) return null;
-  if (before.running) return before.automated ? 'unread' : 'done';
-  if (now.turnCount > before.turnCount) return 'unread';
+  if (before.running) return before.automated && !awaiting ? 'unread' : 'done';
+  // A turn that started and ended between two reads: the conversation grew.
+  if (now.turnCount > before.turnCount) return awaiting ? 'done' : 'unread';
   return null;
 }
 

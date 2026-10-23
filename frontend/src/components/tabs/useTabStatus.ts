@@ -54,7 +54,8 @@ export function useTabStatus<T extends Tab>({
       for (const tab of now) {
         const after = next[tab.id];
         if (!after) continue;
-        const earned = markBetween(last.current[tab.id], after, tab.id === front);
+        const awaiting = (tab as { awaiting?: boolean }).awaiting === true;
+        const earned = markBetween(last.current[tab.id], after, tab.id === front, awaiting);
         if (earned) mark(tab.id, earned);
       }
       last.current = { ...last.current, ...next };

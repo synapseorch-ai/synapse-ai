@@ -101,7 +101,8 @@ export function useChatTabs({
     tabs: state.tabs,
     activeId: state.activeId,
     read: readStatus,
-    onMark: (id, mark) => setState((s) => updateTab(s, id, { mark })),
+    // Earned: the mark shows, and a tab that was awaiting its answer has it.
+    onMark: (id, mark) => setState((s) => updateTab(s, id, { mark, awaiting: false })),
   });
 
   const badges = React.useMemo(() => {
@@ -117,30 +118,36 @@ export function useChatTabs({
 
   const statusRef = React.useRef(status);
   React.useEffect(() => { statusRef.current = status; }, [status]);
+  const frontBusyRef = React.useRef(frontBusy);
+  React.useEffect(() => { frontBusyRef.current = frontBusy; }, [frontBusy]);
+
+  /** The tab in front goes behind: if its turn is running, the answer coming there is the person's own. */
+  const leaving = React.useCallback((s: TabsState<ChatTab>): TabsState<ChatTab> =>
+    s.activeId && frontBusyRef.current ? updateTab(s, s.activeId, { awaiting: true }) : s, []);
 
   /** Open `tab`, or bring forward the one already showing its conversation; at the cap, say why not. */
   const open = React.useCallback((tab: ChatTab) => {
     setState((s) => {
-      const result = openTab(s, tab, (t) => isBusy(statusRef.current[t.id]));
+      const result = openTab(leaving(s), tab, (t) => isBusy(statusRef.current[t.id]));
       if (result.refused) queueMicrotask(() => setNotice(result.refused));
       return result.state;
     });
     setNotice(null);
     setFrontBusy(false);
-  }, []);
+  }, [leaving]);
 
   /** A new conversation with `agentId`; Synapse AI's one tab when it is open already. */
   const openAgent = React.useCallback((agentId: string) => {
     setState((s) => {
       const assistant = adapters.current.isAssistant;
       const existing = assistant(agentId) ? s.tabs.find((t) => assistant(t.agentId)) : undefined;
-      if (existing) return focusTab(s, existing.id, Date.now());
-      const result = openTab(s, make(adapters.current.newSessionId(), agentId, "", true), (t) => isBusy(statusRef.current[t.id]));
+      if (existing) return existing.id === s.activeId ? s : focusTab(leaving(s), existing.id, Date.now());
+      const result = openTab(leaving(s), make(adapters.current.newSessionId(), agentId, "", true), (t) => isBusy(statusRef.current[t.id]));
       if (result.refused) queueMicrotask(() => setNotice(result.refused));
       return result.state;
     });
     setFrontBusy(false);
-  }, [make]);
+  }, [make, leaving]);
 
   /** A conversation from History, a pin, a search or a link. */
   const openConversation = React.useCallback((sessionId: string, agentId: string, title = "") => {
@@ -148,10 +155,10 @@ export function useChatTabs({
   }, [open, make]);
 
   const focus = React.useCallback((id: string) => {
-    setState((s) => (s.activeId === id ? s : focusTab(s, id, Date.now())));
+    setState((s) => (s.activeId === id ? s : focusTab(leaving(s), id, Date.now())));
     setFrontBusy(false);
     setNotice(null);
-  }, []);
+  }, [leaving]);
 
   const close = React.useCallback((id: string) => {
     setNotice(null);
