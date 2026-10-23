@@ -187,11 +187,13 @@ def _summary(value: Any, depth: int = 0) -> Any:
 
 
 async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, *,
-                 confirm_policy: ConfirmPolicy = "irreversible", review: Any = None, reviewed: Any = None) -> Any:
+                 confirm_policy: ConfirmPolicy = "irreversible", review: Any = None, reviewed: Any = None,
+                 made: dict[str, str] | None = None) -> Any:
     """Call `name` as `caller`: every rule above, then the handler. Raises `ToolRefusal` for anything refused.
 
     `review` and `reviewed`, with `confirm_policy="approved_review"`: the person's approved review and the object it
-    approved as state holds it now, both read by the host's code, never from a model's arguments."""
+    approved as state holds it now, both read by the host's code, never from a model's arguments; `made`, the ids a
+    build's save has made, each to the placeholder its approval covered it with (`approved.as_approved`)."""
     args = dict(args or {})
     tool = _TOOLS.get(name)
     if tool is None or (tool.app_only and caller.via != "assistant"):
@@ -213,7 +215,7 @@ async def invoke(name: str, caller: Caller, args: dict[str, Any] | None = None, 
         # assistant always does, with a token per call.
         from core.product_tools import approved
 
-        by_review = tool.kind == "act" and approved.uncovered(review, caller, name, args, reviewed) is None
+        by_review = tool.kind == "act" and approved.uncovered(review, caller, name, args, reviewed, made=made) is None
         policy = "every_act"
     if not by_review and tool.needs_token(policy):
         if not token:

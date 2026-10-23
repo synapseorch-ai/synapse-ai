@@ -9,6 +9,9 @@ calls it covered — and for nothing else (SAI2's binding, 10-21):
   exact arguments, as `confirm.args_hash` hashes them);
 * `uncovered` is asked at each call with the object as state holds it then: changed since, another person, or a
   call it did not make, and the call is not covered.
+* a build is approved before the ids it makes exist (SAI2-P3, F940; Naveen 10-23): its calls are covered with
+  code-minted placeholders for them, and its save passes `made` — each id it has made so far, to the placeholder it
+  stands for — so a call is compared as it was approved. Only a whole id maps back, and only one the save made.
 
 The registry checks scope and the live role first, as for every call, and falls back to `every_act` for anything
 not covered. The record is plain JSON, kept in the run's checkpointed state (`core.native_builder.review`).
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 from dataclasses import dataclass, field
 from typing import Any
@@ -60,14 +64,35 @@ def approve(obj: Any, caller: Caller, calls: list[tuple[str, dict[str, Any]]], *
                           id=secrets.token_urlsafe(12))
 
 
-def uncovered(review: ApprovedReview | None, caller: Caller, tool: str, args: dict[str, Any], current: Any) -> str | None:
-    """Why this call is not covered by the review, or None when it is."""
+def as_approved(args: Any, made: dict[str, str] | None) -> Any:
+    """`args` with each id in `made` (an id the save made → its placeholder) written back as its placeholder,
+    wherever it stands as a whole id: inside a JSON string too, as a workflow's steps carry its agents."""
+    if not made:
+        return args
+    ids = sorted(made, key=len, reverse=True)
+    found = re.compile("|".join(rf"(?<![\w-]){re.escape(real)}(?![\w-])" for real in ids))
+
+    def back(value: Any) -> Any:
+        if isinstance(value, str):
+            return found.sub(lambda m: made[m.group(0)], value)
+        if isinstance(value, dict):
+            return {k: back(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [back(v) for v in value]
+        return value
+
+    return back(args)
+
+
+def uncovered(review: ApprovedReview | None, caller: Caller, tool: str, args: dict[str, Any], current: Any, *,
+              made: dict[str, str] | None = None) -> str | None:
+    """Why this call is not covered by the review, or None when it is. `made`: see `as_approved`."""
     if review is None:
         return "no approved review"
     if digest(current) != review.digest:
         return "what was approved has changed since"
     if caller.who != review.approver:
         return "someone else approved it"
-    if (tool, args_hash(args)) not in review.covers:
+    if (tool, args_hash(as_approved(args, made))) not in review.covers:
         return "the approved review does not make this call"
     return None
