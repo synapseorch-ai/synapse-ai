@@ -122,7 +122,8 @@ async def test_rel2s_demo_a_human_step_and_the_agents_own_confirm_are_both_on_th
     assert _gates(out) == [("Vault Clerk", "file_summary", "confirm", "agent")]
     assert "Vault Clerk asks you before `file_summary`, each time (its own tool policy)" in out["review"]
     assert "as well as the Human steps" in out["review"]
-    assert "file_summary" in out["plan"]["approvals"]["asks_first"]
+    # The Clerk's own ask, carried in the gates only: never in the build's own list (SAI2's review, B1).
+    assert "file_summary" not in out["plan"]["approvals"]["asks_first"]
 
 
 async def test_a_new_agent_asks_first_because_this_build_says_so_and_the_person_may_lift_it(client):
@@ -140,7 +141,9 @@ async def test_a_reused_agents_own_confirm_on_a_read_is_listed_and_cannot_be_lif
     tell = {**FILE_IT, "prompt": "Read the weather."}
     run, out = await _checked(_plan(tell))
     assert ("Vault Clerk", "rotterdam_weather", "confirm", "agent") in _gates(out)
-    assert "rotterdam_weather" in out["plan"]["approvals"]["asks_first"]
+    # Another's ask is carried in the gates only, never in the build's own list (SAI2's review, B1).
+    assert "rotterdam_weather" not in out["plan"]["approvals"]["asks_first"]
+    assert "Vault Clerk asks you before `rotterdam_weather`, each time (its own tool policy)" in out["review"]
     assert "alone:rotterdam_weather" not in out["offers"]
     run.shared_state["review_feedback"] = {"feedback": "let rotterdam_weather act without asking"}
     answer, _ = await _call("read_plan_answer", {}, run)
@@ -187,8 +190,9 @@ async def test_a_blocked_tool_the_plan_uses_is_a_blocking_issue_not_an_ask(clien
     _, out = await _checked(_plan(APPROVE, post))
     assert ("File it", "file_summary", "deny", "workspace") in _gates(out)
     assert "file_summary" not in out["plan"]["approvals"]["asks_first"]
-    assert "build" not in out["offers"]
-    assert any("this workspace's tool policy blocks `file_summary`" in i for i in out["issues"])
+    assert "build" not in out["offers"] and "without:file_summary" in out["offers"]
+    assert "this workspace's tool policy blocks `file_summary`" in out["say"]
+    assert "## Blocked here" in out["review"]
 
 
 async def test_a_reused_agents_blocked_tool_the_plan_does_not_name_is_said_but_does_not_block(client):
@@ -228,3 +232,107 @@ def test_the_card_says_each_gate_in_the_reviews_words():
                   "\" (this workspace's tool policy)\"", "can't use \\`${gate.tool}\\`: ${whose} blocks it",
                   "The step \"${gate.who}\"", "These are asked as well as the Human steps above."):
         assert words in plan_ts, words
+
+
+async def test_another_agents_ask_never_spills_onto_a_new_agent(client):
+    """SAI2's review, B1: the reused Vault Clerk asks before its weather read; a new Reader holding the same read is
+    compiled with no confirm, and the card lists only the Clerk's ask."""
+    from core.native_builder.compile import compile_plan
+    from core.native_builder.objects import Plan
+
+    await _clerk(**{"tool:rotterdam_weather": "confirm"})
+    reader = {"name": "Reader", "purpose": "Reads the weather for the summary", "tools": ["rotterdam_weather"]}
+    read = {"id": "read", "type": "agent", "name": "Read it", "does": "Reads the weather", "agent": "Reader",
+            "prompt": "Read today's weather."}
+    _, out = await _checked(_plan(read, {**FILE_IT, "prompt": "Read the weather."}, agents=[reader]))
+    assert [g for g in _gates(out) if g[1] == "rotterdam_weather"] == [
+        ("Vault Clerk", "rotterdam_weather", "confirm", "agent")]
+    compiled = compile_plan(Plan.model_validate(out["plan"]), mint=build_plan.placeholder_mint())
+    [made] = compiled.agents
+    assert not made.get("tool_policy")
+
+
+async def test_a_block_goes_to_the_person_not_back_to_the_planner(client):
+    """SAI2's review, S1: the planner cannot change a policy, so a block is never sent back to it; the card says it,
+    offers to build without the tool, and that answer is read."""
+    await _policy(undeclared="deny")
+    post = {"id": "post", "type": "tool", "name": "File it", "does": "Files it", "tool": "file_summary"}
+    draft = _plan(CHECK, post)
+    run = OrchestrationRun(run_id="builder_gates", orchestration_id="orch_native_builder",
+                           shared_state={builder_access.CALLER_KEY: {"user_id": "u1"}, "intent": "create"})
+    await SharedState(run).checkpoint()
+    sent, _ = await _call("submit_plan", {k: v for k, v in draft.items() if k != "finish"}, run)
+    assert sent.get("finish") == "submit_plan", sent
+    run, out = await _checked(draft, run)
+    assert "without:file_summary" in out["offers"] and "build" not in out["offers"]
+    run.shared_state["review_feedback"] = {"feedback": "build without file_summary"}
+    answer, _ = await _call("read_plan_answer", {}, run)
+    assert answer == {"outcome": "without", "without": ["file_summary"]}
+
+
+async def test_an_update_is_not_blocked_by_a_step_it_leaves_as_it_is(client):
+    """SAI2's review, S2 (80de4238's rule): a block on a Tool step the update does not touch is said, not a stop."""
+    await _policy(undeclared="deny")
+    existing = {"id": "orch_live", "name": "Live", "description": "", "entry_step_id": "check", "steps": [
+        {"id": "check", "name": "Check the weather", "type": "tool", "forced_tool": "rotterdam_weather",
+         "output_key": "check", "next_step_id": "post"},
+        {"id": "post", "name": "File it", "type": "tool", "forced_tool": "file_summary", "output_key": "post",
+         "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    run = OrchestrationRun(run_id="builder_gates", orchestration_id="orch_native_builder",
+                           shared_state={builder_access.CALLER_KEY: {"user_id": "u1"}, "intent": "update",
+                                         "existing_orch": existing, "current_orchestration_id": "orch_live"})
+    rename = {"finish": "submit_plan", "kind": "update", "title": "Live, renamed", "summary": "s",
+              "edits": [{"op": "set_meta", "fields": {"title": "Live, renamed"}}]}
+    _, out = await _checked(rename, run)
+    assert ("File it", "file_summary", "deny", "workspace") in _gates(out)
+    assert "build" in out["offers"] and "## Blocked here" in out["review"]
+
+
+async def test_a_workspaces_own_tool_key_is_the_workspaces(client):
+    """SAI2's review, S3: `tool:X` in the workspace's defaults is the workspace's, not the agent's."""
+    await _clerk()
+    await _policy(**{"tool:file_summary": "confirm"})
+    post = {"id": "post", "type": "tool", "name": "File it", "does": "Files it", "tool": "file_summary"}
+    _, out = await _checked(_plan(APPROVE, FILE_IT, post))
+    assert ("Vault Clerk", "file_summary", "confirm", "workspace") in _gates(out)
+    assert ("File it", "file_summary", "confirm", "workspace") in _gates(out)
+    assert "(its own tool policy)" not in out["review"]
+
+
+async def test_a_reused_teams_members_and_every_tool_a_run_gives_are_read(client):
+    """SAI2's review, S4: a reused team's members ask too, and an agent with every tool is read as the run reads it."""
+    await _policy(undeclared="confirm")
+    await S.seed_agents([
+        S.make_agent(id="agent_filer", name="Filer", tools=["file_summary"]),
+        S.make_agent(id="agent_all", name="Anything", tools=["all"]),
+        S.make_agent(id="agent_team", name="Desk team", type="delegate", delegate_agent_ids=["agent_filer"]),
+    ])
+    team = {"id": "team", "type": "agent", "name": "Team", "does": "Works it out", "agent": "agent_team",
+            "prompt": "Do it."}
+    every = {"id": "every", "type": "agent", "name": "Everything", "does": "Does it", "agent": "agent_all",
+             "prompt": "Do it."}
+    _, out = await _checked(_plan(team, every))
+    gates = _gates(out)
+    assert ("Filer", "file_summary", "confirm", "workspace") in gates
+    assert ("Anything", "file_summary", "confirm", "workspace") in gates
+
+
+async def test_a_tool_step_run_by_a_new_agent_is_decided_by_its_compiled_policy(client):
+    """SAI2's review, S4: at run time a Tool step naming a new agent uses that agent's policy, as compiled."""
+    clerk = {"name": "Vault Clerk", "purpose": "Files summaries in the vault", "tools": ["file_summary"]}
+    post = {"id": "post", "type": "tool", "name": "File it", "does": "Files it", "tool": "file_summary",
+            "agent": "Vault Clerk"}
+    _, out = await _checked(_plan(APPROVE, post, agents=[clerk]))
+    assert ("File it", "file_summary", "confirm", "build") in _gates(out)
+
+
+def test_the_panel_draws_blocks_apart_from_asks_as_the_review_does():
+    """SAI2's review, S7: "Blocked here" is its own section on both, and the panel counts inner workflows' Human
+    steps as render does."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3] / "frontend/src/components/assistant"
+    plan_ts, cards = (root / "plan.ts").read_text(), (root / "cards.tsx").read_text()
+    asks = plan_ts[plan_ts.index("function asksOf"):plan_ts.index("function blockedOf")]
+    assert "'deny'" not in asks and "inner_workflows" in asks
+    assert "blocked: blockedOf(view)," in plan_ts and ">Blocked here</span>" in cards

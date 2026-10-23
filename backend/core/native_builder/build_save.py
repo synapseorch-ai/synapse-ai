@@ -243,8 +243,8 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
     """Each approval or block that is not what the card said, in the card's words: was, and is."""
     from core.native_builder.render import gate_words
 
-    def key(g: O.Gate) -> tuple[str, str]:
-        return g.who, g.tool
+    def key(g: O.Gate) -> tuple[str, str, str]:
+        return g.kind, g.step or g.who, g.tool
 
     was, is_ = {key(g): g for g in reviewed}, {key(g): g for g in now}
     out = []
@@ -252,7 +252,7 @@ def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
         before, after = was.get(k), is_.get(k)
         if before == after:
             continue
-        name = f"{k[0]} and `{k[1]}`"
+        name = f"{(before or after).who} and `{k[2]}`"
         out.append(f"{name}: the card said \"{gate_words(before)}\", now "
                    + (f"\"{gate_words(after)}\"" if after else "it acts without asking") if before
                    else f"{name}: now \"{gate_words(after)}\"")

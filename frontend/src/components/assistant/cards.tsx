@@ -271,6 +271,12 @@ export function PlanCard({
                             )}
                         </div>
                     )}
+                    {plan.blocked && (
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">Blocked here</span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.blocked}</Markdown>
+                        </div>
+                    )}
                     {plan.actsAlone && (
                         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
                             <span className="text-xs font-medium text-text">Acts without asking</span>

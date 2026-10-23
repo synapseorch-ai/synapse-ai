@@ -92,6 +92,8 @@ export interface Plan {
     asksFirst: string | null;
     /** What the person said may act without anyone approving it each time. */
     actsAlone: string | null;
+    /** What a policy blocks here, by who (F964): render's "Blocked here". Absent for a plan read from its words. */
+    blocked?: string | null;
     /**
      * The answers the card offers, when it is drawn from the plan's object (SAI2-P3): `build`, `without:<tool>`,
      * `find`, `change`, `stop`. Absent for a plan read from its words, which offers what it always did.
@@ -449,20 +451,26 @@ export function gateWords(gate: PlanGate): string {
     return `${who} asks you before \`${gate.tool}\`, each time${by}`;
 }
 
-/** What asks first, by who asks (F964), then a tool a Human step approves, then what is blocked. */
+/** What asks first, by who asks (F964), then a tool a Human step approves: render's "Asks you first". */
 function asksOf(view: PlanObjectView): string | null {
-    const gates = view.plan.gates ?? [];
-    const confirms = gates.filter((g) => g.decision === 'confirm');
+    const confirms = (view.plan.gates ?? []).filter((g) => g.decision === 'confirm');
     const byGate = new Set(confirms.map((g) => g.tool));
     const lines = [
         ...confirms.map(gateWords),
         ...(view.plan.approvals?.asks_first ?? []).filter((t) => !byGate.has(t)).map((t) => `\`${t}\``),
-        ...gates.filter((g) => g.decision === 'deny').map(gateWords),
     ];
     if (!lines.length) return null;
-    const human = view.plan.steps.some((s) => s.type === 'human');
+    // Its inner workflows' Human steps too, as render counts them.
+    const steps = [...view.plan.steps, ...(view.plan.inner_workflows ?? []).flatMap((w) => w.steps ?? [])];
+    const human = steps.some((s) => s.type === 'human');
     return lines.map((l) => `- ${l}`).join('\n')
         + (confirms.length && human ? '\n\nThese are asked as well as the Human steps above.' : '');
+}
+
+/** What a policy blocks: render's "Blocked here" (F964). */
+function blockedOf(view: PlanObjectView): string | null {
+    const lines = (view.plan.gates ?? []).filter((g) => g.decision === 'deny').map(gateWords);
+    return lines.length ? lines.map((l) => `- ${l}`).join('\n') : null;
 }
 
 /** The checked plan a build's review carries when its object is one (`context.object === 'plan'`). */
@@ -482,6 +490,7 @@ export interface PlanObjectView {
         approvals?: { asks_first?: string[]; acts_without_asking?: string[] };
         /** Every approval the run asks for and every block, as the engine's policy decides them (F964). */
         gates?: PlanGate[];
+        inner_workflows?: { title?: string; steps?: PlanObjectStep[] }[];
         tools?: { name: string; status: string; provider?: string | null; via?: string }[];
     };
     /** What the card offers (decision 2, Naveen 10-23): no `build` while a tool has no way in. */
@@ -544,6 +553,7 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
         notCarried: bullets(view.plan.not_carried_over),
         needs: view.say?.trim() || null,
         asksFirst: asksOf(view),
+        blocked: blockedOf(view),
         actsAlone: bullets(view.plan.approvals?.acts_without_asking, true),
         offers: view.offers,
         agentInstructions: Object.entries(view.prompts ?? {})

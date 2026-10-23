@@ -31,7 +31,7 @@ tip_text = state.generate_tip
 buffer_api_key = os.getenv('BUFFER_API_KEY')
 url = 'https://api.bufferapp.com/1/updates/create.json'
 response = requests.post(url, json={'text': tip_text}, headers={'Authorization': f'Bearer {buffer_api_key}'})
-return response.json()
+result = response.json()
 """
 
 
@@ -63,32 +63,62 @@ CLASS = "a step reaches a service through a tool, and its key through the Vault,
 
 @pytest.mark.parametrize("code", [
     BUFFER,
-    "import requests as r\nreturn r.get('https://api.example.com').json()",
-    "from urllib.request import urlopen\nreturn urlopen('https://api.example.com').read()",
-    "import http.client\nreturn 1",
-    "import httpx, json\nreturn 1",
-    "from aiohttp import ClientSession\nreturn 1",
-    "import socket\nreturn 1",
-    "import subprocess\nreturn subprocess.run(['curl', 'https://api.example.com']).returncode",
-    "import os\nreturn os.environ['BUFFER_API_KEY']",
-    "from os import getenv\nreturn getenv('BUFFER_API_KEY')",
-    "from os import environ as e\nreturn e.get('BUFFER_API_KEY')",
-    "return __import__('requests').get('https://api.example.com').json()",
-    "import importlib\nreturn importlib.import_module('requests')",
+    "import requests as r\nresult = r.get('https://api.example.com').json()",
+    "from urllib.request import urlopen\nresult = urlopen('https://api.example.com').read()",
+    "import http.client\nresult = 1",
+    "from http.client import HTTPSConnection\nresult = 1",
+    "import httpx, json\nresult = 1",
+    "from aiohttp import ClientSession\nresult = 1",
+    "import socket\nresult = 1",
+    "import subprocess\nresult = subprocess.run(['curl', 'https://api.example.com']).returncode",
+    "import os\nresult = os.environ['BUFFER_API_KEY']",
+    "from os import getenv\nresult = getenv('BUFFER_API_KEY')",
+    "from os import environ as e\nresult = e.get('BUFFER_API_KEY')",
+    "result = __import__('requests').get('https://api.example.com').json()",
+    "import importlib\nresult = importlib.import_module('requests')",
+    # SAI2's review, S5: a shell, a connection or an import that only allowed modules make.
+    "import os\nresult = os.system('curl https://api.example.com')",
+    "import os as o\nresult = o.popen('curl https://api.example.com').read()",
+    "import os\nos.execv('/usr/bin/curl', ['curl'])",
+    "from os import spawnl\nresult = 1",
+    "import asyncio\nresult = asyncio.open_connection('api.example.com', 443)",
+    "import ssl\nresult = 1",
+    "import ctypes\nresult = 1",
+    "import multiprocessing\nresult = 1",
+    "import pty\nresult = 1",
+    "from xmlrpc.client import ServerProxy\nresult = 1",
+    "import builtins\nresult = builtins.__import__('requests')",
+    "result = globals()['__builtins__'].__import__('requests')",
+    "import os\nresult = getattr(os, 'environ')['BUFFER_API_KEY']",
+    "result = exec('import requests')",
+    "result = eval('1 + 1')",
+    "result = open('/proc/self/environ').read()",
 ])
 async def test_code_that_reaches_a_service_or_reads_a_key_goes_back_to_the_planner(client, code):
     out = await _call("submit_plan", _plan(code))
     assert CLASS in out["error"] and "step post" in out["error"]
 
 
-async def test_code_that_reshapes_the_runs_own_data_is_kept(client):
-    code = ("import json, re\nfrom datetime import datetime, timezone\nimport os.path\n"
-            "rows = json.loads(state.tip) if isinstance(state.tip, str) else []\n"
-            "return [r for r in rows if re.match(r'^ok', str(r))]")
+@pytest.mark.parametrize("code", [
+    ("import json, re\nfrom datetime import datetime, timezone\nimport os.path\n"
+     "rows = json.loads(state.tip) if isinstance(state.tip, str) else []\n"
+     "result = [r for r in rows if re.match(r'^ok', str(r))]"),
+    # SAI2's review, S5: what reaches nothing is kept.
+    "from http import HTTPStatus\nresult = HTTPStatus.OK.phrase",
+    "result = state.environ if hasattr(state, 'environ') else None",
+    "import os\nresult = os.path.basename(str(state.tip))",
+])
+async def test_code_that_reshapes_the_runs_own_data_is_kept(client, code):
     out = await _call("submit_plan", _plan(code))
-    assert out.get("finish") == "submit_plan"
+    assert out.get("finish") == "submit_plan", out
 
 
 async def test_code_that_does_not_parse_is_said_as_such_and_not_as_a_service(client):
-    out = await _call("submit_plan", _plan("return [x for x in"))
+    out = await _call("submit_plan", _plan("result = [x for x in"))
     assert "does not parse" in out["error"] and CLASS not in out["error"]
+
+
+async def test_a_top_level_return_is_said_with_how_a_transform_answers(client):
+    """SAI2's review, S6: `wrap_transform` runs the code at module level, so `return` cannot run there."""
+    out = await _call("submit_plan", _plan("result = 1\nreturn result"))
+    assert "does not parse" in out["error"] and "result = ..." in out["error"]

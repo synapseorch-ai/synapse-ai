@@ -152,6 +152,8 @@ class Gate(BaseModel):
     set_by: Literal["build", "agent", "workspace"]
     #: `step`: a Tool step's own call, decided by the workspace's policy (and its agent's, if it names one).
     kind: Literal["agent", "step"] = "agent"
+    #: The Tool step's id, for a `step` gate: on an update, only a step it writes can block it (SAI2's review, S2).
+    step: str | None = None
 
 
 class Plan(PlanDraft):
@@ -381,12 +383,16 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
 async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str, dict] | None,
                  asks: set[str]) -> list[Gate]:
     """What the run will ask for and what it blocks, decided as the engine decides each call
-    (`tool_policy.decide(tool, resolve_policy(agent, settings))`): for the plan's new agents (with the confirm the
-    compile gives each tool in `asks`), the agents it reuses (every tool they hold, under their own policy) and its
-    Tool steps (F964; REL2's demo)."""
+    (`tool_policy.decide(tool, resolve_policy(agent, settings))`), for (F964; REL2's demo):
+
+    * the plan's new agents, with the confirm the compile gives each of their tools in `asks`;
+    * the agents it reuses, and the members of a team it reuses: every tool the run would give them (`all`, groups
+      and servers included, as the engine aggregates them), under their own policy;
+    * its Tool steps, under their agent's policy (a new agent's as compiled) and the workspace's.
+    """
     from core.config import load_settings
-    from core.tool_policy import decide, resolve_policy
-    from core.tools import resolve_one_tool
+    from core.tool_policy import TOOL_KEY, decide, resolve_policy
+    from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, resolve_one_tool
 
     if agents is None:
         from core.routes.agents import load_user_agents
@@ -403,48 +409,68 @@ async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str,
                 resolved[name] = None
         return resolved[name]
 
-    def set_by(agent: dict | None, category: str) -> str:
+    async def held_by(agent: dict) -> list[Any]:
+        """The tools a run gives a reused agent, as the engine aggregates them (SAI2's review, S4)."""
+        try:
+            return (await aggregate_all_tools(server_module, agent, custom, budget=ALL_TOOLS_TOKEN_BUDGET))[0]
+        except Exception:  # noqa: BLE001 — a server that cannot list is not a gate
+            return [t for n in agent.get("tools") or [] if isinstance(n, str) and (t := await tool(n)) is not None]
+
+    def set_by(agent: dict | None, category: str, name: str) -> str:
+        """The agent's own policy when it holds the key that decided, else the workspace's (SAI2's review, S3)."""
         own = (agent or {}).get("tool_policy") or {}
-        key = "undeclared" if category == "changes" else category
-        return "agent" if category == "tool" or own.get(key) in ("confirm", "deny") else "workspace"
+        key = f"{TOOL_KEY}{name}" if category == "tool" else "undeclared" if category == "changes" else category
+        return "agent" if own.get(key) in ("allow", "confirm", "deny") else "workspace"
+
+    def compiled(agent_name: str) -> dict:
+        """A new agent's policy as the compile writes it: confirm for each of its tools in `asks`."""
+        return {"tool_policy": {f"{TOOL_KEY}{t}": "confirm" for t in new[agent_name].tools if t in asks}}
 
     gates: list[Gate] = []
+    seen: set[tuple[str, str, str]] = set()
 
-    def add(who: str, name: str, decision: str, by: str, kind: str = "agent") -> None:
-        if decision in ("confirm", "deny") and not any(g.who == who and g.tool == name for g in gates):
-            gates.append(Gate(who=who, tool=name, decision=decision, set_by=by, kind=kind))
+    def add(who: str, name: str, decision: str, by: str, *, kind: str = "agent", key: str = "") -> None:
+        # Keyed by the agent's id or the step's, not its name: two agents of one name are two (SAI2's nit).
+        if decision in ("confirm", "deny") and (kind, key or who, name) not in seen:
+            seen.add((kind, key or who, name))
+            gates.append(Gate(who=who, tool=name, decision=decision, set_by=by, kind=kind,
+                              step=key if kind == "step" else None))
 
     new = {a.name: a for a in plan.agents}
     steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
     refs = [s.agent for s in steps if s.type == "agent" and s.agent]
-    for ref in refs:  # a team's members run too, each under its own policy
-        if ref in new and new[ref].type == "team":
-            refs += [m for m in new[ref].members if m not in refs]
+    for ref in refs:  # a team's members run too, each under its own policy: a new team's and a reused one's
+        members = new[ref].members if ref in new and new[ref].type == "team" else \
+            (agents.get(ref) or {}).get("delegate_agent_ids") or []
+        refs += [m for m in members if m not in refs]
     for ref in dict.fromkeys(refs):
         if ref in new:
             for name in new[ref].tools:
                 if (t := await tool(name)) is None:
                     continue
-                inherited, _ = decide(t, resolve_policy({}, settings))
+                inherited, category = decide(t, resolve_policy({}, settings))
                 if inherited == "deny":
-                    add(ref, name, "deny", "workspace")
+                    add(ref, name, "deny", "workspace", key=ref)
                 elif name in asks:
-                    add(ref, name, "confirm", "build" if inherited == "allow" else "workspace")
+                    add(ref, name, "confirm", "build" if inherited == "allow" else "workspace", key=ref)
                 else:
-                    add(ref, name, inherited, "workspace")
+                    add(ref, name, inherited, "workspace", key=ref)
         elif (agent := agents.get(ref)) is not None:
             policy = resolve_policy(agent, settings)
-            for name in agent.get("tools") or []:
-                if not isinstance(name, str) or name == "all" or name.startswith("group:"):
-                    continue
-                if (t := await tool(name)) is not None:
+            for t in await held_by(agent):
+                name = getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+                if name:
                     decision, category = decide(t, policy)
-                    add(agent.get("name") or ref, name, decision, set_by(agent, category))
+                    add(agent.get("name") or ref, name, decision, set_by(agent, category, name), key=ref)
     for s in steps:
         if s.type == "tool" and s.tool and (t := await tool(s.tool)) is not None:
-            agent = agents.get(s.agent) if s.agent else None
+            agent = compiled(s.agent) if s.agent in new else agents.get(s.agent) if s.agent else None
             decision, category = decide(t, resolve_policy(agent, settings))
-            add(s.name, s.tool, decision, set_by(agent, category), "step")
+            if s.agent in new and decide(t, resolve_policy({}, settings))[0] == "deny":
+                # The workspace's block holds: the compile gives no confirm for a blocked tool.
+                decision, category = "deny", "workspace"
+            by = "build" if s.agent in new and category == "tool" else set_by(agent, category, s.tool)
+            add(s.name, s.tool, decision, by, kind="step", key=s.id)
     return gates
 
 
@@ -488,11 +514,11 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     out.gates = await _gates(out, server_module, custom, agents, asks={n for n in acting if n not in kept})
     # The person's "act without asking" lifts this build's own confirm only: what an agent's or the workspace's
     # policy asks still asks, and what it blocks is no approval at all (F964).
+    # `asks_first` stays this build's own list, which the compile turns into its new agents' confirms; another's
+    # ask is carried in the gates only, so it never spills onto a new agent (SAI2's review, B1).
     held = {g.tool for g in out.gates if g.decision == "confirm" and g.set_by != "build"}
     denied = {g.tool for g in out.gates if g.decision == "deny"}
-    asks = [n for n in acting if n not in denied and (n not in kept or n in held)]
-    asks += [g.tool for g in out.gates if g.decision == "confirm" and g.tool not in asks]
-    out.approvals = Approvals(asks_first=list(dict.fromkeys(asks)),
+    out.approvals = Approvals(asks_first=[n for n in acting if n not in kept and n not in denied],
                               acts_without_asking=[n for n in acting if n in kept and n not in held | denied])
 
     out.room = None

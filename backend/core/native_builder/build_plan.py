@@ -230,6 +230,8 @@ class Examined:
     errors: list[str]
     missing: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
+    #: Tools a policy blocks where the plan uses them, with why: the person's to change, never the planner's (F964).
+    blocks: dict[str, str] = field(default_factory=dict)
 
 
 def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
@@ -343,19 +345,29 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
     filled = await O.fill(plan, server_module, found=_found(plan, state), agents=ws.agents)
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
-    issues += blocked(filled)
-    return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues)
+    return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
+                    blocks=blocked(filled, state))
 
 
-def blocked(plan: O.Plan) -> list[str]:
-    """A tool the plan uses that a policy blocks: the run could not call it, so the plan cannot be built as it is
-    (F964; SAI2's point 1: a block is not an approval). A reused agent's other blocked tools are said on the card."""
-    named = set(O.tool_names(plan))
-    return [f"{_WHOSE[g.set_by].format(who=g.who)} blocks `{g.tool}` for "
-            + (f'the step "{g.who}"' if g.kind == "step" else g.who)
-            + (": change it in Settings, or leave it out" if g.set_by == "workspace"
-               else ": change it on the agent, or leave it out")
-            for g in plan.gates if g.decision == "deny" and (g.tool in named or g.kind == "step")]
+def blocked(plan: O.Plan, state: dict) -> dict[str, str]:
+    """Each tool a policy blocks where this plan uses it, with why, in the person's words: the run could not call it,
+    so the plan cannot be built as it is (F964; SAI2's point 1: a block is not an approval). Only the plan's own
+    uses block it: its new agents' tools and the Tool steps it writes; on an update, a step it leaves as it is
+    never does (SAI2's review, S2). A reused agent's blocked tools are said on the card, as it cannot use them today
+    either. The person's to change, not the planner's: never sent back to it (S1)."""
+    new = {a.name for a in plan.agents}
+    base = _base(state) if plan.kind == "update" else None
+    kept = {x.id: x.model_dump() for x in base.steps} if base is not None else {}
+    written = {x.id for x in [*plan.steps, *(y for w in plan.inner_workflows for y in w.steps)]
+               if kept.get(x.id) != x.model_dump()}
+    out: dict[str, str] = {}
+    for g in plan.gates:
+        if g.decision == "deny" and (g.kind == "step" and g.step in written or g.kind == "agent" and g.who in new):
+            out.setdefault(g.tool, f"{_WHOSE[g.set_by].format(who=g.who)} blocks `{g.tool}` for "
+                           + (f'the step "{g.who}"' if g.kind == "step" else g.who)
+                           + (": change it in Settings, or build without it" if g.set_by != "agent"
+                              else ": change it on the agent, or build without it"))
+    return out
 
 
 #: What set a gate, in the card's words.
@@ -432,39 +444,82 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     return errors
 
 
-#: What a build's code may not import: each reaches a service or runs a program (F947). `os` itself is fine; its
-#: environment is not (a key belongs in the Vault).
-_REACHES = frozenset({"requests", "httpx", "urllib", "urllib3", "aiohttp", "socket", "http", "subprocess", "ftplib",
-                      "smtplib", "websocket", "websockets", "importlib"})
+#: What a build's code may not import: each reaches a service, runs a program, or builds an import from text (F947).
+_REACHES = frozenset({"requests", "httpx", "urllib", "urllib3", "aiohttp", "socket", "socketserver", "subprocess",
+                      "ftplib", "smtplib", "poplib", "imaplib", "nntplib", "telnetlib", "websocket", "websockets",
+                      "importlib", "ssl", "ctypes", "multiprocessing", "pty", "xmlrpc", "paramiko", "pycurl"})
+#: `http`'s names that reach nothing (SAI2's review, S5: `from http import HTTPStatus` is not a request).
+_HTTP_NAMES = frozenset({"HTTPStatus", "HTTPMethod"})
+#: `os`'s names that read its environment or run a program.
+_OS_NAMES = frozenset({"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv", "system", "popen", "fork",
+                       "forkpty", "startfile"})
+_OS_PREFIXES = ("exec", "spawn", "posix_spawn")
+#: Names that open a connection or a process whatever module they come from (`asyncio`'s, chiefly).
+_OPENS = frozenset({"open_connection", "start_server", "open_unix_connection", "start_unix_server",
+                    "create_subprocess_exec", "create_subprocess_shell"})
+
+
+def _os_name(name: str) -> bool:
+    return name in _OS_NAMES or name.startswith(_OS_PREFIXES)
 
 
 def reaches_out(code: str) -> tuple[str, str] | None:
-    """`("parse", why)` for code that does not parse, `("uses", name)` for code that imports what reaches a service,
-    reads the environment or imports by a name it builds; else None. Read with `ast`, so an alias is the same import
-    (SAI2, 10-23). The code is a transform's body, so it is read inside a function (`return` at its top level)."""
+    """`("parse", why)` for code that does not compile as the engine runs it, `("uses", what)` for code that reaches a
+    service, runs a program, reads the environment or builds code from text; else None.
+
+    Read with `ast` (an alias is the same import) at module level, as `wrap_transform` runs it (SAI2's review, S6: a
+    top-level `return` cannot run; a transform sets `result`). A lint against a model's drift, not a boundary: it
+    cannot see a library that fetches for you (`pandas.read_csv(url)`) — the sandbox's network is that (SAI2's row).
+    """
     import ast
-    import textwrap
 
     try:
-        tree = ast.parse("def _transform():\n" + textwrap.indent(code or "pass", "    "))
+        tree = ast.parse(code or "", "<transform>", "exec")
+        compile(tree, "<transform>", "exec")
     except SyntaxError as e:
-        return "parse", str(e.msg)
+        why = str(e.msg)
+        if "return" in why:
+            why += "; a transform puts its answer in `result` (result = ...) instead"
+        return "parse", why
+    os_aliases = {"os"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name.split(".")[0] in _REACHES:
+                root = alias.name.split(".")[0]
+                if root == "os" and alias.name == "os":
+                    os_aliases.add(alias.asname or "os")
+                if root in _REACHES or root == "http":
                     return "uses", alias.name
         elif isinstance(node, ast.ImportFrom):
-            root = (node.module or "").split(".")[0]
-            if root in _REACHES:
-                return "uses", node.module or ""
-            if root == "os" and {"environ", "getenv", "environb", "getenvb"} & {a.name for a in node.names}:
-                return "uses", "os.environ"
-        elif isinstance(node, ast.Attribute) and node.attr in ("environ", "getenv", "environb", "getenvb"):
-            return "uses", f"os.{node.attr}"
-        elif isinstance(node, ast.Name) and node.id == "__import__":
-            return "uses", "__import__"
+            module = node.module or ""
+            root, names = module.split(".")[0], {a.name for a in node.names}
+            if root in _REACHES or (root == "http" and (module != "http" or not names <= _HTTP_NAMES)):
+                return "uses", module
+            if root == "os" and (bad := sorted(n for n in names if _os_name(n))):
+                return "uses", f"os.{bad[0]}"
+            if "__import__" in names:
+                return "uses", "__import__"
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id in os_aliases and _os_name(node.attr):
+                return "uses", f"os.{node.attr}"
+            if node.attr in ("__import__", "__builtins__") or node.attr in _OPENS:
+                return "uses", node.attr
+        elif isinstance(node, ast.Name) and node.id in ("__import__", "__builtins__", "exec", "eval", "compile"):
+            return "uses", node.id
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            text = node.value
+            if text.startswith("/proc/") or text in ("__import__", "__builtins__") or (
+                    _os_name(text) and _getattr_arg(tree, node)):
+                return "uses", text
     return None
+
+
+def _getattr_arg(tree: Any, constant: Any) -> bool:
+    """Whether `constant` is the name in a `getattr(x, "...")`: `getattr(os, "environ")` is `os.environ`."""
+    import ast
+
+    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr"
+               and constant in n.args[1:2] for n in ast.walk(tree))
 
 
 def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
@@ -709,7 +764,7 @@ def _app_for(provider: str, catalog: list[dict]) -> dict | None:
 async def check_build(args: dict, server_module: Any, events: list[dict]) -> dict:
     """See the module's docstring. `draft` is the planner's finish (E2's object); everything else is the run's."""
     from core.builder_connect import _read_options, prepare_connection
-    from core.native_builder.render import render
+    from core.native_builder.render import gate_words as render_gate, render
     from core.product_tools.approved import digest
 
     state = _state()
@@ -816,7 +871,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                             "then tell me it is connected.")
     if found.errors:
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
-    buildable = not (no_way or connect or found.errors)
+    said += [f"{why}." for why in found.blocks.values()]
+    # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
+    said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
+    buildable = not (no_way or connect or found.errors or found.blocks)
     prompts = prompts_for(plan, state) if plan.agents else {}
     if buildable and prompts is None:
         # The new agents' instructions are written before the review, so the person reads them and the yes covers
@@ -825,7 +883,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 "research": prior.get("research") or [],
                 "for": {a.name: agent_fingerprint(a.model_dump()) for a in plan.agents}}
     offers = ["build"] if buildable else []
-    offers += [f"without:{n}" for n in [*no_way, *connect]]
+    offers += [f"without:{n}" for n in dict.fromkeys([*no_way, *connect, *found.blocks])]
     # Only where a press changes what the run asks: an agent's or the workspace's own policy still asks (F964, 2).
     held = {g.tool for g in plan.gates if g.set_by != "build"}
     offers += [f"alone:{n}" for n in plan.approvals.asks_first if n not in no_way and n not in connect
@@ -904,7 +962,9 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
     if m:
         tools = (checked_in(state).get("plan") or {}).get("tools") or []
         asked = [w.strip(" `'\"").lower() for w in re.split(r",|\s+and\s+", m.group("what")) if w.strip(" `'\"")]
-        picked = [t["name"] for t in tools if t.get("status") != "present"
+        offered = checked_in(state).get("offers") or []
+        # A tool with no way in, or one a policy blocks (offered as "Build without X", F964).
+        picked = [t["name"] for t in tools if (t.get("status") != "present" or f"without:{t['name']}" in offered)
                   and (t["name"].lower() in asked or str(t.get("provider") or "").lower() in asked)]
         if picked:
             return {"outcome": "without", "without": picked}
