@@ -491,3 +491,18 @@ def test_a_rename_only_update_makes_nothing_but_the_rename():
     assert problems == []
     calls = save_calls(plan, {}, {"intent": "update", "existing_orch": existing})
     assert [(c["tool"], c["args"].get("name")) for c in calls] == [("update_orchestration", "Daily summary")]
+
+
+async def test_an_update_is_held_only_on_steps_it_adds_or_changes(client):
+    """SAI2's check of 80de4238: a workflow that already asks "Paste your Shopify access token" in a Human step (built
+    by hand, imported) could not be renamed. The step rules hold what the update writes, as `_written` does for keys."""
+    existing = {"id": "orch_shop", "name": "Shop", "description": "", "entry_step_id": "ask", "steps": [
+        {"id": "ask", "name": "Ask", "type": "human", "human_prompt": "Paste your Shopify access token",
+         "output_key": "ask", "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    run = await _run(intent="update", existing_orch=existing, current_orchestration_id="orch_shop")
+    rename = {"kind": "update", "title": "Shop 2", "summary": "s", "edits": [{"op": "set_meta",
+                                                                             "fields": {"title": "Shop 2"}}]}
+    assert (await _call("submit_plan", rename, run))[0].get("finish") == "submit_plan"
+    adds = {**rename, "edits": [{"op": "add_step", "after": "ask", "step": {
+        "id": "again", "type": "human", "name": "Again", "does": "x", "prompt": "Paste your Shopify access token"}}]}
+    assert "never asked for a key" in (await _call("submit_plan", adds, run))[0]["error"]

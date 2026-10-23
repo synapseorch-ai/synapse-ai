@@ -351,7 +351,12 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     errors = []
     from core.native_builder.change_tools import _ASKS_SECRET, _ASKS_WAY_IN
 
-    for s in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+    # On an update, the workflow's own steps left as they are were not written by this plan: only what it adds or
+    # changes is held to these rules (SAI2's check of 80de4238; `_written`'s rule for keys). Inner workflows are new.
+    base = _base(state) if plan.kind == "update" else None
+    kept = {x.id: x.model_dump() for x in base.steps} if base is not None else {}
+    written = [x for x in plan.steps if kept.get(x.id) != x.model_dump()]
+    for s in [*written, *(x for w in plan.inner_workflows for x in w.steps)]:
         if s.type == "human":
             # What a run asks its person is kept in the run: never a key, a password or how to connect a service
             # (gpt-oss on dev planned "connect your Xero account by providing the API key" as a step; SAI2, 10-23).
