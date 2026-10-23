@@ -55,6 +55,15 @@ async def _run(user_id="u1", run_id="builder_chg", **state):
     return run
 
 
+def _asked_for(run, ops) -> None:
+    """The person asked for the renames the test proposes (F960: a new name must be their words), unless the test says
+    what they asked itself."""
+    names = [o["fields"]["name"] for o in ops or []
+             if o.get("op", "").startswith("rename_") and (o.get("fields") or {}).get("name")]
+    if names and "user_message" not in run.shared_state:
+        run.shared_state["user_message"] = " and ".join(f'rename it to "{n}"' for n in names)
+
+
 async def _call(tool, args, run):
     with live(run):
         raw, events = await execute_builder_tool_with_events(tool, args, _Server(), run_id=run.run_id)
@@ -63,6 +72,7 @@ async def _call(tool, args, run):
 
 async def _check(ops, run=None, **draft):
     run = run or await _run()
+    _asked_for(run, ops)
     out, events = await _call("check_change", {"draft": {"finish": "submit_change", "ops": ops, **draft}}, run)
     return out, [e for e in events if e.get("type") == "action_needed"], run
 
@@ -375,3 +385,47 @@ async def test_the_change_check_takes_back_what_its_pick_list_printed(client, ro
     for name in (f'Patient reminders ({second["id"]})', f'"Patient reminders" ({second["id"]}) — billing'):
         out, [card], _ = await _check([{"op": "run_workflow", "target": {"kind": "workflow", "name": name}}])
         assert card["buttons"][0]["arguments"]["orchestration_id"] == second["id"], name
+
+
+# ── F960: no change the person did not ask for ───────────────────────────────────────────────────────────────────
+
+async def test_a_rename_nobody_asked_for_is_left_out_and_said(client, role):
+    """SAI2's scratch rerun (Gemini 3 Flash, effect-01): "move the nightly schedule to 3am" came back as a new time and
+    a rename to "Every night at 3". The review showed both, so nothing was done unasked, but the review is the
+    backstop: a new name is the person's words or it is not proposed. The time goes on; the rename is said."""
+    await _schedule()
+    run = await _run(user_message="Move the every night at 2 schedule to 3am")
+    out, _, _ = await _check([
+        {"op": "set_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+         "fields": {"cron_expression": "0 3 * * *"}},
+        {"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+         "fields": {"name": "Every night at 3"}}], run)
+    assert out["outcome"] == "review"
+    assert [c[0] for c in out["calls"]] == ["update_schedule"]
+    assert "name" not in out["calls"][0][1]
+    assert out["say"] == 'I left out renaming the schedule "Every night at 2": you didn\'t ask for that.'
+
+
+async def test_an_unasked_rename_alone_is_asked_about_not_reviewed(client, role):
+    await _schedule()
+    run = await _run(user_message="Tidy up the every night at 2 schedule")
+    out, _, _ = await _check([{"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+                               "fields": {"name": "Nightly run"}}], run)
+    assert out["outcome"] == "ask" and not out.get("calls")
+    assert out["question"] == 'What should the schedule "Every night at 2" be called?'
+
+
+@pytest.mark.parametrize("words", [
+    {"user_message": "Rename the every night at 2 schedule to NIGHTLY RUN"},
+    {"user_message": "rename it", "change_clarify": {"answer": "call it 'Nightly run'"}},
+    {"user_message": "rename it", "manage_review": {"feedback": "no — make the name “Nightly  run”"}},
+])
+async def test_a_rename_to_the_person_s_own_words_is_reviewed(client, role, words):
+    """The person's words this turn: their message, their answer to the planner's question, their reply to the review;
+    case, quotes and spacing aside."""
+    item = await _schedule()
+    run = await _run(**words)
+    out, _, _ = await _check([{"op": "rename_schedule", "target": {"kind": "schedule", "name": "Every night at 2"},
+                               "fields": {"name": "Nightly run"}}], run)
+    assert out["outcome"] == "review", out
+    assert out["calls"] == [["update_schedule", {"schedule_id": item["id"], "name": "Nightly run"}]]

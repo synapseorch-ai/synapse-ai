@@ -348,9 +348,24 @@ def _review(ops: list[dict]) -> str:
 
 
 def _said(ops: list[dict]) -> str:
-    """What the person is told when nothing waits for approval: each card, each no-op, each refusal."""
-    out = [item["say"] for item in ops if item["status"] in ("card", "noop", "refused") and item.get("say")]
+    """What the person is told when nothing waits for approval: each card, no-op, refusal and op left out."""
+    out = [item["say"] for item in ops if item["status"] in ("card", "noop", "refused", "left_out") and item.get("say")]
     return " ".join(out) or "There was nothing to change."
+
+
+def _plain_words(text: Any) -> str:
+    """Words as compared for "did the person say it": case, quotes and spacing aside."""
+    return " ".join("".join(c if c.isalnum() else " " for c in str(text or "").casefold()).split())
+
+
+def _persons_words(state: dict) -> str:
+    """What the person said this turn: their message, their answer to the planner's question, their reply to the
+    review."""
+    clarify, review = state.get("change_clarify"), state.get("manage_review")
+    return " ".join(_plain_words(w) for w in (
+        state.get("user_message"),
+        clarify.get("answer") if isinstance(clarify, dict) else clarify,
+        review.get("feedback") if isinstance(review, dict) else review))
 
 
 async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
@@ -483,6 +498,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
 
     caller = _caller()
     areas.ensure_loaded()
+    _, run = _run()
+    words = _persons_words(run.shared_state if run is not None else {})
     checked: list[dict] = []
     picks: list[dict] = []
     for n, raw in enumerate(ops):
@@ -582,6 +599,12 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             continue
         if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
             new_name = _text(fields.get("name"))
+            if not draft.get("undo_of") and f" {_plain_words(new_name)} " not in f" {words} ":
+                # A new name is the person's words or it is not proposed (F960: "move it to 3am" came back renamed
+                # "Every night at 3"). An undo's rename back is code's, from the card, so it is not asked for again.
+                item.update(status="left_out", say=f"I left out renaming the {op.target} {_quoted(target['name'])}: "
+                                                   "you didn't ask for that.")
+                continue
             if any(i["id"] != target["id"] and i["name"].lower() == new_name.lower()
                    for i in await candidates(op.target) or []):
                 article = "An" if op.target[0] in "aeiou" else "A"
@@ -627,6 +650,12 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             leaves[here] = None if want is None else {**live, **want}
 
     ready = [i for i in checked if i["status"] == "ready"]
+    if not ready and checked and all(i["status"] == "left_out" for i in checked):
+        # Only a rename, and no new name in their words: asked, rather than said and dropped (Naveen, 10-23).
+        first = checked[0]
+        return {**base, "outcome": "ask", "ops": checked,
+                "question": f"What should the {C.OPS[first['op']].target} {_quoted(first['target']['name'])} be "
+                            "called?"}
     # What can't be undone is said once: on the review when there is one, else as the answer.
     said = " ".join([*([] if ready else notes), *([_said(checked)] if len(ready) < len(checked) or not ready else [])])
     if not ready:

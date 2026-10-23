@@ -52,6 +52,15 @@ async def _run(user_id="u1"):
     return run
 
 
+def _asked_for(run, ops) -> None:
+    """The person asked for the renames the test proposes (F960: a new name must be their words), unless the test says
+    what they asked itself."""
+    names = [o["fields"]["name"] for o in ops or []
+             if o.get("op", "").startswith("rename_") and (o.get("fields") or {}).get("name")]
+    if names and "user_message" not in run.shared_state:
+        run.shared_state["user_message"] = " and ".join(f'rename it to "{n}"' for n in names)
+
+
 async def _call(tool, args, run):
     with live(run):
         raw, events = await execute_builder_tool_with_events(tool, args, _Server(), run_id=run.run_id)
@@ -61,6 +70,7 @@ async def _call(tool, args, run):
 async def _change(draft, user_id="u1", answer="approve"):
     """One whole change: check, review answered, approve, apply. Returns (run, check, apply)."""
     run = await _run(user_id)
+    _asked_for(run, draft.get("ops"))
     checked = await _call("check_change", {"draft": {"finish": "submit_change", **draft}}, run)
     if checked["outcome"] != "review":
         return run, checked, None
