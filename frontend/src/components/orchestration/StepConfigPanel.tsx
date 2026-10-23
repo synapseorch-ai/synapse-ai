@@ -43,6 +43,8 @@ interface StepConfigPanelProps {
     isEntry: boolean;
     onSetEntry: () => void;
     availableModels?: string[];
+    /** A second line beside a model, by id: cloud's "Needs balance" while its wallet is empty (F962). */
+    modelHints?: Record<string, string>;
     /** Enables key suggestions and per-step issue notes. Optional — see header note. */
     orchestration?: Orchestration;
     /** The cloud passes false: its panel has no vault-mention wiring. */
@@ -122,7 +124,7 @@ const MAX_WIDTH = 640;
 
 export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
-    availableModels, orchestration, showVaultHints = true, canRunCode = true,
+    availableModels, modelHints, orchestration, showVaultHints = true, canRunCode = true,
     codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
     knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead, tasksPriced = false, workflows,
 }: StepConfigPanelProps) {
@@ -189,7 +191,7 @@ export function StepConfigPanel({
 
     const sectionProps: StepSectionProps = {
         step, update, otherSteps, agents,
-        availableModels: availableModels || [],
+        availableModels: availableModels || [], modelHints,
         availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly, knowledgeBases,
         tasksPriced, workflows,
     };

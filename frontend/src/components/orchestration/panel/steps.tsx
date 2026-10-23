@@ -331,7 +331,7 @@ function AgentSection(props: StepSectionProps) {
     );
 }
 
-function LlmSection({ step, update, availableModels, showVaultHints }: StepSectionProps) {
+function LlmSection({ step, update, availableModels, modelHints, showVaultHints }: StepSectionProps) {
     return (
         <div className="space-y-3">
             <Note>
@@ -351,7 +351,7 @@ function LlmSection({ step, update, availableModels, showVaultHints }: StepSecti
                 />
             </Field>
             <Field label="Model override">
-                <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} />
+                <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
             <HistoryToggle step={step} update={update} />
         </div>
@@ -433,7 +433,7 @@ function ToolArguments({ step, update, tool }: { step: StepConfig; update: StepS
     );
 }
 
-function ToolSection({ step, update, availableModels, availableTools, showVaultHints }: StepSectionProps) {
+function ToolSection({ step, update, availableModels, modelHints, availableTools, showVaultHints }: StepSectionProps) {
     const selectedTool = availableTools.find((t) => t.name === step.forced_tool) as ToolWithSchema | undefined;
     const setHere = step.tool_arguments != null;
     return (
@@ -477,7 +477,7 @@ function ToolSection({ step, update, availableModels, availableTools, showVaultH
             {setHere ? (
                 <ToolArguments step={step} update={update} tool={selectedTool} />
             ) : (
-                <ToolPromptFields step={step} update={update} availableModels={availableModels} showVaultHints={showVaultHints} />
+                <ToolPromptFields step={step} update={update} availableModels={availableModels} modelHints={modelHints} showVaultHints={showVaultHints} />
             )}
         </div>
     );
@@ -485,8 +485,8 @@ function ToolSection({ step, update, availableModels, availableTools, showVaultH
 
 /** The prompt and model a Tool step's model reads to write its arguments (Arguments: Ask the model). */
 function ToolPromptFields({
-    step, update, availableModels, showVaultHints,
-}: Pick<StepSectionProps, 'step' | 'update' | 'availableModels' | 'showVaultHints'>) {
+    step, update, availableModels, modelHints, showVaultHints,
+}: Pick<StepSectionProps, 'step' | 'update' | 'availableModels' | 'modelHints' | 'showVaultHints'>) {
     return (
         <>
             <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
@@ -502,7 +502,7 @@ function ToolPromptFields({
                 />
             </Field>
             <Field label="Model override">
-                <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} />
+                <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
             <HistoryToggle step={step} update={update} />
         </>
@@ -559,7 +559,7 @@ function WorkflowSection({ step, update, orchestration, workflows, showVaultHint
     );
 }
 
-function EvaluatorSection({ step, update, otherSteps, availableModels }: StepSectionProps) {
+function EvaluatorSection({ step, update, otherSteps, availableModels, modelHints }: StepSectionProps) {
     return (
         <div className="space-y-3">
             <Field label="Evaluator prompt" hint="Instructions for the routing decision.">
@@ -572,7 +572,7 @@ function EvaluatorSection({ step, update, otherSteps, availableModels }: StepSec
                 />
             </Field>
             <Field label="Model override">
-                <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} />
+                <ModelSelect value={step.model} onChange={(model) => update({ model })} availableModels={availableModels} hints={modelHints} />
             </Field>
             <div>
                 <span className="mb-1.5 block text-sm font-medium text-text">

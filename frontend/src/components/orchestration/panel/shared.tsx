@@ -36,6 +36,8 @@ export interface StepSectionProps {
     otherSteps: { id: string; name: string }[];
     agents: any[];
     availableModels: string[];
+    /** A second line beside a model, by id: cloud's "Needs balance" while its model wallet is empty (F962). */
+    modelHints?: Record<string, string>;
     availableTools: { name: string; description: string; schema?: unknown }[];
     stateKeys: string[];
     showVaultHints: boolean;
@@ -103,11 +105,14 @@ export function ModelSelect({
     value,
     onChange,
     availableModels,
+    hints,
     'aria-label': ariaLabel = 'Model override',
 }: {
     value: string | undefined;
     onChange: (model: string | undefined) => void;
     availableModels: string[];
+    /** A second line beside a model, by id (F962). */
+    hints?: Record<string, string>;
     'aria-label'?: string;
 }) {
     const DEFAULT = '__default__';
@@ -119,7 +124,7 @@ export function ModelSelect({
             onChange={(v) => onChange(v === DEFAULT ? undefined : v)}
             options={[
                 { value: DEFAULT, label: '(Default)' },
-                ...availableModels.map((m) => ({ value: m, label: m })),
+                ...availableModels.map((m) => ({ value: m, label: m, ...(hints?.[m] ? { hint: hints[m] } : {}) })),
             ]}
             searchPlaceholder="Search models…"
         />
