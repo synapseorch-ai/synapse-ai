@@ -3187,7 +3187,11 @@ function saveTabs({ state, pins }: SavedChatTabs) {
   try {
     // A draft is kept with its tab here: this browser typed it.
     localStorage.setItem(TABS_KEY, JSON.stringify({
-      tabs: state.tabs.map(({ fresh: _page, ...kept }) => kept), activeId: state.activeId, pins,
+      tabs: state.tabs.map(({ id, sessionId, agentId, key, title, usedAt, mark, draft }) => ({
+        id, sessionId, agentId, key, title, usedAt, ...(mark ? { mark } : {}), ...(draft ? { draft } : {}),
+      })),
+      activeId: state.activeId,
+      pins,
     }));
   } catch { /* a full or blocked storage: the tabs last this page's life */ }
 }
@@ -3246,7 +3250,7 @@ export default function Home() {
   const [picker, setPicker] = useState<'strip' | 'phone' | null>(null);
   const [panel, setPanel] = useState<RailPanel | null>(null);
   // A link to a conversation (`/?session=…&agent=…`), opened once the tabs are read.
-  const [link, setLink] = useState<{ sessionId: string; agentId: string } | null>(null);
+  const link = useRef<{ sessionId: string; agentId: string } | null>(null);
 
   const isBuilder = useCallback((agentId: string) => {
     const info = systemStatus?.agents?.[agentId];
@@ -3286,7 +3290,7 @@ export default function Home() {
       const asked = new URLSearchParams(window.location.search);
       const session = asked.get('session');
       const agent = asked.get('agent');
-      if (session && agent) setLink({ sessionId: session, agentId: agent });
+      if (session && agent) link.current = { sessionId: session, agentId: agent };
       await start(kept => {
         let next = kept;
         if (next.tabs.length === 0 && oldSession && oldAgent) next = openTab(next, make(oldSession, oldAgent)).state;
@@ -3301,12 +3305,13 @@ export default function Home() {
 
   // The link, once the tabs are read — and, at the cap, once it is known which tabs are busy.
   useEffect(() => {
-    if (!ready || !link) return;
+    const asked = link.current;
+    if (!ready || !asked) return;
     if (state.tabs.length >= MAX_TABS && !statusLoaded) return;
-    tabs.openConversation(link.sessionId, link.agentId);
-    setLink(null);
+    link.current = null;
+    tabs.openConversation(asked.sessionId, asked.agentId);
     router.replace('/', { scroll: false });
-  }, [ready, link, state.tabs.length, statusLoaded, tabs, router]);
+  }, [ready, state.tabs.length, statusLoaded, tabs, router]);
 
   useTabShortcuts((key) => {
     if (key.kind === 'new') setPicker(onPhone() ? 'phone' : 'strip');
@@ -3440,25 +3445,27 @@ function ConversationList({ which, tabs, frontKey, pins, nameOf, onOpen, onToggl
   onTogglePin: (pin: TabPin) => void;
   onNewChat: () => void;
 }) {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [nonce, setNonce] = useState(0);
   const words = which === 'search' ? query.trim() : '';
+  // What was read, and for which ask: the list shown is the one this ask read, or nothing yet.
+  const asking = `${words}|${nonce}`;
+  const [read, setRead] = useState<{ asking: string; list: SessionSummary[] } | null>(null);
+  const idle = which === 'search' && !words;
+  const loading = !idle && read?.asking !== asking;
+  const sessions = idle ? [] : read?.list ?? [];
 
   useEffect(() => {
-    if (which === 'search' && !words) { setSessions([]); return; }
+    if (idle) return;
     let live = true;
-    setLoading(true);
     const wait = setTimeout(() => {
       fetch(words ? `/api/sessions?q=${encodeURIComponent(words)}` : '/api/sessions')
         .then(r => (r.ok ? r.json() : []))
-        .then(list => { if (live) setSessions(Array.isArray(list) ? list : []); })
-        .catch(e => console.error('[Sessions] fetch error', e))
-        .finally(() => { if (live) setLoading(false); });
+        .then(list => { if (live) setRead({ asking, list: Array.isArray(list) ? list : [] }); })
+        .catch(e => { console.error('[Sessions] fetch error', e); if (live) setRead({ asking, list: [] }); });
     }, words ? 250 : 0);
     return () => { live = false; clearTimeout(wait); };
-  }, [which, words, nonce]);
+  }, [idle, words, asking]);
 
   const pinned = (s: SessionSummary) => pins.some(p => p.sessionId === s.session_id && p.agentId === s.agent_id);
   const openKeys = new Set(tabs.map(t => t.key));
@@ -3468,7 +3475,7 @@ function ConversationList({ which, tabs, frontKey, pins, nameOf, onOpen, onToggl
 
   const remove = async (s: SessionSummary) => {
     await fetch(`/api/sessions/${s.session_id}?agent_id=${s.agent_id}`, { method: 'DELETE' });
-    setSessions(prev => prev.filter(x => !(x.session_id === s.session_id && x.agent_id === s.agent_id)));
+    setRead(prev => prev && { ...prev, list: prev.list.filter(x => !(x.session_id === s.session_id && x.agent_id === s.agent_id)) });
     if (pinned(s)) onTogglePin({ sessionId: s.session_id, agentId: s.agent_id });
   };
 

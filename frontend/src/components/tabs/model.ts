@@ -106,8 +106,9 @@ export function focusTab<T extends Tab>(state: TabsState<T>, id: string, now: nu
 
 function withoutMark<T extends Tab>(tab: T): T {
   if (!('mark' in tab)) return tab;
-  const { mark: _gone, ...rest } = tab as T & { mark?: TabMark };
-  return rest as T;
+  const next = { ...tab } as T & { mark?: TabMark };
+  delete next.mark;
+  return next;
 }
 
 /**
