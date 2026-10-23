@@ -429,3 +429,32 @@ async def test_a_rename_to_the_person_s_own_words_is_reviewed(client, role, word
                                "fields": {"name": "Nightly run"}}], run)
     assert out["outcome"] == "review", out
     assert out["calls"] == [["update_schedule", {"schedule_id": item["id"], "name": "Nightly run"}]]
+
+
+# ── F959: a name said with its kind ──────────────────────────────────────────────────────────────────────────────
+
+async def test_a_name_said_with_its_kind_finds_the_thing(client, role):
+    """F959 (Nova Pro, chg-04): "Change the Front desk agent's model" → "No agent is called "Front desk agent"". A name
+    that matches nothing, but would without a trailing kind word, is that thing."""
+    agent = await _agent(name="Front desk")
+    out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "name": "Front desk agent"},
+                               "fields": {"name": "Harbor desk"}}])
+    assert out["outcome"] == "review", out
+    assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"name": "Harbor desk"}}]]
+
+
+async def test_an_exact_name_with_the_kind_word_in_it_wins(client, role):
+    await _agent(name="Front desk")
+    exact = await _agent(name="Front desk agent")
+    out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "name": "Front desk agent"},
+                               "fields": {"name": "Harbor desk"}}])
+    assert out["calls"] == [["update_agent", {"agent_id": exact["id"], "fields": {"name": "Harbor desk"}}]]
+
+
+async def test_two_that_match_without_the_kind_word_are_still_a_question(client, role):
+    await _workflow(name="Nightly digest for sales")
+    await _workflow(name="Nightly digest for support")
+    out, _, _ = await _check([{"op": "rename_workflow",
+                               "target": {"kind": "workflow", "name": "Nightly digest workflow"},
+                               "fields": {"name": "Digest"}}])
+    assert out["outcome"] == "ask" and len(out["picks"][0]["options"]) == 2

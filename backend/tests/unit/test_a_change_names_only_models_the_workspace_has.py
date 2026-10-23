@@ -79,3 +79,33 @@ async def test_self_hosted_s_list_is_what_the_model_picker_offers(monkeypatch):
     assert model_choices.offers({"anthropic": ["claude-haiku-4-5"]}, "claude-haiku-4-5")
     assert not model_choices.offers({"anthropic": ["claude-haiku-4-5"]}, "synapse.nova-pro")
     assert model_choices.offers(None, "anything")
+
+
+@pytest.fixture
+def cloud_like():
+    async def choices():
+        return {"synapse": ["synapse.nova-pro", "synapse.nova-lite", "synapse.gpt-oss-120b-1-0"],
+                "a": ["x.llama-3"], "b": ["y.llama-3"]}
+    model_choices.set_model_choices(choices)
+
+
+@pytest.mark.parametrize("said", ["nova-pro", "nova pro", "Nova Pro", "synapse.nova-pro"])
+async def test_a_model_named_by_its_own_part_is_the_one_it_names(client, role, cloud_like, said):
+    """F959 (P2's dev after-pass, Nova Pro, chg-04): the planner wrote `nova-pro`, and the check refused it with a list
+    holding exactly one match, `synapse.nova-pro`. One choice whose own id is what was said is that choice; the review
+    shows the full id, so the person approves the exact model."""
+    agent = await _agent(name="Front desk", model="claude-haiku-4-5")
+    out, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                               "fields": {"model": said}}])
+    assert out["outcome"] == "review", out
+    assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "synapse.nova-pro"}}]]
+    assert "model: synapse.nova-pro" in out["review"]
+
+
+@pytest.mark.parametrize("said", ["nova", "llama-3"])
+async def test_a_model_that_names_none_or_several_is_still_refused(client, role, cloud_like, said):
+    agent = await _agent(name="Front desk", model="claude-haiku-4-5")
+    out, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                               "fields": {"model": said}}])
+    assert out["outcome"] == "said" and out["calls"] == []
+    assert f'"{said}" is not a model this workspace can use' in out["say"]

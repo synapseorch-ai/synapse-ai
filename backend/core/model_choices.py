@@ -42,6 +42,18 @@ async def choices() -> dict[str, list[str]] | None:
     return {k: v for k, v in (found or {}).items() if v} or None
 
 
+def named(found: dict[str, list[str]] | None, said: str) -> str | None:
+    """The one model whose own id (after its provider's prefix) is `said`, case, spaces and hyphens aside; None for no
+    list, none, or several."""
+    def plain(text: str) -> str:
+        return "".join(c for c in text.casefold() if c.isalnum())
+
+    wanted = plain(said)
+    matches = {m for models in (found or {}).values() for m in models
+               if wanted and wanted in (plain(m), plain(m.split(".", 1)[-1]), plain(m.split("/", 1)[-1]))}
+    return matches.pop() if len(matches) == 1 else None
+
+
 def offers(found: dict[str, list[str]] | None, model: str) -> bool:
     """Whether `model` is one of them; True when there is no list to go by."""
     return found is None or any(model in models for models in found.values())

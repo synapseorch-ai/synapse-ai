@@ -259,7 +259,16 @@ def resolve(items: list[dict], target: dict) -> list[dict]:
     if not needle:
         return []
     exact = [i for i in items if i["name"].lower() == needle]
-    return exact or [i for i in items if needle in i["name"].lower()]
+    found = exact or [i for i in items if needle in i["name"].lower()]
+    if found:
+        return found
+    # "the Front desk agent": a name said with its kind after it (F959, Nova Pro). Only when nothing has the whole name.
+    bare = next((needle[: -len(word)].strip() for word in _KIND_WORDS if needle.endswith(" " + word)), "")
+    return resolve(items, {"name": bare}) if bare else []
+
+
+#: The words a person puts after a name to say what it is: "the Front desk agent", "the Nightly digest workflow".
+_KIND_WORDS = ("agent", "workflow", "orchestration", "schedule", "tool", "skill")
 
 
 async def read(kind: str, target_id: str) -> dict | None:
@@ -615,6 +624,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             from core import model_choices
 
             found = await model_choices.choices()
+            if not model_choices.offers(found, _text(fields.get("model"))):
+                # One choice whose own id is what was said ("nova-pro" for `synapse.nova-pro`, F959) is that choice;
+                # the review shows its full id, so the exact model is what the person approves.
+                fields["model"] = model_choices.named(found, _text(fields.get("model"))) or fields["model"]
             if not model_choices.offers(found, _text(fields.get("model"))):
                 listed = "; ".join(f"{p}: {', '.join(m[:6])}" for p, m in found.items())
                 item.update(status="refused", say=f"{_quoted(_text(fields.get('model')))} is not a model this "
