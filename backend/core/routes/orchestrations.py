@@ -4,7 +4,6 @@ Orchestration management endpoints: CRUD, run, human-input, cancel.
 import asyncio
 import os
 import json
-import time
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -424,21 +423,52 @@ async def estimate_run(request: Request):
     }
 
 
+#: An editor's save and the check of what it read happen one at a time (F871): read, compare, write.
+_SAVE_LOCK = asyncio.Lock()
+
+WORKFLOW_DELETED = ("This workflow was deleted elsewhere. Your edits are still here: save them as a new workflow, "
+                    "or discard them.")
+
+
+def workflow_changed(at: str) -> str:
+    """The 409's words (F871): when the other save was, and the two ways on."""
+    return f"This workflow was changed elsewhere at {at}. Reload it, or keep yours and save over it."
+
+
+def _if_match(request: Request) -> str | None:
+    """The `updated_at` an editor read, from `If-Match: "<updated_at>"`; None for every caller that sends none."""
+    raw = (request.headers.get("if-match") or "").strip()
+    if not raw:
+        return None
+    return raw[2:] if raw.startswith("W/") else raw
+
 @router.post("/api/orchestrations")
-async def create_or_update_orchestration(orch: OrchestrationIn):
+async def create_or_update_orchestration(orch: OrchestrationIn, request: Request):
     # A single upsert rather than read-list / mutate / write-list, which loses
     # whichever of two concurrent edits finishes first.
     from core.store.resources import get_orchestration as _get
     from core.store.resources import save_orchestration
 
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    existing = await _get(orch.id)
-
-    data = orch.model_dump()
-    await _refuse_to_save(data)
-    data["updated_at"] = now
-    data["created_at"] = (existing or {}).get("created_at", now)
-    await save_orchestration(data)
+    # F871: the editor says what it read. A save from a copy someone has since changed is refused with when, and
+    # one of a workflow since deleted is refused rather than brought back; a save that says nothing is as before.
+    seen = _if_match(request)
+    seen = seen.strip('"') if seen is not None else None
+    async with _SAVE_LOCK:
+        existing = await _get(orch.id)
+        if seen is not None:
+            if existing is None:
+                raise HTTPException(404, detail={"message": WORKFLOW_DELETED})
+            current = str(existing.get("updated_at") or "")
+            if current != seen:
+                raise HTTPException(409, detail={"message": workflow_changed(current), "updated_at": current})
+        # To the microsecond: two saves in one second are two versions.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        data = orch.model_dump()
+        await _refuse_to_save(data)
+        data["updated_at"] = now
+        data["created_at"] = (existing or {}).get("created_at", now)
+        await save_orchestration(data)
     return data
 
 

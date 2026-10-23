@@ -85,6 +85,8 @@ async def _tell_deleted(kind: str, id_: str, document: dict | None) -> None:
 # ---------------------------------------------------------------------------
 
 def orchestration_values(item: dict, tenant_id: str) -> dict:
+    from core.store.models import _now
+
     return {
         "id": item["id"],
         "tenant_id": tenant_id,
@@ -96,6 +98,10 @@ def orchestration_values(item: dict, tenant_id: str) -> dict:
         # missing from every list. The engine itself reads only `False` as
         # retired (`_document`).
         "is_active": bool(item.get("is_active", True)),
+        # Every write moves the row's own stamp (F871): the upsert's ON CONFLICT UPDATE runs no `onupdate`, so the
+        # column kept its creation time, and a host that checks an editor's save against it (cloud's PUT) never saw
+        # a builder's, an MCP key's or the assistant's change. The document is left as its writer wrote it.
+        "updated_at": _now(),
     }
 
 
