@@ -91,6 +91,11 @@ export interface Plan {
     asksFirst: string | null;
     /** What the person said may act without anyone approving it each time. */
     actsAlone: string | null;
+    /**
+     * The answers the card offers, when it is drawn from the plan's object (SAI2-P3): `build`, `without:<tool>`,
+     * `find`, `change`, `stop`. Absent for a plan read from its words, which offers what it always did.
+     */
+    offers?: string[];
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -403,6 +408,90 @@ export function planFromChange(change: ChangeView, prompt: string): Plan | null 
         kind: 'change', body: splitQuestion(prompt).body, overview: change.say?.trim() || null, steps,
         schedule: null, newAgents: [], openQuestions: null, notCarried: null, needs: null, asksFirst: null, actsAlone: null,
     };
+}
+
+// ── A build, from its own object (SAI2-P3, F939) ──────────────────────────────
+
+/** One step of Synapse AI's checked plan, as the review's event carries it (`check_build`). */
+export interface PlanObjectStep {
+    id: string;
+    type: string;
+    name: string;
+    does?: string;
+    tool?: string | null;
+    agent?: string | null;
+    workflow?: string | null;
+}
+
+/** The checked plan a build's review carries when its object is one (`context.object === 'plan'`). */
+export interface PlanObjectView {
+    object: 'plan';
+    outcome: string;
+    plan: {
+        kind: 'create' | 'update';
+        title?: string;
+        summary?: string;
+        steps: PlanObjectStep[];
+        agents?: { name: string; type?: string }[];
+        schedule?: { cron?: string; says?: string; timezone?: string | null } | null;
+        questions?: string[];
+        not_carried_over?: string[];
+        approvals?: { asks_first?: string[]; acts_without_asking?: string[] };
+        tools?: { name: string; status: string; provider?: string | null; via?: string }[];
+    };
+    /** What the card offers (decision 2, Naveen 10-23): no `build` while a tool has no way in. */
+    offers: string[];
+    /** Code's words: each missing tool and its reason, and what the plan could not be saved for. */
+    say?: string;
+}
+
+export function planOf(context: unknown): PlanObjectView | null {
+    if (!context || typeof context !== 'object') return null;
+    const c = context as { object?: unknown; outcome?: unknown; plan?: { steps?: unknown }; offers?: unknown };
+    return c.object === 'plan' && c.outcome === 'review' && Array.isArray(c.plan?.steps) && Array.isArray(c.offers)
+        ? (context as PlanObjectView) : null;
+}
+
+function bullets(items: string[] | undefined, code = false): string | null {
+    const kept = (items ?? []).map((i) => i.trim()).filter(Boolean);
+    return kept.length ? kept.map((i) => (code ? `- \`${i}\`` : `- ${i}`)).join('\n') : null;
+}
+
+/**
+ * The build's card, from the object rather than its markdown: its steps by type, what it makes, when it runs, what
+ * asks first, what is missing and why, the open questions, and the answers it offers. A field with nothing in it is
+ * never drawn (no "(cron expression: )"). The words stay the fallback for an older run (F443).
+ */
+export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan | null {
+    const steps = view.plan.steps.filter((s) => s.type !== 'end');
+    if (!steps.length) return null;
+    const known = (t: string): StepType | null => (t in STEP_TYPE_META ? (t as StepType) : null);
+    const when = view.plan.schedule?.says?.trim();
+    const cron = view.plan.schedule?.cron?.trim();
+    return {
+        kind: 'build',
+        body: splitQuestion(prompt).body,
+        overview: view.plan.summary?.trim() || null,
+        steps: steps.map((s, i) => {
+            const step = stepOf(i + 1, s.name, known(s.type));
+            const detail = [s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '', s.tool ? `uses ${s.tool}` : '']
+                .filter(Boolean).join(' — ');
+            return detail ? { ...step, detail } : step;
+        }),
+        schedule: when ? (cron ? `${when} (${cron}, UTC)` : when) : null,
+        newAgents: (view.plan.agents ?? []).map((a) => a.name).filter(Boolean),
+        openQuestions: bullets(view.plan.questions),
+        notCarried: bullets(view.plan.not_carried_over),
+        needs: view.say?.trim() || null,
+        asksFirst: bullets(view.plan.approvals?.asks_first, true),
+        actsAlone: bullets(view.plan.approvals?.acts_without_asking, true),
+        offers: view.offers,
+    };
+}
+
+/** What a "Build without" answer sends, as `read_plan_answer` reads it. */
+export function withoutWords(tool: string): string {
+    return `build without ${tool}`;
 }
 
 /**

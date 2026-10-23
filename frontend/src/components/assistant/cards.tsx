@@ -14,6 +14,10 @@
  * Nothing about the builder changed for this; `plan.ts` reads its words. A
  * plan that names something missing here also offers Find who can, which sends
  * `RESEARCH_WORDS` and has the builder look for a provider instead (BWA1).
+ *
+ * A build drawn from its own object (SAI2-P3) offers what the object says: no
+ * Build it while a tool has no way in, a "Build without …" for each such tool
+ * instead, and Find who can only while nobody was looked up (Naveen, 10-23).
  */
 import { AlertTriangle, Check, ChevronDown, ChevronUp, Search } from 'lucide-react';
 import * as React from 'react';
@@ -22,7 +26,10 @@ import { EstimateLine, useRunEstimate, type EstimateLoader } from '@/components/
 import { Button, Markdown } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
-import { changeOf, planDefinition, planFromChange, readPlan, splitQuestion, type Plan, type PlanStep } from './plan';
+import {
+    changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan, splitQuestion, withoutWords,
+    type Plan, type PlanStep,
+} from './plan';
 
 /**
  * What a run of the plan would cost (CE1). The plan names every step once and
@@ -178,7 +185,7 @@ export function PlanCard({
 }: {
     prompt: string;
     kind: 'build' | 'change';
-    /** The question's typed object (F795): a change draws from it, its words the fallback. */
+    /** The question's typed object (F795): a change or a build draws from it, its words the fallback. */
     context?: Record<string, unknown> | null;
     open: boolean;
     onAnswer: (text: string) => void;
@@ -189,8 +196,15 @@ export function PlanCard({
 }) {
     const plan = React.useMemo(() => {
         const change = kind === 'change' ? changeOf(context) : null;
-        return (change && planFromChange(change, prompt)) ?? readPlan(prompt, kind);
+        const built = kind === 'build' ? planOf(context) : null;
+        return (change && planFromChange(change, prompt)) ?? (built && planFromPlanObject(built, prompt))
+            ?? readPlan(prompt, kind);
     }, [prompt, kind, context]);
+    // What the card offers: the object's own list, or, for a plan read from its words, what it always offered.
+    const offers = plan?.offers;
+    const canBuild = !offers || offers.includes('build');
+    const canFind = !offers || offers.includes('find');
+    const without = (offers ?? []).filter((o) => o.startsWith('without:')).map((o) => o.slice('without:'.length));
     const [expanded, setExpanded] = React.useState(false);
     const [sent, setSent] = React.useState(false);
     const title = kind === 'change' ? 'The change' : 'The plan';
@@ -237,21 +251,39 @@ export function PlanCard({
                                 Missing here
                             </span>
                             <Markdown className="text-[13px] leading-relaxed">{plan.needs}</Markdown>
-                            {open && (
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    size="sm"
-                                    disabled={sent}
-                                    className="mt-1 self-start"
-                                    onClick={() => {
-                                        setSent(true);
-                                        onAnswer(RESEARCH_WORDS);
-                                    }}
-                                >
-                                    <Search className="size-4" aria-hidden />
-                                    Find who can
-                                </Button>
+                            {open && (without.length > 0 || canFind) && (
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                    {without.map((tool) => (
+                                        <Button
+                                            key={tool}
+                                            type="button"
+                                            variant="secondary"
+                                            size="sm"
+                                            disabled={sent}
+                                            onClick={() => {
+                                                setSent(true);
+                                                onAnswer(withoutWords(tool));
+                                            }}
+                                        >
+                                            Build without {tool}
+                                        </Button>
+                                    ))}
+                                    {canFind && (
+                                        <Button
+                                            type="button"
+                                            variant="secondary"
+                                            size="sm"
+                                            disabled={sent}
+                                            onClick={() => {
+                                                setSent(true);
+                                                onAnswer(RESEARCH_WORDS);
+                                            }}
+                                        >
+                                            <Search className="size-4" aria-hidden />
+                                            Find who can
+                                        </Button>
+                                    )}
+                                </div>
                             )}
                         </div>
                     )}
@@ -292,19 +324,21 @@ export function PlanCard({
                         <Button type="button" variant="secondary" size="sm" disabled={sent} onClick={onRevise}>
                             Change something
                         </Button>
-                        <Button
-                            type="button"
-                            size="sm"
-                            disabled={sent}
-                            onClick={() => {
-                                // Once: a second press would answer a run that has already moved on.
-                                setSent(true);
-                                onAnswer(APPROVE_WORD);
-                            }}
-                        >
-                            <Check className="size-4" aria-hidden />
-                            {kind === 'change' ? 'Go ahead' : 'Build it'}
-                        </Button>
+                        {canBuild && (
+                            <Button
+                                type="button"
+                                size="sm"
+                                disabled={sent}
+                                onClick={() => {
+                                    // Once: a second press would answer a run that has already moved on.
+                                    setSent(true);
+                                    onAnswer(APPROVE_WORD);
+                                }}
+                            >
+                                <Check className="size-4" aria-hidden />
+                                {kind === 'change' ? 'Go ahead' : 'Build it'}
+                            </Button>
+                        )}
                     </div>
                 </div>
             )}

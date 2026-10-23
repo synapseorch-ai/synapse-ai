@@ -261,3 +261,21 @@ async def test_the_check_reads_the_workspace_s_own_catalogue_and_never_offers_sy
     pack, _ = await _call("read_plan_context", {}, run)
     assert "rotterdam_weather" in {t["name"] for t in pack["tools"]}
     assert [a["id"] for a in pack["agents"]] == ["agent_desk"] and pack["kind"] == "create"
+
+
+# ── the card's words and the check's (synced UI, F939) ────────────────────────────────────────────────────────────
+
+def test_the_cards_build_without_words_are_what_the_answer_reads():
+    """The card's "Build without X" sends `withoutWords(X)` (`plan.ts`); `read_plan_answer` must read it as that
+    tool, as F759's test holds the yes words to the gates."""
+    import re
+    from pathlib import Path
+
+    plan_ts = (Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/plan.ts").read_text()
+    template = re.search(r"export function withoutWords\(tool: string\): string \{\s*return `([^`]+)`;", plan_ts)
+    assert template, "plan.ts names the words its Build without button sends"
+    sent = template.group(1).replace("${tool}", "send_mailchimp_campaign")
+    assert build_plan._WITHOUT.match(sent).group("what") == "send_mailchimp_campaign"
+    cards = (Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/cards.tsx").read_text()
+    for offer in ("offers.includes('build')", "o.startsWith('without:')", "offers.includes('find')"):
+        assert offer in cards, offer
