@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
-import { AlertTriangle, Check, X } from 'lucide-react';
+import { AlertTriangle, Check, PanelRightOpen, X } from 'lucide-react';
 import { STEP_TYPE_META } from '@/types/orchestration';
 import type { StepConfig, StepIssue, StepNodeData, StepType } from '@/types/orchestration';
 import { cn } from '@/lib/cn';
@@ -105,6 +105,8 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
     const runDetail = data.runDetail === true;
     const lastRun = data.lastRun as StepNodeData['lastRun'];
     const live = runStatus === 'running' || runStatus === 'paused';
+    const hasResult = data.hasResult === true && typeof data.openResult === 'function';
+    const openResult = data.openResult as StepNodeData['openResult'];
     const meta = STEP_TYPE_META[step.type as StepType];
     if (!meta) return null;
     const role = roleOf(step.type);
@@ -189,8 +191,21 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
             {/* Input handle — left side */}
             <Handle type="target" position={Position.Left} className="!size-2.5 !border-2 !border-[var(--bg)] !bg-text-faint" />
 
+            {/* What the step returned in the run on the canvas (F902): a button in its corner opens it. */}
+            {hasResult && (
+                <button
+                    type="button"
+                    aria-label={`See what ${step.name || 'this step'} returned`}
+                    title="See this step's result"
+                    onClick={(event) => { event.stopPropagation(); openResult?.(step.id); }}
+                    className="nodrag nopan absolute right-1.5 top-1.5 z-10 grid size-6 place-items-center rounded-md border border-border bg-surface text-accent-ink transition-colors hover:bg-accent-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+                >
+                    <PanelRightOpen className="size-3.5" aria-hidden />
+                </button>
+            )}
+
             {/* Header: the type's icon on its role's tint (D211), the name, Start */}
-            <div className="flex items-center gap-2 px-3 pb-1 pt-2.5">
+            <div className={cn('flex items-center gap-2 px-3 pb-1 pt-2.5', hasResult && 'pr-9')}>
                 <StepIcon type={step.type} kind={agentKindOf} />
                 <span className="min-w-0 flex-1 truncate text-[13px] font-semibold tracking-[-0.01em] text-text" translate="no">{step.name}</span>
                 {isEntry && (

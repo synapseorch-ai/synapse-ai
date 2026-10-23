@@ -240,6 +240,9 @@ export interface StepNodeData {
     lastRun?: { state: string; seconds: number | null; times?: number; costUsd?: number | null; credits?: number };
     /** The last run, now over, never reached this step: it is dimmed. */
     unreached?: boolean;
+    /** The run on the canvas holds something of this step's to show (F902): its result button opens it. */
+    hasResult?: boolean;
+    openResult?: (stepId: string) => void;
     issues?: StepIssue[];
     [key: string]: unknown;
 }

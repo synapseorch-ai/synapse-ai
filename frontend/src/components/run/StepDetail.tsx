@@ -14,7 +14,7 @@
  */
 import { Markdown } from '@/components/ui';
 
-import { money, REMOVED_NOTE, type StepExecution, type StepUsage } from './model';
+import { money, outputOf, REMOVED_NOTE, type StepExecution, type StepUsage } from './model';
 
 export function OutputValue({ value }: { value: unknown }) {
     if (typeof value === 'string') {
@@ -32,21 +32,8 @@ export function OutputValue({ value }: { value: unknown }) {
     );
 }
 
-/** What this step wrote, looked up in the run's shared state. */
-export function outputOf(step: StepExecution, state: Record<string, unknown>): unknown {
-    return step.output_key ? state[step.output_key] : undefined;
-}
-
-/** Nothing to open for a step that produced neither output nor an error, nor spent anything. */
-export function hasDetail(step: StepExecution, state: Record<string, unknown>, usage?: StepUsage): boolean {
-    if (step.error || usage) return true;
-    const output = outputOf(step, state);
-    if (output === null || output === undefined) return false;
-    if (typeof output === 'string') return output.trim().length > 0;
-    if (Array.isArray(output)) return output.length > 0;
-    if (typeof output === 'object') return Object.keys(output).length > 0;
-    return true;
-}
+// In `model.ts` since F902 (the canvas reads them too, with no React); said here for the run screens.
+export { hasDetail, outputOf } from './model';
 
 /** The models, turns, tokens, context and tools a step used (cloud's `step_usage`). */
 export function UsageLine({ usage }: { usage: StepUsage }) {

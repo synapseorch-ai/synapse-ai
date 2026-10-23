@@ -1487,8 +1487,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     const runOnCanvas = runStatus !== 'idle' && !!runId;
     // Each step's spend as the run goes (CE1): the stream carries times, not money,
     // so the record is read again a moment after the steps move — a call's row is
-    // written as its step closes — and once more when the run ends.
-    const [liveSpend, setLiveSpend] = useState<{ runId: string; stepUsage: RunRecord['stepUsage'] } | null>(null);
+    // written as its step closes — and once more when the run ends. The same read
+    // keeps what the steps wrote, for each step's result on the canvas (F902).
+    const [liveSpend, setLiveSpend] = useState<{ runId: string; stepUsage: RunRecord['stepUsage']; sharedState: Record<string, unknown> } | null>(null);
     useEffect(() => {
         if (!runOnCanvas || !runId || runHistory.length === 0) return;
         let live = true;
@@ -1497,8 +1498,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                 const res = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}`);
                 if (!res.ok) return;
                 const data = await res.json();
-                if (live && data.step_usage && typeof data.step_usage === 'object') {
-                    setLiveSpend({ runId, stepUsage: data.step_usage });
+                if (live) {
+                    setLiveSpend({
+                        runId,
+                        stepUsage: data.step_usage && typeof data.step_usage === 'object' ? data.step_usage : undefined,
+                        sharedState: data.shared_state && typeof data.shared_state === 'object' ? data.shared_state : {},
+                    });
                 }
             } catch { /* the times still show; the spend comes with the next read */ }
         }, 2500);
@@ -1517,6 +1522,15 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         }
         return newestRun ? stepTimes(newestRun, draft) : null;
     }, [draft, runOnCanvas, runStatus, humanPrompt, waitingStep, runHistory, newestRun, liveSpend, runId]);
+    // The run those come from, for each step's result (F902): the run on the canvas as far as it is read, or the newest.
+    const lastRecord = useMemo(() => {
+        if (runOnCanvas) {
+            const read = liveSpend && liveSpend.runId === runId ? liveSpend : null;
+            return { history: runHistory, sharedState: read?.sharedState ?? {}, stepUsage: read?.stepUsage };
+        }
+        return newestRun;
+    }, [runOnCanvas, liveSpend, runId, runHistory, newestRun]);
+    const lastRunId = runOnCanvas ? runId : newestRun?.id ?? null;
     const showLastRun = async (on: boolean) => {
         setLastRunShown(on);
         if (!on || runOnCanvas || !draft) return;
@@ -2035,6 +2049,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 shown: lastRunShown,
                                 onShow: (on) => { void showLastRun(on); },
                                 loading: newestLoading,
+                                record: lastRecord,
+                                runHref: lastRunId ? `/runs/${encodeURIComponent(lastRunId)}` : null,
                             }}
                             runStrip={
                                 <RunStrip

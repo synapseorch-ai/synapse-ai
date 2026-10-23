@@ -38,6 +38,9 @@ export const nodeTypes: NodeTypes = {
     stepNode: StepNode as any,
 };
 
+/** The steps the run on the canvas has a result for, and what opens one (F902). */
+export type StepResults = { has: ReadonlySet<string>; open: (stepId: string) => void };
+
 function stepsToNodes(
     steps: StepConfig[],
     entryStepId: string,
@@ -50,6 +53,7 @@ function stepsToNodes(
     stepTimes?: Record<string, StepTime> | null,
     settled?: boolean,
     workflowNames?: Record<string, string>,
+    stepResults?: StepResults | null,
 ): Node<StepNodeData>[] {
     return steps.map((step) => {
         const agent = agents.find((a: any) => a.id === step.agent_id);
@@ -69,6 +73,8 @@ function stepsToNodes(
                 runDetail,
                 lastRun: stepTimes?.[step.id],
                 unreached: !!settled && stepTimes?.[step.id]?.state === 'not-reached',
+                hasResult: !!stepResults?.has.has(step.id),
+                openResult: stepResults?.open,
                 issues: issuesByStep[step.id],
             },
             selected: step.id === selectedStepId,
@@ -311,6 +317,8 @@ export interface WorkflowGraphOptions {
     stepTimes?: Record<string, StepTime> | null;
     /** The run shown is over: a step it never reached is dimmed. */
     settled?: boolean;
+    /** The steps the run on the canvas has a result for, and what opens one (F902). */
+    stepResults?: StepResults | null;
     flags: CanvasFlags;
     /** Fit the graph in view. Called once per opened orchestration, and after Tidy up with a duration. */
     fit: (duration?: number) => void;
@@ -330,6 +338,7 @@ export function useWorkflowGraph({
     runDetail,
     stepTimes,
     settled,
+    stepResults,
     flags,
     fit,
     wrapperRef,
@@ -345,8 +354,8 @@ export function useWorkflowGraph({
     );
 
     const computedNodes = useMemo(
-        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail, stepTimes, settled, workflowNames),
-        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail, stepTimes, settled, workflowNames]
+        () => stepsToNodes(orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail, stepTimes, settled, workflowNames, stepResults),
+        [orchestration.steps, orchestration.entry_step_id, agents, selectedStepId, runStepStatuses, issuesByStep, runStepErrors, runDetail, stepTimes, settled, workflowNames, stepResults]
     );
     const computedEdges = useMemo(
         () => stepsToEdges(orchestration.steps, flags.edits),

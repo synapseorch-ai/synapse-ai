@@ -791,6 +791,39 @@ export function duration(seconds: number | null | undefined): string {
     return `${d} ${d === 1 ? 'day' : 'days'}`;
 }
 
+/** What this step wrote, looked up in the run's shared state. */
+export function outputOf(step: StepExecution, state: Record<string, unknown>): unknown {
+    return step.output_key ? state[step.output_key] : undefined;
+}
+
+/** Nothing to open for a step that produced neither output nor an error, nor spent anything. */
+export function hasDetail(step: StepExecution, state: Record<string, unknown>, usage?: StepUsage): boolean {
+    if (step.error || usage) return true;
+    const output = outputOf(step, state);
+    if (output === null || output === undefined) return false;
+    if (typeof output === 'string') return output.trim().length > 0;
+    if (Array.isArray(output)) return output.length > 0;
+    if (typeof output === 'object') return Object.keys(output).length > 0;
+    return true;
+}
+
+/**
+ * A step's result on the canvas (F902): its latest pass in the run on the canvas, what it wrote and what it spent;
+ * null when the run holds nothing of the step's to show (it did not run, or ran and left nothing).
+ */
+export function stepResult(
+    run: Pick<RunRecord, 'history' | 'sharedState' | 'stepUsage'> | null | undefined,
+    stepId: string,
+): { step: StepExecution; output: unknown; usage?: StepUsage } | null {
+    if (!run) return null;
+    const step = [...run.history].reverse().find((h) => h.step_id === stepId);
+    if (!step) return null;
+    const state = run.sharedState || {};
+    const usage = run.stepUsage?.[stepId];
+    if (!hasDetail(step, state, usage)) return null;
+    return { step, output: outputOf(step, state), usage };
+}
+
 /** Step types whose output is not what a run made: a person's answer, a route, an End (`results.NOT_CONTENT`). */
 export const NOT_CONTENT: readonly string[] = ['human', 'evaluator', 'end'];
 

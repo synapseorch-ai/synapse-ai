@@ -39,7 +39,7 @@ import { Copy, Flag, Trash2 } from 'lucide-react';
 import { CommandPalette, IconButton, useCanvasMode, usePersisted, useRegisterCommands } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { KNOWLEDGE_STEP_TYPES, type Orchestration, type StepConfig, type StepType } from '@/types/orchestration';
-import type { StepTime } from '../run/model';
+import { stepResult, type RunRecord, type StepTime } from '../run/model';
 import { canvasFlags } from './canvasFlags';
 import { ROLE_FILL, roleOf } from './roles';
 import { nodeTypes, useWorkflowGraph, type RunStepStatus } from './useWorkflowGraph';
@@ -50,6 +50,7 @@ import {
 } from './workbench/geometry';
 import { useElementBox, useMediaQuery, useReducedMotion } from './workbench/hooks';
 import { SetupCard } from './workbench/SetupCard';
+import { StepResultCard } from './workbench/StepResultCard';
 import { signalEdgeTypes, useRunEdges } from './workbench/signals';
 import { stepCommandGroups, TRANSFORM_NEEDS_CODE } from './workbench/stepCommands';
 import { FLOAT, TopBar } from './workbench/TopBar';
@@ -150,6 +151,13 @@ export interface CanvasWorkbenchProps {
         onShow: (shown: boolean) => void;
         /** The product is reading the run to show. */
         loading?: boolean;
+        /**
+         * The run those come from, as far as it is read: each step's result button opens what it holds of that
+         * step (F902). Absent, no step has a button.
+         */
+        record?: Pick<RunRecord, 'history' | 'sharedState' | 'stepUsage'> | null;
+        /** That run's page, for the result's "Open the run". */
+        runHref?: string | null;
     };
 }
 
@@ -208,8 +216,22 @@ function Workbench({
         if (selectedStepId && settingsOpen) setSettingsOpen(false);
         if (selectedStepId && boardOpen) setBoardOpen(false);
     }
-    const view: 'step' | 'settings' | 'board' | null =
-        selectedStep ? 'step' : settingsOpen ? 'settings' : boardOpen && board ? 'board' : null;
+    // A step's result (F902): it opens in the same card, and a step's setup, the settings or the board take its place.
+    const [resultFor, setResultFor] = useState<string | null>(null);
+    const record = lastRun?.shown ? lastRun.record ?? null : null;
+    const shownResult = resultFor && !selectedStep && !settingsOpen && !boardOpen ? stepResult(record, resultFor) : null;
+    const resultStep = shownResult ? orchestration.steps.find((s) => s.id === resultFor) ?? null : null;
+    const view: 'step' | 'settings' | 'board' | 'result' | null =
+        selectedStep ? 'step' : settingsOpen ? 'settings' : boardOpen && board ? 'board'
+            : shownResult && resultStep ? 'result' : null;
+    // A step picked for its setup closes its result (adjusted while rendering, as the settings are above).
+    if (selectedStepId && resultFor) setResultFor(null);
+    const openResult = useCallback((stepId: string) => {
+        onSelectStep(null);
+        setSettingsOpen(false);
+        setBoardOpen(false);
+        setResultFor(stepId);
+    }, [onSelectStep]);
     const cardOpen = view !== null;
     const sheetBox = useElementBox(sheetRef, cardOpen && phone);
     const dockBox = useElementBox(dockRef);
@@ -253,6 +275,12 @@ function Workbench({
         fitView({ padding: fitPadding(now.rect, now.width, now.height), duration: reduced ? 0 : duration });
     }, [fitView, freeNow, reduced]);
 
+    const stepResults = useMemo(() => {
+        if (!record) return null;
+        const has = new Set(orchestration.steps.filter((st) => stepResult(record, st.id)).map((st) => st.id));
+        return has.size ? { has, open: openResult } : null;
+    }, [record, orchestration.steps, openResult]);
+
     const graph = useWorkflowGraph({
         orchestration,
         agents,
@@ -264,6 +292,7 @@ function Workbench({
         runStepErrors: run.stepErrors,
         runDetail: true,
         stepTimes: lastRun?.shown ? lastRun.steps : null,
+        stepResults,
         settled: !(run.phase === 'running' || run.phase === 'paused'),
         flags,
         fit,
@@ -315,28 +344,31 @@ function Workbench({
     }, [selectedStepId, cardOpen, cardWidth, phone, sheetBox.height, getInternalNode, getViewport, setViewport, freeNow, reduced]);
 
     const closeCard = useCallback(() => {
-        const was = selectedStepId;
+        const was = selectedStepId ?? resultFor;
         setSettingsOpen(false);
         setBoardOpen(false);
+        setResultFor(null);
         if (was) {
-            onSelectStep(null);
+            if (selectedStepId) onSelectStep(null);
             // Back to the step it was about, as a click on the pane would leave it.
             window.requestAnimationFrame(() => {
                 const el = rootRef.current?.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(was)}"]`);
                 el?.focus();
             });
         }
-    }, [selectedStepId, onSelectStep]);
+    }, [selectedStepId, resultFor, onSelectStep]);
 
     const openSettings = useCallback(() => {
         onSelectStep(null);
         setBoardOpen(false);
+        setResultFor(null);
         setSettingsOpen(true);
     }, [onSelectStep]);
 
     const openBoard = useCallback(() => {
         onSelectStep(null);
         setSettingsOpen(false);
+        setResultFor(null);
         setBoardOpen(true);
     }, [onSelectStep]);
 
@@ -567,7 +599,17 @@ function Workbench({
                 >
                     {view === 'step' && selectedStep ? renderStep(selectedStep)
                         : view === 'board' && board ? board.render(() => setBoardOpen(false))
-                            : renderSettings(() => setSettingsOpen(false))}
+                            : view === 'result' && shownResult && resultStep ? (
+                                <StepResultCard
+                                    step={resultStep}
+                                    result={shownResult}
+                                    time={lastRun?.steps?.[resultStep.id]}
+                                    sharedState={record?.sharedState ?? {}}
+                                    runHref={lastRun?.runHref}
+                                    onClose={closeCard}
+                                />
+                            )
+                                : renderSettings(() => setSettingsOpen(false))}
                 </SetupCard>
             )}
 
