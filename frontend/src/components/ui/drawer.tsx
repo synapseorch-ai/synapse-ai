@@ -53,6 +53,9 @@ export function Drawer({
       <RDialog.Portal>
         <RDialog.Overlay className="fixed inset-0 z-50 bg-scrim/40" />
         <RDialog.Content
+          // Its own form submits only itself, as a Modal's does (F890): React carries a submit up its tree, out of
+          // the portal and into whatever form opened it.
+          onSubmit={(event) => event.stopPropagation()}
           onOpenAutoFocus={() => {
             // Called before focus moves in, so the element holding it opened us.
             const held = document.activeElement;

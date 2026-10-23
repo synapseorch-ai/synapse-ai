@@ -52,6 +52,9 @@ export function Modal({
       <RDialog.Portal>
         <RDialog.Overlay className="fixed inset-0 z-50 bg-scrim/60 backdrop-blur-[2px]" />
         <RDialog.Content
+          // A dialog's own form submits only itself. Portalled, it is outside its opener's form in the page, but
+          // React carries a submit up its tree: the profile's change-email form also saved the profile (F890).
+          onSubmit={(event) => event.stopPropagation()}
           onOpenAutoFocus={() => {
             // Called before focus moves in, so the element holding it opened us.
             const held = document.activeElement;
