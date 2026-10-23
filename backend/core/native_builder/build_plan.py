@@ -371,6 +371,11 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
         if s.type == "transform" and not ws.code_steps:
             errors.append(f"step {s.id}: this workspace's plan does not run code, so there are no transform steps: "
                           "use an `llm` step to reshape data")
+        elif s.type == "transform" and (reach := reaches_out((s.config or {}).get("transform_code") or "")):
+            errors.append(f"step {s.id}: its code does not parse ({reach[1]}): fix it" if reach[0] == "parse" else
+                          f"step {s.id}: its code uses `{reach[1]}`, but a step reaches a service through a tool, "
+                          "and its key through the Vault, never from code. Plan a tool step for the service (a tool "
+                          "nothing here provides is looked up, or built without); code works on the run's own data")
         if s.type in ("retrieve", "ingest") and ws.kbs is None:
             errors.append(f"step {s.id}: Knowledge is off in this workspace, so there are no {s.type} steps")
     if not ws.boards_on and (used := [t for t in O.tool_names(plan) if t in TOOL_NAMES]):
@@ -395,6 +400,41 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     if plan.agents and state.get("can_create_agents") is False:
         errors.append("agents: this conversation uses existing agents only; give each step one of theirs by id")
     return errors
+
+
+#: What a build's code may not import: each reaches a service or runs a program (F947). `os` itself is fine; its
+#: environment is not (a key belongs in the Vault).
+_REACHES = frozenset({"requests", "httpx", "urllib", "urllib3", "aiohttp", "socket", "http", "subprocess", "ftplib",
+                      "smtplib", "websocket", "websockets", "importlib"})
+
+
+def reaches_out(code: str) -> tuple[str, str] | None:
+    """`("parse", why)` for code that does not parse, `("uses", name)` for code that imports what reaches a service,
+    reads the environment or imports by a name it builds; else None. Read with `ast`, so an alias is the same import
+    (SAI2, 10-23). The code is a transform's body, so it is read inside a function (`return` at its top level)."""
+    import ast
+    import textwrap
+
+    try:
+        tree = ast.parse("def _transform():\n" + textwrap.indent(code or "pass", "    "))
+    except SyntaxError as e:
+        return "parse", str(e.msg)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in _REACHES:
+                    return "uses", alias.name
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in _REACHES:
+                return "uses", node.module or ""
+            if root == "os" and {"environ", "getenv", "environb", "getenvb"} & {a.name for a in node.names}:
+                return "uses", "os.environ"
+        elif isinstance(node, ast.Attribute) and node.attr in ("environ", "getenv", "environb", "getenvb"):
+            return "uses", f"os.{node.attr}"
+        elif isinstance(node, ast.Name) and node.id == "__import__":
+            return "uses", "__import__"
+    return None
 
 
 def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
