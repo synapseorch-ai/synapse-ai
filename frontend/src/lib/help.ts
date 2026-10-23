@@ -454,6 +454,18 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         media: { id: 'settings/oss-api-keys', alt: 'Settings → API keys: keys for calling this install from your own code.' },
         guide: '/guides/developers/public-api',
     },
+    ai_tools: {
+        title: 'AI tools',
+        summary: 'Use Synapse from Claude, Codex, Cursor or VS Code: ask them to run your workflows, answer approvals and build agents, without opening this app.',
+        steps: [
+            'Pick the AI tool you use.',
+            'Click “Make a key for …”, or paste a key you already have. A key made here is shown only on this page.',
+            'Copy the setup and paste it where the page says: a terminal for Claude Code and Codex, a config file for the others.',
+            'Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.',
+            'Remove the key in Settings → API keys whenever you want to cut the tool off.',
+        ],
+        guide: '/api/mcp-server',
+    },
     import_export: {
         title: 'Import / Export',
         summary: 'Move workflows, agents, apps and tools between Synapse installs as one JSON bundle, or start from a ready-made example.',

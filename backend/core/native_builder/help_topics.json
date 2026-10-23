@@ -16,6 +16,22 @@
    "href": "/agents"
   }
  },
+ "ai_tools": {
+  "title": "AI tools",
+  "summary": "Use Synapse from Claude, Codex, Cursor or VS Code: ask them to run your workflows, answer approvals and build agents, without opening this app.",
+  "steps": [
+   "Pick the AI tool you use.",
+   "Click “Make a key for …”, or paste a key you already have. A key made here is shown only on this page.",
+   "Copy the setup and paste it where the page says: a terminal for Claude Code and Codex, a config file for the others.",
+   "Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.",
+   "Remove the key in Settings → API keys whenever you want to cut the tool off."
+  ],
+  "guide": "/api/mcp-server",
+  "where": {
+   "label": "AI tools",
+   "href": "/ai-tools"
+  }
+ },
  "api_keys": {
   "title": "API keys",
   "summary": "Keys that let your scripts, servers and MCP clients such as Claude Code or Cursor drive Synapse from outside this UI.",

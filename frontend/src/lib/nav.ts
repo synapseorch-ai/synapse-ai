@@ -12,7 +12,7 @@
  * component would fail — and the symptom is a 200 with a 404 body.
  */
 import {
-    Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, ClipboardList, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
+    Activity, ArrowLeftRight, Blocks, BookOpen, Bot, Braces, Cable, ClipboardList, Clock, Cloud, Cpu, Database, DollarSign, Eraser,
     FlaskConical, FolderGit2, FolderOpen, Gauge, Globe, Key, LayoutDashboard, LayoutGrid, LayoutTemplate, LifeBuoy, Library,
     MessageSquare, MessagesSquare, Phone, Radio, ScrollText, Shield, Target, Workflow, Wrench,
     type LucideIcon,
@@ -198,6 +198,14 @@ export const HUB_NAV: NavHubGroup[] = [
                         blurb: 'Embed an agent in your own site with one script tag.',
                     },
                 ],
+            },
+            {
+                // Its own item, not a Settings tab (GUIDE1, F915; Naveen: "we should have a separate mcp section menu").
+                id: 'ai_tools', label: 'AI tools', icon: Cable,
+                tabs: [{
+                    id: 'ai_tools', label: 'AI tools', href: '/ai-tools', icon: Cable,
+                    blurb: 'Use Synapse from Claude, Codex, Cursor or VS Code: run workflows, answer approvals and build agents without opening this app.',
+                }],
             },
         ],
     },
