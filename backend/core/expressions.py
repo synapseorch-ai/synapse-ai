@@ -46,6 +46,7 @@ import ast
 import functools
 import json
 import operator
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -235,6 +236,26 @@ _MAX_DEPTH = 25
 _MAX_POW_EXP = 64
 _MAX_SEQ_REPEAT = 100_000
 
+#: Neither cap above bounds what an operation *makes*: `(((9**64)**64)**64)**64`
+#: took 13 s of CPU and one level more never ended, `round(5, -10**9)` never
+#: ended, `replace` and `join` grew 1,000 characters into 1,000,000 and `split`
+#: made an object per separator — each from a dozen parts or fewer (F965, BF11 and
+#: REL2). Evaluation runs on the event loop and CPU work cannot be cancelled, so
+#: one expression stalled a whole backend, or a worker for every org on it. An
+#: operation that can grow a value now works out its result's size before it runs.
+#:
+#: An integer's size in decimal digits: Python's own limit for turning one into
+#: text, so no expression that can show its result needs more.
+_MAX_INT_DIGITS = 4_300
+_MAX_INT_BITS = int(_MAX_INT_DIGITS * 3.3219280948873626) + 1
+#: One result's characters or items — unless it is no larger than what it came
+#: from, so `doc.replace('\r\n', '\n')` on a large document still works.
+_MAX_ITEMS = 1_000_000
+#: Characters and items one evaluation may make or scan, in all: what keeps a
+#: chain of operations, or a name added later, from spending a worker. About
+#: 0.2 s of work here.
+_MAX_WORK = 50_000_000
+
 
 def _describe(kind: type) -> str:
     return _NODE_NAMES.get(kind, kind.__name__)
@@ -324,17 +345,82 @@ def _compiled(expr: str) -> tuple[ast.Expression | None, str | None, bool]:
 
 # ── The walk: everything that needs a value ──────────────────────────────────
 
+def _too_many_digits() -> ExpressionRefused:
+    return ExpressionRefused(f'the result would have more than {_MAX_INT_DIGITS:,} digits')
+
+
 def _guard_pow(base: Any, exp: Any) -> None:
     if isinstance(base, int) and isinstance(exp, int) and exp > _MAX_POW_EXP:
-        raise ValueError(f'** is limited to an exponent of {_MAX_POW_EXP} here')
+        raise ExpressionRefused(f'** is limited to an exponent of {_MAX_POW_EXP} here')
+    # The exponent alone never bounded the result: (9**64)**64 is 830,977 bits (F965).
+    if (isinstance(base, int) and isinstance(exp, int) and exp > 0 and abs(base) > 1
+            and (abs(base).bit_length() - 1) * exp > _MAX_INT_BITS):
+        raise _too_many_digits()
 
 
 def _guard_repeat(left: Any, right: Any) -> None:
     for seq, n in ((left, right), (right, left)):
         if isinstance(seq, (str, list, tuple)) and isinstance(n, int):
             if len(seq) * n > _MAX_SEQ_REPEAT:
-                raise ValueError(
+                raise ExpressionRefused(
                     f'repeating a sequence past {_MAX_SEQ_REPEAT} items is not allowed here')
+    if (isinstance(left, int) and isinstance(right, int)
+            and left.bit_length() + right.bit_length() > _MAX_INT_BITS + 1):
+        raise _too_many_digits()
+
+
+#: Functions that walk their arguments (counted against the budget); `len`, `abs`,
+#: `bool`, `int`, `float` and `round` do not. Methods walk their receiver, but for
+#: these three, which look at one end or one key.
+_SCANNING = frozenset({min, max, list, dict, str})
+_CONSTANT_TIME = frozenset({'startswith', 'endswith', 'get'})
+
+
+def _size(value: Any) -> int:
+    """What a value counts against the budget: its characters or items."""
+    return len(value) if isinstance(value, (str, list, tuple, dict, set)) else 0
+
+
+#: Methods that make a result bigger than what they read, and how big, worked out
+#: before the call (F965). Every other method's result is no larger than its
+#: receiver, or than what its own arguments made (case changes at most triple).
+def _replace_size(receiver: str, args: list) -> int:
+    old, new = args[0], args[1]
+    if not (isinstance(old, str) and isinstance(new, str)):
+        return len(receiver)
+    # `s.replace('', x)` inserts x at every position: len(s) + 1 of them.
+    times = receiver.count(old) if old else len(receiver) + 1
+    if len(args) > 2 and isinstance(args[2], int) and args[2] >= 0:
+        times = min(times, args[2])
+    return len(receiver) + times * (len(new) - len(old))
+
+
+def _join_size(receiver: str, args: list) -> tuple[int, int]:
+    """`(result characters, what it read)`. A dict joins its keys."""
+    joined = _raw(args[0])  # a dict from state comes wrapped; it joins its keys
+    items = list(joined) if isinstance(joined, (list, tuple, dict, set, str)) else []
+    total = sum(len(x) for x in items if isinstance(x, str))
+    return total + len(receiver) * max(len(items) - 1, 0), total
+
+
+_WORD = re.compile(r"\S+")
+
+
+def _split_items(receiver: str, args: list) -> int:
+    sep = args[0] if args else None
+    limit = args[1] if len(args) > 1 and isinstance(args[1], int) and args[1] >= 0 else None
+    if isinstance(sep, str) and sep:
+        items = receiver.count(sep) + 1
+    elif len(receiver) // 2 + 1 <= _MAX_ITEMS:
+        items = len(receiver) // 2 + 1  # a bound: words are separated by at least one space
+    else:
+        # Counted in C: a prefix first, so a refusal never reads the whole string;
+        # the whole of it only when the split is going to be allowed.
+        head = receiver[: 2 * _MAX_ITEMS + 2]
+        items = _WORD.subn('', head)[1]
+        if items <= _MAX_ITEMS and len(head) < len(receiver):
+            items = _WORD.subn('', receiver)[1]
+    return min(items, limit + 1) if limit is not None else items
 
 
 _BINOPS = {
@@ -354,10 +440,19 @@ _CMPOPS = {
 
 
 class _Walk:
-    __slots__ = ('state',)
+    __slots__ = ('state', 'work')
 
     def __init__(self, state: DotNavigableState):
         self.state = state
+        self.work = 0
+
+    def _spend(self, units: int) -> None:
+        """Count characters and items made or scanned; refuse past one budget (F965)."""
+        self.work += units
+        if self.work > _MAX_WORK:
+            raise ExpressionRefused(
+                f'the expression would produce or read more than {_MAX_WORK:,} '
+                f'characters and items in all')
 
     def run(self, tree: ast.Expression) -> Any:
         return self._eval(tree.body)
@@ -386,6 +481,7 @@ class _Walk:
             # its output: a field of it reads the JSON, as a set argument's
             # reference does (F801). A string that is not a JSON object still
             # has no fields; a method call never comes through here.
+            self._spend(len(receiver))  # reading JSON text is work, each time (F965)
             parsed = _json_object(receiver)
             if parsed is not None:
                 receiver = DotNavigableState(parsed)
@@ -397,7 +493,9 @@ class _Walk:
             f"'{type(receiver).__name__}' object has no attribute '{node.attr}'")
 
     def _subscript(self, node):
-        return self._eval(node.value)[self._eval(node.slice)]
+        value = self._eval(node.value)[self._eval(node.slice)]
+        self._spend(_size(value))
+        return value
 
     def _slice(self, node):
         return slice(
@@ -412,14 +510,58 @@ class _Walk:
             fn = _FUNCS.get(func.id)
             if fn is None:
                 raise ExpressionRefused(f'{func.id}(…) is not available here')
-            return fn(*[self._eval(a) for a in node.args])
+            args = [self._eval(a) for a in node.args]
+            if (fn is round and len(args) > 1 and isinstance(args[1], int)
+                    and abs(args[1]) > _MAX_INT_DIGITS):
+                # round(5, -10**9) computes ten to the billion (F965).
+                raise ExpressionRefused(
+                    f'round(…) to more than {_MAX_INT_DIGITS:,} places is not allowed here')
+            if fn in _SCANNING:
+                self._spend(sum(_size(a) for a in args))
+            value = fn(*args)
+            self._spend(_size(value))
+            return value
         receiver = self._eval(func.value)
         fn = _METHODS.get((type(receiver), func.attr))
         if fn is None:
             raise TypeError(
                 f"'{type(receiver).__name__}' object has no method "
                 f"'{func.attr}' available to an expression")
-        return fn(receiver, *[self._eval(a) for a in node.args])
+        args = [self._eval(a) for a in node.args]
+        if func.attr not in _CONSTANT_TIME:
+            self._spend(_size(receiver))
+        self._presize(func.attr, receiver, args)
+        value = fn(receiver, *args)
+        if isinstance(value, (type({}.keys()), type({}.values()), type({}.items()))):
+            # Plain data only: a view carries `.mapping`, its dict (REL2's review).
+            value = list(value)
+        self._spend(_size(value))
+        return value
+
+    def _presize(self, name: str, receiver: Any, args: list) -> None:
+        """Refuse a method whose result would be too big, before it is made (F965)."""
+        if not isinstance(receiver, str) or not args and name not in ('split', 'rsplit'):
+            return
+        if name == 'replace' and len(args) >= 2:
+            size = _replace_size(receiver, args)
+            if size > max(_MAX_ITEMS, len(receiver)):
+                raise ExpressionRefused(
+                    f'.replace(…) would make {size:,} characters; an expression may make '
+                    f'at most {max(_MAX_ITEMS, len(receiver)):,}')
+            self._spend(max(size, 0))
+        elif name == 'join':
+            size, read = _join_size(receiver, args)
+            if size > max(_MAX_ITEMS, read):
+                raise ExpressionRefused(
+                    f'.join(…) would make {size:,} characters; an expression may make '
+                    f'at most {max(_MAX_ITEMS, read):,}')
+            self._spend(read + size)
+        elif name in ('split', 'rsplit'):
+            items = _split_items(receiver, args)
+            if items > _MAX_ITEMS:
+                raise ExpressionRefused(
+                    f'.{name}(…) would make {items:,} items; an expression may make '
+                    f'at most {_MAX_ITEMS:,}')
 
     def _boolop(self, node):
         if type(node.op) is ast.And:
@@ -449,6 +591,8 @@ class _Walk:
         left = self._eval(node.left)
         right = self._eval(node.right)
         kind = type(node.op)
+        if kind is ast.Add and isinstance(left, (str, list, tuple)) and isinstance(right, (str, list, tuple)):
+            self._spend(len(left) + len(right))  # a chain of these is what the budget is for (F965)
         if kind is ast.Pow:
             _guard_pow(left, right)
         elif kind is ast.Mult:
@@ -463,6 +607,8 @@ class _Walk:
         left = self._eval(node.left)
         for op, comparator in zip(node.ops, node.comparators):
             right = self._eval(comparator)
+            if type(op) in (ast.In, ast.NotIn):
+                self._spend(_size(right))  # a scan of what it looks in (F965)
             if not _CMPOPS[type(op)](left, right):
                 return False
             left = right
