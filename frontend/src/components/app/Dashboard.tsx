@@ -119,14 +119,7 @@ export function Dashboard() {
             setMcpCount(list(mcp).length);
             setName(firstName(me?.first_name));
             if (set && typeof set === 'object') setSettings(set);
-            // A list that could not be read stays unknown, and its card stays hidden (`moreToTry`).
-            const tried = (v: any, has: (rows: any[]) => boolean) => (Array.isArray(v) ? has(v) : undefined);
-            setUsed({
-                evals: tried(rubrics, rows => rows.length > 0),
-                knowledge: tried(bases, rows => rows.length > 0),
-                ai_tools: tried(keys, rows => rows.some(k => k.last_used_at)),
-                channels: tried(channels, rows => rows.length > 0),
-            });
+            setUsed(usedOf({ rubrics, bases, keys, channels }));
             setLoaded(true);
         });
     }, []);
@@ -499,6 +492,22 @@ export function Dashboard() {
             </div>
         </AppScreen>
     );
+}
+
+/**
+ * What Home's "More you can do" reads as used (F914): a rubric, a knowledge base, a key that has ever called in, a
+ * channel. A list that could not be read stays unknown, so its card stays hidden (`moreToTry`).
+ */
+function usedOf(lists: { rubrics: unknown; bases: unknown; keys: unknown; channels: unknown }): Partial<Record<TryKey, boolean>> {
+    const some = (v: unknown) => (Array.isArray(v) ? v.length > 0 : undefined);
+    return {
+        evals: some(lists.rubrics),
+        knowledge: some(lists.bases),
+        ai_tools: Array.isArray(lists.keys)
+            ? lists.keys.some((k: { last_used_at?: string | null } | null) => Boolean(k?.last_used_at))
+            : undefined,
+        channels: some(lists.channels),
+    };
 }
 
 /** What a schedule runs, by name. */
