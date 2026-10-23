@@ -10,8 +10,10 @@ import { Button, Modal } from '@/components/ui';
 
 import { changedWhen, type SaveProblem } from '../saveConflict';
 
-export function SaveConflictDialog({ problem, busy, onReload, onKeepMine, onSaveAsNew, onDiscard, onClose }: {
+export function SaveConflictDialog({ problem, noun = 'workflow', busy, onReload, onKeepMine, onSaveAsNew, onDiscard, onClose }: {
     problem: SaveProblem | null;
+    /** What was saved: a workflow (F871), an agent or a tool (F891). */
+    noun?: 'workflow' | 'agent' | 'tool';
     busy?: boolean;
     onReload: () => void;
     onKeepMine: () => void;
@@ -25,7 +27,7 @@ export function SaveConflictDialog({ problem, busy, onReload, onKeepMine, onSave
         <Modal
             open={problem !== null}
             onClose={onClose}
-            title={changed ? 'This workflow was changed elsewhere' : 'This workflow was deleted elsewhere'}
+            title={changed ? `This ${noun} was changed elsewhere` : `This ${noun} was deleted elsewhere`}
             description={changed
                 ? `Someone saved it ${changedWhen(problem.at)}, in another tab or another session. Your edits are still here.`
                 : 'It was deleted in another tab or by someone else. Your edits are still here.'}
@@ -38,14 +40,14 @@ export function SaveConflictDialog({ problem, busy, onReload, onKeepMine, onSave
             ) : (
                 <>
                     <Button variant="secondary" onClick={onDiscard} disabled={busy}>Discard my edits</Button>
-                    <Button onClick={onSaveAsNew} loading={busy}>Save as a new workflow</Button>
+                    <Button onClick={onSaveAsNew} loading={busy}>Save as a new {noun}</Button>
                 </>
             )}
         >
             <p className="text-sm text-text-muted">
                 {changed
                     ? 'Reload theirs to see what changed (your edits go). Keep mine to save yours over theirs.'
-                    : 'Save as a new workflow to keep your edits, or discard them.'}
+                    : `Save as a new ${noun} to keep your edits, or discard them.`}
             </p>
         </Modal>
     );

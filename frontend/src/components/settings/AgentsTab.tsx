@@ -11,7 +11,7 @@ import { vaultMentions } from '@/components/VaultMention';
 import { CAPABILITIES, AUTO_TOOLS_BY_TYPE } from './types';
 import { useDispatch } from 'react-redux';
 import { AppDispatch } from '@/store';
-import { addAgent, updateAgent } from '@/store/settingsSlice';
+import { addAgent, removeAgent, updateAgent } from '@/store/settingsSlice';
 import { ToastNotification } from './ToastNotification';
 import { AgentActivity, ActivityTab, ThisMonth, WhereItWorks } from './AgentActivity';
 import { AgentTest, toolNamesOf, type AgentStatus } from './AgentTest';
@@ -24,6 +24,8 @@ import { useNavFlags } from '@/components/app/NavFlags';
 import { OssBoardsHost } from '@/lib/boardsHost';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
 import { cn } from '@/lib/cn';
+import { ifMatch, problemLabel, saveProblem, type SaveProblem } from '@/components/orchestration/saveConflict';
+import { SaveConflictDialog } from '@/components/orchestration/workbench/SaveConflictDialog';
 import { providerLabel } from '@/lib/models';
 
 /** The longest name the server accepts (core/models.py `AGENT_NAME_MAX`, F217). */
@@ -191,7 +193,11 @@ export const AgentsTab = ({
         }
     };
 
-    const handleSaveAgent = async () => {
+    // F891: a save says what it read (`If-Match`), so one from a stale copy, or of an agent deleted meanwhile, is
+    // refused rather than written over the other or brought back. `seen`: the time a 409 named (keep mine), or null
+    // to save without the check (save as a new agent).
+    const [refused, setRefused] = useState<{ id: string; problem: SaveProblem; open: boolean } | null>(null);
+    const handleSaveAgent = async (opts?: { seen: string | null }) => {
         if (!draftAgent) return;
         // An agent saved before the limit can hold a longer name; say so rather
         // than let the server's 422 read as "Failed to save agent".
@@ -201,12 +207,14 @@ export const AgentsTab = ({
         }
         setIsSaving(true);
         try {
+            const read = opts ? { updated_at: opts.seen } : draftAgent;
             const res = await fetch('/api/agents', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', ...ifMatch(read) },
                 body: JSON.stringify(draftAgent),
             });
             if (res.ok) {
+                setRefused(null);
                 const { unknown_tools, ...saved } = await res.json();
                 setUnknownTools(Array.isArray(unknown_tools) ? unknown_tools : []);
                 const isNew = !agents.some((a: any) => a.id === draftAgent.id);
@@ -221,6 +229,12 @@ export const AgentsTab = ({
                 loadDraftAgent(saved);
                 showToast('Agent saved successfully', 'success');
             } else {
+                const err = await res.json().catch(() => null);
+                const problem = saveProblem(res.status, err?.detail);
+                if (problem) {
+                    setRefused({ id: draftAgent.id, problem, open: true });
+                    return;
+                }
                 showToast('Failed to save agent', 'error');
             }
         } catch {
@@ -228,6 +242,25 @@ export const AgentsTab = ({
         } finally {
             setIsSaving(false);
         }
+    };
+    const saveRefused = refused && draftAgent && refused.id === draftAgent.id ? refused : null;
+    const reloadTheirs = async () => {
+        const id = draftAgent?.id;
+        const res = await fetch('/api/agents').catch(() => null);
+        const theirs = res?.ok ? ((await res.json()) as any[]).find((a) => a.id === id) : null;
+        if (!theirs) {
+            showToast('Could not load their version. Try again.', 'error');
+            return;
+        }
+        setRefused(null);
+        dispatch(updateAgent(theirs));
+        loadDraftAgent(theirs);
+    };
+    const discardDeleted = () => {
+        const id = draftAgent?.id;
+        setRefused(null);
+        if (id) dispatch(removeAgent(id));
+        setSelectedAgentId(null);
     };
 
     const [testDrawer, setTestDrawer] = useState(false);
@@ -440,7 +473,7 @@ export const AgentsTab = ({
         <AgentTest
             agent={savedAgent}
             dirty={dirty}
-            onSave={handleSaveAgent}
+            onSave={() => void handleSaveAgent()}
             saving={isSaving}
             status={status}
             toolNames={toolNamesOf(savedAgent)}
@@ -461,6 +494,16 @@ export const AgentsTab = ({
     return (
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
             {toast && <ToastNotification show={toast.show} message={toast.message} type={toast.type} />}
+            <SaveConflictDialog
+                noun="agent"
+                problem={saveRefused?.open ? saveRefused.problem : null}
+                busy={isSaving}
+                onReload={() => void reloadTheirs()}
+                onKeepMine={() => saveRefused?.problem.kind === 'changed' && void handleSaveAgent({ seen: saveRefused.problem.at })}
+                onSaveAsNew={() => void handleSaveAgent({ seen: null })}
+                onDiscard={discardDeleted}
+                onClose={() => setRefused((r) => (r ? { ...r, open: false } : r))}
+            />
 
             {/* ── The list ─────────────────────────────────────────────── */}
             <aside aria-label="Your agents" className="flex max-h-[40vh] shrink-0 flex-col border-b border-border md:max-h-none md:w-64 md:border-b-0 md:border-r">
@@ -1581,11 +1624,13 @@ export const AgentsTab = ({
                     {draftAgent.type !== 'orchestrator' && (dirty || isNew) && (
                         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-border bg-surface px-4 py-3 md:px-8">
                             <span role="status" className="min-w-0 flex-1 text-sm text-text-muted">
-                                {isNew ? 'New agent, not saved yet.' : 'Unsaved changes.'}
+                                {saveRefused
+                                    ? <span className="font-medium text-danger">{problemLabel(saveRefused.problem)}.</span>
+                                    : isNew ? 'New agent, not saved yet.' : 'Unsaved changes.'}
                                 {savedAgent && <span className="hidden text-text-faint sm:inline"> The test on the right uses the saved version.</span>}
                             </span>
                             <Button variant="secondary" size="sm" onClick={onDiscard}>Discard</Button>
-                            <Button size="sm" onClick={handleSaveAgent} loading={isSaving} aria-label="Save agent">
+                            <Button size="sm" onClick={() => void handleSaveAgent()} loading={isSaving} aria-label="Save agent">
                                 {isSaving ? 'Saving…' : 'Save'}
                             </Button>
                         </div>

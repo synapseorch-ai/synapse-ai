@@ -20,6 +20,9 @@ import { ConfirmDialog, Toast, useToast } from "@/components/ui";
 import type { AppDispatch } from "@/store";
 import { removeCustomTool, updateCustomTool } from "@/store/settingsSlice";
 
+import { ifMatch, saveProblem, type SaveProblem } from "@/components/orchestration/saveConflict";
+import { SaveConflictDialog } from "@/components/orchestration/workbench/SaveConflictDialog";
+
 import { CustomToolsTab } from "./CustomToolsTab";
 import { useAppSettings } from "./hooks/useAppSettings";
 import { useSettingsData } from "./hooks/useSettingsData";
@@ -39,6 +42,8 @@ export function ToolsScreen() {
     const [n8nWorkflows, setN8nWorkflows] = useState<any[]>([]);
     const [n8nWorkflowsLoading, setN8nWorkflowsLoading] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+    // F891: a save the server refused as from a stale copy or of a deleted tool, with what to resend.
+    const [refused, setRefused] = useState<{ problem: SaveProblem; payload: unknown; message: string } | null>(null);
 
     /*
      * The workflow list is only worth fetching once the builder is open on the
@@ -67,17 +72,31 @@ export function ToolsScreen() {
         };
     }, [draftTool, toolBuilderMode, n8nWorkflows.length, n8nWorkflowsLoading]);
 
-    const persist = async (payload: unknown, successMessage: string) => {
+    // F891: a save says what it read (`If-Match`) while the tool keeps the name it was opened with — a tool is keyed
+    // by its name, so a rename is a new tool, saved as before. `seen` overrides it: the time a 409 named (keep mine),
+    // or null to save without the check (save as a new tool).
+    const openedStamp = (): string | null => {
+        const opened = customTools.find((t: any) => t.updated_at && t.updated_at === draftTool?.updated_at);
+        return opened && opened.name === draftTool?.name ? opened.updated_at : null;
+    };
+    const persist = async (payload: unknown, successMessage: string, seen: string | null = openedStamp()) => {
         try {
             const res = await fetch("/api/tools/custom", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { "Content-Type": "application/json", ...ifMatch({ updated_at: seen }) },
                 body: JSON.stringify(payload),
             });
             if (!res.ok) {
+                const err = await res.json().catch(() => null);
+                const problem = saveProblem(res.status, err?.detail);
+                if (problem) {
+                    setRefused({ problem, payload, message: successMessage });
+                    return;
+                }
                 show("Failed to save tool", "danger");
                 return;
             }
+            setRefused(null);
             const savedResp = await res.json();
             dispatch(updateCustomTool(savedResp?.tool ?? savedResp));
             setDraftTool(null);
@@ -86,6 +105,25 @@ export function ToolsScreen() {
         } catch {
             show("Error saving tool", "danger");
         }
+    };
+
+    const reloadTheirs = async () => {
+        const name = draftTool?.name;
+        const res = await fetch("/api/tools/custom").catch(() => null);
+        const theirs = res?.ok ? ((await res.json()) as any[]).find((t) => t.name === name) : null;
+        if (!theirs) {
+            show("Could not load their version. Try again.", "danger");
+            return;
+        }
+        setRefused(null);
+        dispatch(updateCustomTool(theirs));
+        setDraftTool(null);  // the tab opens it again by name, as after a save: theirs now
+    };
+    const discardDeleted = () => {
+        const name = draftTool?.name;
+        setRefused(null);
+        if (name) dispatch(removeCustomTool(name));
+        setDraftTool(null);
     };
 
     const handleSaveTool = async () => {
@@ -164,6 +202,15 @@ export function ToolsScreen() {
 
     return (
         <>
+        <SaveConflictDialog
+            noun="tool"
+            problem={refused?.problem ?? null}
+            onReload={() => void reloadTheirs()}
+            onKeepMine={() => refused?.problem.kind === "changed" && void persist(refused.payload, refused.message, refused.problem.at)}
+            onSaveAsNew={() => refused && void persist(refused.payload, refused.message, null)}
+            onDiscard={discardDeleted}
+            onClose={() => setRefused(null)}
+        />
             <CustomToolsTab
                 customTools={customTools}
                 draftTool={draftTool}
