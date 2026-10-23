@@ -130,7 +130,7 @@ export function ToolsScreen() {
         if (!draftTool) return;
 
         if (draftTool.tool_type === "python") {
-            if (!draftTool.name) return show("System Name is required", "warning");
+            if (!draftTool.name) return show("Give the tool a name agents use", "warning");
             if (!draftTool.code?.trim()) return show("Python code cannot be empty", "warning");
 
             return persist(

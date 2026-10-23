@@ -219,6 +219,9 @@ export function EvalsScreen() {
                                     <Plus className="h-3.5 w-3.5" aria-hidden /> New set
                                 </Button>
                             </div>
+                            <p className="m-0 px-1 pb-2 text-xs text-text-faint">
+                                Fixed test inputs you can replay after a change, to see whether it made things better or worse.
+                            </p>
                             {suites.length === 0 ? (
                                 <p className="m-0 border-t border-border px-1 py-3 text-[13px] text-text-faint">No golden sets yet.</p>
                             ) : (
@@ -244,16 +247,17 @@ export function EvalsScreen() {
                     <section ref={detailRef} aria-label="Detail" className="min-w-0 scroll-mt-4">
                         {open === null ? (
                             <EmptyState
-                                title="No rubrics yet"
+                                title="Nothing is being scored yet"
                                 action={
                                     <Button size="sm" onClick={() => choose({ kind: "new-rubric" })}>
                                         <Plus className="h-3.5 w-3.5" aria-hidden /> New rubric
                                     </Button>
                                 }
                             >
-                                A rubric says what good looks like. Bind one to a workflow and every run gets
-                                scored; a golden set holds the inputs still, so a change in the score is a change
-                                in the workflow rather than in the questions.
+                                Write down what a good result looks like (a <em>rubric</em>), attach it to a
+                                workflow, and a model scores every run against it. You hear when quality drops.
+                                To compare changes fairly, save a set of test inputs (a <em>golden set</em>) and
+                                replay it after each change.
                             </EmptyState>
                         ) : open.kind === "rubric" || open.kind === "new-rubric" ? (
                             <RubricDetail
@@ -342,7 +346,7 @@ function RubricDetail({
             return;
         }
         if (!(Number.isInteger(draft.baseline_runs) && draft.baseline_runs >= 1)) {
-            onToast("Baseline runs must be a whole number, at least 1.", "danger");
+            onToast("Runs to compare with must be a whole number, at least 1.", "danger");
             return;
         }
         setBusy(true);
@@ -488,8 +492,8 @@ function RubricDetail({
                             </EmptyState>
                         ) : (
                             <EmptyState title="Nothing scored yet">
-                                No rubric is bound to this workflow. Bind one in its workflow settings, under
-                                “Score runs against”, and its runs are scored from then on.
+                                This workflow has no rubric yet. Open the workflow&apos;s settings and pick one under
+                                “Score runs against”. Runs are scored from then on.
                             </EmptyState>
                         )
                     ) : (
@@ -634,7 +638,7 @@ function RubricDetail({
                                 }
                             />
                         </Field>
-                        <Field label="Floor" hint="Flag anything below this. Blank to disable.">
+                        <Field label="Lowest OK score" hint="Flag anything below this. Blank to disable.">
                             <Input
                                 type="number"
                                 value={draft.floor ?? ""}
@@ -646,7 +650,7 @@ function RubricDetail({
                                 }
                             />
                         </Field>
-                        <Field label="Drop" hint="Flag a fall this far below recent runs.">
+                        <Field label="Allowed drop" hint="Flag a fall this far below recent runs.">
                             <Input
                                 type="number"
                                 value={draft.drop ?? ""}
@@ -658,7 +662,7 @@ function RubricDetail({
                                 }
                             />
                         </Field>
-                        <Field label="Baseline runs" hint="How many recent runs a fall is measured against.">
+                        <Field label="Runs to compare with" hint="How many recent runs a fall is measured against.">
                             <Input
                                 type="number"
                                 min={1}

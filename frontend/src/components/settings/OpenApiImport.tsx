@@ -114,10 +114,11 @@ export const OpenApiImport = ({ onClose, onImported }: OpenApiImportProps) => {
                     </button>
                     <div>
                         <h3 className="text-section text-text flex items-center gap-2">
-                            <Import className="h-5 w-5" /> Import from OpenAPI / Swagger
+                            <Import className="h-5 w-5" /> Import tools from an API description
                         </h3>
                         <p className="text-text-faint text-sm">
-                            Paste or upload an OpenAPI 3.x / Swagger 2.0 spec (JSON or YAML) to generate HTTP tools.
+                            Paste or upload the API&apos;s OpenAPI or Swagger file (JSON or YAML), and you get one tool for
+                            each action it lists.
                         </p>
                     </div>
                 </div>

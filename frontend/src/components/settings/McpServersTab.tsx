@@ -316,9 +316,9 @@ export const McpServersTab = ({
                 </div>
             )}
 
-            {/* ── Connected Servers ── */}
+            {/* ── Connected apps ── */}
             <section className="space-y-3" aria-labelledby="mcp-connected-title">
-                <h2 id="mcp-connected-title" className="text-section text-text">Connected Servers</h2>
+                <h2 id="mcp-connected-title" className="text-section text-text">Connected apps</h2>
                 {loadingMcp ? (
                     <div className="flex items-center gap-2 text-text-faint text-sm">
                         <Spinner size={16} className="text-machine" /> Loading…
@@ -326,8 +326,8 @@ export const McpServersTab = ({
                 ) : mcpServers.length === 0 ? (
                     <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
                         <Server className="mx-auto mb-2 size-8 text-text-faint" aria-hidden />
-                        <p className="text-sm font-medium text-text">No servers added yet.</p>
-                        <p className="mt-1 text-sm text-text-muted">Pick a preset or fill the form below.</p>
+                        <p className="text-sm font-medium text-text">No apps connected yet</p>
+                        <p className="mt-1 text-sm text-text-muted">Pick one below to connect it. Any app that offers an MCP server works, and the form takes its address.</p>
                     </div>
                 ) : (
                     <ul className="divide-y divide-border border-y border-border" data-mcp-list="">
@@ -402,10 +402,10 @@ export const McpServersTab = ({
             {/* ── Add Server Form ── */}
             <section className="space-y-6 rounded-xl border border-border bg-surface p-4 sm:p-6" aria-labelledby="mcp-add-title">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h2 id="mcp-add-title" className="text-section text-text">Connect a server</h2>
+                    <h2 id="mcp-add-title" className="text-section text-text">Connect an app</h2>
                     {/* Type toggle */}
                     <div role="group" aria-label="Server type" className="inline-flex gap-0.5 rounded-lg bg-surface-2 p-0.5">
-                        {([['stdio', 'Local (stdio)', Terminal], ['remote', 'Remote (URL)', Globe]] as const).map(([t, text, Icon]) => (
+                        {([['stdio', 'On this machine (stdio)', Terminal], ['remote', 'By web address (URL)', Globe]] as const).map(([t, text, Icon]) => (
                             <button
                                 key={t}
                                 type="button"
@@ -423,7 +423,7 @@ export const McpServersTab = ({
                 <div className="space-y-2.5">
                     <h3 className="flex items-center gap-2 text-xs font-medium text-text-muted">
                         <Zap className="size-3.5 text-text-faint" aria-hidden />
-                        {serverType === 'stdio' ? 'Local Presets' : 'Remote Presets'}
+                        {serverType === 'stdio' ? 'On this machine' : 'By web address'}
                     </h3>
                     <div className="flex flex-wrap gap-2">
                         {presets.map(p => (
@@ -446,16 +446,16 @@ export const McpServersTab = ({
 
                 {/* ── Fields ── */}
                 <div className="space-y-4">
-                    {/* Display Label + Unique ID — always shown */}
+                    {/* Name + short id — always shown */}
                     <div className="grid gap-4 sm:grid-cols-2">
                         <div className="space-y-2">
-                            <Label htmlFor="mcp-draftmcpserver-label" className="block">Display Label</Label>
+                            <Label htmlFor="mcp-draftmcpserver-label" className="block">Name</Label>
                             <input id="mcp-draftmcpserver-label" type="text" value={draftMcpServer.label}
                                 onChange={e => setDraftMcpServer({ ...draftMcpServer, label: e.target.value })}
                                 className={inputCls} placeholder="e.g. GitHub Production" />
                         </div>
                         <div className="space-y-2">
-                            <Label htmlFor="mcp-draftmcpserver-name" className="block">Unique ID</Label>
+                            <Label htmlFor="mcp-draftmcpserver-name" className="block">Short id (no spaces)</Label>
                             <input id="mcp-draftmcpserver-name" type="text" value={draftMcpServer.name}
                                 onChange={e => setDraftMcpServer({ ...draftMcpServer, name: e.target.value })}
                                 className={inputCls} placeholder="e.g. github-prod" />
@@ -518,8 +518,8 @@ export const McpServersTab = ({
                             </div>
                             <div className="space-y-2">
                                 <Label htmlFor="mcp-token" className="block">
-                                    Bearer Token / Personal Access Token{' '}
-                                    <span className="normal-case font-normal">(optional — leave empty for OAuth)</span>
+                                    Access token{' '}
+                                    <span className="normal-case font-normal">(leave empty to sign in instead)</span>
                                 </Label>
                                 <div className="relative">
                                     <input
@@ -566,7 +566,7 @@ export const McpServersTab = ({
                 {/* Submit: the page's one primary action */}
                 <div className="flex justify-end">
                     <Button onClick={onAddServer} disabled={isConnecting} loading={isConnecting}>
-                        {isConnecting ? 'Connecting…' : 'Connect Server'}
+                        {isConnecting ? 'Connecting…' : 'Connect'}
                     </Button>
                 </div>
             </section>

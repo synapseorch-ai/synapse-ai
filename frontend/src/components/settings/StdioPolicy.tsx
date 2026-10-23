@@ -92,8 +92,8 @@ export function StdioPolicy() {
                         <Terminal className="h-4 w-4 text-text-faint" aria-hidden /> Local (stdio) servers
                     </h2>
                     <p className="text-sm text-text-muted mt-1 max-w-prose">
-                        A local server is a command this backend runs on its own machine. Turn them off if this
-                        install can be reached over a network.
+                        An app “on this machine” is a program Synapse starts on the computer it runs on. If other
+                        people can reach this install over a network, turn these off.
                     </p>
                     {scaleMode && (
                         <p className="text-xs text-text mt-1">Scale mode is on, which keeps local servers off whatever this says.</p>

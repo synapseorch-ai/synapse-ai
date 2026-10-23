@@ -181,7 +181,7 @@ export function KnowledgeScreen({ tabs }: { tabs?: React.ReactNode } = {}) {
     }
     if (!enabled) {
         return (
-            <Screen eyebrow="Build" title="Knowledge" description="Agents that answer from your documents, with sources." width="wide" tabs={tabs}>
+            <Screen eyebrow="Build" title="Knowledge" description="Let agents answer from your own documents, and show where each answer came from." width="wide" tabs={tabs}>
                 <EmptyState title="Knowledge is off in this workspace">
                     {offHint ?? 'Knowledge is not switched on here yet.'}
                 </EmptyState>
@@ -193,7 +193,7 @@ export function KnowledgeScreen({ tabs }: { tabs?: React.ReactNode } = {}) {
         <Screen
             eyebrow="Build"
             title="Knowledge"
-            description="Vault folders made searchable. Every file in a knowledge base's folder is read and indexed."
+            description="Let agents answer from your own documents, and show where each answer came from."
             width="wide"
             tabs={tabs}
             actions={canEdit && <Button onClick={() => setCreating(true)}><Plus className="size-4" aria-hidden />New knowledge base</Button>}
@@ -207,12 +207,13 @@ export function KnowledgeScreen({ tabs }: { tabs?: React.ReactNode } = {}) {
                     title="No knowledge bases yet"
                     action={canEdit && <Button onClick={() => setCreating(true)}>New knowledge base</Button>}
                 >
-                    A knowledge base is a Vault folder. Pick one, or name a new one, and everything in it is indexed.
+                    A knowledge base is a folder of documents your agents can look things up in. Pick a Vault folder or
+                    start a new one, and everything in it becomes searchable.
                 </EmptyState>
                     <ol className="mx-auto -mt-4 mb-8 grid px-5 max-w-2xl gap-4 text-left sm:grid-cols-3" aria-label="How a knowledge base works">
                         {[
                             [FolderOpen, 'A folder', 'Name a Vault folder, or upload files and add web pages to it.'],
-                            [Library, 'Read and indexed', 'Every file is read, cut into passages and indexed for search.'],
+                            [Library, 'Read and made searchable', 'Every file is read and split into short passages an agent can find.'],
                             [Search, 'Searched, with sources', 'Agents that use it answer from it and cite what they used.'],
                         ].map(([Icon, head, body]) => {
                             const I = Icon as typeof Search;
@@ -636,7 +637,7 @@ function BaseDetail({
                             Drop files here to add them to <span className="font-mono">{kb.folder}</span>. Documents, spreadsheets,
                             slides, email, web pages and code are read{host.ocr
                                 ? ', and scanned pages and images by OCR.'
-                                : '. Scanned pages and images are not: this install has no OCR.'}
+                                : '. Scanned pages and images aren\'t read: this install can\'t read text in pictures.'}
                         </span>
                     </div>
                 </>

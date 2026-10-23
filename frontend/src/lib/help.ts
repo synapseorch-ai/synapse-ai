@@ -85,9 +85,9 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     evals: {
         title: 'Evals',
-        summary: 'Rubrics say what a good run looks like. A model judges every run of a workflow bound to one and flags regressions; golden sets replay fixed inputs.',
+        summary: 'Evals check that your workflows keep doing a good job. A rubric says what good looks like, and a model scores each run against it and tells you when quality drops. Golden sets replay the same test inputs after a change.',
         steps: [
-            'Click “New rubric”, add criteria with “Add criterion”, set “Floor” and “Drop”, and click “Save rubric”.',
+            'Click “New rubric”, add criteria with “Add criterion”, set “Lowest OK score” and “Allowed drop”, and click “Save rubric”.',
             'In Workflows, open one, open its workflow settings and choose the rubric under “Score runs against”.',
             'Open the rubric and pick the workflow in “Scores for”: the latest and average scores, how many passed, each criterion and the scored runs, where you say whether you agree.',
             'If it says “Nothing scored yet”, click “Score earlier runs” to judge runs from before the rubric.',
@@ -99,12 +99,12 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
 
     usage: {
         title: 'Usage',
-        summary: 'What your model calls have cost: totals, cache savings, cost by model and session, and the price table the estimates come from.',
+        summary: 'What your AI models have cost: the total, what reuse saved, cost by model and by session, and the prices the estimates use.',
         steps: [
-            'Read “Total Cost”, “Total Requests”, “Input Tokens” and “Output Tokens”; costs are estimates from the price table.',
-            'Check “Cache Analytics” for what caching saved, by model and by workflow run.',
+            'Read “Total cost”, “Model calls”, “Words in” and “Words out”; costs are estimates from the prices below.',
+            'Check “Cache analytics” for what reusing earlier work saved, by model and by workflow run.',
             'Under “Session history”, pick a “Filter by” option and click a session for its turn-by-turn cost.',
-            'In “Pricing reference”, edit a rate or click “Add model”, then “Save pricing” to match what you pay.',
+            'In “Prices used for estimates”, edit a rate, or pick “Custom model ID…” to add one, then “Save pricing” to match what you pay.',
             '“Clear logs” deletes every usage record once you confirm; it cannot be undone.',
         ],
         media: { id: 'usage/overview', alt: 'The Usage tab of Runs: model spend, calls and tokens, and the cost by model.' },
@@ -209,28 +209,27 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     // ── Tools ───────────────────────────────────────────────────────────────
     custom_tools: {
         title: 'Tools',
-        summary: 'HTTP, n8n and Python tools your agents can call. Each has a name, a description the model reads to decide when to use it, and a schema for its arguments.',
+        summary: 'Tools let agents act in other systems: call an API, run Python, or start an n8n workflow. Each one says in plain words when an agent should use it, and what it needs.',
         steps: [
-            'Click a tool in the list to edit it beside the list, or click “New Tool”, name it, and write a “Description (For AI)” saying when the model should use it.',
-            'For HTTP, choose a method, enter the URL and list its arguments in “Input Schema (JSON)”.',
+            'Click a tool in the list to edit it beside the list, or click “New tool”, name it, and fill in “When should an agent use this?”.',
+            'For HTTP, choose a method, enter the URL and list its arguments in “What it needs (JSON schema)”.',
             'For n8n, connect it in Settings → Integrations first, then pick the workflow under “n8n Workflow”.',
             'For Python, write code that prints its result on the Python tab and try it with “Run”; it needs Docker.',
-            'Click “Save”, then tick the tool under “Tools” on an agent’s “Setup”. “Import OpenAPI” makes tools from an API spec.',
+            'Click “Save”, then tick the tool under “Tools” on an agent’s “Setup”. “Import from an API description” makes one tool for each action an API lists.',
         ],
         media: { id: 'tools/list', alt: 'The Tools tab of Apps with a Python tool open, which works out when an invoice is due.' },
         guide: '/guides/start/tools',
     },
     mcp_servers: {
         title: 'Apps',
-        summary: 'Connect Model Context Protocol servers, and their tools are offered to your agents. A local server is a command this machine runs; a remote one is reached by URL.',
+        summary: 'Connect the apps your agents work with, and their actions become tools your agents can use. An app can run on this machine or be reached by its web address.',
         steps: [
-            'Google Workspace is connected in Integrations; the card at the top goes there. For a server, choose “Local (stdio)” or “Remote (URL)”, and click a preset to fill in the form, or fill it in yourself.',
-            'Enter a “Display Label” and a “Unique ID”; for a local server, its command, arguments and environment.',
-            'For a remote server, enter the “Server URL”; leave the token empty to sign in with OAuth instead.',
-            'Click “Connect Server”, then tick its tools under “Tools” on an agent’s “Setup”.',
-            'If this install is reachable over a network, turn local servers off or limit their commands.',
+            'Google Workspace is connected in Integrations; the card at the top goes there. For another app, choose “On this machine (stdio)” or “By web address (URL)”, and click a preset to fill in the form, or fill it in yourself.',
+            'Enter a “Name” and a “Short id (no spaces)”; for an app on this machine, its command, arguments and environment.',
+            'For an app by web address, enter the “Server URL”; leave the access token empty to sign in instead.',
+            'Click “Connect”, then tick its tools under “Tools” on an agent’s “Setup”.',
+            'If other people can reach this install over a network, turn apps on this machine off or limit their commands.',
         ],
-        media: { id: 'mcp/browse', alt: 'The Apps page: the directory of apps an agent can connect to, filtered by category; Tools is a tab beside it.' },
         guide: '/guides/start/tools',
     },
     vault: {
@@ -247,7 +246,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     knowledge: {
         title: 'Knowledge',
-        summary: 'Knowledge makes Vault folders searchable, so agents answer from your documents and cite them. Each knowledge base is one Vault folder.',
+        summary: 'Knowledge lets agents answer from your own documents and say where the answer came from. Each knowledge base is one Vault folder.',
         steps: [
             'If it says Knowledge is off, turn on “Knowledge” in Settings → General and click “Save changes”.',
             'In Settings → Models, choose an embedding model for knowledge; without one, search matches words only.',
@@ -443,12 +442,12 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
     },
     api_keys: {
         title: 'API keys',
-        summary: 'Keys that let your scripts, servers and MCP clients such as Claude Code or Cursor drive Synapse from outside this UI.',
+        summary: 'Keys let your own code, or AI tools like Claude Code and Cursor, use Synapse without opening this app.',
         steps: [
             'Name the key after what will use it, and click “Generate”.',
             'Click “Copy key” and keep it somewhere safe; it is never shown again.',
             'Send it as a Bearer token in the Authorization header on calls to /api/v1/*.',
-            'Click “View docs” for the API reference: endpoints, examples, and MCP setup for Claude Code or Cursor.',
+            '“API reference” opens every endpoint with examples; to use Synapse from Claude, Codex or Cursor, open Connect › AI tools.',
             'Removing a key, from its row, is immediate.',
         ],
         media: { id: 'settings/oss-api-keys', alt: 'Settings → API keys: keys for calling this install from your own code.' },

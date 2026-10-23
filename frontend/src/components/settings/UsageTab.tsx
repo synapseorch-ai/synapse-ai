@@ -205,7 +205,7 @@ function CacheDashboard({ summary }: { summary: CacheSummary }) {
         r.estimated_savings > 0 || r.cache_read_tokens > 0 || r.response_cache_hits > 0
     );
     return (
-        <Section variant="plain" collapsible={false} title="Cache analytics" description="Prompt + response cache savings.">
+        <Section variant="plain" collapsible={false} title="Cache analytics" description="What reusing earlier work saved you.">
             <div className="space-y-5">
                 {/* `StatStrip` carries `m-0`, which beats a parent's `space-y` (M2e). */}
                 <div>
@@ -679,7 +679,7 @@ function PricingEditor({ initialPricing, onSaved }: {
             variant="plain"
             collapsible={false}
             className="scroll-mt-4"
-            title="Pricing reference"
+            title="Prices used for estimates"
             description="Edit rates used for cost calculation (USD / 1M tokens)."
             actions={<>
                 {saveMsg && (
@@ -941,7 +941,7 @@ export function UsageTab() {
                         {summary ? cost(summary.total_cost) : loading ? <span className="inline-block h-10 w-40 animate-pulse rounded-md bg-surface-2 align-middle" /> : '—'}
                     </p>
                     <p className="mt-1 text-sm text-text-muted">
-                        Estimated USD across every model call so far, at the rates under Pricing reference.
+                        Estimated USD across every model call so far, at the rates under Prices used for estimates.
                     </p>
                 </div>
                 <div className="flex items-center gap-2">
@@ -960,7 +960,7 @@ export function UsageTab() {
             {error && <ErrorNote>{error}</ErrorNote>}
 
             {!loading && summary && summary.total_requests === 0 && (
-                <EmptyState title="No usage data yet">Send a chat message to start tracking costs</EmptyState>
+                <EmptyState title="Nothing spent yet">Costs show here from the first time an agent uses a model, in chat or in a run.</EmptyState>
             )}
 
             {has && (
@@ -970,9 +970,9 @@ export function UsageTab() {
                         <StatStrip
                             label="Usage so far"
                             cells={[
-                                { label: 'Total requests', value: summary!.total_requests.toLocaleString(), sub: 'LLM calls' },
-                                { label: 'Input tokens', value: fmtK(summary!.total_input_tokens), sub: 'prompt tokens' },
-                                { label: 'Output tokens', value: fmtK(summary!.total_output_tokens), sub: 'completion tokens' },
+                                { label: 'Model calls', value: summary!.total_requests.toLocaleString() },
+                                { label: 'Words in', value: fmtK(summary!.total_input_tokens), sub: 'input tokens' },
+                                { label: 'Words out', value: fmtK(summary!.total_output_tokens), sub: 'output tokens' },
                             ]}
                         />
                     </div>

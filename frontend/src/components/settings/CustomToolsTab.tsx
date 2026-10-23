@@ -192,10 +192,10 @@ export const CustomToolsTab = ({
     const actions = (
         <>
             <Button variant="secondary" onClick={() => guard(() => { closeEditor(); userClosed.current = true; setShowImport(true); })}>
-                <Import className="size-4" aria-hidden /> Import OpenAPI
+                <Import className="size-4" aria-hidden /> Import from an API description
             </Button>
             <Button variant="secondary" onClick={() => guard(startNew)}>
-                <Plus className="size-4" aria-hidden /> New Tool
+                <Plus className="size-4" aria-hidden /> New tool
             </Button>
         </>
     );
@@ -204,7 +204,7 @@ export const CustomToolsTab = ({
         <nav aria-label="Tools" className="min-w-0">
             {customTools.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-border px-5 py-10 text-center text-sm text-text-muted">
-                    No custom tools yet. Create an HTTP, n8n webhook, or Python tool.
+                    No tools yet. Make one, or import an API description.
                 </div>
             ) : (
                 <ul className="grid gap-0.5" data-tool-list="">
@@ -262,9 +262,10 @@ export const CustomToolsTab = ({
             ) : !draftTool ? (
                 <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
                     <Wrench className="mx-auto mb-2 size-8 text-text-faint" aria-hidden />
-                    <p className="text-sm font-medium text-text">{customTools.length ? 'Pick a tool to edit it.' : 'Make your first tool.'}</p>
+                    <p className="text-sm font-medium text-text">{customTools.length ? 'Pick a tool to edit it.' : 'No tools yet'}</p>
                     <p className="mx-auto mt-1 max-w-md text-sm text-text-muted">
-                        Extend your agent with n8n webhooks, HTTP endpoints, or Python functions.
+                        A tool is one action an agent can take in another system, like “look up an order” or
+                        “create an invoice”. Make one, or import an API description to make many at once.
                     </p>
                     <div className="mt-4 flex justify-center gap-2">{actions}</div>
                 </div>
@@ -326,7 +327,7 @@ export const CustomToolsTab = ({
                     {/* Shared name / description fields */}
                     <div className="grid grid-cols-2 gap-4 mb-4">
                         <div className="space-y-1">
-                            <Label htmlFor="cus-drafttool-generalname" className="block">General Name</Label>
+                            <Label htmlFor="cus-drafttool-generalname" className="block">Name</Label>
                             <input id="cus-drafttool-generalname"
                                 type="text"
                                 value={draftTool.generalName || ''}
@@ -343,7 +344,7 @@ export const CustomToolsTab = ({
                             />
                         </div>
                         <div className="space-y-1">
-                            <Label htmlFor="cus-drafttool-name" className="block">System Name (Snake Case)</Label>
+                            <Label htmlFor="cus-drafttool-name" className="block">Name agents use (no spaces, e.g. process_orders)</Label>
                             <input id="cus-drafttool-name"
                                 type="text"
                                 value={draftTool.name}
@@ -354,7 +355,7 @@ export const CustomToolsTab = ({
                         </div>
                     </div>
                     <div className="space-y-1 mb-5">
-                        <Label htmlFor="cus-drafttool-description" className="block">Description (For AI)</Label>
+                        <Label htmlFor="cus-drafttool-description" className="block">When should an agent use this?</Label>
                         <textarea id="cus-drafttool-description"
                             value={draftTool.description}
                             onChange={e => setDraftTool({ ...draftTool, description: e.target.value })}
@@ -577,7 +578,7 @@ export const CustomToolsTab = ({
 
                             {/* Schemas */}
                             <div className="space-y-1 flex flex-col min-h-[280px]">
-                                <Label className="block">Input Schema (JSON)</Label>
+                                <Label className="block">What it needs (JSON schema)</Label>
                                 <CodeEditor
                                     language="json"
                                     lint="json"
@@ -586,7 +587,7 @@ export const CustomToolsTab = ({
                                     value={draftTool.inputSchemaStr || ''}
                                     onChange={inputSchemaStr => setDraftTool({ ...draftTool, inputSchemaStr })}
                                     placeholder='{"type": "object", "properties": {"msg": {"type": "string"}}}'
-                                    aria-label="Input Schema (JSON)"
+                                    aria-label="What it needs (JSON schema)"
                                 />
                             </div>
                         </div>
@@ -622,8 +623,8 @@ export const CustomToolsTab = ({
                                             <div className="flex-1 space-y-1">
                                                 {!dockerStatus.installed && (
                                                     <>
-                                                        <p className="text-xs font-semibold text-text">Docker is not installed</p>
-                                                        <p className="text-xs text-text-muted">Python tools run in a Docker sandbox. Install Docker Desktop to use them.</p>
+                                                        <p className="text-xs font-semibold text-text">Python tools need Docker</p>
+                                                        <p className="text-xs text-text-muted">Install Docker Desktop, then come back. HTTP and n8n tools work without it.</p>
                                                         <a href="https://docs.docker.com/get-docker/" target="_blank" rel="noreferrer"
                                                             className="inline-flex items-center gap-1 text-xs text-accent-ink hover:text-accent-hover underline">
                                                             Install Docker Desktop <ExternalLink className="h-3 w-3" />
@@ -657,7 +658,7 @@ export const CustomToolsTab = ({
                                                 className={buttonStyles({ variant: "secondary", size: "sm" })}
                                             >
                                                 <Container className="h-3.5 w-3.5" />
-                                                {dockerBuilding ? 'Building… (this may take a few minutes)' : 'Build Sandbox Image'}
+                                                {dockerBuilding ? 'Building… (this may take a few minutes)' : 'Build the sandbox (one time, 2–3 min)'}
                                             </button>
                                         )}
                                     </div>

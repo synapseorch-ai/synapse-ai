@@ -87,11 +87,11 @@ export const HUB_NAV: NavHubGroup[] = [
                     },
                     {
                         id: 'evals', label: 'Evals', href: '/evals', icon: Target,
-                        blurb: 'Score runs against a rubric and catch regressions early.',
+                        blurb: 'Check that your workflows keep doing a good job. Say what a good result looks like, and every run gets a score.',
                     },
                     {
                         id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,
-                        blurb: 'Token usage and cost tracking across every LLM call.',
+                        blurb: 'What your AI models have cost, by model, by run and by chat.',
                     },
                 ],
             },
@@ -145,7 +145,7 @@ export const HUB_NAV: NavHubGroup[] = [
                 id: 'knowledge', label: 'Knowledge', icon: Library,
                 tabs: [{
                     id: 'knowledge', label: 'Knowledge', href: '/knowledge', icon: Library,
-                    blurb: 'Vault folders made searchable, so agents answer from your documents with sources.',
+                    blurb: 'Let agents answer from your own documents, and show where each answer came from.',
                     flag: 'knowledge_enabled',
                 }, {
                     // Beside Knowledge, not the Vault, which stands on its own (C7, BOARD1b).
@@ -171,11 +171,11 @@ export const HUB_NAV: NavHubGroup[] = [
                 tabs: [
                     {
                         id: 'mcp_servers', label: 'Apps', href: '/apps', icon: Blocks,
-                        blurb: 'Connect Model Context Protocol servers and their tool catalogues.',
+                        blurb: 'Connect the apps your agents work with, like GitHub, Notion or Figma. Each app\'s actions become tools your agents can use.',
                     },
                     {
                         id: 'custom_tools', label: 'Tools', href: '/tools', icon: Wrench,
-                        blurb: 'Wire up HTTP, Python and n8n tools your agents can call.',
+                        blurb: 'Let your agents use other systems: call an API, run a bit of Python, or start an n8n workflow.',
                     },
                 ],
             },
@@ -262,7 +262,7 @@ export const SETTINGS_NAV: NavGroup[] = [
         items: [
             {
                 id: 'api_keys', label: 'API keys', href: '/settings/api_keys', icon: Key,
-                blurb: 'Issue keys for driving Synapse from outside this UI.',
+                blurb: 'Keys that let your own code, or AI tools like Claude and Cursor, use Synapse.',
             },
             {
                 id: 'import_export', label: 'Import / Export', href: '/settings/import_export', icon: ArrowLeftRight,

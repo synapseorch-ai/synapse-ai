@@ -196,11 +196,11 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                     </button>
                 </div>
                 <p className="text-[11px] text-text-faint leading-relaxed">
-                    Code runs in a <span className="text-accent font-mono">Docker sandbox</span> (512MB RAM, 1 CPU, internet enabled).
-                    Vault files are mounted at <span className="font-mono text-accent">/data/</span>.
-                    Arguments are injected as <span className="font-mono text-accent">_args</span> (dict),
-                    and the variables it declares as <span className="font-mono text-accent">_globals</span>.
-                    <span className="font-mono text-text"> print()</span> stdout becomes the tool result.
+                    Your code runs in a sealed box on this machine (Docker), with internet access, 512 MB of memory
+                    and one CPU. Whatever it prints is what the agent gets back.
+                    <span className="block pt-1">For developers: arguments arrive in <span className="font-mono text-accent">_args</span>,
+                    declared variables in <span className="font-mono text-accent">_globals</span>, and Vault files are
+                    at <span className="font-mono text-accent">/data/</span>.</span>
                 </p>
                 {showPackages && (
                     <div className="flex flex-wrap gap-1.5 pt-1 border-t border-border">
@@ -247,7 +247,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
 
             {/* ── Input Schema (JSON) ──────────────────────────────────────── */}
             <div className="space-y-1">
-                <label className="text-xs font-medium text-text-muted">Input Schema (JSON)</label>
+                <label className="text-xs font-medium text-text-muted">What it needs (JSON schema)</label>
                 <CodeEditor
                     language="json"
                     lint="json"
@@ -303,7 +303,7 @@ export function PythonToolEditor({ draft, onChange }: PythonToolEditorProps) {
                 <div className="flex items-center justify-between">
                     <label className="text-xs font-medium text-text-muted flex items-center gap-2">
                         <Terminal className="h-3.5 w-3.5" />
-                        Test Run
+                        Test run
                     </label>
                     <span className="text-[10px] text-text-faint">Runs in Docker sandbox</span>
                 </div>

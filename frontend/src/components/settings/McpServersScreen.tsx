@@ -229,7 +229,7 @@ export function McpServersScreen() {
                 open={!!confirmDelete}
                 onClose={() => setConfirmDelete(null)}
                 onConfirm={confirmDeleteServer}
-                title="Remove MCP server?"
+                title="Remove this app?"
                 description={
                     <>
                         <span className="font-mono">{confirmDelete}</span> will be disconnected and

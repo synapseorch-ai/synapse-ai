@@ -129,7 +129,7 @@ export const APIKeysTab = () => {
             <Section
                 variant="plain"
                 collapsible={false}
-                title="Generate API key"
+                title="Make a key"
                 actions={
                     <LinkButton href={`${DOCS_BASE}/api/overview`} external variant="secondary" size="sm" target="_blank" rel="noopener noreferrer">
                         API reference
@@ -140,7 +140,8 @@ export const APIKeysTab = () => {
             >
                 <div className={`${FORM} space-y-3`}>
                     <p className="text-sm text-text-muted">
-                        API keys authenticate calls to <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">/api/v1/*</code> (synchronous) and <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">/api/v2/*</code> (distributed, scale mode).
+                        Give it to a script, a server or an AI tool so it can run your workflows and agents. Name it
+                        after where it will be used.
                     </p>
                     <div className="flex gap-2">
                         <Input
@@ -174,7 +175,8 @@ export const APIKeysTab = () => {
                         Send a key as <code className="rounded bg-surface-2 px-1 font-code text-xs text-text">Authorization: Bearer &lt;key&gt;</code>.
                         Every endpoint, with examples, is in the{' '}
                         <TextLink external href={`${DOCS_BASE}/api/overview`} target="_blank" rel="noopener noreferrer">API reference</TextLink>;
-                        connecting Claude Code or Cursor is in{' '}
+                        to use Synapse from Claude, Codex or Cursor, see{' '}
+                        <TextLink href="/ai-tools">Connect › AI tools</TextLink> or{' '}
                         <TextLink external href={`${DOCS_BASE}/api/mcp-server`} target="_blank" rel="noopener noreferrer">the MCP server guide</TextLink>.
                     </p>
                 </div>
@@ -185,7 +187,7 @@ export const APIKeysTab = () => {
                 {loading ? (
                     <p className="text-sm text-text-faint py-4">Loading…</p>
                 ) : keys.length === 0 ? (
-                    <EmptyState title="No API keys yet.">Generate one above to get started.</EmptyState>
+                    <EmptyState title="No keys yet.">Make one above, or <TextLink href="/ai-tools">connect an AI tool</TextLink>.</EmptyState>
                 ) : (
                     <div className="divide-y divide-border rounded-md border border-border">
                         {keys.map(k => (
