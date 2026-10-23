@@ -314,6 +314,18 @@ class TestTheTaskList:
         tasks = {t["member"]: t for t in _of(events, "final")[-1]["team"]["tasks"]}
         assert tasks["Ben"]["result"] == "B done"
 
+    async def test_a_members_done_with_no_result_is_refused_and_its_answer_becomes_the_result(self, server, llm,
+                                                                                              team):
+        """F862's line: a done with `result: ""` closed the task empty, and then the member's answer was not written
+        because the card was closed already."""
+        llm.on("PLAN IT", [assign("Ana", "CHECK A"), tool_call("wait", seconds=10), "done"])
+        llm.on("CHECK A", [tool_call("board_update", status="done", result=""), "A is fine"])
+        events = await _turn(server)
+        refused = [e for e in _wrapped(events, "tool_result", "Ana") if e["tool_name"] == "board_update"]
+        assert refused and refused[0]["preview"].startswith("Refused: A task closes with its result")
+        [task] = _of(events, "final")[-1]["team"]["tasks"]
+        assert (task["status"], task["result"]) == ("done", "A is fine")
+
     async def test_a_board_works_with_boards_off(self, server, llm, team):
         from core.boards.config import boards_enabled
         assert not boards_enabled()

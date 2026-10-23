@@ -915,3 +915,61 @@ class TestTheRightCardToClose:
         tail = str(fake_llm.calls[0]["volatile_tail"])
         line = next(ln for ln in tail.splitlines() if ln.startswith("1) "))
         assert ask.id in line and f'board_update(card_id="{ask.id}", status="done", result=' in line
+
+
+class TestATaskClosesWithItsResult:
+    """F862's line (QA1c on prod, S3): each of the three cards an agent closed was closed `done` with `result: ""` —
+    `board_update` asks for a task's result and nothing held it to that, so its triage sat in a comment and the card
+    read Done with nothing in it. An agent's done on a task needs its result; a person's Done keeps it optional."""
+
+    async def _task(self):
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        card, _ = await store.add_card(board.id, title="KF-30422 delay", key="KF-30422", by=PERSON)
+        return board, card
+
+    @pytest.mark.parametrize("result", [None, "", "   "])
+    async def test_an_agents_done_with_no_result_is_refused_and_the_card_stays_open(self, boards_on, result):
+        from core.boards import tools
+
+        board, card = await self._task()
+        turn = _turn_on(board)
+        args = {"card_id": card.id, "status": "done", "comment": "Triage: 2 h late, carrier notified.",
+                **({"result": result} if result is not None else {})}
+        said = await tools.run_tool("board_update", args, turn, tainted=False)
+        assert said.observation.startswith("Refused") and "`result`" in said.observation
+        assert (await store.get_card(card.id)).status == "open"
+
+    async def test_an_agents_done_with_its_result_closes_it(self, boards_on):
+        from core.boards import tools
+
+        board, card = await self._task()
+        said = await tools.run_tool("board_update", {"card_id": card.id, "status": "done",
+                                                     "result": "2 h late; carrier notified."}, _turn_on(board),
+                                    tainted=False)
+        assert not said.observation.startswith("Refused")
+        assert (await store.get_card(card.id)).result == "2 h late; carrier notified."
+
+    async def test_a_result_written_earlier_is_its_result(self, boards_on):
+        from core.boards import tools
+
+        board, card = await self._task()
+        turn = _turn_on(board)
+        await tools.run_tool("board_update", {"card_id": card.id, "result": "2 h late."}, turn, tainted=False)
+        said = await tools.run_tool("board_update", {"card_id": card.id, "status": "done"}, turn, tainted=False)
+        assert not said.observation.startswith("Refused")
+
+    async def test_a_note_still_closes_with_none(self, boards_on):
+        from core.boards import tools
+
+        board = await store.get_or_create_scoped_board("workflow", "wf_bugs")
+        note, _ = await store.add_card(board.id, title="Carrier strike Friday", kind="note", by=PERSON)
+        said = await tools.run_tool("board_update", {"card_id": note.id, "status": "done"}, _turn_on(board),
+                                    tainted=False)
+        assert not said.observation.startswith("Refused")
+
+    async def test_a_persons_done_keeps_the_result_optional(self, boards_on):
+        from core.boards import service
+
+        _, card = await self._task()
+        done = await service.update_card(card.id, version=card.version, by=PERSON, status="done")
+        assert done["status"] == "done"

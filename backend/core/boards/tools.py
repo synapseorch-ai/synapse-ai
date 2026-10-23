@@ -425,7 +425,7 @@ async def _run(name: str, args: dict[str, Any], turn: TurnBoards, *, tainted: bo
                 version = turn.seen.get(card.id, card.version)
             try:
                 fresh = await store.update_card(card.id, version=version, by=turn.actor, holder=turn.holder,
-                                                tainted=tainted, **changes)
+                                                tainted=tainted, needs_result=True, **changes)
             except (store.StaleCard, store.CardClosed) as conflict:
                 now = getattr(conflict, "card", None) or await store.get_card(card.id) or card
                 notes = await store.comments(now.id)

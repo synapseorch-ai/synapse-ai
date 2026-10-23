@@ -850,7 +850,7 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
 async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder | None, tainted: bool = False,
                       title: str | None = None, body: str | None = None, status: str | None = None,
                       result: str | None = None, stage: str | None = None,
-                      data: dict[str, Any] | None = None) -> Card:
+                      data: dict[str, Any] | None = None, needs_result: bool = False) -> Card:
     """Change a card read at `version`: its title or body, its result, or its status — `done` (a task succeeded,
     or a note is no longer true), `failed` (a task, with the reason as `result`), or `open` again.
 
@@ -888,6 +888,11 @@ async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder |
         if status == "done":
             if card.status == "done":
                 raise CardClosed(f"Card {card_id} is already done.")
+            # An agent's door (F862): its description asks for the result, and a task closed without one read Done
+            # with nothing in it. A person's Done keeps it optional.
+            if needs_result and card.kind == "task" and not str(after.get("result") or card.result or "").strip():
+                raise BadValue("A task closes with its result: put what was found or done in `result` "
+                               "(a comment is not its result).")
             after.update(status="done", outcome="succeeded" if card.kind == "task" else None, closed_at=_iso(now))
             closing = True
         elif status == "failed":

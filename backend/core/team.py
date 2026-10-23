@@ -1060,7 +1060,8 @@ class Team:
             fresh = await store.update_card(card_id, version=card.version, by=self._actor(member),
                                             holder=self.holder(member), tainted=tainted,
                                             status=status if status in ("done", "failed") else None,
-                                            result=str(result) if result is not None else None)
+                                            result=str(result) if result is not None else None,
+                                            needs_result=True)
         except store.BoardError as exc:
             raise Refused(str(exc)) from exc
         member.card_version = fresh.version
