@@ -7,12 +7,12 @@
  * The words come from the product's own topic and need nothing from the network,
  * so they are all there offline. The picture is the docs site's, and it is only
  * ever an extra: offline it is not drawn at all (no request, no broken image),
- * and if it fails to load, or is not published yet, its frame goes away and the
- * words stay. Under reduced motion a clip is shown as its still, and the clip
+ * and it is drawn only once its still has loaded, so one that fails, or is not
+ * published yet, never shows a frame at all (F900). Under reduced motion a clip is shown as its still, and the clip
  * itself is never fetched.
  */
 import { Pause, Play } from 'lucide-react';
-import { useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 
 import { Drawer, TextLink, buttonStyles } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -62,10 +62,22 @@ function HelpPicture({ media, base }: { media: HelpMedia; base: string }) {
     const [loaded, setLoaded] = useState(false);
     const [paused, setPaused] = useState(false);
     const video = useRef<HTMLVideoElement>(null);
-
-    if (!online || failed === 'all') return null;
-
     const still = `${base}/${media.id}.webp`;
+    // The frame is drawn only once its still has loaded (F900): drawn first, a picture the docs site does not have
+    // yet showed an empty frame for a moment and then took it away, moving the words twice. The still is the clip's
+    // poster too, so a clip waits for it as well.
+    const [ready, setReady] = useState(false);
+    useEffect(() => {
+        if (!online) return;
+        const probe = new Image();
+        probe.onload = () => setReady(true);
+        probe.onerror = () => setFailed('all');
+        probe.src = still;
+        return () => { probe.onload = null; probe.onerror = null; };
+    }, [still, online]);
+
+    if (!online || failed === 'all' || !ready) return null;
+
     const frame = 'relative aspect-[16/10] w-full overflow-hidden rounded-md border border-border bg-surface-2';
 
     if (media.clip && !reduced && failed !== 'clip') {
