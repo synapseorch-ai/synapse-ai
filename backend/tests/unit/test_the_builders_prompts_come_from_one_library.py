@@ -26,8 +26,9 @@ from core.native_builder import prompt_lint, seed
 #: 5fc3d1f8…; one new thing is made by the maker after its review, 29341fcf…; the router reads one new thing on its
 #: own as `manage`, 25218696…; the maker makes its one thing once (E2's finish tools), 47fb48df…; what it made is
 #: checked against what was approved, 7bb7c0fb…; SAI2-P3 (F942): the build route on the typed Plan — the planner and
-#: the prompt writer in, the analyst, the agent creator and both savers out, with the four passages only they read.
-BUNDLE_SHA256 = "51bda0e8940feb9473ff788af357a93f205e716521f0a9972f536e19fd7fcedb"
+#: the prompt writer in, the analyst, the agent creator and both savers out, with the four passages only they read,
+#: 51bda0e8…; the planner's step allows 8 passes (five questions, a lookup and a re-plan after a connection).
+BUNDLE_SHA256 = "20cbae84b5e7696511ae98fbd4d0fe25bcb5a42ffe818999a0596bf6243d590e"
 
 
 def _sha(definitions) -> str:

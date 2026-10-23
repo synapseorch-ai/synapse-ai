@@ -336,3 +336,13 @@ def _cycles(orch):
 
     dfs(orch["entry_step_id"], [])
     return found
+
+
+def test_the_planner_has_room_for_five_questions_a_lookup_and_a_replan():
+    """SAI2-P3: the planner runs once, once after each of up to five answers (`ask_person` allows no sixth), once
+    after a lookup and once after "Connected …": 8 passes, so none of those stops a build before its review."""
+    from core.native_builder.seed import _load_bundled_orchestration
+
+    step = next(s for s in _load_bundled_orchestration()["steps"] if s["id"] == "step_plan")
+    assert step["max_iterations"] >= 1 + 5 + 1 + 1
+    assert step["on_exhausted_step_id"] == "step_plan_rounds"

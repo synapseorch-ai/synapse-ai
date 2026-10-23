@@ -595,7 +595,7 @@
             "max_turns": 6,
             "timeout_seconds": 300,
             "allowed_tools": null,
-            "max_iterations": 6,
+            "max_iterations": 8,
             "position_x": 600,
             "position_y": 0,
             "on_exhausted_step_id": "step_plan_rounds",
