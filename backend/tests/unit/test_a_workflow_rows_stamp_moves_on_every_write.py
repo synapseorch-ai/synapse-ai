@@ -27,3 +27,18 @@ async def test_an_update_moves_the_rows_stamp_and_leaves_the_document_as_written
     await resources.save_orchestration({**item, "name": "Desk v2"})
     assert await _stamp("orch_f871_row") > first
     assert await resources.get_orchestration("orch_f871_row") == {**item, "name": "Desk v2"}
+
+
+async def test_an_agents_and_a_tools_row_stamps_move_too():
+    """F891: the same for the other two documents an editor saves whole; their stamp is the row's alone."""
+    agent = {"id": "agent_f891_row", "name": "Dispatch"}
+    tool = {"name": "f891_weather", "description": "d"}
+    await resources.save_agent(agent)
+    await resources.save_tools([tool])
+    first = await resources.row_stamps("agents", ["agent_f891_row"]), await resources.row_stamps("tools", ["f891_weather"])
+    await asyncio.sleep(0.01)
+    await resources.save_agent({**agent, "name": "Dispatch v2"})
+    await resources.save_tools([{**tool, "description": "v2"}])
+    assert (await resources.row_stamps("agents", ["agent_f891_row"]))["agent_f891_row"] > first[0]["agent_f891_row"]
+    assert (await resources.row_stamps("tools", ["f891_weather"]))["f891_weather"] > first[1]["f891_weather"]
+    assert await resources.get_agent("agent_f891_row") == {**agent, "name": "Dispatch v2"}

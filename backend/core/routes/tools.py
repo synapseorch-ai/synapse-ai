@@ -9,7 +9,7 @@ from pathlib import Path
 from html import escape
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -33,7 +33,11 @@ async def save_custom_tools(tools):
 
 @router.get("/api/tools/custom")
 async def get_custom_tools():
-    return await load_custom_tools()
+    from core.store.resources import row_stamps
+
+    # Each with its row's stamp, which the editor's save says it read (F891).
+    stamps = await row_stamps("tools")
+    return [{**t, "updated_at": stamps.get(t.get("name"))} for t in await load_custom_tools()]
 
 
 _NATIVE_SERVER_LABELS: dict[str, str] = {
@@ -141,9 +145,21 @@ async def _upsert_custom_tools(new_tools: list[dict]) -> None:
 
 
 @router.post("/api/tools/custom")
-async def create_custom_tool(tool: dict):
-    await _upsert_custom_tools([tool])
-    return {"status": "success", "tool": tool}
+async def create_custom_tool(tool: dict, request: Request = None):  # type: ignore[assignment] — called directly too
+    from core.routes.save_check import SAVE_LOCK, if_match, refuse_if_stale
+    from core.store.resources import row_stamps
+
+    # The row's stamp is handed out with the tool, never stored in it (F891).
+    tool.pop("updated_at", None)
+    name = str(tool.get("name") or "")
+    # F891: the editor says what it read, while the name is the one it opened (a rename is a new tool, as before).
+    seen = if_match(request)
+    async with SAVE_LOCK:
+        if seen is not None:
+            current = (await row_stamps("tools", [name])).get(name)
+            refuse_if_stale(seen, current, exists=current is not None, noun="tool")
+        await _upsert_custom_tools([tool])
+    return {"status": "success", "tool": {**tool, "updated_at": (await row_stamps("tools", [name])).get(name)}}
 
 
 @router.post("/api/tools/custom/bulk")

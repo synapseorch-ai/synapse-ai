@@ -7,7 +7,7 @@ import logging
 import datetime
 import zoneinfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from pydantic import BaseModel
 from core.models import AGENT_NAME_MAX, Agent, AgentActiveRequest, GeneratePromptRequest
@@ -79,8 +79,11 @@ async def get_agents():
     its to edit, and a channel, a schedule or a widget cannot be answered by it.
     """
     from core.default_agent import DEFAULT_AGENT_ID
+    from core.store.resources import row_stamps
 
-    return [a for a in await load_workspace_agents()
+    # Each with its row's stamp, which the editor's save says it read (F891).
+    stamps = await row_stamps("agents")
+    return [{**a, "updated_at": stamps.get(a.get("id"))} for a in await load_workspace_agents()
             if not (a.get("id") == DEFAULT_AGENT_ID and a.get("type") == "builder")]
 
 
@@ -110,8 +113,25 @@ async def _check_orchestration_exists(document: dict) -> None:
 
 
 @router.post("/api/agents")
-async def create_agent(agent: Agent):
+async def create_agent(agent: Agent, request: Request = None):  # type: ignore[assignment] — called directly too
     # One upsert: read-list / mutate / write-list loses a concurrent edit.
+    from core.routes.save_check import SAVE_LOCK, if_match, refuse_if_stale
+    from core.store.resources import row_stamps
+
+    # F891: the editor says what it read; a save from a copy someone has since changed, or of an agent since
+    # deleted, is refused (core/routes/save_check.py). The stamp is the row's: an agent's document has none.
+    seen = if_match(request)
+    async with SAVE_LOCK:
+        if seen is not None:
+            current = (await row_stamps("agents", [agent.id])).get(agent.id)
+            from core.store.resources import get_agent
+            refuse_if_stale(seen, current, exists=await get_agent(agent.id) is not None, noun="agent")
+        saved = await _save_agent(agent)
+    return {**saved, "updated_at": (await row_stamps("agents", [agent.id])).get(agent.id),
+            "unknown_tools": await _unknown_tools(saved.get("tools") or [])}
+
+
+async def _save_agent(agent: Agent) -> dict:
     from core.store.resources import save_agent
     from core.tool_policy import clean_policy
 
@@ -133,9 +153,9 @@ async def create_agent(agent: Agent):
     # agent. The response carries what was stored, not what was asked for.
     document["tool_policy"] = clean_policy(document.get("tool_policy"))
     await save_agent(document)
-    # Saved as given, and told (F526): a tool nothing here provides is silently missing at run time — Harbor's
-    # `web_search` transferred every weather ask for two sessions. Not refused: a server can be away a while.
-    return {**document, "unknown_tools": await _unknown_tools(document.get("tools") or [])}
+    # Saved as given, and told (F526, the caller): a tool nothing here provides is silently missing at run time —
+    # Harbor's `web_search` transferred every weather ask for two sessions. Not refused: a server can be away a while.
+    return document
 
 
 class ToolCheck(BaseModel):

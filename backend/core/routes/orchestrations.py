@@ -423,24 +423,6 @@ async def estimate_run(request: Request):
     }
 
 
-#: An editor's save and the check of what it read happen one at a time (F871): read, compare, write.
-_SAVE_LOCK = asyncio.Lock()
-
-WORKFLOW_DELETED = ("This workflow was deleted elsewhere. Your edits are still here: save them as a new workflow, "
-                    "or discard them.")
-
-
-def workflow_changed(at: str) -> str:
-    """The 409's words (F871): when the other save was, and the two ways on."""
-    return f"This workflow was changed elsewhere at {at}. Reload it, or keep yours and save over it."
-
-
-def _if_match(request: Request) -> str | None:
-    """The `updated_at` an editor read, from `If-Match: "<updated_at>"`; None for every caller that sends none."""
-    raw = (request.headers.get("if-match") or "").strip()
-    if not raw:
-        return None
-    return raw[2:] if raw.startswith("W/") else raw
 
 @router.post("/api/orchestrations")
 async def create_or_update_orchestration(orch: OrchestrationIn, request: Request):
@@ -451,16 +433,14 @@ async def create_or_update_orchestration(orch: OrchestrationIn, request: Request
 
     # F871: the editor says what it read. A save from a copy someone has since changed is refused with when, and
     # one of a workflow since deleted is refused rather than brought back; a save that says nothing is as before.
-    seen = _if_match(request)
-    seen = seen.strip('"') if seen is not None else None
-    async with _SAVE_LOCK:
+    from core.routes.save_check import SAVE_LOCK, if_match, refuse_if_stale
+
+    seen = if_match(request)
+    async with SAVE_LOCK:
         existing = await _get(orch.id)
-        if seen is not None:
-            if existing is None:
-                raise HTTPException(404, detail={"message": WORKFLOW_DELETED})
-            current = str(existing.get("updated_at") or "")
-            if current != seen:
-                raise HTTPException(409, detail={"message": workflow_changed(current), "updated_at": current})
+        # A workflow's stamp is its document's: this route and the builder write it (core/routes/save_check.py).
+        current = str((existing or {}).get("updated_at") or "") or None
+        refuse_if_stale(seen, current, exists=existing is not None, noun="workflow")
         # To the microsecond: two saves in one second are two versions.
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")

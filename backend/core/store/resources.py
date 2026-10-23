@@ -106,22 +106,51 @@ def orchestration_values(item: dict, tenant_id: str) -> dict:
 
 
 def agent_values(item: dict, tenant_id: str) -> dict:
+    from core.store.models import _now
+
     return {
         "id": item["id"],
         "tenant_id": tenant_id,
         "name": item.get("name") or item["id"],
         "definition": item,
+        "updated_at": _now(),  # as a workflow's (F871, F891): the row's stamp moves on every write
     }
 
 
 def tool_values(item: dict, tenant_id: str) -> dict:
+    from core.store.models import _now
+
     tool_id = item.get("id") or item.get("name")
     return {
         "id": tool_id,
         "tenant_id": tenant_id,
         "name": item.get("name") or tool_id,
         "definition": item,
+        "updated_at": _now(),
     }
+
+
+async def row_stamps(kind: str, keys: list[str] | None = None) -> dict[str, str]:
+    """When each of this tenant's agents (by id) or tools (by name) was last written: the row's `updated_at`, as an
+    ISO instant (F891). An agent's or tool's document carries no stamp of its own and no writer puts one there, so
+    an editor's save is checked against this; the lists and the saves hand it out."""
+    from datetime import timezone
+
+    from core.store import session
+    from core.store.models import AgentDB, ToolDB
+
+    model, key = {"agents": (AgentDB, AgentDB.id), "tools": (ToolDB, ToolDB.name)}[kind]
+    query = select(key, model.updated_at).where(model.tenant_id == get_tenant())
+    if keys is not None:
+        query = query.where(key.in_(keys))
+    async with session() as s:
+        rows = (await s.execute(query)).all()
+    out: dict[str, str] = {}
+    for name, stamp in rows:
+        if stamp is not None:
+            # SQLite hands back naive datetimes; they were written as UTC.
+            out[str(name)] = (stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)).isoformat()
+    return out
 
 
 def mcp_server_values(item: dict, tenant_id: str) -> dict:
