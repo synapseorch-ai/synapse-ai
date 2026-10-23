@@ -64,9 +64,11 @@ function RowLabel({ collapsed, children }: { collapsed: boolean; children: React
 }
 
 function HubLink({
-    hub, href, active, badge, collapsed, onNavigate,
+    hub, tabs, href, active, badge, collapsed, onNavigate,
 }: {
     hub: NavHub;
+    /** The hub's tabs shown here: named in its tooltip, so Evals and Usage are found under Runs (GUIDE1, F914). */
+    tabs: { label: string }[];
     href: string;
     active: boolean;
     badge?: number;
@@ -79,7 +81,8 @@ function HubLink({
             href={href}
             onClick={e => onNavigate(e, href)}
             aria-current={active ? 'page' : undefined}
-            title={hub.label}
+            title={tabs.length > 1 ? `${hub.label}: ${tabs.map(t => t.label).join(' · ')}` : hub.label}
+            data-tour={`rail-${hub.id}`}
             className={cn(ROW, collapsed && 'justify-center', active ? ROW_CURRENT : ROW_IDLE)}
         >
             <Icon className={cn('size-4 shrink-0', active ? 'text-text' : 'text-text-faint')} aria-hidden />
@@ -343,6 +346,7 @@ export function AppRail({
                                     <HubLink
                                         key={hub.id}
                                         hub={hub}
+                                        tabs={tabs}
                                         href={tabs[0].href}
                                         active={hub.tabs.some(t => isAtHref(pathname, t.href))}
                                         badge={hub.badge === 'unseenRuns' ? unseenCount : undefined}

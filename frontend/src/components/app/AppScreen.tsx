@@ -3,8 +3,10 @@
  *
  * Every page says the same things in the same place: the menu group it sits in
  * (the eyebrow), its name and its one-line blurb. A page that is one of a hub's
- * tabs (D209) is titled by its hub, with the hub's tab bar under the title, so
- * Runs, Logs, Evals and Usage read as one place. The words come from
+ * tabs (D209) is titled by its own tab, with the hub's name as the eyebrow and
+ * the hub's tab bar under the title: Evals reads "Runs / Evals", not "Runs"
+ * (GUIDE1, F914; Naveen: Evals and Usage "are great features but not visible").
+ * A tab named as its hub (Apps › Apps) keeps the group. The words come from
  * `lib/nav.ts`, so a rename lands in the rail and the page together.
  *
  * No "use client": the route pages are server components, and this renders no
@@ -38,8 +40,8 @@ export function AppScreen({
     const tabbed = hub.tabs.length > 1;
     return (
         <PageFrame
-            eyebrow={eyebrow ?? group ?? 'Overview'}
-            title={title ?? (tabbed ? hub.label : entry.label)}
+            eyebrow={eyebrow ?? (tabbed && entry.label !== hub.label ? hub.label : group ?? 'Overview')}
+            title={title ?? entry.label}
             description={description ?? entry.blurb}
             tabs={tabbed ? <AppHubTabs hubId={hub.id} current={entry.href} /> : undefined}
             actions={actions}

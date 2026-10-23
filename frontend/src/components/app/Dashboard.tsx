@@ -31,7 +31,8 @@ import { ToolApprovalActions } from '@/components/notifications/ToolApproval';
 import {
     byHandFavourite, ComingUp, firstName, GettingStarted, greeting, HomeSection, HomeStats, MAX_CARDS, NeedsYou,
     AskLine, askSuggestions, RecentRuns, RunHostProvider, RunWeek, START_SUGGESTIONS, startDone, startSteps, statusLine, today, upcoming,
-    weekRuns, weekStats, useClock, type RunRecord, type RunRow, type ToolCall, type WaitingBrief,
+    weekRuns, weekStats, useClock, MoreToTry, moreToTry, type RunRecord, type RunRow, type ToolCall, type TryKey,
+    type WaitingBrief,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
@@ -86,6 +87,9 @@ export function Dashboard() {
     const [agents, setAgents] = useState<{ id: string; name?: string }[]>([]);
     const [schedules, setSchedules] = useState<Schedule[]>([]);
     const [mcpCount, setMcpCount] = useState(0);
+    /** What the workspace has used of what Home's "More you can do" points at (F914); absent until read. */
+    const [used, setUsed] = useState<Partial<Record<TryKey, boolean>>>({});
+    const [moreHidden, setMoreHidden] = usePersisted<'0' | '1'>('synapseHomeMoreHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
     const [name, setName] = useState<string | null>(null);
     const [loaded, setLoaded] = useState(false);
     /** Each waiting run's record, as its run page reads it; `null` when it could not be read. */
@@ -105,7 +109,8 @@ export function Dashboard() {
         Promise.all([
             j('/api/usage/summary'), j('/api/orchestrations'), j('/api/agents'),
             j('/api/schedules'), j('/api/mcp/servers'), j('/api/personal-details'), j('/api/settings'),
-        ]).then(([usage, orch, agentList, scheduleList, mcp, me, set]) => {
+            j('/api/rubrics'), j('/api/knowledge/bases'), j('/api/settings/api-keys'), j('/api/messaging/channels'),
+        ]).then(([usage, orch, agentList, scheduleList, mcp, me, set, rubrics, bases, keys, channels]) => {
             const list = (v: any) => (Array.isArray(v) ? v : Array.isArray(v?.servers) ? v.servers : []);
             if (usage) setSummary(usage);
             setWorkflows(list(orch));
@@ -114,6 +119,14 @@ export function Dashboard() {
             setMcpCount(list(mcp).length);
             setName(firstName(me?.first_name));
             if (set && typeof set === 'object') setSettings(set);
+            // A list that could not be read stays unknown, and its card stays hidden (`moreToTry`).
+            const tried = (v: any, has: (rows: any[]) => boolean) => (Array.isArray(v) ? has(v) : undefined);
+            setUsed({
+                evals: tried(rubrics, rows => rows.length > 0),
+                knowledge: tried(bases, rows => rows.length > 0),
+                ai_tools: tried(keys, rows => rows.some(k => k.last_used_at)),
+                channels: tried(channels, rows => rows.length > 0),
+            });
             setLoaded(true);
         });
     }, []);
@@ -279,17 +292,22 @@ export function Dashboard() {
             <div className="grid gap-7">
                 {/* Synapse AI's ask line (ASSIST1): above Needs you, which stays first in what Home shows. */}
                 {loaded && runsLoaded && (
-                    <AskLine suggestions={askSuggestions(askFacts)} onAsk={(text) => openBuilder({ ask: text })} />
+                    <div data-tour="home-ask">
+                        <AskLine suggestions={askSuggestions(askFacts)} onAsk={(text) => openBuilder({ ask: text })} />
+                    </div>
                 )}
 
                 {/* With nothing waiting, a new workspace's path leads; its fourth step says what Needs you is. */}
                 {(!showStart || startFolded || waitingCount > 0) && (
                     <RunHostProvider value={OSS_RUN_HOST}>
-                        <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
+                        <div data-tour="home-needs-you">
+                            <NeedsYou runs={cards} more={more} tools={tools} hrefOf={runHref} onChanged={refreshRuns} />
+                        </div>
                     </RunHostProvider>
                 )}
 
                 {showStart && (
+                    <div data-tour="home-start">
                     <GettingStarted
                         steps={steps}
                         foldable={startFolded}
@@ -317,6 +335,22 @@ export function Dashboard() {
                                 </>
                             ),
                         }}
+                    />
+                    </div>
+                )}
+
+                {moreHidden !== '1' && (
+                    <MoreToTry
+                        keys={moreToTry(
+                            [
+                                'evals',
+                                ...(settings?.knowledge_enabled ? ['knowledge' as const] : []),
+                                'ai_tools',
+                                ...(settings?.messaging_enabled ? ['channels' as const] : []),
+                            ],
+                            used,
+                        )}
+                        onDismiss={() => setMoreHidden('1')}
                     />
                 )}
 

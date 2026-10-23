@@ -277,3 +277,41 @@ export function askSuggestions(f: AskFacts): string[] {
     else out.push('What did my agents do today?');
     return out.slice(0, 4);
 }
+
+/** A part of the product Home can point at until the workspace has used it (GUIDE1, F914/F917). */
+export type TryKey = 'evals' | 'knowledge' | 'ai_tools' | 'channels';
+
+/**
+ * Home's "More you can do" (GUIDE1, D318, F914; Naveen: "evals usage all are great features but not visible to
+ * users"). Each says what it is for, in plain words, and where it is; the same routes in both products.
+ */
+export const MORE_TO_TRY: Record<TryKey, { title: string; line: string; href: string }> = {
+    evals: {
+        title: 'Check your workflows keep doing well',
+        line: 'Say what a good result looks like, and every run gets a score. You hear when quality drops.',
+        href: '/evals',
+    },
+    knowledge: {
+        title: 'Answer from your own documents',
+        line: 'Give agents a folder of files to look things up in. They say where each answer came from.',
+        href: '/knowledge',
+    },
+    ai_tools: {
+        title: 'Use Synapse from Claude, Codex or Cursor',
+        line: 'Run workflows and answer approvals from the AI tool you already work in.',
+        href: '/ai-tools',
+    },
+    channels: {
+        title: 'Reach your agents from Slack or Telegram',
+        line: 'People talk to an agent where they already chat.',
+        href: '/channels',
+    },
+};
+
+/**
+ * Which of `MORE_TO_TRY` to show: the ones this product offers here (`offered`, in order) that the workspace hasn't
+ * used. A key not yet known (still loading, or unreadable) is left out, so nothing is suggested and then pulled.
+ */
+export function moreToTry(offered: readonly TryKey[], used: Partial<Record<TryKey, boolean>>): TryKey[] {
+    return offered.filter(key => used[key] === false).slice(0, 4);
+}
