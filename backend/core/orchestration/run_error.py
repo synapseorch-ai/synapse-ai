@@ -58,6 +58,20 @@ def reason_of(exc: BaseException, limit: int = 300) -> str:
     return text if type(exc) is RuntimeError else f"{type(exc).__name__}: {text}"
 
 
+def model_failure_of(exc: BaseException) -> dict | None:
+    """A failed step's model failure, for its history entry: its `code`, and whether it is `ours` — a model the
+    deployment serves failed on its side, so a host need not charge for the step (F1012). None when no model call
+    failed: the model's `LLMError` is the exception, or what it was raised from."""
+    from core.llm_providers import LLMError, failure_is_ours
+
+    seen = 0
+    while exc is not None and seen < 5:
+        if isinstance(exc, LLMError):
+            return {"code": exc.code, "ours": failure_is_ours(exc)}
+        exc, seen = exc.__cause__ or exc.__context__, seen + 1
+    return None
+
+
 def failure_reason(status: str | None, step_history: list | None, step_progress: dict | None) -> str | None:
     """Why a run that did not complete stopped: its own reason, else its newest step error.
 

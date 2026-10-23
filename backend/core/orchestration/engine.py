@@ -17,7 +17,7 @@ from core.models_orchestration import Orchestration, OrchestrationRun, StepConfi
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
-from .run_error import failure_reason, reason_of, run_error, set_run_error
+from .run_error import failure_reason, model_failure_of, reason_of, run_error, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
 from .step_usage import exact_window, step_scope
 from .state import SharedState
@@ -810,6 +810,8 @@ class OrchestrationEngine:
                 # drops `step_error` altogether.
                 safe_error = "An internal error occurred while executing this step."
                 real_error = reason_of(e)
+                # Whose the model's failure was, for a host's bill (F1012).
+                model_failure = model_failure_of(e)
                 end_step(run.step_history, {
                     **take_tasks(run.shared_state, step.id),
                     "step_id": step.id,
@@ -817,6 +819,7 @@ class OrchestrationEngine:
                     "step_type": step.type.value,
                     "status": "failed",
                     "error": real_error,
+                    **({"model_failure": model_failure} if model_failure else {}),
                     "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(step_start_time)),
                     "ended_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                     **exact_window(step_start_time),

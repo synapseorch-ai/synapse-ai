@@ -582,6 +582,10 @@ class LLMError(Exception):
     adapter already writes it there.
     """
 
+    #: The call went through the deployment's own model gateway (`synapse.*`): a model the deployment serves, not one
+    #: on the customer's own key. Set where the call is dispatched (F1012).
+    via_gateway: bool = False
+
     def __init__(self, message: str = "", *, provider: str | None = None,
                  status: int | None = None, code: str | None = None, detail: str | None = None):
         super().__init__(message)
@@ -595,6 +599,17 @@ class LLMError(Exception):
     @property
     def retryable(self) -> bool:
         return self.code in RETRYABLE
+
+
+#: The failures of a model the deployment serves that are the deployment's, not the customer's (F1012): its server,
+#: its stream or a timeout, its throttling. A refusal of what was sent, an empty wallet and an empty answer are not.
+_OURS = frozenset({PROVIDER_UNAVAILABLE, RATE_LIMITED, MODEL_ERROR})
+
+
+def failure_is_ours(err: BaseException) -> bool:
+    """Whether a model call's failure is the deployment's own: a model it serves failed on its side (F1012; Naveen
+    2026-10-24). A host need not charge for such a step or turn; one on the customer's own key is theirs."""
+    return isinstance(err, LLMError) and err.via_gateway and err.code in _OURS
 
 
 def _body_message(text: str) -> str | None:
@@ -4142,6 +4157,7 @@ async def generate_response_ex(
     except EmptyAnswer as empty:
         # The call was made and billed; only its answer was empty or blocked
         # (F133). Logged as any call is, then raised as the failure it is.
+        empty.via_gateway = spec.id == "model_gateway"
         if spec.mode in _providers.CLOUD_MODES:
             try:
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens = empty.usage
@@ -4169,9 +4185,10 @@ async def generate_response_ex(
         _team.note_cost(current_model, *(getattr(empty, "usage", None) or ()),
                         charged_microusd=getattr(empty, "charged_microusd", None))
         raise
-    except LLMError:
+    except LLMError as failed:
         # LLM errors must propagate — do NOT swallow them.
         # Orchestration engine will catch this and stop execution.
+        failed.via_gateway = spec.id == "model_gateway"
         raise
     except Exception as e:
         if spec.error is None:
@@ -4179,7 +4196,9 @@ async def generate_response_ex(
         # Any other failure is one too (F132). Returned as the reply, it was
         # written into an LLM step's output key and the run completed, and
         # an evaluator took its fallback route on it.
-        raise LLMError(f"{spec.error}: {str(e)}") from e
+        failed = LLMError(f"{spec.error}: {str(e)}")
+        failed.via_gateway = spec.id == "model_gateway"
+        raise failed from e
 
     # ── Inline thinking tags, whichever provider answered (F32) ──────────────
     # Folded into `reasoning` rather than dropped: the loop shows it as the
