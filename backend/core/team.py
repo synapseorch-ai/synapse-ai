@@ -212,6 +212,9 @@ def note_cost(model: str, input_tokens: int = 0, output_tokens: int = 0, cache_r
     if team is None:
         return
     try:
+        # What it wrote, thinking included: a next call is projected at the team's average (F865).
+        team.out_tokens += max(0, int(output_tokens or 0))
+        team.out_calls += 1
         if charged_microusd is not None and int(charged_microusd) >= 0:
             team.spent_usd += int(charged_microusd) / 1_000_000
             return
@@ -498,6 +501,8 @@ class Team:
         #: lead's would: kept back so the lead can always finish (Q8).
         self.spent_usd: float = float(state.get("spent_usd") or 0.0)
         self.lead_reserve: float = 0.0
+        #: What this stretch's calls wrote out, and how many there were: a call's projection (F865).
+        self.out_tokens, self.out_calls = 0, 0
         #: The work meter, for this stretch of the turn only (F658): never restored, so a resumed turn counts what it
         #: runs after the resume. The members' seconds they had when it started are taken off theirs.
         self._idle_s = 0.0
@@ -708,7 +713,14 @@ class Team:
 
     # ── money, before every model call (Q8) ──
     def allowance(self, model: str, input_chars: int, max_output: int | None) -> float:
-        tokens_in, tokens_out = max(0, int(input_chars)) // CHARS_PER_TOKEN, int(max_output or OUTPUT_ALLOWANCE)
+        """What the next call is projected to cost: its known input, and what the team's calls write on average —
+        never under CE1's prior, never over the cap it is sent with (F865). Its whole cap priced a 16,384-token
+        Haiku call at $0.08 when the team's calls wrote about a thousand, and stopped a $0.20 run at $0.09."""
+        seen = self.out_tokens // self.out_calls if self.out_calls else 0
+        tokens_out = max(OUTPUT_ALLOWANCE, seen)
+        if max_output:
+            tokens_out = min(tokens_out, int(max_output))
+        tokens_in = max(0, int(input_chars)) // CHARS_PER_TOKEN
         price = self.config.prices.get(model)
         if isinstance(price, (list, tuple)) and len(price) == 2:
             # A host's own model (F657): its price, not the rate card's $0.
@@ -754,11 +766,14 @@ class Team:
         """The status line, and the turn's `no_answer`, when a call would pass the team's limit or the run's cap."""
         if self._stopped_by == "cap" and self.limits is not None and self.limits.cap_usd is not None:
             from core.orchestration.run_cap import usd_words
-            return (f"Stopped at this run's cap of {usd_words(self.limits.cap_usd)} in model costs.",
-                    {"why": "run_cap", "limit_usd": self.limits.cap_usd,
-                     # The run's: what it had spent before this stretch (the cap less what it left), and this.
-                     "spent_usd": round(self.limits.cap_usd - (self.limits.usd_left or 0.0)
-                                        + self.spent_usd - self._spent_at_entry, 6)})
+            # The run's: what it had spent before this stretch (the cap less what it left), and this.
+            spent = round(self.limits.cap_usd - (self.limits.usd_left or 0.0) + self.spent_usd - self._spent_at_entry, 6)
+            cap = usd_words(self.limits.cap_usd)
+            # Short of the cap, it is a projection, and says so (F865: "at this run's cap" read at $0.09 of $0.20).
+            line = (f"Stopped at this run's cap of {cap} in model costs." if spent >= self.limits.cap_usd else
+                    f"Stopped: another call could pass this run's cap of {cap} in model costs "
+                    f"(spent so far {usd_words(spent)}).")
+            return line, {"why": "run_cap", "limit_usd": self.limits.cap_usd, "spent_usd": spent}
         return (f"Stopped at the team's spend limit (${self.config.spend_limit_usd:g}).",
                 {"why": "spend_limit", "limit_usd": self.config.spend_limit_usd})
 
