@@ -45,7 +45,7 @@ _LOOSE: dict[str, dict] = {}
 
 
 def _fresh() -> dict:
-    return {"own_mcp": {}, "read_hosts": [], "spent": {}}
+    return {"own_mcp": {}, "own_domains": {}, "read_hosts": [], "spent": {}}
 
 
 def _record() -> tuple[dict, Any]:
@@ -78,9 +78,13 @@ async def _keep(run: Any) -> None:
         logger.warning("research record of run %s not written through: %s", run.run_id, exc)
 
 
-async def _saw_own_server(provider: str, page: str) -> None:
+async def _saw_own_server(provider: str, page: str, domains: set[str] | None = None) -> None:
     record, run = _record()
     record["own_mcp"][_slug(provider)] = page
+    if domains:
+        # Kept sorted: a run's record is checkpointed as JSON. A record from before F951 has no `own_domains`.
+        known = set(record.setdefault("own_domains", {}).get(_slug(provider)) or [])
+        record["own_domains"][_slug(provider)] = sorted(known | set(domains))
     await _keep(run)
 
 
@@ -241,7 +245,7 @@ async def search_mcp_registry(args: dict, server_module: Any, events: list[dict]
     reachable = [s for s in own if not s["install_by_hand"]]
     if reachable:
         page = reachable[0].get("website") or reachable[0].get("repository") or reachable[0]["remote_url"]
-        await _saw_own_server(provider, page)
+        await _saw_own_server(provider, page, _server_domains(reachable[0]))
     note = ("The provider's own server is first." if own else
             f"None of these is {provider}'s own server (their namespace is not its domain); a third party's server "
             "is not the provider's, so say so if you offer one. Search the web for its API next.")
@@ -307,20 +311,71 @@ _OWN_PREFIXES = ("go", "get", "try", "use", "join", "with")
 _OWN_SUFFIXES = ("hq", "app")
 
 
-def _providers_own_page(provider: str, host: str) -> bool:
-    """A page is the provider's own when the host's registrable name (the label before the public suffix, where a
-    domain's owner is) is the provider's whole name (`mailchimp.com`), that name in a common product affix
-    (`goshippo.com` for Shippo), or the provider name's first word — a product on its company's domain (Microsoft
-    Teams on `learn.microsoft.com`; F667, Naveen's brand-word rule).
+#: Endings a provider's own site uses: the common generic ones, any country's (two letters) and the two-part
+#: suffixes above. A look-alike under another (`mailchimp.xyz`, `stripe.top`) is not the provider's own (F951).
+_COMMON_TLDS = frozenset({"com", "org", "net", "io", "co", "ai", "dev", "app", "so", "me", "us", "gg", "sh", "fm",
+                          "tv", "eu", "cloud", "tech", "inc", "health"})
 
-    The name anywhere else in the host is not enough (SAI2, Naveen 2026-10-23): `mailchimp.evil.com`,
-    `evilmailchimp.io` and `stripe-docs.attacker.net` used to count, and P3b gives a person's key to the host this
-    rule calls the provider's own."""
+#: Words too common to stand for a brand on their own: "Open Dental" is opendental.com, not open.<anything>.
+_NOT_A_BRAND = frozenset({"open", "smart", "cloud", "simple", "quick", "super", "digital", "global", "online", "easy",
+                          "health", "money", "store", "books", "teams", "mobile", "secure", "local", "daily", "first",
+                          "united", "national", "general", "central", "great", "happy", "point", "trust", "prime"})
+
+
+def _registrable_domain(host: str) -> str:
+    """`learn.microsoft.com` → "microsoft.com"; `dev.tesco.co.uk` → "tesco.co.uk"."""
+    labels = [x for x in (host or "").lower().removeprefix("www.").split(".") if x]
+    if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
+
+
+def _common_ending(host: str) -> bool:
+    labels = (host or "").lower().split(".")
+    if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
+        return True
+    return len(labels) >= 2 and (labels[-1] in _COMMON_TLDS or (len(labels[-1]) == 2 and labels[-1].isalpha()))
+
+
+def _server_domains(server: dict) -> set[str]:
+    """The domains a provider's own MCP Registry entry vouches for: its namespace's (the Registry verifies a reverse-DNS
+    namespace with its domain before it publishes; a GitHub namespace names no domain of the provider's), its website's
+    and its server's host. The anchor `_providers_own_page` decides by when there is one (F951)."""
+    out = set()
+    labels = [x for x in str(server.get("name") or "").split("/", 1)[0].lower().split(".") if x]
+    if len(labels) >= 2 and labels[:2] != ["io", "github"]:
+        out.add(_registrable_domain(".".join(reversed(labels))))
+    for url in (server.get("website"), server.get("remote_url")):
+        host = (urlsplit(url).hostname or "") if isinstance(url, str) and "//" in url else ""
+        if host:
+            out.add(_registrable_domain(host))
+    return {d for d in out if "." in d}
+
+
+def _providers_own_page(provider: str, host: str, anchors: set[str] | list[str] | None = None) -> bool:
+    """A page is the provider's own when its host is on the provider's own domain.
+
+    - **With an anchor** (the domains the provider's own MCP Registry entry vouches for, `_server_domains`), the anchor
+      decides: the host's registrable domain must be one of them. A look-alike under a good ending (`stripe.io` beside
+      Stripe's `stripe.com`) is then not the provider's own (F951).
+    - **Without one,** the host's registrable name (where a domain's owner is) must be the provider's whole name
+      (`mailchimp.com`), that name in a common product affix (`goshippo.com` for Shippo), or the provider name's first
+      word when that word is a brand (Microsoft Teams on `learn.microsoft.com`; F667's brand-word rule): five letters
+      or more and not a common word ("Open Dental" is opendental.com, not open.<anything>). And the ending must be a
+      common one (`mailchimp.xyz` is not Mailchimp's).
+
+    The name anywhere else in the host is not enough (F935: `mailchimp.evil.com`, `evilmailchimp.io`). P3b gives a
+    person's key to the host this rule calls the provider's own."""
+    if anchors:
+        return _registrable_domain(host) in {_registrable_domain(a) for a in anchors}
+    if not _common_ending(host):
+        return False
     name = _slug(_registrable_name(host))
     slug, words = _slug(provider), _words(provider)
     if not name:
         return False
-    for base in filter(None, (slug, words[0] if words and len(words[0]) >= 3 else "")):
+    brand = words[0] if words and len(words[0]) >= 5 and words[0] not in _NOT_A_BRAND else ""
+    for base in filter(None, (slug, brand)):
         if name == base or name in {p + base for p in _OWN_PREFIXES} or name in {base + s for s in _OWN_SUFFIXES}:
             return True
     return False
@@ -341,7 +396,8 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
         provider = str(raw["provider"]).strip()[:80]
         # A verdict about a provider rests on its own site: "USPS: no public way in" read off EasyPost's page was
         # wrong (BWA1's browser pass; USPS has developers.usps.com).
-        own_pages = [s for s in sources if _providers_own_page(provider, _host(s))]
+        own_pages = [s for s in sources
+                     if _providers_own_page(provider, _host(s), (seen.get("own_domains") or {}).get(_slug(provider)))]
         if (how == "mcp" and _slug(provider) not in seen["own_mcp"]) or (how in ("api", "none") and not own_pages):
             how = "unclear"
         if how == "mcp":
