@@ -93,6 +93,12 @@ CLASS = "a step reaches a service through a tool, and its key through the Vault,
     "result = exec('import requests')",
     "result = eval('1 + 1')",
     "result = open('/proc/self/environ').read()",
+    # SAI2's re-check, 3: what still reaches, by the parts of urllib and http that do.
+    "import urllib\nresult = urllib.request.urlopen('https://api.example.com').read()",
+    "import urllib.parse\nresult = urllib.request.urlopen('https://api.example.com')",
+    "from urllib import request\nresult = request.urlopen('https://api.example.com')",
+    "import http\nresult = http.client.HTTPSConnection('api.example.com')",
+    "import os\nresult = getattr(os, 'execv')",
 ])
 async def test_code_that_reaches_a_service_or_reads_a_key_goes_back_to_the_planner(client, code):
     out = await _call("submit_plan", _plan(code))
@@ -107,6 +113,15 @@ async def test_code_that_reaches_a_service_or_reads_a_key_goes_back_to_the_plann
     "from http import HTTPStatus\nresult = HTTPStatus.OK.phrase",
     "result = state.environ if hasattr(state, 'environ') else None",
     "import os\nresult = os.path.basename(str(state.tip))",
+    # SAI2's re-check, 3: names that only look like the ones refused.
+    "result = getattr(state.db, 'execute', None)",
+    "result = getattr(state.row, 'system', None)",
+    "from re import compile\nresult = compile(r'^ok').match(str(state.tip)) is not None",
+    "result = '/proc/stats is a page' in str(state.tip)",
+    "from urllib.parse import quote, urlparse\nresult = quote(urlparse(str(state.tip)).path)",
+    "import urllib.parse\nresult = urllib.parse.quote(str(state.tip))",
+    "import http\nresult = http.HTTPStatus.OK.phrase",
+    "from http import cookies\nresult = str(cookies.SimpleCookie())",
 ])
 async def test_code_that_reshapes_the_runs_own_data_is_kept(client, code):
     out = await _call("submit_plan", _plan(code))

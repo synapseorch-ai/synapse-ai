@@ -88,7 +88,7 @@ def test_the_models_keep_the_timezone_and_refuse_one_that_is_not():
             "cron_expression": "0 9 * * *", "timezone": "Europe/Amsterdam"}
     assert ScheduleCreate.model_validate(body).model_dump()["timezone"] == "Europe/Amsterdam"
     assert ScheduleUpdate.model_validate({"timezone": "Asia/Tokyo"}).timezone == "Asia/Tokyo"
-    with pytest.raises(ScheduleInvalid, match="not a timezone"):
+    with pytest.raises(ScheduleInvalid, match="not a place's timezone"):
         validate_timing({**body, "timezone": "Mars/Olympus"})
     validate_timing({**body, "timezone": None})
 
@@ -110,7 +110,7 @@ async def test_the_builders_schedule_tools_keep_and_move_its_timezone():
     after = await schedule_store.get(made["id"])
     assert moved["changed"] == ["timezone"] and after["next_run_at"].endswith("T16:00:00Z")
     bad = await _call("update_schedule", {"schedule_id": made["id"], "timezone": "Mars/Olympus"})
-    assert "not a timezone" in bad["error"]
+    assert "not a place's timezone" in bad["error"]
     assert (await schedule_store.get(made["id"]))["timezone"] == "UTC"
 
 
@@ -291,3 +291,26 @@ async def test_a_clock_the_person_names_for_the_move_wins(client):
     out = await _change(named, person_timezone="Europe/Amsterdam")
     [[_, args]] = out["calls"]
     assert args["timezone"] == "Asia/Tokyo"
+
+
+def test_an_hourly_schedule_runs_through_the_repeated_hour():
+    """SAI2's re-check: "every hour" in New York on 1 November 2026 runs at 1:00 EDT, 1:00 EST and 2:00 EST."""
+    schedule, at, runs = _cron("0 * * * *", "America/New_York"), _utc(2026, 11, 1, 4, 30), []
+    for _ in range(4):
+        at = compute_next_run(schedule, at)
+        runs.append(at)
+    assert runs == [_utc(2026, 11, 1, 5), _utc(2026, 11, 1, 6), _utc(2026, 11, 1, 7), _utc(2026, 11, 1, 8)]
+    every5 = _cron("*/30 * * * *", "America/New_York")
+    assert compute_next_run(every5, _utc(2026, 11, 1, 5, 40)) == _utc(2026, 11, 1, 6)
+
+
+@pytest.mark.parametrize("name", ["EST", "MST", "HST", "Etc/GMT+5", "Eastern", "GMT"])
+def test_an_abbreviation_or_a_fixed_offset_is_not_a_place(name):
+    """SAI2's re-check, 4: "EST" is a zone with no summer time, so Eastern would run an hour late all summer."""
+    with pytest.raises(ScheduleInvalid, match="write the place, like America/New_York"):
+        validate_timing({**_cron("0 9 * * *", name)})
+
+
+def test_utc_in_any_case_is_utc():
+    validate_timing(_cron("0 9 * * *", "utc"))
+    assert compute_next_run(_cron("0 9 * * *", "utc"), _utc(2026, 10, 23, 12)) == _utc(2026, 10, 24, 9)

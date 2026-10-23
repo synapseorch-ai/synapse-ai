@@ -335,8 +335,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
 
         named = (plan.schedule.timezone or "").strip()
         if named and not _is_timezone(named):
-            errors.append(f"schedule.timezone: '{named}' is not a timezone name; write one like America/New_York, "
-                          "or leave it out for the person's own")
+            errors.append(f"schedule.timezone: '{named}' is not a place's timezone; write the place, like "
+                          "America/New_York, or leave it out for the person's own")
         elif not named and state.get("person_timezone"):
             plan.schedule = plan.schedule.model_copy(update={"timezone": state["person_timezone"]})
     if errors:
@@ -445,27 +445,42 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
 
 
 #: What a build's code may not import: each reaches a service, runs a program, or builds an import from text (F947).
-_REACHES = frozenset({"requests", "httpx", "urllib", "urllib3", "aiohttp", "socket", "socketserver", "subprocess",
+_REACHES = frozenset({"requests", "httpx", "urllib3", "aiohttp", "socket", "socketserver", "subprocess",
                       "ftplib", "smtplib", "poplib", "imaplib", "nntplib", "telnetlib", "websocket", "websockets",
                       "importlib", "ssl", "ctypes", "multiprocessing", "pty", "xmlrpc", "paramiko", "pycurl"})
-#: `http`'s names that reach nothing (SAI2's review, S5: `from http import HTTPStatus` is not a request).
-_HTTP_NAMES = frozenset({"HTTPStatus", "HTTPMethod"})
-#: `os`'s names that read its environment or run a program.
+#: The parts of `urllib` and `http` that reach something; the rest (`urllib.parse`, `http.HTTPStatus`,
+#: `http.cookies`) only reads text (SAI2's re-check, 3).
+_REACHING_PARTS = {"urllib": frozenset({"request", "robotparser"}),
+                   "http": frozenset({"client", "server", "cookiejar"})}
+#: `os`'s names that read its environment or run a program, exactly.
 _OS_NAMES = frozenset({"environ", "environb", "getenv", "getenvb", "putenv", "unsetenv", "system", "popen", "fork",
-                       "forkpty", "startfile"})
-_OS_PREFIXES = ("exec", "spawn", "posix_spawn")
+                       "forkpty", "startfile", "execl", "execle", "execlp", "execlpe", "execv", "execve", "execvp",
+                       "execvpe", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv", "spawnve", "spawnvp",
+                       "spawnvpe", "posix_spawn", "posix_spawnp"})
+#: The builtins that run text as code.
+_RUNS_TEXT = frozenset({"exec", "eval", "compile", "__import__"})
 #: Names that open a connection or a process whatever module they come from (`asyncio`'s, chiefly).
 _OPENS = frozenset({"open_connection", "start_server", "open_unix_connection", "start_unix_server",
                     "create_subprocess_exec", "create_subprocess_shell"})
 
 
-def _os_name(name: str) -> bool:
-    return name in _OS_NAMES or name.startswith(_OS_PREFIXES)
+def _reaching(module: str, names: set[str] | None = None) -> bool:
+    """Whether importing `module` (or `names` from it) reaches something."""
+    parts = module.split(".")
+    if parts[0] in _REACHES:
+        return True
+    if parts[0] in _REACHING_PARTS:
+        reaching = _REACHING_PARTS[parts[0]]
+        if len(parts) > 1:
+            return parts[1] in reaching
+        # `import urllib` alone could reach `urllib.request`; `import http` and `from http import HTTPStatus` read.
+        return parts[0] == "urllib" if names is None else bool(names & reaching)
+    return False
 
 
 def reaches_out(code: str) -> tuple[str, str] | None:
     """`("parse", why)` for code that does not compile as the engine runs it, `("uses", what)` for code that reaches a
-    service, runs a program, reads the environment or builds code from text; else None.
+    service, runs a program, reads the environment or runs text as code; else None.
 
     Read with `ast` (an alias is the same import) at module level, as `wrap_transform` runs it (SAI2's review, S6: a
     top-level `return` cannot run; a transform sets `result`). A lint against a model's drift, not a boundary: it
@@ -481,45 +496,52 @@ def reaches_out(code: str) -> tuple[str, str] | None:
         if "return" in why:
             why += "; a transform puts its answer in `result` (result = ...) instead"
         return "parse", why
-    os_aliases = {"os"}
+    os_aliases, imported = {"os"}, set()
+    opened = {id(n.args[0]) for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+              and n.func.id == "open" and n.args}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                root = alias.name.split(".")[0]
-                if root == "os" and alias.name == "os":
+                if alias.name == "os":
                     os_aliases.add(alias.asname or "os")
-                if root in _REACHES or root == "http":
+                if _reaching(alias.name):
                     return "uses", alias.name
         elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            root, names = module.split(".")[0], {a.name for a in node.names}
-            if root in _REACHES or (root == "http" and (module != "http" or not names <= _HTTP_NAMES)):
+            module, names = node.module or "", {a.name for a in node.names}
+            imported |= {a.asname or a.name for a in node.names}
+            if _reaching(module, names):
                 return "uses", module
-            if root == "os" and (bad := sorted(n for n in names if _os_name(n))):
+            if module == "os" and (bad := sorted(names & _OS_NAMES)):
                 return "uses", f"os.{bad[0]}"
             if "__import__" in names:
                 return "uses", "__import__"
-        elif isinstance(node, ast.Attribute):
-            if isinstance(node.value, ast.Name) and node.value.id in os_aliases and _os_name(node.attr):
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "getattr"
+                and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)):
+            # `getattr(os, "environ")` is `os.environ`; `getattr(row, "system")` is the row's (SAI2's re-check, 3).
+            obj, name = node.args[0], node.args[1].value
+            on_os = isinstance(obj, ast.Name) and obj.id in os_aliases
+            if name in (_RUNS_TEXT | _OPENS | {"__builtins__"}) or (on_os and name in _OS_NAMES):
+                return "uses", str(name)
+        if isinstance(node, ast.Attribute):
+            base = node.value.id if isinstance(node.value, ast.Name) else None
+            if base in os_aliases and node.attr in _OS_NAMES:
                 return "uses", f"os.{node.attr}"
+            if base in _REACHING_PARTS and node.attr in _REACHING_PARTS[base]:
+                return "uses", f"{base}.{node.attr}"
             if node.attr in ("__import__", "__builtins__") or node.attr in _OPENS:
                 return "uses", node.attr
-        elif isinstance(node, ast.Name) and node.id in ("__import__", "__builtins__", "exec", "eval", "compile"):
+        elif isinstance(node, ast.Name) and node.id not in imported and (
+                node.id in _RUNS_TEXT or node.id == "__builtins__"):
+            # The builtin only: `from re import compile` is re's (SAI2's re-check, 3).
             return "uses", node.id
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             text = node.value
-            if text.startswith("/proc/") or text in ("__import__", "__builtins__") or (
-                    _os_name(text) and _getattr_arg(tree, node)):
+            if text.startswith("/proc/") and (id(node) in opened or not any(c.isspace() for c in text)):
+                return "uses", text
+            if text in ("__import__", "__builtins__"):
                 return "uses", text
     return None
-
-
-def _getattr_arg(tree: Any, constant: Any) -> bool:
-    """Whether `constant` is the name in a `getattr(x, "...")`: `getattr(os, "environ")` is `os.environ`."""
-    import ast
-
-    return any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr"
-               and constant in n.args[1:2] for n in ast.walk(tree))
 
 
 def _found(plan: O.Plan, state: dict) -> dict[str, O.ToolStatus]:
@@ -884,10 +906,12 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 "for": {a.name: agent_fingerprint(a.model_dump()) for a in plan.agents}}
     offers = ["build"] if buildable else []
     offers += [f"without:{n}" for n in dict.fromkeys([*no_way, *connect, *found.blocks])]
-    # Only where a press changes what the run asks: an agent's or the workspace's own policy still asks (F964, 2).
-    held = {g.tool for g in plan.gates if g.set_by != "build"}
+    # Only where a press changes what the run asks (F964, 2): it lifts this build's own confirm, or the Human step a
+    # Tool step needs; where only an agent's or the workspace's policy asks, it would change nothing.
+    gated = {g.tool for g in plan.gates if g.decision == "confirm"}
+    lifts = {g.tool for g in plan.gates if g.decision == "confirm" and g.set_by == "build"}
     offers += [f"alone:{n}" for n in plan.approvals.asks_first if n not in no_way and n not in connect
-               and n not in held]
+               and (n in lifts or n not in gated)]
     if no_way and not looked:
         offers.append("find")
     offers += ["change", "stop"]

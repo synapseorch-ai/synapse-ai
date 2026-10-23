@@ -13,13 +13,24 @@ class ScheduleInvalid(ValueError):
 
 
 def _is_timezone(name: str) -> bool:
+    """A place's timezone ("America/New_York"), or UTC. Not an abbreviation or a fixed offset: "EST" is a zone with
+    no summer time, an hour late all summer for Eastern, and `Etc/GMT+5`'s sign runs backwards (SAI2's re-check, 4)."""
     from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+    text = str(name).strip()
+    if text.upper() == "UTC":
+        return True
+    if "/" not in text or text.split("/")[0] in ("Etc", "SystemV"):
+        return False
     try:
-        ZoneInfo(str(name))
+        ZoneInfo(text)
     except (ZoneInfoNotFoundError, ValueError):
         return False
     return True
+
+
+#: What a name that is not a place's timezone is told.
+TIMEZONE_HINT = "write the place, like America/New_York, or UTC"
 
 
 def validate_timing(schedule: dict) -> None:
@@ -31,7 +42,7 @@ def validate_timing(schedule: dict) -> None:
     clears the others, and a leftover cron on an interval schedule is never read.
     """
     if (tz := schedule.get("timezone")) and not _is_timezone(tz):
-        raise ScheduleInvalid(f"'{tz}' is not a timezone name like America/New_York.")
+        raise ScheduleInvalid(f"'{tz}' is not a place's timezone: {TIMEZONE_HINT}.")
     if schedule.get("schedule_type") == "interval":
         value, unit = schedule.get("interval_value"), schedule.get("interval_unit")
         if value is None or not unit:

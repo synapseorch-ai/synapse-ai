@@ -464,13 +464,21 @@ async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str,
                     add(agent.get("name") or ref, name, decision, set_by(agent, category, name), key=ref)
     for s in steps:
         if s.type == "tool" and s.tool and (t := await tool(s.tool)) is not None:
-            agent = compiled(s.agent) if s.agent in new else agents.get(s.agent) if s.agent else None
+            if s.agent in new:
+                # Decided as the new agent's own tools are: the workspace's first, then the compile's own confirm,
+                # which is "this build" only where the workspace would let it act (SAI2's re-check of S3).
+                inherited, _ = decide(t, resolve_policy({}, settings))
+                if inherited == "deny":
+                    add(s.name, s.tool, "deny", "workspace", kind="step", key=s.id)
+                elif s.tool in asks and s.tool in new[s.agent].tools:
+                    add(s.name, s.tool, "confirm", "build" if inherited == "allow" else "workspace", kind="step",
+                        key=s.id)
+                else:
+                    add(s.name, s.tool, inherited, "workspace", kind="step", key=s.id)
+                continue
+            agent = agents.get(s.agent) if s.agent else None
             decision, category = decide(t, resolve_policy(agent, settings))
-            if s.agent in new and decide(t, resolve_policy({}, settings))[0] == "deny":
-                # The workspace's block holds: the compile gives no confirm for a blocked tool.
-                decision, category = "deny", "workspace"
-            by = "build" if s.agent in new and category == "tool" else set_by(agent, category, s.tool)
-            add(s.name, s.tool, decision, by, kind="step", key=s.id)
+            add(s.name, s.tool, decision, set_by(agent, category, s.tool), kind="step", key=s.id)
     return gates
 
 
@@ -517,7 +525,9 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     # `asks_first` stays this build's own list, which the compile turns into its new agents' confirms; another's
     # ask is carried in the gates only, so it never spills onto a new agent (SAI2's review, B1).
     held = {g.tool for g in out.gates if g.decision == "confirm" and g.set_by != "build"}
-    denied = {g.tool for g in out.gates if g.decision == "deny"}
+    # Blocked for the plan's own agents only where the workspace blocks it: a reused agent's own block is its own,
+    # and never takes a tool from a new agent's confirm (SAI2's re-check, 2).
+    denied = {g.tool for g in out.gates if g.decision == "deny" and g.set_by == "workspace"}
     out.approvals = Approvals(asks_first=[n for n in acting if n not in kept and n not in denied],
                               acts_without_asking=[n for n in acting if n in kept and n not in held | denied])
 

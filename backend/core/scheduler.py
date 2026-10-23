@@ -91,20 +91,33 @@ def compute_next_run(schedule: dict, from_dt: datetime) -> datetime:
 def _next_on_local_clock(cron_expr: str, zone: "ZoneInfo", from_dt: datetime) -> datetime:
     """The cron read on `zone`'s wall clock, in UTC (F948): 4 PM in New York stays 4 PM through the clocks changing.
 
-    The two hours the clocks make awkward, by one rule: a wall time that does not exist that day (2:30 when they jump
-    from 2:00 to 3:00) runs at the first minute that does; a wall time that happens twice (1:30 when they fall back)
-    runs once, the first time.
+    The two hours the clocks make awkward: a wall time that does not exist that day (2:30 when they jump from 2:00 to
+    3:00) runs at the first minute that does; a wall time that happens twice (1:30 when they fall back) runs once,
+    the first time — unless the cron runs every hour (its hour `*` or `*/n`), which runs through the repeated hour as
+    it does any other, so "every hour" leaves no hour out (SAI2's re-check).
     """
     from croniter import croniter
 
-    start = (from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)).astimezone(zone)
-    cron = croniter(cron_expr, start.replace(tzinfo=None))
-    for _ in range(1000):
+    after = (from_dt if from_dt.tzinfo else from_dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    hour = (cron_expr.split() + ["", ""])[1]
+    hourly = hour == "*" or hour.startswith("*/")
+    # From an hour before, on the wall clock: the repeated hour's second pass has wall times already behind `after`.
+    cron = croniter(cron_expr, (after.astimezone(zone) - timedelta(hours=1)).replace(tzinfo=None))
+    best: datetime | None = None
+    for _ in range(2000):
         wall = cron.get_next(datetime)
-        at = _existing(wall, zone).astimezone(timezone.utc)
-        # Past `from_dt` only: the wall time's first occurrence may already be behind it (the repeated hour).
-        if at > from_dt.astimezone(timezone.utc):
-            return at
+        first = _existing(wall, zone).astimezone(timezone.utc)
+        if best is not None and first > best:
+            return best
+        moments = [first]
+        second = wall.replace(tzinfo=zone, fold=1)
+        if hourly and second.utcoffset() != wall.replace(tzinfo=zone, fold=0).utcoffset():
+            moments.append(second.astimezone(timezone.utc))
+        for at in moments:
+            if at > after and (best is None or at < best):
+                best = at
+    if best is not None:
+        return best
     raise ValueError(f"'{cron_expr}' has no next run in {zone.key}")
 
 

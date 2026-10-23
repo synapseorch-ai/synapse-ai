@@ -336,3 +336,35 @@ def test_the_panel_draws_blocks_apart_from_asks_as_the_review_does():
     asks = plan_ts[plan_ts.index("function asksOf"):plan_ts.index("function blockedOf")]
     assert "'deny'" not in asks and "inner_workflows" in asks
     assert "blocked: blockedOf(view)," in plan_ts and ">Blocked here</span>" in cards
+
+
+async def test_a_workspaces_own_tool_key_on_a_new_agents_tool_step_is_the_workspaces(client):
+    """SAI2's re-check, 1: the workspace's `tool:X` confirm on a Tool step a new agent runs is the workspace's; a
+    press would lift nothing, so it is not offered."""
+    await _policy(**{"tool:file_summary": "confirm"})
+    clerk = {"name": "Vault Clerk", "purpose": "Files summaries in the vault", "tools": ["file_summary"]}
+    post = {"id": "post", "type": "tool", "name": "File it", "does": "Files it", "tool": "file_summary",
+            "agent": "Vault Clerk"}
+    _, out = await _checked(_plan(APPROVE, post, agents=[clerk]))
+    assert ("File it", "file_summary", "confirm", "workspace") in _gates(out)
+    assert ("File it", "file_summary", "confirm", "build") not in _gates(out)
+    assert "alone:file_summary" not in out["offers"]
+
+
+async def test_a_reused_agents_own_block_never_takes_a_new_agents_confirm(client):
+    """SAI2's re-check, 2: the reused Clerk's own block on `file_summary` is the Clerk's; the new Mailer holding it
+    still asks first, is compiled with its confirm, and the plan can be built."""
+    from core.native_builder.compile import compile_plan
+    from core.native_builder.objects import Plan
+
+    await _clerk(**{"tool:file_summary": "deny"})
+    mailer = {"name": "Mailer", "purpose": "Files the summary", "tools": ["file_summary"]}
+    mail = {"id": "mail", "type": "agent", "name": "File it", "does": "Files it", "agent": "Mailer",
+            "prompt": "File {state.check}."}
+    _, out = await _checked(_plan(CHECK, {**FILE_IT, "prompt": "Read the weather."}, mail, agents=[mailer]))
+    assert ("Mailer", "file_summary", "confirm", "build") in _gates(out)
+    assert ("Vault Clerk", "file_summary", "deny", "agent") in _gates(out)
+    assert "file_summary" in out["plan"]["approvals"]["asks_first"]
+    assert "build" in out["offers"], out["issues"]
+    [made] = compile_plan(Plan.model_validate(out["plan"]), mint=build_plan.placeholder_mint()).agents
+    assert made["tool_policy"] == {"tool:file_summary": "confirm"}

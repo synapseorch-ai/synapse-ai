@@ -171,7 +171,7 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         from core.models_schedule import _is_timezone
 
         return None if isinstance(value, str) and _is_timezone(value) else \
-            "`timezone` is a timezone name like Europe/Amsterdam (leave it out for the person's own)"
+            "`timezone` is a place's timezone, like Europe/Amsterdam (leave it out for the person's own)"
     if key == "interval_unit":
         return None if value in ("minutes", "hours", "days") else "`interval_unit` is minutes, hours or days"
     if key in ("interval_value", "max_total_turns", "timeout_minutes"):
