@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any
 
 from core.builder_tools import register_builder_tool
@@ -375,7 +376,9 @@ def _said(ops: list[dict]) -> str:
 
 def _plain_words(text: Any) -> str:
     """Words as compared for "did the person say it": case, quotes and spacing aside."""
-    return " ".join("".join(c if c.isalnum() else " " for c in str(text or "").casefold()).split())
+    # Letters, digits and marks: a Devanagari vowel sign is a mark, which `isalnum` would drop (SAI2's review).
+    return " ".join("".join(c if unicodedata.category(c)[0] in "LNM" else " "
+                            for c in str(text or "").casefold()).split())
 
 
 def _persons_words(state: dict) -> str:
@@ -645,7 +648,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             continue
         if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
             new_name = _text(fields.get("name"))
-            if not draft.get("undo_of") and f" {_plain_words(new_name)} " not in f" {words} ":
+            if not draft.get("undo_of") and (not _plain_words(new_name)
+                                             or f" {_plain_words(new_name)} " not in f" {words} "):
                 # A new name is the person's words or it is not proposed (F960: "move it to 3am" came back renamed
                 # "Every night at 3"). An undo's rename back is code's, from the card, so it is not asked for again.
                 # Asked for without its name ("update its name to match"): asked, not dropped (SAI2's review, 2).

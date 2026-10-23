@@ -181,7 +181,8 @@ class StepConfig(BaseModel):
     #: succeeds, and the step's output is that call's result as an object, not the agent's prose. Each must be among
     #: the agent's tools. Empty, the default, is an agent step as before.
     finish_tools: list[str] = []
-    #: AGENT -- what the step's output is when the agent still answers in words after its one reminder (F958): an
+    #: AGENT -- what the step's output is when the agent answers in words, not with a finish (after its one reminder,
+    #: or on its last turn with no room for one; F958): an
     #: object, marked `"fallback": true`, so the next step knows it is code's and not the agent's finish. Only with
     #: `finish_tools`; None, the default, fails the step as before. A turn limit or a spend stop still fails it.
     finish_fallback: dict[str, Any] | None = None

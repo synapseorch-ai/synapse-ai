@@ -48,9 +48,13 @@ def named(found: dict[str, list[str]] | None, said: str) -> str | None:
     def plain(text: str) -> str:
         return "".join(c for c in text.casefold() if c.isalnum())
 
+    def suffixes(model: str) -> set[str]:
+        # The id and each part after a provider's dot or slash: `us.anthropic.claude-haiku-4-5` is also
+        # `anthropic.claude-haiku-4-5` and `claude-haiku-4-5` (SAI2's review).
+        return {plain(model)} | {plain(model[i + 1:]) for i, c in enumerate(model) if c in "./"}
+
     wanted = plain(said)
-    matches = {m for models in (found or {}).values() for m in models
-               if wanted and wanted in (plain(m), plain(m.split(".", 1)[-1]), plain(m.split("/", 1)[-1]))}
+    matches = {m for models in (found or {}).values() for m in models if wanted and wanted in suffixes(m)}
     return matches.pop() if len(matches) == 1 else None
 
 

@@ -109,3 +109,12 @@ async def test_a_model_that_names_none_or_several_is_still_refused(client, role,
                                "fields": {"model": said}}])
     assert out["outcome"] == "said" and out["calls"] == []
     assert f'"{said}" is not a model this workspace can use' in out["say"]
+
+
+def test_a_model_is_named_by_any_of_its_own_suffixes():
+    """SAI2's review (nit): `us.anthropic.claude-haiku-4-5` is "claude-haiku-4-5" and "anthropic.claude-haiku-4-5"
+    too; a dot inside the id itself ("gpt-4.1-mini") is never a provider's prefix to cut at."""
+    found = {"bedrock": ["us.anthropic.claude-haiku-4-5"], "openai": ["gpt-4.1-mini"]}
+    assert model_choices.named(found, "claude-haiku-4-5") == "us.anthropic.claude-haiku-4-5"
+    assert model_choices.named(found, "anthropic.claude-haiku-4-5") == "us.anthropic.claude-haiku-4-5"
+    assert model_choices.named(found, "GPT-4.1-mini") == "gpt-4.1-mini"

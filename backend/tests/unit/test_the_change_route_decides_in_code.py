@@ -523,3 +523,12 @@ async def test_only_the_target_s_own_kind_word_is_set_aside(client, role):
     out, _, _ = await _check([{"op": "rename_agent", "target": {"kind": "agent", "name": "Nightly digest workflow"},
                                "fields": {"name": "Digest"}}])
     assert out["outcome"] == "said" and not out.get("calls")
+
+
+def test_the_person_s_words_keep_every_letter_and_mark():
+    """Devanagari's vowel signs are marks, not letters or digits (`isalnum` drops them): a name in Hindi is compared as
+    the person wrote it (SAI2's review, nit)."""
+    from core.native_builder.change_tools import _plain_words
+
+    assert _plain_words("“रात्रि  सारांश”") == "रात्रि सारांश"
+    assert _plain_words("Nightly-digest, v2!") == "nightly digest v2"
