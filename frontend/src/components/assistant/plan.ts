@@ -96,6 +96,10 @@ export interface Plan {
      * `find`, `change`, `stop`. Absent for a plan read from its words, which offers what it always did.
      */
     offers?: string[];
+    /** Each new agent's instructions, as the person approves them (SAI2-P3, Q2): drawn only from the plan's object. */
+    agentInstructions?: { name: string; instructions: string }[];
+    /** What one run may spend at most (CAP1), in words: drawn only from the plan's object. */
+    limits?: string | null;
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -433,7 +437,8 @@ export interface PlanObjectView {
         summary?: string;
         steps: PlanObjectStep[];
         agents?: { name: string; type?: string }[];
-        schedule?: { cron?: string; says?: string; timezone?: string | null } | null;
+        schedule?: { cron?: string; says?: string; timezone?: string | null; input?: string | null } | null;
+        caps?: { credits?: number | null; dollars?: number | null } | null;
         questions?: string[];
         not_carried_over?: string[];
         approvals?: { asks_first?: string[]; acts_without_asking?: string[] };
@@ -441,6 +446,10 @@ export interface PlanObjectView {
     };
     /** What the card offers (decision 2, Naveen 10-23): no `build` while a tool has no way in. */
     offers: string[];
+    /** Each new agent's instructions, written before the review and covered by the yes (Naveen 10-23, Q2). */
+    prompts?: Record<string, string>;
+    /** An update's changes against the workflow as it is, in code's words: what the card lists as its rows. */
+    changes?: string[];
     /** Code's words: each missing tool and its reason, and what the plan could not be saved for. */
     say?: string;
 }
@@ -465,20 +474,31 @@ function bullets(items: string[] | undefined, code = false): string | null {
 export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan | null {
     const steps = view.plan.steps.filter((s) => s.type !== 'end');
     if (!steps.length) return null;
+    // An update is read as what it changes, not the whole workflow again (SAI2's review, 13).
+    const changes = (view.changes ?? []).filter((c) => c.trim());
     const known = (t: string): StepType | null => (t in STEP_TYPE_META ? (t as StepType) : null);
-    const when = view.plan.schedule?.says?.trim();
-    const cron = view.plan.schedule?.cron?.trim();
+    const when = view.plan.schedule?.says?.trim() || view.plan.schedule?.cron?.trim();
+    const cron = view.plan.schedule?.says?.trim() ? view.plan.schedule?.cron?.trim() : '';
     return {
         kind: 'build',
         body: splitQuestion(prompt).body,
         overview: view.plan.summary?.trim() || null,
-        steps: steps.map((s, i) => {
-            const step = stepOf(i + 1, s.name, known(s.type));
-            const detail = [s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '', s.tool ? `uses ${s.tool}` : '']
-                .filter(Boolean).join(' — ');
-            return detail ? { ...step, detail } : step;
-        }),
-        schedule: when ? (cron ? `${when} (${cron}, UTC)` : when) : null,
+        steps: changes.length
+            ? changes.map((c, i) => ({ n: i + 1, name: c, type: null, label: '', role: 'logic' as const }))
+            : steps.map((s, i) => {
+                const step = stepOf(i + 1, s.name, known(s.type));
+                const detail = [s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '', s.tool ? `uses ${s.tool}` : '']
+                    .filter(Boolean).join(' — ');
+                return detail ? { ...step, detail } : step;
+            }),
+        schedule: when
+            ? [cron ? `${when} (${cron}, UTC)` : when, view.plan.schedule?.input?.trim()
+                ? `each run starting with: ${view.plan.schedule.input.trim()}` : ''].filter(Boolean).join(', ')
+            : null,
+        limits: [
+            view.plan.caps?.credits != null ? `${view.plan.caps.credits} credits` : '',
+            view.plan.caps?.dollars != null ? `$${view.plan.caps.dollars} of models` : '',
+        ].filter(Boolean).join(' and ') || null,
         newAgents: (view.plan.agents ?? []).map((a) => a.name).filter(Boolean),
         openQuestions: bullets(view.plan.questions),
         notCarried: bullets(view.plan.not_carried_over),
@@ -486,12 +506,20 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
         asksFirst: bullets(view.plan.approvals?.asks_first, true),
         actsAlone: bullets(view.plan.approvals?.acts_without_asking, true),
         offers: view.offers,
+        agentInstructions: Object.entries(view.prompts ?? {})
+            .filter(([, text]) => text.trim())
+            .map(([name, text]) => ({ name, instructions: text.trim() })),
     };
 }
 
 /** What a "Build without" answer sends, as `read_plan_answer` reads it. */
 export function withoutWords(tool: string): string {
     return `build without ${tool}`;
+}
+
+/** What "Let it act without asking" sends: the person's own move of a tool out of "asks you first" (BWA1, decision 4). */
+export function aloneWords(tool: string): string {
+    return `let ${tool} act without asking`;
 }
 
 /**

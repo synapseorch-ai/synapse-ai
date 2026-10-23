@@ -27,7 +27,8 @@ import { Button, Markdown } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import {
-    changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan, splitQuestion, withoutWords,
+    aloneWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan, splitQuestion,
+    withoutWords,
     type Plan, type PlanStep,
 } from './plan';
 
@@ -205,6 +206,7 @@ export function PlanCard({
     const canBuild = !offers || offers.includes('build');
     const canFind = !offers || offers.includes('find');
     const without = (offers ?? []).filter((o) => o.startsWith('without:')).map((o) => o.slice('without:'.length));
+    const alone = (offers ?? []).filter((o) => o.startsWith('alone:')).map((o) => o.slice('alone:'.length));
     const [expanded, setExpanded] = React.useState(false);
     const [sent, setSent] = React.useState(false);
     const title = kind === 'change' ? 'The change' : 'The plan';
@@ -214,6 +216,7 @@ export function PlanCard({
 
     const facts = plan ? [
         plan.schedule,
+        plan.limits ? `each run is capped at ${plan.limits}` : null,
         plan.newAgents.length
             ? `creates ${plan.newAgents.length === 1 ? 'an agent' : `${plan.newAgents.length} agents`}: ${plan.newAgents.join(', ')}`
             : null,
@@ -232,10 +235,40 @@ export function PlanCard({
                         </p>
                     )}
                     {estimate && <PlanEstimate plan={plan} load={estimate} />}
+                    {(plan.agentInstructions?.length ?? 0) > 0 && (
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">New agents&apos; instructions</span>
+                            {plan.agentInstructions?.map((a) => (
+                                <details key={a.name} className="text-[13px]">
+                                    <summary className="cursor-pointer text-text">{a.name}</summary>
+                                    <Markdown className="mt-1 text-[13px] leading-relaxed text-text-muted">{a.instructions}</Markdown>
+                                </details>
+                            ))}
+                        </div>
+                    )}
                     {plan.asksFirst && (
                         <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
                             <span className="text-xs font-medium text-text">Asks you first</span>
                             <Markdown className="text-[13px] leading-relaxed">{plan.asksFirst}</Markdown>
+                            {open && alone.length > 0 && (
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                    {alone.map((tool) => (
+                                        <Button
+                                            key={tool}
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            disabled={sent}
+                                            onClick={() => {
+                                                setSent(true);
+                                                onAnswer(aloneWords(tool));
+                                            }}
+                                        >
+                                            Let {tool} act without asking
+                                        </Button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
                     {plan.actsAlone && (
