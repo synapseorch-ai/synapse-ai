@@ -52,8 +52,18 @@ _NEW = re.compile(r"\b(?:new|another|create|build me|make me|from scratch|set up
 _EDIT = re.compile(r"\b(?:add|change|edit|update|remove|modify|fix|rename|replace|insert|also|instead|make it)\b")
 #: Asking to use an outside service: what a lookup answers, never a bare "can't".
 _USE = re.compile(
-    r"\b(?:connect|integrate|hook up|hook into|link|sync|use|work with|works with|support|supports|post to|send to|"
-    r"read from|pull from|push to|can you|can it|can synapse|does it|is there a way|possible)\b")
+    r"\b(?:integrate|sync|use|work with|works with|support|supports|post to|send to|send|book|order|buy|pay|ship|"
+    r"read from|pull from|push to|can you|can it|can synapse|can we|does it|is there a way|possible)\b")
+#: Asking to connect a named service: the answer route's Connect card, or how to connect it — never research (P4's
+#: router replay: self-hosted has no catalogue, so "found nowhere" sent every connect request away).
+_CONNECT = re.compile(r"\b(?:connect|reconnect|hook up|hook into|link|sign in|plug in|how do i|how to|set up)\b")
+#: A question about how or whether (P4's router replay): an answer, whatever the model labelled it.
+_QUESTION = re.compile(r"^(?:how do i|how can i|how to|how does|where do i|where can i|can i|can a|can an|"
+                       r"is it possible|is there a way|is|are|was|were|did|does|do i|what|which|why|when|who|"
+                       r"how many|how much|has|have)\b")
+#: Connecting a named service, said as an instruction; and what makes it an automation instead.
+_CONNECT_DO = re.compile(r"\b(?:connect|reconnect|hook up|hook into|link|plug in|sign in to)\b")
+_AUTOMATE = re.compile(r"\b(?:every|each|whenever|when|daily|weekly|automat\w*|workflow|build|create|schedule)\b")
 #: Build-shaped words, after findings (F766).
 _BUILD = re.compile(r"\b(?:build|make|create|set it up|set up|go ahead|do it|proceed)\b")
 
@@ -129,8 +139,15 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     elif _findings(state.get("prior_findings")) and kind != "build" and (
             kind == "research" or is_yes(message) or (_BUILD.search(text) and kind != "answer")):
         kind, by = "build", "after_findings"
+    # A question about how or whether is an answer (P4's router replay: Nova Pro labelled how-tos as changes).
+    elif kind in ("change", "build") and _QUESTION.match(text) and not _ACT.search(text):
+        kind, by = "answer", "question"
+    # Connecting a named service is the answer route's Connect card, unless an automation through it is asked for.
+    elif kind in ("change", "build") and request.providers and _CONNECT_DO.search(text) and not _AUTOMATE.search(
+            text) and any(_words(p) and _words(p) in text for p in request.providers):
+        kind, by = "answer", "connect_named"
     # An outside service found nowhere here is looked up, never answered "can't" (BWA1 #8).
-    elif kind == "answer" and request.providers and _USE.search(text) and not all(
+    elif kind == "answer" and request.providers and _USE.search(text) and not _CONNECT.search(text) and not all(
             _found(p, connectable) for p in request.providers):
         kind, by = "research", "provider_unknown"
 

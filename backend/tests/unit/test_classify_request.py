@@ -90,9 +90,22 @@ class TestFindingsThenABuild:
 
 
 class TestAProviderIsLookedUpNotRefused:
-    def test_one_found_nowhere_goes_to_research(self):
-        routed = _route("can you connect to Uber Health?", "answer", providers=["Uber Health"])
+    @pytest.mark.parametrize("message", ["can you book patient rides through Uber Health?",
+                                         "can we send claims to Uber Health from here?"])
+    def test_using_one_found_nowhere_goes_to_research(self, message):
+        routed = _route(message, "answer", providers=["Uber Health"])
         assert (routed.kind, routed.route, routed.overridden_by) == ("research", "step_research", "provider_unknown")
+
+    @pytest.mark.parametrize("message,provider", [
+        ("How do I connect Slack?", "Slack"), ("Hook up Notion.", "Notion"),
+        ("Connect my GitHub MCP server.", "GitHub"),
+        ("Can you connect our Linear workspace so the agents can file issues?", "Linear"),
+        ("can you connect to Uber Health?", "Uber Health")])
+    def test_asking_to_connect_one_is_answered_with_its_card_not_researched(self, message, provider):
+        """P4's router replay (10-24): self-hosted has no catalogue, so "found nowhere" sent every connect request to
+        research. Connecting a named service is the answer route's: its Connect card, or how to connect it."""
+        routed = _route(message, "answer", providers=[provider])
+        assert (routed.kind, routed.route) == ("answer", "step_answer")
 
     def test_one_the_workspace_can_connect_is_answered(self):
         routed = _route("how do I connect Slack?", "answer", providers=["Slack"])
@@ -100,6 +113,43 @@ class TestAProviderIsLookedUpNotRefused:
 
     def test_a_provider_in_a_question_that_asks_for_nothing_is_left_alone(self):
         assert _route("is Uber Health a good company?", "answer", providers=["Uber Health"]).kind == "answer"
+
+
+class TestAQuestionIsAnswered:
+    """P4's router replay (10-24): Nova Pro labelled "how do i make a workflow run every weekday at 9?" and "is the
+    invoice sync still running?" as changes. A message shaped as a question about how or whether is an answer."""
+
+    @pytest.mark.parametrize("message", ["how do i make a workflow run every weekday at 9?",
+                                         "Can a run wait for my approval before it sends anything?",
+                                         "Can I stop a workflow from spending more than a few credits per run?",
+                                         "is the invoice sync still running?",
+                                         "How do I invite my office manager so she can approve runs?"])
+    @pytest.mark.parametrize("kind", ["change", "build"])
+    def test_a_how_or_whether_question_is_an_answer(self, message, kind):
+        routed = _route(message, kind)
+        assert (routed.kind, routed.route, routed.overridden_by) == ("answer", "step_answer", "question")
+
+    @pytest.mark.parametrize("message", ["can you pause the morning digest?", "please turn on Nightly invoices",
+                                         "change Nightly invoices to 09:00"])
+    def test_a_request_said_politely_is_still_a_request(self, message):
+        assert _route(message, "change").kind == "change"
+
+
+class TestConnectingANamedServiceIsAnswered:
+    """P4's router replay: Haiku and gpt-oss labelled "Hook up Notion" a build. Connecting a named service is the
+    answer route's Connect card; asking for an automation that uses it is still a build."""
+
+    @pytest.mark.parametrize("message,provider", [("Hook up Notion.", "Notion"),
+                                                  ("Connect my GitHub MCP server.", "GitHub"),
+                                                  ("Connect the 'Acme Weather' MCP server.", "Acme Weather")])
+    @pytest.mark.parametrize("kind", ["build", "change"])
+    def test_a_connect_request_is_an_answer(self, message, provider, kind):
+        routed = _route(message, kind, providers=[provider])
+        assert (routed.kind, routed.route, routed.overridden_by) == ("answer", "step_answer", "connect_named")
+
+    def test_an_automation_through_it_is_a_build(self):
+        routed = _route("Connect Notion and every morning file the new tickets into it", "build", providers=["Notion"])
+        assert routed.kind == "build"
 
 
 class TestTheRoleDoor:
