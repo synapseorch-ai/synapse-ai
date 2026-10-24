@@ -56,7 +56,7 @@ export {
   titleClass,
   type Tone,
 } from "./text";
-export { PageFrame, PageFrameHeader, type PageWidth } from "./page-frame";
+export { FRAME_WIDTHS, PAGE_GUTTER, PageFrame, PageFrameHeader, type PageWidth } from "./page-frame";
 export { StatStrip, type StatCell, type StatDot } from "./stat-strip";
 export { BarList, Meter, type BarRow } from "./bars";
 export { Screen, type ScreenWidth } from "./screen";

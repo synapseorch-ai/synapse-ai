@@ -8,7 +8,8 @@
  * header and the body start at the same padding on every screen, and the
  * width variants only cap how far the column may run to the right. So the
  * title sits at one x at every viewport, and — because the eyebrow line above
- * it is always drawn, empty or not — at one y.
+ * it is always drawn, empty or not — at one y. A wide page fills the sheet, and
+ * the gutter grows past a 1700 px window (F897), so no width leaves a band empty.
  *
  * It takes words, not a nav entry, for the reason `Screen` always has: a
  * `nav: NavEntry` prop would drag one product's navigation model into a design
@@ -34,14 +35,22 @@ import { PageHeader } from "./text";
  */
 export type PageWidth = "form" | "wide";
 
-const WIDTHS: Record<PageWidth | "full", string> = {
+export const FRAME_WIDTHS: Record<PageWidth | "full", string> = {
   form: "max-w-5xl",
-  wide: "max-w-[88rem]",
+  // Fills the sheet (F897, Naveen's rule B, 2026-10-24): it was 88rem, and above ~1700 px the slack all lay on the
+  // right (903 px of it at 2560). A wide page's content is lists, tables and card grids, which use the room.
+  wide: "",
   full: "",
 };
+const WIDTHS = FRAME_WIDTHS;
 
-/** The one horizontal padding, shared by the header and the body so their left edges are the same line. */
-const GUTTER = "px-4 md:px-10";
+/**
+ * The one horizontal padding, shared by the header and the body so their left edges are the same line. 40 px from
+ * `md` up to a 1700 px window, so nothing at 1440 or below moves; then it grows with the screen, to 128 px at most
+ * (F897): a page on a big screen keeps margins in proportion instead of an empty band on one side.
+ */
+export const PAGE_GUTTER = "px-4 md:px-[clamp(2.5rem,calc(4vw_-_1.75rem),8rem)]";
+const GUTTER = PAGE_GUTTER;
 
 type FrameHeaderProps = {
   title: React.ReactNode;
