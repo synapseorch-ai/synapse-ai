@@ -235,22 +235,24 @@ def _plain(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
-def _named(menu: list[ModelEntry], wish: str, words: set[str]) -> list[ModelEntry]:
-    """Models the person named outright: the whole wish is an id or its part after a prefix ("nova pro",
-    "claude-opus-4-1"), else one of their words is a part of exactly one model's id that no family word is ("Opus")."""
+def _named(menu: list[ModelEntry], wish: str, words: set[str]) -> tuple[list[ModelEntry], str]:
+    """Models the person named outright, and the words they named it by: the whole wish is an id or its part after a
+    prefix ("nova pro", "claude-opus-4-1"), else one of their words is a part of exactly one model's id that no family
+    word is ("Opus" in "put it on Opus")."""
     whole = _plain(wish)
     exact = [e for e in menu if whole and whole in {_plain(e.id)} | {_plain(e.id[i + 1:])
                                                                        for i, c in enumerate(e.id) if c in "./"}]
     if exact:
-        return exact
+        return exact, wish.strip()
     generic = set(FAMILIES) | set(_SAME) | _CHEAPEST | _STRONGEST | {"cli", "local", "ollama", "model", "use", "the"}
     for word in sorted(words - generic, key=len, reverse=True):
         if len(word) < 4:
             continue
         hits = [e for e in menu if word in re.split(r"[-._/:]", e.id.casefold())]
         if len(hits) == 1:
-            return hits
-    return []
+            said = re.search(rf"\b{re.escape(word)}\b", wish, re.I)
+            return hits, said.group(0) if said else word
+    return [], ""
 
 
 def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | NoModel | Ask:
@@ -268,14 +270,16 @@ def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntr
     ordinary = [e for e in menu if e.source not in ("cli", "local")]
     kind_pool = [e for e in menu if e.source == asked_kind] if asked_kind else ordinary
 
-    named = _named(kind_pool, wish, words) or (_named(menu, wish, words) if not asked_kind else [])
+    named, named_as = _named(kind_pool, wish, words)
+    if not named and not asked_kind:
+        named, named_as = _named(menu, wish, words)
     if len(named) == 1:
         e = named[0]
         if not _fits(e, needs, has_tools):
             return _no_model([e], needs, has_tools, of=e.id) if not e.can_pay else NoModel(
                 f"{e.id} can't {'call tools' if has_tools and e.tools == 'none' else 'read images'}, which this agent "
                 "needs.")
-        return Picked(e.id, f"you asked for {wish.strip().removeprefix('use ').strip()}")
+        return Picked(e.id, f"you asked for {named_as}")
 
     families = {_SAME.get(w, w) for w in words if _SAME.get(w, w) in FAMILIES}
     if len(families) > 1:

@@ -168,6 +168,9 @@ class TestWishes:
         assert M.resolve_wish("use Opus", "reasoning", has_tools=True, menu=menu) == M.Picked(
             "claude-opus-4-1", "you asked for Opus")
         assert M.resolve_wish("claude-opus-4-1", "simple", has_tools=True, menu=menu).id == "claude-opus-4-1"
+        # The card's words name what matched, never the whole sentence (SAI2's re-check).
+        assert M.resolve_wish("put it on Opus", "reasoning", has_tools=True, menu=menu) == M.Picked(
+            "claude-opus-4-1", "you asked for Opus")
 
     def test_a_family_is_matched_by_its_provider_too_and_says_the_real_reason(self):
         """SAI2's probe: "gpt" said "no model calls tools", though an openai model with tools fitted, and gpt-oss
