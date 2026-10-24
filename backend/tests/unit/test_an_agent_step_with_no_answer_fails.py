@@ -69,7 +69,8 @@ def _entry(run, sid="write"):
     return entry
 
 
-REPEATS = [tool_call("look", where="vault")] * 3 + ["never reached"]
+# The same call three times, and again in the reply that was asked to answer from what it had (F1015).
+REPEATS = [tool_call("look", where="vault")] * 4 + ["never reached"]
 
 
 class TestTheRepeatGuard:
@@ -132,7 +133,7 @@ class TestARepeatedRound:
         orch = S.make_orchestration(id="orch_f476_round", entry_step_id="write", steps=[
             _agent_step(nxt="after"), _print("after")])
         await _seed(orch)
-        fake_llm.script([both] * 3 + ["never reached"])
+        fake_llm.script([both] * 4 + ["never reached"])  # and again in its answer turn (F1015)
 
         assert await driver.start(orch, "run_f476_round") == "failed"
         run = await _run("run_f476_round")

@@ -46,8 +46,12 @@ class TestTheSameCallThreeTimes:
         ls = tool_call("run_bash", command="ls work/inventory")
         events = await _drive(fake_llm, [ls, ls, ls, ls, ls, "never reached"], _same)
 
-        assert fake_llm.call_count == 3, "no model call after the third identical result"
+        # F1015: after the third, one reply to answer from what it has, tools withheld; it called again, so the
+        # guard ends the turn as before, and no model call follows.
+        assert fake_llm.call_count == 4, "one answer turn after the third identical result, then nothing"
         assert "already have that answer" in fake_llm.calls[2]["prompt_msg"], "the second repeat was named"
+        assert "Give your final response now" in fake_llm.calls[3]["prompt_msg"]
+        assert not fake_llm.calls[3].get("tools"), "the answer turn offers no tool"
         stopped = [e for e in events if e.get("type") == "repeat_stopped"]
         assert stopped and stopped[0]["tool_name"] == "run_bash" and stopped[0]["count"] == 3
         answer = _final(events)
@@ -57,8 +61,9 @@ class TestTheSameCallThreeTimes:
         ls = {"tool": "run_bash", "arguments": {"command": "ls"}}
         import json
         batch = "\n".join(json.dumps(ls) for _ in range(4))
-        events = await _drive(fake_llm, [batch, "never reached"], _same)
-        assert fake_llm.call_count == 1
+        events = await _drive(fake_llm, [batch, batch, "never reached"], _same)
+        # F1015: one answer turn after the batch; it repeated the batch, so the guard ends the turn.
+        assert fake_llm.call_count == 2
         assert [e for e in events if e.get("type") == "repeat_stopped"]
 
 
@@ -110,7 +115,8 @@ class TestARepeatedRound:
         abc = _round("search phone case", "search charger", "search watch")
         events = await _drive(fake_llm, [abc, abc, abc, abc, "never reached"], _per_command)
 
-        assert fake_llm.call_count == 3, "no model call after the third identical round"
+        assert fake_llm.call_count == 4, "one answer turn after the third identical round (F1015), then nothing"
+        assert not fake_llm.calls[3].get("tools"), "the answer turn offers no tool"
         told = fake_llm.calls[2]["prompt_msg"]
         assert "same 3 calls" in told and "already have those answers" in told, "the second round was named"
         assert "already have those answers" not in fake_llm.calls[1]["prompt_msg"]

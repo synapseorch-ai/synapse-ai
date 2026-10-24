@@ -1640,6 +1640,28 @@ async def run_agent_step(
     _finished: dict | None = None
     _finish_pending: tuple[str, int] | None = None
     _finish_reminded = False
+    # The repeat guard's answer turn (F1015): a loop the guard stops is given one more reply with its tools withheld
+    # (a finish step keeps only its finish tools), to answer from the results it already has. Only a reply that
+    # still calls a tool ends the turn unanswered, as the guard always did: "hi" on Nova Pro read the workspace
+    # three times and the step failed with an error page, though nothing it needed was missing.
+    _answering_from: dict | None = None
+
+    def _tools_now(tools):
+        """The tools offered to this reply: all of them, or on the guard's answer turn none but a finish tool."""
+        if _answering_from is None:
+            return tools
+        kept = [t for t in (tools or []) if ((t.get("function") or {}).get("name") or t.get("name")) in _finish]
+        return kept or None
+
+    def _repeat_sentence(stop: dict) -> str:
+        """The guard's ending in chat, for a repeated call or a repeated round (F243, F476)."""
+        if stop.get("round"):
+            return (f"I stopped here because I was repeating myself: I made the same {stop['round']} "
+                    f"calls ({stop['tool_name']}) {stop['count']} times in a row and got the "
+                    "same results each time, so making them again would not help. The work so far is above.")
+        return (f"I stopped here because I was repeating myself: I called {stop['tool_name']} "
+                f"with the same arguments {stop['count']} times in a row and got the same result "
+                "each time, so calling it again would not help. The work so far is above.")
     last_intent = "chat"
     last_data = None
     tool_name = None
@@ -2386,7 +2408,7 @@ async def run_agent_step(
                     _effort_now, _retry_effort = _retry_effort, None
                     _wait = ModelWait(generate_response(
                         full_prompt, active_sys_prompt,
-                        tools=ollama_tools, history_messages=active_history,
+                        tools=_tools_now(ollama_tools), history_messages=active_history,
                         memory_context_text=memory_context,
                         # Every call of the turn they were attached to (F245): on
                         # the first only, one tool call later the model was blind
@@ -2524,6 +2546,17 @@ async def run_agent_step(
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
             tool_calls = _unwrap_parallel(parse_all_tool_calls(action_text), tool_schema_map)
+            if _answering_from is not None and any(
+                    _offered_name(c.get("tool", ""), tool_schema_map) not in _finish for c in tool_calls):
+                # Asked to answer from what it had, it called again: the guard's ending, as before F1015.
+                for _e in _unstream("tool_call"):
+                    yield _e
+                _repeat_stop = _answering_from
+                tool_calls = []
+                yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
+                _unanswered = {"why": "repeating", **_repeat_stop}
+                final_response = _repeat_sentence(_repeat_stop)
+                break
             if tool_calls:
                 # What streamed before the call was narration: the engine keeps
                 # it as reasoning, so a stream takes it back.
@@ -3680,22 +3713,23 @@ async def run_agent_step(
                 break
             if not _repeat_stop:
                 _check_round(_turn_calls[_round_from:])
+            if _repeat_stop and _answering_from is None and turn + 1 < max_turns:
+                # One more reply, tools withheld, to answer from what it has (F1015).
+                _log.warning(f"🔁 '{_repeat_stop['tool_name']}' repeated {_repeat_stop['count']}× — asking for the answer")
+                _answering_from = dict(_repeat_stop)
+                _repeat_stop = None
+                _finish_line = (f" by calling {' or '.join(f'`{n}`' for n in _finish)}" if _finish else "")
+                current_context_text += (
+                    f"\nSystem: you already have the results of those calls above, and making them again gives the "
+                    f"same. Give your final response now{_finish_line}, from what you have: no other tool is "
+                    "offered for this reply.\n")
+                yield {"type": "status", "message": "Answering from what it already has"}
+                continue
             if _repeat_stop:
                 _log.warning(f"🔁 '{_repeat_stop['tool_name']}' repeated {_repeat_stop['count']}× — ending the turn")
                 yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
                 _unanswered = {"why": "repeating", **_repeat_stop}
-                if _repeat_stop.get("round"):
-                    final_response = (
-                        f"I stopped here because I was repeating myself: I made the same {_repeat_stop['round']} "
-                        f"calls ({_repeat_stop['tool_name']}) {_repeat_stop['count']} times in a row and got the "
-                        "same results each time, so making them again would not help. The work so far is above."
-                    )
-                else:
-                    final_response = (
-                        f"I stopped here because I was repeating myself: I called {_repeat_stop['tool_name']} "
-                        f"with the same arguments {_repeat_stop['count']} times in a row and got the same result "
-                        "each time, so calling it again would not help. The work so far is above."
-                    )
+                final_response = _repeat_sentence(_repeat_stop)
                 break
 
             if progress_events:
