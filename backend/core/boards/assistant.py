@@ -88,7 +88,62 @@ async def cards_for(viewer_id: str | None, *, admin: bool, closed: bool = False)
     found = await store.find_scoped_board(SCOPE, "")
     if found is None:
         return []
-    cards = await store.list_cards([found.id], statuses=("done",) if closed else ("open", "claimed"), limit=200)
+    # Tasks only: a turn's facts (`note`) are a note card the person is never shown.
+    cards = await store.list_cards([found.id], statuses=("done",) if closed else ("open", "claimed"), kind="task",
+                                   limit=200)
     if admin:
         return cards
     return [c for c in cards if viewer_id and c.owner_id == viewer_id]
+
+
+# ── a turn's facts (SAI2-P4, F977; Naveen 10-24: each turn's own card) ──────────────────────────────────────────────
+
+#: Facts a turn adds to as it goes; any other fact is set once (`also`, the last word on it).
+_GATHERED = ("cards", "presses", "picks", "connects")
+
+
+def _turn_key(run_id: str) -> str:
+    return f"turn:{run_id}"
+
+
+async def note(run_id: str, *, owner_id: str | None, **facts: Any) -> None:
+    """Keep what turn `run_id` put up, listed, queued or had pressed, on that turn's own card.
+
+    The card is a note beside any build or change card of the same turn, so neither ever overwrites the other, and
+    `cards_for` never shows it. `cards`, `presses`, `picks` and `connects` gather; any other fact is set.
+    """
+    if not run_id:
+        return
+    home = await board()
+    key = _turn_key(run_id)
+    for _ in range(3):
+        current = await store._card_by_key(home.id, key)
+        kept = dict((current.data or {}).get("turn") or {}) if current is not None else {}
+        for name, value in facts.items():
+            kept[name] = [*kept.get(name, []), *value] if name in _GATHERED else value
+        if current is None:
+            _, made = await store.add_card(home.id, title="A turn", key=key, kind="note", by=ACTOR,
+                                           data={"turn": kept}, owner_id=owner_id)
+            if made:
+                return
+            continue  # made by a write beside this one: read it again and add to it
+        try:
+            await store.update_card(current.id, version=current.version, by=ACTOR, holder=None,
+                                    data={"turn": kept})
+            return
+        except store.StaleCard:
+            continue
+    raise RuntimeError(f"Turn {run_id}'s card kept changing; its facts were not kept.")
+
+
+async def turn(run_id: str) -> dict[str, Any]:
+    """What turn `run_id` kept (`note`), with the person it is for as `owner_id`; empty when it kept nothing."""
+    if not run_id:
+        return {}
+    found = await store.find_scoped_board(SCOPE, "")
+    if found is None:
+        return {}
+    current = await store._card_by_key(found.id, _turn_key(run_id))
+    if current is None:
+        return {}
+    return {**((current.data or {}).get("turn") or {}), "owner_id": current.owner_id}

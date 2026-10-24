@@ -87,7 +87,12 @@ SCHEMA = {
 
 
 class _NotOffered(Exception):
-    """Why no card: said to the model, which says it to the person."""
+    """Why no card: said to the model, which says it to the person. A "which one?" carries its options with their
+    ids, and the field they answer, so the turn keeps them for the next turn's pick (F977)."""
+
+    def __init__(self, why: str, *, field: str = "", options: list[dict] | None = None) -> None:
+        super().__init__(why)
+        self.field, self.options = field, options or []
 
 
 def _caller() -> Caller:
@@ -128,7 +133,8 @@ def _pick(items: list[dict], wanted: str, what: str, list_hint: str) -> dict:
     # Each with its id: two of the same name told apart by name alone sent the name back, and was refused again (F760).
     names = ", ".join(f'"{i.get("name")}" ({i.get("id")})' for i in near[:8])
     raise _NotOffered(f"More than one {what} matches {wanted!r}: {names}. Ask which one they mean, then call again "
-                      f"with that one's id as `{what}`.")
+                      f"with that one's id as `{what}`.", field=what,
+                      options=[{"id": i.get("id"), "name": i.get("name")} for i in near[:8]])
 
 
 async def _workflow(args: dict) -> dict:
@@ -344,6 +350,13 @@ async def prepare_action(args: dict, server_module: Any, events: list[dict]) -> 
     try:
         card = await _offer(action, args)
     except _NotOffered as why:
+        if why.options:
+            from core.builder_tools import _current_run
+            from core.native_builder import turn_facts
+
+            await turn_facts.keep(_current_run.get(), _caller().user_id, picks=[{
+                "action": action, "field": why.field, "options": why.options,
+                "arguments": {k: v for k, v in args.items() if k not in ("action", why.field)}}])
         return {"error": str(why)}
     events.append(card)
     pressed = " or ".join(f'"{b["label"]}"' for b in card["buttons"]) or "answer on it"

@@ -123,3 +123,40 @@ class TestItIsShownNowhereElseYet:
                                 settings={"boards_enabled": True}, tools_override=None, persist_turn=True,
                                 visitor=None)
         assert got is None or all(b.scope != "assistant" for b in got.boards)
+
+
+class TestATurnsFacts:
+    """F977 (SAI2-P4, Naveen 10-24: each turn's own card): what a turn put up, listed and queued is kept on its own
+    card, so the next turn reads it in code (`read_turn`) — never a model's memory of the conversation."""
+
+    async def test_facts_gather_on_the_turns_own_card(self):
+        await assistant.note("run_t1", owner_id="user_ana",
+                             cards=[{"title": "Run Inbox triage", "buttons": [
+                                 {"label": "Run now", "tool": "run_workflow", "arguments": {"workflow_id": "o1"}}]}])
+        await assistant.note("run_t1", owner_id="user_ana", also="and pause the digest")
+        await assistant.note("run_t1", owner_id="user_ana", cards=[{"title": "Pause digest", "buttons": []}])
+        facts = await assistant.turn("run_t1")
+        assert [c["title"] for c in facts["cards"]] == ["Run Inbox triage", "Pause digest"]
+        assert facts["also"] == "and pause the digest"
+        assert facts["owner_id"] == "user_ana"
+
+    async def test_a_turn_with_no_facts_reads_empty(self):
+        assert await assistant.turn("run_nothing") == {}
+        assert await assistant.turn("") == {}
+
+    async def test_a_build_or_change_card_of_the_same_turn_is_left_alone(self):
+        await assistant.put("run_t2", title="A change", stage="waiting", data={"change": {"picks": [1]}},
+                            owner_id="u")
+        await assistant.note("run_t2", owner_id="u", presses=[{"tool": "run_workflow", "done": True}])
+        assert (await assistant.card("run_t2")).data == {"change": {"picks": [1]}}
+        assert (await assistant.turn("run_t2"))["presses"][0]["done"] is True
+
+    async def test_the_person_never_sees_a_turns_facts_as_a_card(self):
+        await assistant.note("run_t3", owner_id="u", also="x")
+        await assistant.put("bld_f", title="A build", stage="drafting", data=PLAN, owner_id="u")
+        assert [c.key for c in await assistant.cards_for("u", admin=True)] == ["bld_f"]
+        assert [c.key for c in await assistant.cards_for("u", admin=True, closed=True)] == []
+
+    async def test_a_credential_is_never_kept_in_a_turns_facts(self):
+        with pytest.raises(store.SecretInCard):
+            await assistant.note("run_t4", owner_id="u", also="use key sk-" + "proj-" + "a" * 40)
