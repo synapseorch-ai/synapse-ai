@@ -7987,8 +7987,9 @@ async def check_rerankpicker(browser) -> str:
 
 @check
 async def check_hosted_providers(browser) -> str:
-    """Settings → Models in cloud's order and on cloud's card (PROV1, D245): Defaults, Knowledge, the form's Save
-    on the right, then Providers in three groups. A provider card saves and removes its own key and nothing else:
+    """Settings → Models on cloud's card (PROV1, D245), Providers first (GUIDE1, F912; Naveen 2026-10-23: a new
+    workspace has nothing for Defaults to pick until a key is in): Providers in four groups, then Defaults and
+    Knowledge, the form's Save on the right at their foot. A card with no key says "Add key" before it is opened. A provider card saves and removes its own key and nothing else:
     Groq's Save posts only `groq_key`, its Remove asks first and posts only `clear_secrets`. Both POSTs are answered
     here, so nothing is stored."""
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
@@ -8010,17 +8011,17 @@ async def check_hosted_providers(browser) -> str:
         await groups.first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)   # the page's first loads redraw the cards; type after they land
         names = [await g.get_attribute("data-provider-group") for g in await groups.all()]
-        if names != ["Model makers", "Hosts", "On your machine or server"]:
+        if names != ["Model makers", "Hosts", "Your own machine or server", "CLI models"]:
             raise AssertionError(f"the provider groups are {names}")
         heads = await page.evaluate("() => [...document.querySelectorAll('main h2')].map(h => h.textContent.trim())")
-        if heads[:2] != ["Defaults", "Knowledge"] and heads[:2] != ["Defaults", "Providers"]:
-            raise AssertionError(f"the page does not lead with Defaults: {heads}")
+        if heads[:2] != ["Providers", "Defaults"]:
+            raise AssertionError(f"the page does not lead with Providers, then Defaults: {heads}")
         save = page.get_by_role("button", name="Save changes", exact=True)
-        providers_head = page.locator("main h2", has_text="Providers")
-        sb, pb = await save.bounding_box(), await providers_head.bounding_box()
+        defaults_head = page.locator("main h2", has_text="Defaults")
+        sb, db = await save.bounding_box(), await defaults_head.bounding_box()
         column = await page.locator("[data-provider-group]").first.bounding_box()
-        if not sb or not pb or sb["y"] > pb["y"]:
-            raise AssertionError("Save changes is not above Providers")
+        if not sb or not db or sb["y"] < db["y"]:
+            raise AssertionError("Save changes is not at the foot of Defaults")
         if abs((sb["x"] + sb["width"]) - (column["x"] + column["width"])) > 4:
             raise AssertionError("Save changes is not on the right of the form's column")
         for name in ("Mistral", "Moonshot (Kimi)", "Qwen", "Z.ai (GLM)", "MiniMax", "OpenRouter", "Groq", "Cerebras",
@@ -8031,6 +8032,8 @@ async def check_hosted_providers(browser) -> str:
             if await card.locator("img").count() != 1:
                 raise AssertionError(f"{name} has no logo")
         groq = page.locator('[data-provider-card="Groq"]')
+        if not await groq.get_by_text("Add key", exact=True).count():
+            raise AssertionError("Groq, with no key, does not say \"Add key\"")
         await groq.locator("button").first.click()
         await groq.get_by_label("Groq API key").fill("gsk_smoke_not_a_key")
         await groq.get_by_role("button", name="Save", exact=True).click()
@@ -8042,7 +8045,8 @@ async def check_hosted_providers(browser) -> str:
         await ctx.close()
     if [sorted(p) for p in posts] != [["groq_key"], ["clear_secrets"]] or posts[1].get("clear_secrets") != ["groq_key"]:
         raise AssertionError(f"the card's POSTs were {[sorted(p) for p in posts]}")
-    return "Defaults first, Save on the right above Providers, three groups, eleven hosted cards with logos; Groq saves and removes only its own key"
+    return ("Providers first in four groups, then Defaults with Save on the right at its foot, eleven hosted cards "
+            "with logos; Groq says Add key, and saves and removes only its own key")
 
 
 async def _patch_json(route, extra: dict):
