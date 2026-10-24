@@ -52,6 +52,9 @@ WRITES: frozenset[str] = frozenset({
     "delete_custom_tool", "create_skill", "update_skill", "attach_skills", "finish_build", "create_schedule",
     "set_schedule_enabled", "update_schedule", "delete_schedule", "delete_agent", "delete_orchestration",
     "approve_change", "apply_change", "approve_plan", "save_build",
+    # Reads the answer at a build's wait for a connection, and removes the tools that build made on "stop" or "build
+    # without" (F946): a write, of the build's own unsaved tools only.
+    "read_connect_answer",
 })
 
 KINDS: dict[str, str] = {**{n: "read" for n in READS}, **{n: "card" for n in CARDS}, **{n: "write" for n in WRITES}}

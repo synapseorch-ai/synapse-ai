@@ -239,10 +239,14 @@ class TestOnlyTheApplyStepCanDestroy:
         from core.native_builder import build_save, change_ops
 
         assert self.DESTRUCTIVE <= set(change_ops.WRITE_TOOLS)
+        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
         writing = {s["id"] for s in bundled_definitions()["orchestration"]["steps"]
                    if s["type"] == "tool" and s.get("forced_tool") in WRITES}
-        assert writing == {"step_plan_approve", "step_save", "step_make_tools", "step_change_approve", "step_apply"}
-        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+        # And the wait's answer and its give-up (F946), which remove only the tools that build made and never saved.
+        assert writing == {"step_plan_approve", "step_save", "step_make_tools", "step_connect_answer",
+                           "step_connect_give_up", "step_change_approve", "step_apply"}
+        assert {steps[s]["forced_tool"] for s in ("step_connect_answer", "step_connect_give_up")} == {
+            "read_connect_answer"}
         assert steps["step_make_tools"]["forced_tool"] == "save_build"
         import inspect
         source = inspect.getsource(build_save.save_calls) + inspect.getsource(build_save._tool_call)
