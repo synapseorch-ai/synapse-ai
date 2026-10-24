@@ -232,7 +232,8 @@ _EVERY = {"name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND 
           "runs": {"kind": "workflow", "id": "w1", "name": "Nightly digest"}, "add": ["send_email"],
           "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
           "destructive": "confirm", "open_world": "deny", "undeclared": "allow", "max_total_turns": 7,
-          "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "body": "THE SKILL'S TEXT"}
+          "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "body": "THE SKILL'S TEXT",
+          "needs": "reasoning", "wish": "A MODEL WISH"}
 
 
 def _every_field(op_name):

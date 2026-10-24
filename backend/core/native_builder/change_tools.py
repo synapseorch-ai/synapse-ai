@@ -669,6 +669,27 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.name == "set_agent_model":
             from core import model_choices
 
+            if not _text(fields.get("model")):
+                # What the agent needs, or the person's wish, made a model id by code (F966): the planner never
+                # writes one. Its reason goes on the review beside the model it replaces.
+                from core.native_builder import models_menu as MM
+
+                needs, wish, menu = fields.get("needs") or "simple", _text(fields.get("wish")), await MM.menu()
+                has_tools = bool(live.get("tools"))
+                got = (MM.resolve_wish(wish, needs, has_tools=has_tools, menu=menu) if wish
+                       else MM.pick(needs, has_tools=has_tools, menu=menu))
+                if got is None:
+                    item.update(status="refused", say="I can't read which models this workspace can use right now: "
+                                                      "name the model you want.")
+                    continue
+                if isinstance(got, MM.NoModel):
+                    item.update(status="refused", say=got.issue)
+                    continue
+                if isinstance(got, MM.Ask):
+                    item.update(status="ask_model", question=got.question)
+                    continue
+                fields["model"] = got.id
+                item["why"] = f"was {live.get('model') or 'the workspace default'}: {got.reason}"
             found = await model_choices.choices()
             if not model_choices.offers(found, _text(fields.get("model"))):
                 # One choice whose own id is what was said ("nova-pro" for `synapse.nova-pro`, F959) is that choice;
@@ -703,12 +724,17 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                            "nothing to change.")
             continue
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
+        line = _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want)
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
-                    before=_keep(op, live, want), line=_words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
+                    before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":
             leaves[here] = None if want is None else {**live, **want}
 
     ready = [i for i in checked if i["status"] == "ready"]
+    asked = next((i for i in checked if i["status"] == "ask_model"), None)
+    if asked is not None:
+        # Which model a wish means is the person's to say (F966): never a guess.
+        return {**base, "outcome": "ask", "ops": checked, "question": asked["question"]}
     unnamed = [i for i in checked if i["status"] == "ask_name"]
     if unnamed or (not ready and checked and all(i["status"] == "left_out" for i in checked)):
         # A rename they asked for without its name, or only a rename and no new name in their words: asked, rather

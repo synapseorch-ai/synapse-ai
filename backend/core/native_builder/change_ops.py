@@ -94,7 +94,9 @@ _WRITES = (
     Op("delete_schedule", "delete", "schedule", "delete_schedule", verb="Delete"),
     Op("create_schedule", "create", "schedule", "create_schedule",
        ("runs", "prompt", *_SCHEDULE_TIME, "description"), ("runs", "prompt"), verb="Make"),
-    Op("set_agent_model", "write", "agent", "update_agent", ("model",), ("model",), verb="Change the model of"),
+    # A model's id, or what the agent needs, or the person's own words for one (F966): code fills the id.
+    Op("set_agent_model", "write", "agent", "update_agent", ("model", "needs", "wish"), any_of=True,
+       verb="Change the model of"),
     Op("set_agent_tools", "write", "agent", "update_agent", ("add", "remove"), any_of=True,
        verb="Change the tools of"),
     Op("set_agent_skills", "write", "agent", "attach_skills", ("add", "remove"), any_of=True,
@@ -180,6 +182,10 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     if key in ("max_run_credits", "max_run_usd"):
         return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else \
             f"`{key}` is a number above 0"
+    if key == "needs":
+        from core.native_builder.models_menu import NEEDS
+
+        return None if value in NEEDS else f"`needs` is one of {', '.join(NEEDS)}"
     if key == "status":
         return None if value in ("open", "done", "failed") else "`status` is open, done or failed"
     if key == "kind":

@@ -118,3 +118,65 @@ def test_a_model_is_named_by_any_of_its_own_suffixes():
     assert model_choices.named(found, "claude-haiku-4-5") == "us.anthropic.claude-haiku-4-5"
     assert model_choices.named(found, "anthropic.claude-haiku-4-5") == "us.anthropic.claude-haiku-4-5"
     assert model_choices.named(found, "GPT-4.1-mini") == "gpt-4.1-mini"
+
+
+# ── F966: a model by what the agent needs, or by the person's wish ───────────────────────────────────────────────────
+
+@pytest.fixture
+def priced():
+    from core.native_builder import models_menu
+
+    async def choices():
+        return {"anthropic": ["claude-haiku-4-5", "claude-sonnet-4-5", "claude-opus-4-1"], "openai": ["gpt-4.1-mini"]}
+
+    async def facts(ids):
+        return {"claude-opus-4-1": {"price_out": 75, "reasoning": True}, "gpt-4.1-mini": {"vision": False}}
+    model_choices.set_model_choices(choices)
+    models_menu.set_model_facts(facts)
+    yield
+    models_menu.set_model_facts(None)
+
+
+async def test_a_need_is_a_model_code_picks_and_the_review_says_from_what_to_what(client, role, priced):
+    """F966: "put the Front desk on a better model" is `{needs: reasoning}`, never an id the planner made up. Code
+    picks within the ceiling, and the review shows the old model, the new one, and why."""
+    agent = await _agent(name="Front desk", model="claude-haiku-4-5", tools=["web_search"])
+    out, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                               "fields": {"needs": "reasoning"}}])
+    assert out["outcome"] == "review", out
+    assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "claude-sonnet-4-5"}}]]
+    assert ('Change the model of the agent "Front desk" — model: claude-sonnet-4-5 (was claude-haiku-4-5: a '
+            'stronger model, for reasoning)') in out["review"]
+
+
+async def test_a_wish_is_the_person_s_model_and_an_unclear_one_is_asked(client, role, priced):
+    agent = await _agent(name="Front desk", model="gpt-4.1-mini", tools=["web_search"])
+    out, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                               "fields": {"wish": "Claude", "needs": "reasoning"}}])
+    assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "claude-opus-4-1"}}]], \
+        "a wish is not bound by the ceiling"
+    asked, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                                 "fields": {"wish": "claude or gpt"}}])
+    assert asked["outcome"] == "ask" and not asked.get("calls")
+    assert asked["question"].startswith("Which model do you mean?")
+
+
+async def test_a_need_nothing_here_meets_is_said(client, role, priced):
+    agent = await _agent(name="Front desk", model="claude-haiku-4-5", tools=[])
+
+    async def blind(ids):
+        return {i: {"vision": False} for i in ids}
+    from core.native_builder import models_menu
+    models_menu.set_model_facts(blind)
+    out, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                               "fields": {"needs": "vision"}}])
+    assert out["outcome"] == "said" and out["say"] == "No model this workspace can use reads images."
+
+
+def test_a_model_op_names_a_model_a_need_or_a_wish():
+    from core.native_builder import change_ops as C
+
+    assert C.issues("set_agent_model", {"kind": "agent", "id": "a1"}, {}) != []
+    assert C.issues("set_agent_model", {"kind": "agent", "id": "a1"}, {"needs": "reasoning"}) == []
+    assert C.issues("set_agent_model", {"kind": "agent", "id": "a1"}, {"needs": "fast"}) != []
+    assert C.issues("set_agent_model", {"kind": "agent", "id": "a1"}, {"wish": "use Claude"}) == []
