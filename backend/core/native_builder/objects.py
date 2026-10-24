@@ -189,6 +189,10 @@ def plan_schema() -> dict[str, Any]:
 
 # ── a request, a change, a turn ───────────────────────────────────────────────────────────────────────────────────
 
+#: What an answer may read (F976): nothing, this workspace, or the product's help.
+NEEDS = ("none", "workspace", "help")
+
+
 class Request(_Written):
     """The quick model's classify (`classify_request`): four labels, and what code needs to override one."""
 
@@ -196,6 +200,31 @@ class Request(_Written):
     providers: list[str] = Field(default_factory=list, description="Outside services the message names")
     also: str | None = Field(None, description="A second request in the same message, in its words, if any")
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")
+    #: What the answer reads (F976). Left out, code decides alone: a model that says nothing has not said "none".
+    needs: Literal[NEEDS] | None = Field(  # type: ignore[valid-type]
+        None, description="What an answer needs: none (talk, ideas, thanks), workspace (what exists or happened "
+                          "here), help (how the product or its API works)")
+
+
+#: The route entries code hands a request to: a contract with the routes' owners (EDIT-LEDGER.md).
+ENTRIES = ("step_answer", "step_change_context", "step_plan_room", "step_fetch_existing", "step_research",
+           "step_not_yours")
+
+
+class Routed(Request):
+    """A `Request` after code's overrides (`classify_request`): code alone writes this, never a model.
+
+    `kind` and `needs` are code's final reading; `model_kind` / `model_needs` keep what the model said, and
+    `overridden_by` names the rule that moved it, so the router measure can tell the two apart.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    needs: Literal[NEEDS]  # type: ignore[valid-type]
+    route: Literal[ENTRIES]  # type: ignore[valid-type]
+    overridden_by: str | None = None
+    model_kind: str | None = None
+    model_needs: str | None = None
 
 
 #: The ops a change may hold: the button acts (`ACTIONS`), the writes, and two hand-overs to another route
@@ -237,12 +266,18 @@ class Change(_Written):
 
 
 class Turn(BaseModel):
-    """Code's reading of a message before any model (`read_turn`): which route, and what it resolved."""
+    """Code's reading of a message before any model (`read_turn`): which route, and what it resolved.
 
-    route: Literal["pick", "card_label", "plan_answer", "next_request", "classify"]
+    `pressed` and `yes_without_review` (F976) are answered by code alone, in `say`: a press the last turn's card
+    recorded, and a yes with nothing waiting for one. `plan_answer` stays the panel's (F759): a message typed while a
+    review waits sets the run aside there, so a new turn never finds one waiting.
+    """
+
+    route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify"]
     picked: str | None = None
     card: str | None = None
     target: dict[str, Any] | None = None
+    say: str | None = None
 
 
 # ── the checks ────────────────────────────────────────────────────────────────────────────────────────────────────

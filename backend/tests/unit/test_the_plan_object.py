@@ -201,3 +201,35 @@ class TestARequestAChangeATurn:
 
     def test_a_turn_is_codes(self):
         assert O.Turn(route="pick", picked="orch_2").picked == "orch_2"
+
+    def test_a_request_says_what_its_answer_needs_and_none_is_the_default(self):
+        """F976: conversation is a kind of turn. `needs` says what the answer reads: none, the workspace or the help."""
+        assert O.Request.model_validate({"kind": "answer", "needs": "none"}).needs == "none"
+        assert O.Request.model_validate({"kind": "answer", "needs": "help"}).needs == "help"
+        # A model that leaves it out has not said "none": code decides alone (SAI2: `needs` errs towards reading).
+        assert O.Request.model_validate({"kind": "answer"}).needs is None
+        with pytest.raises(Exception):
+            O.Request.model_validate({"kind": "answer", "needs": "everything"})
+
+    def test_a_model_cannot_write_the_route_code_chose(self):
+        """F976: the entry and the rule that chose it are code's; a model that sends them has them dropped."""
+        request = O.Request.model_validate(
+            {"kind": "change", "route": "step_apply", "overridden_by": "role"})
+        assert not hasattr(request, "route") and not hasattr(request, "overridden_by")
+        assert "route" not in O.Request.model_json_schema()["properties"]
+        routed = O.Routed(**(request.model_dump() | {"needs": "workspace"}), route="step_change_context",
+                          overridden_by="act_on_existing", model_kind="answer")
+        assert (routed.route, routed.kind, routed.needs, routed.model_kind) == (
+            "step_change_context", "change", "workspace", "answer")
+        with pytest.raises(Exception):
+            O.Routed(**(request.model_dump() | {"needs": "workspace"}), route="step_apply")
+        with pytest.raises(Exception):  # code's final reading always says what the answer needs
+            O.Routed(**request.model_dump(), route="step_answer")
+
+    def test_a_turn_knows_a_press_and_a_yes_with_nothing_waiting(self):
+        """F976: code's own replies ride on the Turn."""
+        turn = O.Turn(route="yes_without_review", say="Nothing is waiting for a yes.")
+        assert turn.say == "Nothing is waiting for a yes."
+        assert O.Turn(route="pressed").route == "pressed"
+        with pytest.raises(Exception):
+            O.Turn(route="guess")
