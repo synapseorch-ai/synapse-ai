@@ -894,9 +894,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   // `response` puts the answer of record in its place.
   const [draftAnswer, setDraftAnswer] = useState('');
   // The tab's agent. The workspace's "active agent" is only where a new tab starts; a tab keeps its own (TABS1).
-  const [currentAgentId, setCurrentAgentId] = useState<string | null>(tab.agentId);
+  // A tab with no agent yet ('') is the page's no-agent state.
+  const [currentAgentId, setCurrentAgentId] = useState<string | null>(tab.agentId || null);
   // The agent as it is now, for work that outlives the render that started it (a background helper's follow-up).
-  const currentAgentIdRef = useRef<string | null>(tab.agentId);
+  const currentAgentIdRef = useRef<string | null>(tab.agentId || null);
   useEffect(() => { currentAgentIdRef.current = currentAgentId; }, [currentAgentId]);
   // The conversation is being read back from the server, or that read failed: never the empty
   // state meanwhile, which read as a conversation with nothing in it (F873's class).
@@ -1314,7 +1315,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
     try {
       // Written only when it differs: coming forward is a read, and most tabs share the workspace's agent.
       const status: SystemStatus | null = await fetch('/api/status').then(r => (r.ok ? r.json() : null));
-      if (status && status.active_agent_id !== tab.agentId) {
+      if (status && tab.agentId && status.active_agent_id !== tab.agentId) {
         await fetch('/api/agents/active', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -3303,12 +3304,14 @@ export default function Home() {
       const session = asked.get('session');
       const agent = asked.get('agent');
       if (session && agent) link.current = { sessionId: session, agentId: agent };
+      // Chat always has a tab: with no active agent the first one there is, and with none at all a tab with no
+      // agent yet — its composer, and a kept conversation reopened, as the page before tabs did (stack 1's
+      // baseline found the empty strip).
+      const firstAgent = oldAgent || pickableAgents(status).find(a => !a.assistant)?.id || '';
       await start(kept => {
         let next = kept;
-        if (next.tabs.length === 0 && oldSession && oldAgent) next = openTab(next, make(oldSession, oldAgent)).state;
-        if (next.tabs.length === 0 && status?.active_agent_id) {
-          next = openTab(next, make(generateSessionId(), status.active_agent_id, '', true)).state;
-        }
+        if (next.tabs.length === 0 && oldSession) next = openTab(next, make(oldSession, firstAgent)).state;
+        if (next.tabs.length === 0) next = openTab(next, make(generateSessionId(), firstAgent, '', true)).state;
         return next;
       });
     })();

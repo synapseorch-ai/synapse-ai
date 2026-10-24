@@ -4045,6 +4045,62 @@ async def check_tabsrestore(browser) -> str:
 
 
 @check
+async def check_tabsnoagent(browser) -> str:
+    """Chat with no agent at all still opens one tab with its composer (TABS1, F924). The first tab started only
+    from the workspace's active agent, so a workspace with none — a new install, or every agent removed — showed
+    an empty strip and nothing under it (stack 1's baseline: eight chat checks waited for a composer that never
+    came). The page before tabs showed its composer with no agent, and a tab with none never sets one."""
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    posted: list[str] = []
+
+    async def no_agents(route):
+        res = await route.fetch()
+        body = await res.json()
+        body.update({"active_agent_id": None, "agents": {}})
+        await route.fulfill(response=res, json=body)
+
+    async def active(route):
+        posted.append(route.request.post_data or "")
+        await route.continue_()
+
+    async def kept_history(route):
+        await route.fulfill(json={"turns": [{"user": "kept before tabs", "assistant": "kept answer", "tools": [],
+                                             "timestamp": ""}], "pending_approval": None, "running": None})
+
+    await ctx.route("**/api/status", no_agents)
+    await ctx.route("**/api/agents/active", active)
+    await ctx.route("**/api/sessions/uismoke-noagent-kept/history*", kept_history)
+    try:
+        await page.goto(APP, wait_until="domcontentloaded")
+        box = page.locator("main textarea").last
+        await box.wait_for(timeout=15_000)
+        await asyncio.sleep(SETTLE)
+        titles = await _tab_titles(page)
+        # The conversation the page before tabs kept, with no agent to name: it is still the first tab.
+        kept = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+        await kept.add_init_script("try { localStorage.setItem('synapseSessionId', 'uismoke-noagent-kept'); } catch (e) {}")
+        for pattern, handler in (("**/api/status", no_agents), ("**/api/agents/active", active),
+                                 ("**/api/sessions/uismoke-noagent-kept/history*", kept_history)):
+            await kept.route(pattern, handler)
+        try:
+            again = await kept.new_page()
+            await again.goto(APP, wait_until="domcontentloaded")
+            reopened = await _on_screen(again, "kept answer")
+        finally:
+            await kept.close()
+    finally:
+        await ctx.close()
+    if len(titles) != 1:
+        raise AssertionError(f"with no agent the strip holds {titles}, not one tab")
+    if not reopened:
+        raise AssertionError("with no agent, the conversation kept before tabs did not reopen")
+    if posted:
+        raise AssertionError(f"a tab with no agent set the workspace's active agent: {posted}")
+    return "with no agent, one tab and its composer, and a kept conversation reopens; no active agent is set"
+
+
+@check
 async def check_tabsdeeplink(browser) -> str:
     """A link to a conversation opens it in a tab, or brings its open tab forward (TABS1)."""
     _tab_agents()
