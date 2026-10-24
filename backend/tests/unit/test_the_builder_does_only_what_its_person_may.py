@@ -82,6 +82,16 @@ async def test_a_person_below_builder_cannot_have_the_run_write(roles, role):
     assert "error" not in await _call("list_agents", {}, run_id)
 
 
+@pytest.mark.parametrize("role", [Role.VIEWER, Role.APPROVER])
+async def test_a_person_below_builder_cannot_have_a_build_remove_its_tools(roles, role):
+    """F946's wait: its answer removes the tools its build made on "stop" or "build without", a write; the manager's
+    check before P3b landed."""
+    roles["u1"] = role
+    run_id = await _run_for("u1")
+    refused = await _call("read_connect_answer", {}, run_id)
+    assert "error" in refused and "builder" in refused["error"] and role.label in refused["error"]
+
+
 async def test_a_builder_may(roles):
     roles["u1"] = Role.BUILDER
     run_id = await _run_for("u1")
