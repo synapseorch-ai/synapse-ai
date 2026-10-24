@@ -14,7 +14,7 @@ import { useRouter } from 'next/navigation';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
 import { validateOrchestration } from '../orchestration/validate';
-import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
+import { useBuilderShortcuts, useDraftHistory, type DraftSnapshot } from '../orchestration/use-draft-history';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
@@ -184,13 +184,44 @@ function fieldList(raw: unknown): HumanField[] {
 /** What a cap per run counts here: model dollars on your own keys (CAP1). */
 const OSS_CAP_UNITS = ['usd'] as const;
 
-export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, openSettings }: {
+/**
+ * The editor as one tab of the workflows page (TABS1 v2, F930). The page mounts
+ * one editor, keyed by the tab in front, so each workflow's draft and run live
+ * and end with its own tab: a tab going behind hands its draft back (`keep`),
+ * stops reading its run (the run goes on) and comes forward from both. Whatever
+ * would open another workflow here — the switcher, New, a row of the list, a
+ * run — asks the page for a tab instead, so one editor never holds two
+ * workflows' runs (F1026).
+ */
+export interface EditorTabs {
+    /** The tab is a new workflow, opened blank under `initialOrchId`. */
+    startNew?: boolean;
+    /** The draft as the tab left it. */
+    history?: DraftSnapshot;
+    open: (workflowId: string, runId?: string) => void;
+    openNew: () => void;
+    showList: () => void;
+    /** `dirty`: the editor's own rule (an untouched blank workflow holds nothing to lose). */
+    keep: (left: { history: DraftSnapshot; runId: string | null; dirty: boolean }) => void;
+    report: (now: { title: string; dirty: boolean; running: boolean; waiting: boolean; workflowId: string | null }) => void;
+    /** The workflow the tab names is gone (deleted here or elsewhere). */
+    gone: () => void;
+    /** A link the page opens as a tab: following it loses nothing, so it isn't asked about. */
+    isTabLink: (url: URL) => boolean;
+    /** Another tab holds unsaved work: leaving the page asks, as for this tab's own. */
+    othersDirty?: boolean;
+    /** The strip, drawn at the top of the editor and of the list. */
+    strip: React.ReactNode;
+}
+
+export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, openSettings, tabs }: {
     initialRunId?: string;
     initialOrchId?: string;
     /** A value that changes each time a blank workflow is asked for from elsewhere (⌘K's New workflow, M1a). */
     newRequest?: string;
     /** `initialOrchId` opens with its settings (`?settings=1`: a run's "Raise the cap", CAP1). */
     openSettings?: boolean;
+    tabs?: EditorTabs;
 } = {}) {
     // --- Orchestration list ---
     const [orchestrations, setOrchestrations] = useState<Orchestration[]>([]);
@@ -206,10 +237,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         () => Object.fromEntries(orchestrations.map((o) => [o.id, o.name])),
         [orchestrations],
     );
-    const [selectedOrchId, setSelectedOrchId] = useState<string | null>(null);
+    const [selectedOrchId, setSelectedOrchId] = useState<string | null>(tabs?.history?.draft?.id ?? null);
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
-    const { draft, setDraft, replaceDraft, markSaved, undo, redo, canUndo, canRedo, dirty } = useDraftHistory();
+    // A tab coming forward starts from the draft it left with (TABS1 v2).
+    const { draft, setDraft, replaceDraft, markSaved, undo, redo, canUndo, canRedo, dirty, snapshot } =
+        useDraftHistory(800, tabs?.history);
     const router = useRouter();
     // The "?" panel explains the editor while one is open, the list otherwise (H1).
     useHelpTopic(draft ? 'orchestrations.editor' : null);
@@ -525,7 +558,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // statuses from the checkpoint (fast canvas paint), then replay the journal
     // from the start — which rebuilds the exact same Run Log as live viewing —
     // and keep tailing live events until the run ends.
-    const restoreRun = useCallback(async (runInfo: { run_id: string; orchestration_id: string; status: string }) => {
+    const restoreRun = useCallback(async (
+        runInfo: { run_id: string; orchestration_id: string; status: string },
+        // A tab coming forward re-attaches its run to the draft it kept: never the saved one over edits (TABS1 v2).
+        { keepDraft = false }: { keepDraft?: boolean } = {},
+    ) => {
         const orch = orchestrations.find(o => o.id === runInfo.orchestration_id);
         if (!orch) {
             // No definition to render the canvas from — bail loudly rather than
@@ -535,9 +572,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
             showToast('That run\'s workflow no longer exists', 'error');
             return;
         }
-        setSelectedOrchId(runInfo.orchestration_id);
-        setSelectedStepId(null);
-        replaceDraft({ ...orch }, { saved: true });
+        if (!keepDraft) {
+            setSelectedOrchId(runInfo.orchestration_id);
+            setSelectedStepId(null);
+            replaceDraft({ ...orch }, { saved: true });
+        }
         setRunId(runInfo.run_id);
         setRunDrawer('run');
         // Sync the ref synchronously — the useEffect that mirrors runId only runs
@@ -618,7 +657,11 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     }, [orchestrations]);
 
     // A row of the landing's run tables (the shared list, M2b) opens the run here, on the canvas.
-    const openLandingRun = (row: RunRow) => restoreRun({ run_id: row.id, orchestration_id: row.workflowId, status: row.status });
+    const openLandingRun = (row: RunRow) => (tabs
+        ? tabs.open(row.workflowId, row.id)
+        : restoreRun({ run_id: row.id, orchestration_id: row.workflowId, status: row.status }));
+    /** Open a workflow: its own tab when the page keeps tabs, here otherwise. */
+    const openWorkflow = (id: string) => (tabs ? tabs.open(id) : selectOrchestration(id));
 
     // --- Select orchestration ---
     const selectOrchestration = useCallback((id: string | null) => {
@@ -648,6 +691,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // A blank workflow nobody has touched yet holds nothing to lose: it asks only
     // once there is an edit (an undo step) or a saved workflow differs from its save.
     const hasEdits = !!draft && dirty && (canUndo || orchestrations.some(o => o.id === draft.id));
+    const tabsRef = useRef(tabs);
+    const hasEditsRef = useRef(hasEdits);
+    useEffect(() => { tabsRef.current = tabs; hasEditsRef.current = hasEdits; });
     const guardLeave = useCallback((go: () => void) => {
         if (hasEdits) setPendingLeave(() => go);
         else go();
@@ -655,21 +701,24 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
 
     // A link inside the app gets the question too: the App Router cannot stop a
     // navigation once it has started, so the click is taken before it does.
+    // Leaving the page loses every tab's draft, so unsaved work in another tab asks too (TABS1 v2).
+    const leaveAsks = hasEdits || !!tabs?.othersDirty;
     useEffect(() => {
-        if (!hasEdits) return;
+        if (!leaveAsks) return;
         const onClick = (e: MouseEvent) => {
             if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
             const link = (e.target as Element | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
             if (!link || link.target === '_blank' || link.hasAttribute('download')) return;
             const url = new URL(link.href, window.location.href);
             if (url.origin !== window.location.origin || url.pathname === window.location.pathname) return;
+            if (tabsRef.current?.isTabLink(url)) return;  // opens beside this tab: nothing is left behind
             e.preventDefault();
             e.stopPropagation();
             setPendingLeave(() => () => router.push(url.pathname + url.search + url.hash));
         };
         document.addEventListener('click', onClick, true);
         return () => document.removeEventListener('click', onClick, true);
-    }, [hasEdits, router]);
+    }, [leaveAsks, router]);
 
     const backToList = useCallback(() => {
         abortRef.current?.abort();
@@ -680,8 +729,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     }, [selectOrchestration]);
 
     // --- Create new orchestration ---
-    const createNew = () => {
-        const id = 'orch_' + Math.random().toString(36).substring(2, 9);
+    const createNew = (named?: string) => {
+        const id = named ?? 'orch_' + Math.random().toString(36).substring(2, 9);
         const orch: Orchestration = { ...EMPTY_ORCHESTRATION, id };
         replaceDraft(orch);
         setSelectedOrchId(id);
@@ -692,7 +741,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // per request. The request then leaves the address — the address effect above
     // does not run again when this page is already open, so it would linger.
     const newHandledRef = useRef<string | undefined>(undefined);
-    const onNewRequested = useEffectEvent(() => guardLeave(createNew));
+    const onNewRequested = useEffectEvent(() => guardLeave(() => createNew()));
     useEffect(() => {
         if (!newRequest || newHandledRef.current === newRequest) return;
         newHandledRef.current = newRequest;
@@ -775,7 +824,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
             if (res.ok) {
                 const saved = await res.json();
                 setOrchestrations(prev => [...prev, saved]);
-                if (open) {
+                if (open && tabs) {
+                    tabs.open(saved.id);
+                } else if (open) {
                     replaceDraft(saved, { saved: true });
                     setSelectedOrchId(newId);
                     setSelectedStepId(null);
@@ -885,6 +936,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
             }
             setOrchestrations(orchestrations.filter(o => o.id !== confirmDeleteOrchId));
             if (draft?.id === confirmDeleteOrchId) {
+                if (tabs) {
+                    tabs.gone();
+                    return;
+                }
                 replaceDraft(null);
                 setSelectedOrchId(null);
             }
@@ -1586,13 +1641,26 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // it shipped — "duplicate the builder" ends with
     // `window.location.href = /orchestrations?id=…` — and the page read only
     // `?run=`, so the link landed on the list with nothing selected.
-    const initialOrchConsumedRef = useRef(false);
+    // A tab coming forward already holds its draft; a new one starts blank under its own id.
+    const initialOrchConsumedRef = useRef(!!tabs?.history);
     useEffect(() => {
-        if (!initialOrchId || initialOrchConsumedRef.current || orchestrations.length === 0) return;
-        if (!orchestrations.some((o) => o.id === initialOrchId)) return;
+        if (!initialOrchId || initialOrchConsumedRef.current) return;
+        if (tabs?.startNew) {
+            initialOrchConsumedRef.current = true;
+            createNew(initialOrchId);
+            return;
+        }
+        if (!listLoaded) return;
+        if (!orchestrations.some((o) => o.id === initialOrchId)) {
+            // A tab of a workflow deleted since: it has nothing to show.
+            if (tabs) tabs.gone();
+            return;
+        }
         initialOrchConsumedRef.current = true;
         selectOrchestration(initialOrchId);
-    }, [initialOrchId, orchestrations, selectOrchestration]);
+        // createNew is a plain function; the consumed ref keeps this one-shot.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [initialOrchId, orchestrations, listLoaded, selectOrchestration]);
 
     // Deep link (?run=<run_id>): once orchestrations are loaded, open that run
     // exactly as if it was clicked in the Active Runs banner.
@@ -1609,7 +1677,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     run_id: initialRunId,
                     orchestration_id: data.orchestration_id || '',
                     status: data.status || 'running',
-                });
+                }, { keepDraft: !!tabsRef.current?.history });
             } catch { /* ignore */ }
         })();
         // restoreRun is recreated when orchestrations load; the consumed ref
@@ -1636,12 +1704,24 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         };
     }, []);
 
-    // Cleanup on unmount
+    // Cleanup on unmount. A tab going behind keeps its draft and the run it follows (TABS1 v2).
     useEffect(() => {
         return () => {
             abortRef.current?.abort();
+            tabsRef.current?.keep({ history: snapshot(), runId: currentRunIdRef.current, dirty: hasEditsRef.current });
         };
-    }, []);
+    }, [snapshot]);
+
+    const runLive = runStatus === 'running' || runStatus === 'paused';
+    useEffect(() => {
+        tabsRef.current?.report({
+            title: draft?.name ?? '',
+            dirty: hasEdits,
+            running: runLive,
+            waiting: !!humanPrompt,
+            workflowId: draft?.id ?? null,
+        });
+    }, [draft?.name, draft?.id, hasEdits, runLive, humanPrompt]);
 
     const allStepIds = draft?.steps.map(s => ({ id: s.id, name: s.name })) || [];
 
@@ -1739,7 +1819,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     go?.();
                 }}
                 title="Discard unsaved changes?"
-                description={<>Your changes to <strong>{draft?.name || 'this workflow'}</strong> have not been saved.</>}
+                description={hasEdits || !tabs?.othersDirty
+                    ? <>Your changes to <strong>{draft?.name || 'this workflow'}</strong> have not been saved.</>
+                    : <>A workflow open in another tab has changes that have not been saved.</>}
                 confirmLabel="Discard changes"
             />
 
@@ -1803,7 +1885,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                         <Button variant="secondary" onClick={() => openBuilder()} aria-label="Build with AI" data-tour="workflows-build">
                             <Mark size={20} compact={false} className="-my-0.5" /> <span className="hidden sm:inline">Build with AI</span>
                         </Button>
-                        <Button onClick={createNew} data-tour="workflows-new">
+                        <Button onClick={() => (tabs ? tabs.openNew() : createNew())} data-tour="workflows-new">
                             <Plus className="size-4" aria-hidden /> New workflow
                         </Button>
                     </>
@@ -1811,6 +1893,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
             >
                 {toastEl}
                 <div className="grid gap-5">
+                    {tabs?.strip}
                     {/* Runs that are live now, on any workflow: one click back onto its canvas. */}
                     {others.length > 0 && (
                         <div role="group" aria-label="Active runs" className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2">
@@ -1823,7 +1906,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     <button
                                         key={run.run_id}
                                         type="button"
-                                        onClick={() => restoreRun(run)}
+                                        onClick={() => (tabs ? tabs.open(run.orchestration_id, run.run_id) : restoreRun(run))}
                                         className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-2 px-2.5 py-1 text-xs transition-colors hover:border-border-strong"
                                     >
                                         <span aria-hidden className={`size-1.5 rounded-full ${
@@ -1865,12 +1948,12 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     {landingTab === 'orchestrations' && listLoaded && (
                         <WorkflowList
                             rows={workflowRows}
-                            onOpen={(row) => selectOrchestration(row.id)}
+                            onOpen={(row) => openWorkflow(row.id)}
                             menu={(row) => {
                                 const orch = orchestrations.find(o => o.id === row.id);
                                 return (
                                     <RowMenu label={`Actions for ${row.name}`}>
-                                        <MenuItem icon={Pencil} onSelect={() => selectOrchestration(row.id)}>Open</MenuItem>
+                                        <MenuItem icon={Pencil} onSelect={() => openWorkflow(row.id)}>Open</MenuItem>
                                         <MenuItem icon={Files} disabled={saving || !orch} onSelect={() => { if (orch) void duplicateOrchestration(orch, false); }}>Duplicate</MenuItem>
                                         <MenuItem icon={Copy} onSelect={() => { void copyId(row.id); }}>Copy ID</MenuItem>
                                         <MenuSeparator />
@@ -1931,6 +2014,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         <AppScreen id="orchestrations" bleed>
         <div className="flex flex-col h-full relative">
             {toastEl}
+            {tabs?.strip}
                 {/* The open canvas (Prototype 4, D204): the workflow fills the sheet and
                     everything else floats over it. Every control of the old editor is
                     here, moved (M3a's field map): the toolbar's into the bar and the
@@ -2006,12 +2090,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                             }}
                             history={{ undo, redo, canUndo, canRedo }}
                             save={{ dirty, saving, onSave: () => void handleSave(), problem: problemLabel(saveRefused?.problem ?? null) }}
-                            onBack={() => guardLeave(backToList)}
+                            onBack={() => (tabs ? tabs.showList() : guardLeave(backToList))}
                             switcher={
                                 <Combobox
                                     trigger="icon"
                                     value={selectedOrchId || undefined}
-                                    onChange={(id: string) => guardLeave(() => selectOrchestration(id || null))}
+                                    onChange={(id: string) => (tabs
+                                        ? (id && tabs.open(id))
+                                        : guardLeave(() => selectOrchestration(id || null)))}
                                     placeholder="Select workflow…"
                                     searchPlaceholder="Search workflows…"
                                     aria-label="Workflow"
@@ -2020,7 +2106,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 />
                             }
                             menu={[
-                                { id: 'new', label: 'New workflow', icon: Plus, onSelect: () => guardLeave(createNew), separatorBefore: true },
+                                { id: 'new', label: 'New workflow', icon: Plus, onSelect: () => (tabs ? tabs.openNew() : guardLeave(() => createNew())), separatorBefore: true },
                                 { id: 'deploy', label: 'Deploy as Agent', icon: Bot, onSelect: handleDeploy },
                                 { id: 'duplicate', label: 'Duplicate', icon: Copy, onSelect: handleDuplicate, disabled: saving },
                                 { id: 'delete', label: 'Delete', icon: Trash, onSelect: handleDelete, danger: true, separatorBefore: true },

@@ -1,4 +1,4 @@
-import { OrchestrationTab } from '@/components/settings/OrchestrationTab';
+import { WorkflowTabs } from '@/components/workflows/WorkflowTabs';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +18,7 @@ export default async function WorkflowsPage(props: {
     const openSettings = searchParams.settings === '1';
 
     // The page draws its own frame (M2k): the list on the wide frame with its
-    // actions in the header, an open workflow bleeding to the edges.
-    return <OrchestrationTab initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} openSettings={openSettings} />;
+    // actions in the header, an open workflow bleeding to the edges. Workflows
+    // and their runs open as tabs (TABS1 v2).
+    return <WorkflowTabs initialRunId={runId} initialOrchId={orchId} newRequest={newRequest} openSettings={openSettings} />;
 }

@@ -15,6 +15,11 @@
  * - `replaceDraft` — a *navigation*: selecting another orchestration, loading
  *   from the server, or applying a save response. Resets the stacks — undo
  *   must never carry you into a different orchestration's history.
+ *
+ * A tab of the editor (TABS1 v2) going behind takes its draft with it —
+ * `snapshot()` — and coming forward starts from it (`initial`): the draft, its
+ * undo and redo, and what was last saved, so its unsaved dot and its undo
+ * survive the trip.
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -22,11 +27,24 @@ import type { Orchestration } from '@/types/orchestration';
 
 const MAX_HISTORY = 100;
 
-export function useDraftHistory(coalesceMs = 800) {
-    const [draft, setDraftState] = useState<Orchestration | null>(null);
-    const [past, setPast] = useState<Orchestration[]>([]);
-    const [future, setFuture] = useState<Orchestration[]>([]);
-    const [savedJson, setSavedJson] = useState<string>('null');
+/** A draft with its history, as a tab going behind keeps it. */
+export interface DraftSnapshot {
+    draft: Orchestration | null;
+    past: Orchestration[];
+    future: Orchestration[];
+    savedJson: string;
+}
+
+/** Whether a kept draft holds work that isn't saved. */
+export function snapshotDirty(s: DraftSnapshot): boolean {
+    return s.draft !== null && JSON.stringify(s.draft) !== s.savedJson;
+}
+
+export function useDraftHistory(coalesceMs = 800, initial?: DraftSnapshot) {
+    const [draft, setDraftState] = useState<Orchestration | null>(initial?.draft ?? null);
+    const [past, setPast] = useState<Orchestration[]>(initial?.past ?? []);
+    const [future, setFuture] = useState<Orchestration[]>(initial?.future ?? []);
+    const [savedJson, setSavedJson] = useState<string>(initial?.savedJson ?? 'null');
     const lastPushAtRef = useRef(0);
 
     const setDraft = useCallback((next: Orchestration | null) => {
@@ -103,6 +121,11 @@ export function useDraftHistory(coalesceMs = 800) {
         return () => window.removeEventListener('beforeunload', handler);
     }, [dirty]);
 
+    // What a tab going behind keeps: read through a ref, so it is the latest at unmount.
+    const latestRef = useRef<DraftSnapshot>({ draft, past, future, savedJson });
+    useLayoutEffect(() => { latestRef.current = { draft, past, future, savedJson }; });
+    const snapshot = useCallback((): DraftSnapshot => latestRef.current, []);
+
     return {
         draft,
         setDraft,
@@ -113,6 +136,7 @@ export function useDraftHistory(coalesceMs = 800) {
         canUndo: past.length > 0,
         canRedo: future.length > 0,
         dirty,
+        snapshot,
     };
 }
 
