@@ -309,7 +309,9 @@ class Installer:
     def _resolve_target(self) -> None:
         package = self.o.package or os.environ.get("SYNAPSE_PACKAGE", "")
         if package:
-            self.target = package
+            # uv runs from the runtime folder (see _uv_install), so a relative
+            # wheel path is made whole here.
+            self.target = str(Path(package).resolve()) if Path(package).exists() else package
             self.version = runtime.wheel_version(package) or self.o.version or ""
         else:
             from . import BUILT_FOR
@@ -416,6 +418,24 @@ class Installer:
         cmd.append(self.target)
         return cmd
 
+    def _uv_install(self, **kwargs) -> tuple[int, str]:
+        """`uv tool install`, run from the runtime folder that holds the constraints.
+
+        uv splits a constraints path at spaces (`-c` and UV_CONSTRAINT alike): a
+        home under `C:\\Users\\Jane Doe` failed with "File not found:
+        C:\\Users\\Jane". The file goes by its bare name from its own folder
+        (F834), so a relative UV_FIND_LINKS is made whole first.
+        """
+        runtime_dir = self.home / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        env = self._uv_env()
+        links = env.get("UV_FIND_LINKS", "")
+        if links:
+            env["UV_FIND_LINKS"] = " ".join(
+                str(Path(part).resolve()) if "://" not in part and Path(part).exists() else part
+                for part in links.split())
+        return run(self._install_cmd(), self.log, env=env, cwd=runtime_dir, **kwargs)
+
     def _uv_takes_torch_backend(self) -> bool:
         try:
             out = subprocess.run([str(self.uv), "tool", "install", "--help"], capture_output=True,
@@ -426,8 +446,7 @@ class Installer:
 
     def _install(self) -> str:
         parser = UvInstall()
-        run(self._install_cmd(), self.log, env=self._uv_env(),
-            on_line=lambda line: self.screen.progress("install", parser.feed(line)))
+        self._uv_install(on_line=lambda line: self.screen.progress("install", parser.feed(line)))
         tool_dir = Path(run([self.uv, "tool", "dir"], self.log, env=self._uv_env())[1].strip().splitlines()[-1])
         bin_dir = Path(run([self.uv, "tool", "dir", "--bin"], self.log, env=self._uv_env())[1].strip().splitlines()[-1])
         venv = tool_dir / PACKAGE
@@ -610,7 +629,7 @@ class Installer:
             return
         code, _ = run([install.python, "-m", "pip", "uninstall", "-y", PACKAGE], self.log, check=False)
         if code == 0:
-            run(self._install_cmd(), self.log, env=self._uv_env(), check=False)
+            self._uv_install(check=False)
 
     def _record(self, mode: str) -> None:
         fields = {
@@ -809,6 +828,8 @@ def _constraints_file(home: Path, knowledge: bool = False) -> str:
     With Knowledge, its own set (`requirements-wheel-knowledge.lock`): the base
     set pins typer above docling-core's cap, so `[knowledge]` cannot resolve
     under it at all. Without that set (a checkout) nothing is pinned.
+
+    Returns the bare file name, which uv reads from the runtime folder (F834).
     """
     name = "constraints-knowledge.txt" if knowledge else "constraints.txt"
     text = _bundled(name)
@@ -817,7 +838,7 @@ def _constraints_file(home: Path, knowledge: bool = False) -> str:
     path = home / "runtime" / name
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
-    return str(path)
+    return name
 
 
 def _receipt_extras(tool_root: Path | None) -> list[str]:

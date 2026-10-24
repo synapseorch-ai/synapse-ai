@@ -87,6 +87,13 @@ elif args[:2] == ["tool", "install"] and "--help" in args:
     if not os.environ.get("FAKE_UV_OLD"):
         print("      --torch-backend <TORCH_BACKEND>  The backend to use when fetching packages in the PyTorch ecosystem")
 elif args[:2] == ["tool", "install"]:
+    if "-c" in args:
+        # As uv 0.11 does: the value is split at whitespace, each part a file
+        # read from the working directory (F834).
+        for part in args[args.index("-c") + 1].split():
+            if not os.path.isfile(part):
+                print("error: File not found: `%s`" % part)
+                sys.exit(2)
     if os.environ.get("FAKE_UV_FAIL"):
         print("Resolved 181 packages in 1.2s")
         print("error: Failed to download `torch==2.9.0`: connection reset")
@@ -141,11 +148,11 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setattr(legacy.shutil, "which", lambda *a, **k: None)
     uv = _script(fakes / "uv", FAKE_UV)
 
-    def install(version_override=None, **opts):
+    def install(version_override=None, home=None, **opts):
         out = io.StringIO()
         version = "2.0.0" if version_override is None else version_override
         options = flow.Options(uv=str(uv), yes=True, version=version,
-                               home=tmp_path / ".synapse", **opts)
+                               home=home or tmp_path / ".synapse", **opts)
         code = flow.Installer(options, term=tui.Term(stream=out)).run()
         recorded = [json.loads(line) for line in calls.read_text().splitlines()] if calls.exists() else []
         return code, out.getvalue(), recorded
@@ -378,7 +385,7 @@ def test_an_upgrade_keeps_the_extras_uv_installed(world, monkeypatch):
     # Knowledge runs no model on a GPU: without this, Linux gets CUDA's gigabytes.
     assert install[install.index("--torch-backend") + 1] == "cpu"
     # The base set pins typer above docling-core's cap; [knowledge] gets its own.
-    assert install[install.index("-c") + 1].endswith("constraints-knowledge.txt")
+    assert install[install.index("-c") + 1] == "constraints-knowledge.txt"
     assert "with knowledge, telemetry" in out
 
 
@@ -392,7 +399,7 @@ def test_an_upgrade_with_no_extras_runs_the_same_command_as_before(world, monkey
     install = _tool_install(calls)
     assert install[-1] == "synapse-orch-ai==2.0.1"
     assert "--torch-backend" not in install
-    assert install[install.index("-c") + 1].endswith(os.sep + "constraints.txt")
+    assert install[install.index("-c") + 1] == "constraints.txt"
     assert not [c for c in calls if "--help" in c]      # uv is not asked about PyTorch
 
 
@@ -417,7 +424,7 @@ def test_with_telemetry_alone_needs_no_pytorch_flag(world, monkeypatch):
     install = _tool_install(calls)
     assert install[-1] == "synapse-orch-ai[telemetry]==2.0.0"
     assert "--torch-backend" not in install
-    assert install[install.index("-c") + 1].endswith(os.sep + "constraints.txt")
+    assert install[install.index("-c") + 1] == "constraints.txt"
 
 
 def test_a_uv_that_cannot_choose_pytorchs_build_is_swapped_for_the_installers(world, monkeypatch):
@@ -437,6 +444,44 @@ def test_a_uv_that_cannot_choose_pytorchs_build_is_swapped_for_the_installers(wo
     assert fetched == [world["home"]]
     record = json.loads((world["home"] / "install.json").read_text())
     assert record["uv"] == str(private)
+
+
+def test_a_home_with_a_space_in_its_path_installs(world, monkeypatch):
+    """uv splits a constraints path at spaces: Naveen's `C:\\Users\\Naveen Raj`
+    home failed with "File not found: C:\\Users\\Naveen" (F834, rc0 on Windows)."""
+    _bundled_constraints(monkeypatch)
+    home = world["tmp"] / "Jane Doe" / ".synapse"
+
+    code, out, calls = world["install"](home=home)
+
+    assert code == 0, out
+    assert _tool_install(calls)[-1] == "synapse-orch-ai==2.0.0"
+    assert (home / "runtime" / "constraints.txt").read_text() == "typer==0.27.1\n"
+
+
+def test_a_relative_wheel_path_and_find_links_still_reach_uv(world, monkeypatch, tmp_path):
+    """uv runs from the runtime folder now, so relative paths are made whole first."""
+    _bundled_constraints(monkeypatch)
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "synapse_orch_ai-2.0.1-py3-none-any.whl").write_bytes(b"")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SYNAPSE_PACKAGE", "dist/synapse_orch_ai-2.0.1-py3-none-any.whl")
+    monkeypatch.setenv("UV_FIND_LINKS", "dist https://example.test/wheels/")
+    seen = {}
+    real_run = flow.run
+
+    def spy(cmd, log, **kwargs):
+        if cmd[1:3] == ["tool", "install"] and "--help" not in cmd:
+            seen.update(cmd=cmd, cwd=kwargs.get("cwd"), links=kwargs["env"]["UV_FIND_LINKS"])
+        return real_run(cmd, log, **kwargs)
+
+    monkeypatch.setattr(flow, "run", spy)
+    code, out, calls = world["install"](version_override="")
+
+    assert code == 0, out
+    assert seen["cmd"][-1] == str(tmp_path / "dist" / "synapse_orch_ai-2.0.1-py3-none-any.whl")
+    assert seen["cwd"] == world["home"] / "runtime"
+    assert seen["links"] == f"{tmp_path / 'dist'} https://example.test/wheels/"
 
 
 def test_a_wheel_path_takes_its_extras_as_a_direct_reference(world, monkeypatch, tmp_path):
