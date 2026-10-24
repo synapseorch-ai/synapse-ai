@@ -21,7 +21,8 @@ export type ToolAnnotations = {
 export const TOOL_EFFECTS: { value: ToolEffect; label: string }[] = [
     { value: 'reads', label: 'Reads only' },
     { value: 'changes', label: 'Changes something' },
-    { value: 'deletes', label: 'Deletes something' },
+    // `deletes` is MCP's destructive: a change that can't be undone, a sent email as much as a removed row (F877).
+    { value: 'deletes', label: 'Changes something for good' },
 ];
 
 export function annotationsFor(effect: ToolEffect): ToolAnnotations {
@@ -106,11 +107,14 @@ export function sameTags(a: ToolTags | null, b: ToolTags | null): boolean {
     return (Object.keys(a) as ToolTag[]).every(k => a[k] === b[k]);
 }
 
-/** The short chips a tool list shows: what it does, then "Safe to repeat" for a write and "Reaches outside". An
- *  untrusted "reads" (an outside server's, the AI builder's) is shown as the claim it is: the policy doesn't believe it. */
+/** The short chips a tool list shows: what it does, "Can't undo" for a destructive write, then "Safe to repeat" for a
+ *  write and "Reaches outside". An untrusted "reads" (an outside server's, the AI builder's) is shown as the claim it
+ *  is: the policy doesn't believe it. Destructive is MCP's "can't be undone", not "deletes": gmail_send carries it, and
+ *  the tags cannot tell a send from a delete, so no chip says which (F877; Naveen 2026-10-24). */
 export function tagChips(tags: ToolTags | null, trusted = true): string[] {
     if (!tags) return ['Not set'];
-    const chips = [{ reads: trusted ? 'Reads' : 'Says it only reads', changes: 'Changes', deletes: 'Deletes' }[effectOfTags(tags)]];
+    const chips = [tags.read_only ? (trusted ? 'Reads' : 'Says it only reads') : 'Changes'];
+    if (!tags.read_only && tags.destructive) chips.push("Can't undo");
     if (!tags.read_only && tags.idempotent) chips.push('Safe to repeat');
     if (tags.open_world) chips.push('Reaches outside');
     return chips;
