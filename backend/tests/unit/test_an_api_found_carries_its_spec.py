@@ -205,3 +205,17 @@ async def test_a_placeholder_in_the_base_path_is_not_kept():
 async def test_a_path_placeholder_never_takes_a_name_the_tool_already_uses(name):
     found = await _report({**MAILCHIMP, "endpoints": [{"method": "GET", "path": f"/lists/{{{name}}}", "does": "x"}]})
     assert "api" not in found and "endpoint" in found["detail"]
+
+
+@pytest.mark.parametrize("a, b", [
+    ("abc123.execute-api.us-east-1.amazonaws.com", "evil.execute-api.us-east-1.amazonaws.com"),
+    ("mybucket.s3.amazonaws.com", "evilbucket.s3.amazonaws.com"),
+    ("acme.blob.core.windows.net", "evil.blob.core.windows.net"),
+    ("acme.westeurope.cloudapp.azure.com", "evil.westeurope.cloudapp.azure.com"),
+    ("acme.myshopify.com", "evil.myshopify.com"),
+    ("acme.azurestaticapps.net", "evil.azurestaticapps.net"),
+])
+def test_a_tenant_deeper_in_a_cloud_host_never_vouches_for_another(a, b):
+    """SAI2's re-check of 2: AWS and Azure put the tenant more than one label deep, so each host is its own there."""
+    assert br._registrable_domain(a) != br._registrable_domain(b)
+    assert br._registrable_domain("api.stripe.com") == "stripe.com"

@@ -336,8 +336,16 @@ _TWO_PART_SUFFIXES = {"co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.in", "
 #: are two owners, as `tesco.co.uk` and `asda.co.uk` are, so the tenant's label is part of the registrable domain.
 _SHARED_HOST_SUFFIXES = {"workers.dev", "pages.dev", "vercel.app", "netlify.app", "github.io", "gitlab.io",
                          "herokuapp.com", "onrender.com", "fly.dev", "web.app", "firebaseapp.com", "appspot.com",
-                         "azurewebsites.net", "cloudfront.net", "amazonaws.com", "azure-api.net", "ngrok.io",
-                         "ngrok-free.app", "glitch.me", "replit.app", "repl.co"}
+                         "azurewebsites.net", "cloudfront.net", "azure-api.net", "ngrok.io", "ngrok-free.app",
+                         "glitch.me", "replit.app", "repl.co", "myshopify.com", "azurestaticapps.net"}
+#: Clouds that put a tenant more than one label deep (`abc.execute-api.us-east-1.amazonaws.com`,
+#: `acme.blob.core.windows.net`): there each host is its own, and no host vouches for another (SAI2's re-check of 2).
+_WHOLE_HOST_SUFFIXES = ("amazonaws.com", "windows.net", "cloudapp.azure.com")
+
+
+def _whole_host(labels: list[str]) -> bool:
+    host = ".".join(labels)
+    return any(host.endswith("." + s) for s in _WHOLE_HOST_SUFFIXES)
 
 
 def _suffix_labels(labels: list[str]) -> int:
@@ -350,6 +358,8 @@ def _registrable_name(host: str) -> str:
     labels = host.split(".")
     if len(labels) < 2:
         return host
+    if _whole_host(labels):
+        return labels[0]
     return labels[-1 - _suffix_labels(labels)] if len(labels) > _suffix_labels(labels) else host
 
 
@@ -373,6 +383,8 @@ _NOT_A_BRAND = frozenset({"open", "smart", "cloud", "simple", "quick", "super", 
 def _registrable_domain(host: str) -> str:
     """`learn.microsoft.com` → "microsoft.com"; `dev.tesco.co.uk` → "tesco.co.uk"."""
     labels = [x for x in (host or "").lower().removeprefix("www.").split(".") if x]
+    if _whole_host(labels):
+        return ".".join(labels)
     return ".".join(labels[-1 - _suffix_labels(labels):])
 
 
