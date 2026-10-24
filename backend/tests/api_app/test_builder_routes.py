@@ -249,7 +249,9 @@ class TestSeeHowImBuilt:
         # can't-do look-ups out (4), and the turn read in code, its route and what code says, the classify call and its
         # route, the answer's pack and its route, and the three answers — talk, the help, the workspace — in (9);
         # 66 since P3c: step_researched_before out, which nothing led to after the front door's override (F766).
-        assert legend["step_count"] == 66
+        # 69 with the research route code first (SAI2-P5): the look-up, its route, the Researcher on what is left, the
+        # card in code and the reply in code's words, from the Researcher and its quick card step.
+        assert legend["step_count"] == 69
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])

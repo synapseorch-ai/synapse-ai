@@ -46,7 +46,8 @@ READS: frozenset[str] = frozenset({
 #: named provider's Connect card.
 CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action", "submit_change",
                                    "ask_person", "cannot", "check_change", "check_made", "submit_plan", "check_build",
-                                   "submit_prompts", "read_turn", "classify_request", "answer_pack"})
+                                   "submit_prompts", "read_turn", "classify_request", "answer_pack",
+                                   "finish_findings"})
 
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",

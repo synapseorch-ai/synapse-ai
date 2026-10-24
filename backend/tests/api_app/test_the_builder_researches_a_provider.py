@@ -267,8 +267,12 @@ async def test_with_no_web_reader_the_research_says_the_web_was_not_checked():
 def test_the_researcher_holds_the_three_sources_and_nothing_that_writes():
     researcher = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_researcher")
     assert {"find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page"} <= set(researcher["tools"])
-    # The card is a step of its own after the Researcher (the model forgot it in 2 of 4 live runs), never its tool.
-    assert "report_findings" not in researcher["tools"]
+    # The card was a step of its own after the Researcher (the model forgot its tool in 2 of 4 live runs). Since
+    # SAI2-P5 it finishes on report_findings (E2, one reminder), and a Researcher that still forgets leaves the card to
+    # code: its fallback goes on to finish_findings, which puts up code's verdicts (the route's own tests).
+    steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+    assert "report_findings" in researcher["tools"]
+    assert steps["step_lookup_research"]["finish_fallback"] and steps["step_findings"]["forced_tool"] == "finish_findings"
     writes = {"create_agent", "update_agent", "create_http_tool", "create_schedule", "delete_agent", "prepare_connection"}
     assert not writes & set(researcher["tools"])
 
@@ -350,26 +354,46 @@ async def test_a_plan_answered_find_who_can_is_researched_and_builds_nothing(cli
 
 
 async def test_a_goal_with_no_tool_is_researched_and_ends_in_findings(client, builder, fake_llm):
+    """Nothing named that code can look up: the Researcher reads it and finishes on report_findings; the card is
+    put up once and the reply is code's, from the card."""
     fake_llm.script([
         route("research"),
-        "Shippo has a public API with a test mode; the next step is a plan for you to approve.\n"
-        "Shippo — api — an account and an API key — https://docs.goshippo.com",
         tool_call("report_findings", goal="buy shipping labels", options=[
             {"provider": "Shippo", "how": "api", "needs": "An account and an API key",
              "sources": ["https://docs.goshippo.com"]}]),
     ])
     events = await stream(client, "/api/builder/chat", {"message": "Automate buying shipping labels for our kits"})
     steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-    assert "Research a Provider" in steps and "Make the Findings Card" in steps
+    assert steps.index("Look the Providers Up") < steps.index("Research a Provider") < steps.index(
+        "Make the Findings Card") < steps.index("Say What Was Found"), steps
     cards = [e for e in events if e["type"] == "research_findings"]
     assert len(cards) == 1 and cards[0]["options"][0]["provider"] == "Shippo"
+    summary = next(e for e in events if e["type"] == "orchestration_complete")["final_state"]["summary"]
+    assert "**Shippo**" in summary, summary
     assert not [e for e in events if e["type"] == "resource_saved"], "research builds nothing"
 
 
-def test_the_findings_step_asks_for_its_own_tool_on_the_researchers_report():
-    """Its words named `search_help`, copied from the how-to step, while its forced tool is `report_findings` (F764):
-    the model read an instruction for the wrong tool, and the report it turns into the card only as an input."""
+async def test_a_provider_code_finds_is_the_card_with_no_researcher(client, builder, fake_llm, monkeypatch):
+    """The person names stripe.com; the Registry has Stripe's own server: after the router, no model is asked."""
+    import core.safe_fetch as sf
+
+    async def fake(url):
+        return json.dumps(REGISTRY_ANSWER).encode()
+
+    monkeypatch.setattr(sf, "fetch_bytes", fake)
+    fake_llm.script([route("research")])
+    events = await stream(client, "/api/builder/chat", {"message": "Can you take payments through stripe.com?"})
+    steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
+    assert "Research a Provider" not in steps and "Make the Findings Card" in steps, steps
+    [card] = [e for e in events if e["type"] == "research_findings"]
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "mcp")]
+    summary = next(e for e in events if e["type"] == "orchestration_complete")["final_state"]["summary"]
+    assert "**Stripe** has its own MCP server." in summary
+
+
+def test_the_findings_step_is_code_and_asks_no_model():
+    """Its words once named `search_help`, copied from the how-to step, while its tool was `report_findings` (F764).
+    Since SAI2-P5 it asks no model at all: code puts up the card (`finish_findings`, its arguments set)."""
     step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_findings")
-    assert step["forced_tool"] == "report_findings"
-    assert "search_help" not in step["prompt_template"]
-    assert "`report_findings`" in step["prompt_template"] and "{state.summary}" in step["prompt_template"]
+    assert step["forced_tool"] == "finish_findings" and step["tool_arguments"] == {}
+    assert step["prompt_template"] == "" and step.get("model_role") is None

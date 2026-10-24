@@ -92,5 +92,6 @@ async def test_a_reported_research_starts_the_next_one_afresh(pages):
 
 def test_the_research_steps_end_in_fewer_turns():
     steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
-    for sid in ("step_research", "step_plan_research"):
+    # SAI2-P5: the research route's Researcher is step_lookup_research; step_research is code's look-up.
+    for sid in ("step_lookup_research", "step_plan_research"):
         assert 12 <= steps[sid]["max_turns"] <= 14, (sid, steps[sid]["max_turns"])

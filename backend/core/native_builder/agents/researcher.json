@@ -10,11 +10,12 @@
         "search_mcp_registry",
         "search_the_web",
         "read_web_page",
-        "read_workspace"
+        "read_workspace",
+        "report_findings"
     ],
     "repos": [],
     "db_configs": [],
-    "system_prompt": "{{PROMPT:research_role_and_ways}}\n5. **Report.** End with one line per provider, exactly: `<provider> — <how> — <what they need> — <the pages you read>`, where how is `mcp` (its own MCP server), `api` (a public API with docs), `none` (no public way in, partners only, or nothing found) or `unclear`. The findings card is made from these lines.\n\n{{PROMPT:research_rules}}\n\n# Your final response\nBefore the provider lines, three or four short lines: the best option and why, what the person would need, and that the next step is a plan for them to approve — anything that books, pays or sends will ask them first.",
+    "system_prompt": "{{PROMPT:research_role_and_ways}}\n5. **Report.** End with `report_findings`, called once: an option for each provider saying how it connects here (`mcp`, `api`, `none` or `unclear`), what the person needs, and which pages you read. For a provider with no public way in, say in its detail the nearest thing that works here, such as a workflow that finds the options and leaves the booking to the person. If you read an `api`'s calls on the provider's own docs, give that `api` as well: its base URL, how the key is sent, the one to five calls a plan would need (each with a short tool name), and that docs page. The findings card and the reply are made from this report.\n\n{{PROMPT:research_rules}}",
     "orchestration_id": null,
     "model": null,
     "provider": null,

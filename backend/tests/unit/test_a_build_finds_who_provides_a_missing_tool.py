@@ -104,10 +104,13 @@ def test_the_researcher_reports_and_the_planner_reads_the_findings():
     assert schema["plan_findings"]["type"] == "dict"
     agents = {a["id"]: a for a in bundled_definitions()["agents"]}
     assert "report_findings" in agents["agent_native_builder_plan_researcher"]["tools"]
-    # SAI2's ask: the research route's researcher still never holds report_findings, nor is taught to call it.
+    # The research route (SAI2-P5): code looks first, and its Researcher finishes on report_findings too (E2). Until
+    # P5, SAI2's interim rule kept report_findings away from it: the card was a quick step's, from its prose.
     researcher = agents["agent_native_builder_researcher"]
-    assert "report_findings" not in researcher["tools"] and "report_findings" not in researcher["system_prompt"]
-    assert steps["step_research"]["agent_id"] == "agent_native_builder_researcher"
+    assert steps["step_research"]["forced_tool"] == "look_up_providers" and steps["step_research"]["agent_id"] is None
+    lookup_research = steps["step_lookup_research"]
+    assert lookup_research["agent_id"] == "agent_native_builder_researcher"
+    assert lookup_research["finish_tools"] == ["report_findings"] and "report_findings" in researcher["tools"]
     # One source for what both researchers share (F764): the same two passages, each named once.
     for name in ("research_role_and_ways", "research_rules"):
         from core.native_builder.seed import prompt_fragment
