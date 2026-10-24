@@ -8998,12 +8998,18 @@ HUB_TABS = {
     "Apps": [("/apps", "Apps"), ("/tools", "Tools")],
     "Channels": [("/channels", "Channels"), ("/channels/phone", "Phone"), ("/widgets", "Widgets")],
 }
+#: The rail group each hub sits under: the eyebrow over a hub's tab named as the hub (`AppScreen`).
+HUB_GROUPS = {"Runs": "Overview", "Workflows": "Build", "Agents": "Build", "Apps": "Connect", "Channels": "Connect"}
+
+#: The small line over a page's title (`PageHeader`): the block just before the title's row.
+_EYEBROW = "() => document.querySelector('main h1')?.parentElement?.previousElementSibling?.textContent?.trim() ?? null"
 
 
 @check
 async def check_hubtabs(browser) -> str:
-    """Each page of a hub sits under the hub's one title, with the hub's tab bar and its own tab current, the rail
-    lights the hub, and a tab is a client-side link (D209, M1a). Messaging is on in the smoke store, so Channels
+    """Each page of a hub is titled by its own tab, with the hub's name over it (GUIDE1, F914: Evals reads "Runs /
+    Evals", not "Runs"; a tab named as its hub keeps its rail group), the hub's tab bar with its own tab current, the
+    rail lights the hub, and a tab is a client-side link (D209, M1a). Messaging is on in the smoke store, so Channels
     shows both tabs."""
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
@@ -9015,14 +9021,18 @@ async def check_hubtabs(browser) -> str:
                 await page.locator("main h1").first.wait_for(timeout=30_000)
                 await asyncio.sleep(0.8)
                 h1 = (await page.locator("main h1").first.inner_text()).strip()
+                eyebrow = await page.evaluate(_EYEBROW)
                 bar = page.locator(f'main header nav[aria-label="{hub}"]')
                 labels = [t.strip() for t in await bar.locator("a").all_inner_texts()]
                 current = [t.strip() for t in await bar.locator('a[aria-current="page"]').all_inner_texts()]
                 # The name only: Workflows carries its unseen-run count beside it.
                 lit = [t.strip().splitlines()[0] for t in
                        await page.locator('nav[aria-label="Primary"] a[aria-current="page"]').all_inner_texts()]
-                if h1 != hub:
-                    bad.append(f"{href}: the title is {h1!r}, not the hub's {hub!r}")
+                if h1 != label:
+                    bad.append(f"{href}: the title is {h1!r}, not its tab's {label!r}")
+                over = hub if label != hub else HUB_GROUPS[hub]
+                if eyebrow != over:
+                    bad.append(f"{href}: over the title is {eyebrow!r}, not {over!r}")
                 if labels != [t[1] for t in tabs]:
                     bad.append(f"{href}: the tabs are {labels}")
                 if current != [label]:
@@ -9041,7 +9051,8 @@ async def check_hubtabs(browser) -> str:
         await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return f"{sum(len(t) for t in HUB_TABS.values())} tab pages under {len(HUB_TABS)} hubs: title, bar, current tab, rail"
+    return (f"{sum(len(t) for t in HUB_TABS.values())} tab pages under {len(HUB_TABS)} hubs: their own title under "
+            "the hub's name, bar, current tab, rail")
 
 
 #: Addresses that moved (D209, M1a), with the query that must ride along. The first seven are 308s at the routing
@@ -11752,7 +11763,7 @@ async def check_channelsnovoice(browser) -> str:
 
 @check
 async def check_phonetab(browser) -> str:
-    """The Phone tab (V29, VOX1c): under Channels' title with its own tab current, the first number open (never an
+    """The Phone tab (V29, VOX1c): titled Phone under Channels' name (GUIDE1, F914) with its own tab current, the first number open (never an
     empty pane), its recent calls, V15's quiet notes for a slow agent with thinking and planning on, and the
     Restricted key's unsigned note."""
     ctx = await _phone_context(browser)
@@ -11760,8 +11771,10 @@ async def check_phonetab(browser) -> str:
     try:
         await page.goto(f"{APP}/channels/phone", wait_until="domcontentloaded")
         await page.get_by_role("heading", name="Smoke support line").wait_for(timeout=30_000)
-        if (await page.locator("main h1").first.inner_text()).strip() != "Channels":
-            raise AssertionError("the page is not under the hub's title")
+        if (await page.locator("main h1").first.inner_text()).strip() != "Phone":
+            raise AssertionError("the page is not titled by its tab")
+        if await page.evaluate(_EYEBROW) != "Channels":
+            raise AssertionError("the hub's name is not over the title")
         tab = page.get_by_role("link", name="Phone", exact=True).first
         if await tab.get_attribute("aria-current") != "page":
             raise AssertionError("the Phone tab is not the current tab")
@@ -11777,7 +11790,7 @@ async def check_phonetab(browser) -> str:
             raise AssertionError("the unsigned note is missing")
     finally:
         await ctx.close()
-    return "under Channels with Phone current; the first number open with its calls, notes and the unsigned note"
+    return "Phone under Channels' name with Phone current; the first number open with its calls, notes and the unsigned note"
 
 
 @check
