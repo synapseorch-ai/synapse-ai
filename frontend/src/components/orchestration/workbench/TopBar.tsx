@@ -89,6 +89,7 @@ export function TopBar({
                 ) : (
                 <input
                     aria-label="Workflow name"
+                    data-tour="canvas-name"
                     placeholder="Workflow name"
                     value={name}
                     onChange={(e) => onRename(e.target.value)}
@@ -166,6 +167,7 @@ export function TopBar({
                         type="button"
                         onClick={onOpenSettings}
                         aria-pressed={settingsOpen}
+                        data-tour="canvas-settings"
                         aria-label={compact ? 'Workflow settings' : undefined}
                         title="Workflow settings"
                         className={cn(
@@ -216,6 +218,7 @@ export function TopBar({
                         variant="ghost"
                         onClick={onChangeWithAI}
                         aria-label={compact ? 'Change with AI' : undefined}
+                        data-tour="canvas-change-ai"
                         title={compact ? 'Change with AI' : undefined}
                         className="text-text"
                     >
@@ -311,6 +314,7 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                     variant="primary"
                     onClick={onRun}
                     aria-disabled={blocked > 0 || undefined}
+                    data-tour="canvas-run"
                     // One name at every width: a phone shows the shorter word.
                     aria-label={phone ? 'Run now' : undefined}
                     className={cn(runInput && 'rounded-r-none', blocked > 0 && 'opacity-50')}

@@ -682,7 +682,7 @@ export const AgentsTab = ({
                                             />
                                         </div>
                                     </div>
-                                    <Button variant="secondary" className="shrink-0 lg:hidden" onClick={() => setTestDrawer(true)}>
+                                    <Button variant="secondary" className="shrink-0 lg:hidden" onClick={() => setTestDrawer(true)} data-tour="agent-try">
                                         Try it
                                     </Button>
                                 </div>
@@ -1727,7 +1727,8 @@ const chip = (selected: boolean) => cn(
 /** One part of the agent's setup: a heading, and its fields under it. */
 function SetupSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
     return (
-        <section aria-labelledby={id} className="space-y-4 border-b border-border py-6 last:border-b-0">
+        // The section's id is also its guided-tour anchor (F1029: setup-model, setup-instructions, setup-tools…).
+        <section aria-labelledby={id} data-tour={id} className="space-y-4 border-b border-border py-6 last:border-b-0">
             <h3 id={id} className="text-sm font-semibold text-text">{title}</h3>
             {children}
         </section>

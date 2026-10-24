@@ -37,7 +37,7 @@ export function Dock({
             className={cn(FLOAT, 'nokey absolute bottom-2 z-10 flex -translate-x-1/2 items-center gap-0.5 p-1 md:bottom-3')}
             style={{ left }}
         >
-            <Button size="sm" variant="ghost" onClick={onAddStep} aria-label="Add step" title={`Add step (${shortcut})`} className="text-text">
+            <Button size="sm" variant="ghost" onClick={onAddStep} aria-label="Add step" data-tour="canvas-add-step" title={`Add step (${shortcut})`} className="text-text">
                 <Plus className="size-4" aria-hidden />
                 {words && (
                     <>

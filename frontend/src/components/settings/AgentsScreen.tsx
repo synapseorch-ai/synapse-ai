@@ -27,6 +27,7 @@ import { removeAgent } from "@/store/settingsSlice";
 import type { AgentStatus } from "./AgentTest";
 import { AgentsTab } from "./AgentsTab";
 import { useAppSettings } from "./hooks/useAppSettings";
+import { useHelpTopic } from "@/components/help";
 import { takeAgentDraft } from "@/lib/agentDraft";
 import { useCapabilities } from "./hooks/useCapabilities";
 import { useSettingsData } from "./hooks/useSettingsData";
@@ -46,6 +47,8 @@ export function AgentsScreen() {
     const router = useRouter();
     const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
     const [draftAgent, setDraftAgent] = useState<any>(null);
+    // An agent open in the editor has its own help and tour (GUIDE1, F1029), as the workflow editor has.
+    useHelpTopic(draftAgent ? 'agents.editor' : null);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
     // What the draft was when it was last opened or saved. The draft used to be

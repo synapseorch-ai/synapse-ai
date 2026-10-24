@@ -159,6 +159,7 @@ function StepNodeComponent({ data, selected }: { data: any; selected?: boolean }
         // The status class comes first among the frame's `border-*` classes:
         // ui-smoke reads the first one as the step's state.
         <div
+            data-tour="canvas-step"
             className={cn(
                 'relative min-w-[176px] max-w-[232px] rounded-xl border',
                 frame,

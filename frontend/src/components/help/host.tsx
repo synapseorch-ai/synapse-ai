@@ -72,6 +72,12 @@ export type HelpHost = {
     fallback: string;
     /** Guided tours, keyed by topic id: shown once on a page's first visit, and again from the "?" panel. */
     tours?: Record<string, Tour>;
+    /**
+     * The tabs of the section a page sits in, one stop each saying what it is for (GUIDE1, F1028; Naveen: "when they
+     * land on runs page let's show other tabs and its uses"). `id` is the section's, so it shows once per section,
+     * whichever of its tabs is visited first; after a page's own tour when both are new.
+     */
+    tabTourFor?: (topicId: string) => { id: string; tour: Tour } | undefined;
 };
 
 export const DOCS_BASE = 'https://docs.synapseorch.com';

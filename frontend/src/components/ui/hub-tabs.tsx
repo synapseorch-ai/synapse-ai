@@ -19,7 +19,8 @@ import * as React from "react";
 
 import { cn } from "@/lib/cn";
 
-export type HubTab = { href: string; label: string };
+/** `id` names the tab for a guided tour (`data-tour="tab-<id>"`, GUIDE1 F1028); the bar needs only the rest. */
+export type HubTab = { href: string; label: string; id?: string };
 
 export function HubTabs({
   label,
@@ -55,6 +56,7 @@ export function HubTabs({
             ref={here ? currentRef : undefined}
             href={tab.href}
             aria-current={here ? "page" : undefined}
+            data-tour={tab.id ? `tab-${tab.id}` : undefined}
             onClick={onNavigate ? (event) => onNavigate(event, tab.href) : undefined}
             className={cn(
               "relative shrink-0 whitespace-nowrap rounded-t-md px-3 pb-2.5 pt-1.5 text-sm font-medium transition-colors",

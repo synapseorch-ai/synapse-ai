@@ -24,7 +24,7 @@ export function AppHubTabs({ hubId, current }: { hubId: string; current: string 
     const shown = new Set(visibleTabs(hub, flags).map(t => t.href));
     const tabs = hub.tabs
         .filter(t => shown.has(t.href) || t.href === current)
-        .map(t => ({ href: t.href, label: t.label }));
+        .map(t => ({ href: t.href, label: t.label, id: t.id }));
 
     const onNavigate = (event: React.MouseEvent, href: string) => {
         // A modified click opens a new tab or window: leave it to the browser.

@@ -37,25 +37,41 @@ export function HelpProvider({ host, children }: { host: HelpHost; children: Rea
     const topicId = (override && host.topics[override] ? override : null)
         ?? host.topicFor(pathname)
         ?? host.fallback;
-    const tour = host.tours?.[topicId];
+    // A page's own tour, and its section's tabs (F1028): each remembered on its own, run as one when both are new.
+    const pageTour = host.tours?.[topicId];
+    // Memoised: a fresh object each render would restart the first-visit timer forever.
+    const tabs = useMemo(() => host.tabTourFor?.(topicId), [host, topicId]);
+    const parts = useMemo(
+        () => [
+            ...(pageTour ? [{ id: topicId, tour: pageTour }] : []),
+            ...(tabs ? [tabs] : []),
+        ],
+        [pageTour, tabs, topicId],
+    );
+    const tour = useMemo(
+        () => (parts.length ? { version: 1, steps: parts.flatMap(p => p.tour.steps) } : undefined),
+        [parts],
+    );
     const touring = useRef(false);
-    const startTour = useCallback(() => {
-        if (!tour || touring.current) return;
+    const run = useCallback((which: typeof parts) => {
+        if (!which.length || touring.current) return;
         touring.current = true;
         setOpen(false);
-        void import('./tour/runTour').then(({ runTour }) => runTour(tour.steps, () => {
+        void import('./tour/runTour').then(({ runTour }) => runTour(which.flatMap(p => p.tour.steps), () => {
             touring.current = false;
-            markTourSeen(topicId, tour);
+            for (const p of which) markTourSeen(p.id, p.tour);
         }));
-    }, [tour, topicId]);
+    }, []);
+    const startTour = useCallback(() => run(parts), [run, parts]);
 
     useEffect(() => {
-        if (!tour || open || tourSeen(topicId, tour)) return;
+        const unseen = parts.filter(p => !tourSeen(p.id, p.tour));
+        if (!unseen.length || open) return;
         const timer = setTimeout(() => {
-            if (!screenBusy()) startTour();
+            if (!screenBusy()) run(unseen);
         }, TOUR_AFTER_MS);
         return () => clearTimeout(timer);
-    }, [tour, topicId, open, startTour]);
+    }, [parts, open, run]);
 
     const value = useMemo<HelpState>(
         () => ({

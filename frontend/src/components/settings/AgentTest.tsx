@@ -154,7 +154,7 @@ export function AgentTest({
     ) : null;
 
     return (
-        <div className={className}>
+        <div className={className} data-tour="agent-test">
             <AgentTestPanel
                 className="h-full"
                 name={name}
