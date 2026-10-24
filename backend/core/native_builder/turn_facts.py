@@ -70,3 +70,42 @@ async def keep_press(run_id: str | None, user_id: str | None, tool: str, argumen
              "say": say[:300]}])
     except Exception as exc:  # noqa: BLE001
         _log.warning("turn %s: press not kept: %s", run_id, exc)
+
+
+async def answer_card_refusal(run_id: str | None, tool: str, args: dict) -> str | None:
+    """Why the answer route may not put this card up, or None (SAI2's review, after Naveen saw cards pile up and
+    Firecrawl offered on prod):
+
+    * one card per turn: a second waits for the person's next message;
+    * a Connect card for an app or a server only when the person named it: the product's own web search, page reader
+      and scraper do what an unnamed service would.
+    """
+    if tool not in ("prepare_action", "prepare_connection") or not run_id:
+        return None
+    from core.orchestration.engine import live_run
+
+    run = live_run(run_id)
+    request = (run.shared_state.get("request") if run is not None else None) or {}
+    if not isinstance(request, dict) or request.get("route") != "step_answer":
+        return None
+    from core.boards import assistant
+
+    facts = await assistant.turn(run_id)
+    if facts.get("cards") or facts.get("connects"):
+        return ("One card per turn: a card is already up above. Say the next step in words; the person asks for it "
+                "when they are ready.")
+    if tool == "prepare_connection" and args.get("kind") in ("app", "mcp_server"):
+        from core.native_builder.target import _words
+
+        from urllib.parse import urlparse
+
+        message = f" {_words(str(run.shared_state.get('user_message') or ''))} "
+        host = (urlparse(str(args.get("url") or "")).hostname or "").split(".")
+        # What the card connects, never its title (the model writes that): the app, the server, its host's name.
+        names = [str(args.get("catalog_slug") or ""), str(args.get("server_name") or ""),
+                 host[-2] if len(host) >= 2 else ""]
+        if not any(w and f" {w} " in message for n in names for w in [_words(n), *_words(n).split()]
+                   if len(w) >= 4):
+            return ("The person did not name this service. This product's own tools search the web, read a page and "
+                    "scrape a site: answer with those, and offer a service only when the person names it.")
+    return None

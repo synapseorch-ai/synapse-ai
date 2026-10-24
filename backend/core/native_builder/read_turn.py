@@ -170,6 +170,25 @@ async def _previous(session_id: str | None, run_id: str) -> tuple[str, dict]:
     return (row[0], row[1] or {}) if row else ("", {})
 
 
+async def previous_turns(session_id: str | None, run_id: str, limit: int = 20) -> list[str]:
+    """This conversation's earlier turns, newest first, by run id."""
+    if not session_id:
+        return []
+    from sqlalchemy import select
+
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id)
+            .where(OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.session_id == session_id,
+                   OrchestrationRunDB.run_id != run_id)
+            .order_by(OrchestrationRunDB.created_at.desc()).limit(limit))).scalars().all()
+    return list(rows)
+
+
 async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     """The turn as code reads it (`Turn`); a pick from an act's list puts that card up here."""
     from core.boards import assistant
@@ -207,6 +226,8 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     out = turn.model_dump()
     out["message"] = turn.message or message
     out["previous_run_id"] = previous_id
+    # What the last turn did, for the answer's pack: its reply's first sentence.
+    out["last"] = _first_sentence(str(previous.get("summary") or ""))
     return out
 
 

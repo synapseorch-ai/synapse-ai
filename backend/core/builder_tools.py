@@ -1768,10 +1768,12 @@ async def execute_builder_tool_with_events(
         refused, caller = await refusal(tool_name, run_id)
         if refused:
             return json.dumps({"error": refused}), []
+        from core.native_builder import turn_facts
+        if why := await turn_facts.answer_card_refusal(run_id, tool_name, args or {}):
+            return json.dumps({"error": why}), []
         with acting_for(caller):
             result = await _dispatch(tool_name, args, server_module, events)
         # What the call put up is kept on its turn's card, for the next turn to read in code (F977).
-        from core.native_builder import turn_facts
         await turn_facts.keep(run_id, getattr(caller, "user_id", None), **turn_facts.facts_of(events))
         return json.dumps(result, default=str), events
     except Exception as e:
