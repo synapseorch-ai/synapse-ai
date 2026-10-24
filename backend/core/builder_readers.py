@@ -48,7 +48,62 @@ TOPICS: dict[str, str] = {
               "holds each) and the latest closed ones",
 }
 
+#: Each topic's answer, on every host (SAI2-P5): its keys, and the keys of each of its `items`. A key ending in `?`
+#: may be left out (a host that has no credits, a topic with nothing to say). A host's reader answers in the same
+#: shape as the self-hosted one; `shape_problems` names any drift, and both hosts' tests hold their readers to it.
+SHAPES: dict[str, dict[str, list[str]]] = {
+    "schedules": {"keys": ["items", "note"],
+                  "item": ["name", "on", "runs", "starts", "last_run_at", "next_run_at", "last_run"]},
+    "runs": {"keys": ["items", "note"],
+             "item": ["workflow", "status", "started_at", "ended_at", "error", "waiting_for_a_person", "run_id"]},
+    "channels": {"keys": ["items", "note"], "item": ["name", "platform", "on", "status", "agents"]},
+    "phone": {"keys": ["items", "note"], "item": ["name", "number", "on", "answered_by", "language"]},
+    "widgets": {"keys": ["items", "note"], "item": ["name", "agent", "allowed_sites", "on", "messages_per_day"]},
+    "tool_policy": {"keys": ["default", "agents_with_their_own", "note"]},
+    "knowledge": {"keys": ["items", "note"], "item": ["name", "description", "status"]},
+    # Where the host charges credits, they come beside the model dollars (F843).
+    "usage": {"keys": ["items", "window", "note"], "item": ["workflow", "runs", "model_dollars", "credits?"]},
+    # Self-hosted has no plan: no items, and a note saying so.
+    "plan": {"keys": ["items", "note"],
+             "item": ["plan", "monthly_credits", "runs_at_once", "credits_left", "model_wallet_left_usd"]},
+    "models": {"keys": ["default_model", "builder_model", "builder_model_for_quick_steps", "providers_with_a_key",
+                        "note", "models_you_can_pick?"]},
+    "agents": {"keys": ["items"], "item": ["name", "type", "model", "tools"]},
+    "workflows": {"keys": ["items", "count"], "item": ["name", "steps", "scheduled"]},
+    "today": {"keys": ["window", "runs", "failed", "waiting_for_a_person", "running", "schedules_that_ran",
+                       "model_dollars", "credits?", "note"]},
+    "run": {"keys": ["run_id", "status", "workflow", "started_at", "ended_at", "steps", "response", "shared_state",
+                     "error?", "model_dollars", "credits?"]},
+    # A run's question and a tool's approval carry their own keys, each with the tool that answers it.
+    "waiting": {"keys": ["items", "total", "next_cursor"]},
+    "agent_activity": {"keys": ["agent", "conversations", "workflows", "schedules", "note"]},
+    # The boards (a page of them), or with `name` one board's cards.
+    "boards": {"keys": ["items?", "total?", "next_cursor?", "board?", "id?", "open?", "recently_closed?"],
+               "item": ["board", "id", "kind", "open", "being_worked_on"]},
+}
+
 _HOST: dict[str, Reader] = {}
+
+
+def shape_problems(topic: str, answer: dict) -> list[str]:
+    """What in `answer` is not `SHAPES[topic]`, in words; [] when it is that shape. An error answer has no shape."""
+    shape = SHAPES.get(topic)
+    if shape is None:
+        return [f"{topic}: no shape"]
+    problems: list[str] = []
+    for where, keys, given in (("", shape.get("keys") or [], [answer]),
+                               ("an item ", shape.get("item") or [], answer.get("items") or [])):
+        if where and "item" not in shape:
+            continue
+        need = {k for k in keys if not k.endswith("?")}
+        allowed = need | {k[:-1] for k in keys if k.endswith("?")} | ({"topic"} if not where else set())
+        for one in given:
+            if not isinstance(one, dict):
+                problems.append(f"{topic}: {where or 'the answer '}is not an object")
+                continue
+            problems += [f"{topic}: {where}has no `{k}`" for k in sorted(need - set(one))]
+            problems += [f"{topic}: `{k}` is not in its shape" for k in sorted(set(one) - allowed)]
+    return list(dict.fromkeys(problems))
 
 
 def set_workspace_reader(topic: str, reader: Reader | None) -> None:
