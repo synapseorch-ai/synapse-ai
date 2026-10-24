@@ -156,3 +156,20 @@ def test_only_everything_found_skips_the_researcher(value, branch):
     route = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_lookup_route")
     got, error = _eval_state_expr(route["switch_expression"], {"lookup": value}, default=None)
     assert error is None and got == branch
+
+
+def test_a_researcher_that_names_its_own_providers_looks_them_up_in_code():
+    """11 of research 12's openings name no provider: the Researcher names them, and one code call looks them all up
+    (catalogue, Registry, developer page), instead of a catalogue call, a Registry search, a web search and a page
+    each. It holds the tool, and its step's words say when to call it."""
+    from core.native_builder import bundled_definitions
+
+    researcher = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_researcher")
+    assert "look_up_providers" in researcher["tools"]
+    step = next(s for s in bundled_definitions()["orchestration"]["steps"] if s["id"] == "step_lookup_research")
+    assert "If none is listed" in step["prompt_template"] and "`look_up_providers` once" in step["prompt_template"]
+
+
+async def test_providers_the_researcher_names_are_named(world):
+    got = await lookup.look_up_providers({"providers": ["Stripe", "Shippo"]}, None, [])
+    assert [(f["provider"], f["how"]) for f in got["found"]] == [("Stripe", "catalog_app"), ("Shippo", "mcp")]
