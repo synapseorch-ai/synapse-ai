@@ -56,6 +56,7 @@ export function TabStrip<T extends StripTab>({
   onClose,
   onMove,
   newTab,
+  unsaved,
   untitled = "New tab",
   className,
 }: {
@@ -63,6 +64,8 @@ export function TabStrip<T extends StripTab>({
   label: string;
   state: TabsState<T>;
   badges: Record<string, TabBadge>;
+  /** Tabs holding work that isn't saved: a dot of their own, beside the badge. */
+  unsaved?: Record<string, boolean>;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   onMove: (id: string, to: number) => void;
@@ -91,8 +94,8 @@ export function TabStrip<T extends StripTab>({
 
   const titleOf = (t: T) => t.title || untitled;
   const nameOf = (t: T) => {
-    const words = BADGE_WORDS[badges[t.id] ?? "none"];
-    return words ? `${titleOf(t)}, ${words}` : titleOf(t);
+    const words = [unsaved?.[t.id] ? "unsaved changes" : "", BADGE_WORDS[badges[t.id] ?? "none"]].filter(Boolean);
+    return words.length ? `${titleOf(t)}, ${words.join(", ")}` : titleOf(t);
   };
 
   // Arrow keys move along the strip, as a tablist's do; Home and End go to its ends.
@@ -157,6 +160,9 @@ export function TabStrip<T extends StripTab>({
                 >
                   {titleOf(t)}
                 </span>
+                {unsaved?.[t.id] && (
+                  <span aria-hidden title="Unsaved changes" className="size-1.5 shrink-0 rounded-full bg-text-muted" />
+                )}
                 <BadgeMark badge={badge} />
               </button>
               <button

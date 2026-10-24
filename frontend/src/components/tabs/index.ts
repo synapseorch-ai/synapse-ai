@@ -12,3 +12,4 @@ export { SideRail, type RailPanel } from "./SideRail";
 export { useTabShortcuts } from "./useTabShortcuts";
 export { useTabStatus } from "./useTabStatus";
 export { MAX_PINS, restorePins, useChatTabs, type Pin, type SavedChatTabs } from "./useChatTabs";
+export { useWorkflowTabs, type FrontReport, type KeptTab } from "./useWorkflowTabs";

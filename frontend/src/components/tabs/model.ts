@@ -68,6 +68,16 @@ export type OpenResult<T extends Tab> =
 /** Said when every open tab is working or waiting on the person and one more is asked for. */
 export const ALL_BUSY = `${MAX_TABS} tabs are open and each is working or waiting on you. Close one to open another.`;
 
+/** Said at the cap where no tab is ever closed for the person: a workflow's may hold unsaved work. */
+export const AT_CAP = `Close a tab to open another: ${MAX_TABS} are open.`;
+
+/**
+ * At the cap: `close-idle` closes the tab least recently in front that isn't
+ * busy (chat, where a tab is only a view); `refuse` closes nothing and says so
+ * (workflows, where a tab may hold unsaved work).
+ */
+export type AtCap = 'close-idle' | 'refuse';
+
 /**
  * Open `tab` at the end and bring it to the front, or bring the tab already
  * showing the same thing to the front.
@@ -80,12 +90,14 @@ export function openTab<T extends Tab>(
   state: TabsState<T>,
   tab: T,
   busy: (t: T) => boolean = () => false,
+  atCap: AtCap = 'close-idle',
 ): OpenResult<T> {
   const same = state.tabs.find((t) => t.key === tab.key);
   if (same) return { state: focusTab(state, same.id, tab.usedAt), closed: null };
 
   let tabs = state.tabs;
   let closed: T | null = null;
+  if (tabs.length >= MAX_TABS && atCap === 'refuse') return { state, closed: null, refused: AT_CAP };
   if (tabs.length >= MAX_TABS) {
     const idle = tabs
       .filter((t) => t.id !== state.activeId && !busy(t))
@@ -184,6 +196,46 @@ function chatTabFrom(item: unknown): ChatTab | null {
   if (typeof t.draft === 'string' && t.draft) tab.draft = t.draft.slice(0, 20_000);
   if (t.mark === 'done' || t.mark === 'unread') tab.mark = t.mark;
   return tab;
+}
+
+/** A workflow being edited, or one of its runs beside it (TABS1 v2). */
+export interface WorkflowTab extends Tab {
+  kind: 'workflow' | 'run';
+  /** The workflow's id, or the run's. */
+  ref: string;
+  /** A run tab's workflow: it opens beside that workflow's tab. */
+  workflowId?: string;
+}
+
+export function workflowKey(kind: WorkflowTab['kind'], ref: string): string {
+  return `${kind}\u0000${ref}`;
+}
+
+/** Workflow tabs read back from storage, as `restoreChatTabs` reads chat's. */
+export function restoreWorkflowTabs(raw: unknown): TabsState<WorkflowTab> {
+  const value = raw as { tabs?: unknown; activeId?: unknown } | null;
+  const list = Array.isArray(value?.tabs) ? value!.tabs : [];
+  const tabs: WorkflowTab[] = [];
+  const keys = new Set<string>();
+  for (const item of list) {
+    const t = item as Partial<WorkflowTab> | null;
+    if (!t || typeof t !== 'object') continue;
+    if (t.kind !== 'workflow' && t.kind !== 'run') continue;
+    if (typeof t.id !== 'string' || !ID.test(t.id) || typeof t.ref !== 'string' || !ID.test(t.ref)) continue;
+    const key = workflowKey(t.kind, t.ref);
+    if (keys.has(key) || tabs.length >= MAX_TABS) continue;
+    keys.add(key);
+    tabs.push({
+      id: t.id, kind: t.kind, ref: t.ref, key,
+      title: typeof t.title === 'string' ? t.title.slice(0, 200) : '',
+      usedAt: typeof t.usedAt === 'number' && Number.isFinite(t.usedAt) ? t.usedAt : 0,
+      ...(typeof t.workflowId === 'string' && ID.test(t.workflowId) ? { workflowId: t.workflowId } : {}),
+    });
+  }
+  const activeId = typeof value?.activeId === 'string' && tabs.some((t) => t.id === value.activeId)
+    ? value.activeId
+    : tabs[0]?.id ?? null;
+  return { tabs, activeId };
 }
 
 /** What one status read says about a tab's conversation (`/sessions/status`). */

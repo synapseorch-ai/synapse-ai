@@ -34,6 +34,11 @@ export function NewTabMenu({
   onOpenChange,
   label = "New tab",
   tour,
+  first,
+  heading = "Agents",
+  listLabel = "Start a conversation with",
+  placeholder = "Search agents…",
+  footer = "Opens beside your other tabs. Nothing runs until you send.",
   className,
 }: {
   agents: PickableAgent[];
@@ -43,6 +48,12 @@ export function NewTabMenu({
   label?: string;
   /** The guided tour's anchors (`data-tour`) on the button and on the list. */
   tour?: { button: string; list: string };
+  /** A row above the list, its own action: the workflows page's "New workflow". */
+  first?: { label: string; icon: React.ReactNode; onPick: () => void };
+  heading?: string;
+  listLabel?: string;
+  placeholder?: string;
+  footer?: string;
   className?: string;
 }) {
   const ownScroll = useOwnScroll<HTMLDivElement>();
@@ -69,7 +80,7 @@ export function NewTabMenu({
           align="start"
           sideOffset={6}
           collisionPadding={8}
-          aria-label="Start a conversation with"
+          aria-label={listLabel}
           data-tour={tour?.list}
           className="z-50 flex w-72 max-w-[calc(100vw-16px)] max-h-[min(28rem,var(--radix-popover-content-available-height))] flex-col overflow-hidden rounded-lg border border-border-strong bg-surface shadow-elevated"
         >
@@ -78,8 +89,8 @@ export function NewTabMenu({
               <Search className="size-4 shrink-0 text-text-faint" aria-hidden />
               <Command.Input
                 autoFocus
-                placeholder="Search agents…"
-                aria-label="Search agents"
+                placeholder={placeholder}
+                aria-label={placeholder.replace(/…$/, "")}
                 data-no-focus-ring
                 className="h-9 w-full bg-transparent text-sm text-text outline-none placeholder:text-text-faint"
               />
@@ -88,6 +99,18 @@ export function NewTabMenu({
               <Command.Empty className="px-2 py-6 text-center text-sm text-text-faint">
                 {agents.length === 0 ? "No agents yet." : "No agent matches."}
               </Command.Empty>
+              {first && (
+                <Command.Group>
+                  <Command.Item
+                    value={first.label}
+                    onSelect={() => { onOpenChange(false); first.onPick(); }}
+                    className="flex cursor-pointer select-none items-center gap-2.5 rounded-md px-2 py-1.5 text-sm font-medium text-accent-ink outline-none data-[selected=true]:bg-surface-2"
+                  >
+                    {first.icon}
+                    {first.label}
+                  </Command.Item>
+                </Command.Group>
+              )}
               {assistants.length > 0 && (
                 <Command.Group>
                   {assistants.map((a) => <AgentRow key={a.id} agent={a} onPick={pick} />)}
@@ -95,7 +118,7 @@ export function NewTabMenu({
               )}
               {others.length > 0 && (
                 <Command.Group
-                  heading="Agents"
+                  heading={heading}
                   className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-text-faint"
                 >
                   {others.map((a) => <AgentRow key={a.id} agent={a} onPick={pick} />)}
@@ -104,7 +127,7 @@ export function NewTabMenu({
             </Command.List>
           </Command>
           <p className="border-t border-border px-3 py-2 text-xs text-text-faint">
-            Opens beside your other tabs. Nothing runs until you send.
+            {footer}
           </p>
         </RPopover.Content>
       </RPopover.Portal>

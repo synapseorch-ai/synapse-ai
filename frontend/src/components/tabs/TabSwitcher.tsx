@@ -18,6 +18,7 @@ import { BADGE_WORDS, activeTab, type TabBadge, type TabsState } from "./model";
 export function TabSwitcher<T extends StripTab>({
   state,
   badges,
+  unsaved,
   onFocus,
   onClose,
   onNew,
@@ -28,6 +29,8 @@ export function TabSwitcher<T extends StripTab>({
 }: {
   state: TabsState<T>;
   badges: Record<string, TabBadge>;
+  /** Tabs holding work that isn't saved: said on their line. */
+  unsaved?: Record<string, boolean>;
   onFocus: (id: string) => void;
   onClose: (id: string) => void;
   /** Called once the sheet has closed: the new tab's picker opens where the person can see it. */
@@ -89,7 +92,7 @@ export function TabSwitcher<T extends StripTab>({
           <div className="custom-scrollbar -mx-1 flex flex-col gap-1 overflow-y-auto px-1">
             {state.tabs.map((t) => {
               const badge = badges[t.id] ?? "none";
-              const words = BADGE_WORDS[badge];
+              const words = [unsaved?.[t.id] ? "unsaved changes" : "", BADGE_WORDS[badge]].filter(Boolean).join(" · ");
               return (
                 <div key={t.id} className={cn("flex items-center rounded-[10px]", t.id === state.activeId && "bg-surface-2")}>
                   <button
