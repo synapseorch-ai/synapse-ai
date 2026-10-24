@@ -453,8 +453,28 @@ async def test_a_checked_none_wins_over_the_models_other_word_for_the_provider(w
     assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "none")]
 
 
-async def test_the_models_longer_name_folds_into_code_s_verdict(world):
+async def test_the_models_option_folds_into_code_s_verdict_by_identity(world):
+    """Its own domain in common ("Stripe Payments" on docs.stripe.com) or the same name; never a shared word."""
+    state, _ = world
+    state["pages"]["https://docs.stripe.com/payments"] = "# Payments\n\nThe Payments API."
     await _look(providers=["Stripe"])
-    card = await br.report_findings({"options": [{"provider": "Stripe Payments", "how": "unclear"},
-                                                 {"provider": "Square", "how": "unclear"}]}, None, [])
-    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Square", "unclear")]
+    await br.read_web_page({"url": "https://docs.stripe.com/payments"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Stripe Payments", "how": "api", "sources": ["https://docs.stripe.com/payments"]},
+        {"provider": "Stripe Terminal", "how": "unclear"},
+        {"provider": "Square", "how": "unclear"}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [
+        ("Stripe", "catalog_app"), ("Stripe Terminal", "unclear"), ("Square", "unclear")]
+
+
+async def test_another_products_none_never_replaces_code_s_verdict(world):
+    """SAI2: a one-word final that is a brand ("Microsoft") and a model's none on one of its other products."""
+    state, _ = world
+    state["catalog"].append({"slug": "microsoft", "name": "Microsoft", "auth": "oauth", "url": "https://microsoft.com"})
+    state["pages"]["https://teams.live.com/partners"] = "# Teams\n\nPartners only."
+    await _look(providers=["Microsoft"])
+    await br.read_web_page({"url": "https://teams.live.com/partners"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Microsoft Teams", "how": "none", "sources": ["https://teams.live.com/partners"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Microsoft", "catalog_app"),
+                                                                    ("Microsoft Teams", "unclear")]

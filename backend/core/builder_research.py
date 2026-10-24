@@ -630,19 +630,22 @@ PAGES_KEY = "pages"
 def _with_looked_up(seen: dict, options: list[dict]) -> list[dict]:
     """The look-up's verdicts first, then the model's other options; one option per provider. A verdict code found
     (an app in the catalogue, the provider's own server) stands: a model can't upgrade or drop it, only replace it
-    with a `none` that rests on a page of the provider's own this research read (P3B-HANDOFF.md, P5's section). The
-    model's options for that provider fold into it: by its name, or by the name's first word ("Stripe Payments")."""
+    with a `none` that rests on a page of that verdict's own domain (P3B-HANDOFF.md, P5's section). A model's option
+    is that provider's by identity, never by a shared word (SAI2: "Google Analytics" is not Google): the same name,
+    or an own domain in common ("Stripe Payments" on docs.stripe.com)."""
     finals = [v["found"] for v in (seen.get(LOOKED_KEY) or {}).values() if isinstance(v, dict) and v.get("found")]
     if not finals:
         return options
     taken: set[int] = set()
     out = []
     for final in finals:
-        slug = _slug(final["provider"])
+        slug, domains = _slug(final["provider"]), set(final.get("own_domains") or [])
         mine = [i for i, o in enumerate(options) if i not in taken
-                and (_slug(o["provider"]) == slug or _words(o["provider"])[:1] == [slug])]
+                and (_slug(o["provider"]) == slug or domains & set(o.get("own_domains") or []))]
         taken |= set(mine)
-        out.append(next((options[i] for i in mine if options[i]["how"] == "none"), final))
+        out.append(next((options[i] for i in mine if options[i]["how"] == "none"
+                         and (domains & set(options[i].get("own_domains") or [])
+                              or (not domains and _slug(options[i]["provider"]) == slug))), final))
     return out + [o for i, o in enumerate(options) if i not in taken]
 
 
