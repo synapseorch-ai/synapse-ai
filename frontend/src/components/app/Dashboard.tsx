@@ -299,6 +299,11 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                     </div>
                 )}
 
+                {/* F1027, near the top (Naveen: "Can we bring the home page card above"): until a key has called in. */}
+                {connectHost && keyUsed === false && connectHidden !== '1' && (
+                    <ConnectCard host={connectHost} settingsHref="/settings/mcp_server" onDismiss={() => setConnectHidden('1')} />
+                )}
+
                 {/* With nothing waiting, a new workspace's path leads; its fourth step says what Needs you is. */}
                 {(!showStart || startFolded || waitingCount > 0) && (
                     <RunHostProvider value={OSS_RUN_HOST}>
@@ -344,10 +349,6 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                 {/* F1030: a new workspace (while Getting started shows), once the docs' MCP answers, until put away. */}
                 {docsMcp && showStart && learnHidden !== '1' && (
                     <LearnCard logos={{ claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg' }} onDismiss={() => setLearnHidden('1')} />
-                )}
-
-                {connectHost && keyUsed === false && connectHidden !== '1' && (
-                    <ConnectCard host={connectHost} settingsHref="/settings/mcp_server" onDismiss={() => setConnectHidden('1')} />
                 )}
 
                 {moreHidden !== '1' && (

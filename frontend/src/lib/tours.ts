@@ -15,11 +15,11 @@ export const TOURS: Record<string, Tour> = {
         version: 1,
         steps: [
             { anchor: 'home-ask', title: 'Ask Synapse AI', body: 'Ask about your runs in plain words, or describe something to build. It answers from what your workspace has done.' },
+            { anchor: 'home-connect', title: 'Use it from your AI tools', body: 'Connect Claude, Codex, Cursor or VS Code in a click, and run your workflows from there.' },
             { anchor: 'home-start', title: 'Your first steps', body: 'A short path from connecting a model to a workflow that runs on its own. Each step says what to do next.' },
             { anchor: 'home-needs-you', title: 'What needs you', body: 'When a workflow stops to ask a question or wait for your approval, it shows here. Answer it without leaving Home.' },
             { anchor: 'home-more', title: 'More you can do', body: 'Parts of Synapse this workspace hasn’t tried yet, such as scoring runs or answering from your documents.' },
             { anchor: 'rail-runs', title: 'Runs, scores and costs', body: 'Every run, its log, its score (Evals) and what it cost (Usage) live under Runs.' },
-            { anchor: 'home-connect', title: 'Use it from your AI tools', body: 'Connect Claude, Codex, Cursor or VS Code in a click, and run your workflows from there.' },
             { anchor: 'help', title: 'Help on every page', body: 'The “?” explains the page you are on. You can take this tour again from there.' },
         ],
     },
