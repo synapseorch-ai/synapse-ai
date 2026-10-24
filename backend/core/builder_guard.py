@@ -47,25 +47,81 @@ def _engine_provides() -> frozenset[str]:
     return frozenset({*ENGINE_TOOLS, TASK_TOOL_NAME, LEGACY_TASK_TOOL_ALIAS, SPAWN_SUBTASK_TOOL_NAME, *boards})
 
 
-async def _resolver(server_module: Any):
+async def _canonical(server_module: Any):
+    """`canon(name)`: the name a run calls a tool by, for any spelling of it the builder's own listings teach, or
+    None when nothing provides it (F1035).
+
+    The listings and the catalogue spelled one tool differently: `list_server_tools` prints an external server's
+    tools bare (`firecrawl_scrape`) while the catalogue, the resolver and every saved agent call it
+    `firecrawl__firecrawl_scrape`; and a model writes a native server's tool as `web_scraper.scrape_url`. Every
+    one of those read as "nothing provides it", so a plan using the built-in scraper, or a Firecrawl already
+    connected, was sent to research, which offered to connect Firecrawl (gethubservice, prod rc4.2).
+
+    Accepted, in order: the name itself (the run's own lookup); `server.tool` and `server__tool`; a bare tool name
+    exactly one server answers. A bare name two servers answer is never guessed: it reads as missing, and the
+    suggestions name both."""
     from core.routes.tools import load_custom_tools
+    from core.tool_router import SEP
     from core.tools import resolve_one_tool
 
     custom = await load_custom_tools()
-    cache: dict[str, bool] = {}
+    cache: dict[str, str | None] = {}
     engine = _engine_provides()
+    known: list[str] | None = None
+
+    async def runs(name: str) -> bool:
+        try:
+            return await resolve_one_tool(server_module, name, {"tools": [name]}, custom) is not None
+        except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence a tool is missing
+            return True
+
+    async def canon(name: str) -> str | None:
+        nonlocal known
+        if name in _NOT_A_NAME or name in engine or name.startswith("group:"):
+            return name
+        if name in cache:
+            return cache[name]
+        found: str | None = name if await runs(name) else None
+        if found is None and "." in name:
+            server, _, tool = name.partition(".")
+            key = f"{server}{SEP}{tool}"
+            router = getattr(server_module, "tool_router", None)
+            # The catalogue's own name: bare when that server answers the bare name (a built-in's), else its key.
+            # Never another server's tool that happens to share the bare name.
+            if tool and hasattr(router, "resolve") and router.resolve(tool) == key:
+                found = tool
+            elif tool and await runs(key):
+                found = key
+        if found is None and SEP not in name and "." not in name:
+            if known is None:
+                known = await _known_names(server_module)
+            answering = [k for k in known if k.endswith(f"{SEP}{name}")]
+            if len(answering) == 1:
+                found = answering[0]
+        cache[name] = found
+        return found
+
+    return canon
+
+
+async def _resolver(server_module: Any):
+    canon = await _canonical(server_module)
 
     async def exists(name: str) -> bool:
-        if name in _NOT_A_NAME or name in engine or name.startswith("group:"):
-            return True
-        if name not in cache:
-            try:
-                cache[name] = await resolve_one_tool(server_module, name, {"tools": [name]}, custom) is not None
-            except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence a tool is missing
-                cache[name] = True
-        return cache[name]
+        return await canon(name) is not None
 
     return exists
+
+
+async def canonical_names(names: list[Any], server_module: Any) -> list[Any]:
+    """Each name as a run calls it (F1035): what the builder saves, so an agent never holds a spelling no run
+    resolves. A name nothing provides, and anything that is not a name, is left as it was (the refusals say it)."""
+    canon = await _canonical(server_module)
+    out: list[Any] = []
+    for name in names:
+        fixed = await canon(name) if isinstance(name, str) and name else None
+        out.append(fixed or name)
+    return out
 
 
 async def _known_names(server_module: Any) -> list[str]:

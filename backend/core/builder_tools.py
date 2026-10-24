@@ -1846,6 +1846,20 @@ async def _workspace_catalogue(server_module) -> list:
     return (await aggregate_all_tools(server_module, {"tools": ["all"]}, await load_custom_tools()))[0]
 
 
+async def _steps_as_run_calls(orch: dict, server_module: Any) -> dict:
+    """A workflow's Tool steps saved with their tool as a run calls it (F1035): a step the builder wrote as
+    `web_scraper.scrape_url`, or with an external server's bare name, would fail its first run."""
+    from core import builder_guard
+
+    steps = [s for s in orch.get("steps") or [] if isinstance(s, dict) and isinstance(s.get("forced_tool"), str)
+             and s.get("forced_tool")]
+    if steps:
+        fixed = await builder_guard.canonical_names([s["forced_tool"] for s in steps], server_module)
+        for step, name in zip(steps, fixed):
+            step["forced_tool"] = name
+    return orch
+
+
 async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list[dict]) -> Any:
     if tool_name in _REGISTERED:  # a tool from its own module (`register_builder_tool`)
         return await _REGISTERED[tool_name](args, server_module, events)
@@ -1890,6 +1904,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         from core import builder_guard  # F489: never a tool nothing provides
         if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
             return phantom
+        if args.get("tools"):  # saved as a run calls them (F1035): `web_scraper.scrape_url` → `scrape_url`
+            args = {**args, "tools": await builder_guard.canonical_names(args["tools"], server_module)}
         if (refusal := await _refused("agent", 1)) is not None:
             return refusal
         agents = await load_user_agents()
@@ -1958,6 +1974,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
                     continue
+                if spec.get("tools"):  # saved as a run calls them (F1035)
+                    spec = {**spec, "tools": await builder_guard.canonical_names(spec["tools"], server_module)}
                 # Guarantee uniqueness even when called repeatedly in the same millisecond.
                 new_id = _mint_id("agent", length=10)
                 while new_id in existing_ids:
@@ -2012,6 +2030,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             from core import builder_guard  # F489: never a tool nothing provides
             if (phantom := await builder_guard.unknown(fields.get("tools") or [], server_module)) is not None:
                 return phantom
+            fields["tools"] = await builder_guard.canonical_names(fields.get("tools") or [], server_module)  # F1035
         if "tool_policy" in fields:
             fields["tool_policy"] = _agent_policy(fields["tool_policy"])
         if fields.get("team") is not None:
@@ -2061,10 +2080,18 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         try:
             all_tools = await _workspace_catalogue(server_module)
             requested = set(args.get("tool_names", []))
+            # Each asked-for name as a run calls it (F1035): `firecrawl_scrape`, as list_server_tools printed it,
+            # is the catalogue's `firecrawl__firecrawl_scrape`.
+            from core import builder_guard
+
+            asked = [n for n in requested if isinstance(n, str)]
+            as_called = dict(zip(asked, await builder_guard.canonical_names(asked, server_module)))
+            by_name = {t.name: t for t in all_tools}
             result = {}
-            for t in all_tools:
-                if t.name in requested:
-                    result[t.name] = {
+            for name in asked:
+                t = by_name.get(as_called[name])
+                if t is not None:
+                    result[name] = {
                         "name": t.name,
                         "description": t.description or "",
                         "inputSchema": t.inputSchema if hasattr(t, "inputSchema") else {},
@@ -2136,8 +2163,24 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"Server '{server_name}' not found. Call list_tool_servers to see available names."}
         try:
             tools_result = await session.list_tools()
+            # Each tool by the name a run calls it (F1035): an external server's are `server__tool`, as the catalogue,
+            # the resolver and every saved agent hold them. Printed bare, they were the names the builder then used
+            # and could not find.
+            session_key = next((k for k, v in server_module.agent_sessions.items() if v is session), server_name)
+            from core.tool_router import SEP
+
+            def called(tool_name: str) -> str:
+                router = getattr(server_module, "tool_router", None)
+                key = router.key_for(session_key, tool_name) if hasattr(router, "key_for") else None
+                if session_key.startswith("ext_mcp_"):
+                    return key or f"{session_key[len('ext_mcp_'):]}{SEP}{tool_name}"
+                # A native server's tool is called bare, unless another server won its bare name: then its key.
+                if key and hasattr(router, "declares") and not router.declares(session_key, tool_name):
+                    return key
+                return tool_name
+
             return [
-                {"name": t.name, "description": (t.description or "")[:150]}
+                {"name": called(t.name), "description": (t.description or "")[:150]}
                 for t in tools_result.tools
             ]
         except Exception as e:
@@ -2220,7 +2263,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             "created_at": now,
             "updated_at": now,
         }
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
 
@@ -2274,7 +2317,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         orch.update(fields)
         orch["id"] = args["orch_id"]  # the id is not patchable (F784), as `update_agent`'s is not
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "updated", "orchestration": orch}
 
@@ -2308,7 +2351,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         }
         if (run := _current_run.get()) is not None:
             orch["building_run"] = run  # cleared when it validates (F156)
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "created", orch["id"], orch["name"], orch)
         return {"status": "created", "orchestration": orch}
 
@@ -2351,7 +2394,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             s["position_y"] = _zigzag_y(offset + i)
         orch["steps"] = existing + filled
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "appended",
@@ -2407,7 +2450,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         filled[0]["position_y"] = _zigzag_y(offset)
         orch["steps"] = existing + filled
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "step_added",
@@ -2461,7 +2504,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             s["position_y"] = _zigzag_y(offset + i)
         orch["steps"] = existing + filled
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {
             "status": "steps_added",
@@ -2492,7 +2535,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"No allowed meta fields to set. Allowed: {sorted(allowed | set(RUN_CAP_PROPERTIES))}"}
         orch.update(fields)
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "meta_updated", "fields": list(fields.keys())}
 
@@ -2522,7 +2565,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return refused
         orch["steps"] = steps
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "step_updated", "step": steps[sidx]}
 
@@ -2538,7 +2581,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
         orch["steps"] = steps
         orch["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        await save_orchestration(orch)
+        await save_orchestration(await _steps_as_run_calls(orch, server_module))
         _emit(events, "orchestration", "updated", orch["id"], orch.get("name"), orch)
         return {"status": "step_removed", "step_id": step_id, "remaining_steps": len(steps)}
 
@@ -2609,13 +2652,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             for workflow in (orch, *ours):
                 workflow.pop("building_issues", None)
                 if workflow.pop("building_run", None) is not None:
-                    await save_orchestration(workflow)  # finished: `finish_build` keeps it
+                    await save_orchestration(await _steps_as_run_calls(workflow, server_module))  # finished: `finish_build` keeps it
         elif run is not None and orch.get("building_run") == run:
             # Kept with the build in the making, for `finish_build`'s line if it is rolled back (F867).
             said = _issues_said(issues)
             if orch.get("building_issues") != said:
                 orch["building_issues"] = said
-                await save_orchestration(orch)
+                await save_orchestration(await _steps_as_run_calls(orch, server_module))
         return verdict
 
     elif tool_name == "finish_build":
@@ -2640,7 +2683,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if reasons:
                     orch.pop("building_run", None)
                     orch.pop("building_issues", None)
-                    await save_orchestration(orch)
+                    await save_orchestration(await _steps_as_run_calls(orch, server_module))
                     kept.append({"id": orch["id"], "name": orch.get("name"), "reason": " and ".join(reasons)})
                     continue
                 await _delete_orch(orch["id"])
