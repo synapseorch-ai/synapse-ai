@@ -24,6 +24,9 @@ import Link from 'next/link';
 import { AlertTriangle, Blocks, Bot, Clock, MessagesSquare, Workflow } from 'lucide-react';
 
 import { AppScreen } from '@/components/app/AppScreen';
+import { ConnectCard } from '@/components/connect/ConnectCard';
+import { LearnCard } from '@/components/connect/LearnCard';
+import { useOssConnectHost } from '@/components/settings/McpServerTab';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { NOTIFICATION_EVENT, useNotifications } from '@/components/notifications/NotificationProvider';
@@ -72,7 +75,7 @@ const isWaiting = (r: RunSummary) => r.status === 'paused' && Boolean(r.waiting_
 /** A waiting run's record is read again only when its question may have changed. */
 const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.steps_completed ?? 0}`;
 
-export function Dashboard() {
+export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
     const clock = useClock();
     const { open: openBuilder } = useBuilder();
     const modelSetup = useModelSetup();
@@ -90,6 +93,11 @@ export function Dashboard() {
     /** What the workspace has used of what Home's "More you can do" points at (F914); absent until read. */
     const [used, setUsed] = useState<Partial<Record<TryKey, boolean>>>({});
     const [moreHidden, setMoreHidden] = usePersisted<'0' | '1'>('synapseHomeMoreHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
+    /** Whether any key has ever called in (F1027): Home's connect card goes once one has, or when put away. */
+    const [keyUsed, setKeyUsed] = useState<boolean | undefined>(undefined);
+    const [connectHidden, setConnectHidden] = usePersisted<'0' | '1'>('synapseHomeConnectHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
+    const connectHost = useOssConnectHost();
+    const [learnHidden, setLearnHidden] = usePersisted<'0' | '1'>('synapseHomeLearnHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
     const [name, setName] = useState<string | null>(null);
     const [loaded, setLoaded] = useState(false);
     /** Each waiting run's record, as its run page reads it; `null` when it could not be read. */
@@ -119,7 +127,8 @@ export function Dashboard() {
             setMcpCount(list(mcp).length);
             setName(firstName(me?.first_name));
             if (set && typeof set === 'object') setSettings(set);
-            setUsed(usedOf({ rubrics, bases, keys, channels }));
+            setUsed(usedOf({ rubrics, bases, channels }));
+            setKeyUsed(anyKeyUsed(keys));
             setLoaded(true);
         });
     }, []);
@@ -332,13 +341,21 @@ export function Dashboard() {
                     </div>
                 )}
 
+                {/* F1030: a new workspace (while Getting started shows), once the docs' MCP answers, until put away. */}
+                {docsMcp && showStart && learnHidden !== '1' && (
+                    <LearnCard logos={{ claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg' }} onDismiss={() => setLearnHidden('1')} />
+                )}
+
+                {connectHost && keyUsed === false && connectHidden !== '1' && (
+                    <ConnectCard host={connectHost} settingsHref="/settings/mcp_server" onDismiss={() => setConnectHidden('1')} />
+                )}
+
                 {moreHidden !== '1' && (
                     <MoreToTry
                         keys={moreToTry(
                             [
                                 'evals',
                                 ...(settings?.knowledge_enabled ? ['knowledge' as const] : []),
-                                'ai_tools',
                                 ...(settings?.messaging_enabled ? ['channels' as const] : []),
                             ],
                             used,
@@ -495,19 +512,18 @@ export function Dashboard() {
 }
 
 /**
- * What Home's "More you can do" reads as used (F914): a rubric, a knowledge base, a key that has ever called in, a
- * channel. A list that could not be read stays unknown, so its card stays hidden (`moreToTry`).
+ * What Home's "More you can do" reads as used (F914): a rubric, a knowledge base, a channel. A list that could not be
+ * read stays unknown, so its card stays hidden (`moreToTry`). Using Synapse from an AI tool has its own card (F1027).
  */
-function usedOf(lists: { rubrics: unknown; bases: unknown; keys: unknown; channels: unknown }): Partial<Record<TryKey, boolean>> {
+function usedOf(lists: { rubrics: unknown; bases: unknown; channels: unknown }): Partial<Record<TryKey, boolean>> {
     const some = (v: unknown) => (Array.isArray(v) ? v.length > 0 : undefined);
-    return {
-        evals: some(lists.rubrics),
-        knowledge: some(lists.bases),
-        ai_tools: Array.isArray(lists.keys)
-            ? lists.keys.some((k: { last_used_at?: string | null } | null) => Boolean(k?.last_used_at))
-            : undefined,
-        channels: some(lists.channels),
-    };
+    return { evals: some(lists.rubrics), knowledge: some(lists.bases), channels: some(lists.channels) };
+}
+
+/** Whether any API key has ever called in (Home's connect card, F1027); unknown when the list couldn't be read. */
+function anyKeyUsed(keys: unknown): boolean | undefined {
+    if (!Array.isArray(keys)) return undefined;
+    return keys.some((k: { last_used_at?: string | null } | null) => Boolean(k?.last_used_at));
 }
 
 /** What a schedule runs, by name. */

@@ -38,4 +38,6 @@ export const MOVED_TABS: Record<string, string> = {
 export const MOVED_ROUTES: Record<string, string> = {
     '/orchestrations': '/workflows',
     '/mcp-servers': '/apps',
+    // Connect › AI tools left the rail for Settings › MCP server and Home's card (GUIDE1, F1027).
+    '/ai-tools': '/settings/mcp_server',
 };

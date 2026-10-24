@@ -279,7 +279,7 @@ export function askSuggestions(f: AskFacts): string[] {
 }
 
 /** A part of the product Home can point at until the workspace has used it (GUIDE1, F914/F917). */
-export type TryKey = 'evals' | 'knowledge' | 'ai_tools' | 'channels';
+export type TryKey = 'evals' | 'knowledge' | 'channels';
 
 /**
  * Home's "More you can do" (GUIDE1, D318, F914; Naveen: "evals usage all are great features but not visible to
@@ -295,11 +295,6 @@ export const MORE_TO_TRY: Record<TryKey, { title: string; line: string; href: st
         title: 'Answer from your own documents',
         line: 'Give agents a folder of files to look things up in. They say where each answer came from.',
         href: '/knowledge',
-    },
-    ai_tools: {
-        title: 'Use Synapse from Claude, Codex or Cursor',
-        line: 'Run workflows and answer approvals from the AI tool you already work in.',
-        href: '/ai-tools',
     },
     channels: {
         title: 'Reach your agents from Slack or Telegram',

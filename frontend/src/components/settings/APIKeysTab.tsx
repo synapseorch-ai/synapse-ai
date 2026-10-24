@@ -176,7 +176,7 @@ export const APIKeysTab = () => {
                         Every endpoint, with examples, is in the{' '}
                         <TextLink external href={`${DOCS_BASE}/api/overview`} target="_blank" rel="noopener noreferrer">API reference</TextLink>;
                         to use Synapse from Claude, Codex or Cursor, see{' '}
-                        <TextLink href="/ai-tools">Connect › AI tools</TextLink> or{' '}
+                        <TextLink href="/settings/mcp_server">Settings › MCP server</TextLink> or{' '}
                         <TextLink external href={`${DOCS_BASE}/api/mcp-server`} target="_blank" rel="noopener noreferrer">the MCP server guide</TextLink>.
                     </p>
                 </div>
@@ -187,7 +187,7 @@ export const APIKeysTab = () => {
                 {loading ? (
                     <p className="text-sm text-text-faint py-4">Loading…</p>
                 ) : keys.length === 0 ? (
-                    <EmptyState title="No keys yet.">Make one above, or <TextLink href="/ai-tools">connect an AI tool</TextLink>.</EmptyState>
+                    <EmptyState title="No keys yet.">Make one above, or <TextLink href="/settings/mcp_server">connect an AI tool</TextLink>.</EmptyState>
                 ) : (
                     <div className="divide-y divide-border rounded-md border border-border">
                         {keys.map(k => (

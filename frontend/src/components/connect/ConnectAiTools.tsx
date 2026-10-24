@@ -34,6 +34,11 @@ export type ConnectHost = {
     buildChoice?: boolean;
     /** When a key last authenticated, or null if never. */
     lastUsed: (id: string) => Promise<string | null>;
+    /** This workspace's keys, for Home's card to replace its own unused ones (F1027). */
+    listKeys?: () => Promise<{ id: string; name: string; last_used_at: string | null }[]>;
+    revokeKey?: (id: string) => Promise<void>;
+    /** Where the keys are listed and revoked. */
+    keysHref?: string;
     /** Who to ask for a key, when `makeKey` is null. */
     askForKey?: string;
     /** The docs page for the MCP server. */

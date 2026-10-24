@@ -16,21 +16,17 @@
    "href": "/agents"
   }
  },
- "ai_tools": {
-  "title": "AI tools",
-  "summary": "Use Synapse from Claude, Codex, Cursor or VS Code: ask them to run your workflows, answer approvals and build agents, without opening this app.",
+ "agents.editor": {
+  "title": "Setting up an agent",
+  "summary": "An agent is a model with instructions and tools. Say what it is for, pick what it may use, then try it in the chat beside its setup before you put it to work.",
   "steps": [
-   "Pick the AI tool you use.",
-   "Click “Make a key for …”, or paste a key you already have. A key made here is shown only on this page.",
-   "Copy the setup and paste it where the page says: a terminal for Claude Code and Codex, a config file for the others.",
-   "Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.",
-   "Remove the key in Settings → API keys whenever you want to cut the tool off."
+   "Under “Model”, pick the model it thinks with; a stronger one costs more per answer.",
+   "Under “Instructions”, say in plain words what it does, for whom, and what it must never do.",
+   "Under “Tools”, tick what it may use: apps, your own tools, the Vault, the web.",
+   "Ask it something in the test chat to see how it answers, then save.",
+   "Use it in Chat, or as a step in a workflow."
   ],
-  "guide": "/guides/developers/mcp",
-  "where": {
-   "label": "AI tools",
-   "href": "/ai-tools"
-  }
+  "guide": "/guides/start/agents"
  },
  "api_keys": {
   "title": "API keys",
@@ -39,7 +35,7 @@
    "Name the key after what will use it, and click “Generate”.",
    "Click “Copy key” and keep it somewhere safe; it is never shown again.",
    "Send it as a Bearer token in the Authorization header on calls to /api/v1/*.",
-   "“API reference” opens every endpoint with examples; to use Synapse from Claude, Codex or Cursor, open Connect › AI tools.",
+   "“API reference” opens every endpoint with examples; to use Synapse from Claude, Codex or Cursor, open Settings → MCP server.",
    "Removing a key, from its row, is immediate."
   ],
   "guide": "/guides/developers/public-api",
@@ -256,6 +252,22 @@
   "where": {
    "label": "Logs",
    "href": "/logs"
+  }
+ },
+ "mcp_server": {
+  "title": "MCP server",
+  "summary": "Use Synapse from Claude, Codex, Cursor or VS Code: ask them to run your workflows, answer approvals and build agents, without opening this app.",
+  "steps": [
+   "Pick the AI tool you use.",
+   "Click “Make a key for …”, or paste a key you already have. A key made here is shown only on this page.",
+   "Copy the setup and paste it where the page says: a terminal for Claude Code and Codex, a config file for the others.",
+   "Ask the tool “List my Synapse workflows.” The page says “Connected” once its first call arrives.",
+   "Remove the key in Settings → API keys whenever you want to cut the tool off. Home’s “Use Synapse from your AI tools” connects most tools in one click."
+  ],
+  "guide": "/guides/developers/mcp",
+  "where": {
+   "label": "MCP server",
+   "href": "/settings/mcp_server"
   }
  },
  "mcp_servers": {

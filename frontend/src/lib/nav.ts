@@ -199,14 +199,6 @@ export const HUB_NAV: NavHubGroup[] = [
                     },
                 ],
             },
-            {
-                // Its own item, not a Settings tab (GUIDE1, F915; Naveen: "we should have a separate mcp section menu").
-                id: 'ai_tools', label: 'AI tools', icon: Cable,
-                tabs: [{
-                    id: 'ai_tools', label: 'AI tools', href: '/ai-tools', icon: Cable,
-                    blurb: 'Use Synapse from Claude, Codex, Cursor or VS Code: run workflows, answer approvals and build agents without opening this app.',
-                }],
-            },
         ],
     },
 ];
@@ -263,6 +255,12 @@ export const SETTINGS_NAV: NavGroup[] = [
             {
                 id: 'api_keys', label: 'API keys', href: '/settings/api_keys', icon: Key,
                 blurb: 'Keys that let your own code, or AI tools like Claude and Cursor, use Synapse.',
+            },
+            {
+                // Every AI tool step by step (GUIDE1, F1027); Home's card connects most in one click and links here.
+                // Naveen: "I don't want new ai tools menu ... a button that takes to an MCP server page in settings".
+                id: 'mcp_server', label: 'MCP server', href: '/settings/mcp_server', icon: Cable,
+                blurb: 'Use Synapse from Claude, Codex, Cursor or VS Code: run workflows, answer approvals and build agents without opening this app.',
             },
             {
                 id: 'import_export', label: 'Import / Export', href: '/settings/import_export', icon: ArrowLeftRight,

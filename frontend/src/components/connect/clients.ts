@@ -7,7 +7,12 @@
  * servers. Nothing here is a new way in. Synced into cloud's web with the rest of `components/connect`.
  */
 
+import { DOCS_BASE } from '@/components/help';
+
 export type AiClientId = 'claude_code' | 'claude_desktop' | 'codex' | 'cursor' | 'vscode';
+
+/** The docs' own MCP server (DOC5): public, no key; what "Learn Synapse with your AI assistant" adds (F1030). */
+export const DOCS_MCP_URL = `${DOCS_BASE}/api/mcp`;
 
 /** How this product's Claude Desktop row connects: OSS relays over stdio; cloud signs in with OAuth when it's on. */
 export type DesktopRoute = 'stdio' | 'oauth' | 'unavailable';
@@ -63,6 +68,55 @@ export function snippetFor(client: AiClientId, { url, key, desktop }: SnippetInp
             return json({ servers: { synapse: { type: 'http', url, headers: { Authorization: bearer } } } });
     }
 }
+
+/**
+ * A one-click install, where the client has one (F1027; Naveen: "a button that will just get the things done of
+ * connecting"): Cursor's deeplink takes the server's config as base64 JSON, VS Code's URL handler the same object
+ * as `--add-mcp` takes, URL-encoded. The key rides in the link to the app on this machine, never over the network.
+ * Claude Code and Codex have none (their button copies one command); Claude signs in instead (`CLAUDE_CONNECTORS`).
+ */
+export function installLink(
+    client: AiClientId, { url, key, name = 'synapse' }: { url: string; key?: string; name?: string },
+): string | null {
+    // No key: a public server (the docs'), which takes no Authorization at all.
+    const auth = key ? { headers: { Authorization: `Bearer ${key}` } } : {};
+    if (client === 'cursor') {
+        const config = btoa(JSON.stringify({ url, ...auth }));
+        return `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(name)}&config=${encodeURIComponent(config)}`;
+    }
+    if (client === 'vscode') {
+        return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, type: 'http', url, ...auth }))}`;
+    }
+    return null;
+}
+
+/** The one command that adds a public server (no key) to a terminal client; null for the others. */
+export function publicCommand(client: AiClientId, url: string, name: string): string | null {
+    if (client === 'claude_code') return `claude mcp add --transport http ${name} ${url}`;
+    if (client === 'codex') return `codex mcp add ${name} --url ${url}`;
+    return null;
+}
+
+/**
+ * A key Home's card makes for one client: named for the client and where it came from, so the keys list says what
+ * each is (F1027). The install link carries it into the app, so it is the least a client needs (cloud: run-only).
+ */
+export const homeKeyName = (client: string) => `${client}, from Home`;
+
+/**
+ * The keys a repeat click replaces: that client's Home keys never used yet. A used one is connected somewhere and is
+ * kept; an unused one only ever lived in a link, so a new click revokes it rather than leaving a key per click.
+ */
+export function unusedHomeKeys(keys: { id: string; name: string; last_used_at: string | null }[], client: string): string[] {
+    const name = homeKeyName(client);
+    return keys.filter(k => k.name === name && !k.last_used_at).map(k => k.id);
+}
+
+/**
+ * Where Claude (the app and claude.ai share them) adds a custom connector. Claude has no link that fills the form in,
+ * so its button copies the address and opens this page: one paste, then Claude signs in with OAuth.
+ */
+export const CLAUDE_CONNECTORS = 'https://claude.ai/settings/connectors';
 
 /** Whether a client takes the key in its snippet (Desktop over stdio uses the CLI's own; over OAuth, a sign-in). */
 export function needsKey(client: AiClientId, desktop: DesktopRoute): boolean {
