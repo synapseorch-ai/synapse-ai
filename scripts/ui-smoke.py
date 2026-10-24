@@ -5267,16 +5267,20 @@ DRAWER_REACH = """(title) => {
 async def check_drawers(browser) -> str:
     """A closed drawer is out of reach, and an open one's close button has a name (F179).
 
-    The API reference (Settings → API Keys) and the Scale deployment guide slide
-    off-screen when closed but stayed in the page: 13 and 10 controls a keyboard
-    tabbed into and a screen reader read while nothing was visible, and the API
-    reference's close × had no name.
+    The Scale deployment guide slides off-screen when closed but stayed in the page: 10 controls a keyboard
+    tabbed into and a screen reader read while nothing was visible. Settings → API Keys had the same drawer (the
+    API reference); it is gone since F906 (POL1, Naveen: "link to documentation"), so that page must carry no
+    drawer at all — nothing hidden in reach.
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
+        await page.goto(f"{APP}/settings/api_keys", wait_until="domcontentloaded")
+        await page.get_by_role("link", name="API reference").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if await page.evaluate(DRAWER_REACH, "API reference") is not None:
+            raise AssertionError("/settings/api_keys: an API reference drawer is back in the page (F906 links to the docs)")
         for path, title, opener in (
-            ("/settings/api_keys", "API reference", re.compile("view docs", re.I)),
             ("/settings/scale", "Scale deployment guide", re.compile("deploy docs", re.I)),
         ):
             await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
@@ -5298,7 +5302,7 @@ async def check_drawers(browser) -> str:
             await asyncio.sleep(0.8)
             if (await page.evaluate(DRAWER_REACH, title))["reach"]:
                 raise AssertionError(f"{path}: closed with Escape, the {title} is back in reach")
-        return "closed drawers are out of reach; open ones have named buttons"
+        return "the Scale guide's closed drawer is out of reach and its open one has named buttons; API Keys has no drawer"
     finally:
         await ctx.close()
 
@@ -5812,45 +5816,38 @@ async def check_promptwriter(browser) -> str:
 
 @check
 async def check_streamdocs(browser) -> str:
-    """The API reference never shows a stream example the API refuses (F199).
+    """The API page links to the docs and says where to call; it never shows a stream example the API refuses.
 
-    V2's React example opened `new EventSource(…/stream?token=YOUR_API_KEY)`.
-    The key is read only from the Authorization header, which EventSource cannot
-    send: that example got 401 on v1 and v2 alike. Every stream example now reads
-    with fetch and the header, and V1 says how to follow a run at all.
+    F199: V2's React example opened `new EventSource(…/stream?token=YOUR_API_KEY)`, which the API refuses (the key
+    is read only from the Authorization header). F906 (POL1, Naveen: "under api lets not have a documentation …
+    lets have a link to documentation") moved every example to the docs site (DOC5 keeps the stream examples
+    there); the page keeps the key, the v1 and v2 base URLs, how to send a key, and a link to the API reference
+    that opens in a new tab.
     """
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
         await page.goto(f"{APP}/settings/api_keys", wait_until="domcontentloaded")
-        opener = page.get_by_role("button", name=re.compile("view docs", re.I))
-        await opener.wait_for(timeout=30_000)
+        ref = page.locator("main a", has_text="API reference").first
+        await ref.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await opener.click()
-        await asyncio.sleep(0.8)
-        drawer = page.locator(".fixed", has=page.locator("h2", has_text="API reference")).last
-        shown = {}
-        for version in ("V1", "V2"):
-            await drawer.get_by_role("button", name=version, exact=True).click()
-            await asyncio.sleep(0.4)
-            # Sections start closed; open every one so each code block is in the page.
-            # A header is a button around an upper-case title; a closed one has no body after it.
-            await drawer.evaluate("""(root) => {
-              for (const b of root.querySelectorAll('button')) {
-                if (b.querySelector(':scope > span[data-doc-section]') && !b.nextElementSibling) b.click();
-              }
-            }""")
-            await asyncio.sleep(0.4)
-            shown[version] = await drawer.locator("pre").all_inner_texts()
-        for version, blocks in shown.items():
-            if any("new EventSource(" in b or "?token=" in b for b in blocks):
-                raise AssertionError(f"{version}'s docs still open a stream the API refuses (EventSource / ?token=)")
-        if not any("/events/stream" in b for b in shown["V1"]):
-            raise AssertionError("V1's docs never say how to follow a run")
-        hook = next((b for b in shown["V2"] if "function useOrchestrationRun" in b), "")
-        if "Authorization" not in hook or "Last-Event-ID" not in hook:
-            raise AssertionError("V2's React example does not send the key in its header, or cannot resume")
-        return "every stream example sends the key in its header, and V1 shows how to follow a run"
+        if await page.get_by_role("button", name=re.compile("view docs", re.I)).count():
+            raise AssertionError("the in-page docs drawer is back (F906 links to the docs site)")
+        href, target, rel = (await ref.get_attribute("href"), await ref.get_attribute("target"),
+                             await ref.get_attribute("rel"))
+        if href != "https://docs.synapseorch.com/api/overview" or target != "_blank" or "noopener" not in (rel or ""):
+            raise AssertionError(f"the API reference link is {href!r} target={target!r} rel={rel!r}")
+        mcp = await page.locator("main a", has_text="MCP server guide").first.get_attribute("href")
+        if mcp != "https://docs.synapseorch.com/api/mcp-server":
+            raise AssertionError(f"the MCP guide link is {mcp!r}")
+        text = await page.locator("main").inner_text()
+        origin = APP.rstrip("/")
+        for need in (f"{origin}/api/v1", f"{origin}/api/v2", "Authorization: Bearer", "Generate"):
+            if need not in text:
+                raise AssertionError(f"the API page does not say {need!r}")
+        if "new EventSource(" in text or "?token=" in text:
+            raise AssertionError("the API page shows a stream the API refuses (EventSource / ?token=)")
+        return "the API page says the base URLs and how to send a key, and links the reference in a new tab"
     finally:
         await ctx.close()
 
