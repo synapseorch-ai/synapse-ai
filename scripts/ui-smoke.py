@@ -13011,6 +13011,42 @@ async def check_wftabsreload(browser) -> str:
     return "two workflow tabs and the front one survive a reload"
 
 
+@check
+async def check_wftabsaddress(browser) -> str:
+    """The address opens a tab while the page is open, the first workflow's too (TABS1 v2, F930): the page opened
+    on A, B was opened beside it, and Jump to › A brings A's tab back in front. The editor keeps `?id=` in step
+    without a navigation, so to the page's own props that jump changed nothing (stack 1's baseline, cmdk)."""
+    stamp = int(time.time())
+    a, b = f"orch_uismoke_wfaa_{stamp}", f"orch_uismoke_wfab_{stamp}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(a, 1), "name": f"ui-smoke address A {stamp}"})
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(b, 1), "name": f"ui-smoke address B {stamp}"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={a}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await _wf_open_from_picker(page, f"ui-smoke address B {stamp}")
+        await _wf_canvas(page)
+        await page.get_by_role("button", name=re.compile(r"^Jump to")).click()
+        await page.locator("[cmdk-input]").wait_for(timeout=5_000)
+        await page.keyboard.type(f"address A {stamp}")
+        await asyncio.sleep(0.6)
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(SETTLE + 1)
+        front = await _wf_strip(page).get_by_role("tab", selected=True).get_attribute("aria-label") or ""
+        titles = await _wf_titles(page)
+        url = page.url
+    finally:
+        await ctx.close()
+        drop_fixture(a)
+        drop_fixture(b)
+    if "address A" not in front:
+        raise AssertionError(f"Jump to › A left {front!r} in front ({url})")
+    if len(titles) != 2:
+        raise AssertionError(f"the jump opened another tab: {titles}")
+    return "Jump to › the workflow the page opened on brings its tab back, and opens no other"
+
+
 #: The canvas's pan and zoom, as React Flow draws them.
 VIEWPORT = "() => (document.querySelector('.react-flow__viewport') || {}).style?.transform || ''"
 

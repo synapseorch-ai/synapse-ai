@@ -17,6 +17,7 @@
  */
 
 import { Plus, X } from 'lucide-react';
+import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { RunPage } from '@/components/runs/RunPage';
@@ -117,10 +118,8 @@ function runWords(r: RecentRun): string {
     return `${state} · ${ago}`;
 }
 
-export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSettings }: {
-    initialRunId?: string;
+export function WorkflowTabs({ initialOrchId, openSettings }: {
     initialOrchId?: string;
-    newRequest?: string;
     openSettings?: boolean;
 }) {
     const tabs = useWorkflowTabs<DraftSnapshot>({ load: loadTabs, save: saveTabs, readStatus: readRuns, newWorkflowId });
@@ -164,14 +163,22 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
         // Once.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-    // Each ask once: on arrival, and again when ⌘K or a link changes the address while this page is open — the
-    // page renders again with the new address, and this shell stays mounted.
+    // Each ask once: on arrival, and again when ⌘K or a link changes the address while this page is open. Read
+    // from the live address, not the page's props: the editor keeps `?id=` in step with `history.replaceState`,
+    // so ⌘K back to the workflow the page opened on is a change here and none in the props.
+    const params = useSearchParams();
+    const askedId = params.get('id') ?? undefined;
+    const askedRun = params.get('run') ?? undefined;
+    const askedNew = params.get('new') ?? undefined;
     const asked = useRef<string | null>(null);
     useEffect(() => {
-        const ask = `${initialOrchId ?? ''}|${initialRunId ?? ''}|${newRequest ?? ''}`;
+        const ask = `${askedId ?? ''}|${askedRun ?? ''}|${askedNew ?? ''}`;
         if (!ready || asked.current === ask) return;
         asked.current = ask;
-        const id = initialOrchId, run = initialRunId, wantsNew = newRequest;
+        const id = askedId, run = askedRun, wantsNew = askedNew;
+        // The editor writing down the tab in front is no ask.
+        if (!wantsNew && id && front?.kind === 'workflow' && front.ref === id
+            && (!run || run === kept.get(front.id)?.runId)) return;
         if (wantsNew) tabs.openNew();
         else if (run) {
             void (async () => {
@@ -187,7 +194,7 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
             url.searchParams.delete('new');
             window.history.replaceState(null, '', `${url.pathname}${url.search}`);
         }
-    }, [ready, tabs, initialOrchId, initialRunId, newRequest]);
+    }, [ready, tabs, askedId, askedRun, askedNew, front, kept]);
 
     // A link inside the page to a run or a workflow opens a tab (F1025). Listened for on this page's own
     // element: the menu and the help panel are outside it, and dialogs portal out of it.
