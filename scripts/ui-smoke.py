@@ -12724,5 +12724,50 @@ async def check_teamrun(browser) -> str:
     return "the run page draws a team's tasks and lanes from its events; a lane's Stop and Message reach that member of this run alone"
 
 
+@check
+async def check_runstateleak(browser) -> str:
+    """Another workflow opened while a run streams is not marked as running (F1026; TABS1, D319).
+
+    Switching workflows kept the earlier run's stream, its run id and its question: the
+    next event from that run put "running" and Stop on the workflow just opened, whose
+    own Run now was gone. A workflow's run state belongs to that workflow.
+    """
+    stamp = int(time.time())
+    a, b = f"orch_uismoke_leak_a_{stamp}", f"orch_uismoke_leak_b_{stamp}"
+    api("/api/orchestrations", "POST", {**human_gate_orchestration(a), "name": "ui-smoke leak A"})
+    api("/api/orchestrations", "POST", {**human_gate_orchestration(b), "name": "ui-smoke leak B"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(RUNLOG_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={a}", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2.0)
+        await page.get_by_role("button", name="Run now", exact=True).click()
+        for _ in range(30):
+            if await page.evaluate("() => !!window.__run.raw"):
+                break
+            await asyncio.sleep(0.1)
+        await page.evaluate(f"""() => window.__run.raw({{type: 'step_start', orch_step_id: '{a}_p0',
+            step_name: 'Line 1', step_type: 'print'}})""")
+        await asyncio.sleep(0.5)
+        # Open B the way the editor offers: its workflow switcher.
+        await page.get_by_role("button", name="Workflow", exact=True).click()
+        await page.get_by_role("option", name="ui-smoke leak B").click()
+        await asyncio.sleep(1.0)
+        # A's run goes on, and says so.
+        await page.evaluate(f"""() => window.__run.raw({{type: 'step_start', orch_step_id: '{a}_p1',
+            step_name: 'Line 2', step_type: 'print'}})""")
+        await asyncio.sleep(1.0)
+        stop = await page.get_by_role("button", name="Stop", exact=True).count()
+        run_now = await page.get_by_role("button", name="Run now", exact=True).count()
+    finally:
+        await ctx.close()
+        drop_fixture(a)
+        drop_fixture(b)
+    if stop or not run_now:
+        raise AssertionError("an earlier workflow's run marked the workflow opened after it as running")
+    return "a run streaming in one workflow leaves the next workflow opened idle, with its own Run now"
+
+
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
