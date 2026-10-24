@@ -439,6 +439,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // The list's last run per workflow (M2k): the 5 s poll holds only the newest 20
     // of every workflow, so the list also reads the newest 200 once it shows.
     const [listRuns, setListRuns] = useState<RunSummary[]>([]);
+    // Whether that read has answered with the runs: until it has (or when it failed) a row with no run can't say
+    // "Never run", which for a workflow that ran is a wrong word on the way (stack 1's baseline, workflowlist).
+    const [listRunsKnown, setListRunsKnown] = useState(false);
     const [landingTab, setLandingTab] = useState<'orchestrations' | 'active' | 'recent' | 'all'>('orchestrations');
     const [allRuns, setAllRuns] = useState<RunSummary[]>([]);
     const autoTabRef = useRef(false);
@@ -521,7 +524,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         let live = true;
         fetch('/api/orchestrations/runs?limit=200')
             .then(r => r.json())
-            .then(d => { if (live && Array.isArray(d)) setListRuns(d); })
+            .then(d => {
+                if (live && Array.isArray(d)) { setListRuns(d); setListRunsKnown(true); }
+            })
             .catch(() => {});
         return () => { live = false; };
     }, [onList, liveCount]);
@@ -1925,6 +1930,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     {landingTab === 'orchestrations' && listLoaded && (
                         <WorkflowList
                             rows={workflowRows}
+                            runsKnown={listRunsKnown}
                             onOpen={(row) => openWorkflow(row.id)}
                             menu={(row) => {
                                 const orch = orchestrations.find(o => o.id === row.id);

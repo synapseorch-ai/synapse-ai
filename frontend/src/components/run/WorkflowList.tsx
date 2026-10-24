@@ -34,9 +34,12 @@ import {
 
 export function WorkflowList({
     rows, hrefOf, onOpen, actions, actionsWidth = '36px', menu, select, toolbar, empty,
-    search = true, sortable = true, className,
+    search = true, sortable = true, runsKnown = true, className,
 }: {
     rows: WorkflowListRow[];
+    /** Whether the rows' last runs have been read (OSS reads them after the workflows): until then, and when the
+     *  read failed, a row with no run says "—", never "Never run". */
+    runsKnown?: boolean;
     /** A row's link (cloud: the editor at `/workflows?id=`). */
     hrefOf?: (row: WorkflowListRow) => string;
     /** Or an action in place (OSS opens the workflow on its canvas). */
@@ -155,7 +158,7 @@ export function WorkflowList({
                     <ul aria-label="Workflows" className="m-0 list-none p-0">
                         {shown.map((r) => (
                             <Row
-                                key={r.id} row={r} clock={clock} grid={grid} gridStyle={gridStyle}
+                                key={r.id} row={r} clock={clock} runsKnown={runsKnown} grid={grid} gridStyle={gridStyle}
                                 href={hrefOf?.(r)} onOpen={onOpen} actions={actions} menu={menu}
                                 selected={select ? select.selected.has(r.id) : undefined}
                                 onSelect={select ? (on) => {
@@ -173,8 +176,10 @@ export function WorkflowList({
 }
 
 /** The last run, in words: quiet when it completed; amber, red or cyan otherwise. */
-function LastRun({ row, clock }: { row: WorkflowListRow; clock: Clock }) {
+function LastRun({ row, clock, known }: { row: WorkflowListRow; clock: Clock; known: boolean }) {
     const run = row.lastRun;
+    // Not read yet, or the read failed: no claim either way.
+    if (!run && !known) return <span data-last-run-unknown className="text-text-faint">—</span>;
     if (!run) return <span className="text-text-faint">Never run</span>;
     const bucket = lastBucket(row);
     const at = <When iso={run.at} clock={clock} />;
@@ -203,9 +208,9 @@ function TriggerChip({ row }: { row: WorkflowListRow }) {
 }
 
 function Row({
-    row, clock, grid, gridStyle, href, onOpen, actions, menu, selected, onSelect,
+    row, clock, runsKnown, grid, gridStyle, href, onOpen, actions, menu, selected, onSelect,
 }: {
-    row: WorkflowListRow; clock: Clock; grid: string; gridStyle: React.CSSProperties;
+    row: WorkflowListRow; clock: Clock; runsKnown: boolean; grid: string; gridStyle: React.CSSProperties;
     href?: string; onOpen?: (row: WorkflowListRow) => void;
     actions?: (row: WorkflowListRow) => ReactNode; menu?: (row: WorkflowListRow) => ReactNode;
     selected?: boolean; onSelect?: (on: boolean) => void;
@@ -264,7 +269,7 @@ function Row({
             </span>
             <span className="hidden min-w-0 sm:block"><TriggerChip row={row} /></span>
             <span className="hidden min-w-0 truncate whitespace-nowrap text-[13px] text-text-muted sm:block">
-                <LastRun row={row} clock={clock} />
+                <LastRun row={row} clock={clock} known={runsKnown} />
             </span>
             <span className={num}>{run?.startedAt ? <Took start={run.startedAt} end={run.endedAt} /> : '—'}</span>
             <span className={num} title={run?.costHint}>{run ? money(run.costUsd) : '—'}</span>
@@ -283,7 +288,7 @@ function Row({
                 {/* The phone's line 1 has no room for these. */}
                 <span className="flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1 sm:hidden [&>*]:whitespace-nowrap">
                     <TriggerChip row={row} />
-                    <span className="text-text-muted"><LastRun row={row} clock={clock} /></span>
+                    <span className="text-text-muted"><LastRun row={row} clock={clock} known={runsKnown} /></span>
                     {run?.startedAt && <span className="tabular-nums"><Took start={run.startedAt} end={run.endedAt} /></span>}
                     {run && <span className="tabular-nums">{money(run.costUsd)}</span>}
                 </span>

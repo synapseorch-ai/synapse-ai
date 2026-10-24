@@ -10542,6 +10542,8 @@ async def check_workflowlist(browser) -> str:
                 await page.get_by_role("searchbox", name=re.compile("Search workflows")).fill(f"{stamp}")
                 row = page.locator(f"[data-workflow-row='{ran}']")
                 await row.wait_for(timeout=30_000)
+                # The last runs are read after the rows; a cell says "—" until then (workflowlistunknown).
+                await page.locator("[data-last-run-unknown]").first.wait_for(state="detached", timeout=30_000)
                 text = await row.inner_text()
                 for want in ("Mondays 07:00 UTC", "2 steps", "$0"):
                     if want not in text:
@@ -10571,6 +10573,44 @@ async def check_workflowlist(browser) -> str:
         drop_fixture(ran)
         drop_fixture(asks)
     return f"chip, last run, path and the person line at {' and '.join(seen)}px; the search narrows the list"
+
+
+@check
+async def check_workflowlistunknown(browser) -> str:
+    """A row's last run claims nothing until it is known (TABS1, F930): the rows come with the workflows, and their
+    runs from a second read. A workflow that ran said "Never run" until that read answered — a wrong word on the
+    way (stack 1's baseline, workflowlist). While the read is out, and when it fails, the cell is "—"; "Never run"
+    only once it has answered and there is no run."""
+    stamp = int(time.time())
+    oid = f"orch_uismoke_wfu_{stamp}"
+    api("/api/orchestrations", "POST", print_orchestration(oid, f"ui-smoke unknown {stamp}"))
+    said = {}
+    try:
+        for case, answer in (("held", _answer([], hold=4.0)), ("failed", _answer({"detail": "boom"}, status=500))):
+            ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+            await ctx.route("**/api/orchestrations/runs?limit=200", answer)
+            page = await ctx.new_page()
+            try:
+                await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+                row = page.locator(f"[data-workflow-row='{oid}']")
+                await row.wait_for(timeout=30_000)
+                said[case] = await row.inner_text()
+                if case == "held":
+                    await page.locator("[data-last-run-unknown]").first.wait_for(state="detached", timeout=15_000)
+                    said["answered"] = await row.inner_text()
+                else:
+                    await asyncio.sleep(SETTLE)
+                    said["after failing"] = await row.inner_text()
+            finally:
+                await ctx.close()
+    finally:
+        drop_fixture(oid)
+    for case in ("held", "failed", "after failing"):
+        if "Never run" in said[case]:
+            raise AssertionError(f"while its runs are {case}, the row says 'Never run': {said[case]!r}")
+    if "Never run" not in said["answered"]:
+        raise AssertionError(f"once the read answered with no run, the row does not say 'Never run': {said['answered']!r}")
+    return "a row's last run is '—' while its read is out or failed, and 'Never run' only once it answered"
 
 
 @check
