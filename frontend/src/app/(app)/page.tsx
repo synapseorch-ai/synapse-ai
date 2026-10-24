@@ -2906,22 +2906,30 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   const provider = systemStatus?.provider
     ? systemStatus.provider.charAt(0).toUpperCase() + systemStatus.provider.slice(1)
     : null;
+  // Whether the agent can answer (F182) — a workflow agent's steps, each checked (F313) — where the page's
+  // header said it before the tabs took the header's place: its title is the problem, when there is one.
+  const readyDot = systemStatus ? (
+    <span
+      data-model-dot=""
+      className={cn(
+        "size-2 shrink-0 rounded-full",
+        systemStatus.model_ready === true ? "bg-success" : systemStatus.model_ready === false ? "bg-warning" : "bg-text-faint",
+      )}
+      title={systemStatus.model_problem || undefined}
+      aria-hidden
+    />
+  ) : null;
   const modelLabel = workflowId ? (
     // A workflow: each step runs on the model set on it (U64).
-    <span className="truncate" title="A workflow: each step runs on the model set on it">
-      Workflow{workflowStepCount !== null && <> · {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</>}
+    <span className="flex min-w-0 items-center gap-1.5" title="A workflow: each step runs on the model set on it">
+      {readyDot}
+      <span className="truncate">
+        Workflow{workflowStepCount !== null && <> · {workflowStepCount} {workflowStepCount === 1 ? 'step' : 'steps'}</>}
+      </span>
     </span>
   ) : systemStatus ? (
     <span className="flex min-w-0 items-center gap-1.5" title={[provider, systemStatus.model].filter(Boolean).join(' · ')}>
-      {/* Whether the model can answer (F182), where the page's header used to say it. */}
-      <span
-        className={cn(
-          "size-2 shrink-0 rounded-full",
-          systemStatus.model_ready === true ? "bg-success" : systemStatus.model_ready === false ? "bg-warning" : "bg-text-faint",
-        )}
-        title={systemStatus.model_problem || undefined}
-        aria-hidden
-      />
+      {readyDot}
       <span className="truncate">
         {provider && <span className="hidden sm:inline">{provider} · </span>}{systemStatus.model || 'Loading...'}
       </span>

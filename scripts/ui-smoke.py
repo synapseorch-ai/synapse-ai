@@ -7242,7 +7242,8 @@ async def check_workflowready(browser) -> str:
                 break
             await asyncio.sleep(0.2)
         shown = await _on_screen(page, "No Gemini key is saved.")
-        dot = await page.evaluate("(p) => !!document.querySelector(`header [title=\"${p}\"]`)", problem)
+        # The model's dot sits by the composer since TABS1 (the tabs took the page header's place).
+        dot = await page.evaluate("(p) => !!document.querySelector(`[data-model-dot][title=\"${p}\"]`)", problem)
     finally:
         await ctx.close()
         drop_fixture(oid)
@@ -7253,10 +7254,10 @@ async def check_workflowready(browser) -> str:
     if not shown:
         bad.append("the step's problem is not on the page")
     if not dot:
-        bad.append("the header's dot does not carry the step's problem as its title")
+        bad.append("the model's dot does not carry the step's problem as its title")
     if bad:
         raise AssertionError("; ".join(bad))
-    return "the greeting says a step is not ready, names it, and so does the header's dot"
+    return "the greeting says a step is not ready, names it, and so does the model's dot"
 
 
 def judged_question_orchestration(oid: str) -> dict:
