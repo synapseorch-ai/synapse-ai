@@ -484,6 +484,45 @@ def test_a_relative_wheel_path_and_find_links_still_reach_uv(world, monkeypatch,
     assert seen["links"] == f"{tmp_path / 'dist'} https://example.test/wheels/"
 
 
+def test_uv_downloads_a_few_at_a_time_and_waits_on_a_slow_link(world, monkeypatch):
+    """~50 parallel downloads on Naveen's link left numpy 30 s without a byte, and
+    uv gave up on it: "operation timed out" (F835, rc0 on Windows)."""
+    monkeypatch.delenv("UV_CONCURRENT_DOWNLOADS", raising=False)
+    monkeypatch.delenv("UV_HTTP_TIMEOUT", raising=False)
+    seen = {}
+    real_run = flow.run
+
+    def spy(cmd, log, **kwargs):
+        if cmd[1:3] == ["tool", "install"] and "--help" not in cmd:
+            seen.update(kwargs["env"])
+        return real_run(cmd, log, **kwargs)
+
+    monkeypatch.setattr(flow, "run", spy)
+    code, out, _ = world["install"]()
+
+    assert code == 0, out
+    assert seen["UV_CONCURRENT_DOWNLOADS"] == "4"
+    assert seen["UV_HTTP_TIMEOUT"] == "300"
+
+
+def test_a_persons_own_uv_download_settings_are_kept(world, monkeypatch):
+    monkeypatch.setenv("UV_CONCURRENT_DOWNLOADS", "16")
+    monkeypatch.setenv("UV_HTTP_TIMEOUT", "45")
+    seen = {}
+    real_run = flow.run
+
+    def spy(cmd, log, **kwargs):
+        if cmd[1:3] == ["tool", "install"] and "--help" not in cmd:
+            seen.update(kwargs["env"])
+        return real_run(cmd, log, **kwargs)
+
+    monkeypatch.setattr(flow, "run", spy)
+    code, out, _ = world["install"]()
+
+    assert code == 0, out
+    assert (seen["UV_CONCURRENT_DOWNLOADS"], seen["UV_HTTP_TIMEOUT"]) == ("16", "45")
+
+
 def test_a_wheel_path_takes_its_extras_as_a_direct_reference(world, monkeypatch, tmp_path):
     """SYNAPSE_PACKAGE (the e2e scripts' wheel) cannot take `[extra]` after a path."""
     wheel = tmp_path / "synapse_orch_ai-2.0.1-py3-none-any.whl"

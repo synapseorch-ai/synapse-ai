@@ -666,6 +666,11 @@ class Installer:
     def _uv_env(self) -> dict:
         env = self._runtime_env()
         env.setdefault("UV_NO_PROGRESS", "1")
+        # About 50 downloads at once, ~400 MB, share a slow link: a big wheel went
+        # 30 s (uv's default) without a byte and failed the install (F835).
+        # Fewer at a time, and a longer wait; a person's own values win.
+        env.setdefault("UV_CONCURRENT_DOWNLOADS", "4")
+        env.setdefault("UV_HTTP_TIMEOUT", "300")
         if self.o.method == "npm":
             env["UV_TOOL_BIN_DIR"] = str(self.home / "runtime" / "bin")
         return env
