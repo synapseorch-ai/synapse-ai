@@ -148,3 +148,39 @@ class TestWhatTheBuilderSaves:
         orch = next(o for o in await load_orchestrations() if o.get("name") == "Scrape daily")
         step = next(s for s in orch["steps"] if s["id"] == "s1")
         assert step["forced_tool"] == "scrape_url"
+
+
+class TestWhatWasSavedBefore:
+    """rc4.3 changes what the builder writes, never how a run looks a tool up: an agent or workflow saved before it
+    keeps every name that resolved, through any later builder save (the manager's check)."""
+
+    async def test_names_that_resolved_are_left_exactly_as_saved(self, server):
+        from core.builder_guard import canonical_names
+
+        before = ["scrape_url", f"firecrawl{SEP}firecrawl_scrape", f"web_scraper{SEP}scrape_url", "all", "group:g1"]
+        assert await canonical_names(before, server) == before
+
+    async def test_an_old_agent_keeps_its_tools_through_a_builder_edit(self, server):
+        from _fakes import seed as S
+        from core.routes.agents import load_user_agents
+
+        await S.seed_agents([S.make_agent(id="agent_old", name="Old finder",
+                                          tools=["scrape_url", f"firecrawl{SEP}firecrawl_scrape"])])
+        got = await _call("update_agent", {"agent_id": "agent_old", "fields": {"description": "Finds leads."}}, server)
+        assert "error" not in got, got
+        old = next(a for a in await load_user_agents() if a["id"] == "agent_old")
+        assert old["tools"] == ["scrape_url", f"firecrawl{SEP}firecrawl_scrape"]
+
+    async def test_an_old_workflows_tool_step_keeps_its_name_and_still_validates(self, server):
+        from core.builder_guard import missing_in
+
+        workflow = {"steps": [{"id": "s1", "name": "Scrape", "type": "tool", "forced_tool": f"web_scraper{SEP}scrape_url"},
+                              {"id": "s2", "name": "Search", "type": "tool",
+                               "forced_tool": f"firecrawl{SEP}firecrawl_search"}]}
+        issues, warnings = await missing_in([workflow], {}, server)
+        assert issues == [] and warnings == []
+        from core.builder_tools import _steps_as_run_calls
+
+        kept = await _steps_as_run_calls({"steps": [dict(s) for s in workflow["steps"]]}, server)
+        assert [s["forced_tool"] for s in kept["steps"]] == [f"web_scraper{SEP}scrape_url",
+                                                             f"firecrawl{SEP}firecrawl_search"]
