@@ -10931,6 +10931,9 @@ async def check_oldwords(browser) -> str:
     docs, Import / Export, Usage, Memory, Scale and the orchestrator agent's note. Reads the text and every
     aria-label, placeholder and title, on each main page and on a workflow's canvas.
 
+    "MCP server" stays as the name of Synapse's own server, the Settings page Claude, Codex or Cursor connect through
+    (Naveen 2026-10-24, GUIDE1 F1027): only a link to that page is let through, so the word anywhere else still fails.
+
     What the workspace wrote is not the product's words (F516): a workflow named "New orchestration" before F511,
     a run log's own lines. So the names and descriptions it gave its things are taken out first, and so is every
     element that keeps its text verbatim (`white-space: pre…`: a log line, a file, code). The check's own fixture
@@ -10950,13 +10953,17 @@ async def check_oldwords(browser) -> str:
             await asyncio.sleep(SETTLE)
             text = await page.evaluate(
                 """() => {
+                  // Synapse's own MCP server keeps its name (Naveen 2026-10-24): it is not the apps D209 renamed. Only
+                  // a link to its Settings page, the nav entry or a "Settings › MCP server" link, is let through.
+                  const OWN_SERVER = 'a[href$="/settings/mcp_server"]';
                   const verbatim = [...document.body.querySelectorAll('*')]
-                    .filter(e => getComputedStyle(e).whiteSpace.startsWith('pre'));
+                    .filter(e => getComputedStyle(e).whiteSpace.startsWith('pre') || e.matches(OWN_SERVER));
                   const shown = verbatim.map(e => e.style.display);
                   verbatim.forEach(e => { e.style.display = 'none'; });
                   const said = document.body.innerText;
                   verbatim.forEach((e, i) => { e.style.display = shown[i]; });
                   return [said, ...[...document.querySelectorAll('[aria-label],[placeholder],[title]')]
+                    .filter(e => !e.closest(OWN_SERVER))
                     .flatMap(e => ['aria-label', 'placeholder', 'title'].map(a => e.getAttribute(a)))
                     .filter(Boolean)].join('\\n');
                 }""")
