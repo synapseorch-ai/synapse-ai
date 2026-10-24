@@ -236,13 +236,14 @@ class TestSeeHowImBuilt:
         # research gates, the agents gate, the agent creator, the save gate, both savers and finish_build out (11), and
         # the pack, the planner, the check's route and its three endings, the no read in code and its route, the new
         # agents gate and their instructions, the approval and its check, the refusal, the save and its ending in (15);
-        # 56 since the instructions are written before the review (Naveen, Q2 as revised): no gate after the yes.
-        assert legend["step_count"] == 56
+        # 56 since the instructions are written before the review (Naveen, Q2 as revised): no gate after the yes;
+        # 55 since P3b's researcher notes its own findings (E2): step_plan_findings out.
+        assert legend["step_count"] == 55
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
         assert {a["role"] for a in legend["agents"]} == {
-            "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher",
+            "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher", "plan_researcher",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2).
@@ -271,7 +272,7 @@ class TestSeeHowImBuilt:
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 7
+        assert len(result["agent_ids"]) == 8  # P3b: the build's own researcher (an E2 finish on report_findings)
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
