@@ -36,6 +36,12 @@ export async function runTour(steps: readonly TourStep[], onEnd: () => void): Pr
         return;
     }
     const { driver } = await import('driver.js');
+    let ended = false;
+    const end = () => {
+        if (ended) return;
+        ended = true;
+        onEnd();
+    };
     const tour = driver({
         showProgress: shown.length > 1,
         progressText: '{{current}} of {{total}}',
@@ -52,7 +58,14 @@ export async function runTour(steps: readonly TourStep[], onEnd: () => void): Pr
             element: () => anchorOf(step.anchor) ?? document.body,
             popover: { title: step.title, description: step.body },
         })),
-        onDestroyed: onEnd,
+        // Every way out (Done, ✕, Esc, a click outside) asks here first. Driver's own `onDestroyed` fires only once
+        // its opening animation has set a step, so an Esc in that first moment put the tour away unseen and it
+        // came back on the next visit: the tour is put away here, and ends once either way.
+        onDestroyStarted: () => {
+            tour.destroy();
+            end();
+        },
+        onDestroyed: end,
     });
     tour.drive();
 }

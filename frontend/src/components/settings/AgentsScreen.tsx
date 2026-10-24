@@ -47,8 +47,10 @@ export function AgentsScreen() {
     const router = useRouter();
     const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
     const [draftAgent, setDraftAgent] = useState<any>(null);
-    // An agent open in the editor has its own help and tour (GUIDE1, F1029), as the workflow editor has.
-    useHelpTopic(draftAgent ? 'agents.editor' : null);
+    // A new agent being set up has its own help and tour (GUIDE1, F1029), as the workflow editor has. Not one
+    // already made: the workbench always opens an agent, so the page's own help ("Agents") would never show.
+    const settingUpNew = draftAgent !== null && !(agents as any[]).some((a) => a.id === draftAgent.id);
+    useHelpTopic(settingUpNew ? 'agents.editor' : null);
     const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
     // What the draft was when it was last opened or saved. The draft used to be
