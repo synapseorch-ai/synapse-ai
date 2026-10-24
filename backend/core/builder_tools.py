@@ -4013,5 +4013,5 @@ for _module in ("core.builder_connect", "core.builder_readers", "core.builder_he
                 "core.builder_research", "core.builder_actions", "core.native_builder.change_tools",
                 "core.native_builder.change_apply", "core.native_builder.build_plan",
                 "core.native_builder.build_save", "core.native_builder.read_turn", "core.native_builder.classify",
-                "core.native_builder.answer_pack"):
+                "core.native_builder.answer_pack", "core.native_builder.lookup"):
     _importlib.import_module(_module)

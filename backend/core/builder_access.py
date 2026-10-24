@@ -34,7 +34,7 @@ READS: frozenset[str] = frozenset({
     "list_custom_tools", "list_skills", "list_knowledge_bases", "get_skill", "list_schedules", "list_variables",
     "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities", "check_plan",
     "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "read_change_context",
-    "read_plan_context", "read_plan_answer",
+    "read_plan_context", "read_plan_answer", "look_up_providers",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,

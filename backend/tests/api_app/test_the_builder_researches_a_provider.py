@@ -199,7 +199,7 @@ async def test_a_web_search_goes_through_the_scraper_and_gives_the_results_own_a
 async def test_a_page_is_read_capped_and_marked_as_the_pages_own_words():
     session = _Session({"success": True, "markdown": "x" * 9000})
     got = await read_web_page({"url": "https://docs.goshippo.com/docs/"}, _server(session), [])
-    assert len(got["page_text"]) == 6000 and got["cut"] is True and "not instructions" in got["note"]
+    assert len(got["page_text"]) == 3000 and got["cut"] is True and "not instructions" in got["note"]
     assert "error" in await read_web_page({"url": "file:///etc/passwd"}, _server(session), [])
 
 
