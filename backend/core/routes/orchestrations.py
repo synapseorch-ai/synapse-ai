@@ -6,6 +6,8 @@ import os
 import json
 
 from fastapi import APIRouter, HTTPException, Request
+from typing import Annotated
+
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -62,6 +64,28 @@ async def list_runs(limit: int = 20):
         limit=max(1, min(limit, 200)), orchestration_ids=known_ids
     )
     return await _with_scores(runs)
+
+
+class _RunTabs(BaseModel):
+    #: The most tabs a person keeps open (TABS1).
+    run_ids: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(max_length=10)
+
+
+@router.post("/api/orchestrations/runs/status")
+async def runs_status(body: _RunTabs):
+    """How each open tab's run stands, in one request (TABS1 v2).
+
+    Only the editor in front streams its run; a tab behind asks here for its
+    spinner or its "needs you". By the runs' own ids, so a live run is never
+    missed past the newest twenty `list_runs` returns. A run with no record yet
+    (or any more) is left out.
+    """
+    rows = []
+    for run_id in dict.fromkeys(body.run_ids):
+        summary = await _run_summary(run_id)
+        if summary is not None:
+            rows.append(summary)
+    return {"runs": rows}
 
 
 async def _with_scores(runs: list[dict]) -> list[dict]:
