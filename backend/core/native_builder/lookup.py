@@ -137,7 +137,7 @@ def _named_in(message: str, catalog: list[dict]) -> list[dict]:
 
 
 async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
-    """One provider: `{"found": Finding}`, or `{"left": {"provider", "note", "lead"?, "page"?, "page_text"?}}`."""
+    """One provider: `{"found": Finding}`, or `{"left": {"provider", "note", "lead"?, "page"?}}`."""
     from core.builder_connect import _read_options
 
     entry = research.catalog_entry(provider, (await _read_options()).get("catalog") or [])
@@ -176,8 +176,13 @@ async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
     notes.append(said)
     left: dict = {"provider": provider, "note": " ".join(notes)}
     if page:
-        # The page read, lead or not: what the research's verdict rests on ("orders are placed by phone").
-        left |= {"page": page, "page_text": text}
+        # The page read, lead or not: what the research's verdict rests on ("orders are placed by phone"). Its words
+        # stay in the research's record, never in the step's output or its history (SAI2-P3): read_web_page hands
+        # them to the Researcher again without reading the page twice.
+        left["page"] = page
+        record, run = research._record()
+        record.setdefault(research.PAGES_KEY, {})[page] = text
+        await research._keep(run)
     if lead is not None:
         left["lead"] = lead
     return {"left": left}

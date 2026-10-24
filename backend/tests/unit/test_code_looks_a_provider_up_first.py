@@ -154,7 +154,7 @@ async def test_an_own_developer_page_is_a_lead_never_a_verdict(world):
     assert lead["sources"] == ["https://mailchimp.com/developer/marketing/"]
     assert lead["own_domains"] == ["mailchimp.com"]
     assert left["page"] == "https://mailchimp.com/developer/marketing/"
-    assert "Authentication" in left["page_text"] and len(left["page_text"]) <= 3000
+    assert "page_text" not in left, "a page's words stay out of the step's output and the run's history"
     assert asked["scraped"][1:] == ["https://mailchimp.com/developer/marketing/"], "look-alikes are never read"
     assert "mailchimp.com" in br._evidence()["read_hosts"], "report_findings may cite the page it read"
 
@@ -176,7 +176,7 @@ async def test_a_page_without_api_words_is_no_lead_but_is_handed_on(world):
     got = await _look(providers=["Henry Schein"])
     [left] = got["left"]
     assert "lead" not in left and left["page"] == "https://henryschein.com/us-en/ordering"
-    assert "placed by phone" in left["page_text"] and "nothing of an API" in left["note"]
+    assert "nothing of an API" in left["note"]
     assert "henryschein.com" in br._evidence()["read_hosts"], "a none may rest on it"
 
 
@@ -335,3 +335,19 @@ def test_the_look_up_is_a_read_the_builder_may_call():
 
     assert "look_up_providers" in READS
     assert any(s["function"]["name"] == "look_up_providers" for s in BUILDER_TOOL_SCHEMAS)
+
+
+async def test_the_researcher_reads_a_looked_up_page_again_for_free(world):
+    """The look-up's page goes to the Researcher through read_web_page, from the run's record: no second read, no
+    backstop spent, and at most 3000 characters."""
+    state, asked = world
+    long_docs = DOCS + "\n\n" + "\n\n".join(f"Changelog entry {i}, nothing to see." for i in range(400))
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/marketing/"]
+    state["pages"]["https://mailchimp.com/developer/marketing/"] = long_docs
+    await _look(providers=["Mailchimp"])
+    before = list(asked["scraped"])
+    got = await br.read_web_page({"url": "https://mailchimp.com/developer/marketing/"}, None, [])
+    assert asked["scraped"] == before and not br._evidence().get("spent")
+    assert "## Authentication" in got["page_text"] and len(got["page_text"]) <= 3000
+    await br.report_findings({"options": [{"provider": "Mailchimp", "how": "unclear"}]}, None, [])
+    assert br.PAGES_KEY not in br._evidence(), "a report clears the pages with the rest of the record"
