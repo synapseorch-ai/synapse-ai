@@ -62,7 +62,17 @@ export const selfHostedConnector: Connector = {
         return { status: 'connected', message: `Saved the ${provider.label ?? provider.id} key.` };
     },
 
-    async toolSecret(tool, value): Promise<ConnectResult> {
+    async toolSecret(tool, value, hostParams): Promise<ConnectResult> {
+        if (tool.tools?.length) {
+            // The tools a build made (F945): the server fills their host and checks it, and keeps the key.
+            const res = await post('/api/tools/connect', {
+                tools: tool.tools, header: tool.header, scheme: tool.scheme ?? '', key: value,
+                host_params: hostParams ?? {}, provider: tool.name,
+            });
+            if (!res.ok) return { status: 'error', message: await problem(res) };
+            const saved = (await res.json()) as { message?: string };
+            return { status: 'connected', message: saved.message ?? `Saved the ${tool.header} for ${tool.name}.` };
+        }
         const list = await fetch('/api/tools/custom');
         if (!list.ok) return { status: 'error', message: await problem(list) };
         const tools = (await list.json()) as Array<Record<string, unknown>>;

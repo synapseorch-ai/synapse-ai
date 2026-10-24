@@ -3,11 +3,13 @@ Custom tools and MCP server management endpoints.
 """
 import json
 import os
+import re
 import asyncio
 import shutil
 from pathlib import Path
 from html import escape
 from typing import Optional
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
@@ -195,6 +197,59 @@ async def create_custom_tools_bulk(payload: dict):
     notes = [f"`{t['name']}`: {note}" for t in tools if (note := await _keep_lock(t))]
     await _upsert_custom_tools(tools)
     return {"status": "success", "imported": len(tools), **({"notes": notes} if notes else {})}
+
+
+#: An account part of a made tool's host (Mailchimp's `us6`): one DNS label (F945).
+_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+@router.post("/api/tools/connect")
+async def connect_made_tools(body: dict):
+    """The Connect card of a build's made tools saves here (F945; A8): for each tool, the account part of its host is
+    filled only with one DNS label and the provider's domain is checked again on the result, and the key goes into
+    its header with its scheme, through the tools' own save. The key is never sent back."""
+    from core.builder_research import _registrable_domain
+    from core.http_tool import _UNCONNECTED
+    from core.store.resources import load_tools
+
+    names = [str(n) for n in body.get("tools") or []]
+    header, scheme, key = str(body.get("header") or ""), str(body.get("scheme") or ""), str(body.get("key") or "")
+    params = {str(k).lower(): str(v).strip().lower() for k, v in (body.get("host_params") or {}).items()}
+    if not key or any(ord(c) < 32 or ord(c) == 127 for c in key):
+        raise HTTPException(status_code=422, detail="The key is empty or holds a line break: paste it again.")
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", header) or scheme not in ("Bearer", "Token", ""):
+        raise HTTPException(status_code=422, detail="That header or scheme is not one this card can save.")
+    current = {t.get("name"): t for t in await load_tools()}
+    updated = []
+    for name in names:
+        tool = current.get(name)
+        lock = str((tool or {}).get("base_lock") or "")
+        if not lock:
+            raise HTTPException(status_code=422, detail=f"`{name}` is not a tool a build made, so it is not "
+                                                        "connected here: set its key on the Tools screen.")
+        new_lock, new_url = lock, str(tool.get("url") or "")
+        for part in _UNCONNECTED.findall(lock):
+            label = part.strip("_")
+            value = params.get(label, "")
+            if not _LABEL.match(value):
+                raise HTTPException(status_code=422, detail=f"`{label}` is one word of letters, digits and dashes, "
+                                                            "as the card says where to find it.")
+            new_lock, new_url = new_lock.replace(part, value), new_url.replace(part, value)
+        before = _registrable_domain(urlsplit(lock).hostname.split(".", 1)[-1] if _UNCONNECTED.search(lock)
+                                     else urlsplit(lock).hostname or "")
+        if _registrable_domain(urlsplit(new_lock).hostname or "") != before:
+            raise HTTPException(status_code=422, detail=f"`{name}` would no longer be on {before}: not saved.")
+        updated.append({**tool, "url": new_url, "base_lock": new_lock,
+                        "headers": {**(tool.get("headers") or {}), header: f"{scheme} {key}".strip()}})
+    async with _save_lock():
+        await _upsert_custom_tools(updated)
+    return {"status": "connected", "tools": names, "message": f"Saved the {header} for {body.get('provider') or names[0]}."}
+
+
+def _save_lock():
+    from core.routes.save_check import SAVE_LOCK
+
+    return SAVE_LOCK
 
 
 # ── Tool groups ───────────────────────────────────────────────────────────────

@@ -151,6 +151,20 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
         tool_name = (args.get("tool_name") or "").strip()
         header = (args.get("header") or "").strip()
         tools = {t.get("name"): t for t in await load_tools()}
+        if isinstance(args.get("tools"), list):
+            # One card for every tool a build made for one provider (F945): its key once, with its scheme and the
+            # account part of its host, saved by the server (`/api/tools/connect`), never by the browser alone.
+            names = [str(n) for n in args["tools"] if str(n) in tools and tools[str(n)].get("base_lock")]
+            if not names or len(names) != len(args["tools"]):
+                return {"error": "Each tool on this card must be one the build made, and made already."}
+            if not header or any(c.isspace() for c in header):
+                return {"error": "Name the header that carries the key, e.g. X-Api-Key or Authorization."}
+            card["tool"] = {"id": names[0], "name": (args.get("provider") or names[0]).strip()[:60],
+                            "header": header, "scheme": str(args.get("scheme") or ""), "tools": names,
+                            "host_params": [{"name": str(p.get("name")), "says": str(p.get("says") or "")[:160]}
+                                            for p in args.get("host_params") or [] if isinstance(p, dict)]}
+            events.append(card)
+            return {"status": "card_shown", "card_id": card["id"]}
         if tool_name not in tools:
             return {"error": f"No custom tool named '{tool_name}'. Create it first, then ask for its key here."}
         if not header or any(c.isspace() for c in header):

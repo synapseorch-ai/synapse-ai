@@ -39,7 +39,14 @@ export interface ConnectSpec {
     app?: { slug: string; name?: string; auth?: 'oauth' | 'bearer' | 'none' | string; url?: string; token_hint?: string };
     server?: { name: string; label?: string; url: string };
     provider?: { id: string; label?: string };
-    tool?: { id: string; name: string; header: string };
+    /**
+     * A tool's key. For the tools a build made from a read API (F945): every one of the provider's (`tools`), the
+     * scheme its key goes in with, and each account part of its host the person fills in (Mailchimp's `dc`).
+     */
+    tool?: {
+        id: string; name: string; header: string; scheme?: string; tools?: string[];
+        host_params?: { name: string; says: string }[];
+    };
     screen?: { id: string; label?: string };
 }
 

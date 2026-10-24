@@ -34,7 +34,7 @@ export interface Connector {
     app?: (app: NonNullable<ConnectSpec['app']>, token?: string) => Promise<ConnectResult>;
     server?: (server: NonNullable<ConnectSpec['server']>, token?: string) => Promise<ConnectResult>;
     providerKey?: (provider: NonNullable<ConnectSpec['provider']>, key: string) => Promise<ConnectResult>;
-    toolSecret?: (tool: NonNullable<ConnectSpec['tool']>, value: string) => Promise<ConnectResult>;
+    toolSecret?: (tool: NonNullable<ConnectSpec['tool']>, value: string, hostParams?: Record<string, string>) => Promise<ConnectResult>;
     /** The host's path for a settings screen id (`models`, `apps`, `channels`…), or null if it has none. */
     href: (screen: string) => string | null;
     /** The product's name for "stored encrypted in …". */
@@ -74,6 +74,10 @@ export function ConnectCard({
     const [phase, setPhase] = React.useState<Phase>('idle');
     const [error, setError] = React.useState<string | null>(null);
     const [secret, setSecret] = React.useState('');
+    // Each account part of a made tool's host (F945): filled in beside the key, checked by the server.
+    const hostParams = spec.kind === 'tool_secret' ? (spec.tool?.host_params ?? []) : [];
+    const [params, setParams] = React.useState<Record<string, string>>({});
+    const paramsFilled = hostParams.every((p) => (params[p.name] ?? '').trim());
     const [signinUrl, setSigninUrl] = React.useState<string | null>(null);
 
     const name = spec.app?.name ?? spec.server?.label ?? spec.provider?.label ?? spec.tool?.name
@@ -83,7 +87,10 @@ export function ConnectCard({
         if (spec.kind === 'app' && spec.app && connector.app) return (s: string) => connector.app!(spec.app!, s || undefined);
         if (spec.kind === 'mcp_server' && spec.server && connector.server) return (s: string) => connector.server!(spec.server!, s || undefined);
         if (spec.kind === 'provider_key' && spec.provider && connector.providerKey) return (s: string) => connector.providerKey!(spec.provider!, s);
-        if (spec.kind === 'tool_secret' && spec.tool && connector.toolSecret) return (s: string) => connector.toolSecret!(spec.tool!, s);
+        if (spec.kind === 'tool_secret' && spec.tool && connector.toolSecret) {
+            return (s: string) => connector.toolSecret!(spec.tool!, s,
+                Object.fromEntries(hostParams.map((p) => [p.name, (params[p.name] ?? '').trim()])));
+        }
         return null;
     })();
     const link = run ? null : connector.href(screen);
@@ -92,7 +99,7 @@ export function ConnectCard({
     const done = phase === 'connected';
 
     async function connect() {
-        if (!run) return;
+        if (!run || !paramsFilled) return;
         setPhase('working');
         setError(null);
         try {
@@ -152,6 +159,19 @@ export function ConnectCard({
                 )}
             </div>
 
+            {!done && run && hostParams.map((p) => (
+                <label key={p.name} className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-text-muted">{p.says || p.name}</span>
+                    <Input
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={params[p.name] ?? ''}
+                        onChange={(e) => setParams((was) => ({ ...was, [p.name]: e.target.value }))}
+                        aria-label={p.says || p.name}
+                    />
+                </label>
+            ))}
+
             {!done && field && phase !== 'signin' && (
                 <label className="flex flex-col gap-1.5">
                     <span className="text-xs font-medium text-text-muted">{field}</span>
@@ -194,7 +214,7 @@ export function ConnectCard({
                             size="sm"
                             loading={phase === 'working'}
                             onClick={() => void connect()}
-                            disabled={phase === 'working' || (needsSecret && !secret.trim())}
+                            disabled={phase === 'working' || (needsSecret && !secret.trim()) || !paramsFilled}
                         >
                             {needsSecret ? 'Save' : 'Connect'}
                         </Button>
