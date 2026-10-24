@@ -631,11 +631,16 @@ def _read_pidfile(path: Path):
 
 
 def _is_running(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except Exception:
-        return False
-    return True
+    """Whether process `pid` exists. Every caller (status, stop, start, upgrade)
+    asks here.
+
+    Not `os.kill(pid, 0)`: on Windows signal 0 is CTRL_C_EVENT, which fails for
+    the detached backend and frontend, so status said "not running" while both
+    answered, and every Windows install ended "Starting failed" (F1036).
+    """
+    import psutil
+
+    return psutil.pid_exists(pid)
 
 
 def _kill_proc_tree(proc: subprocess.Popen, timeout: int = 5) -> None:
