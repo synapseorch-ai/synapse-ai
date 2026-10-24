@@ -42,9 +42,9 @@ DRAFT_KEY, CHECKED_KEY, FINDINGS_KEY, EXISTING_KEY, ANSWER_KEY, PROMPTS_KEY = (
 #: approval can cover each save call with the placeholders it will be made with (F940).
 MADE = PLACEHOLDER
 
-#: Whether the build makes an HTTP tool from the lookup's API spec after the yes (P3b, F944). Until then an
-#: API-only provider has no way in here.
-MAKES_HTTP_TOOLS = False
+#: Whether the build makes an HTTP tool from the lookup's API spec after the yes (P3b: F944 makes it, F945 connects
+#: it, F946 waits for the connection before the save). Off, an API-only provider has no way in here.
+MAKES_HTTP_TOOLS = True
 
 #: How many times `submit_plan` sends a Plan back in one planner step before it takes it as it is, issues and all
 #: (the card then says them, and offers no Build it).

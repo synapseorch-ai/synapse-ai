@@ -237,8 +237,10 @@ class TestSeeHowImBuilt:
         # the pack, the planner, the check's route and its three endings, the no read in code and its route, the new
         # agents gate and their instructions, the approval and its check, the refusal, the save and its ending in (15);
         # 56 since the instructions are written before the review (Naveen, Q2 as revised): no gate after the yes;
-        # 55 since P3b's researcher notes its own findings (E2): step_plan_findings out.
-        assert legend["step_count"] == 55
+        # 55 since P3b's researcher notes its own findings (E2): step_plan_findings out; 61 with the tools a build makes
+        # and its wait for their connection (F944–F946): the make, its route, the wait, its answer, its route, giving
+        # up, its end.
+        assert legend["step_count"] == 62
         assert legend["entry_step"]["type"] == "evaluator"
         assert {r["label"] for r in legend["routes"]} == {
             "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
@@ -246,8 +248,9 @@ class TestSeeHowImBuilt:
             "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher", "plan_researcher",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
-        # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2).
-        assert len(legend["human_gates"]) == 4
+        # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2); the wait for a made
+        # tool's connection is the fifth (P3b, F946).
+        assert len(legend["human_gates"]) == 5
         assert "evaluator" in legend["step_types"]
 
     async def test_the_legend_carries_the_orchestration_the_canvas_draws(self, client):

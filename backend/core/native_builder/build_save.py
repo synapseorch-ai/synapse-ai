@@ -534,13 +534,119 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         run.step_progress.pop(PROGRESS_KEY, None)  # what it recorded is gone again
         return _stopped(events, f"Nothing was built: {reason}.")
     if only == "tools":
-        return {"outcome": "tools_made", "tools": [c["name"] for c in calls if c["kind"] == "tool"]}
+        made_tools = [c["name"] for c in calls if c["kind"] == "tool"]
+        say = await _connect_cards(plan, made_tools, events) if made_tools else ""
+        return {"outcome": "tools_made", "tools": made_tools, "say": say}
+    # Saved: what it made is the build's now, never removed by a later cancel (F946).
+    run.step_progress[PROGRESS_KEY] = {**(run.step_progress.get(PROGRESS_KEY) or {}), "saved": True}
+    from core.orchestration.state import SharedState
+
+    try:
+        await SharedState(run).checkpoint(columns=("step_progress",))
+    except Exception as exc:  # noqa: BLE001 — the mark is still on the run; its next checkpoint writes it
+        _log.warning("build save of run %s not marked saved: %s", run_id, exc)
     left = [c for c in calls if c.get("makes")]
     notes = "".join(f" {n}" for n in checked.get("notes") or [])  # what the card said it does not do, said again
     return {"outcome": "saved", "made": {c["name"]: made[c["makes"]] for c in left if c["makes"] in made},
             "effect": await _read_back(calls, made) + notes}
 
 
+async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> str:
+    """One Connect card per provider for the tools this build made for it (F945), from the approved spec: its key
+    once, its header and scheme, and what its host needs. Returns what the wait says."""
+    from core.builder_connect import prepare_connection
+
+    by: dict[str, list[O.ToolStatus]] = {}
+    for t in plan.tools:
+        if t.name in names and t.api:
+            by.setdefault(t.provider or t.name, []).append(t)
+    for provider, tools in by.items():
+        api = tools[0].api or {}
+        auth = api.get("auth") or {}
+        await prepare_connection({
+            "kind": "tool_secret", "title": f"Connect {provider}", "provider": provider,
+            "why": f"This build made {len(tools)} tool{'s' if len(tools) > 1 else ''} for {provider}. Give "
+                   f"{'them' if len(tools) > 1 else 'it'} your {provider} key here; it is kept with the "
+                   f"tool{'s' if len(tools) > 1 else ''}, never in this conversation.",
+            "tools": [t.name for t in tools], "header": auth.get("name") or "Authorization",
+            "scheme": auth.get("scheme") or "", "host_params": api.get("host_params") or []}, None, events)
+    who = " and ".join(by)
+    return (f"I made the tools for {who}. Connect {who} on the card above, and I'll save the rest of the build. Or "
+            f"say \"build without {next(iter(by))}\", or \"stop\".")
+
+
+#: Ending words at the wait for a connection (F946), read in code like the review's.
+_STOP = re.compile(r"^\s*(?:stop|cancel|never ?mind|don'?t build( it)?|forget it)\s*[.!]?\s*$", re.I)
+
+
+def _made_tools(run: Any) -> list[str]:
+    """The tools this build made and has not saved yet (its save's record)."""
+    kept = run.step_progress.get(PROGRESS_KEY) or {} if run is not None else {}
+    if kept.get("saved"):
+        return []
+    return [real for kind, real, _ in kept.get("done") or [] if kind == "tool"]
+
+
+async def undo_made_tools(run: Any, events: list[dict], why: str) -> list[str]:
+    """Remove the tools a build made and never saved, and forget them (SAI2's addition 2): never left behind."""
+    names = _made_tools(run)
+    if not names:
+        return []
+    await _undo([("tool", n, n) for n in names], run.shared_state, events, why)
+    kept = run.step_progress.get(PROGRESS_KEY) or {}
+    run.step_progress[PROGRESS_KEY] = {**kept, "done": [d for d in kept.get("done") or [] if d[0] != "tool"],
+                                       "calls_done": []}
+    return names
+
+
+async def read_connect_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """What the person said at the wait for a connection (F946), in code: the card's words with every made tool
+    connected go on to the save; "build without X" removes X's tools and goes back to the check with X left out;
+    "stop" removes them all; anything else is asked again."""
+    from core.http_tool import _UNCONNECTED
+    from core.native_builder.build_plan import _CONNECTED, _WITHOUT
+    from core.store.resources import load_tools
+
+    _, run = _run()
+    state = run.shared_state if run is not None else {}
+    said = "stop" if args.get("give_up") else str((_obj(state.get("connect_answer")) or {}).get("feedback") or "")
+    plan = _plan_of(checked_in(state))
+    made = _made_tools(run)
+    providers = {t.name: t.provider or t.name for t in plan.tools if t.name in made}
+    if _CONNECTED.match(said):
+        current = {t.get("name"): t for t in await load_tools()}
+        waiting = [n for n in made if n not in current
+                   or _UNCONNECTED.search(str(current[n].get("base_lock") or ""))
+                   or not (current[n].get("headers") or {})]
+        if not waiting:
+            return {"outcome": "connected"}
+        who = " and ".join(dict.fromkeys(providers.get(n, n) for n in waiting))
+        return {"outcome": "again", "say": f"{who} is not connected yet: fill in its card above, then press Connect."}
+    m = _WITHOUT.match(said)
+    if m or _STOP.match(said):
+        who = " and ".join(dict.fromkeys(providers.values())) or "the"
+        removed = await undo_made_tools(run, events, "the build went on without them" if m else "the build stopped")
+        say = f"I removed the {who} tools I'd made." if removed else ""
+        if m:
+            return {"outcome": "without", "without": removed, "say": say}
+        return {"outcome": "stop", "say": f"{say} Nothing else was built.".strip()}
+    return {"outcome": "again", "say": "I'm waiting for the card above. Connect it, or say \"build without …\", or "
+                                       "\"stop\"."}
+
+
+async def _cancelled(run: Any) -> None:
+    """A builder run cancelled or expired while it waits never leaves the tools it made (SAI2's addition 2)."""
+    if getattr(run, "orchestration_id", "") == "orch_native_builder" and _made_tools(run):
+        await undo_made_tools(run, [], "the build was cancelled before it was saved")
+
+
+from core.orchestration.cancel import on_cancel  # noqa: E402 — registered with the module, as its tools are
+
+on_cancel(_cancelled)
+register_builder_tool({"type": "function", "function": {
+    "name": "read_connect_answer", "description": "Synapse AI's reading of the answer at a build's wait for a "
+                                                  "connection (code).", "parameters": {"type": "object", "properties": {}}}},
+                      read_connect_answer)
 register_builder_tool(SUBMIT_PROMPTS, submit_prompts)
 for _name, _handler, _says in (("approve_plan", approve_plan, "Synapse AI's record of the person's yes to a build "
                                                               "(code)."),

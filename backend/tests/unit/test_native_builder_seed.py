@@ -233,18 +233,21 @@ class TestOnlyTheApplyStepCanDestroy:
     def test_the_apply_step_makes_all_of_them(self):
         """Every delete is a change op, and the one step that makes a change's calls is `step_apply`. The only
         other steps that force a write are the two approvals, which write the run's own record, and the build's
-        save (SAI2-P3), which makes, never deletes: its calls are only these."""
+        save (SAI2-P3), which makes, never deletes: its calls are only these. P3b's `step_make_tools` is that save
+        run up to its first calls, the tools it makes from a read API (F944)."""
         from core.builder_access import WRITES
         from core.native_builder import build_save, change_ops
 
         assert self.DESTRUCTIVE <= set(change_ops.WRITE_TOOLS)
         writing = {s["id"] for s in bundled_definitions()["orchestration"]["steps"]
                    if s["type"] == "tool" and s.get("forced_tool") in WRITES}
-        assert writing == {"step_plan_approve", "step_save", "step_change_approve", "step_apply"}
+        assert writing == {"step_plan_approve", "step_save", "step_make_tools", "step_change_approve", "step_apply"}
+        steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
+        assert steps["step_make_tools"]["forced_tool"] == "save_build"
         import inspect
-        source = inspect.getsource(build_save.save_calls)
+        source = inspect.getsource(build_save.save_calls) + inspect.getsource(build_save._tool_call)
         made = {"create_agent", "create_orchestration", "update_orchestration", "set_orchestration_meta",
-                "create_board", "create_schedule"}
+                "create_board", "create_schedule", "create_http_tool"}
         assert {t for t in made if f'"{t}"' in source} == made and "delete" not in source
 
     def test_nothing_inherits_the_default_tool_set_by_accident(self):

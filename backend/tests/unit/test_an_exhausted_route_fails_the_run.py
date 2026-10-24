@@ -197,6 +197,7 @@ _SCRIPTED = {
     "step_check_plan": '{"outcome": "{state.human_response.next}"}',
     "step_plan_answer": '{"outcome": "revise"}',
     "step_plan_approve": '{"approved": 1}',
+    "step_make_tools": '{"outcome": "tools_made", "tools": []}',   # no read API's tools to make (F944)
 }
 
 

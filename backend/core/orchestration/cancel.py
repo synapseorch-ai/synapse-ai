@@ -78,6 +78,19 @@ async def _announce(run_id: str, redis: Any = None) -> None:
             pass
 
 
+#: What else a cancel settles, beyond the run's own record: each is called with the run as it stopped (a paused run
+#: never reaches the engine's end-of-run seam). A failing one never stops the cancel. The builder's registers the
+#: removal of tools a build made and never saved (F946).
+_ON_CANCEL: list[Any] = []
+
+
+def on_cancel(hook: Any) -> Any:
+    """Register `async hook(run)` to run when a run is cancelled; returns it, so it can decorate."""
+    if hook not in _ON_CANCEL:
+        _ON_CANCEL.append(hook)
+    return hook
+
+
 async def cancel_run(run_id: str, *, redis: Any = None, reason: str | None = None) -> Cancelled:
     """Stop a run, running or paused. `reason`, when given, is kept on the run as why
     it stopped (`run_error`), so its page says more than "cancelled" (F247)."""
@@ -141,6 +154,12 @@ async def cancel_run(run_id: str, *, redis: Any = None, reason: str | None = Non
             if reason:
                 from core.orchestration.run_error import set_run_error
                 set_run_error(restored.run, reason)
+            for hook in list(_ON_CANCEL):
+                try:
+                    await hook(restored.run)
+                except Exception:  # noqa: BLE001 — a hook that fails never stops the cancel
+                    import logging
+                    logging.getLogger(__name__).warning("a cancel hook failed for run %s", run_id, exc_info=True)
             await restored.checkpoint()
             status, stopped = "cancelled", True
             if was_paused and not live:
