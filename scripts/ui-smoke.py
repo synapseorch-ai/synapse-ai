@@ -1706,12 +1706,12 @@ async def check_mcppresets(browser) -> str:
         await page.goto(f"{APP}/apps", wait_until="domcontentloaded")
         await asyncio.sleep(SETTLE)
         # The add form is on the page (M2f); an older layout opened it first.
-        if not await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).count():
+        if not await page.get_by_role("button", name=re.compile(r"By web address \(URL\)")).count():
             opener = page.get_by_role("button", name=re.compile(r"^(add|new)", re.I)).first
             if await opener.count():
                 await opener.click()
                 await asyncio.sleep(0.8)
-        await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).first.click()
+        await page.get_by_role("button", name=re.compile(r"By web address \(URL\)")).first.click()
         await asyncio.sleep(0.5)
         token = page.locator("#mcp-token")
         for label, auth in MCP_PRESET_AUTH.items():
@@ -7606,10 +7606,10 @@ async def check_mcpadd(browser) -> str:
 
         async def add(name: str, url: str) -> str:
             # A saved add resets the form to its default type (stdio).
-            await page.get_by_role("button", name=re.compile(r"Remote \(URL\)")).click()
-            await page.get_by_label("Unique ID").fill(name)
+            await page.get_by_role("button", name=re.compile(r"By web address \(URL\)")).click()
+            await page.get_by_label("Short id (no spaces)").fill(name)
             await page.get_by_label("Server URL").fill(url)
-            await page.get_by_role("button", name="Connect Server").click()
+            await page.get_by_role("button", name="Connect", exact=True).click()
             await asyncio.sleep(1.0)
             return await page.evaluate("() => document.querySelector('main').innerText")
 
@@ -10839,7 +10839,7 @@ async def check_evalfields(browser) -> str:
         if puts:
             raise AssertionError("a scale with min at max was sent")
         await detail.get_by_role("spinbutton", name="Scale min").fill("1")
-        await detail.get_by_role("spinbutton", name="Baseline runs").fill("7")
+        await detail.get_by_role("spinbutton", name="Runs to compare with").fill("7")
         await detail.get_by_role("button", name="Save rubric").click()
         await _status_saying(page, "Saved as version 2")
         stored = next(r for r in api("/api/rubrics") if r["id"] == rubric["id"])
