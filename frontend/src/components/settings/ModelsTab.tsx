@@ -107,9 +107,12 @@ export const ModelsTab = ({
     // Both lists, and the builder's picker, are built by one helper in
     // lib/models — they used to be three separate flatMaps that disagreed.
     const modelOptions = withUnreachable(buildModelOptions(providers), selectedModel);
-    const embeddingOptions = withUnreachable(
-        buildModelOptions(providers, 'embedding_models'), embeddingModel,
-    );
+    // Empty is a real choice (F1020's class: every optional picker can go back to empty): code search and each
+    // step's semantic cache simply have no embeddings then.
+    const embeddingOptions = [
+        { value: DEFAULT_SENTINEL, label: 'None' },
+        ...withUnreachable(buildModelOptions(providers, 'embedding_models'), embeddingModel),
+    ];
     // Empty means "whatever the default model is", which is a real choice and
     // needs a row of its own — a blank control reads as nothing being set.
     const builderOptions = [
@@ -389,8 +392,8 @@ export const ModelsTab = ({
                 </Field>
                 <Field label="Embedding model" hint="Indexes code repositories, matches each workflow step's semantic cache, and embeds knowledge bases unless Knowledge has its own. Gemini, OpenAI, Bedrock, Ollama and OpenAI-compatible servers embed.">
                     <Combobox
-                        value={embeddingModel || undefined}
-                        onChange={setEmbeddingModel}
+                        value={embeddingModel || DEFAULT_SENTINEL}
+                        onChange={(v) => setEmbeddingModel(v === DEFAULT_SENTINEL ? '' : v)}
                         options={embeddingOptions}
                         placeholder={loadingModels ? 'Loading models…' : 'Select default embedding model…'}
                         searchPlaceholder="Search embedding models…"

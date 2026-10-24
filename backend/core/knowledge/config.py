@@ -65,6 +65,17 @@ class KnowledgeSettings:
     contextual_model: str = ""  # CCR-10
 
 
+#: A workspace's "no rerank" (QA1e's F1020). Cloud reads an empty `knowledge_rerank_model` as the platform's reranker
+#: (BF9), so "stop reranking" needs a value of its own; the engine reads it as no default reranker, as OSS's "".
+#: Never a model id: those always name their provider (`cohere.…`).
+RERANK_OFF = "none"
+
+
+def _rerank_model(settings: Mapping[str, Any]) -> str:
+    model = str(_get(settings, "knowledge_rerank_model") or "").strip()
+    return "" if model == RERANK_OFF else model
+
+
 def _get(settings: Mapping[str, Any], key: str) -> Any:
     value = settings.get(key)
     return DEFAULTS[key] if value is None else value
@@ -92,7 +103,7 @@ def knowledge_settings(settings: Mapping[str, Any] | None = None) -> KnowledgeSe
         trace_retention_days=int(_get(settings, "knowledge_trace_retention_days")),
         api_search_per_min=int(_get(settings, "knowledge_api_search_per_min")),
         embedding_model=embedding,
-        rerank_model=str(_get(settings, "knowledge_rerank_model") or ""),
+        rerank_model=_rerank_model(settings),
         ingest_concurrency=int(_get(settings, "knowledge_ingest_concurrency")),
         snapshot_grace_days=int(_get(settings, "knowledge_snapshot_grace_days")),
         rerank_base_url=str(_get(settings, "knowledge_rerank_base_url") or ""),

@@ -285,5 +285,7 @@ def _usage(route: RerankRoute, model: str, name: str, data: Any, latency_ms: int
 
 def from_settings(settings: Mapping[str, Any]) -> ProviderReranker | None:
     """The default reranker: one when a rerank model is configured, else None."""
+    from core.knowledge.config import RERANK_OFF
+
     model = str(settings.get("knowledge_rerank_model") or "").strip()
-    return ProviderReranker() if model else None
+    return ProviderReranker() if model and model != RERANK_OFF else None
