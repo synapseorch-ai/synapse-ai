@@ -20,6 +20,9 @@ Rules that are not style:
   is refused; the `token` check says so once instead of failing everything.
 * Exit status is the number of failed checks, so a broken check cannot hide
   the rest.
+* Every check's browser has already seen every guided tour (`ToursSeen`): a
+  page's first-visit tour covers it until put away, so a fresh browser would
+  meet one on every page. Only `tour` starts fresh, with `fresh_context`.
 """
 from __future__ import annotations
 
@@ -52,6 +55,36 @@ CHECKS: dict[str, "object"] = {}
 def check(fn):
     CHECKS[fn.__name__.removeprefix("check_")] = fn
     return fn
+
+
+# Every guided tour (GUIDE1, F919/F1028) reads as seen, whatever its page or version: `tourSeen` reads
+# `synapse.tour.<id>.v<n>` from localStorage, and here that read is always '1'.
+TOURS_SEEN = """try{const get=Storage.prototype.getItem;Storage.prototype.getItem=function(k){
+  return this===window.localStorage&&typeof k==='string'&&k.startsWith('synapse.tour.')
+    ?'1':get.call(this,k)}}catch(e){}"""
+
+
+class ToursSeen:
+    """The browser every check gets: each context it opens has seen every tour already.
+
+    Naveen (2026-10-24): a page's guided tour opens by itself once, on the first visit, and its overlay takes
+    the clicks until it is put away; that replaced "help only on click". A check about anything else must not
+    meet one by accident, so this is where no check can forget it. `fresh_context` is the exception, for `tour`.
+    """
+
+    def __init__(self, browser):
+        self._browser = browser
+
+    def __getattr__(self, name):
+        return getattr(self._browser, name)
+
+    async def new_context(self, **kwargs):
+        ctx = await self._browser.new_context(**kwargs)
+        await ctx.add_init_script(TOURS_SEEN)
+        return ctx
+
+    async def fresh_context(self, **kwargs):
+        return await self._browser.new_context(**kwargs)
 
 
 # ── the API, as the app's own server calls it ────────────────────────────────
@@ -8610,6 +8643,57 @@ async def _help_context(browser, *, media: str = "ok", reduced: bool = False, ro
     return ctx, seen
 
 
+TOUR_POPOVER = "#driver-popover-content"
+
+
+async def _no_tour(page, path: str) -> None:
+    """`path` loads and no tour opens: past the provider's 1.5 s settle, with room to draw."""
+    await page.goto(f"{APP}{path}", wait_until="domcontentloaded")
+    await page.get_by_role("button", name=HELP_BUTTON, exact=True).first.wait_for(timeout=30_000)
+    await asyncio.sleep(SETTLE + 2)
+    if await page.locator(TOUR_POPOVER).is_visible():
+        raise AssertionError(f"{path}: a tour opened again")
+
+
+@check
+async def check_tour(browser) -> str:
+    """A page's guided tour opens by itself once, on the first visit, and never the help panel (GUIDE1, F919/F1028).
+
+    Naveen (2026-10-24): guides open once on their own, the panel only on a click. A fresh browser: Home's tour
+    opens with no panel behind it; Esc puts it away and a reload doesn't bring it back; the panel's "Take the
+    tour" runs it again. A section's tab guide shows on its first tab and not on the section's next one.
+    """
+    ctx = await browser.fresh_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/", wait_until="domcontentloaded")
+        popover = page.locator(TOUR_POPOVER)
+        await popover.wait_for(state="visible", timeout=30_000)
+        if await page.locator(f"[role=dialog]:not({TOUR_POPOVER})").count():
+            raise AssertionError("/: a dialog other than the tour opened by itself")
+        await page.keyboard.press("Escape")
+        await popover.wait_for(state="hidden", timeout=5_000)
+        await _no_tour(page, "/")
+
+        _, dialog = await _open_help(page)
+        await dialog.get_by_role("button", name="Take the tour").click()
+        await popover.wait_for(state="visible", timeout=10_000)
+        await page.keyboard.press("Escape")
+        await popover.wait_for(state="hidden", timeout=5_000)
+
+        await page.goto(f"{APP}/runs", wait_until="domcontentloaded")
+        await popover.wait_for(state="visible", timeout=30_000)
+        title = (await page.locator("#driver-popover-title").inner_text()).strip()
+        if not title.startswith("Runs ›"):
+            raise AssertionError(f"/runs: the first visit's guide is {title!r}, not the section's tabs")
+        await page.keyboard.press("Escape")
+        await popover.wait_for(state="hidden", timeout=5_000)
+        await _no_tour(page, "/logs")
+    finally:
+        await ctx.close()
+    return "a first visit shows the page's tour once, never the panel; the panel replays it; a section's tabs once"
+
+
 async def _open_help(page, how: str = "click"):
     """Press the page's "?" and wait for its panel. Returns (button, dialog)."""
     button = page.get_by_role("button", name=HELP_BUTTON, exact=True)
@@ -8635,9 +8719,11 @@ _FOCUSED_LABEL = """() => { const el = document.activeElement;
 async def check_help(browser) -> str:
     """The "?" opens a panel about the page, only when pressed, and gives focus back when it closes (H1).
 
-    Naveen: help opens "when clicking" — never as a tour on a first visit — so a fresh browser loads pages and
-    nothing opens, and nothing is fetched from the docs site either. Then the panel: a dialog named for the page,
-    closed by Escape, its ✕ and the scrim, each handing focus back to the "?" that opened it (F382's drawer).
+    Naveen: the panel opens "when clicking". A page's guided tour is the one thing that opens by itself on a first
+    visit (his call, 2026-10-24, replacing "never as a tour") and is `tour`'s; this browser has seen every tour, so
+    pages load and nothing opens, and nothing is fetched from the docs site either. Then the panel: a dialog named
+    for the page, closed by Escape, its ✕ and the scrim, each handing focus back to the "?" that opened it (F382's
+    drawer).
     """
     ctx, seen = await _help_context(browser)
     page = await ctx.new_page()
@@ -11358,7 +11444,7 @@ async def main() -> int:
                 print(f"?? {name}: no such check"); failed += 1; continue
             started = time.time()
             try:
-                note = await fn(browser)
+                note = await fn(ToursSeen(browser))
                 print(f"ok {name}: {note} ({time.time() - started:.1f}s)")
             except Exception as exc:                      # a broken check fails alone
                 failed += 1
