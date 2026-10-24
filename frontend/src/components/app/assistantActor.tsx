@@ -18,7 +18,9 @@ async function press(button: ActionButton): Promise<ActResult> {
     const res = await fetch('/api/assistant/act', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool: button.tool, arguments: button.arguments, token: button.token }),
+        body: JSON.stringify({
+            tool: button.tool, arguments: button.arguments, token: button.token, run_id: button.run_id ?? null,
+        }),
     });
     let body: { detail?: unknown; result?: { run_id?: string | null } } = {};
     try { body = await res.json(); } catch { /* not JSON */ }

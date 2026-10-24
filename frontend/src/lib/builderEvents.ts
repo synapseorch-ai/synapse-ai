@@ -80,6 +80,8 @@ export interface ActionButton {
     arguments: Record<string, any>;
     token: string;
     expires_in_seconds?: number;
+    /** The assistant turn that put the card up: a press is kept on that turn's card, for the next turn (SAI2-P4). */
+    run_id?: string | null;
 }
 
 export interface ActionSpec {
@@ -419,12 +421,16 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
 
         // An action card (ASSIST1): what the assistant would do, for the person
         // to press. Keyed on the card's own id, so a replay redraws it.
-        case 'action_needed':
+        case 'action_needed': {
             if (!event.id || !Array.isArray(event.buttons)) return state;
+            // Each button carries the turn that showed it, so its press is kept on that turn's card (SAI2-P4).
+            const runId = event.run_id ?? state.runId;
+            const action = { ...event, buttons: event.buttons.map((b: ActionButton) => ({ ...b, run_id: runId })) };
             return append(state, {
                 role: 'assistant', content: String(event.title ?? 'Action'), kind: 'action',
-                key: `action-${event.id}`, action: event as ActionSpec,
+                key: `action-${event.id}`, action: action as ActionSpec,
             });
+        }
 
         // What the Researcher found (BWA1, F577): a card of the options, each with
         // its sources. One per research step; a replay redraws it.
