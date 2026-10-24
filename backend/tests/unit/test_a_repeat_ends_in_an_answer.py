@@ -104,3 +104,23 @@ class TestTheStepNoLongerFails:
         assert run.shared_state.get("draft") == "Tides rise twice a day."
         assert "o_after" in run.shared_state, "the next step ran"
         assert _entry(run)["status"] != "failed"
+
+
+class TestAProviderWhoseToolsAreInThePrompt:
+    async def test_the_answer_turn_prompt_lists_no_tool(self, fake_llm):
+        """Prod's Nova Pro runs through Bedrock, whose tools are written into the system prompt, not sent natively
+        (HOT1's read of the run): withholding the native list alone would still show it every tool."""
+        from core.react_engine import run_agent_step
+
+        async def same(name, args):
+            return "nothing ran"
+
+        model = "bedrock.amazon.nova-pro-v1:0"
+        agent = S.make_agent(tools=["all"], skip_default_tools=True, model=model)
+        fake_llm.script([LOOK] * 3 + ["Hi! Nothing ran today."])
+        events = [e async for e in run_agent_step(
+            message="hi", agent_id=agent["id"], session_id="s_f1015_br", server_module=_server(),
+            agent_override=agent, tool_executor=same, max_turns=6, tools_override=[_LOOK], model_override=model)]
+        assert "Look somewhere." in fake_llm.calls[2]["sys_prompt"], "the tools are in the prompt on this provider"
+        assert "Look somewhere." not in fake_llm.calls[3]["sys_prompt"], "but not on the answer turn"
+        assert _final(events)["response"] == "Hi! Nothing ran today."

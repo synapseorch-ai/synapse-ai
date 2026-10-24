@@ -1653,6 +1653,10 @@ async def run_agent_step(
         kept = [t for t in (tools or []) if ((t.get("function") or {}).get("name") or t.get("name")) in _finish]
         return kept or None
 
+    def _tools_json_now() -> str:
+        """The prompt's tool list on the guard's answer turn: its finish tools, or none."""
+        return json.dumps(_tools_now(ollama_tools) or [])
+
     def _repeat_sentence(stop: dict) -> str:
         """The guard's ending in chat, for a repeated call or a repeated round (F243, F476)."""
         if stop.get("round"):
@@ -2186,7 +2190,9 @@ async def run_agent_step(
             # append-only transcript. The transcript then hits the cache turn
             # over turn; only the tail is re-read.
             active_sys_prompt = build_system_prompt(
-                agent_system_template, tools_json, session_id,
+                # On the guard's answer turn the prompt lists no tool but a finish one (F1015): a provider whose tools
+                # are written into the prompt (Bedrock's, prod's Nova Pro) would otherwise still be shown them.
+                agent_system_template, tools_json if _answering_from is None else _tools_json_now(), session_id,
                 _get_session_state, server_module.memory_store, agent_id=agent_id_for_session,
                 inject_tools=inject_tools_in_prompt,
                 native_reasoning=_native_reasoning,
