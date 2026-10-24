@@ -90,6 +90,8 @@ def shape_problems(topic: str, answer: dict) -> list[str]:
     shape = SHAPES.get(topic)
     if shape is None:
         return [f"{topic}: no shape"]
+    if set(answer) <= {"topic", "error"} and "error" in answer:
+        return []
     problems: list[str] = []
     for where, keys, given in (("", shape.get("keys") or [], [answer]),
                                ("an item ", shape.get("item") or [], answer.get("items") or [])):

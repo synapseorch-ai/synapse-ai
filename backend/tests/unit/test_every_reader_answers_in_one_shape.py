@@ -82,6 +82,7 @@ def test_a_drifted_answer_is_named():
     assert shape_problems("agents", {"topic": "agents", "items": [], "extra": 1}) == [
         "agents: `extra` is not in its shape"]
     assert shape_problems("plan", {"topic": "plan", "items": []}) == ["plan: has no `note`"]
+    assert shape_problems("plan", {"topic": "plan", "error": "I can't read plan right now"}) == [], "says so instead"
 
 
 async def test_a_hosts_reader_that_drifts_is_caught():
