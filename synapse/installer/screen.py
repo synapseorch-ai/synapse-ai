@@ -161,7 +161,10 @@ class LiveScreen(_Screen):
         # download finishing) still reads as a bar that moves.
         target = s.progress or 0.0
         s.shown = target if target < s.shown else s.shown + (target - s.shown) * 0.25
-        width = max(8, min(self._BAR_WIDTH, self.term.width - self._NAME_WIDTH - 20))
+        # The detail after it (F1037's "180 of 410 MB · about 6 min left") takes
+        # its room from the bar, not from the end of the line.
+        room = self.term.width - self._NAME_WIDTH - 20 - (len(s.detail) + 2 if s.detail else 0)
+        width = max(8, min(self._BAR_WIDTH, room))
         filled = int(round(s.shown * width))
         t, g = self.term, self.term.g
         bar = t.style(g("bar") * filled, "cyan") + t.style(g("rest") * (width - filled), "dim")

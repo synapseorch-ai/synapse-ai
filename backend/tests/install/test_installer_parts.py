@@ -128,6 +128,32 @@ def test_uv_output_becomes_a_bar_that_only_goes_forward():
     assert seen[4] - seen[3] > seen[3] - seen[2]
 
 
+def test_the_download_says_megabytes_and_the_time_left():
+    """~400 MB took Naveen ~20 minutes on rc0 with only a bar (F1037)."""
+    now = [100.0]
+    parser = progress.UvInstall(clock=lambda: now[0])
+    parser.feed("Resolved 180 packages in 3.06s")
+    parser.feed("Downloading scipy (300.0MiB)")
+    parser.feed("Downloading numpy (100.0MiB)")
+    assert parser.detail() is None                # nothing finished: no rate yet
+    now[0] = 220.0
+    parser.feed(" Downloaded numpy")              # 100 MB in 2 min: 300 MB is 6 min
+    assert parser.detail() == "100 of 400 MB · about 6 min left"
+    parser.feed(" Downloaded scipy")
+    parser.feed("Prepared 180 packages in 5m")
+    assert parser.detail() == ""                  # the downloads are over
+
+
+def test_the_last_minute_says_so():
+    now = [0.0]
+    parser = progress.UvInstall(clock=lambda: now[0])
+    parser.feed("Downloading a (10.0MiB)")
+    parser.feed("Downloading b (1.0MiB)")
+    now[0] = 50.0
+    parser.feed(" Downloaded a")
+    assert parser.detail() == "10 of 11 MB · under a minute left"
+
+
 def test_an_unknown_line_changes_nothing():
     parser = progress.UvInstall()
     parser.feed("Resolved 3 packages in 0.1s")
@@ -751,3 +777,17 @@ def test_copilots_models_are_its_settings_choices_auto_first(monkeypatch):
     assert providers.copilot_models("/bin/copilot") == ["auto", "claude-sonnet-5.5", "gpt-5.6", "gemini-3-pro-preview"]
     _cli_runs(monkeypatch, {})
     assert providers.copilot_models("/bin/copilot") == ["auto"]
+
+
+def test_the_time_left_fits_an_80_column_window():
+    """The bar gives up its room to the detail, which would otherwise be clipped (F1037)."""
+    class Narrow(tui.Term):
+        width = 80
+
+    term = Narrow(stream=io.StringIO())
+    live = screen.LiveScreen(term, "Synapse")
+    live.add("install", "Installing Synapse")
+    live.start("install")
+    live.progress("install", 0.66, "312 of 406 MB · about 2 min left")
+    line = next(term.clip(l) for l in live.lines() if "Installing" in l)
+    assert line.endswith("312 of 406 MB · about 2 min left") and len(line) <= 80

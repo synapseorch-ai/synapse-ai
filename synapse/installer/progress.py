@@ -9,7 +9,9 @@ the install.
 """
 from __future__ import annotations
 
+import math
 import re
+import time
 
 _SIZE = {"B": 1, "KiB": 1024, "MiB": 1024 ** 2, "GiB": 1024 ** 3}
 
@@ -33,11 +35,13 @@ class UvInstall:
     _INSTALLED = re.compile(r"^Installed (\d+) packages?")
     _EXECUTABLES = re.compile(r"^Installed \d+ executables?")
 
-    def __init__(self):
+    def __init__(self, clock=time.monotonic):
         self.fraction = 0.0
         self.packages = 0
         self._sizes: dict[str, float] = {}
         self._done: set[str] = set()
+        self._clock = clock
+        self._began: float | None = None
 
     def feed(self, line: str) -> float:
         line = line.strip()
@@ -46,6 +50,8 @@ class UvInstall:
             self._to(0.05)
         elif m := self._DOWNLOADING.match(line):
             self._sizes[m.group(1)] = float(m.group(2)) * _SIZE[m.group(3)]
+            if self._began is None:
+                self._began = self._clock()
         elif m := self._DOWNLOADED.match(line):
             self._done.add(m.group(1))
             total = sum(self._sizes.values()) or 1.0
@@ -61,6 +67,26 @@ class UvInstall:
 
     def _to(self, value: float) -> None:
         self.fraction = max(self.fraction, min(1.0, value))
+
+    def detail(self) -> str | None:
+        """`180 of 410 MB · about 6 min left` while the wheels download (F1037).
+
+        ~400 MB took Naveen ~20 minutes with only a bar. The rate is what has
+        finished so far over the time since the first download began, so it
+        moves when a package finishes. None until one has (nothing to go on,
+        and the screen keeps what it shows); "" once the downloads are over.
+        """
+        if self.fraction >= 0.85:
+            return ""
+        total = sum(self._sizes.values())
+        done = sum(self._sizes.get(n, 0.0) for n in self._done)
+        elapsed = self._clock() - self._began if self._began is not None else 0.0
+        if not total or not done or elapsed <= 0:
+            return None
+        left = (total - done) / (done / elapsed)
+        when = "under a minute left" if left < 60 else f"about {math.ceil(left / 60)} min left"
+        mb = 1024 ** 2
+        return f"{done / mb:.0f} of {total / mb:.0f} MB · {when}"
 
 
 class Downloads:

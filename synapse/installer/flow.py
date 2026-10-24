@@ -446,7 +446,8 @@ class Installer:
 
     def _install(self) -> str:
         parser = UvInstall()
-        self._uv_install(on_line=lambda line: self.screen.progress("install", parser.feed(line)))
+        self._uv_install(on_line=lambda line: self.screen.progress("install", parser.feed(line),
+                                                                   parser.detail()))
         tool_dir = Path(run([self.uv, "tool", "dir"], self.log, env=self._uv_env())[1].strip().splitlines()[-1])
         bin_dir = Path(run([self.uv, "tool", "dir", "--bin"], self.log, env=self._uv_env())[1].strip().splitlines()[-1])
         venv = tool_dir / PACKAGE
