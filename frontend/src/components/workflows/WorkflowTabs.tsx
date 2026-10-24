@@ -164,11 +164,14 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
         // Once.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-    const asked = useRef({ initialOrchId, initialRunId, newRequest, done: false });
+    // Each ask once: on arrival, and again when ⌘K or a link changes the address while this page is open — the
+    // page renders again with the new address, and this shell stays mounted.
+    const asked = useRef<string | null>(null);
     useEffect(() => {
-        if (!ready || asked.current.done) return;
-        asked.current.done = true;
-        const { initialOrchId: id, initialRunId: run, newRequest: wantsNew } = asked.current;
+        const ask = `${initialOrchId ?? ''}|${initialRunId ?? ''}|${newRequest ?? ''}`;
+        if (!ready || asked.current === ask) return;
+        asked.current = ask;
+        const id = initialOrchId, run = initialRunId, wantsNew = newRequest;
         if (wantsNew) tabs.openNew();
         else if (run) {
             void (async () => {
@@ -184,7 +187,7 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
             url.searchParams.delete('new');
             window.history.replaceState(null, '', `${url.pathname}${url.search}`);
         }
-    }, [ready, tabs]);
+    }, [ready, tabs, initialOrchId, initialRunId, newRequest]);
 
     // A link inside the page to a run or a workflow opens a tab (F1025). Listened for on this page's own
     // element: the menu and the help panel are outside it, and dialogs portal out of it.
