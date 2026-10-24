@@ -98,3 +98,10 @@ async def test_the_card_names_the_providers_tools_its_header_scheme_and_host_par
     assert card["tool"] == {"id": "mailchimp_send_campaign", "name": "Mailchimp", "header": "Authorization",
                             "scheme": "Bearer", "tools": BODY["tools"],
                             "host_params": [{"name": "dc", "says": "after the dash"}]}
+
+
+async def test_connecting_keeps_the_builders_tags_a_claim(client):
+    """SAI2's whole-P3b review, 8: the card's save is not the person tagging the tool."""
+    await save_tool({**WAITING, "annotations_by": "builder", "annotations": {"readOnlyHint": False}})
+    await _connect(BODY)
+    assert (await _tool("mailchimp_send_campaign")).get("annotations_by") == "builder"

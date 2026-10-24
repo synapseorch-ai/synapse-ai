@@ -332,12 +332,25 @@ _TWO_PART_SUFFIXES = {"co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.in", "
                       "co.za", "com.mx"}
 
 
+#: Hosts on which each tenant has its own name (SAI2's whole-P3b review, 2): `acme.workers.dev` and `evil.workers.dev`
+#: are two owners, as `tesco.co.uk` and `asda.co.uk` are, so the tenant's label is part of the registrable domain.
+_SHARED_HOST_SUFFIXES = {"workers.dev", "pages.dev", "vercel.app", "netlify.app", "github.io", "gitlab.io",
+                         "herokuapp.com", "onrender.com", "fly.dev", "web.app", "firebaseapp.com", "appspot.com",
+                         "azurewebsites.net", "cloudfront.net", "amazonaws.com", "azure-api.net", "ngrok.io",
+                         "ngrok-free.app", "glitch.me", "replit.app", "repl.co"}
+
+
+def _suffix_labels(labels: list[str]) -> int:
+    """How many of a host's last labels are its public suffix: 2 for `co.uk` or `workers.dev`, else 1."""
+    return 2 if len(labels) >= 3 and ".".join(labels[-2:]) in (_TWO_PART_SUFFIXES | _SHARED_HOST_SUFFIXES) else 1
+
+
 def _registrable_name(host: str) -> str:
-    """`learn.microsoft.com` → "microsoft"; `dev.tesco.co.uk` → "tesco"."""
+    """`learn.microsoft.com` → "microsoft"; `dev.tesco.co.uk` → "tesco"; `acme.workers.dev` → "acme"."""
     labels = host.split(".")
-    if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
-        return labels[-3]
-    return labels[-2] if len(labels) >= 2 else host
+    if len(labels) < 2:
+        return host
+    return labels[-1 - _suffix_labels(labels)] if len(labels) > _suffix_labels(labels) else host
 
 
 #: Words a product's own domain often wraps its name in: `goshippo.com` for Shippo, `getcalendly`, `slackhq`. Only
@@ -360,9 +373,7 @@ _NOT_A_BRAND = frozenset({"open", "smart", "cloud", "simple", "quick", "super", 
 def _registrable_domain(host: str) -> str:
     """`learn.microsoft.com` → "microsoft.com"; `dev.tesco.co.uk` → "tesco.co.uk"."""
     labels = [x for x in (host or "").lower().removeprefix("www.").split(".") if x]
-    if len(labels) >= 3 and ".".join(labels[-2:]) in _TWO_PART_SUFFIXES:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
+    return ".".join(labels[-1 - _suffix_labels(labels):])
 
 
 def _common_ending(host: str) -> bool:
@@ -474,13 +485,16 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
         return None, "its host_params do not match the placeholder in its base URL"
     if _climbs(path):
         return None, "its base URL's path could climb out of it"
+    if "{" in path or "}" in path:
+        return None, "its base URL's path holds a placeholder: only the start of its host may"
     endpoints = [e for e in raw.get("endpoints") or [] if isinstance(e, dict)]
     if not 1 <= len(endpoints) <= 5 or len(endpoints) != len(raw.get("endpoints") or []):
         return None, "it needs one to five endpoints"
     for e in endpoints:
         p = str(e.get("path") or "")
         if str(e.get("method") or "").upper() not in _METHODS or not p.startswith("/") or _climbs(p) \
-                or any(c in p for c in "?#:@") or any("{" in seg and not _PARAM.match(seg) for seg in p.split("/")):
+                or any(c in p for c in "?#:@") or any("{" in seg and not _PARAM.match(seg) for seg in p.split("/")) \
+                or {"{body}", "{data}", "{global}"} & set(p.split("/")):
             return None, f"an endpoint ({str(e.get('method') or '')} {p[:60]}) is not a method and a path under its base"
     # A7: each endpoint names its tool, under the provider's name, so a plan's tool is one endpoint exactly.
     slug, names = re.sub(r"[^a-z0-9]+", "_", provider.lower()).strip("_"), []

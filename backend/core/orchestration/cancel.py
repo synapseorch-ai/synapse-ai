@@ -91,6 +91,19 @@ def on_cancel(hook: Any) -> Any:
     return hook
 
 
+#: What else a run's end settles, called at `_execute_loop`'s end (the line every path passes, fleet included) with
+#: the run as it ended: failed, cancelled or completed. A failing one never fails the run (F946: a build that failed
+#: before its save leaves no made tool behind; SAI2's whole-P3b review, 4).
+_ON_END: list[Any] = []
+
+
+def on_end(hook: Any) -> Any:
+    """Register `async hook(run)` to run when a run ends; returns it, so it can decorate."""
+    if hook not in _ON_END:
+        _ON_END.append(hook)
+    return hook
+
+
 async def cancel_run(run_id: str, *, redis: Any = None, reason: str | None = None) -> Cancelled:
     """Stop a run, running or paused. `reason`, when given, is kept on the run as why
     it stopped (`run_error`), so its page says more than "cancelled" (F247)."""

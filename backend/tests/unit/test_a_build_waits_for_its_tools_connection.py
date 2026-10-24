@@ -183,3 +183,45 @@ async def test_giving_up_after_asking_removes_its_tools(client):
     run, _ = await _made()
     out, _ = await _call("read_connect_answer", {"give_up": True}, run)
     assert out["outcome"] == "stop" and await _made_tool() is None
+
+
+# ── SAI2's whole-P3b review: 3, 4, 6 ─────────────────────────────────────────────────────────────────────────────
+
+async def test_build_without_one_provider_keeps_the_others_connected_tools(client):
+    """3: only the named provider's tools go, and the planner hears its own names, never the `_2` made."""
+    from core.routes.tools import connect_made_tools
+
+    run, _ = await _made()
+    await save_tool({"name": "stripe_payment_link", "tool_type": "http", "method": "POST",
+                     "url": "https://api.stripe.com/v1/payment_links", "base_lock": "https://api.stripe.com/v1",
+                     "headers": {}})
+    kept = run.step_progress[build_save.PROGRESS_KEY]
+    kept["done"] = [*kept["done"], ["tool", "stripe_payment_link", "stripe_payment_link"]]
+    await connect_made_tools({"tools": ["stripe_payment_link"], "header": "Authorization", "scheme": "Bearer",
+                              "key": "sk", "host_params": {}, "provider": "Stripe"})
+    out, _ = await _answer(run, "build without Mailchimp")
+    assert out["outcome"] == "without" and out["without"] == ["mailchimp_send_campaign"]
+    names = {t["name"] for t in await load_tools()}
+    assert "mailchimp_send_campaign" not in names and "stripe_payment_link" in names
+    assert "I kept the" in out["say"]
+
+
+async def test_a_build_that_fails_before_its_save_removes_its_tools(client):
+    """4: a running run that ends failed never reaches the cancel hook; the end of the run removes them."""
+    from core.orchestration.cancel import _ON_END
+
+    run, _ = await _made()
+    run.status = "failed"
+    for hook in _ON_END:
+        await hook(run)
+    assert await _made_tool() is None
+
+
+async def test_a_key_typed_at_the_wait_is_never_kept(client):
+    """6: said where it goes, and no copy left in the run."""
+    run, _ = await _made()
+    key = "sk_live_" + "Q" * 24
+    run.step_history.append({"step_id": "step_wait_connect", "output": {"feedback": f"here it is {key}"}})
+    out, _ = await _answer(run, f"here it is {key}")
+    assert out["outcome"] == "again" and "paste it on the card" in out["say"]
+    assert key not in json.dumps(run.shared_state) and key not in json.dumps(run.step_history)

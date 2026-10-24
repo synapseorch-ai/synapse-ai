@@ -40,6 +40,13 @@ class NotConnected(ValueError):
 _UNCONNECTED = re.compile(r"__[a-z0-9_]+__")
 
 
+#: Set by the build's save while it makes a read API's tools (F944): the one channel a new lock enters by. A caller's
+#: `base_lock` (an MCP client, a builder agent, a person's editor, an import) is never taken (SAI2's review, blocker 1).
+import contextvars as _contextvars
+
+MAKING_TOOLS: _contextvars.ContextVar[bool] = _contextvars.ContextVar("making_tools", default=False)
+
+
 def lock_of(url: str) -> str:
     """The base a tool's URL keeps to: its scheme, host and path up to its first `{placeholder}` segment."""
     from urllib.parse import urlsplit

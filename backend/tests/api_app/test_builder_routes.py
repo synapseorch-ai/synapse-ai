@@ -237,7 +237,7 @@ class TestSeeHowImBuilt:
         # the pack, the planner, the check's route and its three endings, the no read in code and its route, the new
         # agents gate and their instructions, the approval and its check, the refusal, the save and its ending in (15);
         # 56 since the instructions are written before the review (Naveen, Q2 as revised): no gate after the yes;
-        # 55 since P3b's researcher notes its own findings (E2): step_plan_findings out; 61 with the tools a build makes
+        # 55 since P3b's researcher notes its own findings (E2): step_plan_findings out; 62 with the tools a build makes
         # and its wait for their connection (F944–F946): the make, its route, the wait, its answer, its route, giving
         # up, its end.
         assert legend["step_count"] == 62

@@ -24,6 +24,7 @@ import json
 import re
 from typing import Any
 
+from core import http_tool
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core.native_builder import objects as O
@@ -490,12 +491,14 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             if only == "tools" and call["kind"] != "tool":
                 break  # `step_make_tools`: the tools only; the rest after the person connects them (F944)
             if await _taken_since(call, made, before):
-                noun = "a workflow" if call["kind"] == "orchestration" else "an agent"
+                noun = {"orchestration": "a workflow", "tool": "a tool"}.get(call["kind"], "an agent")
                 # Its own, unrecorded (a worker that stopped between a make and its record), or someone else's:
                 # neither is taken, and nothing is blamed (MCP2's note 2).
                 failure = (f'{noun} called "{call["name"]}" is there now that was not at your yes; it may be one an '
                            "interrupted save made, so I made nothing more")
                 break
+            # A read API's tool takes its lock here, and only here (F944; SAI2's review, blocker 1).
+            making = http_tool.MAKING_TOOLS.set(call["kind"] == "tool")
             try:
                 result = await registry.invoke(call["tool"], caller, _filled(call["args"], made),
                                                confirm_policy="approved_review", review=approval, reviewed=reviewed,
@@ -511,6 +514,8 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                 _log.warning("build save call %s failed: %s", call["tool"], exc)
                 failure = f"{call['name']}: it failed ({type(exc).__name__})"
                 break
+            finally:
+                http_tool.MAKING_TOOLS.reset(making)
             parsed = _obj(result)
             if isinstance(parsed, dict) and parsed.get("status") == "needs_confirmation":
                 failure = f"{call['name']}: your approval does not cover this call"
@@ -587,16 +592,34 @@ def _made_tools(run: Any) -> list[str]:
     return [real for kind, real, _ in kept.get("done") or [] if kind == "tool"]
 
 
-async def undo_made_tools(run: Any, events: list[dict], why: str) -> list[str]:
-    """Remove the tools a build made and never saved, and forget them (SAI2's addition 2): never left behind."""
-    names = _made_tools(run)
+async def undo_made_tools(run: Any, events: list[dict], why: str, names: list[str] | None = None) -> list[str]:
+    """Remove the tools a build made and never saved (all, or `names`), and forget them (SAI2's addition 2): never
+    left behind."""
+    names = [n for n in _made_tools(run) if names is None or n in names]
     if not names:
         return []
     await _undo([("tool", n, n) for n in names], run.shared_state, events, why)
     kept = run.step_progress.get(PROGRESS_KEY) or {}
-    run.step_progress[PROGRESS_KEY] = {**kept, "done": [d for d in kept.get("done") or [] if d[0] != "tool"],
-                                       "calls_done": []}
+    run.step_progress[PROGRESS_KEY] = {**kept, "calls_done": [],
+                                       "done": [d for d in kept.get("done") or [] if not (d[0] == "tool" and d[1] in names)]}
     return names
+
+
+def _scrub(value: Any, said: str) -> Any:
+    """`value` with every text holding `said` replaced: a key typed at the wait leaves no copy in the run."""
+    if isinstance(value, str):
+        return "[a key, removed]" if said and said in value else value
+    if isinstance(value, dict):
+        return {k: _scrub(v, said) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub(v, said) for v in value]
+    return value
+
+
+def _connected(tool: dict | None) -> bool:
+    from core.http_tool import _UNCONNECTED
+
+    return bool(tool) and not _UNCONNECTED.search(str(tool.get("base_lock") or "")) and bool(tool.get("headers"))
 
 
 async def read_connect_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -613,22 +636,47 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
     plan = _plan_of(checked_in(state))
     made = _made_tools(run)
     providers = {t.name: t.provider or t.name for t in plan.tools if t.name in made}
+    from core.secret_scrub import holds_credential
+
+    if holds_credential(said):
+        # A key typed at the wait, not on its card (SAI2's review, 6): never kept in the run, said where it goes.
+        state["connect_answer"] = {"feedback": "[a key, removed]"}
+        if run is not None:
+            run.step_history[:] = [_scrub(entry, said) for entry in run.step_history]
+        return {"outcome": "again", "say": "That looks like a key, so I didn't keep it: paste it on the card above, "
+                                           "which keeps it with the tool, never in this conversation."}
     if _CONNECTED.match(said):
         current = {t.get("name"): t for t in await load_tools()}
-        waiting = [n for n in made if n not in current
-                   or _UNCONNECTED.search(str(current[n].get("base_lock") or ""))
-                   or not (current[n].get("headers") or {})]
+        waiting = [n for n in made if not _connected(current.get(n))]
         if not waiting:
             return {"outcome": "connected"}
         who = " and ".join(dict.fromkeys(providers.get(n, n) for n in waiting))
         return {"outcome": "again", "say": f"{who} is not connected yet: fill in its card above, then press Connect."}
     m = _WITHOUT.match(said)
-    if m or _STOP.match(said):
+    if m:
+        # Only the provider named loses its tools (SAI2's review, 3); another's tool not yet connected goes too, as
+        # the new yes makes it again; one already connected stays, and the new check finds it present with its key.
+        asked = {w.strip(" `'\"").lower() for w in re.split(r",|\s+and\s+", m.group("what")) if w.strip(" `'\"")}
+        named = [n for n in made if n.lower() in asked or providers.get(n, "").lower() in asked]
+        if not named:
+            return {"outcome": "again", "say": "Which one? Say \"build without\" and the provider's name, or "
+                                               "\"stop\"."}
+        current = {t.get("name"): t for t in await load_tools()}
+        gone = [n for n in made if n in named or not _connected(current.get(n))]
+        removed = await undo_made_tools(run, events, "the build went on without them", gone)
+        kept = [n for n in made if n not in removed]
+        # The planner's own names, not the `_2` this build made under (the endpoint's tool, A7).
+        draft_names = {t.name: str((t.api or {}).get("endpoint", {}).get("tool") or t.name) for t in plan.tools}
+        say = " ".join(x for x in (
+            f"I removed the {' and '.join(dict.fromkeys(providers.get(n, n) for n in removed))} tools I'd made."
+            if removed else "",
+            f"I kept the {' and '.join(dict.fromkeys(providers.get(n, n) for n in kept))} tools you connected."
+            if kept else "") if x)
+        return {"outcome": "without", "without": [draft_names.get(n, n) for n in named], "say": say}
+    if _STOP.match(said):
         who = " and ".join(dict.fromkeys(providers.values())) or "the"
-        removed = await undo_made_tools(run, events, "the build went on without them" if m else "the build stopped")
+        removed = await undo_made_tools(run, events, "the build stopped")
         say = f"I removed the {who} tools I'd made." if removed else ""
-        if m:
-            return {"outcome": "without", "without": removed, "say": say}
         return {"outcome": "stop", "say": f"{say} Nothing else was built.".strip()}
     return {"outcome": "again", "say": "I'm waiting for the card above. Connect it, or say \"build without …\", or "
                                        "\"stop\"."}
@@ -640,9 +688,17 @@ async def _cancelled(run: Any) -> None:
         await undo_made_tools(run, [], "the build was cancelled before it was saved")
 
 
-from core.orchestration.cancel import on_cancel  # noqa: E402 — registered with the module, as its tools are
+async def _ended(run: Any) -> None:
+    """A builder run that ended failed or cancelled before its save never leaves the tools it made (SAI2's review,
+    4): the cancel hook sees a paused run; this sees one that was running."""
+    if getattr(run, "status", "") in ("failed", "cancelled"):
+        await _cancelled(run)
+
+
+from core.orchestration.cancel import on_cancel, on_end  # noqa: E402 — registered with the module, as its tools are
 
 on_cancel(_cancelled)
+on_end(_ended)
 register_builder_tool({"type": "function", "function": {
     "name": "read_connect_answer", "description": "Synapse AI's reading of the answer at a build's wait for a "
                                                   "connection (code).", "parameters": {"type": "object", "properties": {}}}},

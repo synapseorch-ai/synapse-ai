@@ -591,7 +591,12 @@ async def _make_room(plan: O.Plan, state: dict) -> tuple[O.Plan, dict[str, str],
     renames: dict[str, str] = {}
     for name in sorted(used & owned.keys()):
         taken = tools.get(name)
+        # The same provider's own tool is used, once connected; one still waiting for its card (another build's) is
+        # that build's, never adopted (SAI2's review, 5).
+        from core.http_tool import _UNCONNECTED
+
         if taken is None or (taken.get("tool_type") == "http"
+                             and not _UNCONNECTED.search(str(taken.get("base_lock") or ""))
                              and _registrable_domain(_host(str(taken.get("url") or ""))) in owned[name]):
             continue
         n = 2

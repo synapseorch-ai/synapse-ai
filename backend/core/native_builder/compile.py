@@ -303,13 +303,13 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
 
 async def validate(compiled: Compiled, plan: Plan, server_module: Any,
                    existing_agents: dict[str, dict] | None = None, *, own_steps: set[str] | None = None) -> list[str]:
-    # A read API's tools the build makes after the yes, by method: held to decision 4 now, not after (F944).
-    to_make = {t.name: str((t.api or {}).get("endpoint", {}).get("method") or "POST").upper()
-               for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api}
     """The checks that need the workspace, over the workflow and its inner ones: a tool nothing provides on a step
     (F489), set arguments that do not fit their tool (E1), and BWA1's decision 4 — nothing that changes something
     outside runs with nobody approving it, except what the Plan's "acts without asking" lets act. The issues are
     added to `compiled` and returned."""
+    # A read API's tools the build makes after the yes, by method: held to decision 4 now, not after (F944).
+    to_make = {t.name: str((t.api or {}).get("endpoint", {}).get("method") or "POST").upper()
+               for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api}
     from core import builder_guard
 
     workflows = [compiled.orchestration, *(i.orchestration for i in compiled.inner)]

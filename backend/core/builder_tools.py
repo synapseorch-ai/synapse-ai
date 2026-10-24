@@ -2745,12 +2745,17 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # A tool made from a read API keeps to its base (F944, A8): only code writes a lock, and a builder never
         # moves a locked tool off it; replacing it carries the lock forward.
         from core.http_tool import under_lock
-        lock = str(args.get("base_lock") or (before or {}).get("base_lock") or "")
+        from core.http_tool import MAKING_TOOLS
+        # The stored lock, or a new one only from the build's own save (SAI2's review, blocker 1): never a caller's.
+        lock = str((before or {}).get("base_lock") or (args.get("base_lock") if MAKING_TOOLS.get() else "") or "")
         if lock and not under_lock(url, lock):
             return {"error": f"`{name}` was made for {lock}, and keeps to that API: a tool for another address is a "
                              "new tool, under another name."}
         if lock:
             tool["base_lock"] = lock
+            if before and before.get("base_lock"):
+                # A re-create within its API keeps the key its Connect card saved (SAI2's nit).
+                tool["headers"] = {**(before.get("headers") or {}), **headers}
         claimed = {t: args[t] for t in ("read_only", "destructive", "idempotent", "open_world") if t in args}
         await save_tool(_builder_tags(tool, before, claimed))
         _emit(events, "tool", "created", name, name, tool)

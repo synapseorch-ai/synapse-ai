@@ -896,6 +896,14 @@ class OrchestrationEngine:
             from core.boards import resolve as _board_resolve
             await _board_resolve.release(run.run_id, prefix=True, settings=None, why=f"the run {run.status}")
 
+        if run.status in ("completed", "failed", "cancelled"):
+            from core.orchestration.cancel import _ON_END
+            for hook in list(_ON_END):
+                try:
+                    await hook(run)
+                except Exception as exc:  # noqa: BLE001 — a hook that fails never fails the run
+                    _log.warning(f"a run-end hook failed for {run.run_id}: {exc}")
+
         if owed_turn and not self.caller_saves_turn:
             try:
                 await self._save_owed_turn(run, owed_turn)

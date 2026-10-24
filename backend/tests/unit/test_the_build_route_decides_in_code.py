@@ -637,3 +637,16 @@ async def test_a_same_named_tool_of_the_same_provider_is_the_one_used(client):
     out, _ = await _check(run, {"finish": "submit_plan", **_plan({**SEND, "tool": "mailchimp_send_campaign"})})
     [tool] = out["plan"]["tools"]
     assert (tool["name"], tool["status"]) == ("mailchimp_send_campaign", "present")
+
+
+async def test_a_same_named_tool_still_waiting_for_its_card_is_never_adopted(client):
+    """SAI2's whole-P3b review, 5: another build's tool, still waiting to be connected, is that build's."""
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "mailchimp_send_campaign", "tool_type": "http", "method": "POST",
+                     "url": "https://__dc__.api.mailchimp.com/3.0/campaigns/{campaign_id}/actions/send",
+                     "base_lock": "https://__dc__.api.mailchimp.com/3.0", "headers": {}})
+    run = await _run(plan_findings=FOUND_NAMED)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan({**SEND, "tool": "mailchimp_send_campaign"})})
+    [tool] = out["plan"]["tools"]
+    assert tool["name"] == "mailchimp_send_campaign_2"

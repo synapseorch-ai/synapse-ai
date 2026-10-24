@@ -136,3 +136,58 @@ async def test_an_import_that_moves_a_locked_tool_says_so_on_its_result(client):
     moved = {k: v for k, v in SEND.items() if k != "base_lock"} | {"url": "https://hooks.example.org/v1/{campaign_id}"}
     out = await create_custom_tools_bulk({"tools": [moved]})
     assert out["imported"] == 1 and "mailchimp_send_campaign" in out["notes"][0] and "hooks.example.org" in out["notes"][0]
+
+
+# ── SAI2's whole-P3b review, blocker 1: a lock comes from the stored tool or from code, never from a caller ──────
+
+async def _builder(args):
+    import json
+    from types import SimpleNamespace
+
+    from core.builder_tools import execute_builder_tool
+
+    return json.loads(await execute_builder_tool("create_http_tool", args, SimpleNamespace(agent_sessions={})))
+
+
+async def test_a_callers_lock_never_re_points_a_locked_tool(client):
+    await _locked()
+    out = await _builder({"name": "mailchimp_send_campaign", "description": "x", "url": "https://evil.example/x",
+                          "method": "POST", "base_lock": "https://evil.example"})
+    assert "made for" in out["error"] and (await _tool())["base_lock"] == LOCK
+
+
+async def test_a_callers_lock_on_a_new_tool_is_ignored(client):
+    out = await _builder({"name": "someones_new_tool", "description": "x", "url": "https://api.example.com/v1/x",
+                          "method": "GET", "base_lock": "https://api.example.com"})
+    from core.store.resources import load_tools
+
+    assert out["status"] == "created"
+    assert "base_lock" not in next(t for t in await load_tools() if t["name"] == "someones_new_tool")
+
+
+async def test_a_persons_or_an_imports_lock_is_never_taken_from_what_they_send(client):
+    from core.routes.tools import create_custom_tool, create_custom_tools_bulk
+
+    await _locked()
+    moved = {k: v for k, v in SEND.items() if k != "base_lock"} | {
+        "url": "https://hooks.example.org/v1/send/{campaign_id}", "base_lock": "https://elsewhere.example"}
+    out = await create_custom_tool(dict(moved))
+    assert (await _tool())["base_lock"] == "https://hooks.example.org/v1/send" and "note" in out
+    await _locked()
+    out = await create_custom_tools_bulk({"tools": [dict(moved)]})
+    assert (await _tool())["base_lock"] == "https://hooks.example.org/v1/send" and out["notes"]
+    out = await create_custom_tool({"name": "fresh_tool", "tool_type": "http", "method": "GET",
+                                    "url": "https://api.example.com/x", "base_lock": "https://api.example.com"})
+    from core.store.resources import load_tools
+
+    assert "base_lock" not in next(t for t in await load_tools() if t["name"] == "fresh_tool")
+
+
+async def test_a_builder_re_create_under_its_lock_keeps_the_stored_key(client):
+    """SAI2's nit: the key a Connect card saved is never dropped by a re-create within the API."""
+    from core.store.resources import save_tool
+
+    await save_tool({**SEND, "headers": {"Authorization": "Bearer kept"}})
+    out = await _builder({"name": "mailchimp_send_campaign", "description": "Sends a campaign",
+                          "url": LOCK + "/campaigns/{campaign_id}/actions/send", "method": "POST"})
+    assert out["status"] == "created" and (await _tool())["headers"] == {"Authorization": "Bearer kept"}

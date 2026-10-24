@@ -173,7 +173,9 @@ async def _keep_lock(tool: dict) -> str | None:
     from core.store.resources import load_tools
 
     before = next((t for t in await load_tools() if t.get("name") == tool.get("name")), None)
-    lock = str(tool.get("base_lock") or (before or {}).get("base_lock") or "")
+    # Only the stored lock counts: what an editor or an import sends is never taken (SAI2's review, blocker 1).
+    tool.pop("base_lock", None)
+    lock = str((before or {}).get("base_lock") or "")
     if not lock:
         return None
     url = str(tool.get("url") or "")
@@ -208,8 +210,6 @@ async def connect_made_tools(body: dict):
     """The Connect card of a build's made tools saves here (F945; A8): for each tool, the account part of its host is
     filled only with one DNS label and the provider's domain is checked again on the result, and the key goes into
     its header with its scheme, through the tools' own save. The key is never sent back."""
-    from core.builder_research import _registrable_domain
-    from core.http_tool import _UNCONNECTED
     from core.store.resources import load_tools
 
     names = [str(n) for n in body.get("tools") or []]
@@ -219,7 +219,22 @@ async def connect_made_tools(body: dict):
         raise HTTPException(status_code=422, detail="The key is empty or holds a line break: paste it again.")
     if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", header) or scheme not in ("Bearer", "Token", ""):
         raise HTTPException(status_code=422, detail="That header or scheme is not one this card can save.")
-    current = {t.get("name"): t for t in await load_tools()}
+    async with _save_lock():
+        # Read and written under one lock, so an edit in between is never lost (SAI2's review, 8).
+        current = {t.get("name"): t for t in await load_tools()}
+        updated = _connected_tools(names, current, header, scheme, key, params)
+        from core.store.resources import save_tools
+
+        # Saved as they are, `annotations_by` with them: the builder's tags stay a claim (SAI2's review, 8).
+        await save_tools(updated)
+    return {"status": "connected", "tools": names, "message": f"Saved the {header} for {body.get('provider') or names[0]}."}
+
+
+def _connected_tools(names: list[str], current: dict, header: str, scheme: str, key: str,
+                     params: dict[str, str]) -> list[dict]:
+    from core.builder_research import _registrable_domain
+    from core.http_tool import _UNCONNECTED
+
     updated = []
     for name in names:
         tool = current.get(name)
@@ -241,9 +256,7 @@ async def connect_made_tools(body: dict):
             raise HTTPException(status_code=422, detail=f"`{name}` would no longer be on {before}: not saved.")
         updated.append({**tool, "url": new_url, "base_lock": new_lock,
                         "headers": {**(tool.get("headers") or {}), header: f"{scheme} {key}".strip()}})
-    async with _save_lock():
-        await _upsert_custom_tools(updated)
-    return {"status": "connected", "tools": names, "message": f"Saved the {header} for {body.get('provider') or names[0]}."}
+    return updated
 
 
 def _save_lock():

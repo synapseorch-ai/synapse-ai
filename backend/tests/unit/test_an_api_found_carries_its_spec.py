@@ -170,3 +170,38 @@ async def test_two_endpoints_never_share_a_tool_name():
                  {"method": "POST", "path": "/lists", "does": "y", "tool": "lists"}]
     found = await _report({**MAILCHIMP, "endpoints": endpoints})
     assert "api" not in found and "tool name" in found["detail"]
+
+
+# ── SAI2's whole-P3b review, 2: on shared hosting, "own" is the tenant, never the host ───────────────────────────
+
+@pytest.mark.parametrize("a, b", [("acme.workers.dev", "evil.workers.dev"), ("acme.vercel.app", "evil.vercel.app"),
+                                  ("acme.github.io", "evil.github.io"), ("api.acme.herokuapp.com", "evil.herokuapp.com"),
+                                  ("acme.azurewebsites.net", "evil.azurewebsites.net")])
+def test_a_shared_host_never_vouches_for_another_tenant(a, b):
+    assert br._registrable_domain(a) != br._registrable_domain(b)
+    assert br._registrable_domain("docs." + a.split(".", 1)[-1] if a.count(".") > 2 else a) == br._registrable_domain(a)
+
+
+def test_an_ordinary_domain_is_as_before():
+    assert br._registrable_domain("api.stripe.com") == "stripe.com"
+    assert br._registrable_domain("dev.tesco.co.uk") == "tesco.co.uk"
+
+
+async def test_a_spec_on_another_tenant_of_a_shared_host_is_not_kept():
+    br._LOOSE[""] = {**br._fresh(), "read_hosts": ["acme.workers.dev"]}
+    spec = {**MAILCHIMP, "base_url": "https://evil.workers.dev/v1", "host_params": [],
+            "docs_url": "https://acme.workers.dev/docs"}
+    found = await _report(spec, sources=("https://acme.workers.dev/docs",), provider="Acme")
+    assert "api" not in found and "own domain" in found["detail"]
+
+
+async def test_a_placeholder_in_the_base_path_is_not_kept():
+    """SAI2's whole-P3b review, 7: only the start of the host may hold one."""
+    found = await _report({**MAILCHIMP, "base_url": "https://{dc}.api.mailchimp.com/{version}"})
+    assert "api" not in found and "path holds a placeholder" in found["detail"]
+
+
+@pytest.mark.parametrize("name", ["body", "data", "global"])
+async def test_a_path_placeholder_never_takes_a_name_the_tool_already_uses(name):
+    found = await _report({**MAILCHIMP, "endpoints": [{"method": "GET", "path": f"/lists/{{{name}}}", "does": "x"}]})
+    assert "api" not in found and "endpoint" in found["detail"]
