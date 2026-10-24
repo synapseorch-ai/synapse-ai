@@ -66,6 +66,9 @@ SCHEMA = {
 
 
 async def look_up_providers(args: dict, server_module: Any, events: list[dict]) -> dict:
+    # The route's own look-up (its step sets no arguments, or the build's needs) locks what it finds; a look-up the
+    # Researcher asks for, of providers it named itself, is its own to report or leave out (SAI2, 10-24).
+    locked = not any(args.get(k) for k in ("providers", "need")) or bool(args.get("needs"))
     if not any(args.get(k) for k in ("providers", "needs", "need")):
         args = _from_the_run()
     need = str(args.get("need") or "").strip()
@@ -91,9 +94,12 @@ async def look_up_providers(args: dict, server_module: Any, events: list[dict]) 
                                              "reads this one."})
                 continue
             record["looks"] = record.get("looks", 0) + 1
-            got = {**await _look(provider, ask.get("domain"), server_module), "tries": (got or {}).get("tries", 0) + 1}
+            got = {**await _look(provider, ask.get("domain"), server_module), "tries": (got or {}).get("tries", 0) + 1,
+                   "locked": bool((got or {}).get("locked"))}
             looked[key] = got
-            await research._keep(run)
+        if locked and not got.get("locked"):
+            got["locked"] = True
+        await research._keep(run)
         if got.get("found"):
             if got["found"] not in found:
                 found.append(got["found"])
@@ -348,6 +354,11 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
         options.append({"provider": left["provider"], "how": "unclear",
                         "detail": str(lead.get("detail") or left.get("note") or "")[:300],
                         "sources": [left["page"]] if left.get("page") else []})
+    record = research._evidence()
+    for v in (record.get(research.LOOKED_KEY) or {}).values():
+        # The Researcher's own look-up, never reported: what it found is said, as code found it.
+        if isinstance(v, dict) and v.get("found") and not v.get("locked"):
+            options.append({"provider": v["found"]["provider"], "how": "unclear"})
     if not options and not looked.get("found"):
         findings = {"status": "nothing", "goal": goal, "options": []}
         return {**findings, "said": said(findings)}

@@ -60,8 +60,8 @@ def world(monkeypatch):
 
 async def test_a_report_passes_through_once_and_keeps_its_verdicts(world):
     """SAI2's hazard: the Researcher's report, then finish_findings, and no second report_findings."""
-    world["lookup"] = await lookup.look_up_providers({"providers": ["Shippo", "Mailchimp"], "need": "Labels"},
-                                                     None, [])
+    world.update(request={"providers": ["Shippo", "Mailchimp"]}, user_message="Labels")
+    world["lookup"] = await lookup.look_up_providers({}, None, [])
     await br.read_web_page({"url": "https://mailchimp.com/developer/"}, None, [])
     reported_events: list[dict] = []
     world["findings"] = await br.report_findings({"goal": "Labels", "options": [
@@ -76,8 +76,8 @@ async def test_a_report_passes_through_once_and_keeps_its_verdicts(world):
 
 
 async def test_everything_found_by_code_is_the_card_with_no_model(world):
-    world["lookup"] = await lookup.look_up_providers({"providers": ["Stripe", "Shippo"], "need": "Links and labels"},
-                                                     None, [])
+    world.update(request={"providers": ["Stripe", "Shippo"]}, user_message="Links and labels")
+    world["lookup"] = await lookup.look_up_providers({}, None, [])
     events: list[dict] = []
     done = await lookup.finish_findings({}, None, events)
     [card] = events
@@ -87,7 +87,8 @@ async def test_everything_found_by_code_is_the_card_with_no_model(world):
 
 
 async def test_a_researcher_that_never_reported_still_leaves_a_card(world):
-    world["lookup"] = await lookup.look_up_providers({"providers": ["Stripe", "Mailchimp", "IRCTC"]}, None, [])
+    world.update(request={"providers": ["Stripe", "Mailchimp", "IRCTC"]})
+    world["lookup"] = await lookup.look_up_providers({}, None, [])
     world["findings"] = {"status": "no_report", "fallback": True}
     events: list[dict] = []
     done = await lookup.finish_findings({}, None, events)
@@ -173,3 +174,12 @@ def test_a_researcher_that_names_its_own_providers_looks_them_up_in_code():
 async def test_providers_the_researcher_names_are_named(world):
     got = await lookup.look_up_providers({"providers": ["Stripe", "Shippo"]}, None, [])
     assert [(f["provider"], f["how"]) for f in got["found"]] == [("Stripe", "catalog_app"), ("Shippo", "mcp")]
+
+
+async def test_a_researcher_that_looked_up_its_own_and_never_reported_still_says_them(world):
+    world["lookup"] = {"findings": {"goal": "Payments", "options": []}, "found": [], "left": []}
+    await lookup.look_up_providers({"providers": ["Stripe"]}, None, [])
+    world["findings"] = {"status": "no_report", "fallback": True}
+    events: list[dict] = []
+    await lookup.finish_findings({}, None, events)
+    assert [(o["provider"], o["how"]) for o in events[0]["options"]] == [("Stripe", "catalog_app")]

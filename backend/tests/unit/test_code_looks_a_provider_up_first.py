@@ -85,11 +85,19 @@ def world(monkeypatch):
     monkeypatch.setattr(bc, "_read_options", options)
     monkeypatch.setattr(sf, "fetch_bytes", fetch)
     monkeypatch.setattr(br, "_scrape", scrape)
+    from core.native_builder import build_plan
+    monkeypatch.setattr(build_plan, "_state", lambda: state.get("run") or {})
     return state, asked
 
 
 async def _look(**args) -> dict:
     return await lookup.look_up_providers(args, None, [])
+
+
+async def _route(state: dict, providers: list[str], need: str = "") -> dict:
+    """The research route's own look-up: its step sets no arguments, and the run's request names the providers."""
+    state["run"] = {"request": {"kind": "research", "providers": providers}, "user_message": need}
+    return await lookup.look_up_providers({}, None, [])
 
 
 # ── 1. The catalogue ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -329,7 +337,7 @@ async def test_report_findings_puts_up_the_look_ups_finals_with_no_model(world):
     """The research route with everything found: `step_findings` calls report_findings with nothing of its own."""
     state, _ = world
     state["registry"]["shippo"] = [SHIPPO_OWN]
-    got = await _look(providers=["Stripe", "Shippo"], need="Labels and links")
+    got = await _route(state, ["Stripe", "Shippo"], "Labels and links")
     events: list[dict] = []
     card = await br.report_findings({}, None, events)
     assert card["options"] == got["found"]
@@ -340,7 +348,7 @@ async def test_report_findings_merges_the_look_up_with_the_researchers_report(wo
     state, _ = world
     state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
     state["pages"]["https://mailchimp.com/developer/"] = DOCS
-    got = await _look(providers=["Stripe", "Mailchimp"], need="Links and a newsletter")
+    got = await _route(state, ["Stripe", "Mailchimp"], "Links and a newsletter")
     events: list[dict] = []
     card = await br.report_findings({"goal": "Links and a newsletter", "options": [
         {"provider": "Mailchimp", "how": "api", "detail": "Open API with a key.", "needs": "A Mailchimp account",
@@ -472,9 +480,28 @@ async def test_another_products_none_never_replaces_code_s_verdict(world):
     state, _ = world
     state["catalog"].append({"slug": "microsoft", "name": "Microsoft", "auth": "oauth", "url": "https://microsoft.com"})
     state["pages"]["https://teams.live.com/partners"] = "# Teams\n\nPartners only."
-    await _look(providers=["Microsoft"])
+    await _route(state, ["Microsoft"])
     await br.read_web_page({"url": "https://teams.live.com/partners"}, None, [])
     card = await br.report_findings({"options": [
         {"provider": "Microsoft Teams", "how": "none", "sources": ["https://teams.live.com/partners"]}]}, None, [])
     assert [(o["provider"], o["how"]) for o in card["options"]] == [("Microsoft", "catalog_app"),
                                                                     ("Microsoft Teams", "unclear")]
+
+
+async def test_a_provider_the_researcher_looked_up_itself_is_its_own_to_leave_out(world):
+    """SAI2: "Close is in the Apps catalogue" is true; whether Close fits the job is the model's judgement. Only the
+    route's own look-up (the request's providers, a domain written out, the build's needs) is locked."""
+    state, _ = world
+    await _route(state, ["Stripe"])
+    got = await _look(providers=["Close", "Linear"])
+    assert [f["provider"] for f in got["found"]] == ["Close", "Linear"]
+    card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Linear", "catalog_app")]
+
+
+async def test_the_route_s_own_verdict_stays_locked_when_the_researcher_looks_it_up_again(world):
+    state, _ = world
+    await _route(state, ["Stripe"])
+    await _look(providers=["Stripe", "Linear"])
+    card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
+    assert [o["provider"] for o in card["options"]] == ["Stripe", "Linear"]

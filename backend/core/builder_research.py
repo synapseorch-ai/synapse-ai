@@ -630,18 +630,23 @@ PAGES_KEY = "pages"
 def _with_looked_up(seen: dict, options: list[dict]) -> list[dict]:
     """The look-up's verdicts first, then the model's other options; one option per provider. A verdict code found
     (an app in the catalogue, the provider's own server) stands: a model can't upgrade or drop it, only replace it
-    with a `none` that rests on a page of that verdict's own domain (P3B-HANDOFF.md, P5's section). A model's option
+    with a `none` that rests on a page of that verdict's own domain (P3B-HANDOFF.md, P5's section). One the
+    Researcher's own look-up found is locked only by its report naming it. A model's option
     is that provider's by identity, never by a shared word (SAI2: "Google Analytics" is not Google): the same name,
     or an own domain in common ("Stripe Payments" on docs.stripe.com)."""
-    finals = [v["found"] for v in (seen.get(LOOKED_KEY) or {}).values() if isinstance(v, dict) and v.get("found")]
-    if not finals:
+    looked = [v for v in (seen.get(LOOKED_KEY) or {}).values() if isinstance(v, dict) and v.get("found")]
+    if not looked:
         return options
     taken: set[int] = set()
     out = []
-    for final in finals:
+    for v in looked:
+        final = v["found"]
         slug, domains = _slug(final["provider"]), set(final.get("own_domains") or [])
         mine = [i for i, o in enumerate(options) if i not in taken
                 and (_slug(o["provider"]) == slug or domains & set(o.get("own_domains") or []))]
+        if not mine and not v.get("locked"):
+            # A provider the Researcher named and looked up itself, then left out of its report: its call (SAI2).
+            continue
         taken |= set(mine)
         out.append(next((options[i] for i in mine if options[i]["how"] == "none"
                          and (domains & set(options[i].get("own_domains") or [])
