@@ -5442,7 +5442,8 @@ async def check_knowledge_retrieve_words(browser) -> str:
 @check
 async def check_knowledge_dropzone(browser) -> str:
     """The drop zone says what this install reads: no OCR here, so scanned pages and images are not read (KP1). It
-    said they are read "once OCR is configured", and nothing in OSS configures one."""
+    said they are read "once OCR is configured", and nothing in OSS configures one. In plain words (GUIDE1, F921):
+    no "OCR" in it at all."""
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     for pattern, handler in _SMOKE_KB_ROUTES:
         await ctx.route(pattern, handler)
@@ -5452,7 +5453,7 @@ async def check_knowledge_dropzone(browser) -> str:
         zone = page.get_by_text(re.compile(r"^Drop files here")).first
         await zone.wait_for(timeout=30_000)
         said = " ".join((await zone.inner_text()).split())
-        if "OCR is configured" in said or "this install has no OCR" not in said:
+        if "OCR" in said or "Scanned pages and images aren't read: this install can't read text in pictures." not in said:
             raise AssertionError(f"the drop zone says {said!r}")
         return "the drop zone says this install reads no scanned pages or images"
     finally:
@@ -7752,7 +7753,8 @@ async def _usage_page(browser, routes, theme="light"):
 
 @check
 async def check_usage_hero(browser) -> str:
-    """Usage leads with one figure (UX1, M2g): Total cost, then the calls and tokens as one strip, not four tiles; its
+    """Usage leads with one figure (UX1, M2g): Total cost, then the calls and tokens as one strip, not four tiles, in
+    plain words (GUIDE1, F921: "Model calls", "Words in", "Words out"); its
     two actions sit beside the figure and Clear logs asks first in the product's own dialog, sending nothing on Cancel."""
     deletes: list[str] = []
     ctx, page = await _usage_page(browser, _SMOKE_USAGE)
@@ -7762,7 +7764,7 @@ async def check_usage_hero(browser) -> str:
         if not hero.startswith("Total cost $0.05"):
             raise AssertionError(f"the hero says {hero!r}")
         strip = " ".join((await page.locator("dl[aria-label='Usage so far']").inner_text()).split())
-        for want in ("Total requests 10", "Input tokens 60.0K", "Output tokens 2.0K"):
+        for want in ("Model calls 10", "Words in 60.0K input tokens", "Words out 2.0K output tokens"):
             if want not in strip:
                 raise AssertionError(f"the strip says {strip!r}, not {want!r}")
         await page.get_by_role("button", name="Refresh").wait_for(timeout=5_000)
@@ -7775,7 +7777,7 @@ async def check_usage_hero(browser) -> str:
             raise AssertionError(f"Cancel still sent {deletes}")
     finally:
         await ctx.close()
-    return "Total cost, a strip of requests and tokens, Clear logs asks and Cancel sends nothing"
+    return "Total cost, a strip of model calls and words in and out, Clear logs asks and Cancel sends nothing"
 
 
 @check
