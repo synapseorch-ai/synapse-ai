@@ -552,6 +552,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     state = run.shared_state if run is not None else {}
     _heard(state)
     words = _persons_words(state)
+    chosen = await _chosen(state)
     checked: list[dict] = []
     picks: list[dict] = []
     for n, raw in enumerate(ops):
@@ -571,6 +572,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         if op.kind == "create":
             if op.name == "create_schedule":
                 runs = dict(fields["runs"])
+                if _answers(chosen, n, "runs", runs["kind"], runs):
+                    runs["id"] = chosen["id"]
                 found = resolve(await candidates(runs["kind"]) or [], runs)
                 if len(found) != 1:
                     item.update(status="refused" if not found else "pick",
@@ -591,6 +594,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 continue
             target["name"] = name
         else:
+            if _answers(chosen, n, "target", op.target, target):
+                target["id"] = chosen["id"]
             items = await candidates(op.target)
             if items is not None:
                 found = resolve(items, target)
@@ -754,6 +759,40 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     out["digest"] = digest(reviewed_of(out))
     await _card(out, stage=WAITING)
     return out
+
+
+async def _chosen(state: dict) -> dict | None:
+    """The option the person chose from this conversation's waiting pick list, answered in code by the front door
+    (SAI2-P4's read_turn: state.turn), re-checked here against that card's own options; None for anything else."""
+    turn = state.get("turn")
+    if not isinstance(turn, dict) or turn.get("then") != "change" or not isinstance(turn.get("picked"), dict):
+        return None
+    picked, key = turn["picked"], turn.get("previous_run_id")
+    if not key:
+        return None
+    from core.boards import assistant
+
+    try:
+        card = await assistant.card(str(key))
+    except Exception:  # noqa: BLE001 — no card to check it against: not taken
+        return None
+    person = _caller().user_id
+    if card is None or (person and card.owner_id != person):
+        return None
+    for pick in (((card.data or {}).get("change") or {}).get("picks")) or []:
+        if (pick.get("op"), pick.get("field")) == (picked.get("op"), picked.get("field")) and any(
+                option.get("id") == picked.get("id") for option in pick.get("options") or []):
+            return {**picked, "wanted": pick.get("wanted")}
+    return None
+
+
+def _answers(chosen: dict | None, n: int, field: str, kind: str, target: dict) -> bool:
+    """Whether the person's chosen option is this op's target: the same field and kind, no id of its own yet, and the
+    name the list asked about (by its place only when the planner gave no name, so a reordered draft never takes it)."""
+    if chosen is None or chosen.get("field") != field or chosen.get("kind") != kind or target.get("id"):
+        return False
+    name = _text(target.get("name"))
+    return name.lower() == str(chosen.get("wanted") or "").lower() if name else n == chosen.get("op")
 
 
 def reviewed_of(checked: dict) -> dict:

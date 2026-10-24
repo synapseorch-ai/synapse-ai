@@ -590,3 +590,50 @@ async def test_a_schedule_s_time_change_carries_its_own_clock(client, role):
     [op] = [o for o in out["ops"] if o["status"] == "ready"]
     assert op["before"]["timezone"] == "Europe/Amsterdam"
     assert "timezone" not in op["call"]["args"], "the call sets only what it sets"
+
+
+# ── P4: "the second one", answered in code ───────────────────────────────────────────────────────────────────────────
+
+def _turn(picked_id, *, name, previous="builder_chg", op=0, field="target", kind="workflow"):
+    return {"route": "pick", "then": "change", "previous_run_id": previous,
+            "picked": {"op": op, "field": field, "kind": kind, "id": picked_id, "name": name}}
+
+
+async def test_a_pick_answered_in_code_is_the_target_the_model_need_not_repeat(client, role):
+    """SAI2-P4's front door resolves "the second one" against this conversation's waiting pick list (state.turn). The
+    planner re-sends the op by name; code fills the chosen id, checked against the card's own options (F760's class
+    in code)."""
+    await _workflow(name="Nightly digest for sales")
+    second = await _workflow(name="Nightly digest for support")
+    rename = [{"op": "rename_workflow", "target": {"kind": "workflow", "name": "Nightly digest"},
+               "fields": {"name": "Morning digest"}}]
+    first, _, _ = await _check(rename, await _run(user_message="rename the nightly digest to Morning digest"))
+    assert first["outcome"] == "ask"
+    run = await _run(run_id="builder_chg_b", user_message="the second one",
+                     chat_history="user: rename the nightly digest to Morning digest",
+                     turn=_turn(second["id"], name="Nightly digest for support"))
+    out, _, _ = await _check(rename, run)
+    assert out["outcome"] == "review", out
+    assert out["calls"] == [["set_orchestration_meta", {"orch_id": second["id"], "name": "Morning digest"}]]
+
+
+async def test_a_pick_not_on_the_card_or_not_the_person_s_own_is_never_forced(client, role):
+    await _workflow(name="Nightly digest for sales")
+    await _workflow(name="Nightly digest for support")
+    stranger = await _workflow(name="Something else")
+    rename = [{"op": "rename_workflow", "target": {"kind": "workflow", "name": "Nightly digest"},
+               "fields": {"name": "Morning digest"}}]
+    await _check(rename, await _run(user_message="rename the nightly digest to Morning digest"))
+    off_card = await _run(run_id="builder_chg_c", user_message="that one",
+                          chat_history="user: rename the nightly digest to Morning digest",
+                          turn=_turn(stranger["id"], name="Something else"))
+    out, _, _ = await _check(rename, off_card)
+    assert out["outcome"] == "ask", "an id the card did not offer is not taken"
+    theirs = await _run(user_id="u2", run_id="builder_chg_d",
+                        user_message="rename the nightly digest to Morning digest")
+    await _check(rename, theirs)
+    someone_else_s = await _run(run_id="builder_chg_e", user_message="the first one",
+                                chat_history="user: rename the nightly digest to Morning digest",
+                                turn=_turn("x", name="x", previous="builder_chg_d"))
+    out, _, _ = await _check(rename, someone_else_s)
+    assert out["outcome"] == "ask", "another person's list answers nothing here"
