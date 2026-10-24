@@ -35,6 +35,7 @@ export function NewTabMenu({
   label = "New tab",
   tour,
   first,
+  more,
   heading = "Agents",
   listLabel = "Start a conversation with",
   placeholder = "Search agents…",
@@ -50,6 +51,8 @@ export function NewTabMenu({
   tour?: { button: string; list: string };
   /** A row above the list, its own action: the workflows page's "New workflow". */
   first?: { label: string; icon: React.ReactNode; onPick: () => void };
+  /** A second group under the list: the workflows page's recent runs. */
+  more?: { heading: string; items: PickableAgent[]; onPick: (id: string) => void };
   heading?: string;
   listLabel?: string;
   placeholder?: string;
@@ -122,6 +125,16 @@ export function NewTabMenu({
                   className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-text-faint"
                 >
                   {others.map((a) => <AgentRow key={a.id} agent={a} onPick={pick} />)}
+                </Command.Group>
+              )}
+              {more && more.items.length > 0 && (
+                <Command.Group
+                  heading={more.heading}
+                  className="[&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:text-xs [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-text-faint"
+                >
+                  {more.items.map((a) => (
+                    <AgentRow key={a.id} agent={a} onPick={(id) => { onOpenChange(false); more.onPick(id); }} />
+                  ))}
                 </Command.Group>
               )}
             </Command.List>

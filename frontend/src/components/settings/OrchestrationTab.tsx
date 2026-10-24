@@ -14,11 +14,12 @@ import { useRouter } from 'next/navigation';
 import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvider';
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
 import { validateOrchestration } from '../orchestration/validate';
-import { useBuilderShortcuts, useDraftHistory, type DraftSnapshot } from '../orchestration/use-draft-history';
+import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
+import type { EditorTabs } from '../tabs/editorTabs';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { failureReason, stepErrorsFrom } from '@/lib/runErrors';
-import { CanvasWorkbench } from '../orchestration/CanvasWorkbench';
+import { CanvasWorkbench, type CanvasViewport } from '../orchestration/CanvasWorkbench';
 import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
 import { RunCapFields } from '../orchestration/RunCapFields';
 import { loadRunEstimate } from '@/lib/estimate';
@@ -184,35 +185,7 @@ function fieldList(raw: unknown): HumanField[] {
 /** What a cap per run counts here: model dollars on your own keys (CAP1). */
 const OSS_CAP_UNITS = ['usd'] as const;
 
-/**
- * The editor as one tab of the workflows page (TABS1 v2, F930). The page mounts
- * one editor, keyed by the tab in front, so each workflow's draft and run live
- * and end with its own tab: a tab going behind hands its draft back (`keep`),
- * stops reading its run (the run goes on) and comes forward from both. Whatever
- * would open another workflow here — the switcher, New, a row of the list, a
- * run — asks the page for a tab instead, so one editor never holds two
- * workflows' runs (F1026).
- */
-export interface EditorTabs {
-    /** The tab is a new workflow, opened blank under `initialOrchId`. */
-    startNew?: boolean;
-    /** The draft as the tab left it. */
-    history?: DraftSnapshot;
-    open: (workflowId: string, runId?: string) => void;
-    openNew: () => void;
-    showList: () => void;
-    /** `dirty`: the editor's own rule (an untouched blank workflow holds nothing to lose). */
-    keep: (left: { history: DraftSnapshot; runId: string | null; dirty: boolean }) => void;
-    report: (now: { title: string; dirty: boolean; running: boolean; waiting: boolean; workflowId: string | null }) => void;
-    /** The workflow the tab names is gone (deleted here or elsewhere). */
-    gone: () => void;
-    /** A link the page opens as a tab: following it loses nothing, so it isn't asked about. */
-    isTabLink: (url: URL) => boolean;
-    /** Another tab holds unsaved work: leaving the page asks, as for this tab's own. */
-    othersDirty?: boolean;
-    /** The strip, drawn at the top of the editor and of the list. */
-    strip: React.ReactNode;
-}
+export type { EditorTabs } from '../tabs/editorTabs';
 
 export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, openSettings, tabs }: {
     initialRunId?: string;
@@ -693,6 +666,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     const hasEdits = !!draft && dirty && (canUndo || orchestrations.some(o => o.id === draft.id));
     const tabsRef = useRef(tabs);
     const hasEditsRef = useRef(hasEdits);
+    // Where the canvas stood when it closed: a tab keeps it (TABS1 v2).
+    const viewportRef = useRef<CanvasViewport | null>(tabs?.viewport ?? null);
     useEffect(() => { tabsRef.current = tabs; hasEditsRef.current = hasEdits; });
     const guardLeave = useCallback((go: () => void) => {
         if (hasEdits) setPendingLeave(() => go);
@@ -1708,7 +1683,9 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     useEffect(() => {
         return () => {
             abortRef.current?.abort();
-            tabsRef.current?.keep({ history: snapshot(), runId: currentRunIdRef.current, dirty: hasEditsRef.current });
+            tabsRef.current?.keep({
+                history: snapshot(), runId: currentRunIdRef.current, dirty: hasEditsRef.current, viewport: viewportRef.current,
+            });
         };
     }, [snapshot]);
 
@@ -2089,6 +2066,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 remove: deleteStep,
                             }}
                             history={{ undo, redo, canUndo, canRedo }}
+                            viewport={tabs?.viewport}
+                            onViewport={(v) => { viewportRef.current = v; }}
                             save={{ dirty, saving, onSave: () => void handleSave(), problem: problemLabel(saveRefused?.problem ?? null) }}
                             onBack={() => (tabs ? tabs.showList() : guardLeave(backToList))}
                             switcher={

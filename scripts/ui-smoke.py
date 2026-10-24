@@ -13011,5 +13011,92 @@ async def check_wftabsreload(browser) -> str:
     return "two workflow tabs and the front one survive a reload"
 
 
+#: The canvas's pan and zoom, as React Flow draws them.
+VIEWPORT = "() => (document.querySelector('.react-flow__viewport') || {}).style?.transform || ''"
+
+
+@check
+async def check_wftabsview(browser) -> str:
+    """A workflow tab comes back where its canvas stood; a tab opened fresh fits its workflow (TABS1 v2, Naveen)."""
+    stamp = int(time.time())
+    a, b = f"orch_uismoke_wfva_{stamp}", f"orch_uismoke_wfvb_{stamp}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(a, 3), "name": "ui-smoke view A"})
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(b, 3), "name": "ui-smoke view B"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={a}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        fitted_a = await page.evaluate(VIEWPORT)
+        for _ in range(3):
+            await page.get_by_role("button", name="Zoom in").first.click()
+            await asyncio.sleep(0.3)
+        await page.mouse.move(700, 500)
+        await page.mouse.down()
+        await page.mouse.move(560, 430, steps=6)
+        await page.mouse.up()
+        await asyncio.sleep(0.6)
+        moved_a = await page.evaluate(VIEWPORT)
+        await _wf_open_from_picker(page, "ui-smoke view B")
+        await _wf_canvas(page)
+        # A tab opened fresh shows its whole workflow: every step inside the canvas.
+        outside = await page.evaluate("""() => {
+            const box = document.querySelector('.react-flow').getBoundingClientRect();
+            return [...document.querySelectorAll('.react-flow__node')].filter(n => {
+                const r = n.getBoundingClientRect();
+                return r.left < box.left - 1 || r.right > box.right + 1 || r.top < box.top - 1 || r.bottom > box.bottom + 1;
+            }).length;
+        }""")
+        await _wf_strip(page).get_by_role("tab", name=re.compile("view A")).click()
+        await _wf_canvas(page)
+        await asyncio.sleep(0.6)
+        back_a = await page.evaluate(VIEWPORT)
+    finally:
+        await ctx.close()
+        drop_fixture(a)
+        drop_fixture(b)
+    if moved_a == fitted_a:
+        raise AssertionError("zooming and panning did not move the canvas: the check proves nothing")
+    if back_a != moved_a:
+        raise AssertionError(f"coming back the canvas stood at {back_a!r}, not where it was left ({moved_a!r})")
+    if outside:
+        raise AssertionError(f"a tab opened fresh did not fit its workflow: {outside} steps outside the canvas")
+    return "a tab comes back to its own zoom and pan exactly; a fresh tab fits its workflow"
+
+
+@check
+async def check_wftabspickrun(browser) -> str:
+    """The new tab's picker lists recent runs, live ones first; picking one opens it as a tab (TABS1 v2, Naveen)."""
+    oid = f"orch_uismoke_wfpick_{int(time.time())}"
+    api("/api/orchestrations", "POST", {**human_gate_orchestration(oid), "name": "ui-smoke pick run"})
+    run_id = _start_real_run(oid)
+    other = f"orch_uismoke_wfpick2_{int(time.time())}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(other, 1), "name": "ui-smoke pick other"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={other}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await page.get_by_role("button", name="Open a workflow in a new tab").first.click()
+        await asyncio.sleep(1.5)
+        listed = page.get_by_role("group", name="Recent runs")
+        first = await listed.get_by_role("option").first.inner_text() if await listed.count() else ""
+        await listed.get_by_role("option", name=re.compile("ui-smoke pick run")).first.click()
+        await asyncio.sleep(SETTLE)
+        titles = await _wf_titles(page)
+        front = await _wf_strip(page).get_by_role("tab", selected=True).get_attribute("aria-label") or ""
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        drop_fixture(other)
+    if not first:
+        raise AssertionError("the new tab's picker has no Recent runs")
+    if "ui-smoke pick run" not in first or "Waiting on you" not in first:
+        raise AssertionError(f"the live run waiting on a person is not first: {first!r}")
+    if not front.startswith("Run") or len(titles) != 2:
+        raise AssertionError(f"picking the run did not open it as a tab in front: {titles}")
+    return "the picker lists recent runs, the live one first, and picking one opens it as a tab"
+
+
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))

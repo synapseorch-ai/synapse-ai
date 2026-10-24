@@ -58,7 +58,16 @@ import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './wor
 
 export type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase };
 
+/** Where the canvas stood: its pan and zoom. */
+export interface CanvasViewport { x: number; y: number; zoom: number }
+
 export interface CanvasWorkbenchProps {
+    /**
+     * Where to stand on open instead of fitting the workflow: a tab coming back keeps its place
+     * (TABS1 v2, Naveen). Told where it stood when it closes (`onViewport`).
+     */
+    viewport?: CanvasViewport | null;
+    onViewport?: (viewport: CanvasViewport) => void;
     orchestration: Orchestration;
     /** Every edit: the canvas's, the name's, the toolbar's. The host records it for undo. */
     onChange: (next: Orchestration) => void;
@@ -180,7 +189,7 @@ function Workbench({
     orchestration, onChange, agents, workflowNames, knowledgeEnabled = false, canRunCode = true, selectedStepId,
     onSelectStep,
     renderStep, renderSettings, settingsAtOpen = false, board, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
-    insetRight = 0, run, runStrip, runDrawer, lastRun,
+    insetRight = 0, run, runStrip, runDrawer, lastRun, viewport, onViewport,
 }: CanvasWorkbenchProps) {
     // The canvas is the page: the shell hides the page header and folds the menu (D204).
     useCanvasMode(true);
@@ -281,6 +290,21 @@ function Workbench({
         return has.size ? { has, open: openResult } : null;
     }, [record, orchestration.steps, openResult]);
 
+    // A tab coming back stands where it left, once; every later fit (Fit view, Tidy up) fits.
+    const standAt = useRef(viewport ?? null);
+    const fitOrStand = useCallback((duration?: number) => {
+        const at = standAt.current;
+        if (at) {
+            standAt.current = null;
+            void setViewport(at);
+            return;
+        }
+        fit(duration);
+    }, [fit, setViewport]);
+    // Told after every pan and zoom, not at unmount: a parent's cleanup runs before its child's.
+    const onViewportRef = useRef(onViewport);
+    useEffect(() => { onViewportRef.current = onViewport; });
+
     const graph = useWorkflowGraph({
         orchestration,
         agents,
@@ -295,7 +319,7 @@ function Workbench({
         stepResults,
         settled: !(run.phase === 'running' || run.phase === 'paused'),
         flags,
-        fit,
+        fit: fitOrStand,
         wrapperRef: flowRef,
     });
 
@@ -499,6 +523,7 @@ function Workbench({
                         graph.onPaneClick();
                     }}
                     onDelete={graph.onDelete}
+                    onMoveEnd={(_event: unknown, at: CanvasViewport) => onViewportRef.current?.(at)}
                     onDragOver={graph.onDragOver}
                     onDrop={graph.onDrop}
                     nodesDraggable={flags.nodesDraggable}

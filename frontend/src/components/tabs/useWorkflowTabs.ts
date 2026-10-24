@@ -30,6 +30,8 @@ import { useTabStatus } from "./useTabStatus";
 /** What a tab behind left with: its draft (opaque here) and the run it follows. */
 export interface KeptTab<D> {
   history?: D;
+  /** Where its canvas stood: it comes back there (Naveen). */
+  viewport?: { x: number; y: number; zoom: number } | null;
   runId?: string | null;
   /** Its draft holds work that isn't saved. */
   dirty?: boolean;

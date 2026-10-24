@@ -93,6 +93,30 @@ function tabLink(url: URL): { run?: string; workflow?: string } | null {
 
 const onPhone = () => window.matchMedia('(max-width: 767px)').matches;
 
+type RecentRun = { run_id: string; orchestration_id: string; status: string; waiting_for_human?: boolean;
+                   started_at?: string | null; ended_at?: string | null };
+
+/** The new tab's recent runs: live ones first, then the newest, ten at most. */
+function recentRuns(runs: RecentRun[]): RecentRun[] {
+    const live = (r: RecentRun) => r.status === 'running' || r.status === 'paused';
+    return [...runs.filter(live), ...runs.filter(r => !live(r))].slice(0, 10);
+}
+
+/** A recent run in a few words: how it stands, and when. */
+function runWords(r: RecentRun): string {
+    const state = r.waiting_for_human ? 'Waiting on you'
+        : r.status === 'running' ? 'Running'
+        : r.status === 'paused' ? 'Paused'
+        : r.status === 'completed' ? 'Completed'
+        : r.status === 'failed' ? 'Failed'
+        : r.status === 'cancelled' ? 'Cancelled' : r.status;
+    const at = r.ended_at || r.started_at;
+    if (!at) return state;
+    const mins = Math.max(0, Math.round((Date.now() - new Date(at).getTime()) / 60000));
+    const ago = mins < 1 ? 'just now' : mins < 60 ? `${mins} min ago` : mins < 1440 ? `${Math.round(mins / 60)} h ago` : `${Math.round(mins / 1440)} d ago`;
+    return `${state} · ${ago}`;
+}
+
 export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSettings }: {
     initialRunId?: string;
     initialOrchId?: string;
@@ -102,6 +126,7 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
     const tabs = useWorkflowTabs<DraftSnapshot>({ load: loadTabs, save: saveTabs, readStatus: readRuns, newWorkflowId });
     const { ready, start, state, front, notice, setNotice, badges, unsaved, kept } = tabs;
     const [workflows, setWorkflows] = useState<{ id: string; name: string; description?: string }[]>([]);
+    const [recent, setRecent] = useState<RecentRun[]>([]);
     const [picker, setPicker] = useState<'strip' | 'phone' | null>(null);
     const [closing, setClosing] = useState<WorkflowTab | null>(null);
     const shellRef = useRef<HTMLDivElement>(null);
@@ -113,6 +138,12 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
         }).catch(() => {});
     }, []);
     useEffect(() => { readWorkflows(); }, [readWorkflows]);
+    // The picker's recent runs (Naveen): read when it opens.
+    const readRecent = useCallback(() => {
+        fetch('/api/orchestrations/runs?limit=30').then(r => (r.ok ? r.json() : [])).then(list => {
+            if (Array.isArray(list)) setRecent(list);
+        }).catch(() => {});
+    }, []);
     const nameOf = useCallback((id?: string) => workflows.find(w => w.id === id)?.name ?? '', [workflows]);
 
     /** Open a run as a tab: beside its workflow, named after it. */
@@ -210,6 +241,11 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
     }), [state, nameOf]);
 
     const picked = workflows.map(w => ({ id: w.id, name: w.name, note: w.description || null }));
+    const runItems = recentRuns(recent).map(r => ({
+        id: r.run_id,
+        name: nameOf(r.orchestration_id) || 'A workflow since deleted',
+        note: runWords(r),
+    }));
     const pickerProps = {
         agents: picked,
         onPick: (id: string) => tabs.openWorkflow(id, undefined, nameOf(id)),
@@ -219,6 +255,14 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
         placeholder: 'Search workflows…',
         footer: 'Opens beside your other tabs. Nothing runs until you press Run.',
         first: { label: 'New workflow', icon: <Plus className="size-4" aria-hidden />, onPick: tabs.openNew },
+        more: {
+            heading: 'Recent runs',
+            items: runItems,
+            onPick: (runId: string) => {
+                const run = recent.find(r => r.run_id === runId);
+                void openRun(runId, run?.orchestration_id || undefined);
+            },
+        },
     };
 
     const strip = ready && state.tabs.length > 0 ? (
@@ -237,7 +281,7 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
                         <NewTabMenu
                             {...pickerProps}
                             open={picker === 'strip'}
-                            onOpenChange={o => { setPicker(o ? 'strip' : null); if (o) readWorkflows(); }}
+                            onOpenChange={o => { setPicker(o ? 'strip' : null); if (o) { readWorkflows(); readRecent(); } }}
                         />
                     )}
                 />
@@ -257,7 +301,7 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
                 <NewTabMenu
                     {...pickerProps}
                     open={picker === 'phone'}
-                    onOpenChange={o => { setPicker(o ? 'phone' : null); if (o) readWorkflows(); }}
+                    onOpenChange={o => { setPicker(o ? 'phone' : null); if (o) { readWorkflows(); readRecent(); } }}
                     className="size-11"
                 />
             </div>
@@ -274,11 +318,12 @@ export function WorkflowTabs({ initialRunId, initialOrchId, newRequest, openSett
     const bridge: EditorTabs = {
         startNew: !!front && tabs.isFresh(front.id),
         history: frontKept?.history,
+        viewport: frontKept?.viewport,
         open: (workflowId, runId) => tabs.openWorkflow(workflowId, runId, nameOf(workflowId)),
         openNew: tabs.openNew,
         showList: () => tabs.focus(null),
-        keep: ({ history, runId, dirty }) => {
-            if (front) tabs.keep(front.id, { history, runId, dirty });
+        keep: ({ history, runId, dirty, viewport }) => {
+            if (front) tabs.keep(front.id, { history, runId, dirty, viewport });
         },
         report: (now) => {
             tabs.setFrontReport(now);
