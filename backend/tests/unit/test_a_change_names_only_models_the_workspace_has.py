@@ -153,8 +153,12 @@ async def test_a_wish_is_the_person_s_model_and_an_unclear_one_is_asked(client, 
     agent = await _agent(name="Front desk", model="gpt-4.1-mini", tools=["web_search"])
     out, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
                                "fields": {"wish": "Claude", "needs": "reasoning"}}])
-    assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "claude-opus-4-1"}}]], \
-        "a wish is not bound by the ceiling"
+    assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "claude-sonnet-4-5"}}]], \
+        "a family word is a kind of model: the ceiling holds (SAI2's probe)"
+    named, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
+                                 "fields": {"wish": "Opus", "needs": "reasoning"}}])
+    assert named["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "claude-opus-4-1"}}]], \
+        "a model named outright is theirs, above the ceiling"
     asked, _, _ = await _check([{"op": "set_agent_model", "target": {"kind": "agent", "id": agent["id"]},
                                  "fields": {"wish": "claude or gpt"}}])
     assert asked["outcome"] == "ask" and not asked.get("calls")

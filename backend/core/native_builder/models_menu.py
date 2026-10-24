@@ -150,11 +150,21 @@ def _strongest_first(e: ModelEntry, has_tools: bool = False) -> tuple:
     return (not e.reasoning, has_tools and e.tools != "native", e.price_out is None, -(e.price_out or 0), e.id)
 
 
-def _no_model(needs: str, has_tools: bool) -> NoModel:
-    what = "calls tools" if has_tools else ("reads images" if needs == "vision" else "it can pay for")
-    if has_tools and needs == "vision":
-        what = "calls tools and reads images"
-    return NoModel(f"No model this workspace can use {what}.")
+def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: str = "") -> NoModel:
+    """Why nothing here does the job, said by what the candidates lack (SAI2's probe): the wallet first, then tools,
+    then images. `of` names the family a wish asked for."""
+    if candidates and not any(e.can_pay for e in candidates):
+        if of:
+            return NoModel(f"{', '.join(sorted(e.id for e in candidates))} can't be paid for now (the wallet).")
+        return NoModel("No model this workspace can use can be paid for now (the wallet).")
+    payable = [e for e in candidates if e.can_pay]
+    kind = f"No {of} model here" if of else "No model this workspace can use"
+    if has_tools and not any(e.tools in ("native", "prompt") for e in payable):
+        lacks = "calls tools and reads images" if needs == "vision" and not any(e.vision for e in payable) else \
+            "calls tools"
+    else:
+        lacks = "reads images"
+    return NoModel(f"{kind} {lacks}." if not of else f"{kind} {lacks}, which this agent needs.")
 
 
 def _by_need(fitting: list[ModelEntry], needs: str, *, ceiling: bool, has_tools: bool) -> ModelEntry:
@@ -178,89 +188,126 @@ def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | NoM
         if local and not usable:
             fitting = local
         else:
-            return _no_model(needs, has_tools)
+            return _no_model(usable or menu, needs, has_tools)
     if len(fitting) == 1:
         return Picked(fitting[0].id, _ONLY)
     return Picked(_by_need(fitting, needs, ceiling=True, has_tools=has_tools).id, _REASONS[needs])
 
 
+def _strength(e: ModelEntry | None) -> tuple:
+    return (bool(e and e.reasoning), (e.price_out or 0) if e else 0)
+
+
 def stronger_than(current: str, needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | None:
-    """The strongest model above the ceiling that does the job, with its price, for Synapse AI to offer; None when
-    there is none (or only ones whose price is not known: an offer says what it costs)."""
+    """The next real step up from `current`, with its price, for Synapse AI to offer (F1018). Below the ceiling, the
+    strongest within it; only from a model at or above the ceiling, the strongest above it (SAI2's probe: from Nova
+    Pro, Sonnet, not Opus). Never an unpriced one: an offer says what it costs. None when nothing is stronger."""
     now = next((e for e in menu if e.id == current), None)
-    floor = max(AUTO_PICK_CEILING_USD_PER_MTOK_OUT, (now.price_out or 0) if now else 0)
-    above = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools)
-             and e.price_out is not None and e.price_out > floor and e.id != current]
-    if not above:
+    priced = [e for e in menu if e.source not in ("cli", "local") and _fits(e, needs, has_tools)
+              and e.price_out is not None and e.id != current and _strength(e) > _strength(now)]
+    at_ceiling = now is not None and (now.price_out or 0) >= AUTO_PICK_CEILING_USD_PER_MTOK_OUT
+    within = [e for e in priced if e.price_out <= AUTO_PICK_CEILING_USD_PER_MTOK_OUT]
+    pool = [e for e in priced if e.price_out > AUTO_PICK_CEILING_USD_PER_MTOK_OUT] if at_ceiling else within
+    if not pool:
         return None
-    best = sorted(above, key=lambda e: _strongest_first(e, has_tools))[0]
+    best = sorted(pool, key=lambda e: _strongest_first(e, has_tools))[0]
     return Picked(best.id, f"about ${best.price_out:g} per 1M output tokens")
 
 
 # ── a person's wish ─────────────────────────────────────────────────────────────────────────────────────────────────
 
-#: A word a person uses for a family of models, and what its ids hold.
-FAMILIES = {"claude": "claude", "anthropic": "claude", "gpt": "gpt", "openai": "gpt", "gemini": "gemini",
-            "google": "gemini", "nova": "nova", "llama": "llama", "mistral": "mistral", "grok": "grok",
-            "deepseek": "deepseek", "qwen": "qwen", "kimi": "kimi"}
+#: A word a person uses for a family of models: what its ids hold, and the providers that serve it.
+FAMILIES: dict[str, tuple[str, frozenset[str]]] = {
+    "claude": ("claude", frozenset({"anthropic", "anthropic_cli"})),
+    "gpt": ("gpt", frozenset({"openai", "codex_cli"})),
+    "gemini": ("gemini", frozenset({"gemini", "gemini_cli"})), "nova": ("nova", frozenset()),
+    "llama": ("llama", frozenset()), "mistral": ("mistral", frozenset({"mistral"})),
+    "grok": ("grok", frozenset({"grok"})), "deepseek": ("deepseek", frozenset({"deepseek"})),
+    "qwen": ("qwen", frozenset({"qwen"})), "kimi": ("kimi", frozenset({"moonshot"})),
+}
+#: Other words for a family.
+_SAME = {"anthropic": "claude", "openai": "gpt", "chatgpt": "gpt", "google": "gemini"}
 _CHEAPEST = {"cheapest", "cheaper", "cheap", "fastest", "faster", "smallest"}
-_STRONGEST = {"strongest", "stronger", "best", "smartest", "most capable", "biggest"}
+_STRONGEST = {"strongest", "stronger", "best", "smartest", "biggest"}
 
 
 def _plain(text: str) -> str:
     return "".join(c for c in text.casefold() if c.isalnum())
 
 
+def _named(menu: list[ModelEntry], wish: str, words: set[str]) -> list[ModelEntry]:
+    """Models the person named outright: the whole wish is an id or its part after a prefix ("nova pro",
+    "claude-opus-4-1"), else one of their words is a part of exactly one model's id that no family word is ("Opus")."""
+    whole = _plain(wish)
+    exact = [e for e in menu if whole and whole in {_plain(e.id)} | {_plain(e.id[i + 1:])
+                                                                       for i, c in enumerate(e.id) if c in "./"}]
+    if exact:
+        return exact
+    generic = set(FAMILIES) | set(_SAME) | _CHEAPEST | _STRONGEST | {"cli", "local", "ollama", "model", "use", "the"}
+    for word in sorted(words - generic, key=len, reverse=True):
+        if len(word) < 4:
+            continue
+        hits = [e for e in menu if word in re.split(r"[-._/:]", e.id.casefold())]
+        if len(hits) == 1:
+            return hits
+    return []
+
+
 def resolve_wish(wish: str, needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | NoModel | Ask:
-    """The model a person asked for, in their words: a model's own id ("nova pro"), a family ("Claude": its best for
-    the need, not bound by the ceiling, as it is their choice), a rule ("the cheapest"), a CLI or a local model when
-    they say so. None of these, or two families, is a question with the menu's names: never a guess."""
+    """The model a person asked for, in their words (Naveen; SAI2's probe):
+    - a model they name outright ("nova pro", "Opus", its id) is theirs, even above the ceiling: its price is shown;
+    - a family ("Claude", "gpt") is a kind of model: its best for the need within the ceiling, matched by name or by
+      provider, and the card offers a stronger one (`stronger_than`);
+    - a rule ("the cheapest", "the strongest"); a CLI or a local model when they say so, or when what they named is
+      only there;
+    - two families, or nothing it could mean, is a question with the menu's names. Never a guess. A model that can't
+      do the job is said, with the real reason."""
     words = set(re.findall(r"[a-z0-9]+", wish.casefold()))
-    phrase = " ".join(re.findall(r"[a-z0-9]+", wish.casefold()))
-    wants_cli, wants_local = "cli" in words, bool(words & {"local", "ollama"})
-    # A CLI or a local model only when they say so (Naveen); then only those.
-    kind = "cli" if wants_cli else ("local" if wants_local else None)
-    allowed = [e for e in menu if (e.source == kind if kind else e.source not in ("cli", "local"))]
-    names = sorted(e.id for e in menu if e.source not in ("cli", "local") or wants_cli or wants_local)
+    names = sorted(e.id for e in menu)
+    asked_kind = "cli" if "cli" in words else ("local" if words & {"local", "ollama"} else None)
+    ordinary = [e for e in menu if e.source not in ("cli", "local")]
+    kind_pool = [e for e in menu if e.source == asked_kind] if asked_kind else ordinary
 
-    # A model's own id, said as such ("nova pro", "claude-haiku-4-5").
-    wanted = _plain(wish)
-    own = [e for e in allowed if wanted and wanted in {_plain(e.id)} | {_plain(e.id[i + 1:]) for i, c in enumerate(e.id)
-                                                                       if c in "./"}]
-    if len(own) == 1:
-        e = own[0]
-        if has_tools and e.tools not in ("native", "prompt"):
-            return NoModel(f"{e.id} can't call tools, which this agent needs.")
-        if needs == "vision" and not e.vision:
-            return NoModel(f"{e.id} can't read images, which this agent needs.")
-        return Picked(e.id, f"you asked for {wish.strip()}")
+    named = _named(kind_pool, wish, words) or (_named(menu, wish, words) if not asked_kind else [])
+    if len(named) == 1:
+        e = named[0]
+        if not _fits(e, needs, has_tools):
+            return _no_model([e], needs, has_tools, of=e.id) if not e.can_pay else NoModel(
+                f"{e.id} can't {'call tools' if has_tools and e.tools == 'none' else 'read images'}, which this agent "
+                "needs.")
+        return Picked(e.id, f"you asked for {wish.strip().removeprefix('use ').strip()}")
 
-    families = {FAMILIES[w] for w in words if w in FAMILIES}
+    families = {_SAME.get(w, w) for w in words if _SAME.get(w, w) in FAMILIES}
     if len(families) > 1:
         return Ask("Which model do you mean? This workspace can use: " + ", ".join(names) + ".", names)
     if families:
         family = families.pop()
-        said = next((m.group(0) for w, f in FAMILIES.items() if f == family
+        part, providers = FAMILIES[family]
+        said = next((m.group(0) for w in [family, *[k for k, v in _SAME.items() if v == family]]
                      for m in [re.search(rf"\b{w}\b", wish, re.I)] if m), family)
-        members = [e for e in allowed if family in e.id.lower()]
+
+        def member(e: ModelEntry) -> bool:
+            return part in e.id.casefold() or e.provider in providers
+
+        members = [e for e in kind_pool if member(e)] or ([e for e in menu if member(e)] if not asked_kind else [])
         if not members:
             return Ask(f"No {said} model is available here. This workspace can use: " + ", ".join(names) + ".", names)
         fitting = [e for e in members if _fits(e, needs, has_tools)]
         if not fitting:
-            return _no_model(needs, has_tools)
-        return Picked(_by_need(fitting, needs, ceiling=False, has_tools=has_tools).id, f"you asked for {said}")
+            return _no_model(members, needs, has_tools, of=said)
+        return Picked(_by_need(fitting, needs, ceiling=True, has_tools=has_tools).id, f"you asked for {said}")
 
-    fitting = [e for e in allowed if _fits(e, needs, has_tools)]
-    if wants_cli or wants_local:
+    fitting = [e for e in kind_pool if _fits(e, needs, has_tools)]
+    if asked_kind:
         if not fitting:
-            return Ask(f"No {'CLI' if wants_cli else 'local'} model here can do this. This workspace can use: "
-                       + ", ".join(names) + ".", names)
+            return Ask(f"No {'CLI' if asked_kind == 'cli' else 'local'} model here can do this. This workspace can "
+                       "use: " + ", ".join(names) + ".", names)
         return Picked(_by_need(fitting, needs, ceiling=False, has_tools=has_tools).id,
-                      f"you asked for {'a CLI' if wants_cli else 'a local'} model")
+                      f"you asked for {'a CLI' if asked_kind == 'cli' else 'a local'} model")
     if words & _CHEAPEST and fitting:
         return Picked(sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0].id,
                       "you asked for the lowest-cost model")
-    if (words & _STRONGEST or "most capable" in phrase) and fitting:
+    if (words & _STRONGEST or "most capable" in " ".join(re.findall(r"[a-z0-9]+", wish.casefold()))) and fitting:
         return Picked(sorted(fitting, key=lambda e: _strongest_first(e, has_tools))[0].id,
                       "you asked for the strongest model")
     return Ask(f"I don't know which model \"{wish.strip()}\" is. This workspace can use: " + ", ".join(names) + ".",

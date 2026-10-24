@@ -122,6 +122,9 @@ class TestPick:
             "claude-haiku-4-5", "the only model here that fits")
 
     def test_none_usable_is_said_never_a_silent_default(self):
+        broke = _entry("synapse.nova-pro", source="managed", provider="model_gateway", price_out=3.2, can_pay=False)
+        assert M.pick("simple", has_tools=False, menu=[broke]) == M.NoModel(
+            "No model this workspace can use can be paid for now (the wallet).")
         got = M.pick("simple", has_tools=True, menu=[BLIND_NO_TOOLS, CLI])
         assert got == M.NoModel("No model this workspace can use calls tools.")
         assert M.pick("vision", has_tools=False, menu=[MINI]) == M.NoModel(
@@ -136,6 +139,13 @@ class TestStrongerThan:
         got = M.stronger_than("claude-sonnet-4-5", "reasoning", has_tools=True, menu=[HAIKU, SONNET, OPUS])
         assert got == M.Picked("claude-opus-4-1", "about $75 per 1M output tokens")
 
+    def test_it_is_the_next_real_step_up_within_the_ceiling(self):
+        """SAI2's probe (F1018): "stronger than nova-pro" jumped to Opus at $75. From a model below the ceiling, the
+        offer is the strongest within it; above it only from a model already at the ceiling."""
+        nova = _entry("synapse.nova-pro", source="managed", provider="model_gateway", price_out=3.2)
+        assert M.stronger_than("synapse.nova-pro", "simple", has_tools=True, menu=[nova, SONNET, OPUS]) == M.Picked(
+            "claude-sonnet-4-5", "about $15 per 1M output tokens")
+
     def test_nothing_above_the_ceiling_or_unpriced_is_no_offer(self):
         pricey_unknown = _entry("oaic.giant", price_out=None, reasoning=True)
         assert M.stronger_than("claude-sonnet-4-5", "reasoning", has_tools=True,
@@ -143,12 +153,36 @@ class TestStrongerThan:
 
 
 class TestWishes:
-    def test_a_family_is_its_best_for_the_need_and_not_bound_by_the_ceiling(self):
-        """The ceiling is for automatic picks (Naveen); "use Claude" is the person's choice, its price shown."""
+    def test_a_family_word_stays_within_the_ceiling_and_the_stronger_one_is_offered(self):
+        """SAI2's probe: "use Claude" (reasoning) picked Opus at $75. A family word is a kind of model, not a model:
+        the ceiling holds, and the card offers the stronger one (`stronger_than`)."""
         menu = [MINI, HAIKU, SONNET, OPUS]
         assert M.resolve_wish("use Claude for the writer", "reasoning", has_tools=True, menu=menu) == M.Picked(
-            "claude-opus-4-1", "you asked for Claude")
+            "claude-sonnet-4-5", "you asked for Claude")
         assert M.resolve_wish("claude", "simple", has_tools=True, menu=menu).id == "claude-haiku-4-5"
+        assert M.stronger_than("claude-sonnet-4-5", "reasoning", has_tools=True, menu=menu).id == "claude-opus-4-1"
+
+    def test_a_model_named_outright_is_theirs_above_the_ceiling(self):
+        """Only a model the person names ("Opus", its id) skips the ceiling: their choice, its price on the card."""
+        menu = [MINI, HAIKU, SONNET, OPUS]
+        assert M.resolve_wish("use Opus", "reasoning", has_tools=True, menu=menu) == M.Picked(
+            "claude-opus-4-1", "you asked for Opus")
+        assert M.resolve_wish("claude-opus-4-1", "simple", has_tools=True, menu=menu).id == "claude-opus-4-1"
+
+    def test_a_family_is_matched_by_its_provider_too_and_says_the_real_reason(self):
+        """SAI2's probe: "gpt" said "no model calls tools", though an openai model with tools fitted, and gpt-oss
+        matched but could not be paid for."""
+        mystery = _entry("openai.mystery", provider="openai", price_out=None)
+        oss = _entry("synapse.gpt-oss-120b", source="managed", provider="model_gateway", price_out=0.6, can_pay=False)
+        assert M.resolve_wish("gpt", "simple", has_tools=True, menu=[oss, mystery, HAIKU]).id == "openai.mystery"
+        assert M.resolve_wish("gpt", "simple", has_tools=True, menu=[oss, HAIKU]) == M.NoModel(
+            "synapse.gpt-oss-120b can't be paid for now (the wallet).")
+
+    def test_a_local_or_cli_model_named_by_its_family_is_a_wish_for_it(self):
+        mistral = _entry("ollama.mistral", source="local", price_out=0, provider="ollama")
+        assert M.resolve_wish("mistral", "simple", has_tools=True, menu=[HAIKU, mistral]).id == "ollama.mistral"
+        asked = M.resolve_wish("banana", "simple", has_tools=True, menu=[HAIKU, mistral, CLI])
+        assert isinstance(asked, M.Ask) and asked.options == ["claude-haiku-4-5", "cli.claude", "ollama.mistral"]
 
     def test_a_model_s_own_id_is_that_model(self):
         nova = _entry("synapse.nova-pro", source="managed", price_out=3.2, provider="model_gateway")
@@ -159,6 +193,7 @@ class TestWishes:
         menu = [MINI, HAIKU, SONNET, OPUS]
         assert M.resolve_wish("the cheapest one", "reasoning", has_tools=True, menu=menu).id == "gpt-4.1-mini"
         assert M.resolve_wish("the strongest model", "simple", has_tools=True, menu=menu).id == "claude-opus-4-1"
+        assert M.resolve_wish("the most capable one", "simple", has_tools=True, menu=menu).id == "claude-opus-4-1"
 
     def test_a_cli_or_local_model_is_there_when_asked_for(self):
         assert M.resolve_wish("use the claude cli", "simple", has_tools=True, menu=[HAIKU, CLI]).id == "cli.claude"
