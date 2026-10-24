@@ -1,7 +1,7 @@
 /*
  * The guided tours (GUIDE1, D318, F920): a few stops on a main page, each lighting up one part and saying what it
  * is for. Naveen: "a highlighter will highlight a section and explain what we can do with this ... and they just
- * click next". Keyed by the page's help topic id (`lib/helpHost.tsx`). A stop whose part isn't on the page right
+ * click next". Keyed by the page's help topic id (`lib/helpHost.tsx`). Chat's stops are TABS1's anchors (D319). A stop whose part isn't on the page right
  * now (a new workspace's empty state, a phone's hidden rail) is skipped, so one list serves every state.
  *
  * Every anchor must exist in the source (`test_every_tour_step_has_its_anchor.py`): a screen that drops one fails a
@@ -29,6 +29,17 @@ export const TOURS: Record<string, Tour> = {
             { anchor: 'workflows-new', title: 'Or start from scratch', body: 'A blank canvas: add steps, connect them, and run it to see each step’s result.' },
             { anchor: 'workflows-templates', title: 'Ready-made workflows', body: 'Start from a template and make it yours. Each brings its agents and connections along.' },
             { anchor: 'workflows-views', title: 'Your workflows and their runs', body: 'Switch between your workflows and their latest runs. Open one to edit it on the canvas.' },
+        ],
+    },
+    chat: {
+        version: 1,
+        steps: [
+            { anchor: 'chat-tabs', title: 'Conversations as tabs', body: 'Each conversation is a tab, so several can work at once. A spinner means its agent is working; an amber dot means it needs you.' },
+            { anchor: 'chat-tab-switcher', title: 'Your conversations', body: 'Your open conversations, and how each is doing. Tap to switch between them.' },
+            { anchor: 'chat-new-tab', title: 'Start a conversation', body: 'Pick who to talk to. Synapse AI comes first: it can build agents and workflows for you.' },
+            { anchor: 'chat-composer', title: 'Ask for what you need', body: 'Type it in your own words. You can attach, paste or drop images when the agent’s model can read them.' },
+            { anchor: 'chat-rail', title: 'History, Pinned and Search', body: 'Open an earlier conversation in a tab, pin one to find it again, or search every question and answer.' },
+            { anchor: 'help', title: 'Help on every page', body: 'The “?” explains the page you are on. You can take this tour again from there.' },
         ],
     },
     agents: {
