@@ -19,7 +19,8 @@ const POPOVER = [
     '[&_.driver-popover-description]:!mt-1 [&_.driver-popover-description]:!text-sm [&_.driver-popover-description]:!leading-relaxed [&_.driver-popover-description]:!text-text-muted',
     '[&_.driver-popover-progress-text]:!text-xs [&_.driver-popover-progress-text]:!text-text-faint',
     '[&_.driver-popover-footer_button]:!rounded-md [&_.driver-popover-footer_button]:!border-border [&_.driver-popover-footer_button]:!bg-surface-2 [&_.driver-popover-footer_button]:!px-3 [&_.driver-popover-footer_button]:!py-1 [&_.driver-popover-footer_button]:!text-xs [&_.driver-popover-footer_button]:!text-text [&_.driver-popover-footer_button]:![text-shadow:none]',
-    '[&_.driver-popover-next-btn]:!border-accent [&_.driver-popover-next-btn]:!bg-accent [&_.driver-popover-next-btn]:!text-accent-fg',
+    // Next is the primary action: one class deeper than the footer's buttons, so it wins over their surface.
+    '[&_.driver-popover-footer_button.driver-popover-next-btn]:!border-accent [&_.driver-popover-footer_button.driver-popover-next-btn]:!bg-accent [&_.driver-popover-footer_button.driver-popover-next-btn]:!text-accent-fg',
     '[&_.driver-popover-close-btn]:!text-text-faint',
     '[&_.driver-popover-arrow]:!hidden',
 ].join(' ');
