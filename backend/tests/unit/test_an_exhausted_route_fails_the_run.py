@@ -19,7 +19,6 @@ import types
 import pytest
 
 from _fakes import seed as S
-from _fakes.fake_llm import tool_call
 
 
 def _server():
@@ -194,6 +193,9 @@ class TestAtTheAnswerThatRoutesThere:
 #: What the build route's code steps answer in the graph (SAI2-P3): the check's outcome is whatever the person's last
 #: answer scripts as `next`, a no is a revision, and the approval goes through. Everything else prints its id.
 _SCRIPTED = {
+    # The front door (SAI2-P4): code reads the turn on to classify, and classify routes a build.
+    "step_turn": '{"then": "classify"}',
+    "step_classify": '{"kind": "build", "route": "step_plan_room"}',
     "step_check_plan": '{"outcome": "{state.human_response.next}"}',
     "step_plan_answer": '{"outcome": "revise"}',
     "step_plan_approve": '{"approved": 1}',
@@ -222,17 +224,13 @@ def _builder_graph() -> dict:
     return orch
 
 
-def _route(label):
-    return tool_call(f"route_{label}", reasoning="scripted")
-
-
 class TestTheBuildersOwnCycles:
-    """Since SAI2-P3 the only model on these routes is the router: the planner's own choice to ask or to submit is
-    scripted here as the check's outcome (`_SCRIPTED`), and the cycles' caps are what is tested. The planner's own
-    bound — no sixth question in one run — is `ask_person`'s (`test_synapse_ai_asks_no_secret_and_no_way_in`)."""
+    """Since SAI2-P4 no model runs on these routes: the front door's call is scripted as its answer, and the
+    planner's own choice to ask or to submit as the check's outcome (`_SCRIPTED`), so the cycles' caps are what is
+    tested. The planner's own bound — no sixth question in one run — is `ask_person`'s
+    (`test_synapse_ai_asks_no_secret_and_no_way_in`)."""
 
     async def _start(self, driver, fake_llm, run_id, first="ask"):
-        fake_llm.script([_route("create")])
         return await driver.start(_builder_graph(), run_id,
                                   initial_state={"plan_room": {"orchestrations_left": 1},
                                                  "human_response": {"next": first}})

@@ -155,7 +155,7 @@ def test_the_planner_plans_a_schedule_on_or_off_as_a_button():
 def test_the_answer_still_puts_up_a_card_for_a_button_it_is_asked():
     """A button asked for as a question still reaches the reporter, which puts the card up; no change plan reaches
     it any more."""
-    answer = _steps()["step_answer"]
+    answer = _steps()["step_answer_workspace"]  # the answer that reads the workspace (SAI2-P4)
     assert "put the card up with `prepare_action`" in answer["prompt_template"]
     assert "manage_plan" not in answer["input_keys"] and "manage_plan" not in answer["prompt_template"]
 

@@ -3921,5 +3921,6 @@ import importlib as _importlib  # noqa: E402
 for _module in ("core.builder_connect", "core.builder_readers", "core.builder_help", "core.builder_guard",
                 "core.builder_research", "core.builder_actions", "core.native_builder.change_tools",
                 "core.native_builder.change_apply", "core.native_builder.build_plan",
-                "core.native_builder.build_save"):
+                "core.native_builder.build_save", "core.native_builder.read_turn", "core.native_builder.classify",
+                "core.native_builder.answer_pack"):
     _importlib.import_module(_module)

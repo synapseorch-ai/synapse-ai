@@ -16,7 +16,6 @@ import pytest
 
 from core.builder_research import previous_findings
 from core.native_builder import bundled_definitions, seed_native_builder
-from core.orchestration.steps import _eval_state_expr
 from test_builder_routes import route, stream, tool_call
 
 STRIPE = {"goal": "send a payment link", "options": [{"provider": "Stripe", "how": "mcp", "needs": "A Stripe account",
@@ -51,13 +50,22 @@ def test_the_previous_turns_findings_are_its_findings_card_only(state, found):
     ({}, "step_research"),
 ])
 def test_research_after_findings_goes_to_the_build_through_the_role_door(state, goes_to):
+    """F766 in code since SAI2-P4 (SAI2-P3's conditions, 10-24): classify's override sends a research request after
+    findings to the build, through the role door; with no findings it is research."""
+    from core.native_builder.classify import override
+    from core.native_builder.objects import Request
+
     steps = _steps()
-    assert steps["step_intent"]["route_map"]["research"] == "step_researched_before"
-    gate = steps["step_researched_before"]
-    value, _ = _eval_state_expr(gate["if_condition"], state, default=False)
-    assert (gate["if_true_step_id"] if value else gate["if_false_step_id"]) == goes_to
+    routed = override(Request(kind="research"), message="go ahead and set up the Stripe link", state=state,
+                      inventory={}, connectable=set())
+    assert steps["step_classify_route"]["switch_cases"][routed.route] == goes_to
     # The build it reaches is the create path: the role door, then the plan room.
-    assert steps["step_change_route"]["switch_default_step_id"] == "step_plan_room"
+    assert routed.route in ("step_plan_room", "step_research")
+    assert steps["step_change_route"]["switch_cases"]["create"] == "step_plan_room"
+    for who in ({"may_change": False, "may_act": False}, {"may_change": False, "may_act": True}):
+        below = override(Request(kind="research"), message="go ahead", state={**state, **who}, inventory={},
+                         connectable=set())
+        assert below.route == ("step_not_yours" if goes_to == "step_may_change" else "step_research")
 
 
 @pytest.mark.parametrize("findings, outcome", [(STRIPE, "review"), ({}, "research")])
@@ -112,7 +120,7 @@ async def test_go_ahead_after_the_findings_builds_from_them(client, builder, fak
 
     fake_llm.reset()
     fake_llm.script([
-        route("research"),                                     # the router still reads it as research
+        route("research"),                                     # the model still reads it as research
         tool_call("submit_plan", **PLAN),                      # the planner's finish (E2)
     ])
     second = await stream(client, "/api/builder/chat",

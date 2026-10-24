@@ -45,11 +45,16 @@ async def _next(engine, step_id: str, state: dict) -> str | None:
 
 
 def test_the_routes_that_change_things_go_through_the_gate(engine):
-    routes = engine.step_map["step_intent"].route_map
-    for label in BEFORE:
-        assert routes[label] == "step_may_change", label
-    for label in ("answer", "howto", "connect", "cantdo", "research"):
-        assert routes[label] != "step_may_change", label
+    """The front door (SAI2-P4): classify's route for a build or a change, and a change's pick read in code, go
+    through the door; an answer, research and the refusal never do. Code checks the role before it too
+    (`classify.override`)."""
+    routes = engine.step_map["step_classify_route"].switch_cases
+    for entry in BEFORE.values():
+        assert routes[entry] == "step_may_change", entry
+    for entry in ("step_answer", "step_research", "step_not_yours"):
+        assert routes[entry] != "step_may_change", entry
+    assert engine.step_map["step_classify_route"].switch_default_step_id == "step_answer"
+    assert engine.step_map["step_turn_route"].switch_cases["change"] == "step_may_change"
 
 
 @pytest.mark.parametrize("label", list(BEFORE))

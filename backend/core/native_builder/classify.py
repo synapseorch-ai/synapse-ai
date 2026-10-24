@@ -20,6 +20,19 @@ from core.native_builder.target import _words
 
 _log = logging.getLogger(__name__)
 
+#: The four kinds, where each goes first, and what each is: the legend's routes (`/api/builder/legend`).
+KINDS = {
+    "answer": ("step_answer", "Telling or talking: what exists here and what has happened, how the product works and "
+                              "how to call its API, ideas, opinions and small talk. Read only what the answer needs."),
+    "change": ("step_change_context", "Something that exists ends up different: run, pause, turn on or off, rename, "
+                                      "move, delete, or edit an agent, a schedule, a tool or a skill."),
+    "build": ("step_plan_room", "Something new is made — a workflow, an agent, a team, a tool — or a workflow's "
+                                "steps are edited."),
+    "research": ("step_research", "An outside company's service is needed to book, buy, pay, ship or order, or who "
+                                  "could do it is asked."),
+}
+
+
 # ── what a message says, in words code reads ──────────────────────────────────────────────────────────────────────
 
 #: A button act, said as a request: at the start, or after a please / can you.
@@ -43,7 +56,7 @@ _BUILD = re.compile(r"\b(?:build|make|create|set it up|set up|go ahead|do it|pro
 
 #: Workspace nouns and run questions: an answer that names one reads the workspace (SAI2's review: err towards it).
 _WORKSPACE = re.compile(
-    r"\b(?:my|our|agents?|workflows?|orchestrations?|runs?|ran|schedules?|scheduled|tools?|skills?|channels?|"
+    r"\b(?:agents?|workflows?|orchestrations?|runs?|ran|schedules?|scheduled|tools?|skills?|channels?|"
     r"boards?|cards?|knowledge|bases?|credits?|usage|spend|spent|cost|plan|keys?|models?|variables?|widgets?|phone|"
     r"failed|failing|failure|errors?|broke|broken|stopped|stuck|waiting|today|yesterday|this week|last week|status|"
     r"history|logs?|happened|did .+ do|is .+ (?:on|off|running)|why did|why didn t|why is|why isn t|why does|"

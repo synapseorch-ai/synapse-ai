@@ -54,18 +54,26 @@ def test_no_role_or_a_role_not_mapped_leaves_the_runs_model(roles):
 
 
 def test_the_builders_quick_steps_are_its_routing_and_its_one_call_look_ups():
-    """Every routing evaluator, and the tool steps that only write one call's arguments (the how-to, connect and
-    can't-do look-ups, the findings card, and the build's own note of who provides a missing tool, F763): never a
-    step that plans, writes or answers. The build's plan check is code since SAI2-P3, with no model at all."""
-    steps = bundled_definitions()["orchestration"]["steps"]
+    """Every routing evaluator, and the steps that only write one call's arguments (the findings card; the front
+    door's classify, SAI2-P4): never a step that plans, writes or answers. The build's plan check is code since
+    SAI2-P3, and the how-to, connect and can't-do look-ups are code since SAI2-P4, with no model at all."""
+    bundle = bundled_definitions()
+    steps = bundle["orchestration"]["steps"]
+    agents = {a["id"]: a for a in bundle["agents"]}
     quick = {s["id"] for s in steps if s.get("model_role") == "quick"}
     evaluators = {s["id"] for s in steps if s["type"] == "evaluator"}
-    assert evaluators <= quick and "step_intent" in quick
+    assert evaluators <= quick and "step_classify" in quick
     # P3b: the build's researcher notes its own findings (E2), so step_plan_findings and its quick call are gone.
-    assert quick - evaluators == {"step_howto", "step_connect", "step_cantdo", "step_findings"}
+    assert quick - evaluators == {"step_classify", "step_findings"}
     assert not [s["id"] for s in steps if s["type"] == "tool" and s.get("tool_arguments") is not None
                 and s.get("model_role")], "a code step calls no model, quick or not"
-    assert all(s["type"] in ("evaluator", "tool") for s in steps if s["id"] in quick)
+    for s in steps:
+        if s["id"] not in quick or s["type"] in ("evaluator", "tool"):
+            continue
+        # An agent step is quick only as one call: it finishes on a tool, and its agent holds nothing else (E2).
+        assert s["type"] == "agent" and s.get("finish_tools"), s["id"]
+        assert set(agents[s["agent_id"]]["tools"]) == set(s["finish_tools"]), s["id"]
+        assert s["max_turns"] <= 2, s["id"]
 
 
 @pytest.fixture

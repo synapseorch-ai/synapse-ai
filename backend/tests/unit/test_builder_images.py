@@ -38,7 +38,8 @@ class TestOptingIn:
 
         steps = bundled_definitions()["orchestration"]["steps"]
         opted = {s["id"] for s in steps if s.get("pass_images")}
-        assert opted == {"step_plan", "step_answer"}
+        # SAI2-P4: the answer is three steps — talk, the help, the workspace — and each may be shown the picture.
+        assert opted == {"step_plan", "step_answer_talk", "step_answer_help", "step_answer_workspace"}
 
     def test_the_field_survives_a_round_trip(self):
         """Orchestrations are stored as JSON, so a new field only exists if the

@@ -9,6 +9,8 @@ Pro's 663 evaluator decisions in all). These pin:
 - `route_<label>`, the bare label, either in any case, and a reply that is only the label, all name the route;
 - anything else still falls back;
 - the builder's own router falls back to `answer` — reading, never building — when a reply really does not parse.
+  Since SAI2-P4 the builder's router is one call, an E2 finish on `classify_request`: a reply that is not that call
+  ends the step on its fallback, a workspace answer.
 """
 from __future__ import annotations
 
@@ -43,8 +45,9 @@ def test_anything_else_names_no_route(reply):
 
 def test_the_builders_router_falls_back_to_reading_not_building():
     orch = bundled_definitions()["orchestration"]
-    intent = next(s for s in orch["steps"] if s["id"] == "step_intent")
-    assert intent["fallback_route"] == "answer"
+    classify = next(s for s in orch["steps"] if s["id"] == "step_classify")
+    assert classify["finish_tools"] == ["classify_request"]
+    assert (classify["finish_fallback"]["kind"], classify["finish_fallback"]["route"]) == ("answer", "step_answer")
 
 
 @pytest.fixture
@@ -52,11 +55,14 @@ async def builder():
     await seed_native_builder()
 
 
-async def test_a_bare_label_routes_the_builder_where_the_model_said(client, builder, fake_llm):
+async def test_a_reply_that_is_not_the_call_is_read_and_answered_never_built(client, builder, fake_llm):
+    """Nova Pro's bare label (F491), at the front door since SAI2-P4: a reply naming a route instead of calling
+    `classify_request` is no build. The step ends on its fallback, and the question is answered from the workspace."""
     fake_llm.set_default("The nightly schedule last ran at 02:00.")
     fake_llm.script([json.dumps({"tool": "answer", "arguments": {"reasoning": "a question"}})])
     events = await stream(client, "/api/builder/chat", {"message": "what's the last schedule that ran?"})
-    decision = next(e for e in events if e["type"] == "routing_decision" and e.get("orch_step_id") == "step_intent")
-    assert decision["decision"] == "answer"
-    assert "Fallback" not in decision.get("reasoning", "")
-    assert decision["reasoning"] == "a question"
+    order = [e.get("orch_step_id") for e in events if e["type"] == "step_start"]
+    assert "step_answer_workspace" in order and "step_plan" not in order and "step_may_change" not in order, order
+    final = next(e for e in events if e["type"] == "orchestration_complete")["final_state"]
+    assert final["request"]["route"] == "step_answer" and final["request"]["fallback"] is True
+    assert "02:00" in final["summary"]

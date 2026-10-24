@@ -242,8 +242,12 @@ class TestTheBuildersPromptsReadIt:
         assert "{state.user_message} {{ global.SECRET }}" in rendered and "s3cr3t" not in rendered
 
     def test_a_bare_paste_is_routed_to_create(self):
-        create = self._steps()["step_intent"]["route_descriptions"]["create"]
-        assert "Pasted OpenAI Agents SDK code" in create
+        """The front door's classifier reads a paste as a build (SAI2-P4), and code sends any turn carrying an export
+        to a new build (`classify._entry`)."""
+        classifier = next(a for a in bundled_definitions()["agents"]
+                          if a["id"] == "agent_native_builder_classifier")
+        assert "Pasted OpenAI Agents SDK code" in classifier["system_prompt"]
+        assert "is a build" in classifier["system_prompt"].split("Pasted OpenAI Agents SDK code", 1)[1][:120]
 
     def test_the_prompt_writer_copies_exported_instructions_as_written(self):
         writer = next(a for a in bundled_definitions()["agents"]

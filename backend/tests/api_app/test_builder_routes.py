@@ -28,15 +28,21 @@ def tool_call(tool: str, **args) -> str:
     return json.dumps({"tool": tool, "arguments": args})
 
 
-def route(label: str) -> str:
-    """An evaluator's routing decision.
+#: What each of the old router's eight labels is as the front door's one call (SAI2-P4): its kind, and for an answer
+#: what it needs. Code still checks it (`classify.override`), as it checks a model's.
+KINDS = {"create": {"kind": "build"}, "update": {"kind": "build"}, "manage": {"kind": "change"},
+         "answer": {"kind": "answer", "needs": "workspace"}, "research": {"kind": "research"},
+         "howto": {"kind": "answer", "needs": "help"}, "connect": {"kind": "answer", "needs": "help"},
+         "cantdo": {"kind": "answer", "needs": "help"}}
 
-    Evaluators only accept a `route_<label>` tool call — a bare label string
-    does not parse, and the step then falls back to the FIRST entry in its
-    `route_map`. So a test that returns a bare "create" is exercising the
-    fallback, not the routing.
+
+def route(label: str, **request) -> str:
+    """The front door's one model call: `classify_request` (SAI2-P4, F979), with the kind `label` means.
+
+    The step finishes on that call (E2); a reply that is not the call ends it on its fallback, a workspace answer.
+    So a test that returns a bare "create" is exercising the fallback, not the routing.
     """
-    return tool_call(f"route_{label}", reasoning="test")
+    return tool_call("classify_request", **{**KINDS[label], **request})
 
 
 async def stream(client, path: str, body: dict) -> list[dict]:
@@ -239,19 +245,24 @@ class TestSeeHowImBuilt:
         # 56 since the instructions are written before the review (Naveen, Q2 as revised): no gate after the yes;
         # 55 since P3b's researcher notes its own findings (E2): step_plan_findings out; 62 with the tools a build makes
         # and its wait for their connection (F944–F946): the make, its route, the wait, its answer, its route, giving
-        # up, its end.
-        assert legend["step_count"] == 62
-        assert legend["entry_step"]["type"] == "evaluator"
-        assert {r["label"] for r in legend["routes"]} == {
-            "create", "update", "manage", "answer", "howto", "connect", "cantdo", "research"}
+        # up, its end; 67 with the front door read in code (SAI2-P4): the 8-label router and the how-to, connect and
+        # can't-do look-ups out (4), and the turn read in code, its route and what code says, the classify call and its
+        # route, the answer's pack and its route, and the three answers — talk, the help, the workspace — in (9).
+        assert legend["step_count"] == 67
+        assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
+        assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
+        assert all(r["description"] and r["to"] for r in legend["routes"])
         assert {a["role"] for a in legend["agents"]} == {
             "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher", "plan_researcher",
+            "classifier", "talker",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2); the wait for a made
         # tool's connection is the fifth (P3b, F946).
         assert len(legend["human_gates"]) == 5
-        assert "evaluator" in legend["step_types"]
+        # No evaluator is left: the router is a typed call, and every other branch reads state in code.
+        assert {"tool", "switch", "agent", "human", "print"} <= set(legend["step_types"])
+        assert "evaluator" not in legend["step_types"]
 
     async def test_the_legend_carries_the_orchestration_the_canvas_draws(self, client):
         """The modal draws the builder on a read-only canvas instead of a
@@ -275,7 +286,9 @@ class TestSeeHowImBuilt:
     async def test_duplicating_gives_the_workspace_an_editable_copy(self, client, builder):
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
-        assert len(result["agent_ids"]) == 8  # P3b: the build's own researcher (an E2 finish on report_findings)
+        # P3b: the build's own researcher (an E2 finish on report_findings); SAI2-P4: the front door's classifier and
+        # talk's agent.
+        assert len(result["agent_ids"]) == 10
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
@@ -538,9 +551,10 @@ class TestTheBuilderKnowsWhatYouMean:
         await stream(client, "/api/builder/chat", {
             "message": "add a step that emails me", "current_orchestration_id": "orch_ext",
         })
-        router_prompt = fake_llm.calls[0]["prompt_msg"]
-        assert "[current_orchestration_name]:\nextended research" in router_prompt
-        assert "[current_orchestration_source]:\nviewing" in router_prompt
+        router_prompt = fake_llm.calls[0]["prompt_msg"]  # the front door's one call (SAI2-P4)
+        assert "Call `classify_request` once." in router_prompt
+        assert "### current_orchestration_name\nSource: shared state\nextended research" in router_prompt
+        assert "### current_orchestration_source\nSource: shared state\nviewing" in router_prompt
 
     async def test_a_named_orchestration_resolves_without_a_page(self, client, builder, fake_llm):
         await self._orchestration("orch_ext", "extended research")
@@ -591,7 +605,7 @@ class TestTheBuilderKnowsWhatYouMean:
         assert (second["current_orchestration_id"], second["current_orchestration_source"]) == (
             "orch_ext_2", "picked",
         )
-        assert f"[chat_history]:\nuser: {self.MESSAGE}" in fake_llm.calls[0]["prompt_msg"]
+        assert f"The conversation so far:\nuser: {self.MESSAGE}" in fake_llm.calls[0]["prompt_msg"]
 
     async def test_another_conversation_does_not_answer_the_question(
         self, client, builder, fake_llm

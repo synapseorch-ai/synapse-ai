@@ -180,3 +180,47 @@ class TestTheStep:
         run.shared_state["request"] = {"kind": "build", "route": "step_plan_room"}
         _, events = await self._call(run, "prepare_connection", {"kind": "app", "catalog_slug": "firecrawl"})
         assert [e.get("type") for e in events] == ["connection_needed"]
+
+
+class TestTheAnswerSteps:
+    """What each answer step is offered (F983) and the reporter's one read tool per job (F756, F982)."""
+
+    def _bundle(self):
+        from core.native_builder import bundled_definitions
+
+        bundle = bundled_definitions()
+        return {s["id"]: s for s in bundle["orchestration"]["steps"]}, {a["id"]: a for a in bundle["agents"]}
+
+    def test_talk_is_offered_no_tool_at_all(self):
+        """An agent step (so a picture reaches it) whose agent holds no tool and whose step allows none."""
+        steps, agents = self._bundle()
+        talk = steps["step_answer_talk"]
+        assert talk["type"] == "agent" and talk["allowed_tools"] == [] and not talk.get("forced_tool")
+        assert agents[talk["agent_id"]]["tools"] == [] and agents[talk["agent_id"]]["skip_default_tools"] is True
+        assert "{state.answer_pack.pack}" in talk["prompt_template"]
+
+    def test_help_is_offered_the_help_and_no_workspace_read(self):
+        steps, _ = self._bundle()
+        assert set(steps["step_answer_help"]["allowed_tools"]) == {"search_help", "product_capabilities",
+                                                                   "prepare_connection"}
+
+    def test_only_the_workspace_answer_looks_before_it_answers(self):
+        steps, agents = self._bundle()
+        assert "Look before you answer" in steps["step_answer_workspace"]["prompt_template"]
+        assert "read_workspace" in steps["step_answer_workspace"]["allowed_tools"]
+        assert "Look before you answer" not in agents["agent_native_builder_reporter"]["system_prompt"]
+        assert "Look before you answer" not in steps["step_answer_help"]["prompt_template"]
+
+    def test_the_reporter_holds_one_read_tool_per_job(self):
+        """F756: runs, agents, workflows and schedules are `read_workspace` topics; the older tools for the same jobs
+        stay registered for MCP, never offered to the reporter."""
+        _, agents = self._bundle()
+        tools = set(agents["agent_native_builder_reporter"]["tools"])
+        assert "read_workspace" in tools
+        assert not tools & {"list_agents", "get_agent", "list_orchestrations", "get_orchestration", "list_schedules",
+                            "list_recent_runs", "get_run_summary"}
+
+    def test_the_old_tools_are_still_served(self):
+        from core.builder_tools import BUILDER_TOOL_NAMES
+
+        assert {"list_agents", "list_orchestrations", "list_schedules", "list_recent_runs"} <= set(BUILDER_TOOL_NAMES)

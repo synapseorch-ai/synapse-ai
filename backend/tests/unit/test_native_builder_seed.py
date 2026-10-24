@@ -38,8 +38,8 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "change_planner", "maker", "orchestrator", "plan_researcher", "planner", "prompt_writer", "reporter",
-            "researcher",
+            "change_planner", "classifier", "maker", "orchestrator", "plan_researcher", "planner", "prompt_writer",
+            "reporter", "researcher", "talker",
         ]
 
     def test_the_version_is_stable_and_moves_with_the_content(self):
@@ -53,7 +53,7 @@ class TestTheBundle:
         bundle = bundled_definitions()
         blob = str(bundle)
         assert "{{STEP_TYPE_CHEATSHEET}}" not in blob
-        assert "step_intent" in blob
+        assert "step_turn" in blob
 
     def test_every_agent_a_step_names_is_in_the_bundle(self):
         bundle = bundled_definitions()
@@ -144,8 +144,10 @@ class TestSeeding:
         assert result["orchestration"] == "added"
         # 8 since the Researcher (F577, BWA1); 9 with P2's change planner and maker; 7 since P3's planner and
         # prompt writer took the analyst's, the agent creator's and both savers' places; 8 with P3b's plan researcher
-        # (the build's own, an E2 finish on report_findings; P5 may fold the two researchers into one).
-        assert len(result["agents_added"]) == 8
+        # (the build's own, an E2 finish on report_findings; P5 may fold the two researchers into one); 9 with the front
+        # door's classifier (SAI2-P4: its one call, an E2 finish on classify_request); 10 with talk's, which holds
+        # no tool.
+        assert len(result["agents_added"]) == 10
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration
@@ -378,7 +380,7 @@ class TestTheBuilderKnowsItsTarget:
         assert set(TARGET_KEYS) <= set(schema)
 
     def test_the_router_reads_the_target(self):
-        keys = set(self._steps()["step_intent"]["input_keys"])
+        keys = set(self._steps()["step_classify"]["input_keys"])
         assert {
             "current_orchestration_id", "current_orchestration_name",
             "current_orchestration_source", "current_orchestration_matches",
@@ -386,17 +388,21 @@ class TestTheBuilderKnowsItsTarget:
 
     def test_the_answer_and_the_change_planner_see_the_page(self):
         steps = self._steps()
+        # The answer that reads the workspace (SAI2-P4); the help's answer sees the page too.
         assert {"current_page", "current_orchestration_source", "current_orchestration_matches"} <= set(
-            steps["step_answer"]["input_keys"]
+            steps["step_answer_workspace"]["input_keys"]
         )
+        assert "current_page" in steps["step_answer_help"]["input_keys"]
         assert "current_page" in steps["step_change"]["input_keys"]
 
     def test_an_unclear_change_is_answered_not_built(self):
         """Two matches, or a name that is not the open one, leaves the id empty —
         and the route that runs then must ask, not build a duplicate."""
-        intent = self._steps()["step_intent"]
-        assert "ambiguous" in intent["route_descriptions"]["answer"]
-        assert "ambiguous" in intent["evaluator_prompt"]
+        # SAI2-P4: classify reads the source, code sends an ambiguous build to the answer (`classify._entry`, tested
+        # in test_classify_request), and the answer asks which one.
+        steps = self._steps()
+        assert "ambiguous" in steps["step_classify"]["prompt_template"]
+        assert "ambiguous" in steps["step_answer_workspace"]["prompt_template"]
 
     def test_no_prompt_uses_a_new_key_as_a_placeholder(self):
         import re
@@ -614,8 +620,10 @@ class TestAFullPlanAndAStoppedBuild:
 
     @staticmethod
     def _lands(steps, label):
-        """Where a route lands past the door for a person who may change things (ASSIST1, F682)."""
-        target = steps["step_intent"]["route_map"][label]
+        """Where a route lands past the door for a person who may change things (ASSIST1, F682): from classify's
+        route (SAI2-P4) through its switch and the role door."""
+        entry = {"create": "step_plan_room", "update": "step_fetch_existing", "manage": "step_change_context"}[label]
+        target = steps["step_classify_route"]["switch_cases"][entry]
         if target == "step_may_change":
             gate = steps["step_may_change"]
             target = steps[gate["if_true_step_id"]]["switch_cases"][label]

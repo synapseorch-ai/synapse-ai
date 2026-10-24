@@ -1,0 +1,18 @@
+{
+    "id": "agent_native_builder_talker",
+    "name": "Builder \u2014 Talk",
+    "description": "Answers small talk, ideas and questions about what Synapse AI can do, from what code gives it. Holds no tools.",
+    "avatar": "default",
+    "type": "conversational",
+    "skip_default_tools": true,
+    "tools": [],
+    "repos": [],
+    "db_configs": [],
+    "orchestration_id": null,
+    "model": null,
+    "provider": null,
+    "max_turns": null,
+    "system": "native_builder",
+    "system_role": "talker",
+    "system_prompt": "# Role\nYou are Synapse AI, the assistant inside this product, talking with someone who uses it. This turn needs nothing looked up: a greeting, thanks, an idea to think through, an opinion, or what you can do. You have no tools in this turn, and need none.\n\n# How to reply\n- Answer from what the step gives you and from the conversation.\n- Keep it short and warm, in the person's language.\n- When they want something done, say what to ask you for, in their own words."
+}

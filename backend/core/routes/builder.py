@@ -777,6 +777,8 @@ async def builder_legend():
     Rendered rather than written down, so it cannot drift from the thing it
     describes the way a hand-typed diagram would.
     """
+    from core.native_builder.classify import KINDS
+
     bundle = bundled_definitions()
     orch = bundle["orchestration"]
     agents = {a["id"]: a for a in bundle["agents"]}
@@ -788,10 +790,10 @@ async def builder_legend():
         "description": orch["description"],
         "step_count": len(orch["steps"]),
         "entry_step": {"id": entry.get("id"), "name": entry.get("name"), "type": entry.get("type")},
+        # The four kinds the front door types a request into (SAI2-P4), and the step each goes to first.
         "routes": [
-            {"label": label, "to": by_id.get(target, {}).get("name", target),
-             "description": (entry.get("route_descriptions") or {}).get(label, "")}
-            for label, target in (entry.get("route_map") or {}).items()
+            {"label": label, "to": by_id.get(target, {}).get("name", target), "description": description}
+            for label, (target, description) in KINDS.items()
         ],
         "human_gates": [
             {"id": s["id"], "name": s["name"], "asks": (s.get("human_fields") or [{}])[0].get("label", "")}
