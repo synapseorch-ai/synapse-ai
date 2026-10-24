@@ -348,6 +348,27 @@ async def test_a_which_one_question_is_kept_on_the_person_s_card(client, role):
     assert first["id"] in {o["id"] for o in waiting["picks"][0]["options"]}
 
 
+async def test_what_read_turn_chose_from_the_list_reaches_the_planner_for_its_own_card_only(client, role):
+    """SAI2-P4 (F978, SAI2-P2's yes 10-24): "the second one" is resolved in code by `read_turn`, and the waiting pick
+    carries the choice — only when the waiting card is the one that turn read, never another conversation's."""
+    await _workflow(name="Patient reminders", description="front desk")
+    second = await _workflow(name="Patient reminders", description="billing")
+    out, _, asked = await _check([{"op": "run_workflow",
+                                   "target": {"kind": "workflow", "name": "Patient reminders"}}])
+    assert out["outcome"] == "ask"
+    picked = {"op": 0, "field": "target", "kind": "workflow", "id": second["id"], "name": "Patient reminders"}
+    turn = {"route": "pick", "then": "change", "picked": picked, "previous_run_id": asked.run_id}
+    context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick", turn=turn))
+    assert context["waiting_pick"]["chosen"] == picked
+
+    elsewhere = {**turn, "previous_run_id": "builder_some_other_turn"}
+    context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick2", turn=elsewhere))
+    assert "chosen" not in context["waiting_pick"]
+    context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick3", turn={**turn,
+                                                                                               "then": "said"}))
+    assert "chosen" not in context["waiting_pick"]
+
+
 async def test_an_undo_and_other_ops_in_one_submit_are_sent_back_not_half_done(client):
     """`undo_of` builds its own ops, so ops beside it were dropped without a word (the branch review's finding 14)."""
     run = await _run()

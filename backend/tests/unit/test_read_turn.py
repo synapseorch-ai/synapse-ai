@@ -250,3 +250,16 @@ class TestTheStep:
             assert "viewer" in turn["say"]
         finally:
             hooks.set_role_source(None)
+
+    async def test_a_changes_pick_goes_back_through_the_role_door(self):
+        from core.boards import assistant
+
+        await self._turn("builder_c1", "builder:t:panel:c", {"summary": "Which one?"})
+        await assistant.put("builder_c1", title="Which one?", stage="waiting", owner_id=None, data={"change": {
+            "question": "Which one?", "picks": [{"op": 0, "field": "target", "kind": "agent", "wanted": "Support",
+                                                 "options": [{"id": "agt_1", "name": "Support"},
+                                                             {"id": "agt_2", "name": "Support billing"}]}]}})
+        now = await self._turn("builder_c2", "builder:t:panel:c", {"user_message": "the second one"})
+        turn, events = await self._read(now)
+        assert (turn["route"], turn["then"], turn["picked"]["id"]) == ("pick", "change", "agt_2")
+        assert now.shared_state["intent"] == "manage" and events == []

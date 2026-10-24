@@ -201,6 +201,9 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     if turn.route == "next_request" and run is not None:
         # The queued request is this turn's message from here on: classify and every route read it.
         run.shared_state["user_message"] = turn.message
+    if turn.then == "change" and run is not None:
+        # A change's pick goes back through the role door to the change route (`step_may_change` reads it).
+        run.shared_state["intent"] = "manage"
     out = turn.model_dump()
     out["message"] = turn.message or message
     out["previous_run_id"] = previous_id
