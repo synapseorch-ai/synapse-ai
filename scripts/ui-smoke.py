@@ -2785,7 +2785,8 @@ async def check_canvasleave(browser) -> str:
 
     Back, the switcher, New and the rail used to drop an edited draft without a
     word; only a reload got the browser's prompt. A blank draft nobody touched
-    still leaves quietly.
+    still leaves quietly. Since TABS1 v2 Back, the switcher and New keep the
+    edit in its tab — nothing is dropped — and leaving the page still asks.
     """
     oid = f"orch_uismoke_leave_{int(time.time())}"
     api("/api/orchestrations", "POST", laid_out_orchestration(oid, 2))
@@ -2807,13 +2808,16 @@ async def check_canvasleave(browser) -> str:
         await page.locator("input[aria-label='Workflow name']").fill("ui-smoke leave, edited")
         await page.get_by_role("button", name="Back", exact=True).click()
         await asyncio.sleep(0.6)
-        if not await ask.count():
-            problems.append("Back with an unsaved edit did not ask")
-        else:
+        # Since TABS1 v2 Back shows the list and the edit waits in its tab: nothing is dropped, so nothing asks.
+        if await ask.count():
+            problems.append("Back asked, though the edit stays in its tab")
             await ask.get_by_role("button", name="Cancel").click()
-            await asyncio.sleep(0.4)
+        else:
+            await page.get_by_role("tablist", name="Open workflows").get_by_role("tab").first.click()
+            await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+            await asyncio.sleep(0.6)
             if await page.locator("input[aria-label='Workflow name']").input_value() != "ui-smoke leave, edited":
-                problems.append("Cancel did not keep the edit")
+                problems.append("Back lost the edit: its tab came back without it")
         await page.click('nav[aria-label="Primary"] a[href="/agents"]')
         await asyncio.sleep(0.6)
         if not await ask.count():
@@ -12770,6 +12774,241 @@ async def check_runstateleak(browser) -> str:
     if stop or not run_now:
         raise AssertionError("an earlier workflow's run marked the workflow opened after it as running")
     return "a run streaming in one workflow leaves the next workflow opened idle, with its own Run now"
+
+
+# ── workflow and run tabs (TABS1 v2, D319) ──────────────────────────────────
+
+def _wf_strip(page):
+    return page.get_by_role("tablist", name="Open workflows")
+
+
+async def _wf_titles(page) -> list[str]:
+    return [(await t.get_attribute("aria-label")) or "" for t in await _wf_strip(page).get_by_role("tab").all()]
+
+
+async def _wf_canvas(page, timeout: int = 30_000) -> None:
+    await page.locator(".react-flow__node").first.wait_for(timeout=timeout)
+    await asyncio.sleep(1.0)
+
+
+async def _wf_open_from_picker(page, name: str) -> None:
+    await page.get_by_role("button", name="Open a workflow in a new tab").first.click()
+    await page.get_by_role("option", name=re.compile(re.escape(name))).first.click()
+    await asyncio.sleep(1.0)
+
+
+def _start_real_run(oid: str) -> str:
+    """Start a model-free run (print steps, then a person's step) and return its id."""
+    req = urllib.request.Request(
+        f"{API}/api/orchestrations/{oid}/run", method="POST", data=json.dumps({"message": ""}).encode(),
+        headers={"Content-Type": "application/json", "X-Synapse-Internal": TOKEN})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        for raw in r.read().decode().splitlines():
+            if raw.startswith("data: "):
+                event = json.loads(raw[6:])
+                if event.get("run_id"):
+                    return event["run_id"]
+    raise AssertionError("the run never said its id")
+
+
+@check
+async def check_wftabsdraft(browser) -> str:
+    """A workflow's unsaved edit and its undo survive its tab going behind and coming back (TABS1 v2, F930)."""
+    stamp = int(time.time())
+    a, b = f"orch_uismoke_wfa_{stamp}", f"orch_uismoke_wfb_{stamp}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(a, 2), "name": "ui-smoke tabs A"})
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(b, 2), "name": "ui-smoke tabs B"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    name = page.locator("input[aria-label='Workflow name']")
+    try:
+        await page.goto(f"{APP}/workflows?id={a}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await name.fill("ui-smoke tabs A, edited")
+        await asyncio.sleep(1.0)
+        await _wf_open_from_picker(page, "ui-smoke tabs B")
+        await _wf_canvas(page)
+        on_b = await name.input_value()
+        titles = await _wf_titles(page)
+        nodes = await page.locator(".react-flow__renderer").count()
+        await _wf_strip(page).get_by_role("tab", name=re.compile("tabs A")).click()
+        await _wf_canvas(page)
+        back = await name.input_value()
+        undo = page.get_by_role("button", name=re.compile(r"^Undo"))
+        can_undo = await undo.count() and await undo.first.is_enabled()
+    finally:
+        await ctx.close()
+        drop_fixture(a)
+        drop_fixture(b)
+    if on_b != "ui-smoke tabs B":
+        raise AssertionError(f"the second tab shows {on_b!r}, not its own workflow")
+    if not any("tabs A" in t and "unsaved changes" in t for t in titles):
+        raise AssertionError(f"the tab behind does not say it holds unsaved changes: {titles}")
+    if nodes != 1:
+        raise AssertionError(f"{nodes} canvases are mounted; only the tab in front should have one")
+    if back != "ui-smoke tabs A, edited":
+        raise AssertionError(f"coming back, the edit read {back!r}")
+    if not can_undo:
+        raise AssertionError("coming back, the edit cannot be undone")
+    return "an unsaved edit and its undo come back with their tab; one canvas is mounted"
+
+
+@check
+async def check_wftabsclose(browser) -> str:
+    """Closing a tab with unsaved work asks first; Cancel keeps it, Discard closes it (TABS1 v2, F930)."""
+    oid = f"orch_uismoke_wfclose_{int(time.time())}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(oid, 2), "name": "ui-smoke tabs close"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    ask = page.get_by_role("dialog", name="Discard unsaved changes?")
+    problems = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await page.locator("input[aria-label='Workflow name']").fill("ui-smoke tabs close, edited")
+        await asyncio.sleep(0.8)
+        close = page.get_by_role("button", name=re.compile(r"^Close ui-smoke tabs close"))
+        await close.click()
+        await asyncio.sleep(0.5)
+        if not await ask.count():
+            problems.append("closing an unsaved tab did not ask")
+        else:
+            await ask.get_by_role("button", name="Cancel").click()
+            await asyncio.sleep(0.4)
+            if len(await _wf_titles(page)) != 1:
+                problems.append("Cancel closed the tab anyway")
+            await close.click()
+            await asyncio.sleep(0.5)
+            await ask.get_by_role("button", name="Discard changes").click()
+            await asyncio.sleep(0.8)
+            if await _wf_strip(page).count() and await _wf_titles(page):
+                problems.append("Discard changes did not close the tab")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return "an unsaved tab asks before closing; Cancel keeps it, Discard closes it"
+
+
+@check
+async def check_wftabscap(browser) -> str:
+    """At ten tabs a new one is refused with a sentence, and none is closed for the person (TABS1 v2, F930)."""
+    stamp = int(time.time())
+    ids = [f"orch_uismoke_wfcap{i}_{stamp}" for i in range(11)]
+    for i, oid in enumerate(ids):
+        api("/api/orchestrations", "POST", {**laid_out_orchestration(oid, 1), "name": f"ui-smoke cap {i:02d}"})
+    seeded = {"tabs": [{"id": f"wt_cap{i}", "kind": "workflow", "ref": oid, "key": f"workflow\u0000{oid}",
+                        "title": f"ui-smoke cap {i:02d}", "usedAt": i + 1} for i, oid in enumerate(ids[:10])],
+              "activeId": "wt_cap0"}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(f"try {{ localStorage.setItem('synapseTabs:workflows', {json.dumps(json.dumps(seeded))}); }} catch (e) {{}}")
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2)
+        await _wf_open_from_picker(page, "ui-smoke cap 10")
+        said = await page.get_by_text("Close a tab to open another: 10 are open.").count()
+        kept = await page.evaluate("""() => (JSON.parse(localStorage.getItem('synapseTabs:workflows') || '{}').tabs || [])
+            .map(t => t.ref)""")
+    finally:
+        await ctx.close()
+        for oid in ids:
+            drop_fixture(oid)
+    if not said:
+        raise AssertionError("an eleventh tab was not refused with its sentence")
+    if sorted(kept) != sorted(ids[:10]):
+        raise AssertionError(f"the open tabs changed at the cap: {kept}")
+    return "at ten tabs a new one is refused in a sentence and nothing is closed"
+
+
+@check
+async def check_wftabsrun(browser) -> str:
+    """A run opened from its workflow is a tab beside it, its page inside the editor (TABS1 v2, F1022, F1025)."""
+    oid = f"orch_uismoke_wfrun_{int(time.time())}"
+    api("/api/orchestrations", "POST", {**human_gate_orchestration(oid), "name": "ui-smoke tabs run"})
+    run_id = _start_real_run(oid)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        # The workflow with its run on the canvas, as a reopened run link opens it.
+        await page.goto(f"{APP}/workflows?run={run_id}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await asyncio.sleep(SETTLE)
+        link = page.locator(f'a[href="/runs/{run_id}"]').first
+        await link.wait_for(timeout=15_000)
+        await link.click()
+        await asyncio.sleep(SETTLE)
+        url = page.url
+        titles = await _wf_titles(page)
+        front = await _wf_strip(page).get_by_role("tab", selected=True).get_attribute("aria-label") or ""
+        text = await page.evaluate("() => document.querySelector('main').innerText")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if "/runs/" in url:
+        raise AssertionError("the run link left the editor instead of opening a tab")
+    if len(titles) != 2 or not titles[1].startswith("Run"):
+        raise AssertionError(f"the run did not open as a tab beside its workflow: {titles}")
+    if not front.startswith("Run"):
+        raise AssertionError(f"the run's tab is not in front: {front!r}")
+    if "ui-smoke tabs run" not in text:
+        raise AssertionError("the run's page did not draw inside its tab")
+    return "a run link from its workflow opens the run as a tab beside it, on the same page"
+
+
+@check
+async def check_wftabsrail(browser) -> str:
+    """Tabs take only links inside the workflows page: the menu still navigates (TABS1 v2, F1025)."""
+    oid = f"orch_uismoke_wfrail_{int(time.time())}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(oid, 1), "name": "ui-smoke tabs rail"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await page.click('nav[aria-label="Primary"] a[href="/runs"]')
+        try:
+            await page.wait_for_url("**/runs", timeout=10_000)
+            left = True
+        except Exception:
+            left = False
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+    if not left:
+        raise AssertionError("a link in the app's menu was taken by the workflow tabs")
+    return "a link in the app's menu navigates as before"
+
+
+@check
+async def check_wftabsreload(browser) -> str:
+    """Open workflow tabs and the front one come back after a reload (TABS1 v2, F930)."""
+    stamp = int(time.time())
+    a, b = f"orch_uismoke_wfra_{stamp}", f"orch_uismoke_wfrb_{stamp}"
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(a, 1), "name": "ui-smoke reload A"})
+    api("/api/orchestrations", "POST", {**laid_out_orchestration(b, 1), "name": "ui-smoke reload B"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/workflows?id={a}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        await _wf_open_from_picker(page, "ui-smoke reload B")
+        await _wf_canvas(page)
+        before = await _wf_titles(page)
+        await page.goto(f"{APP}/workflows", wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE + 2)
+        after = await _wf_titles(page)
+        front = await _wf_strip(page).get_by_role("tab", selected=True).get_attribute("aria-label") or ""
+    finally:
+        await ctx.close()
+        drop_fixture(a)
+        drop_fixture(b)
+    if len(before) != 2 or after != before:
+        raise AssertionError(f"tabs before the reload {before}, after {after}")
+    if "reload B" not in front:
+        raise AssertionError(f"the front tab did not come back in front: {front!r}")
+    return "two workflow tabs and the front one survive a reload"
 
 
 if __name__ == "__main__":
