@@ -4130,6 +4130,9 @@ async def check_tabsphone(browser) -> str:
         if await _strip(page).is_visible():
             raise AssertionError("the tab strip shows at phone width")
         switcher = page.get_by_role("button", name=re.compile(r"^Switch tab"))
+        # The tour's "new tab" stop has a "+" to stand on at phone width too (GUIDE1).
+        if not await page.locator('[data-tour="chat-new-tab"]:visible').count():
+            raise AssertionError("no visible chat-new-tab anchor at phone width: the tour skips its stop")
         await switcher.click()
         sheet = page.get_by_role("dialog", name=re.compile(r"open tabs$"))
         await sheet.wait_for(timeout=5_000)

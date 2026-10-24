@@ -3388,6 +3388,8 @@ export default function Home() {
             onPick={tabs.openAgent}
             open={picker === 'phone'}
             onOpenChange={o => setPicker(o ? 'phone' : null)}
+            // The tour's "new tab" stop on a phone, where the strip's "+" is hidden (GUIDE1).
+            tour={{ button: 'chat-new-tab', list: 'chat-agent' }}
             className="size-11"
           />
           <IconButton icon={History} label="History" onClick={() => setPanel('history')} />
