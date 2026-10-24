@@ -174,7 +174,9 @@ class TestSingleBraceStillWorks:
     async def test_data_means_the_whole_payload_and_has_no_double_brace_spelling(self, outbound):
         await _tool(url="https://api.test/q?p={data}", body="")
         await TestTheToolStepMatchesTheAgent()._call({"a": 1})
-        assert outbound.calls[0]["url"] == 'https://api.test/q?p={"a": 1}'
+        # Percent-encoded into its place since F1014 (httpx sent `{"a": 1}` encoded anyway; a raw `&` or `#` in a
+        # value is what added parameters or cut the URL).
+        assert outbound.calls[0]["url"] == "https://api.test/q?p=%7B%22a%22%3A%201%7D"
 
     async def test_an_unknown_single_brace_reference_is_left_alone(self, outbound):
         """Never blanked — a URL that loses a segment silently is worse than one
@@ -342,7 +344,13 @@ class TestEgressAtTheMomentOfTheCall:
         from core.egress_guard import BlockedEgress
 
         tool = {"url": "http://{{args.host}}/meta-data/", "method": "GET"}
+        # A one-label host an argument may fill (F1014), which renders to loopback: the egress check refuses it.
         with pytest.raises(BlockedEgress):
+            await http_tool.send(
+                self._NeverCalled(), tool, {"host": "localhost"}, {}
+            )
+        # An address an argument tries to put in the host is refused before that, by the host check (F1014).
+        with pytest.raises(http_tool.UnsafeUrl):
             await http_tool.send(
                 self._NeverCalled(), tool, {"host": "169.254.169.254"}, {}
             )

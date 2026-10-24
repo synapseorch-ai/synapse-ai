@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote, urlsplit
 
 import httpx
 
@@ -51,6 +51,33 @@ class MissingArgument(ValueError):
             f"{' and '.join(places)} {'needs' if len(places) == 1 else 'need'}. "
             f"Nothing was sent; call it again with {'it' if len(names) == 1 else 'them'}."
         )
+
+
+class UnsafeUrl(ValueError):
+    """A tool's arguments would move its request off the URL its author wrote (F1014).
+
+    A `ValueError`, like `MissingArgument`: both callers already report one to
+    the model or fail the step with it, and nothing is sent.
+    """
+
+
+#: One DNS label: what a placeholder in a URL's host may be filled with
+#: (`https://{tenant}.zendesk.com`). No dot, slash, `@`, colon or `#`.
+_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def _encode(text: str, raw: bool) -> str:
+    """An argument's text as it goes into a URL (F1014).
+
+    Percent-encoded to the unreserved set, so a value cannot add a path
+    segment, a query parameter, a fragment, userinfo or a port. A tool that
+    opts out (`url_values: "raw"`, for an API whose path argument holds
+    slashes) keeps its value as written, but never its braces: a value is not
+    a template and is not filled again.
+    """
+    if raw:
+        return text.replace("{", "%7B").replace("}", "%7D")
+    return quote(text, safe="-_.~")
 
 
 def _argument_of(reference: str) -> str | None:
@@ -108,48 +135,124 @@ def _walk(obj: Any, path: str) -> str | None:
     return json.dumps(cur) if isinstance(cur, (dict, list)) else str(cur)
 
 
-def render_url(url: str, args: dict[str, Any], global_variables: dict[str, Any]) -> tuple[str, set[str]]:
-    """The URL with its references filled in, and the argument keys it used.
+def _fill(url: str, args: dict[str, Any], global_variables: dict[str, Any], put, consumed: set[str]) -> str:
+    """`url` with its references filled: an argument's text through `put`, the author's globals as written.
 
     Two passes, and the order matters. `{{ … }}` first, so `{{global.base}}` can
     expand into something that itself contains `{id}`; then the single-brace
     forms, so a URL written before this syntax existed — or pasted from an
     OpenAPI spec, whose path templating *is* single-brace — keeps working.
-
-    The consumed keys are the point of the return value: an argument the URL
-    already used must not be sent again as a query parameter or in the body,
-    which is what the agent's copy did until D69 and this one did until now.
     """
-    consumed: set[str] = set()
-
     context = {"global": global_variables, "args": args}
-    for reference in templating.references(url):
-        head = reference.split(".")[0]
-        if head not in templating.NAMESPACES and head in args:
-            consumed.add(head)
-    url = templating.render(url, context, bare="args")
 
-    def _sub(match: re.Match[str]) -> str:
+    def _double(match: re.Match[str]) -> str:
+        reference = match.group(1)
+        found, value = templating.lookup(reference, context, bare="args")
+        if not found:
+            return match.group(0)
+        if _argument_of(reference) is not None or reference == "args":
+            head = reference.split(".")[0]
+            if head not in templating.NAMESPACES and head in args:
+                consumed.add(head)  # as before: a bare name is consumed, `{{args.x}}` is not
+            return put(templating._text(value))
+        return templating._text(value)  # global.* / state.*: the author's, not an argument
+
+    url = templating.REF.sub(_double, url) if url and "{{" in url else url
+
+    def _single(match: re.Match[str]) -> str:
         expr = match.group(1).strip()
         if expr == "data":
             # The whole argument payload. Legacy, and deliberately kept: there
             # is no `{{ … }}` spelling of it, so removing it would delete a
             # capability rather than rename one.
-            return json.dumps(args)
+            return put(json.dumps(args))
         if expr.startswith("data."):
             path = expr[len("data.") :]
             value = _walk(args, path)
             if value is not None:
                 consumed.add(path.split(".")[0])
-                return value
+                return put(value)
             return match.group(0)
         if expr in args:
             consumed.add(expr)
             value = args[expr]
-            return json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+            return put(json.dumps(value) if isinstance(value, (dict, list)) else str(value))
         return match.group(0)  # unrecognised — left visible, never blanked
 
-    return _SINGLE.sub(_sub, url), consumed
+    return _SINGLE.sub(_single, url)
+
+
+def _check_origin(shape: str, rendered: str, values: dict[str, str]) -> None:
+    """Refuse a rendered URL whose scheme, host or port an argument chose (F1014).
+
+    `shape` is the URL filled with a marker for each argument's value. Where a
+    marker lands in the scheme or port, an argument chose it; in the host, its
+    value must be one DNS label and the rendered host must be exactly the
+    template's with those labels in place. A `.`/`..` path segment the
+    template did not have is refused too: it walks the request up the API.
+    """
+    def has_marker(text: str | None) -> list[str]:
+        return [m for m in values if text and m in text]
+
+    s, r = urlsplit(shape), urlsplit(rendered)
+    if has_marker(s.scheme):
+        raise UnsafeUrl("A tool's URL scheme cannot come from an argument. Nothing was sent.")
+    if r.scheme.lower() != s.scheme.lower():
+        raise UnsafeUrl("An argument changed this tool's URL scheme. Nothing was sent.")
+    shape_host = (s.hostname or "")
+    host_markers = has_marker(shape_host) + has_marker(s.netloc.rpartition("@")[0])
+    expected = shape_host
+    for marker in host_markers:
+        value = values[marker]
+        if not _LABEL.fullmatch(value):
+            raise UnsafeUrl(
+                f"An argument cannot choose this tool's host: {value!r} is not a single host label "
+                "(letters, digits and hyphens). Nothing was sent.")
+        expected = expected.replace(marker, value.lower())
+    if (r.hostname or "") != expected or r.username != s.username or r.password != s.password:
+        raise UnsafeUrl("An argument changed this tool's host. Nothing was sent.")
+    try:
+        shape_port, rendered_port = s.port, r.port
+    except ValueError:
+        raise UnsafeUrl("A tool's port cannot come from an argument. Nothing was sent.") from None
+    if shape_port != rendered_port:
+        raise UnsafeUrl("An argument changed this tool's port. Nothing was sent.")
+    dots = {".", ".."}
+    if [seg for seg in r.path.split("/") if seg in dots] != [seg for seg in s.path.split("/") if seg in dots]:
+        raise UnsafeUrl("An argument cannot add a '.' or '..' path segment to this tool's URL. Nothing was sent.")
+
+
+def render_url(
+    url: str, args: dict[str, Any], global_variables: dict[str, Any], *, url_values: str | None = None,
+) -> tuple[str, set[str]]:
+    """The URL with its references filled in, and the argument keys it used.
+
+    An argument's value is percent-encoded into its place, and the result must
+    keep the template's scheme, host and port (F1014): a model steered by what
+    it read could otherwise fill a keyed tool's host, or walk its path, and the
+    request went there with the tool's headers. `url_values="raw"` keeps path
+    values as written for an API that takes a path with slashes; the host check
+    stays. The author's `{{global.*}}` is never encoded.
+
+    The consumed keys are the point of the return value: an argument the URL
+    already used must not be sent again as a query parameter or in the body,
+    which is what the agent's copy did until D69 and this one did until now.
+    """
+    raw = str(url_values or "").strip().lower() == "raw"
+    consumed: set[str] = set()
+    rendered = _fill(url, args, global_variables, lambda text: _encode(text, raw), consumed)
+
+    values: dict[str, str] = {}
+
+    def _mark(text: str) -> str:
+        marker = f"zzarg{len(values)}zz"
+        values[marker] = text
+        return marker
+
+    shape = _fill(url, args, global_variables, _mark, set())
+    if values:
+        _check_origin(shape, rendered, values)
+    return rendered, consumed
 
 
 def build_request(
@@ -192,7 +295,7 @@ def build_request(
         raise MissingArgument(sorted(missing), places)
 
     context = {"global": global_variables, "args": args}
-    url, consumed = render_url(url, args, global_variables)
+    url, consumed = render_url(url, args, global_variables, url_values=tool.get("url_values"))
     headers = templating.render_mapping(raw_headers, context, bare="args")
     body, body_consumed = templating.request_body(
         template, args, {"global": global_variables}
