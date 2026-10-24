@@ -179,3 +179,33 @@ def test_the_new_entries_are_product_tools_with_their_roles():
     assert registry.get("delete_board").irreversible and registry.get("delete_knowledge_document").irreversible
     for name in ("list_boards", "read_board"):
         assert registry.get(name).kind == "read"
+
+
+# ── A title that only repeats the text is derived in code (SAI2-P5's rendering row) ──────────────────────────────────
+
+async def test_a_note_whose_title_repeats_its_text_gets_a_title_of_its_own(client, faq):
+    """ASSIST1's row: a model titled the note with its whole text, and the card said it twice."""
+    kb, wrote = faq
+    text = ("Patients can reschedule up to 24 hours before their appointment without a fee. Later changes are "
+            "charged $25.")
+    _, [card] = await _prepare({"action": "knowledge_add_note", "knowledge_base": "FAQ", "title": text + " ",
+                                "text": text})
+    title = "Patients can reschedule up to 24 hours before their…"
+    assert card["detail"] == f"{title}: {text}"
+    await _press(client, card)
+    assert wrote["note"] == (kb.id, text, title)
+
+
+async def test_a_short_note_is_said_once():
+    from core.builder_actions import _own_title, _same_words
+
+    assert _own_title("Open 9 to 5", "open 9 to 5.") == "Open 9 to 5" and _same_words("Open 9 to 5", "open 9 to 5.")
+    assert _own_title("Hours", "Open 9 to 5.") == "Hours", "a title of its own is kept"
+
+
+async def test_a_board_card_whose_title_is_its_text_says_it_once(client, boards_on):
+    _, [card] = await _prepare({"action": "board_create", "name": "Bugs", "text": "What breaks"})
+    await _press(client, card)
+    _, [card] = await _prepare({"action": "board_add_card", "board": "bugs", "title": "Login 500s",
+                                "text": "Login 500s."})
+    assert card["title"] == 'Add "Login 500s" to "Bugs"' and card["detail"] == ""

@@ -323,6 +323,44 @@ export function shownInTrail(message: BuilderMessage): boolean {
     return true;
 }
 
+/** Where the JSON value that opens `text` ends (its closing bracket's index + 1), or -1 when none closes. */
+function jsonEnd(text: string): number {
+    let depth = 0;
+    let inString = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text[i];
+        if (inString) {
+            if (c === '\\') i++;
+            else if (c === '"') inString = false;
+        } else if (c === '"') inString = true;
+        else if (c === '{' || c === '[') depth++;
+        else if (c === '}' || c === ']') {
+            depth--;
+            if (depth === 0) return i + 1;
+        }
+    }
+    return -1;
+}
+
+/**
+ * A reply with the JSON it opened with cut (SAI2's rendering row: a stray `{}` opened a gpt-4.1-mini reporter
+ * reply). Only a whole JSON value at the very start, with words after it, goes; a reply that is only JSON, or that
+ * opens with a bracket that is not JSON, is left as it was.
+ */
+export function withoutOpeningJson(reply: string): string {
+    const text = reply.trimStart();
+    if (!text.startsWith('{') && !text.startsWith('[')) return reply;
+    const end = jsonEnd(text);
+    const rest = end > 0 ? text.slice(end).trim() : '';
+    if (!rest) return reply;
+    try {
+        JSON.parse(text.slice(0, end));
+    } catch {
+        return reply;
+    }
+    return rest;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): BuilderState {
     const type: string = event?.type ?? '';
@@ -421,7 +459,8 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             };
             if (!summary) return withStatus;
             return append(withStatus, {
-                role: 'assistant', content: String(summary), kind: 'text', key: `summary-${event.run_id ?? seq}`,
+                role: 'assistant', content: withoutOpeningJson(String(summary)), kind: 'text',
+                key: `summary-${event.run_id ?? seq}`,
             });
         }
 

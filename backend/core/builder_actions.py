@@ -166,6 +166,26 @@ async def _run(args: dict) -> tuple[dict, str]:
     return view, names.get(orch_id) or orch_id
 
 
+def _same_words(a: str, b: str) -> bool:
+    """Whether two texts say the same, whatever their case, spacing or closing stop."""
+    def norm(t: str) -> str:
+        return " ".join(t.split()).casefold().rstrip(".!?:;")
+    return bool(a) and norm(a) == norm(b)
+
+
+def _own_title(title: str, text: str) -> str:
+    """A note's or a card's title, as written; when it only repeats the text (a model's answer, SAI2's rendering
+    row), one in code: the text's first sentence, cut at a word within 60 characters. A short one is kept as written
+    (the card then says it once)."""
+    if not _same_words(title, text) or len(title) <= 60:
+        return title
+    first = " ".join(re.split(r"(?<=[.!?])\s|\n", text.strip(), maxsplit=1)[0].split())
+    if len(first) <= 60:
+        return first
+    cut = first[:60].rsplit(" ", 1)[0].rstrip(",;:")
+    return f"{cut}…"
+
+
 def _card(title: str, *, detail: str = "", danger: bool = False, buttons: list[dict] | None = None,
           question: dict | None = None) -> dict:
     return {"type": "action_needed", "id": f"act_{uuid.uuid4().hex[:10]}", "title": title, "detail": detail,
@@ -283,8 +303,9 @@ async def _knowledge(action: str, args: dict) -> dict:
         text = str(args.get("text") or "").strip()
         if not text:
             raise _NotOffered("Say what the note says.")
-        title = str(args.get("title") or "").strip()
-        return _card(f'Add a note to "{kb.name}"', detail=(f"{title}: " if title else "") + text[:300],
+        title = _own_title(str(args.get("title") or "").strip(), text)
+        return _card(f'Add a note to "{kb.name}"',
+                     detail=(f"{title}: " if title and not _same_words(title, text) else "") + text[:300],
                      buttons=[await _button("Add note", "add_knowledge_note",
                                             {"knowledge_base": kb.id, "title": title or None, "text": text})])
     row = await _resolved(knowledge._document(str(args.get("doc_id") or "")))
@@ -311,7 +332,9 @@ async def _board(action: str, args: dict) -> dict:
             if not title:
                 raise _NotOffered("Say what the card is: its title.")
             text = str(args.get("text") or "").strip()
-            return _card(f'Add "{title}" to "{board["name"]}"', detail=text[:300],
+            title = _own_title(title, text)
+            return _card(f'Add "{title}" to "{board["name"]}"',
+                         detail="" if _same_words(title, text) else text[:300],
                          buttons=[await _button("Add card", "add_board_card",
                                                 {"board": board["id"], "title": title, "body": text})])
         return _card(f'Delete the board "{board["name"]}"', danger=True,
