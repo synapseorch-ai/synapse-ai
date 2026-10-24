@@ -40,6 +40,10 @@ from core.log import get_logger
 
 _log = get_logger(__name__)
 
+#: How an agent offered no tool at all ends a reply that is still only a call (SAI2-P4; SAI2's review 7): in words,
+#: as its answer, never "ran out of turns".
+NO_TOOLS_SENTENCE = "Sorry, I couldn't put that into words; could you say it another way?"
+
 MAX_TURNS = 30
 
 
@@ -1645,6 +1649,9 @@ async def run_agent_step(
     # still calls a tool ends the turn unanswered, as the guard always did: "hi" on Nova Pro read the workspace
     # three times and the step failed with an error page, though nothing it needed was missing.
     _answering_from: dict | None = None
+    # An agent offered no tool at all (no tools, no finish tools; Synapse AI's talk step) that calls one anyway: the
+    # refusal starts the same answer turn, and a call there ends in words (SAI2-P4). Any other agent: as before.
+    _called_with_nothing = False
 
     def _tools_now(tools):
         """The tools offered to this reply: all of them, or on the guard's answer turn none but a finish tool."""
@@ -2560,6 +2567,13 @@ async def run_agent_step(
             # them sequentially before the next LLM turn.  This prevents partial
             # saves when a provider batches multiple calls into one response.
             tool_calls = _unwrap_parallel(parse_all_tool_calls(action_text), tool_schema_map)
+            if _answering_from is not None and _answering_from.get("no_tools") and tool_calls:
+                # Offered nothing and told so, it called again: its answer is a sentence in words (SAI2-P4).
+                for _e in _unstream("tool_call"):
+                    yield _e
+                tool_calls = []
+                final_response = NO_TOOLS_SENTENCE
+                break
             if _answering_from is not None and any(
                     _offered_name(c.get("tool", ""), tool_schema_map) not in _finish for c in tool_calls):
                 # Asked to answer from what it had, it called again: the guard's ending, as before F1015.
@@ -3152,6 +3166,8 @@ async def run_agent_step(
                     block_msg = f"Tool '{tool_name}' is not available for this agent. Available tools: {', '.join(allowed_tools)}."
                     current_context_text += f"\nSystem: {block_msg}\n"
                     _open_refusal = "not one of this agent's tools"
+                    if not ollama_tools and not _finish:
+                        _called_with_nothing = True
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": "Blocked: Tool not available for this agent",
                            "refused": True, "reason": _open_refusal}
                     continue
@@ -3725,6 +3741,17 @@ async def run_agent_step(
                 _log.warning("🔁 background helpers sent again after being told they work — ending the turn")
                 final_response = _bg_repeat_end
                 break
+            if _called_with_nothing and _answering_from is None:
+                # Offered no tool, it called one: one reply with nothing offered, told so (SAI2-P4).
+                _called_with_nothing = False
+                if turn + 1 >= max_turns:
+                    final_response = NO_TOOLS_SENTENCE
+                    break
+                _answering_from = {"no_tools": True}
+                current_context_text += ("\nSystem: no tool is offered for this reply; give your final response "
+                                         "now, in words.\n")
+                yield {"type": "status", "message": "Answering in words"}
+                continue
             if not _repeat_stop:
                 _check_round(_turn_calls[_round_from:])
             if _repeat_stop and _answering_from is None and turn + 1 < max_turns:
