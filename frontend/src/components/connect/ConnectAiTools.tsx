@@ -229,9 +229,12 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
 
 function Snippet({ text }: { text: string }) {
     return (
-        <div className="relative rounded-md border border-border bg-surface-2">
-            <pre className="overflow-x-auto px-4 py-3 pr-24 font-code text-xs leading-relaxed text-text">{text}</pre>
-            <CopyButton text={text} className="absolute right-2 top-2" />
+        // Copy sits in its own bar, not over the code: at a phone's width a long command scrolled under it.
+        <div className="rounded-md border border-border bg-surface-2">
+            <div className="flex justify-end border-b border-border px-2 py-1.5">
+                <CopyButton text={text} />
+            </div>
+            <pre className="overflow-x-auto px-4 py-3 font-code text-xs leading-relaxed text-text">{text}</pre>
         </div>
     );
 }
