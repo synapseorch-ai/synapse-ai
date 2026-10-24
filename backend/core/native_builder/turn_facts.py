@@ -28,6 +28,18 @@ def connect_what(card: dict) -> str:
     return str(card.get("title") or "").lower()
 
 
+def connect_what_args(args: dict) -> str:
+    """What a `prepare_connection` call would connect, as `connect_what` keys the card it would put up."""
+    for field in ("catalog_slug", "url", "provider", "tool_name", "screen"):
+        if args.get(field):
+            return str(args[field]).strip().lower()
+    return str(args.get("title") or "").strip().lower()
+
+
+#: Words that ask for a connection again, so a card shown before may go up once more.
+_AGAIN = ("connect", "reconnect", "link", "hook", "sign in", "again")
+
+
 def facts_of(events: list[dict]) -> dict[str, list]:
     """The facts a tool call's events add to its turn: the action cards and the Connect cards it put up."""
     cards = [card_fact(e) for e in events if e.get("type") == "action_needed"]
@@ -94,6 +106,16 @@ async def answer_card_refusal(run_id: str | None, tool: str, args: dict) -> str 
     if facts.get("cards") or facts.get("connects"):
         return ("One card per turn: a card is already up above. Say the next step in words; the person asks for it "
                 "when they are ready.")
+    if tool == "prepare_connection":
+        from core.native_builder.read_turn import previous_turns
+
+        message = str(run.shared_state.get("user_message") or "").lower()
+        what = connect_what_args(args)
+        if what and not any(w in message for w in _AGAIN):
+            for previous in await previous_turns(getattr(run, "session_id", None), run_id):
+                if any(c.get("what") == what for c in (await assistant.turn(previous)).get("connects") or []):
+                    return ("That Connect card was shown earlier in this conversation: say it is above, and put up "
+                            "no other; it goes up again when the person asks to connect it again.")
     if tool == "prepare_connection" and args.get("kind") in ("app", "mcp_server"):
         from core.native_builder.target import _words
 

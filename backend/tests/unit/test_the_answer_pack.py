@@ -42,6 +42,12 @@ class TestEveryPackSaysWhoAndWhere:
         assert "say nothing about what the business does" in pack.lower()
         assert "manufactur" not in pack.lower()
 
+    def test_an_unknown_name_is_left_out(self):
+        """SAI2's review: OSS writes no workspace name; the pack never says "unnamed"."""
+        pack = _pack(workspace_name="", asker_name="")
+        assert "unnamed" not in pack and "Who is asking: a owner" not in pack
+        assert "Who is asking: an owner in this workspace." in pack
+
     def test_talk_gets_what_the_product_can_do_from_code(self):
         assert "What this product does" in _pack("none")
 
@@ -167,6 +173,29 @@ class TestTheStep:
         asked = await self._run("builder_fc3", "connect Firecrawl again please", providers=["Firecrawl"])
         _, events = await self._call(asked, "answer_pack")
         assert [e.get("type") for e in events] == ["connection_needed"]
+
+    async def test_a_card_shown_earlier_is_not_put_up_again_by_the_model(self):
+        """SAI2's review 6: "never re-offered" holds for the answering model's own call too, across this conversation's
+        earlier turns, unless the person asks for it again."""
+        first = await self._run("builder_re1", "connect Firecrawl", session="builder:t:panel:re",
+                                providers=["Firecrawl"])
+        _, events = await self._call(first, "answer_pack")
+        assert [e.get("type") for e in events] == ["connection_needed"]
+
+        later = await self._run("builder_re2", "how much does Firecrawl cost?", session="builder:t:panel:re",
+                                needs="help")
+        said, events = await self._call(later, "prepare_connection", {"kind": "app", "catalog_slug": "firecrawl"})
+        assert events == [] and "shown earlier" in said["error"]
+
+        again = await self._run("builder_re3", "please connect Firecrawl again", session="builder:t:panel:re",
+                                needs="help")
+        _, events = await self._call(again, "prepare_connection", {"kind": "app", "catalog_slug": "firecrawl"})
+        assert [e.get("type") for e in events] == ["connection_needed"]
+
+        elsewhere = await self._run("builder_re4", "tell me about Firecrawl", session="builder:t:panel:other",
+                                    needs="help")
+        _, events = await self._call(elsewhere, "prepare_connection", {"kind": "app", "catalog_slug": "firecrawl"})
+        assert [e.get("type") for e in events] == ["connection_needed"], "another conversation never saw it"
 
     async def test_one_card_per_turn(self):
         run = await self._run("builder_two", "connect Notion and Firecrawl", providers=["Notion", "Firecrawl"])

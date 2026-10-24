@@ -126,11 +126,18 @@ def tools_not_held(agents: list[dict] | None = None, orch: dict | None = None) -
     found: list[tuple[str, str]] = []
     for agent in agents:
         held = set(agent.get("tools") or [])
-        texts = {f"agent:{agent['id']}": agent.get("system_prompt") or ""}
+        system = agent.get("system_prompt") or ""
+        texts = [(f"agent:{agent['id']}", system, held)]
         for step in orch.get("steps") or []:
-            if step.get("agent_id") == agent["id"]:
-                texts[f"step:{step['id']}.prompt_template"] = step.get("prompt_template") or ""
-        for place, text in texts.items():
+            if step.get("agent_id") != agent["id"]:
+                continue
+            # A step's `allowed_tools` is what its turn holds; the agent's own prompt is read there too (SAI2-P4).
+            narrowed = step.get("allowed_tools")
+            step_held = held & set(narrowed) if narrowed is not None else held
+            if narrowed is not None:
+                texts.append((f"step:{step['id']}.agent_prompt", system, step_held))
+            texts.append((f"step:{step['id']}.prompt_template", step.get("prompt_template") or "", step_held))
+        for place, text, may in texts:
             found += [(place, name) for name in dict.fromkeys(_TICKED.findall(text))
-                      if name in known and name not in held and name not in _ENGINE_TOOLS]
+                      if name in known and name not in may and name not in _ENGINE_TOOLS]
     return found

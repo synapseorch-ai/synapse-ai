@@ -38,11 +38,14 @@ KINDS = {
 #: A button act, said as a request: at the start, or after a please / can you.
 _ACT = re.compile(
     r"(?:^|\b(?:please|pls|can you|could you|would you|now|then|and|just)\s+)"
-    r"(?:turn (?:on|off)|switch (?:on|off)|enable|disable|pause|unpause|resume|run|start|stop|cancel|kick off|"
+    r"(?:turn(?: \w+){0,2} (?:on|off)|switch(?: \w+){0,2} (?:on|off)|enable|disable|pause|unpause|resume|run|start|"
+    r"stop|cancel|kick off|"
     r"trigger|delete|remove|get rid of)\b")
 #: A change to something that exists.
 _CHANGE = re.compile(
     r"\b(?:change|edit|update|set|move|rename|reschedule|switch|make|give|attach|detach|turn)\b")
+#: A change verb that is never talk, named thing or not ("rename it to Reception").
+_CHANGE_ONLY = re.compile(r"\b(?:change|edit|update|rename|reschedule|move|delete|remove|detach)\b")
 #: Words that ask for something new.
 _NEW = re.compile(r"\b(?:new|another|create|build me|make me|from scratch|set up a|a fresh)\b")
 #: Words that edit what is open.
@@ -64,7 +67,7 @@ _WORKSPACE = re.compile(
 #: How the product works, its API and MCP: the help.
 _HELP = re.compile(
     r"\b(?:how do i|how can i|how to|how does|api|apis|mcp|sdk|docs|documentation|endpoint|python|curl|javascript|"
-    r"typescript|webhooks?|what can you do|what can synapse|can synapse|does synapse|can it|does it support|"
+    r"typescript|webhooks?|can synapse|does synapse|can it|does it support|"
     r"supports?|feature|features|pricing|price|plans?|tutorial|guide|where do i|where is the)\b")
 
 _KINDS = {"schedule": ("schedule", "schedules"), "agent": ("agent", "agents"),
@@ -104,6 +107,12 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
              connectable: set[str]) -> Routed:
     """`request` corrected from what code knows, with the entry it goes to."""
     text = _words(message)
+    if state.get("export_source"):
+        # Pasted export code is a new build, whatever it names or says (SAI2's review 1).
+        routed = Routed(**{**request.model_dump(), "kind": "build", "needs": "workspace"}, route="step_plan_room",
+                        overridden_by=None if request.kind == "build" else "export", model_kind=request.kind,
+                        model_needs=request.needs)
+        return routed if _may("build", state) else routed.model_copy(update={"route": "step_not_yours"})
     kind, by = request.kind, None
     named = _named(text, inventory)
     things = {k: v for k, v in named.items() if v}
@@ -139,8 +148,8 @@ def _needs(kind: str, said: str | None, text: str, things: dict) -> str:
     """What the answer reads. `none` only when the model did not ask for more and code finds nothing to read."""
     if kind != "answer":
         return "workspace"
-    if things or _WORKSPACE.search(text):
-        return "workspace"
+    if things or _WORKSPACE.search(text) or _ACT.search(text) or _CHANGE_ONLY.search(text):
+        return "workspace"  # an act or a change with nothing named is the model's to place, but never talk
     if said in ("workspace", "help"):
         return said
     if _HELP.search(text):

@@ -36,8 +36,10 @@ from core.native_builder import prompt_lint, seed
 #: P3b: the build's own researcher finishes on report_findings (E2), its shared passages in the library, 1ecd661d…; the
 #: build makes a read API's tools after the yes and waits for their connection before the save (F944–F946), 1f82462e…;
 #: SAI2-P4: the front door read in code — the turn, one typed classify call (its classifier agent), the answer's pack
-#: built from what it needs, talk with no tools — and the reporter's one read tool per job (F756), 8d5a358b….
-BUNDLE_SHA256 = "8d5a358b14116c6fb97bd65522ac8a060896cd09f8aaf1b4eeaff97fbe011271"
+#: built from what it needs, talk with no tools — and the reporter's one read tool per job (F756), 8d5a358b…;
+#: SAI2's review of P4: the reporter's own prompt teaches no tool (each step's does), talk has room for the answer
+#: turn, and the talker says only its role, c2b8ebd2….
+BUNDLE_SHA256 = "c2b8ebd2f705e2473c55f0ff2702ce7ea7caebd254d50e40195647093feee164"
 
 
 def _sha(definitions) -> str:
@@ -115,6 +117,18 @@ class TestAPromptTeachesOnlyTheToolsItsAgentHolds:
         orch = {"steps": [{"id": "s", "agent_id": "a", "prompt_template": "Finish with `submit_change`."}]}
         assert prompt_lint.tools_not_held(agents, orch) == [("agent:a", "delete_agent"),
                                                             ("step:s.prompt_template", "submit_change")]
+
+    def test_a_step_that_narrows_the_tools_narrows_what_may_be_taught(self):
+        """SAI2's review 5 (SAI2-P4): a step's `allowed_tools` is what that step's turn holds. The agent's prompt, read
+        on that step too, may teach only those; so may the step's own."""
+        agents = [{"id": "a", "tools": ["read_workspace", "search_help"],
+                   "system_prompt": "Answer from facts. Read with `read_workspace`."}]
+        orch = {"steps": [
+            {"id": "help", "agent_id": "a", "allowed_tools": ["search_help"],
+             "prompt_template": "Use `search_help`, then `read_workspace`."},
+            {"id": "all", "agent_id": "a", "prompt_template": "Use `read_workspace`."}]}
+        assert prompt_lint.tools_not_held(agents, orch) == [("step:help.agent_prompt", "read_workspace"),
+                                                            ("step:help.prompt_template", "read_workspace")]
 
     def test_a_name_that_is_no_tool_is_not_counted(self):
         agents = [{"id": "a", "tools": [], "system_prompt": "Use the op `edit_steps` and its `what` field."}]

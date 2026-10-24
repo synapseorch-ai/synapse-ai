@@ -363,10 +363,35 @@ async def test_what_read_turn_chose_from_the_list_reaches_the_planner_for_its_ow
 
     elsewhere = {**turn, "previous_run_id": "builder_some_other_turn"}
     context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick2", turn=elsewhere))
-    assert "chosen" not in context["waiting_pick"]
+    assert context["waiting_pick"] is None, "a pick never reads another turn's list"
     context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick3", turn={**turn,
                                                                                                "then": "said"}))
     assert "chosen" not in context["waiting_pick"]
+
+
+async def test_a_pick_reads_its_own_conversations_list_not_the_newest(client, role):
+    """SAI2's review 4: the person's newest waiting list may be another conversation's. A pick `read_turn` made goes
+    back with the list of the card that turn read."""
+    await _workflow(name="Patient reminders", description="front desk")
+    second = await _workflow(name="Patient reminders", description="billing")
+    _, _, mine = await _check([{"op": "run_workflow", "target": {"kind": "workflow", "name": "Patient reminders"}}],
+                              run=await _run(run_id="builder_mine"))
+    await _workflow(name="Invoice chaser", description="a")
+    await _workflow(name="Invoice chaser", description="b")
+    await _check([{"op": "run_workflow", "target": {"kind": "workflow", "name": "Invoice chaser"}}],
+                 run=await _run(run_id="builder_other_conv"))
+    picked = {"op": 0, "field": "target", "kind": "workflow", "id": second["id"], "name": "Patient reminders"}
+    turn = {"route": "pick", "then": "change", "picked": picked, "previous_run_id": mine.run_id}
+    context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick_mine", turn=turn))
+    waiting = context["waiting_pick"]
+    assert waiting["picks"][0]["wanted"] == "Patient reminders" and waiting["chosen"] == picked
+
+    # SAI2-P2's condition: a turn naming another person's card gets no list at all, never theirs.
+    _, _, theirs = await _check([{"op": "run_workflow", "target": {"kind": "workflow", "name": "Patient reminders"}}],
+                                run=await _run(user_id="u2", run_id="builder_theirs"))
+    turn = {**turn, "previous_run_id": theirs.run_id}
+    context, _ = await _call("read_change_context", {}, await _run(run_id="builder_pick_theirs", turn=turn))
+    assert context["waiting_pick"] is None
 
 
 async def test_an_undo_and_other_ops_in_one_submit_are_sent_back_not_half_done(client):

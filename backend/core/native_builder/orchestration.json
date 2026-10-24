@@ -355,7 +355,7 @@
             "input_keys": [],
             "output_key": "summary",
             "forced_tool": null,
-            "max_turns": 2,
+            "max_turns": 3,
             "timeout_seconds": 300,
             "allowed_tools": [],
             "next_step_id": "step_end",

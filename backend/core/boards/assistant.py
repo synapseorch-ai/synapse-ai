@@ -13,6 +13,7 @@ the Boards screen once Boards is on, each person their own cards and an admin al
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from core.store import boards as store
@@ -100,6 +101,8 @@ async def cards_for(viewer_id: str | None, *, admin: bool, closed: bool = False)
 
 #: Facts a turn adds to as it goes; any other fact is set once (`also`, the last word on it).
 _GATHERED = ("cards", "presses", "picks", "connects")
+#: How long a turn's facts are kept: what later turns of a conversation read, not a record for ever.
+TURN_FACTS_FOR = timedelta(days=14)
 
 
 def _turn_key(run_id: str) -> str:
@@ -125,6 +128,7 @@ async def note(run_id: str, *, owner_id: str | None, **facts: Any) -> None:
             _, made = await store.add_card(home.id, title="A turn", key=key, kind="note", by=ACTOR,
                                            data={"turn": kept}, owner_id=owner_id)
             if made:
+                await _prune(home.id)
                 return
             continue  # made by a write beside this one: read it again and add to it
         try:
@@ -134,6 +138,27 @@ async def note(run_id: str, *, owner_id: str | None, **facts: Any) -> None:
         except store.StaleCard:
             continue
     raise RuntimeError(f"Turn {run_id}'s card kept changing; its facts were not kept.")
+
+
+async def _prune(board_id: str) -> None:
+    """Delete the turns' facts older than `TURN_FACTS_FOR`, and their history: never a build's or a change's card."""
+    from sqlalchemy import delete, select
+
+    from core.store import session
+    from core.store.models import BoardCardDB, BoardCardEventDB
+    from core.tenancy import get_tenant
+
+    cutoff = store._now() - TURN_FACTS_FOR
+    tenant = get_tenant()
+    async with session() as s:
+        old = select(BoardCardDB.id).where(
+            BoardCardDB.tenant_id == tenant, BoardCardDB.board_id == board_id, BoardCardDB.kind == "note",
+            BoardCardDB.key.like("turn:%"), BoardCardDB.updated_at < cutoff)
+        ids = (await s.execute(old.limit(200))).scalars().all()
+        if ids:
+            await s.execute(delete(BoardCardEventDB).where(BoardCardEventDB.tenant_id == tenant,
+                                                           BoardCardEventDB.card_id.in_(ids)))
+            await s.execute(delete(BoardCardDB).where(BoardCardDB.tenant_id == tenant, BoardCardDB.id.in_(ids)))
 
 
 async def turn(run_id: str) -> dict[str, Any]:

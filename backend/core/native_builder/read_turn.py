@@ -86,7 +86,9 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
 
     # 1. A yes to the second request the last turn queued.
     also = str(facts.get("also") or "").strip()
-    if also and (yes or said in _GO_ON):
+    asked_back = str(previous.get("summary") or "").strip().endswith("?")
+    # A yes to a question the last reply asked is that question's, not the queue's (SAI2's review).
+    if also and (yes or said in _GO_ON) and not asked_back:
         return Turn(route="next_request", then="classify", message=also)
 
     # 2. A pick from the last "which one?" list: an act's (its card goes up) or a change's (back to the change route).
@@ -135,6 +137,12 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
 
     # 5. A yes with nothing waiting for one. A yes after findings is a build (F766), and a yes to a question the last
     # reply asked answers it: both go on to classify, which reads the conversation.
+    if yes and buttons and not presses:
+        # A card not yet pressed is what waits: the yes points at it (SAI2's review 2).
+        card, button = buttons[-1]
+        return Turn(route="card_label", then="said", card=card.get("title"),
+                    say=f"Press {_quoted(button.get('label'))} on the card above ({card.get('title')}): "
+                        "nothing happens until you do.")
     if yes:
         findings = prior_findings if isinstance(prior_findings, dict) else {}
         last = str(previous.get("summary") or "").strip()

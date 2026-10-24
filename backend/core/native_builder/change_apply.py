@@ -57,11 +57,16 @@ async def read_change_context(args: dict, server_module: Any, events: list[dict]
         return {"last_change": None, "waiting_pick": None}
     last = next((c for c in _newest(done) if c.stage == CHANGED and (c.data or {}).get("applied")), None)
     waiting = next((c for c in _newest(open_) if ((c.data or {}).get("change") or {}).get("picks")), None)
-    # What `read_turn` chose from that list in code (SAI2-P4, F978), when it is this conversation's own card.
+    # What `read_turn` chose from that list in code (SAI2-P4, F978), when it is this conversation's own card; a pick
+    # reads the list of the card its turn read, never the person's newest in another conversation.
     from core.native_builder.change_tools import _run
     _, run = _run()
     turn = (run.shared_state.get("turn") if run is not None else None) or {}
     chosen = turn.get("picked") if turn.get("then") == "change" else None
+    if chosen:
+        # This person's own card of that turn, or no list at all: never another conversation's, never another's.
+        waiting = next((c for c in open_ if c.key == turn.get("previous_run_id")
+                        and ((c.data or {}).get("change") or {}).get("picks")), None)
     return {
         "last_change": None if last is None else {
             "key": last.key, "title": last.title,

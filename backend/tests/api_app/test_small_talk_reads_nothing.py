@@ -47,3 +47,19 @@ async def test_a_question_about_the_workspace_still_reads_it(client, builder, fa
     events = await stream(client, "/api/builder/chat", {"message": "what failed today?"})
     order = [e.get("orch_step_id") for e in events if e["type"] == "step_start"]
     assert "step_answer_workspace" in order and "step_answer_talk" not in order, order
+
+
+async def test_a_model_that_invents_reads_still_ends_in_words(client, builder, fake_llm):
+    """SAI2's review 7 (F1015's class): a prompt-mode model writes read calls for "hi". Each is refused, nothing is
+    read, and the turn ends in words — never "ran out of turns", never an error."""
+    from core.react_engine import NO_TOOLS_SENTENCE
+
+    read = tool_call("read_workspace", topic="today")
+    fake_llm.script([tool_call("classify_request", kind="answer", needs="none"), read, read])
+    fake_llm.set_default(read)
+    events = await stream(client, "/api/builder/chat", {"message": "hi"})
+    assert not [e for e in events if e["type"] in ("step_error", "orchestration_error")]
+    assert all(e.get("refused") for e in events
+               if e["type"] == "tool_result" and e.get("orch_step_id") == "step_answer_talk")
+    final = next(e for e in events if e["type"] == "orchestration_complete")["final_state"]
+    assert final["summary"] == NO_TOOLS_SENTENCE

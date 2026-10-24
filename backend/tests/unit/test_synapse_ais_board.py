@@ -160,3 +160,28 @@ class TestATurnsFacts:
     async def test_a_credential_is_never_kept_in_a_turns_facts(self):
         with pytest.raises(store.SecretInCard):
             await assistant.note("run_t4", owner_id="u", also="use key sk-" + "proj-" + "a" * 40)
+
+    async def test_old_turns_facts_are_pruned_and_recent_ones_kept(self):
+        """SAI2's review: a turn's facts are for the next turns, not for ever. A new turn's card prunes those older
+        than `TURN_FACTS_FOR`, with their history."""
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import update
+
+        from core.store import session
+        from core.store.models import BoardCardDB, BoardCardEventDB
+
+        await assistant.note("run_old", owner_id="u", also="x")
+        await assistant.note("run_recent", owner_id="u", also="y")
+        old_card = await assistant.card("turn:run_old")
+        async with session() as s:
+            await s.execute(update(BoardCardDB).where(BoardCardDB.id == old_card.id).values(
+                updated_at=datetime.now(timezone.utc) - assistant.TURN_FACTS_FOR - timedelta(days=1)))
+        await assistant.note("run_new", owner_id="u", also="z")
+        assert await assistant.turn("run_old") == {}
+        assert (await assistant.turn("run_recent"))["also"] == "y"
+        assert (await assistant.turn("run_new"))["also"] == "z"
+        async with session() as s:
+            from sqlalchemy import select
+            left = (await s.execute(select(BoardCardEventDB).where(BoardCardEventDB.card_id == old_card.id))).all()
+        assert left == []

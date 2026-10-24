@@ -97,13 +97,16 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
     described = describe_workspace(workspace_name, "" if profile.strip().startswith(_NOT_RECORDED) else profile)
     has_profile = bool(profile.strip()) and not profile.strip().startswith(_NOT_RECORDED)
     parts = []
+    unrecorded = ("It has no description recorded, so say nothing about what the business does or what industry "
+                  "it is in.")
     if has_profile:
         parts.append(f"The workspace: {described}.")
+    elif workspace_name:
+        parts.append(f"The workspace: {workspace_name}. {unrecorded}")
     else:
-        parts.append(f"The workspace: {workspace_name or 'unnamed'}. It has no description recorded, so say nothing "
-                     "about what the business does or what industry it is in.")
+        parts.append(f"The workspace: {unrecorded[3:]}".replace("The workspace: has", "This workspace has"))
     who = f"{asker_name}, " if asker_name else ""
-    parts.append(f"Who is asking: {who}a {asker_role.label} in this workspace.")
+    parts.append(f"Who is asking: {who}{_article(asker_role.label)} {asker_role.label} in this workspace.")
     if last:
         parts.append(f"What the last turn did: {last}")
     if connect:

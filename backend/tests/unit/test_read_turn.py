@@ -98,6 +98,22 @@ class TestAPress:
         assert turn.route == "pressed" and "hasn't been pressed" in turn.say and "Run now" in turn.say
 
 
+class TestAYesWhileACardWaits:
+    """SAI2's review 2: a card not yet pressed is what waits; a yes points at it."""
+
+    @pytest.mark.parametrize("said", ["yes", "ok", "approve"])
+    def test_a_yes_points_at_the_card(self, said):
+        turn = decide(said, previous={"summary": "A card is up: Run it."}, facts={"cards": [RUN_CARD]})
+        assert (turn.route, turn.then) == ("card_label", "said")
+        assert turn.say.startswith('Press "Run now" on the card above')
+
+    def test_after_its_press_a_yes_says_nothing_waits(self):
+        facts = {"cards": [RUN_CARD], "presses": [{"card": RUN_CARD["title"], "label": "Run now",
+                                                   "tool": "run_orchestration", "done": True, "say": "Started."}]}
+        turn = decide("yes", previous={"summary": "Started the run."}, facts=facts)
+        assert turn.route == "yes_without_review"
+
+
 class TestAYesWithNothingWaiting:
     def test_it_says_nothing_waits_and_what_was_done_last(self):
         turn = decide("approve", previous={"summary": "I turned off the schedule Nightly invoices. Anything else?\n"},
@@ -128,6 +144,11 @@ class TestTheQueuedRequest:
     @pytest.mark.parametrize("said", ["do that", "go ahead", "sure", "yes please"])
     def test_other_ways_of_saying_go_on(self, said):
         assert decide(said, previous={}, facts={"also": "pause it"}).route == "next_request"
+
+    def test_a_yes_to_the_replys_own_question_answers_that_question(self):
+        """SAI2's review: the last reply asked something of its own; the yes is to that, not to the queue."""
+        turn = decide("yes", previous={"summary": "There are two. Shall I list them?"}, facts={"also": "pause it"})
+        assert turn.route == "classify"
 
     def test_something_else_leaves_it_queued(self):
         assert decide("what failed today?", previous={}, facts={"also": "pause it"}).route == "classify"

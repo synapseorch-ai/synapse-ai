@@ -118,7 +118,7 @@ class TestTheRoleDoor:
 
 class TestWhatTheAnswerNeeds:
     @pytest.mark.parametrize("message", ["hi", "thanks!", "brainstorm a reminder flow with me", "goodbye",
-                                         "what do you think of a two-step approval?"])
+                                         "what do you think of a two-step approval?", "what can you do?"])
     def test_talk_needs_nothing(self, message):
         for said in ("none", None):
             assert _route(message, "answer", needs=said).needs == "none"
@@ -130,9 +130,15 @@ class TestWhatTheAnswerNeeds:
         assert _route(message, "answer", needs="none").needs == "workspace"
 
     @pytest.mark.parametrize("message", ["how do I call your API from Python?", "how do I add an MCP server?",
-                                         "what can you do?", "does Synapse do webhooks?"])
+                                         "does Synapse do webhooks?"])
     def test_how_the_product_works_reads_its_help(self, message):
         assert _route(message, "answer", needs="none").needs == "help"
+
+    @pytest.mark.parametrize("message", ["pause it", "turn everything off", "stop it now", "delete that one",
+                                         "rename it to Reception"])
+    def test_an_act_or_a_change_with_nothing_named_still_reads(self, message):
+        """SAI2's review 3: with no name code knows, an act is the model's to place, but never as talk."""
+        assert _route(message, "answer", needs="none").needs == "workspace"
 
     def test_a_name_that_is_also_a_word_reads_the_workspace(self):
         """An agent called "Support": a message with that word may be about it, so it reads (the safe side)."""
@@ -161,6 +167,13 @@ class TestCreateOrUpdate:
         state = {"current_orchestration_source": "viewing", "current_orchestration_id": "orch_inv",
                  "export_source": "agents_sdk"}
         assert _route("add this", "build", state=state).route == "step_plan_room"
+
+    def test_pasted_export_code_is_never_an_act_or_a_change(self):
+        """SAI2's review 1: a paste naming an existing agent and saying "run it" is still a new build."""
+        state = {"export_source": "agents_sdk"}
+        for kind in ("answer", "change", "build"):
+            routed = _route("Here is our Support agent's export, build it and run it", kind, state=state)
+            assert (routed.kind, routed.route) == ("build", "step_plan_room"), kind
 
     def test_two_that_match_are_asked_about_in_the_answer(self):
         state = {"current_orchestration_source": "ambiguous", "current_orchestration_matches": "a\nb"}
