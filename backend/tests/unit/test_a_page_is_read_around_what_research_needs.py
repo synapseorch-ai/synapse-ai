@@ -49,3 +49,16 @@ def test_a_short_page_is_given_whole():
 def test_the_cap_holds_however_many_hits():
     page = "\n\n".join(f"The API key {i} is sent in a header, with OAuth for partners." for i in range(500))
     assert len(page_extract(page)) <= 3000
+
+
+def test_who_may_use_it_survives_sixty_api_sections():
+    """SAI2's probe: the gating sentence after sixty sections of API reference was cut."""
+    sections = "\n\n".join(f"## Endpoint {i}\n\nThe API reference for endpoint {i}, with OAuth." for i in range(60))
+    page = "# Hotel Connectivity API\n\n" + sections + "\n\nAvailable to approved partners only. Apply here."
+    got = page_extract(page)
+    assert "approved partners only" in got and len(got) <= 3000
+
+
+def test_a_page_with_no_api_word_keeps_its_gate():
+    page = "# Integrations\n\n" + FILLER + "\n\nIntegrations are not offered to the public; contact our sales team."
+    assert "not offered to the public" in page_extract(page)

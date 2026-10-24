@@ -630,16 +630,20 @@ PAGES_KEY = "pages"
 def _with_looked_up(seen: dict, options: list[dict]) -> list[dict]:
     """The look-up's verdicts first, then the model's other options; one option per provider. A verdict code found
     (an app in the catalogue, the provider's own server) stands: a model can't upgrade or drop it, only replace it
-    with a `none` that rests on a page of the provider's own this research read (P3B-HANDOFF.md, P5's section)."""
+    with a `none` that rests on a page of the provider's own this research read (P3B-HANDOFF.md, P5's section). The
+    model's options for that provider fold into it: by its name, or by the name's first word ("Stripe Payments")."""
     finals = [v["found"] for v in (seen.get(LOOKED_KEY) or {}).values() if isinstance(v, dict) and v.get("found")]
     if not finals:
         return options
-    said = {_slug(o["provider"]): o for o in options}
+    taken: set[int] = set()
     out = []
     for final in finals:
-        model = said.pop(_slug(final["provider"]), None)
-        out.append(model if model is not None and model["how"] == "none" else final)
-    return out + [o for o in options if _slug(o["provider"]) in said]
+        slug = _slug(final["provider"])
+        mine = [i for i, o in enumerate(options) if i not in taken
+                and (_slug(o["provider"]) == slug or _words(o["provider"])[:1] == [slug])]
+        taken |= set(mine)
+        out.append(next((options[i] for i in mine if options[i]["how"] == "none"), final))
+    return out + [o for i, o in enumerate(options) if i not in taken]
 
 
 def previous_findings(state: Any) -> dict:
@@ -671,9 +675,15 @@ _PAGE_CHARS = 3000
 #: What research reads a page for: whether there is an API, who may use it, how one signs in, and at what price.
 _ACCESS_WORDS = frozenset({
     "api", "apis", "developer", "developers", "endpoint", "endpoints", "reference", "rest", "graphql", "sdk",
-    "webhook", "webhooks", "authentication", "authenticate", "auth", "oauth", "key", "keys", "token", "tokens",
-    "partner", "partners", "affiliate", "affiliates", "apply", "approval", "approved", "access", "eligible", "sandbox",
-    "test", "pricing", "price", "plan", "plans", "rate", "limits",
+    "webhook", "webhooks", "authentication", "authenticate", "auth", "oauth", "token", "tokens", "access",
+    "sandbox", "pricing", "price",
+})
+#: Words that say who may use it: kept before anything else, so "available to approved partners only" survives a
+#: page with sixty API sections above it (SAI2's probe).
+_GATE_WORDS = frozenset({
+    "partner", "partners", "partnership", "affiliate", "affiliates", "apply", "application", "approval", "approved",
+    "invite", "invitation", "invited", "enterprise", "sales", "private", "beta", "only", "offered", "eligible",
+    "eligibility", "restricted", "waitlist", "allowlist", "whitelist",
 })
 #: Pages that are not results on a search page: the search engine's own.
 _NOT_A_RESULT = ("duckduckgo.com",)
@@ -851,30 +861,34 @@ async def read_web_page(args: dict, server_module: Any, events: list[dict]) -> d
 
 
 def page_extract(text: str, words: list[str] | tuple[str, ...] = (), limit: int = _PAGE_CHARS) -> str:
-    """At most `limit` characters of a page: its first paragraph (the title) and, in the page's order, each
-    paragraph that holds an access word or one of `words` (the provider's), with the paragraph after it (a heading's
-    body). Gaps are marked "…". A page with no hit gives its head."""
+    """At most `limit` characters of a page: its first paragraph (the title), then the paragraphs that say who may
+    use it (`_GATE_WORDS`), then those that hold an access word or one of `words` (the provider's); a heading among
+    them keeps the paragraph after it. They are given in the page's order, gaps marked "…". A page with no hit gives
+    its head."""
     if len(text) <= limit:
         return text
     paras = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    hits = _ACCESS_WORDS | set(words)
-    keep = {0}
-    for i, para in enumerate(paras):
-        if hits & set(_words(para)):
-            keep.update((i, i + 1))
-    if keep == {0}:
+    if not paras or len(paras[0]) >= limit:
         return text[:limit]
-    out, size, last = [], 0, -1
-    for i in sorted(k for k in keep if k < len(paras)):
-        part = ("…\n\n" if last >= 0 and i != last + 1 else "") + paras[i]
-        room = limit - size - (2 if out else 0)
-        if len(part) > room:
-            if room > 200:
-                out.append(part[:room])
-            break
-        out.append(part)
-        size, last = size + len(part) + (2 if len(out) > 1 else 0), i
-    return "\n\n".join(out)
+    hits = _ACCESS_WORDS | set(words)
+    gates = [i for i, p in enumerate(paras) if _GATE_WORDS & set(_words(p))]
+    rest = [i for i, p in enumerate(paras) if i not in gates and hits & set(_words(p))]
+
+    def joined(keep: set[int]) -> str:
+        out, last = [], -1
+        for i in sorted(keep):
+            out.append(("…\n\n" if last >= 0 and i != last + 1 else "") + paras[i])
+            last = i
+        return "\n\n".join(out)
+
+    keep = {0}
+    for i in gates + rest:
+        more = {i, i + 1} if paras[i].startswith("#") and i + 1 < len(paras) else {i}
+        if len(joined(keep | more)) <= limit:
+            keep |= more
+        elif len(joined(keep | {i})) <= limit:
+            keep.add(i)
+    return text[:limit] if keep == {0} else joined(keep)
 
 
 register_builder_tool(SEARCH_SCHEMA, search_the_web)

@@ -30,12 +30,17 @@ from typing import Any
 import core.builder_research as research
 from core.builder_tools import register_builder_tool
 
-#: Providers a look-up reads for; the rest are the research's.
-MAX_PROVIDERS = 5
+#: Providers one look-up reads for, and a research's whole run (SAI2's probe: unbounded, six calls of five new names
+#: read 30 searches and 30 Registry pages); the rest are the research's. A failed source is tried once more.
+MAX_PROVIDERS, MAX_LOOKS, MAX_TRIES = 5, 10, 2
 #: A page is a developer page when it says at least this many of these (one of them "api").
 _API_WORDS = frozenset({"api", "apis", "endpoint", "endpoints", "authentication", "authenticate", "oauth", "rest",
                         "graphql", "sdk", "webhook", "webhooks", "reference", "developer", "developers", "token"})
 _DOMAIN = re.compile(r"\b((?:[a-z0-9-]+\.)+[a-z]{2,})\b")
+#: Endings of file names, not of a provider's site: notes.md, app.py and node.js are not providers.
+_FILE_ENDINGS = frozenset({"md", "py", "js", "ts", "tsx", "jsx", "sh", "rb", "rs", "go", "txt", "csv", "pdf", "png",
+                           "jpg", "jpeg", "gif", "doc", "docx", "xls", "xlsx", "json", "yaml", "yml", "html", "css",
+                           "zip", "exe", "log", "sql", "env", "ini", "cfg", "toml"})
 
 SCHEMA = {
     "type": "function",
@@ -61,83 +66,148 @@ SCHEMA = {
 
 
 async def look_up_providers(args: dict, server_module: Any, events: list[dict]) -> dict:
+    if not any(args.get(k) for k in ("providers", "needs", "need")):
+        args = _from_the_run()
     need = str(args.get("need") or "").strip()
     asks = await _asks(args, need)
     record, run = research._record()
     looked = record.setdefault(research.LOOKED_KEY, {})
     found, left = [], []
     for ask in asks[:MAX_PROVIDERS]:
-        provider = ask.get("provider")
+        provider, said = ask.get("provider"), {k: ask[k] for k in ("provider", "tool", "does") if ask.get(k)}
         if not provider:
-            left.append({**ask, "note": "No provider is named for this yet: the research finds who provides it."})
+            left.append({**said, "note": "No provider is named for this yet: the research finds who provides it."})
+            continue
+        if not ask.get("named"):
+            # SAI2's probe: "Close the Jira ticket" is not the Close app. A name found in the words is the research's.
+            left.append({**said, "note": f"{provider}, in the Apps catalogue, matches words of this request; whether "
+                                         "it is the one meant is for the research."})
             continue
         key = research._slug(provider)
-        if key not in looked:
-            looked[key] = await _look(provider, ask.get("domain"), server_module)
+        got = looked.get(key)
+        if got is None or (got.get("failed") and got.get("tries", 1) < MAX_TRIES):
+            if record.get("looks", 0) >= MAX_LOOKS:
+                left.append({**said, "note": "This research has looked up enough providers in code: the research "
+                                             "reads this one."})
+                continue
+            record["looks"] = record.get("looks", 0) + 1
+            got = {**await _look(provider, ask.get("domain"), server_module), "tries": (got or {}).get("tries", 0) + 1}
+            looked[key] = got
             await research._keep(run)
-        got = looked[key]
         if got.get("found"):
             if got["found"] not in found:
                 found.append(got["found"])
         else:
-            left.append({k: v for k, v in ask.items() if k != "domain"} | got["left"])
+            left.append(said | got["left"])
     return {"findings": {"goal": need[:200], "options": found}, "found": found, "left": left}
 
 
+def _from_the_run() -> dict:
+    """The research route's step sets no arguments: the run's own request (P4's typed `Request`, when the front door
+    wrote one) and message. Read here, not from a template, so a run with no `request` (a paused run on the old
+    definition, a channel turn) falls back to the message instead of failing on a missing reference (SAI2, 10-24)."""
+    from core.native_builder.build_plan import _obj, _state
+
+    state = _state()
+    request = _obj(state.get("request"))
+    providers = request.get("providers") if isinstance(request, dict) else None
+    return {"providers": [p for p in providers or [] if isinstance(p, str)],
+            "need": str(state.get("user_message") or "")}
+
+
 async def _asks(args: dict, need: str) -> list[dict]:
-    """What to look up: the request's providers (P4's `Request.providers`), the build's needs (SAI2-P3's), or, when
-    neither came (a paused run on the old definition, a channel turn), the catalogue's names and the domains the
-    message itself names. A need that names no provider takes one only from a catalogue name in its words."""
+    """What to look up. `named` marks a provider the person named: the request's providers (P4's
+    `Request.providers`), a need's own provider (SAI2-P3's), or a domain written out. Only a named provider can be a
+    verdict of code's. An Apps catalogue name found among a need's or the message's words is not named: Close,
+    Square and Linear are words too (SAI2's probe). With neither providers nor needs (a paused run on the old
+    definition, a channel turn), the message is read for both."""
     from core.builder_connect import _read_options
 
     catalog = (await _read_options()).get("catalog") or []
     asks: list[dict] = []
     for p in args.get("providers") or []:
         if isinstance(p, str) and p.strip():
-            asks.append({"provider": p.strip()[:80]})
+            asks.append({"provider": p.strip()[:80], "named": True})
     for n in args.get("needs") or []:
         if not isinstance(n, dict):
             continue
         ask = {k: str(n[k])[:200] for k in ("tool", "does") if n.get(k)}
         provider = str(n.get("provider") or "").strip()
-        if not provider:
-            said = set(research._words(f"{n.get('tool') or ''} {n.get('does') or ''}".replace("_", " ")))
-            entry = next((e for e in catalog if set(research._words(str(e.get("name") or ""))) <= said
-                          and research._words(str(e.get("name") or ""))), None)
-            provider = str(entry.get("name")) if entry else ""
-        asks.append({"provider": provider[:80], **ask} if provider else ask)
+        if provider:
+            asks.append({"provider": provider[:80], **ask, "named": True})
+            continue
+        matches = _catalogue_words(f"{n.get('tool') or ''} {n.get('does') or ''}".replace("_", " "), catalog)
+        asks.append({"provider": matches[0], **ask, "named": False} if len(matches) == 1 else ask)
     if not asks:
-        asks = _named_in(need, catalog)
+        asks = [{"provider": name, "named": False} for name in _catalogue_words(need, catalog)] + _domains_in(need)
     out, seen = [], set()
     for ask in asks:
         key = research._slug(ask.get("provider") or "") or f"need:{ask.get('tool')}:{ask.get('does')}"
         if key not in seen:
             seen.add(key)
             out.append(ask)
+        elif ask.get("named"):
+            # A name both written out and found in the words is named.
+            next(o for o in out if research._slug(o.get("provider") or "") == key)["named"] = True
     return out
 
 
-def _named_in(message: str, catalog: list[dict]) -> list[dict]:
-    """The providers a message names that code can tell without a model: an Apps catalogue name, in its words, and
-    a domain written out (calendly.com is Calendly)."""
-    words = research._words(message)
-    joined = f" {' '.join(words)} "
-    named = []
+def _catalogue_words(text: str, catalog: list[dict]) -> list[str]:
+    """The Apps catalogue names that appear, word for word, in `text`."""
+    joined = f" {' '.join(research._words(text))} "
+    names = []
     for e in catalog:
-        name = research._words(str(e.get("name") or ""))
-        if name and f" {' '.join(name)} " in joined:
-            named.append({"provider": str(e.get("name"))})
+        words = research._words(str(e.get("name") or ""))
+        if words and f" {' '.join(words)} " in joined:
+            names.append(str(e.get("name")))
+    return names
+
+
+def _domains_in(message: str) -> list[dict]:
+    """The providers a message names by their domain (calendly.com is Calendly): named, by the person."""
+    named = []
     for domain in _DOMAIN.findall(message.lower()):
-        if not research._common_ending(domain):
+        if domain.rsplit(".", 1)[-1] in _FILE_ENDINGS or not research._common_ending(domain):
             continue
         name = research._registrable_name(domain)
         if name:
-            named.append({"provider": name[:1].upper() + name[1:], "domain": research._registrable_domain(domain)})
+            named.append({"provider": name[:1].upper() + name[1:], "domain": research._registrable_domain(domain),
+                          "named": True})
     return named
 
 
+def _an(name: str) -> str:
+    return f"{'An' if name[:1].lower() in 'aeiou' else 'A'} {name} account"
+
+
+def _verified(server: dict) -> bool:
+    """A Registry namespace the Registry verified by DNS before it published (`com.stripe`); a GitHub namespace
+    (`io.github.<user>`) is anyone's who holds that GitHub name (SAI2's probe)."""
+    labels = [x for x in str(server.get("name") or "").split("/", 1)[0].lower().split(".") if x]
+    return len(labels) >= 2 and labels[:2] != ["io", "github"]
+
+
+def _reachable(url: str | None) -> bool:
+    """A remote a person can connect: https, a public host by name, and no `{…}` left to fill (SAI2's probe:
+    `http://10.0.0.1:9/{tenant}/mcp` had counted)."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    if not url or "{" in url or "}" in url:
+        return False
+    parts = urlsplit(url)
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or "." not in host or host.endswith((".local", ".internal", ".localhost", ".lan")):
+        return False
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return False
+
+
 async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
-    """One provider: `{"found": Finding}`, or `{"left": {"provider", "note", "lead"?, "page"?}}`."""
+    """One named provider: `{"found": Finding}`, or `{"left": {"provider", "note", "lead"?, "page"?}, "failed"?}`."""
     from core.builder_connect import _read_options
 
     entry = research.catalog_entry(provider, (await _read_options()).get("catalog") or [])
@@ -148,50 +218,58 @@ async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
         name = str(entry.get("name") or provider)
         return {"found": _finding(
             provider, "catalog_app", f"{name} is in this workspace's Apps catalogue: it connects in a click.",
-            f"A {name} account", own, sorted({research._registrable_domain(research._host(u)) for u in own}),
+            _an(name), own, sorted({research._registrable_domain(research._host(u)) for u in own}),
             app={"slug": str(entry.get("slug") or ""), "name": name})}
 
-    notes, anchors = [], set()
+    notes, anchors, failed = [], set(), False
     servers, error = await research.registry_servers(provider, domain)
     if servers is None:
         notes.append(f"The MCP Registry could not be read ({error}).")
+        failed = True
     else:
-        own = [s for s in servers if s["providers_own"]]
-        reachable = [s for s in own if not s["install_by_hand"]]
-        if reachable:
-            server = reachable[0]
+        own = [s for s in servers if s["providers_own"] and _verified(s)]
+        server = next((s for s in own if _reachable(s.get("remote_url"))), None)
+        if server is not None:
             page = server.get("website") or server.get("repository") or server["remote_url"]
             domains = research._server_domains(server)
             await research._saw_own_server(provider, page, domains)
             return {"found": _finding(
                 provider, "mcp", f"{provider}'s own MCP server is in the MCP Registry ({server['name']}), at "
                                  f"{server['remote_url']}.",
-                f"A {provider} account", [page], sorted(domains))}
-        for server in own:
-            anchors |= research._server_domains(server)
-        notes.append(f"{provider}'s own server is in the MCP Registry but must be installed by hand."
-                     if own else f"The MCP Registry has no server of {provider}'s own.")
+                _an(provider), [page], sorted(domains))}
+        for s in own:
+            anchors |= research._server_domains(s)
+        unverified = [s for s in servers if s["providers_own"] and not _verified(s)]
+        notes.append(f"{provider}'s own server is in the MCP Registry but can't be reached from here." if own else
+                     f"A GitHub account named for {provider} publishes {unverified[0]['name']} in the MCP Registry; "
+                     f"the Registry doesn't check that it is {provider}'s." if unverified else
+                     f"The MCP Registry has no server of {provider}'s own.")
 
-    lead, page, text, said = await _developer_page(provider, anchors, server_module)
-    notes.append(said)
+    record, run = research._record()
+    if record.get("web_down"):
+        notes.append("The web can't be read here right now.")
+        return {"left": {"provider": provider, "note": " ".join(notes)}, "failed": failed}
+    web = await _developer_page(provider, anchors, server_module)
+    notes.append(web["said"])
+    if web.get("down"):
+        record["web_down"] = True
+        await research._keep(run)
     left: dict = {"provider": provider, "note": " ".join(notes)}
-    if page:
+    if web.get("page"):
         # The page read, lead or not: what the research's verdict rests on ("orders are placed by phone"). Its words
         # stay in the research's record, never in the step's output or its history (SAI2-P3): read_web_page hands
-        # them to the Researcher again without reading the page twice.
-        left["page"] = page
-        record, run = research._record()
-        record.setdefault(research.PAGES_KEY, {})[page] = text
+        # them to the Researcher again without reading the page twice, marked as the page's own words.
+        left["page"] = web["page"]
+        record.setdefault(research.PAGES_KEY, {})[web["page"]] = web["text"]
         await research._keep(run)
-    if lead is not None:
-        left["lead"] = lead
-    return {"left": left}
+    if web.get("lead") is not None:
+        left["lead"] = web["lead"]
+    return {"left": left, "failed": failed or bool(web.get("failed"))}
 
 
-async def _developer_page(provider: str, anchors: set[str], server_module: Any
-                          ) -> tuple[dict | None, str, str, str]:
-    """One search for the provider's developer page, and the first result on its own domain, read. `(lead, the page
-    read, its extract, what was found)`; the lead is None when no own page with an API on it was read."""
+async def _developer_page(provider: str, anchors: set[str], server_module: Any) -> dict:
+    """One search for the provider's developer page, and the first result on its own domain, read: `{said, page?,
+    text?, lead?, failed?, down?}`. The lead is there only when an own page with an API on it was read."""
     from urllib.parse import quote_plus
 
     query = quote_plus(f"{provider} API documentation")
@@ -199,30 +277,32 @@ async def _developer_page(provider: str, anchors: set[str], server_module: Any
                                                   "remove_overlays": True})
     if page.get("error"):
         research._searched("failed")
-        return None, "", "", f"The web could not be searched ({page['error'][:120]})."
+        return {"said": f"The web could not be searched ({page['error'][:120]}).", "failed": True,
+                "down": bool(page.get("down"))}
     results = research.result_links(page)
     if not results:
-        research._searched("blocked" if research.search_refused(page) else "empty")
-        return None, "", "", ("The web search was refused as automated." if research.search_refused(page)
-                              else "The web search gave no results.")
+        refused = research.search_refused(page)
+        research._searched("blocked" if refused else "empty")
+        return {"said": "The web search was refused as automated." if refused else "The web search gave no results.",
+                "failed": refused}
     research._searched("results")
     url = next((r["url"] for r in results if r["url"].startswith("https://")
                 and research._providers_own_page(provider, research._host(r["url"]), anchors or None)), None)
     if url is None:
-        return None, "", "", f"No result of the web search is on {provider}'s own site."
+        return {"said": f"No result of the web search is on {provider}'s own site."}
     read = await research._scrape(server_module, {"url": url, "remove_overlays": True})
     if read.get("error"):
-        return None, "", "", f"{provider}'s page {url} could not be read."
+        return {"said": f"{provider}'s page {url} could not be read.", "failed": True, "down": bool(read.get("down"))}
     text = str(read.get("markdown") or "")
     await research._read_host(url)
     extract = research.page_extract(text, research._words(provider))
-    said = set(research._words(text))
-    if "api" not in said or len(said & _API_WORDS) < 2:
-        return None, url, extract, f"{provider}'s own page {url} says nothing of an API."
+    words = set(research._words(text))
+    if "api" not in words or len(words & _API_WORDS) < 2:
+        return {"said": f"{provider}'s own page {url} says nothing of an API.", "page": url, "text": extract}
     own_domains = sorted(anchors | {research._registrable_domain(research._host(url))})
-    return (_finding(provider, "api", f"{provider} has developer docs at {url}; whether its API is open to this "
-                                      "workspace is for the research to read.", "", [url], own_domains),
-            url, extract, f"{provider}'s developer page was read: {url}.")
+    return {"said": f"{provider}'s developer page was read: {url}.", "page": url, "text": extract,
+            "lead": _finding(provider, "api", f"{provider} has developer docs at {url}; whether its API is open to "
+                                              "this workspace is for the research to read.", "", [url], own_domains)}
 
 
 def _finding(provider: str, how: str, detail: str, needs: str, sources: list[str], own_domains: list[str],
@@ -234,3 +314,71 @@ def _finding(provider: str, how: str, detail: str, needs: str, sources: list[str
 
 
 register_builder_tool(SCHEMA, look_up_providers)
+
+
+# ── The research route's end: one card, and the reply in code's words ────────────────────────────────────────────
+
+FINISH_SCHEMA = {"type": "function", "function": {
+    "name": "finish_findings",
+    "description": "(code) The research's findings card and its reply: the Researcher's report as it was, or the "
+                   "look-up's when no model reported.",
+    "parameters": {"type": "object", "properties": {}}}}
+
+
+async def finish_findings(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """The research route's last word (SAI2-P5). A Researcher that reported has had its card put up by
+    `report_findings`: that report passes through as it is, never reported twice (a second report would read a
+    cleared record and call every verdict unclear). Otherwise (everything was found by code, or the Researcher ended
+    without reporting) the look-up's verdicts are the card, with each provider left over `unclear` and why. Either way
+    the reply is written here, from the findings (`said`): the person is never left without an answer (F958's
+    class)."""
+    from core.native_builder.build_plan import _obj, _state
+
+    state = _state()
+    reported = _obj(state.get("findings"))
+    if isinstance(reported, dict) and reported.get("status") == "reported":
+        return {**reported, "said": said(reported)}
+    looked = _obj(state.get("lookup")) or {}
+    goal = str(((looked.get("findings") or {}).get("goal")) or state.get("user_message") or "")[:200]
+    options = []
+    for left in looked.get("left") or []:
+        if not isinstance(left, dict) or not left.get("provider"):
+            continue
+        lead = left.get("lead") or {}
+        options.append({"provider": left["provider"], "how": "unclear",
+                        "detail": str(lead.get("detail") or left.get("note") or "")[:300],
+                        "sources": [left["page"]] if left.get("page") else []})
+    if not options and not looked.get("found"):
+        findings = {"status": "nothing", "goal": goal, "options": []}
+        return {**findings, "said": said(findings)}
+    findings = await research.report_findings({"goal": goal, "options": options}, server_module, events)
+    if findings.get("error"):
+        findings = {"status": "nothing", "goal": goal, "options": []}
+    return {**findings, "said": said(findings)}
+
+
+def said(findings: dict) -> str:
+    """The research's reply, in code's words, from the findings: one line per provider and what comes next. Nothing
+    in it asks for a key or says anything was booked."""
+    options = [o for o in findings.get("options") or [] if isinstance(o, dict)]
+    if not options:
+        return ("I couldn't find who provides this from what I could read. Tell me the service you use, or one "
+                "you'd like to, and I'll look it up.")
+    lines = []
+    for o in options:
+        name, how, detail = f"**{o.get('provider')}**", o.get("how"), str(o.get("detail") or "").strip()
+        head = {"catalog_app": f"{name} is in your Apps catalogue: it connects with a click.",
+                "mcp": f"{name} has its own MCP server.",
+                "api": f"{name} has a public API{' whose calls I read' if o.get('api') else ''}.",
+                "none": f"{name} has no public way in for this."}.get(how, f"{name}: I couldn't confirm a way in.")
+        needs = str(o.get("needs") or "").strip().rstrip(".")
+        lines.append(" ".join(x for x in (head, detail, f"It needs: {needs}." if needs else "") if x))
+    usable = any(o.get("how") in ("catalog_app", "mcp", "api") for o in options)
+    nxt = ("Say \"build it\" and I'll draft a plan for you to approve; anything that books, pays or sends asks you "
+           "first." if usable else
+           "Nothing here can do it for you directly. Say \"build it\" and I'll plan a workflow that finds the options "
+           "and leaves the booking or ordering to you.")
+    return "\n".join(f"- {line}" for line in lines) + "\n\n" + nxt
+
+
+register_builder_tool(FINISH_SCHEMA, finish_findings)
