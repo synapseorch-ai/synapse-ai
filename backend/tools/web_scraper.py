@@ -146,6 +146,21 @@ async def get_crawler() -> AsyncWebCrawler:
     return _crawler
 
 
+async def close_crawler() -> None:
+    """Close the browser, if one was started, with crawl4ai's `close()` — 0.9 has no `stop()`, and calling it killed
+    every shutdown with the browser still up (F1016). Never raises: it runs as the server stops, and a browser that
+    will not close must not be the process's last word. The next call starts a new one."""
+    global _crawler
+    async with _crawler_lock:
+        crawler, _crawler = _crawler, None
+    if crawler is None:
+        return
+    try:
+        await crawler.close()
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        print(f"web_scraper: the browser did not close cleanly: {exc}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # MCP server
 # ---------------------------------------------------------------------------
@@ -914,13 +929,11 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
-    global _crawler
     async with stdio_server() as (read_stream, write_stream):
         try:
             await app.run(read_stream, write_stream, app.create_initialization_options())
         finally:
-            if _crawler is not None:
-                await _crawler.stop()
+            await close_crawler()
 
 
 if __name__ == "__main__":
