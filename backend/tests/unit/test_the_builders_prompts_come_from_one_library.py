@@ -46,7 +46,7 @@ from core.native_builder import prompt_lint, seed
 #: `step_researched_before` goes, unreachable since P4's override sends findings and a yes to the build (F766), 5cbb0a48…;
 #: SAI2-P5: the research route code first, its Researcher finishing on report_findings on what code left (its own
 #: report line; the shared passages unchanged), the quick card step and its passage out; the Researcher looks up the providers it names itself in code
-#: (`look_up_providers`), RECOMPUTED-AT-REBASE-END.
+#: (`look_up_providers`), 0bd14cb9….
 BUNDLE_SHA256 = "5cbb0a4849aac36756d8929e3a2e9e3a83851dbc8b207c3c8dcffa2891b1c693"
 
 
