@@ -37,6 +37,7 @@ logging.getLogger("crawl4ai.async_webcrawler").setLevel(logging.ERROR)
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
+from core import egress_proxy
 from core.egress_guard import BlockedEgress, check_host, check_url
 
 # ---------------------------------------------------------------------------
@@ -112,21 +113,28 @@ _crawler: AsyncWebCrawler | None = None
 _crawler_lock = asyncio.Lock()
 
 
+def browser_config(local_proxy: str | None = None) -> BrowserConfig:
+    """`local_proxy` is Synapse's own egress proxy (`core.egress_proxy`): the browser's whole network goes through
+    it, so what the route guard does not see (a page's WebSockets, its service workers) is refused there."""
+    return BrowserConfig(
+        headless=True,
+        browser_type="chromium",
+        enable_stealth=True,
+        verbose=False,
+        user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        **({"proxy_config": {"server": local_proxy}} if local_proxy else {}),
+    )
+
+
 async def get_crawler() -> AsyncWebCrawler:
     global _crawler
     async with _crawler_lock:
         if _crawler is None:
-            config = BrowserConfig(
-                headless=True,
-                browser_type="chromium",
-                enable_stealth=True,
-                verbose=False,
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-            )
+            config = browser_config((await egress_proxy.shared()).url)
             _crawler = AsyncWebCrawler(config=config)
             _crawler.crawler_strategy.set_hook(
                 "on_page_context_created", _attach_egress_guard
