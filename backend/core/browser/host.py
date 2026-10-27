@@ -155,6 +155,25 @@ class Session:
         self.mcp = await self._stack.enter_async_context(ClientSession(read, write))
         await self.mcp.initialize()
 
+    async def load_login(self, state: dict) -> None:
+        """A saved website login (cookies and localStorage), loaded before the first page."""
+        cookies = [c for c in (state.get("cookies") or []) if isinstance(c, dict)]
+        if cookies:
+            await self.ctx.add_cookies(cookies)
+        stored = {o.get("origin"): [[i.get("name"), i.get("value")] for i in (o.get("localStorage") or [])]
+                  for o in (state.get("origins") or []) if isinstance(o, dict) and o.get("origin")}
+        if stored:
+            await self.ctx.add_init_script(
+                "(() => { const want = " + json.dumps(stored) + "; const items = want[location.origin];"
+                " if (!items) return; try { for (const [k, v] of items) {"
+                " if (localStorage.getItem(k) === null) localStorage.setItem(k, v); } } catch (e) {} })()")
+
+    async def login_state(self) -> dict:
+        try:
+            return await self.ctx.storage_state()
+        except Exception:
+            return {}
+
     async def _devtools_port(self) -> int:
         marker = self.dir / "profile" / "DevToolsActivePort"
         for _ in range(100):
@@ -624,9 +643,14 @@ class Host:
                     wheel="person" if body.get("person_only") else "agent")
         try:
             await s.start(self.pw)
+            if isinstance(body.get("login_state"), dict):
+                await s.load_login(body["login_state"])
         except Exception as exc:
             await s.close()
             return web.json_response({"error": f"the browser did not start: {exc}"}, status=503)
+        if isinstance(body.get("turn"), dict):  # it opens on the person's turn (a saved login that expired)
+            s._turn(str(body["turn"].get("kind") or "asked"), str(body["turn"].get("reason") or ""))
+            s.handover = None
         self.sessions[sid] = s
         return web.json_response({"session_id": sid})
 
@@ -650,9 +674,16 @@ class Host:
     async def close_session(self, request):
         body = await request.json()
         s = self.sessions.pop(body.get("session_id", ""), None)
+        state = None
         if s is not None:
+            if body.get("keep_login"):
+                state = await s.login_state()
             await s.close()
-        return web.json_response({"closed": s is not None, "login_state": None})
+        return web.json_response({"closed": s is not None, "login_state": state})
+
+    async def get_login_state(self, request):
+        s = self._session(request.query.get("session_id", ""))
+        return web.json_response({"login_state": await s.login_state()})
 
     # viewer
     async def frames(self, request):
@@ -740,6 +771,7 @@ def control_app(host: Host) -> web.Application:
     app.router.add_get("/shot", host.get_shot)
     app.router.add_post("/close", host.close_session)
     app.router.add_get("/state", host.get_state)
+    app.router.add_get("/login-state", host.get_login_state)
     return app
 
 

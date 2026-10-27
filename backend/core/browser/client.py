@@ -129,6 +129,8 @@ class BrowserTools:
         self._events: dict[str, list[dict]] = {}
         self._handovers: dict[str, dict] = {}       # owner -> the person's turn the agent must stop for
         self._parked: dict[str, dict] = {}          # owner -> the turn the chat or run is parked on
+        self._expired: dict[str, dict] = {}         # owner -> the saved login that needs the person again
+        self._logins: dict[str, list[str]] = {}     # a "Log in to a site" session -> its sites
         self._tools: list[types.Tool] | None = None
 
     # ── what the engine's MCP paths call ─────────────────────────────────────
@@ -158,6 +160,11 @@ class BrowserTools:
             return _result(refused, error=True)
         try:
             sid = await self._session_for(key)
+            if key in self._expired:  # the saved login ran out: the person logs in again first
+                self._handovers[key] = {"kind": "login_expired", "reason": _EXPIRED, "session_id": sid,
+                                        **self._expired.pop(key)}
+                return _result("The saved login has expired. It is the person's turn in the browser to log in "
+                               "again; stop here, and you will continue when they hand it back.", error=True)
             status, body = await self.host.call("POST", "/tool", json={
                 "session_id": sid, "name": name, "args": arguments or {}})
             if status == 404:  # the session was closed (idle) or the component restarted
@@ -209,20 +216,62 @@ class BrowserTools:
         """The parked turn the person just answered, once."""
         return self._parked.pop(key, None) if key else None
 
+    async def keep_login(self, session_id: str, *, login_ref: str | None, sites: list[str], owner: str) -> str | None:
+        """Keep the session's current login (the person just logged in), under `login_ref` or a new one."""
+        status, body = await self.host.call("GET", "/login-state", params={"session_id": session_id})
+        state = body.get("login_state") if status == 200 else None
+        if not state or not (state.get("cookies") or state.get("origins")):
+            return None
+        from core import website_logins
+        return await website_logins.keep(login_ref, state=state, sites=sites, owner=owner)
+
+    async def open_login_session(self, sites: list[str]) -> str:
+        """"Log in to a site": the person's alone, no agent, the wheel theirs from the start."""
+        key = f"login:{secrets.token_hex(8)}"
+        status, body = await self.host.call("POST", "/session", json={
+            "owner": key, "mode": gate.CO_DRIVE, "person_only": True, "limits": {"actions": 1}})
+        if status != 200 or not body.get("session_id"):
+            raise RuntimeError(body.get("error") or "the browser did not open")
+        sid = body["session_id"]
+        self._sessions[key] = sid
+        self._owners[sid] = key
+        self._logins[sid] = list(sites)
+        self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
+        return sid
+
+    async def finish_login(self, session_id: str, *, keep: bool, owner: str) -> str | None:
+        """End a "Log in to a site" session, keeping its login when the person asked to."""
+        sites = self._logins.pop(session_id, None)
+        key = self._owners.get(session_id)
+        if sites is None or not key:
+            return None
+        ref = await self.keep_login(session_id, login_ref=None, sites=sites, owner=owner) if keep else None
+        await self.close_owner(key)
+        return ref
+
     # ── sessions ─────────────────────────────────────────────────────────────
     async def _session_for(self, key: str) -> str:
         sid = self._sessions.get(key)
         if sid:
             return sid
         chosen = settings.get() or {}
-        status, body = await self.host.call("POST", "/session", json={
-            "owner": key, "mode": chosen.get("mode") or gate.READ_ONLY, "sites": chosen.get("sites") or [],
-            "limits": {"actions": int(chosen.get("action_budget") or 40)}})
+        login_ref = chosen.get("login_ref")
+        state = await _login_state(login_ref) if login_ref else None
+        expired = bool(login_ref) and state is None
+        opening = {"owner": key, "mode": chosen.get("mode") or gate.READ_ONLY, "sites": chosen.get("sites") or [],
+                   "limits": {"actions": int(chosen.get("action_budget") or 40)}}
+        if state:
+            opening["login_state"] = state
+        if expired:
+            opening["turn"] = {"kind": "login_expired", "reason": _EXPIRED}
+        status, body = await self.host.call("POST", "/session", json=opening)
         if status != 200 or not body.get("session_id"):
             raise RuntimeError(body.get("error") or "the browser did not open")
         sid = body["session_id"]
         self._sessions[key] = sid
         self._owners[sid] = key
+        if expired:
+            self._expired[key] = {"login_ref": login_ref, "sites": chosen.get("sites") or []}
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
         return sid
 
@@ -258,6 +307,21 @@ class BrowserTools:
                 await self.host.call("POST", "/close", json={"session_id": sid}, timeout=30)
             except Exception:
                 pass
+
+
+_EXPIRED = "The saved login has expired: log in again, then hand the browser back."
+
+
+async def _login_state(login_ref: str) -> dict | None:
+    """The saved login's session, decrypted, or None once expired, forgotten or never kept."""
+    try:
+        from core import website_logins
+    except ImportError:
+        return None
+    try:
+        return await website_logins.state_for(login_ref)
+    except Exception:
+        return None
 
 
 def _scrub(text: str) -> str:

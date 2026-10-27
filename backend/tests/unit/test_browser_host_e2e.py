@@ -401,3 +401,31 @@ async def test_typing_on_an_unlisted_site_asks_first_and_scope_holds_redirects_t
     off = await _tool(http, control, scoped, "browser_navigate", {"url": f"http://other.localhost:{port}/"})
     assert off["is_error"] and "ERR_BLOCKED_BY_CLIENT" in off["text"]
     assert "other.localhost is not one of this agent's sites" in off["text"]
+
+
+async def test_a_saved_login_reaches_the_site_and_comes_back_at_close(codrive_host):
+    seen = {}
+
+    async def whoami(request):
+        seen["cookie"] = request.headers.get("Cookie", "")
+        return web.Response(content_type="text/html", text="<h1>Account</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", whoami)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    port = tcp._server.sockets[0].getsockname()[1]
+    http, control, _ = codrive_host
+    try:
+        state = {"cookies": [{"name": "sid", "value": "abc123", "domain": "localhost", "path": "/",
+                              "expires": -1, "httpOnly": True, "secure": False, "sameSite": "Lax"}], "origins": []}
+        sid = (await _post(http, control, "/session", {"owner": "run:login", "mode": "read_only",
+                                                       "login_state": state}))["session_id"]
+        await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+        assert "sid=abc123" in seen["cookie"]
+        closed = await _post(http, control, "/close", {"session_id": sid, "keep_login": True})
+        assert any(c["name"] == "sid" and c["value"] == "abc123" for c in closed["login_state"]["cookies"])
+    finally:
+        await runner.cleanup()

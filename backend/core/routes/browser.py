@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse
 
 from core.browser import client as browser_client
@@ -90,6 +91,13 @@ async def _resume(owner: str, said: str, note: str, request: Request) -> dict | 
     parked = browser_client.tools.take_parked(owner)
     if not parked:
         return None
+    if parked.get("kind") == "login_expired" and parked.get("login_ref"):
+        # The person logged in again in their turn: that login is kept under the same ref.
+        try:
+            await browser_client.tools.keep_login(parked["session_id"], login_ref=parked["login_ref"],
+                                                  sites=parked.get("sites") or [], owner=_person())
+        except Exception:
+            pass
     kind, _, ident = owner.partition(":")
     if kind == "run":
         from core.orchestration.answers import answer_paused_run
@@ -130,6 +138,40 @@ async def take(session_id: str, request: Request):
 @router.post("/api/browser/{session_id}/wheel/hand-back")
 async def hand_back(session_id: str, request: Request):
     return await _relay(session_id, "hand-back", request)
+
+
+def _person() -> str:
+    """Who a kept login belongs to: the install's one sign-in, or "you" without one."""
+    from core.config import load_settings
+    return load_settings().get("login_username") or "you"
+
+
+class LoginSession(BaseModel):
+    sites: list[str] = []
+
+
+@router.post("/api/browser/login-sessions")
+async def open_login_session(body: LoginSession):
+    """"Log in to a site" (Website logins): a browser that is the person's alone."""
+    from core.models import AgentBrowser
+    try:
+        sites = AgentBrowser(sites=body.sites).sites
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return {"session_id": await browser_client.tools.open_login_session(sites)}
+
+
+class FinishLogin(BaseModel):
+    keep: bool = True
+
+
+@router.post("/api/browser/{session_id}/finish-login")
+async def finish_login(session_id: str, body: FinishLogin):
+    owner = _owner(session_id)
+    if not owner.startswith("login:"):
+        raise HTTPException(status_code=409, detail="This browser is not a login session.")
+    ref = await browser_client.tools.finish_login(session_id, keep=body.keep, owner=_person())
+    return {"login_ref": ref}
 
 
 @router.post("/api/browser/{session_id}/stop")

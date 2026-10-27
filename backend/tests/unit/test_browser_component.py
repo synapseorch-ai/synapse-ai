@@ -576,3 +576,115 @@ def test_a_run_resumes_the_same_step_with_the_persons_word():
         "Read the page again before you act.\n")
     assert progress["turn"] == 3 and run.status == "running" and not run.waiting_for_human
     assert run.step_history[-1]["status"] == "running"
+
+
+# ── saved website logins (F1102) ─────────────────────────────────────────────
+
+@pytest.fixture
+def logins_store(monkeypatch):
+    """BRW2's `core.website_logins`, stood in by its two calls."""
+    import sys
+    import types as _types
+    kept: dict = {"wl_live": {"cookies": [{"name": "sid", "value": "abc", "domain": "portal.example.com",
+                                           "path": "/"}], "origins": []}}
+    saved: list = []
+
+    async def state_for(ref):
+        return kept.get(ref)
+
+    async def keep(ref, *, state, sites, owner):
+        saved.append((ref, state, sites, owner))
+        return ref or "wl_new"
+
+    module = _types.ModuleType("core.website_logins")
+    module.state_for, module.keep = state_for, keep
+    monkeypatch.setitem(sys.modules, "core.website_logins", module)
+    import core
+    monkeypatch.setattr(core, "website_logins", module, raising=False)
+    return saved
+
+
+async def test_an_agents_saved_login_opens_its_browser_logged_in(logins_store):
+    tools = browser_client.BrowserTools(_FakeHost())
+    token = browser_client.settings.set({"login_ref": "wl_live", "sites": ["portal.example.com"]})
+    try:
+        await _call(tools, "run:r1")
+    finally:
+        browser_client.settings.reset(token)
+    opening = [c[2] for c in tools.host.calls if c[1] == "/session"][0]
+    assert opening["login_state"]["cookies"][0]["name"] == "sid" and "turn" not in opening
+
+
+async def test_an_expired_login_is_the_persons_turn_before_anything_else(logins_store):
+    tools = browser_client.BrowserTools(_FakeHost())
+    token = browser_client.settings.set({"login_ref": "wl_gone", "sites": ["portal.example.com"]})
+    try:
+        result = await _call(tools, "run:r2", "browser_navigate", {"url": "https://portal.example.com"})
+    finally:
+        browser_client.settings.reset(token)
+    opening = [c[2] for c in tools.host.calls if c[1] == "/session"][0]
+    assert opening["turn"]["kind"] == "login_expired" and "login_state" not in opening
+    assert result.isError and "log in again" in result.content[0].text
+    assert not [c for c in tools.host.calls if c[1] == "/tool"], "nothing is done on an expired login"
+    turn = tools.take_handover("run:r2")
+    assert turn["kind"] == "login_expired" and turn["login_ref"] == "wl_gone"
+
+
+async def test_handing_back_after_logging_in_again_keeps_it_under_the_same_ref(client, monkeypatch):
+    from core.orchestration import answers
+    fake = browser_client.BrowserTools(_FakeHost())
+    fake._owners["s5"] = "run:run5"
+    fake._parked["run:run5"] = {"kind": "login_expired", "login_ref": "wl_gone", "sites": ["portal.example.com"],
+                                "session_id": "s5"}
+    kept = []
+
+    async def keep_login(sid, *, login_ref, sites, owner):
+        kept.append((sid, login_ref, sites, owner))
+        return login_ref
+
+    async def viewer(sid, path, body=None):
+        return 200, {"wheel": "agent"}
+
+    async def fake_answer(app_state, run_id, response, **kw):
+        pass
+
+    monkeypatch.setattr(fake, "keep_login", keep_login)
+    monkeypatch.setattr(fake, "viewer", viewer)
+    monkeypatch.setattr(answers, "answer_paused_run", fake_answer)
+    monkeypatch.setattr(browser_client, "tools", fake)
+    resp = await client.post("/api/browser/s5/wheel/hand-back", json={})
+    assert resp.json()["resumed"] == {"kind": "run", "run_id": "run5"}
+    assert kept == [("s5", "wl_gone", ["portal.example.com"], "you")]
+
+
+async def test_log_in_to_a_site_opens_a_browser_that_is_the_persons_alone(client, monkeypatch):
+    fake = browser_client.BrowserTools(_FakeHost())
+    monkeypatch.setattr(browser_client, "tools", fake)
+    resp = await client.post("/api/browser/login-sessions", json={"sites": ["https://Portal.Example.com/login"]})
+    sid = resp.json()["session_id"]
+    opening = [c[2] for c in fake.host.calls if c[1] == "/session"][0]
+    assert opening["person_only"] is True and opening["owner"].startswith("login:")
+    assert fake._logins[sid] == ["portal.example.com"]
+    bad = await client.post("/api/browser/login-sessions", json={"sites": ["localhost"]})
+    assert bad.status_code == 422
+
+
+async def test_finishing_a_login_keeps_it_or_not_and_only_for_a_login_session(client, monkeypatch, logins_store):
+    fake = browser_client.BrowserTools(_FakeHost())
+    monkeypatch.setattr(browser_client, "tools", fake)
+    fake._owners["chat_sid"] = "chat:c"
+    assert (await client.post("/api/browser/chat_sid/finish-login", json={"keep": True})).status_code == 409
+
+    sid = (await client.post("/api/browser/login-sessions", json={"sites": ["portal.example.com"]})).json()["session_id"]
+    original = fake.host.call
+
+    async def call(method, path, *, json=None, params=None, timeout=120):
+        if path == "/login-state":
+            return 200, {"login_state": {"cookies": [{"name": "sid", "value": "new"}], "origins": []}}
+        return await original(method, path, json=json, params=params, timeout=timeout)
+
+    fake.host.call = call
+    resp = await client.post(f"/api/browser/{sid}/finish-login", json={"keep": True})
+    assert resp.json() == {"login_ref": "wl_new"}
+    assert logins_store[-1][2:] == (["portal.example.com"], "you")
+    assert fake.owner_of(sid) is None, "the login session is closed"
