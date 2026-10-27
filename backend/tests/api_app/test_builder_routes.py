@@ -251,8 +251,9 @@ class TestSeeHowImBuilt:
         # 66 since P3c: step_researched_before out, which nothing led to after the front door's override (F766).
         # 69 with the research route code first (SAI2-P5): the look-up, its route, the Researcher on what is left, the
         # card in code and the reply in code's words, from the Researcher and its quick card step;
-        # 72 with the build's look-up code first (P3c's splice): the look-up, its route, and code's finals reported.
-        assert legend["step_count"] == 72
+        # 72 with the build's look-up code first (P3c's splice): the look-up, its route, and code's finals reported;
+        # 73 with the question that says what still can't be built instead of the same plan again (F1121).
+        assert legend["step_count"] == 73
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
@@ -262,8 +263,8 @@ class TestSeeHowImBuilt:
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2); the wait for a made
-        # tool's connection is the fifth (P3b, F946).
-        assert len(legend["human_gates"]) == 5
+        # tool's connection is the fifth (P3b, F946); the line on what still can't be built, the sixth (F1121).
+        assert len(legend["human_gates"]) == 6
         # No evaluator is left: the router is a typed call, and every other branch reads state in code.
         assert {"tool", "switch", "agent", "human", "print"} <= set(legend["step_types"])
         assert "evaluator" not in legend["step_types"]

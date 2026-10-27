@@ -52,8 +52,9 @@ from core.native_builder import prompt_lint, seed
 #: go-ahead after findings is shown to the planner as their goal (`plan_context.request`), 00723c8a…; the P5 gate:
 #: the research route's Researcher holds only the web, the look-up and its report (its catalogue and Registry steps in
 #: code), and the by-hand steps are a passage of the build's researcher's own (`research_by_hand`, its prompt
-#: unchanged), 1d2a272d….
-BUNDLE_SHA256 = "1d2a272d5d5d6496c7a6e8739a48a2a54f572f29e880aae7b2f1d6bbb4b3c0ad"
+#: unchanged), 1d2a272d…; with F1121's question on what still can't be built (`step_plan_same`, and the `same` and
+#: `no_tool` cases that reach it), 90b30a42….
+BUNDLE_SHA256 = "90b30a42c8a0785c50293e8ee1c600c53c40d07b2ef16ae245e3ac587baa64f4"
 
 
 def _sha(definitions) -> str:

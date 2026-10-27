@@ -946,7 +946,8 @@
                 "research": "step_plan_lookup",
                 "said": "step_plan_said",
                 "error": "step_build_failed",
-                "prompts": "step_agent_prompts"
+                "prompts": "step_agent_prompts",
+                "same": "step_plan_same"
             },
             "switch_default_step_id": "step_build_failed"
         },
@@ -1116,7 +1117,8 @@
                 "stronger": "step_check_plan",
                 "without": "step_check_plan",
                 "connected": "step_plan_context",
-                "revise": "step_plan_context"
+                "revise": "step_plan_context",
+                "no_tool": "step_plan_same"
             },
             "switch_default_step_id": "step_plan_context",
             "on_exhausted_step_id": "step_plan_rounds"
@@ -1619,6 +1621,45 @@
             "max_iterations": 5,
             "position_x": 900,
             "position_y": 250
+        },
+        {
+            "id": "step_plan_same",
+            "name": "Say What Still Can't Be Built",
+            "type": "human",
+            "agent_id": null,
+            "prompt_template": null,
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": "{state.plan_checked.same_say}",
+            "human_fields": [
+                {
+                    "name": "feedback",
+                    "type": "textarea",
+                    "label": "Approve or describe changes"
+                }
+            ],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "input_keys": [
+                "plan_answer"
+            ],
+            "output_key": "review_feedback",
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 3600,
+            "allowed_tools": null,
+            "next_step_id": "step_plan_answer",
+            "max_iterations": 5,
+            "position_x": 1500,
+            "position_y": -300,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_human_review",

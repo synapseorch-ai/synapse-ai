@@ -153,9 +153,11 @@ async def test_an_api_only_provider_has_no_way_in_yet_so_build_it_is_never_offer
             "tool": "send_mailchimp_campaign"}
     out, events = await _check(run, {"finish": "submit_plan", **_plan(send)})
     assert out["outcome"] == "review" and "build" not in out["offers"]
-    # A lead (P3b's hand-off, A6): its calls are not read yet, so "Find who can" reads them; Build it waits.
-    assert "without:send_mailchimp_campaign" in out["offers"] and "find" in out["offers"]
-    assert "public API" in out["say"] and not [e for e in events if e.get("type") == "connection_needed"]
+    # An API the research read and could make no tool from (F1121, replacing P3b's "Find who can" here: another look
+    # read the same pages, and bld-01/02/07 went round): said plainly, with an MCP server or "build without it".
+    assert "without:send_mailchimp_campaign" in out["offers"] and "find" not in out["offers"]
+    assert "Mailchimp has an API, but I can't make a tool for it yet" in out["say"]
+    assert not [e for e in events if e.get("type") == "connection_needed"]
 
 
 async def test_an_app_in_the_catalog_is_connected_after_the_yes_never_beside_the_plan(client):
@@ -688,7 +690,9 @@ async def test_an_api_lead_is_no_connection_yet(client):
     out, _ = await _check(run, {"finish": "submit_plan", **_plan(SEND)})
     [tool] = out["plan"]["tools"]
     assert (tool["status"], tool["via"]) == ("found", "none")
-    assert out["plan"]["connections_needed"] == [] and "find" in out["offers"]
+    # F1121: no Connect card and no "Find who can" for it; the plain line and "build without it" instead.
+    assert out["plan"]["connections_needed"] == [] and "find" not in out["offers"]
+    assert out["no_tool"] == ["send_mailchimp_campaign"]
 
 
 async def test_a_plan_tool_is_matched_to_exactly_one_endpoint_of_a_read_api(client):

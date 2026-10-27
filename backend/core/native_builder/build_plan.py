@@ -883,6 +883,19 @@ def _misnamed(plan: O.Plan, server_module: Any, ws: Workspace, state: dict) -> d
     return out
 
 
+#: An API whose only way in is a person's OAuth sign-in (Gmail, Google Calendar): a token pasted on a card expires
+#: within the hour, so no tool is made from its spec, however well it reads (F1121). A key it also takes is a way in.
+_OAUTH = re.compile(r"\boauth\b|\bconsent screen\b", re.IGNORECASE)
+_A_KEY = re.compile(r"\b(?:api[ -]?(?:key|token)s?|personal access tokens?|secret keys?|private app (?:token|key)s?)\b",
+                    re.IGNORECASE)
+
+
+def _signs_in_only(option: dict) -> bool:
+    """Whether an option's own words say its API takes an OAuth sign-in and no key (F1121)."""
+    said = f"{option.get('needs') or ''}\n{option.get('detail') or ''}"
+    return bool(_OAUTH.search(said)) and not _A_KEY.search(said)
+
+
 def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> dict[str, O.ToolStatus]:
     """What the lookup found for each tool the Plan names, by the provider's name in the tool's own name or in the
     words of the steps and agents that use it (F763's match, on the Plan's own fields)."""
@@ -900,6 +913,8 @@ def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> 
         for option in options:
             provider, how = str(option.get("provider") or ""), option.get("how")
             spec = option.get("api") if isinstance(option.get("api"), dict) else None
+            if spec is not None and how == "api" and _signs_in_only(option):
+                spec = None  # F1121: no tool from a spec whose key is a sign-in; the card says so plainly
             # A7: a read API's call is named exactly, by its endpoint's tool; the status carries that one endpoint.
             endpoint = next((e for e in (spec or {}).get("endpoints") or []
                              if e.get("tool") == (renamed or {}).get(name, name)), None)
@@ -1137,6 +1152,17 @@ def _app_for(provider: str, catalog: list[dict]) -> dict | None:
     return next((e for e in catalog if words and words <= set(_words(f"{e.get('name')} {e.get('slug')}"))), None)
 
 
+#: The lead-in when a reply leaves the plan as the card above shows it (F1121).
+SAME = "The plan above is the same."
+
+
+def no_tool_line(provider: str, names: list[str]) -> str:
+    """The one plain line for an API the build can't make a tool for here yet (F1121, SAI2's words)."""
+    tools = " and ".join(f"`{n}`" for n in names)
+    return (f"I can't build {tools} here yet: {provider} has an API, but I can't make a tool for it yet. Add an MCP "
+            "server for it on the MCP servers screen and ask again, or say \"build without it\".")
+
+
 async def check_build(args: dict, server_module: Any, events: list[dict]) -> dict:
     """See the module's docstring. `draft` is the planner's finish (E2's object); everything else is the run's."""
     from core.builder_connect import _read_options, prepare_connection
@@ -1233,7 +1259,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
-    no_way, connect, said, leads, makes, later, after_yes = [], [], [], [], [], [], []
+    no_way, connect, said, makes, later, after_yes = [], [], [], [], [], []
+    no_tool: dict[str, list[str]] = {}
     for t in plan.tools:
         if t.status == "missing" and t.provider:
             # The research's verdict, with why (A6): no way in that it could find.
@@ -1246,11 +1273,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 ", and the lookup found nobody who does" if looked else "")
                 + ". Connect an app or service that provides it, or build without it.")
         elif t.status == "found" and t.via == "none":
-            # A lead (A6): an API whose calls the research has not read yet; "Find who can" reads them.
+            # An API the research read and could make no tool from: no spec it could use, an OAuth sign-in, a token
+            # in the URL's path (F1121, Gmail, Calendar, Telegram's Bot API). Said once, by provider, below.
             no_way.append(t.name)
-            leads.append(t.name)
-            said.append(f"`{t.name}`: {t.provider} has a public API, but I haven't read how to call it yet: find "
-                        "who can, to read its docs, or build without it.")
+            no_tool.setdefault(t.provider or t.name, []).append(t.name)
         elif t.status == "found" and t.via == "http_tool" and not MAKES_HTTP_TOOLS:
             no_way.append(t.name)
             said.append(f"`{t.name}`: {t.provider} has a public API, but I can't make a tool for it here yet: build "
@@ -1270,6 +1296,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             else:
                 after_yes.append(f"`{t.name}`: after your yes, I'll ask you to connect {t.provider}'s own MCP "
                                  "server, under Apps and MCP servers.")
+    said += [no_tool_line(provider, names) for provider, names in no_tool.items()]
     if found.errors:
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]
@@ -1294,7 +1321,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                and (n in lifts or n not in gated)]
     # A stronger model where the planner said it helps, at its price: the person's choice, never made for them (F966).
     offers += [f"stronger:{n}" for n, p in plan.models.items() if p.stronger]
-    if no_way and (not looked or leads or any(t.status == "missing" and t.provider for t in plan.tools)):
+    # Not for an API the research read and could make no tool from (F1121): another look reads the same pages.
+    if no_way and (not looked or any(t.status == "missing" and t.provider for t in plan.tools)):
         offers.append("find")
     offers += ["change", "stop"]
 
@@ -1331,8 +1359,14 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
            "research": prior.get("research") or [], "notes": board_notes, "changes": changes,
            "after_yes": after_yes,
            # The review's lead-in follows what the card offers: no "approve to build it" where it can't be built.
-           "lead": LEAD_BUILD if buildable else LEAD_NOT_YET}
+           "lead": LEAD_BUILD if buildable else LEAD_NOT_YET,
+           "no_tool": [n for names in no_tool.values() for n in names],
+           "same_say": f"{SAME} {' '.join(said)}".strip()}
     out["digest"] = digest(reviewed_of(out))
+    if not buildable and prior.get("outcome") in ("review", "same") and prior.get("digest") == out["digest"]:
+        # The same plan as the card above, and still not buildable (F1121): what stands in the way, at its own
+        # question, never the plan drawn again (bld-01/02/07 went round until "we went back and forth").
+        out["outcome"], out["review"] = "same", out["same_say"]
     await _card(out)
     return out
 
@@ -1357,7 +1391,9 @@ async def _card(checked: dict) -> None:
 
 # ── a review answer that is not a yes ─────────────────────────────────────────────────────────────────────────────
 
-_WITHOUT = re.compile(r"^\s*build\s+(?:it\s+)?without\s+(?P<what>.+?)\s*[.!]?\s*$", re.I)
+#: A short lead-in before it ("ok, build without them", "please build without Telegram") is still the answer (F1121).
+_WITHOUT = re.compile(r"^\s*(?:(?:ok|okay|yes|yeah|sure|fine|alright|then|please|just)[,.!]?\s+)*"
+                      r"build\s+(?:it\s+)?without\s+(?P<what>.+?)\s*[.!]?\s*$", re.I)
 #: The card's "Let it act without asking" (`plan.ts` `aloneWords`): the person's own act, never the planner's.
 _ALONE = re.compile(r"^\s*let\s+(?P<what>.+?)\s+act\s+without\s+asking\s*[.!]?\s*$", re.I)
 #: The Connect card's own words when it is done (`onConnected`, both panels): "Connected X.", "Saved the H for T.",
@@ -1391,17 +1427,69 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
                   if o.startswith("stronger:") and o.split(":", 1)[1].lower() == named]
         if picked:
             return {"outcome": "stronger", "stronger": picked}
+    checked = checked_in(state)
+    no_tool = [str(n) for n in checked.get("no_tool") or []]
+    from core.native_builder.review import is_yes
+
+    if no_tool and "build" not in (checked.get("offers") or []) and is_yes(answer):
+        # A yes to a plan that can't be built: what stands in the way, again (F1121). It never reaches the approval
+        # from here: `step_plan_same` answers into this step, past no check of the plan (F778's binding).
+        return await _no_tool_unless_here(no_tool, checked, server_module)
     m = _WITHOUT.match(answer)
     if m:
-        tools = (checked_in(state).get("plan") or {}).get("tools") or []
-        asked = [w.strip(" `'\"").lower() for w in re.split(r",|\s+and\s+", m.group("what")) if w.strip(" `'\"")]
+        tools = (checked.get("plan") or {}).get("tools") or []
+        asked = [w.strip(" `'\".").lower() for w in re.split(r",|\s+and\s+", m.group("what")) if w.strip(" `'\".")]
+        if no_tool and set(asked) <= _THOSE:
+            # "Build without it", as the line about what the build can't make says it (F1121).
+            return {"outcome": "without", "without": no_tool}
         offered = checked_in(state).get("offers") or []
         # A tool with no way in, or one a policy blocks (offered as "Build without X", F964).
         picked = [t["name"] for t in tools if (t.get("status") != "present" or f"without:{t['name']}" in offered)
                   and (t["name"].lower() in asked or str(t.get("provider") or "").lower() in asked)]
         if picked:
             return {"outcome": "without", "without": picked}
+    if no_tool and _ADD_IT.search(answer) and _names_one(answer, no_tool, checked):
+        # Asked to add an integration the build can't make (bld-01/02/07's every round): the line again, at its own
+        # question, with no planner call and no plan drawn again (F1121, P5's read).
+        return await _no_tool_unless_here(no_tool, checked, server_module)
     return {"outcome": "revise"}
+
+
+async def _no_tool_unless_here(no_tool: list[str], checked: dict, server_module: Any) -> dict:
+    """The line again, unless one of those providers is here now (SAI2's review of F1121): the line says to add an MCP
+    server and ask again, so what the workspace provides is read again first (a server named for the provider, or
+    tools named for it), and one now here is a re-plan on its real tools, as the Connect card's "Connected …" is."""
+    from core.native_builder.build_save import _provider_tools, _servers_of
+    from core.store.resources import load_tools
+
+    tools = {t["name"]: t for t in (checked.get("plan") or {}).get("tools") or [] if isinstance(t, dict)}
+    servers = _servers_of(server_module)
+    current = {t.get("name"): t for t in await load_tools()}
+    for name in no_tool:
+        provider = str((tools.get(name) or {}).get("provider") or name)
+        if _provider_tools(provider, servers, current):
+            return {"outcome": "connected"}
+    return {"outcome": "no_tool"}
+
+
+#: What "build without it" names: the tools the line about what can't be made named (F1121).
+_THOSE = frozenset({"it", "them", "that", "those", "this", "these", "that one", "those ones"})
+#: An ask to add, connect or set up an integration (bld-07: "I'll need the Telegram bot token … can be configured").
+_ADD_IT = re.compile(r"\b(?:add|connect|set ?up|install|enable|integrate|hook (?:it )?up|configur\w*|link)\b",
+                     re.IGNORECASE)
+
+
+def _names_one(answer: str, no_tool: list[str], checked: dict) -> bool:
+    """Whether `answer` names one of the tools the build can't make, or its provider."""
+    from core.builder_research import _words
+
+    said = set(_words(answer.replace("_", " ")))
+    tools = {t["name"]: t for t in (checked.get("plan") or {}).get("tools") or [] if isinstance(t, dict)}
+    for name in no_tool:
+        provider = str((tools.get(name) or {}).get("provider") or "")
+        if set(_words(name.replace("_", " "))) <= said or (provider and set(_words(provider)) <= said):
+            return True
+    return False
 
 
 register_builder_tool({"type": "function", "function": {
