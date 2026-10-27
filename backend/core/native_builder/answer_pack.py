@@ -4,7 +4,8 @@
 on `request.needs`, which classify set and code checked (F979):
 
 * every pack: the workspace's name and its own description (or that it has none, so the reply never guesses the
-  business), the asker's name and role, what the product can do, and what the last turn did;
+  business), the asker's name and role, the reply's language and that it is written to them (F986), what the product
+  can do, and what the last turn did;
 * **help:** the product's help hits, found in code (`builder_help.search`; no quick call);
 * **workspace:** the acts and changes this asker's role may ask for, and only those, plus the things the message
   names, with their ids.
@@ -35,6 +36,11 @@ _ACT_ROLES = {"answer_run": Role.APPROVER}
 _TARGET_WORDS = {"knowledge_base": "knowledge base", "approval": "tool call that waits"}
 
 _NOT_RECORDED = "(not recorded"
+#: Classify's `language` (an ISO 639-1 code, F979) by name: the reply's language is a fact code gives the answer (F986).
+LANGUAGES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "it": "Italian", "pt": "Portuguese",
+             "nl": "Dutch", "hi": "Hindi", "bn": "Bengali", "ta": "Tamil", "te": "Telugu", "mr": "Marathi",
+             "ur": "Urdu", "ar": "Arabic", "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "ru": "Russian",
+             "tr": "Turkish", "pl": "Polish", "id": "Indonesian", "vi": "Vietnamese", "th": "Thai"}
 
 
 def _article(word: str) -> str:
@@ -84,6 +90,15 @@ def _may_line(role: Role) -> str:
             "can.")
 
 
+def _reply_line(language: str | None) -> str:
+    """How the reply is written: in the message's language, named when classify read it (lang-03 came back in English
+    after two Spanish turns), and to the person, never about them (it opened "The user asked…")."""
+    name = LANGUAGES.get(str(language or "").split("-")[0].strip().lower())
+    where = f"Reply in {name}, the language this message is written in" if name else \
+        "Reply in the language this message is written in"
+    return f'{where}. Write to the person who asked, as "you"; never call them "the user".'
+
+
 def describe_workspace(name: str, profile: str) -> str:
     """The workspace in one line: its name and its own description; empty when neither is recorded."""
     profile = "" if not profile or profile.strip().startswith(_NOT_RECORDED) else profile.strip()
@@ -120,6 +135,7 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
     who = f"{asker_name}, " if asker_name else ""
     parts.append(f"Who is asking: {who}{_article(asker_role.label)} {asker_role.label} in this workspace. "
                  + _may_line(asker_role))
+    parts.append(_reply_line(routed.get("language")))
     if last:
         parts.append(f"What the last turn did: {last}")
     if connect:

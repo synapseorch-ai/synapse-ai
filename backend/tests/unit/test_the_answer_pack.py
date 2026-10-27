@@ -67,6 +67,30 @@ class TestEveryPackSaysWhoAndWhere:
         assert "Turned off Nightly invoices." in _pack(last="Turned off Nightly invoices.")
 
 
+class TestEveryPackSaysHowToReply:
+    """F986 (lang-03, SAI2's re-read): a Spanish ask whose own words read like the builder's ("¿Quieres que te
+    muestre…?") got an English reply about "the user". Classify already wrote the language; code now puts it in every
+    pack as a fact, with who the reply is written to."""
+
+    @pytest.mark.parametrize("code,name", [("es", "Spanish"), ("hi", "Hindi"), ("en", "English"), ("ES", "Spanish"),
+                                           ("pt-BR", "Portuguese")])
+    @pytest.mark.parametrize("needs", ["none", "help", "workspace"])
+    def test_the_language_classify_read_is_named(self, code, name, needs):
+        pack = _pack(needs, routed={**ROUTED, "needs": needs, "language": code})
+        assert f"Reply in {name}, the language this message is written in" in pack
+
+    @pytest.mark.parametrize("code", [None, "", "xx"])
+    def test_an_unknown_language_is_still_the_messages_own(self, code):
+        pack = _pack(routed={**ROUTED, "language": code})
+        assert "Reply in the language this message is written in" in pack
+        assert "Reply in English" not in pack
+
+    @pytest.mark.parametrize("needs", ["none", "help", "workspace"])
+    def test_the_reply_is_written_to_the_person(self, needs):
+        pack = _pack(needs)
+        assert 'Write to the person who asked, as "you"' in pack and '"the user"' in pack
+
+
 class TestHelp:
     def test_help_hits_are_in_the_pack(self):
         hits = [{"title": "Call the API", "summary": "Use an API key.", "steps": ["Open Settings → API keys"],
