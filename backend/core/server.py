@@ -104,6 +104,16 @@ from core.browser_automation import gated
 from core.tools_registry import ALL_NATIVE_TOOLS
 TOOLS_LIST = dict(ALL_NATIVE_TOOLS)
 
+def _native_tool_args(name: str) -> list[str]:
+    """What a native tool's server is started with beyond its script. The scraper saves screenshots in its own
+    folder in the vault and nowhere else (F1066)."""
+    if name == "web_scraper":
+        from core.vault import _vault_root
+
+        return ["--output-dir", str(_vault_root() / "tool_outputs" / "screenshots")]
+    return []
+
+
 async def _filesystem_server_spec() -> dict:
     """The Filesystem MCP server, rooted where agents may read.
 
@@ -600,7 +610,7 @@ async def lifespan(app: FastAPI):
 
             server_params = StdioServerParameters(
                 command=sys.executable,
-                args=[script_path],
+                args=[script_path, *_native_tool_args(agent_name)],
                 env=env
             )
 
