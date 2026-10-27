@@ -235,6 +235,8 @@ class Examined:
     blocks: dict[str, str] = field(default_factory=dict)
     #: What code changed in the plan and the card says (F944: a tool name already taken, made as `_2`).
     notes: list[str] = field(default_factory=list)
+    #: Names nothing provides that code can say what they are instead (F950, F1043): never researched.
+    misnamed: list[str] = field(default_factory=list)
 
 
 def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
@@ -348,6 +350,10 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
     plan, renamed, room_notes = await _make_room(plan, state)
     filled = await O.fill(plan, server_module, found=_found(plan, state, renamed), agents=ws.agents)
+    misnamed = _misnamed(filled, server_module, ws, state)
+    if misnamed:
+        # What it is instead, the planner's to fix, before any lookup or card (F950, F1043).
+        return Examined(filled, list(misnamed.values()), missing=list(filled.missing), misnamed=list(misnamed))
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks=blocked(filled, state), notes=room_notes)
@@ -613,6 +619,85 @@ async def _make_room(plan: O.Plan, state: dict) -> tuple[O.Plan, dict[str, str],
     notes = [f"`{old}` is already a tool here, from somewhere else, so this build makes its own as `{new}` and leaves "
              "that one as it is." for old, new in renames.items()]
     return out, {new: old for old, new in renames.items()}, notes
+
+
+#: A model's own work, written as a tool name (F1043 b): what an agent or an llm step does with words.
+_MODEL_WORK = frozenset({
+    "summarise", "summarize", "summary", "summaries", "summarising", "summarizing", "summarisation", "summarization",
+    "analyse", "analyze", "analysis", "analysing", "analyzing", "classify", "classification", "categorise",
+    "categorize", "categorisation", "categorization", "sentiment", "generate", "generation", "write", "draft",
+    "compose", "rewrite", "translate", "translation", "reason", "reasoning", "decide", "decision", "judge", "evaluate",
+    "evaluation", "interpret", "understand", "compare", "comparison", "nlp", "natural", "language", "processing", "llm",
+    "think"})
+#: Keeping a step's result, written as a tool name: a step's output is already kept in the run's state.
+_KEEP = frozenset({"store", "save", "keep", "remember", "persist", "record"})
+#: Words that say nothing of where: a name made only of these and the two sets above names no service.
+_FILLER = frozenset({"text", "data", "result", "results", "output", "outputs", "content", "changes", "change", "diff",
+                     "info", "information", "report", "the", "a", "an", "of", "to", "and", "for", "with", "from", "it",
+                     "this", "that", "new", "model", "step", "what", "changed"})
+#: A scraping job's own words (F950), and the built-in scraper's tools that do it.
+_SCRAPE_JOB = frozenset({"scrape", "scraper", "scraping", "crawl", "crawler", "crawling", "webpage", "website",
+                         "html", "browse", "browser"})
+_SCRAPE_WORDS = _SCRAPE_JOB | {"fetch", "web", "page", "pages", "site", "url", "read", "extract"}
+_BUILT_IN_SCRAPE = ("scrape_url", "scrape_structured", "crawl_multiple", "search_page", "extract_links")
+#: What a request may need beyond a built-in scraper (SAI2's change 3: a code fact, never a model's judgement): each
+#: word, when the request says it and no built-in's own description does, lets another service be looked up.
+SCRAPE_BEYOND = {"proxy": ("proxy", "proxies"), "javascript": ("javascript", "js"), "rendering": ("rendering",),
+                 "thousands": ("thousands", "000")}
+
+
+def model_work(name: str) -> bool:
+    """Whether a tool name says only a model's own work, or keeping a result (F1043 b): `store_result`,
+    `natural_language_processing`, `summarize_text`; never a name that says where (`save_to_google_sheet`)."""
+    words = set(re.findall(r"[a-z]+", name.lower()))
+    return bool(words) and words <= (_MODEL_WORK | _KEEP | _FILLER) and bool(words & (_MODEL_WORK | _KEEP))
+
+
+def _servers(server_module: Any) -> dict[str, list[str]]:
+    """Each tool server's name and its tools, from the router's `server__tool` keys."""
+    router = getattr(server_module, "tool_router", None) or {}
+    out: dict[str, list[str]] = {}
+    for key in list(dict.keys(router)) if isinstance(router, dict) else []:
+        server, sep, tool = str(key).partition("__")
+        if sep and tool:
+            out.setdefault(server.lower(), []).append(tool)
+    return out
+
+
+def _misnamed(plan: O.Plan, server_module: Any, ws: Workspace, state: dict) -> dict[str, str]:
+    """Each name nothing provides that code can say what it is instead, and what to write (F950, F1043): a tool
+    server's name, a model's own work, or a job the built-in scraper does under a service the person never named.
+    Research runs only for what is left: a named service, or a real gap."""
+    servers = _servers(server_module)
+    here = {t["name"] for t in ws.tools}
+    described = " ".join(t.get("does") or "" for t in ws.tools if t["name"] in _BUILT_IN_SCRAPE).lower()
+    said = set(re.findall(r"[a-z0-9]+", " ".join(str(state.get(k) or "") for k in ("user_message", "chat_history"))
+                          .lower()))
+    out: dict[str, str] = {}
+    for t in plan.tools:
+        if t.status != "missing":
+            continue
+        name = t.name
+        words = set(re.findall(r"[a-z0-9]+", name.lower()))
+        if name.lower() in servers:
+            tools = sorted(servers[name.lower()])
+            out[name] = (f"`{name}` is a tool server, not a tool; its tools are "
+                         + ", ".join(f"`{x}`" for x in tools[:12]) + ": name the one this step uses")
+        elif model_work(name):
+            out[name] = (f"`{name}` is a model's own work, not a tool: write it as an `agent` or `llm` step; a step's "
+                         "output is kept in the run's state, so nothing stores it")
+        elif words & _SCRAPE_JOB and (built := [b for b in _BUILT_IN_SCRAPE if b in here]):
+            others = words - _SCRAPE_WORDS - _FILLER - _MODEL_WORK - _KEEP
+            beyond = [need for need, says in SCRAPE_BEYOND.items()
+                      if set(says) & said and not any(w in described for w in says)]
+            if not (others & said) and not beyond:
+                # Built-in always, unless named (Naveen, 10-24): another service only when the person named it.
+                out[name] = (f"`{name}`: this workspace's own `{built[0]}` does that, built in (also "
+                             + ", ".join(f"`{b}`" for b in built[1:]) + "); use it. Another service only when the "
+                             "person names it") if len(built) > 1 else (
+                    f"`{name}`: this workspace's own `{built[0]}` does that, built in; use it. Another service only "
+                    "when the person names it")
+    return out
 
 
 def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> dict[str, O.ToolStatus]:
@@ -939,8 +1024,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                    for name in named_boards]
     findings = _obj(state.get(FINDINGS_KEY))
     looked = isinstance(findings, dict) and bool(findings.get("options"))
-    if plan.missing and not looked and not prior.get("research"):
-        return {**base, "outcome": "research", "research": list(plan.missing), "plan": plan.model_dump()}
+    # What code could name instead is the planner's, never research's (F950, F1043).
+    to_research = [t for t in plan.missing if t not in found.misnamed]
+    if to_research and not looked and not prior.get("research"):
+        return {**base, "outcome": "research", "research": to_research, "plan": plan.model_dump()}
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
