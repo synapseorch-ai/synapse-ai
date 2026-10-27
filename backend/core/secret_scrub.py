@@ -152,3 +152,67 @@ def reveal_secrets(text: str, values: dict[str, Any]) -> str:
         if isinstance(value, str):
             text = text.replace(secret_mark(name), value)
     return text
+
+
+# ── a secret asked for (F1093) ────────────────────────────────────────────────────────────────────────────────────
+# What Synapse AI says to the person never asks for a key, a token or a password: one typed in chat is kept with the
+# chat (chg-09). A connection comes through a Connect card, a key through Settings → Vault. H45's res-05 (P5's measure,
+# 10-27): the build planner's open question read "you'll need to provide your Stripe Secret API Key (starts with
+# sk_test_ or sk_live_) and your SendGrid API Key (starts with SG.)", and nothing checked the plan's own words.
+
+#: A secret named: a key, a token, a password, a PIN or a code, or a login, as something of theirs or a service's.
+#: Not a count of tokens, a password reset or a licence to buy (SAI2's review, 17). A question naming one asks for it.
+SECRET_NAMED = re.compile(
+    r"(?i)\b(?:(?:api|access|private|secret|signing)[\s_-]?keys?|(?:api|access|auth|bearer|refresh|secret|personal)"
+    r"[\s_-]?tokens?|client[\s_-]?secret|credentials?|bearer|pass(?:word|wd|code|phrase)s?(?!\s+reset)|"
+    r"(?:2fa|mfa|otp|one[\s-]time|verification|security|access)\s+codes?|(?-i:\bPIN\b)|pin\s+(?:code|number)s?|"
+    r"(?:log|sign)[\s-]?in(?:\s+details)?\s+(?:for|to)\b|"
+    r"(?:your|their|its|the)\s+(?:[\w.-]+\s+){0,2}(?:keys?|tokens?|logins?|secrets?)\b(?!\s+(?:dates?|points?|metrics?|"
+    r"words?|people|accounts?|questions?|steps?|results?)))")
+#: Prose that asks someone for something: the person addressed ("you'll need to provide", "once you have", "please
+#: paste") or told to be asked ("ask the user for"), then a verb of handing over; or what Synapse AI needs ("I'll need"). "Reminds the team to rotate API keys"
+#: and "the key is kept in the Vault" ask for nothing.
+_ASKING = re.compile(
+    r"(?i)\b(?:(?:you(?:'ll|'d|'re| will| would| can| could| should| must| need)?|please|"
+    r"(?:ask|prompt|request)(?:s|ed|ing)?\s+(?:the\s+)?(?:user|person|customer|client|caller|them|him|her)s?)"
+    r"\b[^.?!\n]{0,60}?\b(?:provide|give|share|send|paste|enter|type|supply|tell|have|ready|for)\b|"
+    r"(?:i|we)(?:'ll| will| would)?\s+need\b)")
+_SENTENCES = re.compile(r"(?<=[.?!])\s+|\n+")
+
+#: Code's line in place of what asked (the manager's net, 10-27).
+NEVER_IN_CHAT = ("A key, a token or a password never goes in this chat: connect the service on its Connect card, or "
+                 "add the key in Settings → Vault, where it is kept encrypted.")
+
+
+def _asks(sentence: str) -> bool:
+    asking = _ASKING.search(sentence)
+    return asking is not None and SECRET_NAMED.search(sentence, asking.start()) is not None
+
+
+def asks_for_a_secret(text: str, *, strict: bool = True) -> bool:
+    """Whether `text` asks the person for a key, a token or a password. `strict`, for a question (or a `cannot`,
+    which is said to the person as it is): naming one is asking for it. Otherwise, for prose that describes a
+    workflow (a summary, a step, an agent, a reply): only a sentence that asks for one, so a workflow that reminds a
+    team to rotate API keys may still be described."""
+    if not isinstance(text, str) or not text:
+        return False
+    if strict:
+        return SECRET_NAMED.search(text) is not None
+    return any(_asks(s) for s in _SENTENCES.split(text))
+
+
+def without_secret_asks(text: str, *, line: str | None = NEVER_IN_CHAT) -> tuple[str, bool]:
+    """`text` with each sentence that asks for a secret taken out, and code's `line` once in their place (none when
+    `line` is None); `(text, whether any was)`. Lines and paragraphs stay as they were."""
+    if not asks_for_a_secret(text, strict=False):
+        return text, False
+    lines = []
+    for raw in text.split("\n"):
+        parts = re.split(r"(?<=[.?!])(\s+)", raw)
+        kept = "".join(p for i, p in enumerate(parts) if i % 2 or not _asks(p)).strip()
+        if kept or not raw.strip():
+            lines.append(kept if raw.strip() else raw)
+    cleaned = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    if line:
+        cleaned = f"{cleaned}\n\n{line}" if cleaned else line
+    return cleaned, True

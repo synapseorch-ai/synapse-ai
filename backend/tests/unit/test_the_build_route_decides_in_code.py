@@ -339,6 +339,61 @@ async def test_a_plan_holding_a_key_is_sent_back(client):
     assert "holds a key" in sent["error"]
 
 
+#: H45 res-05's open question (P5's measure, 10-27), which the card showed under "Open questions".
+RES_05_ASKS = ("To complete this workflow, you'll need to provide your Stripe Secret API Key (starts with sk_test_ or "
+               "sk_live_) and your SendGrid API Key (starts with SG.). These will be securely connected to your "
+               "workspace.")
+
+
+async def test_a_plan_whose_question_asks_for_a_key_is_sent_back(client):
+    """F1093: `ask_person` refused the key question, so res-05's planner wrote it as the plan's own open question."""
+    run = await _run()
+    sent, _ = await _call("submit_plan", _plan(CHECK, TELL, questions=[RES_05_ASKS, "Which list should it use?"]),
+                          run)
+    assert "questions: an open question asks the person for a key" in sent["error"]
+    assert "Connect card" in sent["error"]
+
+
+@pytest.mark.parametrize("where", ["summary", "does", "purpose"])
+async def test_a_plans_words_that_ask_for_a_key_are_sent_back(client, where):
+    run = await _run()
+    asks = "Once you have your SendGrid API key, paste it here."
+    tell, agents = dict(TELL), []
+    summary = "Warn when the wind is strong."
+    if where == "summary":
+        summary = f"{summary} {asks}"
+    elif where == "does":
+        tell["does"] = f"Drafts a delay warning. {asks}"
+    else:
+        tell = {**TELL, "agent": "Warner"}
+        agents = [{"name": "Warner", "purpose": f"Drafts warnings. {asks}", "tools": []}]
+    sent, _ = await _call("submit_plan", _plan(CHECK, tell, summary=summary, agents=agents), run)
+    assert "asks the person for a key" in sent["error"]
+
+
+async def test_a_plan_reviewed_after_its_sendbacks_never_shows_the_ask(client):
+    """Code's floor: the card the person reads holds neither the question nor the sentence that asked."""
+    run = await _run()
+    draft = _plan(CHECK, {**TELL, "does": "Drafts a delay warning. Please paste your Twilio auth token below."},
+                  questions=[RES_05_ASKS, "Which list should it use?"])
+    for _ in range(build_plan.SENDBACKS):
+        assert "error" in (await _call("submit_plan", draft, run))[0]
+    out, _ = await _call("submit_plan", draft, run)
+    checked, _ = await _check(run, out)
+    shown = json.dumps(checked)
+    assert "Secret API Key" not in shown and "auth token" not in shown
+    assert checked["plan"]["questions"] == ["Which list should it use?"]
+    assert "Drafts a delay warning." in shown
+
+
+async def test_a_plan_that_only_describes_keys_is_not_sent_back(client):
+    run = await _run()
+    rotate = {**TELL, "does": "Reminds the team to rotate API keys every quarter."}
+    out, _ = await _call("submit_plan", _plan(CHECK, rotate, questions=["Which Stripe account should it charge?"]),
+                         run)
+    assert out.get("finish") == "submit_plan", out
+
+
 async def test_an_update_is_not_refused_for_what_already_runs_only_for_what_it_adds(client):
     """SAI2's review, 1: an existing workflow with an ungated step that acts runs today; an edit elsewhere in it is
     not refused for that step, while an acting step the edit adds is held to decision 4."""

@@ -411,12 +411,13 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     if MADE in json.dumps(plan.model_dump(), default=str):
         # The save's own mark for an id it has yet to make: in what is saved, it would leave every call uncovered.
         return Examined(plan, [f"The plan holds the text {MADE}, which the save keeps for ids it makes: take it out."])
+    plan, asked = _without_secret_asks(plan, base)
     errors, _ = O.check_structure(plan, ws.inventory())
     if base is not None and plan.kind == "update":
         # A step no step leads to in the workflow as it is now is not this change's to fix (SAI2's review, 23).
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
-    errors += await _rules(plan, ws, state)
+    errors += await _rules(plan, ws, state) + asked
     if plan.schedule:
         # A schedule runs on its person's clock (F948, Naveen 10-23): the timezone they named, else their own (the
         # browser's, sent with the turn); with neither, UTC.
@@ -505,6 +506,50 @@ def _written(plan: O.Plan, base: O.Plan | None) -> dict:
     before = {s.id: s.model_dump() for s in base.steps}
     dumped["steps"] = [s for s in dumped["steps"] if before.get(s["id"]) != s]
     return dumped
+
+
+#: What goes back to the planner for each part of a plan that asked for a secret (F1093).
+NEVER_ASK = ("asks the person for a key, a token or a password: never ask for one. A service's tool is planned as "
+             "it is, and its key comes through a Connect card after the yes; ask only what the person alone knows")
+
+
+def _without_secret_asks(plan: O.Plan, base: O.Plan | None) -> tuple[O.Plan, list[str]]:
+    """The plan with every part that asks the person for a secret taken out, and what goes back to the planner for
+    each (F1093; H45 res-05's open question asked for the Stripe and SendGrid keys). A question naming one is
+    dropped; a sentence of prose that asks for one is cut. Code's floor: a plan reviewed after its sendbacks never
+    shows one. On an update, only what this plan writes."""
+    from core.secret_scrub import asks_for_a_secret, without_secret_asks
+
+    issues: list[str] = []
+    questions = [q for q in plan.questions if not asks_for_a_secret(q)]
+    if len(questions) != len(plan.questions):
+        issues.append(f"questions: an open question {NEVER_ASK}")
+
+    def prose(where: str, text: str | None) -> str | None:
+        cut, was = without_secret_asks(text or "", line=None)
+        if not was:
+            return text
+        issues.append(f"{where} {NEVER_ASK}")
+        return cut
+
+    kept = {s.id: s.model_dump() for s in base.steps} if base is not None else {}
+
+    def step(s: O.Step) -> O.Step:
+        if kept.get(s.id) == s.model_dump():
+            return s
+        return s.model_copy(update={"name": prose(f"step {s.id}: its name", s.name) or s.name,
+                                    "does": prose(f"step {s.id}: what it does", s.does) or ""})
+
+    cleaned = plan.model_copy(update={
+        "questions": questions,
+        "summary": prose("summary: it", plan.summary) or "",
+        "steps": [step(s) for s in plan.steps],
+        "agents": [a.model_copy(update={"purpose": prose(f"agent {a.name}: its purpose", a.purpose) or ""})
+                   for a in plan.agents],
+        "inner_workflows": [w.model_copy(update={"steps": [step(s) for s in w.steps]})
+                            for w in plan.inner_workflows],
+    })
+    return cleaned, issues
 
 
 async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:

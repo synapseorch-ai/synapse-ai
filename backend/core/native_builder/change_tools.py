@@ -32,6 +32,7 @@ from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core.native_builder import change_ops as C, one_writer
 from core.product_tools.roles import Role
+from core.secret_scrub import SECRET_NAMED, asks_for_a_secret
 
 _log = get_logger(__name__)
 
@@ -150,6 +151,8 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
             continue
         fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
         found += [f"op {n}: {line}" for line in C.issues(str(op.get("op") or ""), op.get("target") or {}, fields)]
+    found += [f"op {n}: {SAYS_ASKS}" for n, op in enumerate(ops, 1)
+              if isinstance(op, dict) and asks_for_a_secret(_text(op.get("says")), strict=False)]
     if found:
         return {"error": "Fix these and call submit_change again: " + "; ".join(found)}
     change = Change.model_validate({"ops": ops, "undo_of": undo_of or None})
@@ -159,19 +162,16 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
 #: A question that asks the person for a secret (chg-09: a key asked in chat was typed there and kept): a key, a
 #: token, a password, a PIN or a code, or a login, as something of theirs or a service's. Not a count of tokens, a
 #: password reset or a licence to buy (SAI2's review, 17).
-_ASKS_SECRET = re.compile(
-    r"(?i)\b(?:(?:api|access|private|secret|signing)[\s_-]?keys?|(?:api|access|auth|bearer|refresh|secret|personal)"
-    r"[\s_-]?tokens?|client[\s_-]?secret|credentials?|bearer|pass(?:word|wd|code|phrase)s?(?!\s+reset)|"
-    r"(?:2fa|mfa|otp|one[\s-]time|verification|security|access)\s+codes?|(?-i:\bPIN\b)|pin\s+(?:code|number)s?|"
-    r"(?:log|sign)[\s-]?in(?:\s+details)?\s+(?:for|to)\b|"
-    r"(?:your|their|its|the)\s+(?:[\w.-]+\s+){0,2}(?:keys?|tokens?|logins?|secrets?)\b(?!\s+(?:dates?|points?|metrics?|"
-    r"words?|people|accounts?|questions?|steps?|results?)))")
+_ASKS_SECRET = SECRET_NAMED  # one detector for "asks for" and "holds" a secret (F1093, with F1092)
 #: … or for how a service is reached (res-05: "Apps catalog, MCP URL or HTTP tool?"), which the lookup finds out. A
 #: "which one" question may still name an HTTP tool the workspace has.
 _ASKS_WAY_IN = re.compile(
     r"(?i)\bhow\b[^?]{0,80}?\b(?:connect(?:ed|ing)?|integrat(?:e|ed|ing)|hook(?:ed)?\s+(?:it\s+)?up|"
     r"authenticat\w*)\b[^?]{0,40}?\b(?:to|with|into|via)\b|\b(?:mcp(?:\s+(?:server|url))?|apps?\s+catalog\w*|"
     r"via\s+(?:its|their|the)\s+api|api\s+or\s+(?:a\s+)?webhook)\b|\bhttp\s+tool\b")
+CANNOT_FOR_A_KEY = ("A key, a token or a password is never why something can't be done, and never asked for: a "
+                    "service's tool is planned, and its key comes through a Connect card after the yes.")
+SAYS_ASKS = "its says asks for a key, a token or a password; a key comes through a Connect card, never the chat"
 SECRET_ASKED = ("Never ask the person for a key, a token or a password: a connection comes through a Connect card, "
                 "never through the chat. Ask only what the person alone knows.")
 WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a tool, and how it is reached, is "
@@ -208,6 +208,9 @@ async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
     why, nearest = _text(args.get("why")), _text(args.get("nearest"))
     if not why or not nearest:
         return {"error": "cannot needs both why and nearest: the nearest thing this product does instead."}
+    if asks_for_a_secret(f"{why}\n{nearest}"):
+        # Said to the person as it is: a key is never a reason to stop, nor something to ask for (F1093).
+        return {"error": CANNOT_FOR_A_KEY}
     return {"finish": "cannot", "why": why, "nearest": nearest}
 
 
@@ -914,3 +917,29 @@ CHECK = {"type": "function", "function": {
 }}
 register_builder_tool(CHECK, check_change)
 
+
+
+# ── what a turn ends by saying (F1093) ────────────────────────────────────────────────────────────────────────────
+
+async def said_without_secret_asks(run: Any) -> None:
+    """A builder turn's reply never asks for a key, a token or a password: a sentence of it that does is taken out,
+    and code's line pointing to the Connect card and the Vault is said in its place (the manager's net, 10-27). The
+    replies of the talk and answer routes are a model's own words, with no finish tool to refuse them; here, where
+    every run ends (fleet included), before the panel reads `summary` and the conversation keeps it."""
+    from core.orchestration.state import SharedState
+    from core.secret_scrub import without_secret_asks
+
+    if getattr(run, "orchestration_id", "") != "orch_native_builder" or getattr(run, "status", "") != "completed":
+        return
+    said = run.shared_state.get("summary")
+    if not isinstance(said, str):
+        return
+    cleaned, was = without_secret_asks(said)
+    if was:
+        run.shared_state["summary"] = cleaned
+        await SharedState(run).checkpoint()
+
+
+from core.orchestration.cancel import on_end  # noqa: E402 — registered with the module, as its tools are
+
+on_end(said_without_secret_asks)
