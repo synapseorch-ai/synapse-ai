@@ -37,6 +37,8 @@ PUBLIC_EVENT_TYPES = frozenset({
     "queued", "worker_picked_up", "paused", "cancelled", "error", "done",
     # A failed turn's one offer: the same message again on a stronger model, at its price (F1018).
     "try_stronger",
+    # The browser inside Synapse (BRW1): a session opened, and what each agent action did (no page text).
+    "browser_session", "browser_action",
     # Helpers and team members, each wrapping a narrowed event of its own (`helpers.SHOWN`, `team.SHOWN`).
     "helper_started", "helper_event", "helper_finished", "helper_results_read", "helper_result_kept",
     "member_started", "member_event", "member_finished", "member_answered",

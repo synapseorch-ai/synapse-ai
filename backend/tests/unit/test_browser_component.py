@@ -250,3 +250,10 @@ def test_a_browser_agent_is_told_how_its_browser_works():
 
 async def test_a_closed_browsers_screenshot_is_not_served(client):
     assert (await client.get("/api/browser/nope/shot/1")).status_code == 404
+
+
+def test_the_pane_events_reach_the_chat_and_the_run():
+    from core.events_public import public_event
+    assert public_event({"type": "browser_session", "session_id": "s1", "owner": "chat:a"})
+    assert public_event({"type": "browser_action", "session_id": "s1", "n": 1, "action": "browser_click",
+                         "target": "Search button", "url": "https://example.com", "shot_ref": "1"})
