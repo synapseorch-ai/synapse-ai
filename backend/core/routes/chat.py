@@ -475,6 +475,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 # A Team's members (TEAM1a): each one started, what it does (wrapped), its
                 # record; and the team's task list.
                 "member_started", "member_event", "member_finished", "team_tasks",
+                # The browser inside Synapse (BRW1): a session opened, and each agent action
+                # with its screenshot's ref; the pane opens on the first.
+                "browser_session", "browser_action",
             ):
                 yield f"data: {json.dumps(event, default=str)}\n\n"
 

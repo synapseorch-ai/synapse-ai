@@ -296,3 +296,25 @@ async def test_an_agents_browser_call_runs_under_its_chat_and_tells_the_pane(fak
     assert "browser_session" in kinds and "browser_action" in kinds
     assert kinds.index("browser_session") < kinds.index("browser_action")
     assert browser_client.owner.get() is None, "the owner does not outlive the call"
+
+
+async def test_the_chat_stream_carries_the_pane_events(client, monkeypatch):
+    """Found by BRW1's live check (2026-10-27, gemini-2.5-flash on example.com): the chat route passes each
+    event by name and drops the rest, so the pane never heard a browser open."""
+    import core.routes.chat as chat
+    from _fakes import engine_events as E
+    from _fakes.fake_redis_stream import data_events
+
+    monkeypatch.setattr(chat, "run_react_loop", E.gen_from([
+        E.tool_execution("browser_navigate", {"url": "https://example.com"}),
+        E.tool_result("browser_navigate", "### Page\n- Page URL: https://example.com/"),
+        {"type": "browser_session", "session_id": "s1", "owner": "chat:x"},
+        {"type": "browser_action", "session_id": "s1", "n": 1, "actor": "agent", "action": "browser_navigate",
+         "target": "https://example.com", "url": "https://example.com/", "shot_ref": "1"},
+        E.final("It is the example page.", intent="chat"),
+    ]))
+    resp = await client.post("/chat/stream", json={"message": "open example.com"})
+    events = data_events(resp.text.split("\n\n"))
+    kinds = [e["type"] for e in events]
+    assert kinds == ["tool_execution", "tool_result", "browser_session", "browser_action", "response", "done"]
+    assert events[3]["shot_ref"] == "1" and events[2]["session_id"] == "s1"
