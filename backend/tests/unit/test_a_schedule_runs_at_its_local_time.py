@@ -136,7 +136,8 @@ def test_the_panel_sends_the_persons_timezone_and_the_run_keeps_a_real_one():
     assert builder._person_timezone("Europe/Amsterdam") == "Europe/Amsterdam"
     assert builder._person_timezone("Mars/Olympus") is None and builder._person_timezone(None) is None
     assert '"person_timezone": _person_timezone(request.timezone)' in inspect.getsource(builder.prepare_builder_run)
-    panel = (Path(__file__).resolve().parents[3] / "frontend/src/components/app/BuilderProvider.tsx").read_text()
+    # Each Synapse AI chat sends its own turns (TABS2): the body is built in the chat's store.
+    panel = (Path(__file__).resolve().parents[3] / "frontend/src/components/app/builderChats.ts").read_text()
     assert "timezone: Intl.DateTimeFormat().resolvedOptions().timeZone" in panel
 
 
