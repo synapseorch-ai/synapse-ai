@@ -126,6 +126,7 @@ def browser_config(local_proxy: str | None = None) -> BrowserConfig:
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/120.0.0.0 Safari/537.36"
         ),
+        extra_args=list(egress_proxy.CHROMIUM_ARGS),
         **({"proxy_config": {"server": local_proxy}} if local_proxy else {}),
     )
 

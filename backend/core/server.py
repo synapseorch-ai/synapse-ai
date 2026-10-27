@@ -88,6 +88,7 @@ _settings = load_settings()
 if _settings.get("ollama_base_url"):
     os.environ["OLLAMA_BASE_URL"] = _settings["ollama_base_url"]
 
+from core.browser_automation import gated
 from core.tools_registry import ALL_NATIVE_TOOLS
 TOOLS_LIST = dict(ALL_NATIVE_TOOLS)
 
@@ -178,6 +179,18 @@ def _filesystem_server_spec() -> dict:
     }
 
 
+#: Synapse's egress proxy (`core.egress_proxy`), which Browser Automation's browser goes through; lifespan starts it.
+_browser_proxy_url: str | None = None
+
+
+def _native_tool_args(name: str) -> list[str]:
+    """What a native tool's server is started with beyond its script. The scraper saves screenshots in its own
+    folder in the vault and nowhere else (F1066)."""
+    if name == "web_scraper":
+        return ["--output-dir", str((Path(DATA_DIR) / "vault" / "tool_outputs" / "screenshots").resolve())]
+    return []
+
+
 def _build_native_mcp_servers() -> list[dict]:
     """
     Build the list of native MCP servers to connect at startup.
@@ -198,12 +211,31 @@ def _build_native_mcp_servers() -> list[dict]:
             # Fallback for old configs
             env_dict["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/.cache/ms-playwright")
 
-        servers.append({
-            "name": "Browser Automation",
-            "command": _NPX_CMD,
-            "args": ["-y", "@playwright/mcp", "--browser", "chrome", "--output-dir", "data/vault/playwright"],
-            "env": env_dict,
-        })
+        from core.browser_automation import BROWSER_AUTOMATION, PLAYWRIGHT_MCP
+
+        if _browser_proxy_url is None:
+            # Never without its proxy: lifespan starts it before any server is spawned.
+            print("Warning: the egress proxy is not running — not starting Browser Automation.")
+        else:
+            # Its own folder is its output directory and its working directory: the server reads and writes files
+            # only inside those two. It was the relative "data/vault/playwright", resolved against the home
+            # directory it was started in.
+            folder = (Path(DATA_DIR) / "vault" / "playwright").resolve()
+            folder.mkdir(parents=True, exist_ok=True)
+            # Its browser's own flags, in a file outside that folder (its tools write there), rewritten at every start.
+            from core import egress_proxy
+
+            config = Path(DATA_DIR) / "browser_automation" / "config.json"
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(json.dumps({"browser": {"launchOptions": {"args": list(egress_proxy.CHROMIUM_ARGS)}}}))
+            servers.append({
+                "name": BROWSER_AUTOMATION,
+                "command": _NPX_CMD,
+                "args": ["-y", PLAYWRIGHT_MCP, "--browser", "chrome", "--output-dir", str(folder),
+                         "--proxy-server", _browser_proxy_url, "--config", str(config)],
+                "env": env_dict,
+                "cwd": str(folder),
+            })
 
     # --- Google Workspace MCP Server (Gmail, Drive, Calendar) ---
     google_env = _get_google_oauth_env()
@@ -392,10 +424,14 @@ def _log_security_posture() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global exit_stack
+    global exit_stack, _browser_proxy_url
     print("Starting Multi-Agent Orchestrator...")
     _log_security_posture()
     exit_stack = AsyncExitStack()
+    # Before any browser is started: every one goes through it.
+    from core import egress_proxy
+
+    _browser_proxy_url = (await egress_proxy.shared()).url
     
     if _settings.get("coding_agent_enabled"):
         try:
@@ -415,7 +451,7 @@ async def lifespan(app: FastAPI):
 
             server_params = StdioServerParameters(
                 command=sys.executable,
-                args=[script_path],
+                args=[script_path, *_native_tool_args(agent_name)],
                 env=env
             )
 
@@ -479,13 +515,15 @@ async def lifespan(app: FastAPI):
                     command=cmd,
                     args=mcp_cfg["args"],
                     env=env,
-                    cwd=str(Path.home()),
+                    cwd=mcp_cfg.get("cwd") or str(Path.home()),
                 )
                 read, write = await exit_stack.enter_async_context(stdio_client(server_params))
                 session = await exit_stack.enter_async_context(
                     ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
                 )
                 await session.initialize()
+                # The Browser Automation server offers only what its gate allows (`core.browser_automation`).
+                session = gated(mcp_name, session)
 
                 agent_sessions[mcp_name] = session
 

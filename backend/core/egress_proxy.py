@@ -22,9 +22,6 @@ resolved to); anything that is not a proxy request is a `400`.
 It listens on loopback and needs no credentials: what it reaches is the public
 internet, which anything on the machine reaches already.
 
-A host's own proxy comes first: where the environment names one (cloud's I1
-Smokescreen, F580), the browser is given that instead, and it is the layer.
-
 Deliberately stdlib-only, like the guard: the scraper's subprocess starts its own.
 """
 from __future__ import annotations
@@ -34,6 +31,10 @@ import sys
 from urllib.parse import urlsplit
 
 from core import egress_guard
+
+#: What a Chromium behind this proxy is started with. WebRTC's UDP never goes through a proxy; with this flag WebRTC
+#: takes the proxied path or none.
+CHROMIUM_ARGS = ("--force-webrtc-ip-handling-policy=disable_non_proxied_udp",)
 
 #: A request head larger than this is not one a browser sends.
 _HEAD_LIMIT = 64 * 1024
