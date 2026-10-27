@@ -408,7 +408,10 @@ def said(findings: dict, unnamed: bool = False) -> str:
         head = {"catalog_app": f"{name} is in your Apps catalogue: it connects with a click.",
                 "mcp": f"{name} has its own MCP server.",
                 "api": f"{name} has a public API{' whose calls I read' if o.get('api') else ''}.",
-                "none": f"{name} has no public way in for this."}.get(how, f"{name}: I couldn't confirm a way in.")
+                "none": f"{name} has no public way in for this.",
+                "partner": f"{name} is for approved partners only"
+                           f"{' (' + ', '.join(o['partner_words']) + ')' if o.get('partner_words') else ''}."
+                }.get(how, f"{name}: I couldn't confirm a way in.")
         needs = str(o.get("needs") or "").strip().rstrip(".")
         lines.append(" ".join(x for x in (head, detail, f"It needs: {needs}." if needs else "") if x))
     usable = any(o.get("how") in ("catalog_app", "mcp", "api") for o in options)

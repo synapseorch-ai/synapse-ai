@@ -559,6 +559,41 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
     }, ""
 
 
+#: What says only approved partners get in (F1094): P5's measure, Booking.com, Uber and OpenTable reported as `api`.
+_GATE = re.compile(
+    r"(?<![-\w])(?:approved partners?|partners?[- ]only|partnership(?: agreement| contract)?"
+    r"|affiliate(?: partner)?(?: registration| program(?:me)?)?"
+    r"|partner (?:registration|program(?:me)?|agreement|account|api key|api|centre|center|portal|approval)"
+    r"|apply for access|contract|needs? [^.\n]{0,40}?approval)(?![-\w])", re.IGNORECASE)
+#: A sentence that only wonders is no gate: "I did not read whether production keys need partner approval".
+_WONDERS = re.compile(r"\b(?:whether|not confirmed|did not|didn't|unclear|if|may|might|could not|couldn't)\b",
+                      re.IGNORECASE)
+_SAYS_NO = re.compile(r"\b(?:no|not|without|never)\s+(?:\w+\s+)?$", re.IGNORECASE)
+
+
+def partner_words(text: str) -> list[str]:
+    """The words, as written, that say only approved partners get in, with the capitalised name before them
+    ("Managed Affiliate Partner registration"); none from a sentence that wonders or a gate said not to be ("no
+    contract")."""
+    found: list[str] = []
+    for sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+        if _WONDERS.search(sentence):
+            continue
+        for m in _GATE.finditer(sentence):
+            if _SAYS_NO.search(sentence[:m.start()]):
+                continue
+            start = m.start()
+            for _ in range(3):
+                before = re.search(r"[A-Z][\w'&.]* $", sentence[:start])
+                if before is None or before.group().strip() in ("A", "An", "The"):
+                    break
+                start = before.start()
+            words = sentence[start:m.end()].strip()
+            if words not in found:
+                found.append(words)
+    return found
+
+
 async def report_findings(args: dict, server_module: Any, events: list[dict]) -> dict:
     seen = _evidence()
     options = []
@@ -597,6 +632,12 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
                 option.update(how="unclear", detail=f"{_NO_WAY[why]}. {detail}"[:300])
             else:
                 option["detail"] = f"{detail[:180]} (Its API spec was not used: {why}.)".strip()[:300]
+        gate = partner_words(f"{option['needs']}\n{detail}") if option["how"] == "api" else []
+        if gate:
+            # F1094: the model's own words say only approved partners get in (Booking.com's "Managed Affiliate Partner
+            # registration"), so it is no way in here, whatever it wrote. Code's value, never the model's (`_HOW`).
+            option.update(how="partner", partner_words=gate)
+            option.pop("api", None)
         options.append(option)
     options = _with_looked_up(seen, options)
     if not options:

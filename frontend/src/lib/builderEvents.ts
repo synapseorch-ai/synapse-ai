@@ -72,8 +72,10 @@ export interface ResearchFindings {
     goal?: string;
     options: {
         provider: string;
-        how: 'mcp' | 'api' | 'none' | 'unclear';
+        how: 'catalog_app' | 'mcp' | 'api' | 'partner' | 'none' | 'unclear';
         detail?: string;
+        /** `partner`: the words that say only approved partners get in (F1094). */
+        partner_words?: string[];
         needs?: string;
         sources?: string[];
     }[];

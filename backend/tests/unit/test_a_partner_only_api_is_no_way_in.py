@@ -1,0 +1,99 @@
+"""A partner-only API is no way in (F1094, SAI2-P5 with SAI2-P3; SAI2 10-27, from P5's measure).
+
+Haiku 4.5's res-02/03/06: the Researcher reported Booking.com, Uber and OpenTable as `api`, though its own words said
+what kept the person out ("Managed Affiliate Partner registration, Partner Centre access"; "the privileged `request`
+scope, which in production needs Uber's Full Access approval"), and the build then planned with them. The research
+rules already say a partners-only provider is `none`; the model wrote `api` anyway. Code reads the model's own words
+in `report_findings`, after the `api` verdict stands, and sets `how: "partner"` with the words it matched. The schema
+the model writes to is unchanged (`_HOW`): `partner` is code's, so a model that writes it gets `unclear`.
+
+A sentence that only wonders ("I did not read whether production keys need partner approval") is not a partner gate.
+"""
+from __future__ import annotations
+
+import pytest
+
+import core.builder_research as br
+from core.native_builder.lookup import said
+
+BOOKING = "https://developers.booking.com/connectivity/docs"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_evidence():
+    br._LOOSE.clear()
+    yield
+    br._LOOSE.clear()
+
+
+async def _report(provider: str, how: str, needs: str, detail: str = "", page: str = BOOKING) -> dict:
+    await br._read_host(page)
+    card = await br.report_findings({"goal": "Book hotels", "options": [
+        {"provider": provider, "how": how, "detail": detail, "needs": needs, "sources": [page]}]}, None, [])
+    [option] = card["options"]
+    return option
+
+
+async def test_res_02s_own_needs_make_booking_com_partner_only():
+    option = await _report("Booking.com", "api",
+                           "Managed Affiliate Partner registration, Partner Centre access, an API key and an "
+                           "X-Affiliate-Id.", "Its API can book hotel rooms, and a sandbox lets you test.")
+    assert option["how"] == "partner"
+    assert option["partner_words"] == ["Managed Affiliate Partner registration", "Partner Centre"]
+
+
+async def test_a_gate_that_needs_an_approval_is_partner_only():
+    option = await _report("Uber", "api", "An Uber developer account and an OAuth 2.0 app. Ride requests use the "
+                           "privileged `request` scope, which in production needs Uber's Full Access approval.",
+                           page="https://developer.uber.com/docs/riders")
+    assert option["how"] == "partner" and option["partner_words"] == ["needs Uber's Full Access approval"]
+
+
+@pytest.mark.parametrize("needs", [
+    "A Mailchimp account and an API key.",
+    "A GoDaddy account and an API key. I did not read whether production keys need partner approval.",
+    "A Duffel account and a token. Whether a new workspace can get access without partner approval is not confirmed.",
+    "A paid Calendly plan and a token. I did not confirm whether partner approval is also required.",
+    "No contract and no partnership needed: a free account and a key.",
+])
+async def test_a_plain_public_api_stays_api(needs):
+    option = await _report("Mailchimp", "api", needs, page="https://mailchimp.com/developer/")
+    assert option["how"] == "api" and "partner_words" not in option
+
+
+async def test_only_an_api_verdict_is_read_for_a_gate():
+    """`none` already says no way in, and `unclear` was never a verdict."""
+    option = await _report("Booking.com", "none", "Managed Affiliate Partner registration.")
+    assert option["how"] == "none" and "partner_words" not in option
+
+
+async def test_a_model_cannot_write_partner_itself():
+    option = await _report("Booking.com", "partner", "Managed Affiliate Partner registration.")
+    assert option["how"] == "unclear"
+
+
+async def test_a_partner_gate_drops_the_spec():
+    """A spec of calls the person can't make is no tool to build."""
+    await br._read_host(BOOKING)
+    option = await br.report_findings({"options": [{
+        "provider": "Booking.com", "how": "api", "needs": "Approved partners only.", "sources": [BOOKING],
+        "api": {"base_url": "https://distribution-xml.booking.com", "auth": "basic", "docs": BOOKING,
+                "calls": [{"name": "book_room", "method": "POST", "path": "/book"}]}}]}, None, [])
+    [option] = option["options"]
+    assert option["how"] == "partner" and "api" not in option
+
+
+def test_the_reply_says_it_is_for_approved_partners_and_offers_what_works():
+    text = said({"options": [{"provider": "Booking.com", "how": "partner", "detail": "Its API can book rooms.",
+                              "partner_words": ["Managed Affiliate Partner registration"]}]})
+    assert "**Booking.com** is for approved partners only (Managed Affiliate Partner registration)." in text
+    assert "Nothing here can do it for you directly" in text, "a partner-only provider is no way in"
+
+
+def test_the_partner_value_stays_out_of_the_models_schema():
+    assert "partner" not in br._HOW
+
+
+def test_the_words_keep_the_name_before_them_but_not_an_article():
+    assert br.partner_words("A Kayak partner account and test keys.") == ["Kayak partner account"]
+    assert br.partner_words("A partner account.") == ["partner account"]

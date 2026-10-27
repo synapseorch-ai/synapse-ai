@@ -13,10 +13,12 @@ import { ExternalLink } from 'lucide-react';
 
 import type { ResearchFindings } from '@/lib/builderEvents';
 
-/** How each option would connect, in words. Only "no public way in" is a warning. */
+/** How each option would connect, in words. Only "no public way in" and "approved partners only" are warnings. */
 const HOW: Record<ResearchFindings['options'][number]['how'], { label: string; tone: string }> = {
+    catalog_app: { label: 'In your Apps catalogue', tone: 'text-success' },
     mcp: { label: 'Its own MCP server', tone: 'text-success' },
     api: { label: 'Public API', tone: 'text-accent-ink' },
+    partner: { label: 'Approved partners only', tone: 'text-warning' },
     none: { label: 'No public way in', tone: 'text-warning' },
     unclear: { label: 'Could not tell', tone: 'text-text-faint' },
 };
