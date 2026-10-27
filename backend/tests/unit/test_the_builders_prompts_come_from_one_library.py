@@ -49,8 +49,11 @@ from core.native_builder import prompt_lint, seed
 #: (`look_up_providers`), 0bd14cb9…; the route's own look-up is marked by its step (`by_route`, SAI2's review N1),
 #: b9516051…; rebased on P3c (`step_researched_before` out), e3743489…; the build's look-up is code first (P3c's
 #: splice of `look_up_providers`: the look-up, its route, and code's finals reported), d7e67981…; F1064: a bare
-#: go-ahead after findings is shown to the planner as their goal (`plan_context.request`), 00723c8a….
-BUNDLE_SHA256 = "00723c8a9a062ee9d5d99666f9c249b456a736ab0045c1b5acc30cf7759f04eb"
+#: go-ahead after findings is shown to the planner as their goal (`plan_context.request`), 00723c8a…; the P5 gate:
+#: the research route's Researcher holds only the web, the look-up and its report (its catalogue and Registry steps in
+#: code), and the by-hand steps are a passage of the build's researcher's own (`research_by_hand`, its prompt
+#: unchanged), 1d2a272d….
+BUNDLE_SHA256 = "1d2a272d5d5d6496c7a6e8739a48a2a54f572f29e880aae7b2f1d6bbb4b3c0ad"
 
 
 def _sha(definitions) -> str:

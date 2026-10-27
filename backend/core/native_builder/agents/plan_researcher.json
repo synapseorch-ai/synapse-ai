@@ -15,7 +15,7 @@
     ],
     "repos": [],
     "db_configs": [],
-    "system_prompt": "{{PROMPT:research_role_and_ways}}\n5. **Report.** Finish by calling `report_findings` once, with one option per provider: how it would connect here (`mcp`, `api`, `none` or `unclear`), what it needs, and the pages you read. For an `api` whose calls you read on the provider's own docs, add its `api`: the base URL, how the key is sent, the one to five calls the plan needs (each with a short tool name), and that docs page. The plan is redrafted from this report.\n\n{{PROMPT:research_rules}}",
+    "system_prompt": "{{PROMPT:research_role_and_ways}}\n{{PROMPT:research_by_hand}}\n5. **Report.** Finish by calling `report_findings` once, with one option per provider: how it would connect here (`mcp`, `api`, `none` or `unclear`), what it needs, and the pages you read. For an `api` whose calls you read on the provider's own docs, add its `api`: the base URL, how the key is sent, the one to five calls the plan needs (each with a short tool name), and that docs page. The plan is redrafted from this report.\n\n{{PROMPT:research_rules}}",
     "orchestration_id": null,
     "model": null,
     "provider": null,

@@ -266,7 +266,12 @@ async def test_with_no_web_reader_the_research_says_the_web_was_not_checked():
 
 def test_the_researcher_holds_the_three_sources_and_nothing_that_writes():
     researcher = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_researcher")
-    assert {"find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page"} <= set(researcher["tools"])
+    # The three sources: the Apps catalogue and the MCP Registry through look_up_providers, in code (that its own call
+    # reads both is the look-up's test, `test_a_researchers_own_look_up_reads_the_catalogue_and_the_registry`), and
+    # the web. The gate (SAI2, 10-27): the tools look_up_providers replaced, and read_workspace, never called in P5's
+    # measure, were about 4.1k characters of schema on every round.
+    assert {"look_up_providers", "search_the_web", "read_web_page"} <= set(researcher["tools"])
+    assert not {"find_in_catalog", "search_mcp_registry", "read_workspace"} & set(researcher["tools"])
     # The card was a step of its own after the Researcher (the model forgot its tool in 2 of 4 live runs). Since
     # SAI2-P5 it finishes on report_findings (E2, one reminder), and a Researcher that still forgets leaves the card to
     # code: its fallback goes on to finish_findings, which puts up code's verdicts (the route's own tests).

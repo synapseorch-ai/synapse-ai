@@ -70,13 +70,16 @@ async def look_up_providers(args: dict, server_module: Any, events: list[dict]) 
     # offers it to no model). A look-up the Researcher asks for, of providers it named itself, is its own to report or
     # leave out (SAI2, 10-24; its review, N1).
     locked = args.get("by_route") is True
-    if not any(args.get(k) for k in ("providers", "needs", "need")):
+    unnamed: list[str] = []
+    from_the_run = not any(args.get(k) for k in ("providers", "needs", "need"))
+    if from_the_run:
         args = _from_the_run()
+        args["providers"], unnamed = await _named_only(args["providers"])
     need = str(args.get("need") or "").strip()
     asks = await _asks(args, need)
     record, run = research._record()
     looked = record.setdefault(research.LOOKED_KEY, {})
-    found, left, unmatched = [], [], []
+    found, left, unmatched = [], [], list(unnamed)
     for ask in asks[:MAX_PROVIDERS]:
         provider, said = ask.get("provider"), {k: ask[k] for k in ("provider", "tool", "does") if ask.get(k)}
         if not provider:
@@ -108,9 +111,29 @@ async def look_up_providers(args: dict, server_module: Any, events: list[dict]) 
             left.append(said | got["left"])
             if not got.get("matched") and not got.get("failed") and not ask.get("domain"):
                 unmatched.append(provider)
-    # `unmatched`: named, looked up in full, and nothing of it found (F997's guard: the classify can name a category,
-    # "hotel booking"). Never in the Researcher's prompt, which reads only `left`.
+    # `unmatched`: not named, or named, looked up in full, and nothing of it found (F997's guard: the classify can name
+    # a category, "hotel booking"). Never in the Researcher's prompt, which reads only `left`.
+    if from_the_run and not found:
+        # The gate (SAI2, 10-27): with nothing found, the Researcher starts as it did before P5, with no lead text in
+        # its prompt. The leads stay in the run's record, for the fallback card (`finish_findings`).
+        left = []
     return {"findings": {"goal": need[:200], "options": found}, "found": found, "left": left, "unmatched": unmatched}
+
+
+async def _named_only(providers: list[str]) -> tuple[list[str], list[str]]:
+    """The request's providers a person named, and the rest (the gate, SAI2 10-27). P5's measure: the classify wrote
+    categories as providers, all in lower case ("train operator", "our usual dental supplier"), and real names with a
+    capital (Uber, Stripe). Named: a capital letter, an Apps catalogue name, or a domain. A category written with a
+    capital is looked up and matches nothing: one look in code, no lead, no tokens."""
+    from core.builder_connect import _read_options
+
+    catalog = (await _read_options()).get("catalog") or []
+    named, rest = [], []
+    for p in providers:
+        is_named = (any(c.isupper() for c in p) or research.catalog_entry(p, catalog) is not None
+                    or bool(_domains_in(p)))
+        (named if is_named else rest).append(p)
+    return named, rest
 
 
 def _from_the_run() -> dict:
@@ -371,8 +394,9 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
     listed = {research._slug(o["provider"]) for o in options}
     for v in (record.get(research.LOOKED_KEY) or {}).values():
         # The Researcher's own look-up, never reported: what it found is said as code found it, and what it left is
-        # said unclear with why (SAI2's review, N3a).
-        if not isinstance(v, dict) or v.get("locked"):
+        # said unclear with why (SAI2's review, N3a). The route's own finals are the look-up's `found`; its leads are
+        # here too when it found nothing and so handed none on (the gate).
+        if not isinstance(v, dict) or (v.get("locked") and v.get("found")):
             continue
         if v.get("found"):
             options.append({"provider": v["found"]["provider"], "how": "unclear"})

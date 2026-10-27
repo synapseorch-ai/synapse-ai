@@ -553,3 +553,90 @@ async def test_a_trailing_dot_hides_no_private_host(world, remote):
     state, _ = world
     state["registry"]["acme"] = [{"server": {"name": "com.acme/mcp", "remotes": [{"url": remote}]}}]
     assert (await _look(providers=["Acme"]))["found"] == []
+
+
+# ── The gate (SAI2, Naveen 10-27): only a named provider is looked up, and a look-up with no finals hands on nothing ─
+# P5's measure at 4d99ae1b: the look-up found nothing in 18 runs. The classify wrote categories as providers ("train
+# operator", "hotel booking services", "our usual dental supplier"), code searched the web for "<category> API
+# documentation", and the Researcher read a lead that said only that, every round.
+
+async def test_a_category_the_classify_wrote_is_never_looked_up(world):
+    state, asked = world
+    got = await _route(state, ["hotel booking"], "Can an agent book hotel rooms for our staff conferences?")
+    assert asked == {"registry": [], "scraped": []}, "no Registry search and no web search for a category"
+    assert got["found"] == [] and got["left"] == [] and got["unmatched"] == ["hotel booking"]
+
+
+async def test_a_capitalised_category_is_looked_up_in_code_and_hands_on_nothing(world):
+    """Fails safe: a classify that writes "Hotel booking" costs one look in code and no tokens."""
+    state, asked = world
+    got = await _route(state, ["Hotel booking"], "Hotel booking for our staff?")
+    assert len(asked["registry"]) == 1
+    assert got["found"] == [] and got["left"] == [] and got["unmatched"] == ["Hotel booking"]
+
+
+async def test_a_lower_case_catalogue_name_is_named(world):
+    state, _ = world
+    got = await _route(state, ["stripe"], "send a payment link")
+    assert [(f["provider"], f["how"]) for f in got["found"]] == [("stripe", "catalog_app")]
+
+
+async def test_a_lower_case_name_outside_the_catalogue_is_left_to_the_research(world):
+    """The fixture's catalogue has no Mailchimp: lower-case "mailchimp" is the research's to search by hand, and F997's
+    line stays true of it (SAI2)."""
+    state, asked = world
+    got = await _route(state, ["mailchimp"], "send our newsletter")
+    assert asked == {"registry": [], "scraped": []} and got["unmatched"] == ["mailchimp"]
+
+
+async def test_a_domain_is_named_whatever_its_case(world):
+    state, asked = world
+    await _route(state, ["booking.com"], "book hotels")
+    assert len(asked["registry"]) == 1
+
+
+async def test_a_route_look_up_with_no_finals_hands_no_lead_text_and_keeps_its_leads_for_the_card(world):
+    """No finals: the Researcher starts as it did before P5, with no lead in its prompt. A Researcher that then never
+    reports still leaves the lead on the fallback card, from the run's record."""
+    state, _ = world
+    state["results"]["mailchimp"] = ["https://mailchimp.com/developer/"]
+    state["pages"]["https://mailchimp.com/developer/"] = DOCS
+    got = await _route(state, ["Mailchimp"], "send our newsletter")
+    assert got["found"] == [] and got["left"] == [] and got["unmatched"] == []
+    state["run"].update(lookup=got, findings={"status": "no_report", "fallback": True})
+    done = await lookup.finish_findings({}, None, [])
+    [option] = done["options"]
+    assert (option["provider"], option["how"]) == ("Mailchimp", "unclear")
+    assert option["sources"] == ["https://mailchimp.com/developer/"]
+
+
+async def test_a_route_look_up_with_a_final_still_hands_on_what_is_left(world):
+    state, _ = world
+    got = await _route(state, ["Stripe", "Mailchimp"], "links and a newsletter")
+    assert [f["provider"] for f in got["found"]] == ["Stripe"] and [x["provider"] for x in got["left"]] == ["Mailchimp"]
+
+
+async def test_the_build_routes_look_up_keeps_its_leads(world):
+    """The build route's step passes its needs: its look-up is not the research route's, and P3's planner reads them."""
+    got = await lookup.look_up_providers(
+        {"by_route": True, "needs": [{"tool": "send_newsletter", "does": "Send it", "provider": "Mailchimp"}]}, None, [])
+    assert got["found"] == [] and [x["provider"] for x in got["left"]] == ["Mailchimp"]
+
+
+async def test_a_researchers_own_look_up_reads_the_catalogue_and_the_registry(world, monkeypatch):
+    """SAI2's condition for the Researcher's tools (find_in_catalog and search_mcp_registry are gone from them): its
+    own look_up_providers call, of a name the request didn't name, still reads both sources."""
+    state, asked = world
+    read = []
+    options = bc._read_options
+
+    async def counted():
+        read.append(1)
+        return await options()
+
+    monkeypatch.setattr(bc, "_read_options", counted)
+    await _route(state, ["Stripe"], "take payments")
+    read.clear()
+    await _look(providers=["Shippo"])
+    assert read, "the Apps catalogue was read"
+    assert any("Shippo" in u for u in asked["registry"]), "the MCP Registry was searched"
