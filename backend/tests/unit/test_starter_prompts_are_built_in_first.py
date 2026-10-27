@@ -82,6 +82,22 @@ def test_every_home_persona_has_rows_of_its_own():
     assert not thin, f"personas Home offers with fewer than two rows: {thin}"
 
 
+def test_every_row_asks_for_something_to_build():
+    # F1105 (ONB3's measure on Claude Code Haiku, 2026-10-27): "Do a design audit of a page I give you" was answered
+    # as a question, not built ("I can't take screenshots from here"); "Edit a draft I give you" read as a change to
+    # nothing. Synapse AI builds: a starter says so in its first word.
+    asks = [r["id"] for r in _rows() if not r["text"].startswith("Make ")]
+    assert not asks, f"rows that do not ask for a workflow or an assistant to be made: {asks}"
+
+
+def test_no_row_promises_a_start_the_product_does_not_have():
+    # F1105: "When I upload a spreadsheet to the Vault" — a workflow cannot start on a file landing in the Vault, and
+    # the builder said so instead of planning. A row starts its workflow by hand, on a schedule, or from what it is given.
+    promised = [r["id"] for r in _rows()
+                if re.search(r"\bwhen (i|we|you) (add|upload|drop|put|save)\b", r["text"].lower())]
+    assert not promised, f"rows that promise a start on a file being added: {promised}"
+
+
 def test_most_rows_need_no_app():
     rows = _rows()
     built_in = [r for r in rows if not r["needs"]]

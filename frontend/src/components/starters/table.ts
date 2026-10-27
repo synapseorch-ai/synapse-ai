@@ -53,90 +53,90 @@ export const NEED_LABELS: Record<string, string> = {
 export const STARTERS: Starter[] = [
     {
         id: 'leads', title: 'A lead list in the Vault', personas: ['marketer', 'sales'], goals: ['marketing', 'sales'], needs: [],
-        text: 'Find 25 {industry} companies that fit our ideal customer, with website, size and a one-line reason for each, and save the list as a spreadsheet in the Vault.',
+        text: 'Make a workflow that searches the web for 25 {industry} companies that fit the customer I describe, with website, size and a one-line reason for each, and saves the list as a spreadsheet in the Vault.',
     },
     {
         id: 'competitors', title: 'A weekly competitor digest', personas: ['marketer', 'founder'], goals: ['marketing', 'research'], needs: [],
-        text: 'Every Monday, read three competitors’ websites and blogs and send me a short digest of what changed: new pages, pricing, launches.',
+        text: 'Make a workflow that runs every Monday: it reads the websites and blogs of the competitors I list and saves a short digest of what changed in the Vault: new pages, pricing, launches.',
     },
     {
         id: 'repurpose', title: 'One post, many posts', personas: ['marketer', 'content_creator'], goals: ['writing', 'marketing'], needs: [],
-        text: 'Turn a blog post link I give you into five LinkedIn posts and three short posts for X, and save them in the Vault for me to review.',
+        text: 'Make a workflow that turns a blog post link I give it into five LinkedIn posts and three short posts for X, and saves them in the Vault for me to review.',
     },
     {
         id: 'audit', title: 'A design audit of a page', personas: ['designer'], goals: ['design'], needs: [],
-        text: 'Do a design audit of a web page I give you: screenshot it at desktop and phone width, and list the top 10 issues in layout, contrast and copy, each with a fix.',
+        text: 'Make a workflow that does a design audit of a web page I give it: screenshots at desktop and phone width, then the top 10 issues in layout, contrast and copy, each with a fix.',
     },
     {
         id: 'site', title: 'A one-page website', personas: ['designer', 'founder'], goals: ['design'], needs: [],
-        text: 'Design a one-page website for a product I describe: write the copy and the HTML, and save it in the Vault so I can open it.',
+        text: 'Make a workflow that designs a one-page website for a product I describe: it writes the copy and the HTML and saves them in the Vault so I can open it.',
     },
     {
         id: 'prs', title: 'Triage pull requests', personas: ['engineer'], goals: ['development'], needs: ['github'],
-        text: 'Connect GitHub and triage our open pull requests each morning: label each by size and risk, and list the ones waiting longest for review.',
+        text: 'Make a workflow that connects to GitHub and triages our open pull requests each morning: it labels each by size and risk and lists the ones waiting longest for review.',
     },
     {
         id: 'apiclient', title: 'A client for an API', personas: ['engineer'], goals: ['development', 'custom_api'], needs: [],
-        text: 'Read the API docs page I give you and write a small client for it with an example call, saved in the Vault.',
+        text: 'Make a workflow that reads an API docs page I give it and writes a small client for that API with an example call, saved in the Vault.',
     },
     {
         id: 'callprep', title: 'A brief before each call', personas: ['sales'], goals: ['sales'], needs: [],
-        text: 'Before a sales call, research the company I name: what they do, recent news, likely needs and three questions to ask, as a one-page brief.',
+        text: 'Make a workflow that researches a company I name before a sales call: what they do, recent news, likely needs and three questions to ask, as a one-page brief.',
     },
     {
         id: 'digest', title: 'A Friday market brief', personas: ['founder'], goals: ['research', 'reporting'], needs: [],
-        text: 'Every Friday, write me a one-page brief on the {industry} market: news about our market, competitors and customers, with links.',
+        text: 'Make a workflow that runs every Friday and writes me a one-page brief on the {industry} market: news about our market, competitors and customers, with links.',
     },
     {
         id: 'faq', title: 'An FAQ from our website', personas: ['founder', 'product'], goals: ['support', 'chat'], needs: [],
-        text: 'Read our website and write a help-centre FAQ of 15 questions and answers from it, saved in the Vault.',
+        text: 'Make a workflow that reads the website I give it and writes a help-centre FAQ of 15 questions and answers from it, saved in the Vault.',
     },
     {
         id: 'invoices', title: 'Invoices into a spreadsheet', personas: ['operations'], goals: ['documents', 'finance'], needs: [],
-        text: 'When I add an invoice or receipt PDF to the Vault, pull out the vendor, date, amount and due date and add a row to a spreadsheet there.',
+        text: 'Make a workflow that, when I run it, reads the invoice and receipt PDFs in a Vault folder and adds the vendor, date, amount and due date of each to a spreadsheet there.',
     },
     {
         id: 'inbox', title: 'Sort the morning inbox', personas: ['operations', 'founder'], goals: ['operations'], needs: ['google'],
-        text: 'Connect Gmail and each morning sort new email into needs reply, FYI and can wait, with a one-line summary of each.',
+        text: 'Make a workflow that connects to Gmail and each morning sorts new email into needs reply, FYI and can wait, with a one-line summary of each.',
     },
     {
         id: 'reviews', title: 'Themes in customer reviews', personas: ['product'], goals: ['research'], needs: [],
-        text: 'Read the reviews on a page I give you, group the feedback into themes and rank the five most-asked-for changes.',
+        text: 'Make a workflow that reads the reviews on a page I give it, groups the feedback into themes and ranks the five most-asked-for changes.',
     },
     {
         id: 'spec', title: 'Notes into a spec', personas: ['product'], goals: ['documents', 'writing'], needs: [],
-        text: 'Turn my rough feature notes into a one-page spec: the problem, who it’s for, scope and open questions, saved in the Vault.',
+        text: 'Make a workflow that turns rough feature notes I give it into a one-page spec: the problem, who it’s for, scope and open questions, saved in the Vault.',
     },
     {
         id: 'sheet', title: 'A report from a spreadsheet', personas: ['analyst'], goals: ['data', 'reporting', 'finance'], needs: [],
-        text: 'When I upload a spreadsheet to the Vault, summarise it: the key numbers, trends and anything odd, as a short report with a table.',
+        text: 'Make a workflow that, when I run it, summarises the newest spreadsheet in the Vault: the key numbers, trends and anything odd, as a short report with a table.',
     },
     {
         id: 'prices', title: 'Track prices weekly', personas: ['analyst'], goals: ['data', 'ecommerce'], needs: [],
-        text: 'Every week, check the prices on five product pages I list and keep a table in the Vault of how they change.',
+        text: 'Make a workflow that runs every week, checks the prices on the product pages I list and keeps a table in the Vault of how they change.',
     },
     {
         id: 'edit', title: 'Edit a draft', personas: ['editor'], goals: ['writing'], needs: [],
-        text: 'Edit a draft I give you for clarity and tone, list each change with its reason, and save the clean copy in the Vault.',
+        text: 'Make a workflow that edits a draft I give it for clarity and tone, lists each change with its reason, and saves the clean copy in the Vault.',
     },
     {
         id: 'trends', title: 'Ten post ideas a week', personas: ['content_creator'], goals: ['writing', 'marketing'], needs: [],
-        text: 'Each week, find 10 topics people in {industry} are talking about and draft a short post idea for each.',
+        text: 'Make a workflow that runs every week, finds 10 topics people in {industry} are talking about and drafts a short post idea for each.',
     },
     {
         id: 'storecheck', title: 'Check our product pages', personas: [], goals: ['ecommerce'], needs: [],
-        text: 'Each week, check our 10 best product pages for broken links, missing prices and missing images, and send me the list.',
+        text: 'Make a workflow that runs every week, checks the product pages I list for broken links, missing prices and missing images, and saves the list in the Vault.',
     },
     {
         id: 'brief', title: 'A researched brief', personas: ['anyone'], goals: ['research'], needs: [],
-        text: 'Research a topic I give you across the web and write a two-page brief with sources.',
+        text: 'Make a workflow that researches a topic I give it across the web and writes a two-page brief with sources.',
     },
     {
         id: 'summarise', title: 'Summarise a page', personas: ['anyone'], goals: [], needs: [],
-        text: 'Summarise any web page I give you into five bullet points and save them in the Vault.',
+        text: 'Make a workflow that summarises any web page I give it into five bullet points and saves them in the Vault.',
     },
     {
         id: 'agent', title: 'An assistant for our website', personas: ['anyone'], goals: ['saas_agents', 'chat', 'support'], needs: [],
-        text: 'Make me an assistant that answers questions about our website, using its pages as what it knows.',
+        text: 'Make me an assistant that answers questions about the website I give it, using its pages as what it knows.',
     },
 ];

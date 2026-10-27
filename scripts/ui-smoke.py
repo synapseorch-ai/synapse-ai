@@ -10368,7 +10368,8 @@ async def check_homestart(browser) -> str:
         if await path.get_by_role("radio", name="Engineering").get_attribute("aria-checked") != "true":
             bad.append("I work in was not remembered")
         await starters.first.click()
-        words = "Read the API docs page I give you and write a small client for it with an example call, saved in the Vault."
+        words = ("Make a workflow that reads an API docs page I give it and writes a small client for that API with an "
+                 "example call, saved in the Vault.")
         box = page.get_by_role("textbox", name="Message Synapse AI").first
         await box.wait_for(timeout=30_000)
         await page.wait_for_function(
