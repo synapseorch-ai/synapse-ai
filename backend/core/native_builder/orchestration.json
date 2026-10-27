@@ -1033,6 +1033,7 @@
             "switch_expression": "state.plan_answer.outcome or \"revise\"",
             "switch_cases": {
                 "alone": "step_check_plan",
+                "stronger": "step_check_plan",
                 "without": "step_check_plan",
                 "connected": "step_plan_context",
                 "revise": "step_plan_context"

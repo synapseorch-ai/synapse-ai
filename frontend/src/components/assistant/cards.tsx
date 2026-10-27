@@ -28,7 +28,7 @@ import { cn } from '@/lib/cn';
 
 import {
     aloneWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan, splitQuestion,
-    withoutWords,
+    strongerWords, withoutWords,
     type Plan, type PlanStep,
 } from './plan';
 
@@ -265,6 +265,31 @@ export function PlanCard({
                                             }}
                                         >
                                             Let {tool} act without asking
+                                        </Button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {plan.models && (
+                        <div className="flex flex-col gap-1 rounded-lg bg-surface-2 px-3 py-2.5">
+                            <span className="text-xs font-medium text-text">Models</span>
+                            <Markdown className="text-[13px] leading-relaxed">{plan.models}</Markdown>
+                            {open && (plan.stronger?.length ?? 0) > 0 && (
+                                <div className="mt-1 flex flex-wrap gap-2">
+                                    {plan.stronger?.map((s) => (
+                                        <Button
+                                            key={s.agent}
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            disabled={sent}
+                                            onClick={() => {
+                                                setSent(true);
+                                                onAnswer(strongerWords(s.agent));
+                                            }}
+                                        >
+                                            {s.label}
                                         </Button>
                                     ))}
                                 </div>

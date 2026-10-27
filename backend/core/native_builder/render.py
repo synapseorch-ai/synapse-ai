@@ -89,6 +89,8 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
                 line += f" (a team: {', '.join(names.get(m, m) for m in a.members)})"
             if a.tools:
                 line += f" — tools: {', '.join(f'`{t}`' for t in a.tools)}"
+            if picked := getattr(plan, "models", {}).get(a.name):
+                line += f" — model: {picked.name} ({picked.reason}{f'; {a.why.strip()}' if a.why else ''})"
             agent_lines.append(line)
     if plan.reuse_agents:
         agent_lines.append("### Existing agents it uses")

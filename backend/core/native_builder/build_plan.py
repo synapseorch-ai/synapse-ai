@@ -162,6 +162,61 @@ def _base(state: dict) -> O.Plan | None:
         return None
 
 
+async def _menu_lines() -> list[str]:
+    """The models a new agent can be on, one short line each: what it can do and what it costs (F966)."""
+    from core.native_builder import models_menu as MM
+
+    lines = []
+    for e in await MM.menu():
+        can = ["calls tools" if e.tools != "none" else "calls no tools"]
+        can += ["reasons"] if e.reasoning else []
+        can += ["reads images"] if e.vision else []
+        can += [f"${e.price_out:g} per 1M output tokens"] if e.price_out is not None else []
+        can += [] if e.can_pay else ["can't be paid for now"]
+        lines.append(f"{e.name}: {', '.join(can)}")
+    return lines[:24]
+
+
+async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.ModelPick], list[str], str]:
+    """Each new agent's model, picked in code from the models this workspace can call (F966): from what it needs, or
+    from the person's own wish, never from an id the planner wrote. Returns the picks; what no model here can do (said
+    on the card, and Build it stays off); and a question when a wish could mean more than one model. `stronger`: the
+    agents the person moved to the stronger model the card offered. No menu read: no picks, the workspace's default,
+    as before."""
+    from core.native_builder import models_menu as MM
+
+    if not plan.agents:
+        return {}, [], ""
+    menu = await MM.menu()
+    if not menu:
+        return {}, [], ""
+    names = {e.id: e.name for e in menu}
+    picks: dict[str, O.ModelPick] = {}
+    issues: list[str] = []
+    for a in plan.agents:
+        # A team's lead hands work to its members through a tool call.
+        has_tools = bool(a.tools) or a.type == "team"
+        wish = (a.model_wish or "").strip()
+        got = (MM.resolve_wish(wish, a.needs, has_tools=has_tools, menu=menu) if wish
+               else MM.pick(a.needs, has_tools=has_tools, menu=menu))
+        if got is None:
+            continue
+        if isinstance(got, MM.Ask):
+            return picks, issues, f"For {a.name}: {got.question}"
+        if isinstance(got, MM.NoModel):
+            issues.append(f"{a.name}: {got.issue}")
+            continue
+        up = MM.stronger_than(got.id, a.needs, has_tools=has_tools, menu=menu)
+        if up and a.name in stronger:
+            picks[a.name] = O.ModelPick(model=up.id, name=names.get(up.id, up.id),
+                                        reason=f"the stronger model you chose, {up.reason}")
+        else:
+            picks[a.name] = O.ModelPick(model=got.id, name=names.get(got.id, got.id), reason=got.reason,
+                                        **({"stronger": up.id, "stronger_price": up.reason}
+                                           if up and a.stronger_helps else {}))
+    return picks, issues, ""
+
+
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_help import product_capabilities
 
@@ -188,6 +243,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
         # What this product does and does not, so a `cannot` names the nearest thing that works (SAI2's review, nit).
         "capabilities": (await product_capabilities({}, server_module, []))["capabilities"],
     }
+    if pack["may_make_agents"] and (models := await _menu_lines()):
+        # What a new agent's model can be, so the planner says what each needs, or the person's wish (F966).
+        pack["models"] = models
     if ws.kbs is not None:
         pack["knowledge_bases"] = [{"id": i, "name": kb.name} for i, kb in ws.kbs.items()
                                    if getattr(kb, "status", "active") == "active"]
@@ -1025,6 +1083,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     alone = list(dict.fromkeys([*(prior.get("alone") or []),
                                 *((answer.get("alone") or []) if answer.get("outcome") == "alone" else [])]))
     base["alone"] = alone
+    # The person's own "use a stronger model for X" (F966): kept while that agent is in the plan.
+    stronger = list(dict.fromkeys([*(prior.get("stronger") or []),
+                                   *((answer.get("stronger") or []) if answer.get("outcome") == "stronger" else [])]))
+    base["stronger"] = stronger
     ws = await workspace(server_module)
     found = await examine(draft, server_module, ws=ws, state=state, without=without, alone=alone)
     plan = found.plan
@@ -1055,6 +1117,12 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     to_research = [t for t in plan.missing if t not in found.misnamed]
     if to_research and not looked and not prior.get("research"):
         return {**base, "outcome": "research", "research": to_research, "plan": plan.model_dump()}
+
+    plan.models, model_issues, model_question = await pick_models(plan, stronger)
+    if model_question:
+        # A wish that could mean more than one model is asked, with the menu's names; never guessed (F966).
+        return {**base, "outcome": "ask", "question": model_question}
+    found.errors += model_issues
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
@@ -1117,6 +1185,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     lifts = {g.tool for g in plan.gates if g.decision == "confirm" and g.set_by == "build"}
     offers += [f"alone:{n}" for n in plan.approvals.asks_first if n not in no_way and n not in connect
                and (n in lifts or n not in gated)]
+    # A stronger model where the planner said it helps, at its price: the person's choice, never made for them (F966).
+    offers += [f"stronger:{n}" for n, p in plan.models.items() if p.stronger]
     if no_way and (not looked or leads or any(t.status == "missing" and t.provider for t in plan.tools)):
         offers.append("find")
     offers += ["change", "stop"]
@@ -1185,12 +1255,15 @@ _WITHOUT = re.compile(r"^\s*build\s+(?:it\s+)?without\s+(?P<what>.+?)\s*[.!]?\s*
 _ALONE = re.compile(r"^\s*let\s+(?P<what>.+?)\s+act\s+without\s+asking\s*[.!]?\s*$", re.I)
 #: The Connect card's own words when it is done (`onConnected`, both panels): "Connected X.", "Saved the H for T.",
 #: and an app's own sign-in, "Signed in to X." (SAI2's review, 8).
+#: The card's "Use a stronger model for X" (`plan.ts` `strongerWords`, F966): the person's own act.
+_STRONGER = re.compile(r"^\s*use\s+a\s+stronger\s+model\s+for\s+(?P<who>.+?)\s*[.!]?\s*$", re.I)
 _CONNECTED = re.compile(r"^\s*(?:connected\b|saved the\b|signed in to\b)", re.I)
 
 
 async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
     """What a review answer that is not F754's yes asks for: `without` (the tools to leave out, by a tool's name or
-    its provider's), `connected`, or `revise` (anything else, which goes back to the planner)."""
+    its provider's), `connected`, `alone` and `stronger` (the card's own presses, only for what it offered), or `revise`
+    (anything else, which goes back to the planner)."""
     state = _state()
     answer = str((_obj(state.get("review_feedback")) or {}).get("feedback") or "")
     if _CONNECTED.match(answer):
@@ -1203,6 +1276,14 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
         picked = [t for t in asks if t.lower() == named and f"alone:{t}" in (checked.get("offers") or [])]
         if picked:
             return {"outcome": "alone", "alone": picked}
+    up = _STRONGER.match(answer)
+    if up:
+        named = up.group("who").strip(" `'\"").lower()
+        offered = checked_in(state).get("offers") or []
+        picked = [o.split(":", 1)[1] for o in offered
+                  if o.startswith("stronger:") and o.split(":", 1)[1].lower() == named]
+        if picked:
+            return {"outcome": "stronger", "stronger": picked}
     m = _WITHOUT.match(answer)
     if m:
         tools = (checked_in(state).get("plan") or {}).get("tools") or []

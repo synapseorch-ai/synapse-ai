@@ -124,7 +124,8 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
         args: dict[str, Any] = {"name": agent["name"], "description": agent.get("description") or "",
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
                                 "system_prompt": prompts.get(agent["name"]) or agent.get("description") or ""}
-        args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy") if agent.get(k)}
+        # The model code picked (F966), which the card showed and the yes covers.
+        args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy", "model") if agent.get(k)}
         calls.append({"tool": "create_agent", "args": args, "makes": agent["id"], "kind": "agent",
                       "name": agent["name"]})
     for inner in inner_order(compiled)[0]:  # each before any workflow of the build that runs it (SAI2's review, 2)
@@ -268,6 +269,23 @@ async def _moved_since_read(state: dict) -> str | None:
 def _stopped(events: list[dict], reason: str) -> dict:
     events.append({"type": "build_stopped", "reason": reason})
     return {"outcome": "stopped", "reason": reason, "effect": ""}
+
+
+async def _models_moved(plan: O.Plan, checked: dict) -> list[str]:
+    """Each new agent whose model code would pick now is not the one the yes saw (F966), in words. A menu that can't
+    be read now keeps what was approved."""
+    from core.native_builder.build_plan import pick_models
+
+    now, issues, question = await pick_models(plan, list(checked.get("stronger") or []))
+    if not now and not issues and not question:
+        return []
+    out = []
+    for a in plan.agents:
+        was, picked = plan.models.get(a.name), now.get(a.name)
+        if (was.model if was else None) != (picked.model if picked else None):
+            out.append(f"{a.name} was to run on {was.name if was else 'the workspace default'}, and would now run "
+                       f"on {picked.name if picked else 'no model here'}")
+    return out
 
 
 def _gates_moved(reviewed: list[O.Gate], now: list[O.Gate]) -> list[str]:
@@ -466,6 +484,11 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         # The card promised what the run asks for (F964; SAI2's point 3): a policy changed since is not what was
         # approved.
         return _stopped(events, "Nothing was built: what the run asks you for changed since your yes — "
+                                + "; ".join(moved) + ". Ask again to see the plan as it is now.")
+    if moved := await _models_moved(plan, checked):
+        # The card said which model each new agent runs on, and the yes covered it: one this workspace can no longer
+        # call, or a better fit since, is not what was approved.
+        return _stopped(events, "Nothing was built: the models this workspace can use changed since your yes — "
                                 + "; ".join(moved) + ". Ask again to see the plan as it is now.")
     issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)
               # A tool this build makes is not there until `step_make_tools` makes it (F944), nor one connected after

@@ -65,6 +65,26 @@ class NewAgent(_Written):
     purpose: str = Field(description="One or two sentences: what it is for")
     tools: list[str] = Field(default_factory=list, description="Exact tool names it needs")
     members: list[str] = Field(default_factory=list, description="team: the names or ids of its members")
+    # What its model needs, never a model: code picks it from what this workspace can call (F966).
+    needs: Literal["simple", "reasoning", "vision"] = Field(
+        "simple", description="What its model needs: simple (most jobs), reasoning (careful judgement, tricky "
+                              "writing), or vision (it reads images). Never a model's name: code picks the model")
+    model_wish: str | None = Field(None, description="Only when the person named a model for this agent: their own "
+                                                     "words, e.g. Claude, the cheapest, nova pro")
+    stronger_helps: bool = Field(False, description="True when a stronger model would clearly do this job better: "
+                                                    "the card offers one at its price, for the person to choose")
+    why: str | None = Field(None, description="A few words on what the job needs from its model, shown beside the "
+                                              "model, e.g. careful legal wording")
+
+
+class ModelPick(BaseModel):
+    """The model code picked for a new agent (F966), and why; a stronger one it offers, at its price."""
+
+    model: str
+    name: str
+    reason: str
+    stronger: str | None = None
+    stronger_price: str | None = None
 
 
 class Schedule(_Written):
@@ -173,6 +193,8 @@ class Plan(PlanDraft):
     room: str | None = None
     #: Every approval the run will ask for, and every block, as the engine's policy decides them (F964).
     gates: list[Gate] = Field(default_factory=list)
+    #: Each new agent's model, by its name, picked in code (F966): never the planner's.
+    models: dict[str, ModelPick] = Field(default_factory=dict)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":

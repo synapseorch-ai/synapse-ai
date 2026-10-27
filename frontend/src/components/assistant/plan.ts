@@ -65,6 +65,8 @@ export interface PlanStep {
     detail?: string;
     /** A change plan's `⚠️ DELETES:` line. */
     deletes?: boolean;
+    /** The model an agent step runs on, when code picked its new agent's (F966): the estimate prices it. */
+    model?: string;
 }
 
 export interface Plan {
@@ -105,6 +107,10 @@ export interface Plan {
     agentInstructions?: { name: string; instructions: string }[];
     /** What one run may spend at most (CAP1), in words: drawn only from the plan's object. */
     limits?: string | null;
+    /** Each new agent's model and why, as code picked it (F966): drawn only from the plan's object. */
+    models?: string | null;
+    /** The stronger models the card offers (`stronger:<agent>`), each with its price (F966). */
+    stronger?: { agent: string; label: string }[];
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -350,6 +356,8 @@ export function planDefinition(plan: Plan): { entry_step_id: string; steps: Reco
         name: s.name,
         type: s.type,
         next_step_id: i + 1 < typed.length ? `plan_${i + 2}` : null,
+        // The model code picked for the step's new agent (F966), so CE1 prices it rather than the default.
+        ...(s.model ? { model: s.model } : {}),
     }));
     return { entry_step_id: steps[0].id, steps };
 }
@@ -561,6 +569,25 @@ function blockedOf(view: PlanObjectView): string | null {
     return lines.length ? lines.map((l) => `- ${l}`).join('\n') : null;
 }
 
+/** The model code picked for a new agent, and a stronger one it offers at its price (F966). */
+export interface PlanModelPick {
+    model: string;
+    name: string;
+    reason: string;
+    stronger?: string | null;
+    stronger_price?: string | null;
+}
+
+/** Each new agent's model as the card says it: "Writer — X (why)". */
+function modelsOf(view: PlanObjectView): string | null {
+    const picks = view.plan.models ?? {};
+    const lines = (view.plan.agents ?? []).filter((a) => picks[a.name]).map((a) => {
+        const p = picks[a.name];
+        return `${a.name} — ${p.name} (${p.reason}${a.why?.trim() ? `; ${a.why.trim()}` : ''})`;
+    });
+    return bullets(lines);
+}
+
 /** The checked plan a build's review carries when its object is one (`context.object === 'plan'`). */
 export interface PlanObjectView {
     object: 'plan';
@@ -570,7 +597,9 @@ export interface PlanObjectView {
         title?: string;
         summary?: string;
         steps: PlanObjectStep[];
-        agents?: { name: string; type?: string }[];
+        agents?: { name: string; type?: string; why?: string | null }[];
+        /** Each new agent's model, by its name, as code picked it (F966). */
+        models?: Record<string, PlanModelPick>;
         schedule?: { cron?: string; says?: string; timezone?: string | null; input?: string | null } | null;
         caps?: { credits?: number | null; dollars?: number | null } | null;
         questions?: string[];
@@ -628,7 +657,8 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
                 const step = stepOf(i + 1, s.name, known(s.type));
                 const detail = [s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '', s.tool ? `uses ${s.tool}` : '']
                     .filter(Boolean).join(' — ');
-                return detail ? { ...step, detail } : step;
+                const model = s.agent ? view.plan.models?.[s.agent]?.model : undefined;
+                return { ...step, ...(detail ? { detail } : {}), ...(model ? { model } : {}) };
             }),
         schedule: when
             ? [cron ? `${when} (${cron}, ${zoneWords(view.plan.schedule?.timezone)})` : when, view.plan.schedule?.input?.trim()
@@ -647,6 +677,13 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
         afterYes: bullets(view.after_yes),
         actsAlone: bullets(view.plan.approvals?.acts_without_asking, true),
         offers: view.offers,
+        models: modelsOf(view),
+        stronger: view.offers.filter((o) => o.startsWith('stronger:')).map((o) => o.slice('stronger:'.length))
+            .filter((agent) => view.plan.models?.[agent]?.stronger)
+            .map((agent) => {
+                const p = view.plan.models![agent];
+                return { agent, label: `Use ${p.stronger} for ${agent}${p.stronger_price ? ` (${p.stronger_price})` : ''}` };
+            }),
         agentInstructions: Object.entries(view.prompts ?? {})
             .filter(([, text]) => text.trim())
             .map(([name, text]) => ({ name, instructions: text.trim() })),
@@ -656,6 +693,11 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
 /** What a "Build without" answer sends, as `read_plan_answer` reads it. */
 export function withoutWords(tool: string): string {
     return `build without ${tool}`;
+}
+
+/** What "Use a stronger model" sends: the person's own choice of the model the card offered (F966). */
+export function strongerWords(agent: string): string {
+    return `use a stronger model for ${agent}`;
 }
 
 /** What "Let it act without asking" sends: the person's own move of a tool out of "asks you first" (BWA1, decision 4). */

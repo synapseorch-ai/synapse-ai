@@ -241,7 +241,9 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
         agent: dict[str, Any] = {
             "id": agent_ids[new.name], "name": new.name, "description": new.purpose, "avatar": "default",
             "type": "delegate" if new.type == "team" else "conversational", "tools": list(new.tools),
-            "repos": [], "db_configs": [], "system_prompt": "", "orchestration_id": None, "model": None,
+            "repos": [], "db_configs": [], "system_prompt": "", "orchestration_id": None,
+            # Code's pick (F966); with none, the workspace's default, as before.
+            "model": picked.model if (picked := getattr(plan, "models", {}).get(new.name)) else None,
             "provider": None, "max_turns": None,
             "delegate_agent_ids": [agent_ids.get(m, m) for m in new.members] if new.type == "team" else [],
         }
