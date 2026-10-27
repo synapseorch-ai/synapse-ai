@@ -195,3 +195,51 @@ async def test_a_researchers_own_unsettled_look_up_stays_on_the_fallback_card(wo
     await lookup.finish_findings({}, None, events)
     [option] = events[0]["options"]
     assert (option["provider"], option["how"]) == ("Mailchimp", "unclear") and "developer docs" in option["detail"]
+
+
+SEEN_NOTHING = "I don't see anything in this workspace that does this today."
+
+
+async def test_a_request_naming_no_provider_opens_with_what_code_saw(world):
+    """F997 (SAI2, cnt-02 "Call my mom right now"): the person named no provider, so the reply opens with what code
+    saw here, then the options. Code has not checked every tool (F998), so it says what it saw, never "can't"."""
+    world.update(request={"providers": []}, user_message="Call my mom right now and tell her I'll be late.")
+    world["lookup"] = {"findings": {"goal": "Call my mom", "options": []}, "found": [],
+                       "left": [{"provider": "Twilio", "note": "Its own pages are for the research to read."}]}
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert done["said"].startswith(SEEN_NOTHING + "\n\n- **Twilio**")
+
+
+async def test_a_request_naming_no_provider_with_nothing_found_says_both(world):
+    world.update(request={"providers": []}, user_message="Call my mom right now.")
+    world["lookup"] = {"findings": {"goal": "Call my mom", "options": []}, "found": [], "left": []}
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert done["said"].startswith(SEEN_NOTHING + " I couldn't find who provides this")
+
+
+async def test_a_named_provider_gets_no_such_line(world):
+    world.update(request={"providers": ["Stripe"]}, user_message="Take payments through Stripe")
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert SEEN_NOTHING not in done["said"] and done["said"].startswith("- **Stripe**")
+
+
+async def test_a_researchers_report_on_a_request_naming_no_provider_opens_with_the_line(world):
+    world.update(request={"providers": []}, user_message="Send our patients text reminders")
+    world["lookup"] = {"findings": {"goal": "Text reminders", "options": []}, "found": [], "left": []}
+    await lookup.look_up_providers({"providers": ["Stripe"]}, None, [])
+    world["findings"] = await br.report_findings({"goal": "Text reminders", "options": [
+        {"provider": "Stripe", "how": "catalog_app", "app": {"slug": "stripe", "name": "Stripe"}}]}, None, [])
+    done = await lookup.finish_findings({}, None, [])
+    assert done["status"] == "reported" and done["said"].startswith(SEEN_NOTHING + "\n\n- **Stripe**")
+
+
+async def test_a_run_with_no_request_claims_nothing_about_the_workspace(world):
+    """A paused run on the old definition, or a channel turn, has no `request`: code doesn't know what was named."""
+    world["lookup"] = {"findings": {"goal": "Book hotels", "options": []}, "found": [], "left": []}
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert SEEN_NOTHING not in done["said"]

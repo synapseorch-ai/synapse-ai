@@ -342,9 +342,12 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
     from core.native_builder.build_plan import _obj, _state
 
     state = _state()
+    request = _obj(state.get("request"))
+    # F997 (SAI2, cnt-02): the person named no provider. Only a run whose front door wrote a request knows that.
+    unnamed = isinstance(request, dict) and not request.get("providers")
     reported = _obj(state.get("findings"))
     if isinstance(reported, dict) and reported.get("status") == "reported":
-        return {**reported, "said": said(reported)}
+        return {**reported, "said": said(reported, unnamed)}
     looked = _obj(state.get("lookup")) or {}
     goal = str(((looked.get("findings") or {}).get("goal")) or state.get("user_message") or "")[:200]
     options = []
@@ -371,20 +374,25 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
                             "sources": [left["page"]] if left.get("page") else []})
     if not options and not looked.get("found"):
         findings = {"status": "nothing", "goal": goal, "options": []}
-        return {**findings, "said": said(findings)}
+        return {**findings, "said": said(findings, unnamed)}
     findings = await research.report_findings({"goal": goal, "options": options}, server_module, events)
     if findings.get("error"):
         findings = {"status": "nothing", "goal": goal, "options": []}
-    return {**findings, "said": said(findings)}
+    return {**findings, "said": said(findings, unnamed)}
 
 
-def said(findings: dict) -> str:
+#: What code saw, never "can't": it has not checked every tool here against the need (F998).
+SEEN_NOTHING = "I don't see anything in this workspace that does this today."
+
+
+def said(findings: dict, unnamed: bool = False) -> str:
     """The research's reply, in code's words, from the findings: one line per provider and what comes next. Nothing
-    in it asks for a key or says anything was booked."""
+    in it asks for a key or says anything was booked. A request that named no provider opens with what code saw in
+    the workspace (F997)."""
     options = [o for o in findings.get("options") or [] if isinstance(o, dict)]
     if not options:
-        return ("I couldn't find who provides this from what I could read. Tell me the service you use, or one "
-                "you'd like to, and I'll look it up.")
+        return ((SEEN_NOTHING + " " if unnamed else "") + "I couldn't find who provides this from what I could read. "
+                "Tell me the service you use, or one you'd like to, and I'll look it up.")
     lines = []
     for o in options:
         name, how, detail = f"**{o.get('provider')}**", o.get("how"), str(o.get("detail") or "").strip()
@@ -399,7 +407,7 @@ def said(findings: dict) -> str:
            "first." if usable else
            "Nothing here can do it for you directly. Say \"build it\" and I'll plan a workflow that finds the options "
            "and leaves the booking or ordering to you.")
-    return "\n".join(f"- {line}" for line in lines) + "\n\n" + nxt
+    return (SEEN_NOTHING + "\n\n" if unnamed else "") + "\n".join(f"- {line}" for line in lines) + "\n\n" + nxt
 
 
 register_builder_tool(FINISH_SCHEMA, finish_findings)
