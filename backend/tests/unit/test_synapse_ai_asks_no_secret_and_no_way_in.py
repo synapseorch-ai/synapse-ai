@@ -175,6 +175,36 @@ async def test_a_turns_reply_never_asks_for_a_key(client, orchestration_id, stat
         assert text.startswith("Here's how it works.") and "Then it runs on its own." in text
 
 
+@pytest.mark.parametrize("orchestration_id, session_id, kept", [
+    ("orch_0192f3a1c4d07b2e9a6f5d8c3b1e0a47", "builder:u1:default", False),
+    ("orch_someone_elses", "builder:u1:default", True),
+])
+async def test_a_hosts_builder_reply_never_asks_for_a_key(client, orchestration_id, session_id, kept):
+    """F1126: cloud's builder is a per-workspace copy under an id it mints, so the net keyed on `orch_native_builder`
+    never ran there. A host's own builder id is the builder's; an ordinary run named `builder:…` is not."""
+    from core.native_builder import identity
+    from core.native_builder.change_tools import said_without_secret_asks
+
+    async def ids():
+        return ["orch_0192f3a1c4d07b2e9a6f5d8c3b1e0a47"]
+
+    identity.set_builder_ids(ids)
+    try:
+        said = f"Here's how it works. {RES_05} Then it runs on its own."
+        run = OrchestrationRun(run_id="builder_reply", orchestration_id=orchestration_id, session_id=session_id,
+                               status="completed", shared_state={"summary": said})
+        await SharedState(run).checkpoint()
+        await said_without_secret_asks(run)
+    finally:
+        identity.set_builder_ids(None)
+    stored = (await SharedState.restore(run.run_id)).run.shared_state["summary"]
+    if kept:
+        assert run.shared_state["summary"] == said and stored == said
+        return
+    for text in (run.shared_state["summary"], stored):
+        assert "Secret API Key" not in text and text.endswith(NEVER_IN_CHAT)
+
+
 def test_the_reply_check_runs_where_every_run_ends():
     import core.builder_tools  # noqa: F401 — loads the builder's modules, as at boot
     from core.native_builder.change_tools import said_without_secret_asks

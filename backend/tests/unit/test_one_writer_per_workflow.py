@@ -104,6 +104,30 @@ class TestWhoHoldsAWorkflow:
         assert holder is not None and holder.session_id == _chat("chat-a")
         assert holder.title == "rename the digest" and holder.user_id == "u1"
 
+    @pytest.mark.parametrize("orchestration_id, holds", [
+        ("orch_0192f3a1c4d07b2e9a6f5d8c3b1e0a47", True),
+        # An ordinary run named into a chat's session, with a ready op in its state, holds nothing: it is no turn.
+        ("orch_digest", False),
+    ])
+    async def test_a_hosts_builder_turn_holds(self, client, orchestration_id, holds):
+        """F1126: cloud's builder turns carry its per-workspace builder id, so a read keyed on `orch_native_builder`
+        found no hold there and two chats both wrote."""
+        from core.native_builder import identity
+
+        run = await _turn("run_a", "chat-a", change_checked=_ready_rename("orch_x"))
+        run.orchestration_id = orchestration_id
+        await SharedState(run).checkpoint()
+
+        async def ids():
+            return ["orch_0192f3a1c4d07b2e9a6f5d8c3b1e0a47"]
+
+        identity.set_builder_ids(ids)
+        try:
+            holder = await W.held_by("orch_x", _chat("chat-b"))
+        finally:
+            identity.set_builder_ids(None)
+        assert (holder is not None) is holds
+
     async def test_never_the_asking_chat_itself(self, client):
         await _turn("run_a", "chat-a", change_checked=_ready_rename("orch_x"))
         assert await W.held_by("orch_x", _chat("chat-a")) is None

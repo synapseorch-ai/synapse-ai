@@ -808,7 +808,9 @@ def _provider_tools(provider: str, servers: dict[str, list[str]], current: dict[
 
 async def _cancelled(run: Any) -> None:
     """A builder run cancelled or expired while it waits never leaves the tools it made (SAI2's addition 2)."""
-    if getattr(run, "orchestration_id", "") == "orch_native_builder" and _made_tools(run):
+    from core.native_builder.identity import is_builder_run
+
+    if _made_tools(run) and await is_builder_run(run):
         await undo_made_tools(run, [], "the build was cancelled before it was saved")
 
 

@@ -926,16 +926,18 @@ async def said_without_secret_asks(run: Any) -> None:
     and code's line pointing to the Connect card and the Vault is said in its place (the manager's net, 10-27). The
     replies of the talk and answer routes are a model's own words, with no finish tool to refuse them; here, where
     every run ends (fleet included), before the panel reads `summary` and the conversation keeps it."""
+    from core.native_builder.identity import is_builder_run
     from core.orchestration.state import SharedState
     from core.secret_scrub import without_secret_asks
 
-    if getattr(run, "orchestration_id", "") != "orch_native_builder" or getattr(run, "status", "") != "completed":
+    if getattr(run, "status", "") != "completed":
         return
     said = run.shared_state.get("summary")
     if not isinstance(said, str):
         return
     cleaned, was = without_secret_asks(said)
-    if was:
+    # Which run it is, asked last: on a host it is a read, and every run that ends comes here.
+    if was and await is_builder_run(run):
         run.shared_state["summary"] = cleaned
         await SharedState(run).checkpoint()
 

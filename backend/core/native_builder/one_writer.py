@@ -72,18 +72,19 @@ async def holds(session_id: str | None, *, run_id: str | None = None) -> dict[st
     from sqlalchemy import select
 
     from core.builder_access import CALLER_KEY
-    from core.native_builder import NATIVE_BUILDER_ORCH_ID
+    from core.native_builder.identity import builder_ids
     from core.store import session
     from core.store.models import OrchestrationRunDB
     from core.tenancy import get_tenant
 
     since = datetime.now(timezone.utc) - RUNNING_FOR
+    ids = sorted(await builder_ids())
     async with session() as s:
         rows = (await s.execute(
             select(OrchestrationRunDB.run_id, OrchestrationRunDB.session_id, OrchestrationRunDB.status,
                    OrchestrationRunDB.waiting_for_human, OrchestrationRunDB.created_at, OrchestrationRunDB.shared_state)
             .where(OrchestrationRunDB.tenant_id == get_tenant(),
-                   OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,
+                   OrchestrationRunDB.orchestration_id.in_(ids),
                    OrchestrationRunDB.status.in_(("running", "paused")))
             .order_by(OrchestrationRunDB.created_at.asc())
         )).all()

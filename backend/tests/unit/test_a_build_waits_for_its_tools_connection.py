@@ -167,6 +167,33 @@ async def test_a_run_ended_while_it_waits_removes_its_tools(client, ends):
     assert await _made_tool() is None
 
 
+@pytest.mark.parametrize("orchestration_id, removed", [
+    ("orch_0192f3a1c4d07b2e9a6f5d8c3b1e0a47", True),
+    # An ordinary run carrying a build's record and a `builder:` session is still no build: its tools are not this
+    # hook's to remove.
+    ("orch_digest", False),
+])
+async def test_a_hosts_build_cancelled_while_it_waits_removes_its_tools(client, orchestration_id, removed):
+    """F1126: cloud's builder runs carry its per-workspace builder id, so a check keyed on `orch_native_builder` left
+    a cancelled build's made tools behind there."""
+    from core.native_builder import identity
+    from core.orchestration.cancel import cancel_run
+
+    run, _ = await _made()
+
+    async def ids():
+        return ["orch_0192f3a1c4d07b2e9a6f5d8c3b1e0a47"]
+
+    identity.set_builder_ids(ids)
+    try:
+        run.orchestration_id, run.session_id, run.status = orchestration_id, "builder:u1:default", "paused"
+        await SharedState(run).checkpoint()
+        await cancel_run(run.run_id)
+    finally:
+        identity.set_builder_ids(None)
+    assert (await _made_tool() is None) is removed
+
+
 async def test_a_saved_builds_tools_are_never_removed_by_a_later_cancel(client):
     from core.orchestration.cancel import cancel_run
     from core.routes.tools import connect_made_tools
