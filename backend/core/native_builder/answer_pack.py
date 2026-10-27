@@ -72,6 +72,18 @@ def may_ask(role: Role) -> list[str]:
     return list(dict.fromkeys(lines))
 
 
+def _may_line(role: Role) -> str:
+    """What this person may ask for, in one line, on every answer (SAI2's review, 10-27): a "could I…" ends in the
+    offer when their role allows it, and never in one it doesn't."""
+    if role.can_act_as(Role.BUILDER):
+        return "They may ask you to build or change things here: offer it when they want something done."
+    if role.can_act_as(Role.APPROVER):
+        return ("They may answer what waits for them and use its cards; building and changing need the builder "
+                "role, so say who can.")
+    return ("They may read and ask about this workspace, not build or change it; say someone with the builder role "
+            "can.")
+
+
 def describe_workspace(name: str, profile: str) -> str:
     """The workspace in one line: its name and its own description; empty when neither is recorded."""
     profile = "" if not profile or profile.strip().startswith(_NOT_RECORDED) else profile.strip()
@@ -106,7 +118,8 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
     else:
         parts.append(f"The workspace: {unrecorded[3:]}".replace("The workspace: has", "This workspace has"))
     who = f"{asker_name}, " if asker_name else ""
-    parts.append(f"Who is asking: {who}{_article(asker_role.label)} {asker_role.label} in this workspace.")
+    parts.append(f"Who is asking: {who}{_article(asker_role.label)} {asker_role.label} in this workspace. "
+                 + _may_line(asker_role))
     if last:
         parts.append(f"What the last turn did: {last}")
     if connect:

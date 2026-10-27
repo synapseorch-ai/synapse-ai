@@ -48,6 +48,18 @@ class TestEveryPackSaysWhoAndWhere:
         assert "unnamed" not in pack and "Who is asking: a owner" not in pack
         assert "Who is asking: an owner in this workspace." in pack
 
+    @pytest.mark.parametrize("needs", ["none", "help", "workspace"])
+    def test_every_pack_says_what_this_person_may_ask_for(self, needs):
+        """SAI2's review (10-27): "Is there a way to send invoices automatically" is talk, and a reply that only
+        describes ends with no offer. Code tells every answer what the asker may ask for, in one line."""
+        builder = _pack(needs, role=Role.BUILDER)
+        assert "may ask you to build or change things here: offer it when they want something done" in builder
+        viewer = _pack(needs, role=Role.VIEWER)
+        assert "offer it when they want something done" not in viewer
+        assert "may read and ask about this workspace, not build or change it" in viewer
+        approver = _pack(needs, role=Role.APPROVER)
+        assert "may answer what waits for them" in approver and "offer it when" not in approver
+
     def test_talk_gets_what_the_product_can_do_from_code(self):
         assert "What this product does" in _pack("none")
 
