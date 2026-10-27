@@ -75,7 +75,8 @@ async def test_the_redraft_note_keeps_what_a_provider_may_supply():
 
 
 @pytest.mark.parametrize("state, goes_to", [
-    ({"plan_checked": {"outcome": "research", "research": ["stripe_create_payment_link"]}}, "step_plan_research"),
+    # Code looks it up first (P3c's splice of P5's look-up); the Researcher reads only what it leaves.
+    ({"plan_checked": {"outcome": "research", "research": ["stripe_create_payment_link"]}}, "step_plan_lookup"),
     ({"plan_checked": {"outcome": "review", "research": ["stripe_create_payment_link"]}}, "step_human_review"),
     ({"plan_checked": {"outcome": "review"}}, "step_human_review"),
     ({"plan_checked": None}, "step_build_failed"),   # unreadable: said, never researched or reviewed

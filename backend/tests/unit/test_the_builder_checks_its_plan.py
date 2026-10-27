@@ -205,7 +205,7 @@ def test_the_builder_checks_between_the_plan_and_the_review():
 
 
 @pytest.mark.parametrize("outcome,goes_to", [
-    ("review", "step_human_review"), ("ask", "step_human_clarify"), ("research", "step_plan_research"),
+    ("review", "step_human_review"), ("ask", "step_human_clarify"), ("research", "step_plan_lookup"),
     ("said", "step_plan_said"), (None, "step_build_failed")])
 @pytest.mark.parametrize("as_text", [False, True])
 def test_the_check_routes_the_plan_as_the_engine_evaluates_it(outcome, goes_to, as_text):

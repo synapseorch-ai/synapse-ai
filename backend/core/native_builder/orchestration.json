@@ -12,6 +12,7 @@
         "answer_pack": {"type": "dict", "default": {}, "description": "What the answer needs to know, built in code from request.needs: the workspace, who asks, the help, what their role may ask for (answer_pack, SAI2-P4)"},
         "workspace_name": {"type": "str", "default": "", "description": "The workspace's name, written by the host; empty when it has none"},
         "asker_name": {"type": "str", "default": "", "description": "The asking person's name, written by the host; empty when it has none"},
+        "plan_lookup": {"type": "dict", "default": {}, "description": "What code found for a build before any model read the web (look_up_providers on check_build's needs, by_route; SAI2-P3's splice): the found verdicts, and what is left for the plan researcher"},
         "lookup": {"type": "dict", "default": {}, "description": "What code found before any model read the web (look_up_providers, SAI2-P5): the found verdicts, and what is left for the Researcher"},
         "findings": {"type": "dict", "default": {}, "description": "What report_findings returned on the research route: the options the findings card shows (F577), and the reply said from them (SAI2-P5)"},
         "plan_research": {"type": "str", "default": "", "description": "The Researcher's report on who provides the tools a build's plan names that nothing here provides (F763)"},
@@ -659,6 +660,117 @@
             "on_exhausted_step_id": "step_plan_rounds"
         },
         {
+            "id": "step_plan_lookup",
+            "name": "Look Up Who Provides It",
+            "type": "tool",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "input_keys": [
+                "plan_checked"
+            ],
+            "output_key": "plan_lookup",
+            "forced_tool": "look_up_providers",
+            "max_turns": 1,
+            "timeout_seconds": 180,
+            "allowed_tools": null,
+            "next_step_id": "step_plan_lookup_route",
+            "max_iterations": 3,
+            "position_x": 1300,
+            "position_y": 350,
+            "tool_arguments": {
+                "by_route": true,
+                "needs": "{{state.plan_checked.needs}}"
+            }
+        },
+        {
+            "id": "step_plan_lookup_route",
+            "name": "Route: Found It All?",
+            "type": "switch",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 3,
+            "position_x": 1300,
+            "position_y": 400,
+            "input_keys": [
+                "plan_lookup"
+            ],
+            "output_key": null,
+            "tool_arguments": null,
+            "next_step_id": null,
+            "switch_expression": "\"found\" if state.plan_lookup.found and not state.plan_lookup.left else \"research\"",
+            "switch_cases": {
+                "found": "step_plan_found",
+                "research": "step_plan_research"
+            },
+            "switch_default_step_id": "step_plan_research"
+        },
+        {
+            "id": "step_plan_found",
+            "name": "Note What Code Found",
+            "type": "tool",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "input_keys": [
+                "plan_lookup"
+            ],
+            "output_key": "plan_findings",
+            "forced_tool": "report_findings",
+            "max_turns": 1,
+            "timeout_seconds": 180,
+            "allowed_tools": null,
+            "next_step_id": "step_plan",
+            "max_iterations": 3,
+            "position_x": 1450,
+            "position_y": 400,
+            "tool_arguments": {
+                "goal": "{{state.plan_lookup.findings.goal}}",
+                "options": []
+            }
+        },
+        {
             "id": "step_plan_research",
             "name": "Find Who Provides It",
             "type": "agent",
@@ -666,7 +778,7 @@
             "finish_tools": [
                 "report_findings"
             ],
-            "prompt_template": "The plan for this build calls tools that nothing in this workspace provides yet: {state.plan_checked.research}. Find out who provides each one and how it would connect here, and report the options with report_findings. Do not plan or build: the plan is redrafted from your report.\n\nWhat the build is for:\n{state.plan_draft.summary}\n\nWhat they asked:\n{state.user_message}\n\nWorkspace profile (what this organisation does, where):\n{state.org_profile}",
+            "prompt_template": "The plan for this build calls tools that nothing in this workspace provides yet: {state.plan_checked.research}. Code has already looked each one up in this product's Apps catalogue, the MCP Registry and the provider's own developer page: what it found is added to your report by code, and what it could not settle is below, each with what it found (`note`) and the page it read, if any (`page`: read_web_page gives you that page again at no cost). Find out who provides each one still to settle and how it would connect here, and report the options with report_findings. Do not plan or build: the plan is redrafted from your report.\n\nStill to settle:\n{state.plan_lookup.left}\n\nWhat the build is for:\n{state.plan_draft.summary}\n\nWhat they asked:\n{state.user_message}\n\nWorkspace profile (what this organisation does, where):\n{state.org_profile}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -831,7 +943,7 @@
             "switch_cases": {
                 "review": "step_human_review",
                 "ask": "step_human_clarify",
-                "research": "step_plan_research",
+                "research": "step_plan_lookup",
                 "said": "step_plan_said",
                 "error": "step_build_failed",
                 "prompts": "step_agent_prompts"
