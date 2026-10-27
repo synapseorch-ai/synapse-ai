@@ -186,12 +186,32 @@ class BrowserTools:
             return _result("The person is driving the browser; wait for them to hand it back.", error=True)
         if body.get("log"):
             self._events.setdefault(key, []).append({"type": "browser_action", "session_id": sid, **body["log"]})
+            await self._keep_shot(key, sid, body["log"])
         text = _scrub(body.get("text", ""))
         if body.get("handover"):
             self._handovers[key] = body["handover"]
             text += ("\n### Synapse\nIt is the person's turn in the browser: " + body["handover"]["reason"]
                      + " Stop here; you will continue when they hand it back.")
         return _result(text, error=bool(body.get("is_error")))
+
+    async def _keep_shot(self, key: str, sid: str, entry: dict) -> None:
+        """The filmstrip's copy (F1103): best effort, never in the agent's way."""
+        ref = entry.get("shot_ref")
+        if not ref or not key.startswith(("run:", "chat:")):
+            return
+        try:
+            await self.host.ensure()
+            async with aiohttp.ClientSession(headers=self.host._headers(),
+                                             timeout=aiohttp.ClientTimeout(total=15)) as http:
+                async with http.get(f"http://127.0.0.1:{self.host.control}/shot",
+                                    params={"session_id": sid, "ref": ref}) as resp:
+                    if resp.status != 200:
+                        return
+                    jpeg = await resp.read()
+            from core.browser import kept
+            await asyncio.to_thread(kept.keep, key, ref, jpeg)
+        except Exception:
+            pass
 
     async def _wait_for_wheel(self, sid: str) -> bool:
         """While the person drives, the agent's call waits for the wheel to come back."""

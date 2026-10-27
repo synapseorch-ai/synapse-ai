@@ -107,6 +107,9 @@ class Session:
         self.handback: str | None = None               # what the agent hears on its next call
         self.took_at: float | None = None
         self.last_frame: dict | None = None
+        self.dialog = None          # a page's alert/confirm/prompt, while the person drives
+        self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
+        self.chooser = None         # a page's file picker, while the person drives
         self.limits = {**DEFAULT_LIMITS, **(limits or {})}
         self.dir = root / sid
         self.log: list[dict] = []
@@ -141,6 +144,7 @@ class Session:
             await self.ctx.add_init_script(_NO_WORKERS)
         self.ctx.on("page", self._on_page)
         self.page = self.ctx.pages[0] if self.ctx.pages else await self.ctx.new_page()
+        self._watch(self.page)
         port = await self._devtools_port()
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -427,11 +431,33 @@ class Session:
         return {"allowed": host}
 
     async def input(self, body: dict) -> dict | None:
-        """The person's mouse, keys and address bar, while they hold the wheel."""
+        """The person's mouse, keys and address bar, while they hold the wheel. An action a page holds up
+        (a click that opens an alert waits for the alert) answers `pending` after 3 s and finishes later."""
         if self.wheel != "person" or self.page is None:
             return None
-        kind = body.get("type")
         page = self.page
+        kind = body.get("type")
+        if kind == "mouse" and body.get("event", "click") == "click":
+            x, y = float(body.get("x", 0)), float(body.get("y", 0))
+            found = await page.evaluate(
+                "([x, y]) => { const s = document.elementFromPoint(x, y)?.closest('select');"
+                " if (!s || s.disabled) return null; return {options: [...s.options].map("
+                "o => ({value: o.value, label: o.label || o.text})), selected: s.value}; }", [x, y])
+            if found:  # the screencast draws no native dropdown: the pane draws this one
+                self.select = {"target": f"{x:g},{y:g}", **found}
+                self._push_state()
+                return {"ok": True, "select": self.select}
+        task = asyncio.ensure_future(self._act(page, kind, body))
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=3)
+        except asyncio.TimeoutError:
+            return {"ok": True, "pending": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        self.last_used = time.monotonic()
+        return {"ok": True}
+
+    async def _act(self, page, kind: str, body: dict) -> None:
         mods = [m for m in (body.get("modifiers") or []) if m in ("Shift", "Control", "Alt", "Meta")]
         for m in mods:
             await page.keyboard.down(m)
@@ -466,22 +492,22 @@ class Session:
                     await page.go_forward(wait_until="commit")
                 elif body.get("action") == "reload":
                     await page.reload(wait_until="commit")
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)[:200]}
         finally:
             for m in reversed(mods):
-                await page.keyboard.up(m)
-        self.last_used = time.monotonic()
-        return {"ok": True}
+                try:
+                    await page.keyboard.up(m)
+                except Exception:
+                    pass
 
     def state(self) -> dict:
-        return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner,
+        return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner, **self.popups(),
                 "held": ({"method": self.held["method"], "url": self.held["url"]} if self.held else None)}
 
     def _push_state(self) -> None:
         """Viewers see the wheel and the banner change at once, on the last frame."""
         if self.last_frame and self.viewers:
-            meta = {**self.last_frame, "wheel": self.wheel, "banner": self.banner, "url": self._page_url()}
+            meta = {k: v for k, v in self.last_frame.items() if k not in ("dialog", "select", "file")}
+            meta = {**meta, "wheel": self.wheel, "banner": self.banner, "url": self._page_url(), **self.popups()}
             for q in list(self.viewers):
                 _offer(q, meta)
 
@@ -517,8 +543,87 @@ class Session:
         return entry
 
     # ── the person's view ────────────────────────────────────────────────────
+    def _watch(self, page) -> None:
+        """The screencast draws no native popup: while the person drives, the pane draws them."""
+        page.on("dialog", self._on_dialog)
+        page.on("filechooser", self._on_chooser)
+
+    def _on_dialog(self, dialog) -> None:
+        if self.wheel == "person":  # the agent's are Playwright MCP's (browser_handle_dialog)
+            self.dialog = dialog
+            self._push_state()
+
+    def _on_chooser(self, chooser) -> None:
+        if self.wheel == "person":
+            self.chooser = chooser
+            asyncio.ensure_future(self._chooser_accepts(chooser))
+
+    async def _chooser_accepts(self, chooser) -> None:
+        try:
+            self._accept = await chooser.element.get_attribute("accept") or ""
+        except Exception:
+            self._accept = ""
+        self._push_state()
+
+    def popups(self) -> dict:
+        out: dict = {}
+        if self.dialog is not None:
+            out["dialog"] = {"type": self.dialog.type, "message": self.dialog.message,
+                             "default": self.dialog.default_value or None}
+        if self.select:
+            out["select"] = self.select
+        if self.chooser is not None:
+            out["file"] = {"multiple": self.chooser.is_multiple(), "accept": getattr(self, "_accept", "") or ""}
+        return out
+
+    async def answer_dialog(self, accept: bool, text: str | None) -> dict | None:
+        dialog, self.dialog = self.dialog, None
+        if dialog is None:
+            return None
+        try:
+            await (dialog.accept(text) if accept and text is not None else dialog.accept() if accept
+                   else dialog.dismiss())
+        except Exception:
+            pass
+        self._push_state()
+        return {"ok": True}
+
+    async def choose(self, target: str, value: str) -> dict | None:
+        """The person's pick from a dropdown the pane drew: set on the element at that point."""
+        if not self.select or self.select.get("target") != target:
+            return None
+        self.select = None
+        try:
+            x, y = (float(v) for v in target.split(","))
+            await self.page.evaluate(
+                "([x, y, v]) => { const s = document.elementFromPoint(x, y)?.closest('select'); if (!s) return;"
+                " s.value = v; s.dispatchEvent(new Event('input', {bubbles: true}));"
+                " s.dispatchEvent(new Event('change', {bubbles: true})); }", [x, y, value])
+        except Exception:
+            pass
+        self._push_state()
+        return {"ok": True}
+
+    async def give_file(self, name: str, data: bytes) -> dict | None:
+        chooser, self.chooser = self.chooser, None
+        if chooser is None:
+            return None
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", name or "file")[:120] or "file"
+        folder = self.dir / "uploads"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / safe
+        path.write_bytes(data)
+        try:
+            await chooser.set_files(str(path))
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        finally:
+            self._push_state()
+        return {"ok": True}
+
     def _on_page(self, page) -> None:
         self.page = page
+        self._watch(page)
         page.on("close", lambda _p: self._page_closed())
         if self.viewers:
             asyncio.ensure_future(self._restart_screencast())
@@ -542,7 +647,7 @@ class Session:
         def on_frame(ev):
             meta = {"jpeg_b64": ev["data"], "w": ev.get("metadata", {}).get("deviceWidth"),
                     "h": ev.get("metadata", {}).get("deviceHeight"), "url": self.page.url if self.page else "",
-                    "wheel": self.wheel, "banner": self.banner}
+                    "wheel": self.wheel, "banner": self.banner, **self.popups()}
             self.last_frame = meta
             for q in list(self.viewers):
                 _offer(q, meta)
@@ -751,6 +856,27 @@ class Host:
         s, body = await self._viewer_body(request)
         return web.json_response(s.allow_site(str(body.get("host") or "")))
 
+    async def dialog(self, request):
+        s, body = await self._viewer_body(request)
+        done = await s.answer_dialog(bool(body.get("accept", True)), body.get("text"))
+        return web.json_response(done) if done else web.json_response({"error": "No dialog is open."}, status=409)
+
+    async def select(self, request):
+        s, body = await self._viewer_body(request)
+        done = await s.choose(str(body.get("target") or ""), str(body.get("value") or ""))
+        return web.json_response(done) if done else web.json_response({"error": "No dropdown is open."}, status=409)
+
+    async def file(self, request):
+        s, body = await self._viewer_body(request)
+        try:
+            data = base64.b64decode(body.get("b64") or "", validate=True)
+        except Exception:
+            return web.json_response({"error": "That file did not arrive whole."}, status=422)
+        if len(data) > 25 * 1024 * 1024:
+            return web.json_response({"error": "Files go up to 25 MB."}, status=413)
+        done = await s.give_file(str(body.get("name") or "file"), data)
+        return web.json_response(done) if done else web.json_response({"error": "No file picker is open."}, status=409)
+
     async def reap(self) -> None:
         while True:
             await asyncio.sleep(30)
@@ -776,13 +902,16 @@ def control_app(host: Host) -> web.Application:
 
 
 def viewer_app(host: Host) -> web.Application:
-    app = web.Application(middlewares=[host.auth])
+    app = web.Application(middlewares=[host.auth], client_max_size=36 * 1024 * 1024)
     app.router.add_get("/frames", host.frames)
     app.router.add_post("/input", host.input)
     app.router.add_post("/wheel/take", host.wheel_take)
     app.router.add_post("/wheel/hand-back", host.wheel_hand_back)
     app.router.add_post("/release", host.release)
     app.router.add_post("/allow-site", host.allow_site)
+    app.router.add_post("/dialog", host.dialog)
+    app.router.add_post("/select", host.select)
+    app.router.add_post("/file", host.file)
     return app
 
 

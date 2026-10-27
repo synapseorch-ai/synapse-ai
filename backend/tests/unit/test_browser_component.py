@@ -736,3 +736,25 @@ async def test_a_hand_back_note_with_a_card_number_is_refused(client, monkeypatc
     monkeypatch.setattr(browser_client, "tools", fake)
     resp = await client.post("/api/browser/s3/wheel/hand-back", json={"note": "card 4111 1111 1111 1111"})
     assert resp.status_code == 422 and resp.json()["detail"] == gate.CARD_WORDS
+
+
+# ── kept screenshots (F1103) ─────────────────────────────────────────────────
+
+def test_a_runs_screenshots_are_kept_read_and_forgotten_with_it():
+    from core.browser import kept
+    kept.keep("run:r_f1103", "1", b"\xff\xd8one")
+    kept.keep("run:r_f1103", 2, b"\xff\xd8two")
+    kept.keep("login:x", "1", b"never")  # a login session keeps nothing
+    assert kept.read("run", "r_f1103", "2") == b"\xff\xd8two"
+    assert kept.read("run", "../r_f1103", "1") is None and kept.read("disk", "r_f1103", "1") is None
+    assert kept.read("run", "r_f1103", "x") is None
+    kept.forget("run", "r_f1103")
+    assert kept.read("run", "r_f1103", "1") is None
+
+
+async def test_the_filmstrip_reads_a_kept_screenshot(client):
+    from core.browser import kept
+    kept.keep("chat:c_f1103", "3", b"\xff\xd8jpeg")
+    ok = await client.get("/api/browser/kept/chat/c_f1103/3")
+    assert ok.status_code == 200 and ok.content == b"\xff\xd8jpeg" and ok.headers["content-type"] == "image/jpeg"
+    assert (await client.get("/api/browser/kept/chat/c_f1103/4")).status_code == 404

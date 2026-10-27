@@ -10,7 +10,7 @@ holds it, and its id is never guessable.
 from __future__ import annotations
 
 import aiohttp
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse
 
@@ -62,7 +62,7 @@ async def shot(session_id: str, ref: str):
 
 #: The person's actions on their view, relayed to the component (V2-CONTRACT.md).
 _VIEWER_ACTIONS = {"input": "/input", "release": "/release", "allow-site": "/allow-site",
-                   "take": "/wheel/take", "hand-back": "/wheel/hand-back"}
+                   "take": "/wheel/take", "hand-back": "/wheel/hand-back", "dialog": "/dialog", "select": "/select"}
 
 
 async def _relay(session_id: str, action: str, request: Request):
@@ -131,6 +131,42 @@ async def release(session_id: str, request: Request):
 @router.post("/api/browser/{session_id}/allow-site")
 async def allow_site(session_id: str, request: Request):
     return await _relay(session_id, "allow-site", request)
+
+
+@router.post("/api/browser/{session_id}/dialog")
+async def answer_dialog(session_id: str, request: Request):
+    return await _relay(session_id, "dialog", request)
+
+
+@router.post("/api/browser/{session_id}/select")
+async def choose(session_id: str, request: Request):
+    return await _relay(session_id, "select", request)
+
+
+@router.post("/api/browser/{session_id}/file")
+async def give_file(session_id: str, file: UploadFile):
+    """The person's own file, for the page's file picker while they drive (V2-CONTRACT.md)."""
+    _owner(session_id)
+    data = await file.read(25 * 1024 * 1024 + 1)
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Files go up to 25 MB.")
+    import base64
+    status, answer = await browser_client.tools.viewer(session_id, "/file", {
+        "name": file.filename or "file", "b64": base64.b64encode(data).decode()})
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")
+    return answer
+
+
+@router.get("/api/browser/kept/{kind}/{ident}/{n}")
+async def kept_shot(kind: str, ident: str, n: str):
+    """A screenshot a run or chat kept after its browser closed, for the filmstrip (F1103)."""
+    import asyncio
+    from core.browser import kept
+    data = await asyncio.to_thread(kept.read, kind, ident, n)
+    if data is None:
+        raise HTTPException(status_code=404, detail="That screenshot is gone.")
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/api/browser/{session_id}/wheel/take")

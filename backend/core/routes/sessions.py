@@ -223,5 +223,7 @@ async def delete_session(session_id: str, agent_id: str | None = Query(default=N
         return {"status": "deleted", "session_id": session_id}
     deleted = await delete_chat_session(session_id, agent_id=agent_id)
     if deleted:
+        from core.browser import kept
+        kept.forget("chat", session_id)  # its browser's screenshots go with it (F1103)
         return {"status": "deleted", "session_id": session_id}
     return JSONResponse(status_code=404, content={"detail": "Session not found"})

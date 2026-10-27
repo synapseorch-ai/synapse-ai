@@ -429,3 +429,62 @@ async def test_a_saved_login_reaches_the_site_and_comes_back_at_close(codrive_ho
         assert any(c["name"] == "sid" and c["value"] == "abc123" for c in closed["login_state"]["cookies"])
     finally:
         await runner.cleanup()
+
+
+async def test_the_pane_draws_the_popups_the_screencast_cannot(codrive_host):
+    picked = {}
+
+    async def page(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0'>"
+            "<select id='s' aria-label='Size' style='position:absolute;left:20px;top:20px;width:200px;height:30px'>"
+            "<option value='s'>Small</option><option value='l'>Large</option></select>"
+            "<button onclick=\"alert('Saved!')\" style='position:absolute;left:20px;top:80px;width:120px;"
+            "height:30px'>Save</button>"
+            "<input id='f' type='file' accept='.pdf' style='position:absolute;left:20px;top:140px;width:200px;"
+            "height:30px'></body></html>"))
+
+    app = web.Application()
+    app.router.add_get("/", page)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    port = tcp._server.sockets[0].getsockname()[1]
+    http, control, viewer = codrive_host
+    try:
+        sid = (await _post(http, control, "/session", {"owner": "login:p", "mode": "co_drive",
+                                                       "person_only": True}))["session_id"]
+        await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+        await asyncio.sleep(0.8)
+
+        status, body = await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 100, "y": 35})
+        assert status == 200 and [o["label"] for o in body["select"]["options"]] == ["Small", "Large"]
+        status, _ = await _view(http, viewer, sid, "/select", {"target": body["select"]["target"], "value": "l"})
+        assert status == 200 and "select" not in await _state(http, control, sid)
+
+        await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 60, "y": 95})
+        for _ in range(30):
+            state = await _state(http, control, sid)
+            if state.get("dialog"):
+                break
+            await asyncio.sleep(0.1)
+        assert state["dialog"] == {"type": "alert", "message": "Saved!", "default": None}
+        status, _ = await _view(http, viewer, sid, "/dialog", {"accept": True})
+        assert status == 200 and "dialog" not in await _state(http, control, sid)
+
+        await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 100, "y": 155})
+        for _ in range(30):
+            state = await _state(http, control, sid)
+            if state.get("file"):
+                break
+            await asyncio.sleep(0.1)
+        assert state["file"] == {"multiple": False, "accept": ".pdf"}
+        import base64
+        status, _ = await _view(http, viewer, sid, "/file", {"name": "invoice.pdf",
+                                                              "b64": base64.b64encode(b"%PDF-1.4").decode()})
+        assert status == 200 and "file" not in await _state(http, control, sid)
+        status, _ = await _view(http, viewer, sid, "/dialog", {"accept": True})
+        assert status == 409  # nothing open
+    finally:
+        await runner.cleanup()

@@ -891,8 +891,10 @@ async def delete_orchestration_log(run_id: str):
     from core.orchestration.journal import FileRunJournal
     from core.orchestration import run_images
     deleted_journal = FileRunJournal.delete(run_id)
-    # The images it kept for a Replay go with its log (F395).
+    # The images it kept for a Replay go with its log (F395), and its browser's screenshots (F1103).
     await run_images.forget(run_id)
+    from core.browser import kept
+    kept.forget("run", run_id)
     if OrchestrationLogger.delete_log(run_id) or deleted_journal:
         return {"status": "deleted", "run_id": run_id}
     raise HTTPException(status_code=404, detail="Log not found")
