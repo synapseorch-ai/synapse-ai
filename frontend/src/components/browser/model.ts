@@ -77,6 +77,8 @@ export type BrowserInput =
 export type BrowserHost = {
   framesUrl: (sessionId: string) => string;
   shotUrl: (sessionId: string, ref: string) => string;
+  /** The screenshot after action `n`, kept with its chat or run once the browser closed (the filmstrip). */
+  keptShotUrl?: (owner: 'chat' | 'run', id: string, n: number) => string;
   /** Ends the agent's turn or run and closes its browser. Resolves false when it could not. */
   stop: (sessionId: string) => Promise<boolean>;
   /** The person takes the wheel: the agent's action in flight finishes and its next one waits. */

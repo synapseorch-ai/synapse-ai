@@ -12746,6 +12746,59 @@ async def check_brwbox(browser) -> str:
     return "a refused answer is said, leaves no trace of what was typed, and the question stays open"
 
 
+@check
+async def check_brwrunpage(browser) -> str:
+    """A run's page shows the browser its agent works in (BRW2, F1075): live while the run runs, then, once it has
+    ended, a filmstrip of what the agent did, from the screenshots kept with the run."""
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    events = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsR", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame({**_BRW_ACTION, "session_id": "bsR"}, "3"),
+        _frame({**_BRW_ACTION, "session_id": "bsR", "n": 2, "action": "browser_navigate",
+                "target": "https://stock.example.com/orders", "shot_ref": "2"}, "4")])
+    bad: list[str] = []
+    try:
+        # Live: the stream stays open, as a running run's does.
+        _M2B_STREAM = events
+        live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live})
+        await ctx.route(re.compile(r".*/api/browser/bsR/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame()))
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            try:
+                await region.wait_for(timeout=8_000)
+            except Exception:
+                bad.append("a running run with a browser shows no live browser")
+        finally:
+            await ctx.close()
+
+        # Ended: the filmstrip, from the kept screenshots.
+        _M2B_STREAM = events + _frame({"type": "stream_complete"})
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
+                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]})
+        try:
+            strip = page.get_by_role("list", name="What the agent did in the browser")
+            try:
+                await strip.wait_for(timeout=8_000)
+                srcs = await strip.locator("img").evaluate_all("els => els.map(e => e.getAttribute('src'))")
+                if srcs != ["/api/browser/kept/run/run_smoke_m2b_done/1", "/api/browser/kept/run/run_smoke_m2b_done/2"]:
+                    bad.append(f"the filmstrip shows {srcs}")
+            except Exception:
+                bad.append("an ended run with a browser shows no filmstrip")
+            if await page.get_by_role("region", name="Live browser").count():
+                bad.append("an ended run still shows the live browser")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a running run shows its live browser; an ended one the filmstrip of kept screenshots"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

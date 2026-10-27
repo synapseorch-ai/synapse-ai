@@ -4,6 +4,7 @@ export {
 } from './BrowserSetup';
 export { BrowserPane } from './BrowserPane';
 export { BrowserTurnCard } from './BrowserTurnCard';
+export { Filmstrip } from './Filmstrip';
 export { PANE_SHARE, PaneHandle, parseShare } from './PaneHandle';
 export { useBrowserFrames, type FrameMemory, type FramesState } from './useBrowserFrames';
 export {

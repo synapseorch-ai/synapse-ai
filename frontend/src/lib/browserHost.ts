@@ -10,6 +10,7 @@ const enc = encodeURIComponent;
 export const OSS_BROWSER_HOST: BrowserHost = {
   framesUrl: (sessionId) => `/api/browser/${enc(sessionId)}/frames`,
   shotUrl: (sessionId, ref) => `/api/browser/${enc(sessionId)}/shot/${enc(ref)}`,
+  keptShotUrl: (owner, id, n) => `/api/browser/kept/${owner}/${enc(id)}/${n}`,
   stop: async (sessionId) => {
     const res = await fetch(`/api/browser/${enc(sessionId)}/stop`, { method: 'POST' });
     // Already closed is stopped too.

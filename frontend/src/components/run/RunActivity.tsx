@@ -23,11 +23,12 @@ import * as React from 'react';
 import { Button, ErrorNote, Markdown, Modal, Spinner } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
+import { BrowserPane, Filmstrip, type BrowserAction } from '@/components/browser';
 import { TeamView, type LaneHandlers, type MemberAnswer } from '@/components/team';
 
 import { useRunHost } from './host';
 import { isLive } from './model';
-import { applyRunEvent, emptyRunLog, LogLine, type RunLogState, type StepResultEntry } from './RunLogView';
+import { applyRunEvent, emptyRunLog, LogLine, type BrowserEntry, type RunLogState, type StepResultEntry } from './RunLogView';
 
 /** A `step_error` with the step's own words from the history (F151, F195): the stream's `error` is sanitised. */
 function withStepError(event: unknown, errors: Record<string, string>): unknown {
@@ -196,6 +197,7 @@ export function RunActivity({
                     {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
                     {/* Paused, nothing works: a member's question is answered, nothing stopped or written to. */}
                     <TeamView state={state.team} kept={!following || status === 'paused'} className="mb-3" {...teamHandlers} />
+                    <RunBrowser runId={runId} live={following} state={state} />
                     {content}
                 </RCollapsible.Content>
             </RCollapsible.Root>
@@ -221,5 +223,42 @@ export function RunActivity({
                 )}
             </Modal>
         </>
+    );
+}
+
+/**
+ * The browser a step's agent worked in (BRW2, F1075): live while the run runs, the same pane as beside a chat; after
+ * it, the filmstrip of what the agent did, from the screenshots kept with the run. Nothing while no browser opened,
+ * or where the product reaches no browser (`RunHost.browser`).
+ */
+function RunBrowser({ runId, live, state }: { runId: string; live: boolean; state: RunLogState }) {
+    const browser = useRunHost().browser;
+    const actions: BrowserAction[] = React.useMemo(
+        () => state.entries.filter((e): e is BrowserEntry => typeof e !== 'string' && e.kind === 'browser'),
+        [state.entries]);
+    if (!browser || !state.browser) return null;
+    if (live) {
+        return (
+            <section aria-label="Live browser" className="mb-3 grid gap-2">
+                <h3 className="text-sm font-medium text-text">Live browser</h3>
+                <BrowserPane
+                    host={browser}
+                    sessionId={state.browser.sessionId}
+                    agentName="The agent"
+                    actions={actions}
+                    className="h-[30rem] overflow-hidden rounded-lg border border-border"
+                />
+            </section>
+        );
+    }
+    if (actions.length === 0) return null;
+    const kept = browser.keptShotUrl;
+    return (
+        <section aria-label="The browser" className="mb-3 grid gap-2">
+            <h3 className="text-sm font-medium text-text">
+                The browser <span className="font-normal text-text-faint">· {actions.length} action{actions.length === 1 ? '' : 's'}</span>
+            </h3>
+            <Filmstrip actions={actions} shotUrl={(a) => (kept ? kept('run', runId, a.n) : null)} />
+        </section>
     );
 }
