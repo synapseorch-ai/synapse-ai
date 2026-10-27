@@ -179,12 +179,15 @@ const VERBS: Record<string, string> = {
  * so those only gain a capital.
  */
 export function actionWords(a: Pick<BrowserAction, 'action' | 'target' | 'actor' | 'because'>): string {
-  if (a.actor === 'guard') return `Kept from leaving the browser: ${a.target}`;
+  // The guard: what it kept from leaving, and a payment it held for the person to press.
+  if (a.actor === 'guard') return a.action === 'held' ? `Held for you: ${a.target}` : `Kept from leaving the browser: ${a.target}`;
   // A final button, pressed by the agent on the person's words or by the person after a turn.
   if (a.action === 'pressed') {
     if (a.actor === 'person') return `You pressed ‘${a.target}’`;
     return a.because ? `Pressed ‘${a.target}’, as you asked: “${a.because}”` : `Pressed ‘${a.target}’`;
   }
+  if (a.action === 'took over') return 'You took over';
+  if (a.action === 'handed back') return a.target ? `You handed the browser back: ${a.target}` : 'You handed the browser back';
   // What left the browser while the person drove: "POST shop.example.com", never a body or a field.
   if (a.action === 'sent') {
     const [method, ...rest] = a.target.trim().split(/\s+/);

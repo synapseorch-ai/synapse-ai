@@ -14,7 +14,8 @@ import { hostOf, type BrowserBanner, type PageDialog, type PageFile, type PageSe
  * "It only loaded data" for sites that send to read. A turn the agent handed over (a password, a code, a check that
  * you're a person, a login that ended, or something it asked) ends with Done, which hands the wheel back. Typing on
  * a site no one listed is allowed here, once a session. A final button the agent stopped at (`press`) is named with
- * what it does, for the person to press; money is always theirs, so a held payment is never let through, only taken
+ * what it does, for the person to press (its reason is that same sentence, so it is not said again); payments,
+ * permanent deletes and closing an account are always theirs, and a held payment is never let through, only taken
  * over (Naveen 2026-10-28).
  */
 export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onTakeOver, failed }: {
@@ -52,9 +53,8 @@ export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onT
       <><strong className="font-semibold">Your turn. Press ‘{label}’ yourself.</strong>{' '}
         It {does.replace(/\.$/, '')}.{' '}
         {money
-          ? 'Payments are always yours: an agent never presses them.'
-          : `${agentName} presses a button like this only when you’ve asked it to in your own words.`}
-        {reason ? <> {agentName} was going to: {reason.replace(/\.$/, '')}.</> : null}</>
+          ? 'Payments, permanent deletes and closing an account are always yours: an agent never presses them.'
+          : `${agentName} presses a button like this only when you’ve asked it to in your own words.`}</>
     );
   } else if (banner.kind === 'allow_typing') {
     words = (
