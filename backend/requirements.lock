@@ -110,6 +110,7 @@ croniter==6.2.4
     # via -r requirements.txt
 cryptography==50.0.0
     # via
+    #   -r requirements.txt
     #   google-auth
     #   pdfminer-six
     #   pyjwt

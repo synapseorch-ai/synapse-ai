@@ -128,6 +128,50 @@ def test_a_tampered_login_reads_as_none(_isolated):
     assert run(wl.state_for(ref)) is None
 
 
+@pytest.mark.parametrize("field, value", [("expires_at", 4_000_000_000), ("created_at", 0), ("sites", ["x.example"])])
+def test_a_login_edited_on_disk_reads_as_none(_isolated, field, value):
+    """Its dates too: an `expires_at` moved on disk must not stretch the 30-day cap (BRW1's review)."""
+    ref = run(wl.keep(None, state=_state(-1), sites=["a.example"], owner="you"))
+    [f] = [p for p in _files(_isolated / "blobs") if p.name.startswith(ref)]
+    record = json.loads(f.read_text())
+    record[field] = value
+    f.write_text(json.dumps(record))
+    assert run(wl.state_for(ref)) is None
+
+
+def test_the_key_is_never_read_half_made(monkeypatch):
+    """Several first writes at once agree on one whole key: none reads an empty or partial file (BRW1's review)."""
+    import threading
+
+    keys, errors = [], []
+    start = threading.Barrier(8)
+
+    def first():
+        try:
+            start.wait()
+            keys.append(wl._key())
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=first) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert len(set(keys)) == 1 and len(keys[0]) == 32
+
+
+@pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX")
+def test_a_key_others_can_read_is_warned_about(caplog):
+    run(wl.keep(None, state=_state(-1), sites=["a.example"], owner="you"))
+    os.chmod(wl.key_path(), 0o644)
+    with caplog.at_level("WARNING", logger="core.website_logins"):
+        wl._key()
+    assert any("readable" in r.getMessage() for r in caplog.records)
+    assert not any(SECRET in r.getMessage() for r in caplog.records)
+
+
 def test_a_login_read_with_another_key_reads_as_none(monkeypatch):
     ref = run(wl.keep(None, state=_state(-1), sites=["a.example"], owner="you"))
     monkeypatch.setenv(wl.KEY_ENV, "A" * 43 + "=")

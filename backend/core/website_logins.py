@@ -6,11 +6,13 @@ good as the password while it lasts. Kept here so a later run starts logged in.
 
 How it is kept:
 
-* **Encrypted.** AES-GCM, one fresh nonce per write. The login's id, owner and sites are bound to the ciphertext as
-  associated data, so a record edited on disk reads as no login rather than as someone else's.
+* **Encrypted.** AES-GCM, one fresh nonce per write. Everything else the record says (its id, owner, sites and both
+  dates) is bound to the ciphertext as associated data, so a record edited on disk, a moved expiry included, reads as
+  no login rather than as someone else's or as one that lasts longer.
 * **The key is not in the store.** A 32-byte key in ``SYNAPSE_WEBSITE_LOGINS_KEY`` (base64), else a file under the
-  install's ``var/keys/`` made on first use, readable by its owner only. The logins themselves live in the tenant's
-  durable directory in the blob store, so a copy of the store alone opens nothing.
+  install's ``var/keys/`` made on first use, readable by its owner only (a looser file is warned about). It is
+  written whole and linked into place, so a reader racing its maker never sees half a key. The logins themselves live
+  in the tenant's durable directory in the blob store, so a copy of the store alone opens nothing.
 * **For a while.** Until the last of its cookies expires, and never more than 30 days. Past that a login reads as
   none and is removed: the run hands over to its owner to log in again.
 * **Never in a log or an event.** Only `list_logins` leaves this module with anything but the state itself, and it
@@ -24,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import re
 import secrets
@@ -33,6 +36,8 @@ from typing import Any
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+_log = logging.getLogger(__name__)
 
 KEY_ENV = "SYNAPSE_WEBSITE_LOGINS_KEY"
 #: The longest a login is kept, whatever its cookies say.
@@ -59,15 +64,28 @@ def _key() -> bytes:
     path = key_path()
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Written whole beside it, then linked into place: the link fails if another first write got there first,
+        # and nobody ever reads a key file still being written. Both then use the one that is there.
+        tmp = path.with_name(f".{path.name}.{secrets.token_hex(6)}")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         try:
-            # O_EXCL: two first writes at once agree on the one key the first of them made.
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            pass
-        else:
             with os.fdopen(fd, "wb") as f:
                 f.write(base64.b64encode(AESGCM.generate_key(bit_length=256)))
-    return base64.b64decode(path.read_bytes().strip())
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.link(tmp, path)
+            except FileExistsError:
+                pass
+        finally:
+            tmp.unlink(missing_ok=True)
+    if os.name == "posix" and path.stat().st_mode & 0o077:
+        _log.warning("The website logins key at %s is readable by others; it should be readable by its owner only "
+                     "(chmod 600).", path)
+    key = base64.b64decode(path.read_bytes().strip())
+    if len(key) != 32:
+        raise ValueError(f"The website logins key at {path} is not a 32-byte key.")
+    return key
 
 
 def _dir() -> Path:
@@ -81,7 +99,7 @@ def _file(login_ref: str) -> Path | None:
 
 
 def _aad(record: dict) -> bytes:
-    return json.dumps({k: record[k] for k in ("id", "owner", "sites")}, sort_keys=True).encode()
+    return json.dumps({k: record[k] for k in _FIELDS}, sort_keys=True).encode()
 
 
 def _expiry(state: dict, now: float) -> float:

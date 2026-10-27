@@ -26,6 +26,8 @@ uvicorn>=0.29,<1
 httpx>=0.27,<1
 google-api-python-client>=2.0,<3
 google-auth-oauthlib>=1.0,<2
+# Website logins' encryption and webhook signatures import it directly (BRW2, F1079); google-auth already pulls it in.
+cryptography>=42,<51
 mcp>=1.29,<2
 chromadb>=0.5,<2
 ollama>=0.2,<1
