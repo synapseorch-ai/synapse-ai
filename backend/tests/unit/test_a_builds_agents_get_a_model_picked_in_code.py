@@ -213,36 +213,47 @@ async def test_a_stronger_model_not_offered_is_never_read():
     assert answer["outcome"] == "revise"
 
 
-# ── a model the provider refuses ──────────────────────────────────────────────────────────────────────────────────
+# ── a model the provider refuses, and one the wallet can't pay ───────────────────────────────────────────────────
 
-#: A model its provider refuses today (BED1, 10-27: Grok 4.7's row enabled on dev, refused by AWS): the host's facts
-#: mark it unusable, and the strongest within the ceiling, so the most tempting pick and offer there is.
-REFUSED = _entry("synapse.grok-4-7", reasoning=True, vision=True, out=14, pay=False)
+#: A model its provider refuses today (BED1, 10-27: Grok 4.7, its row enabled on dev, refused by AWS). The cloud hook
+#: drops every refused `synapse.*` row from the menu (SAI2-P2), so here it is simply not on it.
+REFUSED = "synapse.grok-4-7"
+#: A model this workspace's wallet can't pay for now: on the menu, unusable, and the strongest within the ceiling, so
+#: the most tempting pick and offer there is.
+UNPAID = _entry("synapse.claude-sonnet-unpaid", reasoning=True, vision=True, out=14, pay=False)
 
 
 @pytest.mark.parametrize("agent", [_writer(needs="reasoning"), _writer(stronger_helps=True),
                                    _writer(needs="vision", stronger_helps=True)])
-async def test_a_refused_model_is_never_picked_nor_offered(workspace, agent):
-    workspace["now"] = [*MENU, REFUSED]
+async def test_a_refused_or_unpaid_model_is_never_picked_nor_offered(workspace, agent):
+    workspace["now"] = [*MENU, UNPAID]
     _, checked = await _check(_draft(agent))
     pick = _pick(checked)
-    assert pick["model"] != REFUSED.id and pick.get("stronger") != REFUSED.id
-    assert REFUSED.id not in checked["review"] and not [o for o in checked["offers"] if REFUSED.id in o]
+    for gone in (REFUSED, UNPAID.id):
+        assert pick["model"] != gone and pick.get("stronger") != gone
+        assert gone not in checked["review"] and not [o for o in checked["offers"] if gone in o]
 
 
-async def test_a_wish_for_a_refused_model_is_said_never_picked(workspace):
-    workspace["now"] = [*MENU, REFUSED]
+async def test_a_wish_for_a_refused_model_is_asked_with_the_menus_names(workspace):
+    workspace["now"] = [*MENU, UNPAID]
     _, checked = await _check(_draft(_writer(model_wish="Grok")))
+    assert checked["outcome"] == "ask" and "Warning writer" in checked["question"]
+    assert "No Grok model is available here" in checked["question"] and "synapse.claude-haiku" in checked["question"]
+    assert REFUSED not in checked["question"]
+
+
+async def test_a_wish_for_a_model_the_wallet_cant_pay_is_said_never_picked(workspace):
+    workspace["now"] = [*MENU, UNPAID]
+    _, checked = await _check(_draft(_writer(model_wish="claude sonnet unpaid")))
     assert not checked["plan"].get("models") and "build" not in checked["offers"]
-    assert any(i.startswith("Warning writer: ") and REFUSED.id in i for i in checked["issues"])
+    assert "Warning writer: synapse.claude-sonnet-unpaid can't be paid for now (the wallet)." in checked["issues"]
 
 
-async def test_a_pick_refused_since_the_yes_stops_the_save(client, workspace):
+async def test_a_pick_gone_from_the_menu_since_the_yes_stops_the_save(client, workspace):
     run, _ = await _check(_draft(_writer(needs="reasoning")))
     run.shared_state["review_feedback"] = {"feedback": "Build it"}
     run.shared_state["plan_approval"], _ = await _call("approve_plan", {}, run)
-    workspace["now"] = [e if e.id != "synapse.claude-sonnet" else MM.ModelEntry(**{**e.__dict__, "can_pay": False})
-                        for e in MENU]
+    workspace["now"] = [e for e in MENU if e.id != "synapse.claude-sonnet"]  # refused since: off the menu
     saved, _ = await _call("save_build", {}, run)
     assert saved["outcome"] != "saved" and "synapse.claude-sonnet" in saved["reason"]
 
