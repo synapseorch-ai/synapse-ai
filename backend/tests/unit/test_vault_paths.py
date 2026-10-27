@@ -76,7 +76,6 @@ def test_archive_dir_is_not_bound_at_import():
     [
         "core.orchestration.steps",
         "core.react_engine",
-        "core.server",
         # The stdio tool servers. They are separate processes, so nothing in the
         # rest of the suite would notice them drifting — and `tools/sandbox.py`
         # had in fact never been repointed: it built `backend/data/vault` from
@@ -102,6 +101,20 @@ def test_nothing_re_derives_the_old_vault_path(module_name):
 
     assert not re.search(r'["\']data["\']\s*\)?\s*/\s*["\']vault["\']', source)
     assert "_vault_root()" in source
+
+
+def test_the_server_builds_no_vault_path():
+    """`core.server` built one vault path: the npx Playwright server's `--output-dir`. That server is gone — the
+    browser component (BRW1, F1070) keeps each session's files in its own temporary folder, deleted with the
+    session — so the server must neither re-derive the old path nor build a vault path of its own again.
+    """
+    import core.server as server
+    from core.browser import host
+
+    source = Path(inspect.getfile(server)).read_text(encoding="utf-8")
+    assert not re.search(r'["\']data["\']\s*\)?\s*/\s*["\']vault["\']', source)
+    assert "_vault_root" not in source
+    assert '"--output-dir", str(self.dir / "mcp")' in Path(inspect.getfile(host)).read_text(encoding="utf-8")
 
 
 def test_sandbox_mounts_the_tenant_vault():
