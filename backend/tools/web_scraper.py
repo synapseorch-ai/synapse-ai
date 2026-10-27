@@ -4,9 +4,10 @@ import json
 import logging
 import os
 import sys
-import tempfile
+import time
 import weakref
 from contextlib import contextmanager
+from pathlib import Path
 from urllib.parse import urlparse
 
 
@@ -38,6 +39,7 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
 from core import egress_proxy
+from core.file_roots import within
 from core.egress_guard import BlockedEgress, check_host, check_url
 
 # ---------------------------------------------------------------------------
@@ -45,7 +47,52 @@ from core.egress_guard import BlockedEgress, check_host, check_url
 # ---------------------------------------------------------------------------
 
 MAX_MARKDOWN_LEN = 50_000
-MAX_SCREENSHOT_B64 = 2_000_000  # auto-save to tmp file above this size
+MAX_SCREENSHOT_B64 = 2_000_000  # saved in OUTPUT_DIR above this size
+
+#: Where `screenshot_url` saves a screenshot, and the only place it writes (F1066): the folder this server was
+#: started with (`--output-dir`; the backend gives it `<vault>/tool_outputs/screenshots`). None on a worker's
+#: shared server, which serves every tenant on its task and has no folder of theirs: nothing is saved there.
+OUTPUT_DIR: Path | None = None
+
+
+def output_dir_from(argv: list[str]) -> Path | None:
+    """`--output-dir <path>` from this server's arguments, or None."""
+    if "--output-dir" in argv[:-1]:
+        return Path(argv[argv.index("--output-dir") + 1])
+    return None
+
+
+def _screenshot_target(requested: str | None) -> Path:
+    """Where a screenshot asked to be saved as `requested` goes: inside `OUTPUT_DIR`, links and `..` resolved, or
+    `ValueError`. A bare name is placed in the folder; no name gets one."""
+    folder = OUTPUT_DIR
+    if folder is None:
+        raise ValueError("Screenshots are not saved to disk here: leave out output_path and the image comes back "
+                         "in the answer.")
+    path = Path(requested or f"screenshot-{time.strftime('%Y%m%d-%H%M%S')}.png").expanduser()
+    if not path.is_absolute():
+        path = folder / path
+    folder.mkdir(parents=True, exist_ok=True)
+    if not within(path, [folder]):
+        raise ValueError(f"Screenshots are saved only inside {folder}: give a file name such as 'page.png'.")
+    return path
+
+
+def _write_new(path: Path, data: bytes) -> Path:
+    """Write `data` to a file that did not exist: `path`, else `path` with -1, -2… before its suffix. Never over a
+    file, and never through a link at the last step."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    for n in range(1000):
+        candidate = path if n == 0 else path.with_name(f"{path.stem}-{n}{path.suffix}")
+        try:
+            fd = os.open(candidate, flags, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        return candidate
+    raise ValueError(f"too many screenshots named {path.name}")
 
 # ---------------------------------------------------------------------------
 # Crawler singleton — started lazily on first use
@@ -416,8 +463,8 @@ async def list_tools() -> list[types.Tool]:
             name="screenshot_url",
             description=(
                 "Take a screenshot of a webpage and return it as a base64-encoded PNG. "
-                "Supports full-page capture and optional save-to-disk. "
-                "If the screenshot exceeds 2 MB it is automatically saved to a temp file."
+                "Supports full-page capture and optional saving to the vault's screenshots folder. "
+                "If the screenshot exceeds 2 MB it is saved there automatically."
             ),
             inputSchema={
                 "type": "object",
@@ -432,7 +479,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "Absolute file path to save the PNG (e.g. '/tmp/screenshot.png'). If omitted, returns base64 in the response."
+                        "description": "File name to save the PNG under, in the vault's screenshots folder (e.g. 'page.png'). If omitted, returns base64 in the response."
                     },
                     "full_page": {
                         "type": "boolean",
@@ -709,6 +756,13 @@ async def _handle_screenshot_url(args: dict) -> list[types.TextContent]:
         return _err("url is required")
     if (blocked := await _preflight(url)) is not None:
         return _err(blocked)
+    # Where it would be saved, refused before the page is fetched.
+    target = None
+    if args.get("output_path"):
+        try:
+            target = _screenshot_target(str(args["output_path"]))
+        except ValueError as exc:
+            return _err(str(exc))
 
     delay = float(args.get("delay", 0))
     full_page = args.get("full_page", False)
@@ -729,21 +783,21 @@ async def _handle_screenshot_url(args: dict) -> list[types.TextContent]:
         return _err("Screenshot capture returned no data")
 
     screenshot_b64: str = result.screenshot
-    output_path: str | None = args.get("output_path")
 
-    # Auto-save to temp file if too large for inline embedding
-    if not output_path and len(screenshot_b64) > MAX_SCREENSHOT_B64:
-        tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
-        output_path = tmp.name
-        tmp.close()
+    # Too large to hand back inline: saved in the folder, under a name of its own.
+    if target is None and len(screenshot_b64) > MAX_SCREENSHOT_B64:
+        try:
+            target = _screenshot_target(None)
+        except ValueError:
+            return _err(f"The screenshot is larger than {MAX_SCREENSHOT_B64 // 1_000_000} MB and is not saved "
+                        "to disk here; take it without full_page")
 
-    if output_path:
+    if target is not None:
         try:
             img_bytes = base64.b64decode(screenshot_b64)
-            with open(output_path, "wb") as fh:
-                fh.write(img_bytes)
-            return _ok({"success": True, "url": url, "saved_to": output_path, "size_bytes": len(img_bytes)})
-        except Exception as exc:
+            saved = _write_new(target, img_bytes)
+            return _ok({"success": True, "url": url, "saved_to": str(saved), "size_bytes": len(img_bytes)})
+        except (OSError, ValueError) as exc:
             return _err(f"Failed to save screenshot: {exc}")
 
     return _ok({"success": True, "url": url, "screenshot_base64": screenshot_b64, "format": "png"})
@@ -867,7 +921,8 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
 # ---------------------------------------------------------------------------
 
 async def main() -> None:
-    global _crawler
+    global _crawler, OUTPUT_DIR
+    OUTPUT_DIR = output_dir_from(sys.argv)
     async with stdio_server() as (read_stream, write_stream):
         try:
             await app.run(read_stream, write_stream, app.create_initialization_options())

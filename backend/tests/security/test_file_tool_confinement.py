@@ -221,3 +221,153 @@ async def test_an_allowed_directory_already_covered_is_not_passed_twice(layout, 
         lambda: {"bash_allowed_dirs": [str(layout["vault"]), str(layout["allowed"]), "/no/such/dir"]},
     )
     assert file_roots.allowed_roots() == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
+
+
+# ── The scraper's screenshots are saved in their own folder (F1066) ─────────────────────────────────────────────
+#
+# `screenshot_url` took an `output_path` and opened it for writing, wherever it pointed. It saves inside the folder
+# its server is started with now (`--output-dir`, `<vault>/tool_outputs/screenshots`), never over a file that is
+# there, and not at all where it was started with none (a shared worker).
+
+import base64
+from types import SimpleNamespace
+
+PNG = base64.b64encode(b"\x89PNG\r\n\x1a\nfake").decode()
+PUBLIC = "https://93.184.216.34/"
+
+
+@pytest.fixture
+def shots(tmp_path, monkeypatch):
+    from tools import web_scraper
+
+    folder = tmp_path / "vault" / "tool_outputs" / "screenshots"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)
+
+    class Crawler:
+        async def arun(self, url, config):
+            return SimpleNamespace(success=True, screenshot=PNG, error_message=None)
+
+    async def get_crawler():
+        return Crawler()
+
+    monkeypatch.setattr(web_scraper, "get_crawler", get_crawler)
+    monkeypatch.setattr(web_scraper, "OUTPUT_DIR", folder)
+    return SimpleNamespace(scraper=web_scraper, folder=folder, outside=outside)
+
+
+async def _shoot(shots, **args):
+    out = await shots.scraper._handle_screenshot_url({"url": PUBLIC, **args})
+    return json.loads(out[0].text)
+
+
+@pytest.mark.parametrize("where", ["outside/.bashrc", "vault/notes.md"])
+async def test_a_screenshot_is_never_written_outside_its_folder(shots, tmp_path, where):
+    target = tmp_path / where
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("keep me")
+    payload = await _shoot(shots, output_path=str(target))
+    assert payload["success"] is False
+    assert target.read_text() == "keep me"
+
+
+@pytest.mark.parametrize("name", ["../../outside/x.png", "a/../../../outside/x.png"])
+async def test_a_relative_path_cannot_climb_out(shots, name):
+    payload = await _shoot(shots, output_path=name)
+    assert payload["success"] is False
+    assert not (shots.outside / "x.png").exists()
+
+
+async def test_a_link_inside_the_folder_does_not_lead_out(shots):
+    shots.folder.mkdir(parents=True)
+    os.symlink(shots.outside, shots.folder / "out")
+    payload = await _shoot(shots, output_path="out/x.png")
+    assert payload["success"] is False
+    assert not (shots.outside / "x.png").exists()
+
+
+async def test_a_file_name_is_saved_in_the_folder(shots):
+    payload = await _shoot(shots, output_path="page.png")
+    assert payload["success"] is True
+    assert payload["saved_to"] == str(shots.folder / "page.png")
+    assert (shots.folder / "page.png").read_bytes() == base64.b64decode(PNG)
+
+
+@pytest.mark.parametrize("given", ["shots/a.png", "{folder}/b.png"])
+async def test_a_path_inside_the_folder_is_kept(shots, given):
+    payload = await _shoot(shots, output_path=given.format(folder=shots.folder))
+    assert payload["success"] is True
+    assert payload["saved_to"].startswith(str(shots.folder) + os.sep)
+
+
+async def test_a_file_already_there_is_not_written_over(shots):
+    shots.folder.mkdir(parents=True)
+    (shots.folder / "page.png").write_text("an earlier one")
+    payload = await _shoot(shots, output_path="page.png")
+    assert payload["success"] is True
+    assert (shots.folder / "page.png").read_text() == "an earlier one"
+    assert payload["saved_to"] != str(shots.folder / "page.png")
+    assert payload["saved_to"].startswith(str(shots.folder) + os.sep)
+
+
+async def test_a_large_screenshot_goes_to_the_folder_not_the_systems_temp(shots, monkeypatch, tmp_path):
+    import tempfile
+
+    monkeypatch.setattr(shots.scraper, "MAX_SCREENSHOT_B64", 4)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "systemp"))
+    (tmp_path / "systemp").mkdir()
+    payload = await _shoot(shots)
+    assert payload["success"] is True
+    assert payload["saved_to"].startswith(str(shots.folder) + os.sep)
+    assert list((tmp_path / "systemp").iterdir()) == []
+
+
+async def test_with_no_folder_nothing_is_written_anywhere(shots, monkeypatch, tmp_path):
+    import tempfile
+
+    monkeypatch.setattr(shots.scraper, "OUTPUT_DIR", None)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "systemp"))
+    (tmp_path / "systemp").mkdir()
+    monkeypatch.chdir(shots.outside)
+
+    payload = await _shoot(shots, output_path="x.png")
+    assert payload["success"] is False
+    assert list(shots.outside.iterdir()) == []
+
+    monkeypatch.setattr(shots.scraper, "MAX_SCREENSHOT_B64", 4)
+    payload = await _shoot(shots)
+    assert payload["success"] is False
+    assert list((tmp_path / "systemp").iterdir()) == []
+
+
+async def test_a_small_screenshot_with_no_path_comes_back_inline_as_before(shots):
+    payload = await _shoot(shots)
+    assert payload == {"success": True, "url": PUBLIC, "screenshot_base64": PNG, "format": "png"}
+
+
+def test_the_scraper_reads_its_folder_from_its_arguments(monkeypatch, tmp_path):
+    from tools import web_scraper
+
+    assert web_scraper.output_dir_from(["web_scraper.py"]) is None
+    assert web_scraper.output_dir_from(["web_scraper.py", "--output-dir", str(tmp_path)]) == tmp_path
+
+
+def test_the_backend_starts_the_scraper_with_its_folder(monkeypatch, tmp_path):
+    import core.server as server
+
+    monkeypatch.setattr(server, "DATA_DIR", tmp_path / "data")
+    folder = (tmp_path / "data" / "vault" / "tool_outputs" / "screenshots").resolve()
+    assert server._native_tool_args("web_scraper") == ["--output-dir", str(folder)]
+    assert server._native_tool_args("time") == []
+    assert "args=[script_path, *_native_tool_args(agent_name)]" in __import__("inspect").getsource(server.lifespan)
+
+
+def test_a_shared_worker_starts_it_with_none():
+    """A worker's scraper serves every tenant on the task: there is no one folder to give it."""
+    from pathlib import Path
+
+    from core.scale.worker_server_module import _get_native_mcp_servers
+
+    servers = _get_native_mcp_servers(Path("/tools"), Path("/backend"))
+    if "web_scraper" in servers:
+        assert "--output-dir" not in servers["web_scraper"].args
