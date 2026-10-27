@@ -240,3 +240,84 @@ def test_the_card_draws_after_your_yes_as_the_review_does():
     root = Path(__file__).resolve().parents[3] / "frontend/src/components/assistant"
     plan_ts, cards = (root / "plan.ts").read_text(), (root / "cards.tsx").read_text()
     assert "afterYes: bullets(view.after_yes)," in plan_ts and ">After your yes</span>" in cards
+
+
+# ── a server set up on its own screen, and "done" (F1104) ─────────────────────────────────────────────────────────
+# P5's gate measure, res-04/05 (10-27): an MCP server the catalogue doesn't have (Shippo) gets the Apps screen's card,
+# a link with no press of its own; and the wait went on only on "Connected …". A person who added the server and came
+# back saying "done" was asked again, in a loop. Now any reply that says it is done runs the same exact check, which
+# alone decides; a "not yet" is asked again, and "build without X" and "stop" go first.
+
+SHIPPO = {"provider": "Shippo", "how": "mcp", "detail": "Its own MCP server",
+          "sources": ["https://registry.modelcontextprotocol.io/v0/servers/com.shippo/mcp"],
+          "own_domains": ["goshippo.com"]}
+BUY = {"id": "buy", "type": "tool", "name": "Buy the label", "does": "Buys a Shippo shipping label",
+       "tool": "shippo_buy_label"}
+
+
+async def _waiting_for_shippo():
+    run, _, _ = await _reviewed()
+    run.shared_state[build_plan.FINDINGS_KEY] = {"goal": "x", "options": [SHIPPO]}
+    draft = {"finish": "submit_plan", "kind": "create", "title": "Labels", "summary": "Buys a label.",
+             "steps": [ASK, {**BUY, "next": None}]}
+    draft["steps"][0] = {**ASK, "next": "buy"}
+    run.shared_state[build_plan.DRAFT_KEY] = draft
+    checked, _ = await _call("check_build", {"draft": draft}, run)
+    run.shared_state[build_plan.CHECKED_KEY] = checked
+    await _yes(run)
+    made, events = await _call("save_build", {"only": "tools"}, run)
+    return run, made, events
+
+
+async def _add_shippo():
+    await save_tool({"name": "shippo_buy_label", "tool_type": "http", "method": "POST",
+                     "url": "https://api.goshippo.com/transactions", "headers": {"Authorization": "ShippoToken k"},
+                     "inputSchema": {"type": "object"}})
+    SERVER.tool_router["shippo__shippo_buy_label"] = ("ext_mcp_shippo", "shippo_buy_label")
+
+
+async def test_a_server_set_up_on_its_own_screen_is_waited_for_with_what_to_say():
+    run, made, events = await _waiting_for_shippo()
+    [card] = [e for e in events if e.get("type") == "connection_needed"]
+    assert card["kind"] == "settings", "Shippo is not in the catalogue: the Apps screen's card"
+    assert card["waits_for"] == "Shippo", "its Connected press says \"Connected Shippo.\", and the check decides"
+    assert made["waits"] == ["Shippo"]
+    assert "Connect Shippo on the card above and tell me when it's done" in made["say"]
+
+
+@pytest.mark.parametrize("words", ["done", "Done!", "I added it", "ok, it's set up", "all set", "finished",
+                                   "Connected Shippo."])
+async def test_done_with_the_server_here_goes_on_to_the_save(words):
+    run, _, _ = await _waiting_for_shippo()
+    await _add_shippo()
+    out, _ = await _answer(run, words)
+    assert out["outcome"] == "connected", (words, out)
+
+
+async def test_done_before_the_server_is_here_waits_with_the_same_line_each_time():
+    run, _, _ = await _waiting_for_shippo()
+    first, _ = await _answer(run, "done")
+    again, _ = await _answer(run, "done")
+    assert first["outcome"] == again["outcome"] == "again"
+    assert first["say"] == again["say"]
+    assert "Shippo is not connected yet" in first["say"] and "tell me when it's done" in first["say"]
+    assert "press Connect." not in first["say"], "the Apps screen's card has no Connect press"
+
+
+@pytest.mark.parametrize("words", ["not done yet", "I haven't added it", "I can't", "it won't connect", "not yet",
+                                   "no, not done"])
+async def test_a_not_yet_is_asked_again_even_with_the_server_here(words):
+    run, _, _ = await _waiting_for_shippo()
+    await _add_shippo()
+    out, _ = await _answer(run, words)
+    assert out["outcome"] == "again", (words, out)
+    assert "tell me when it's done" in out["say"]
+
+
+async def test_build_without_and_stop_go_before_a_done_word():
+    run, _, _ = await _waiting_for_shippo()
+    out, _ = await _answer(run, "build without Shippo")
+    assert out["outcome"] == "without" and out["without"] == ["shippo_buy_label"]
+    run, _, _ = await _waiting_for_shippo()
+    out, _ = await _answer(run, "stop")
+    assert out["outcome"] == "stop"

@@ -176,6 +176,10 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
         if screen not in options["screens"]:
             return {"error": f"Unknown screen '{screen}'. Known: {', '.join(options['screens'])}."}
         card["screen"] = {"id": screen, "label": options["screens"][screen]}
+        if waits_for := str(args.get("waits_for") or "").strip():
+            # A build waits on this screen (F1104): the card's own press says "Connected X.", and the build's check of
+            # what is here decides, never the press.
+            card["waits_for"] = waits_for[:80]
 
     events.append(card)
     return {"status": "card_shown", "id": card["id"],

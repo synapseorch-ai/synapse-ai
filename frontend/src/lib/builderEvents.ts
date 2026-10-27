@@ -61,6 +61,8 @@ export interface ConnectSpec {
         host_params?: { name: string; says: string }[];
     };
     screen?: { id: string; label?: string };
+    /** A build waits on this settings screen (F1104): the card's press says "Connected <this>.", and the build checks. */
+    waits_for?: string;
 }
 
 /**

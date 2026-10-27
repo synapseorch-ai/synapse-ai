@@ -122,6 +122,11 @@ export function ConnectCard({
         }
     }
 
+    /** Set up on its own screen (F1104): the press only says so; the build checks what is here, so it claims nothing. */
+    function setUp() {
+        onConnected(`Connected ${spec.waits_for}.`);
+    }
+
     function signedIn() {
         setSecret('');
         setPhase('connected');
@@ -219,10 +224,15 @@ export function ConnectCard({
                             {needsSecret ? 'Save' : 'Connect'}
                         </Button>
                     ) : link ? (
-                        <a href={link} className={buttonStyles({ variant: 'secondary', size: 'sm' })}>
-                            Open {spec.screen?.label ?? 'settings'}
-                            <ArrowRight className="size-3.5" aria-hidden />
-                        </a>
+                        <span className="inline-flex flex-wrap items-center gap-2">
+                            <a href={link} className={buttonStyles({ variant: 'secondary', size: 'sm' })}>
+                                Open {spec.screen?.label ?? 'settings'}
+                                <ArrowRight className="size-3.5" aria-hidden />
+                            </a>
+                            {spec.waits_for && (
+                                <Button type="button" size="sm" onClick={setUp}>Connected</Button>
+                            )}
+                        </span>
                     ) : null}
                 </div>
             )}

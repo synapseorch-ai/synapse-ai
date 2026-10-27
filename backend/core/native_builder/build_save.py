@@ -632,7 +632,7 @@ async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> 
             else:
                 await prepare_connection({"kind": "settings", "screen": "apps", "title": f"Connect {provider}",
                                           "why": f"Add {provider}'s MCP server under Apps and MCP servers: this "
-                                                 f"build uses {uses}."}, None, events)
+                                                 f"build uses {uses}.", "waits_for": provider}, None, events)
     for provider, tools in by.items():
         api = tools[0].api or {}
         auth = api.get("auth") or {}
@@ -648,12 +648,27 @@ async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> 
         return [], ""
     who = " and ".join(waits)
     made = f"I made the tools for {' and '.join(by)}. " if by else ""
-    return waits, (f"{made}Connect {who} on the card{'s' if len(waits) > 1 else ''} above, and I'll save the rest "
-                   f"of the build. Or say \"build without {waits[0]}\", or \"stop\".")
+    return waits, (f"{made}Connect {who} on the card{'s' if len(waits) > 1 else ''} above and tell me when it's "
+                   f"done, and I'll save the rest of the build. Or say \"build without {waits[0]}\", or \"stop\".")
 
 
 #: Ending words at the wait for a connection (F946), read in code like the review's.
 _STOP = re.compile(r"^\s*(?:stop|cancel|never ?mind|don'?t build( it)?|forget it)\s*[.!]?\s*$", re.I)
+#: A reply at the wait that says it is done (F1104; P5's res-04/05: "done" after adding a server on the Apps screen
+#: was asked again, in a loop). It claims nothing: only the exact check of what is here decides. A "not yet" is not
+#: one.
+_DONE = re.compile(r"(?i)\b(?:done|finished|all\s+set|set\s+up|added|connected|installed|ready|did\s+it|ok(?:ay)?|"
+                   r"yes|yep|there)\b")
+_NOT_YET = re.compile(r"(?i)\b(?:not|no|never|cannot|unable|yet)\b|n't\b|n’t\b")
+#: What the wait says when it is still waiting, the same each time.
+_STILL = "connect it on its card above, then tell me when it's done"
+
+
+def says_done(said: str) -> bool:
+    """Whether a reply at the wait says it is done: the card's own words, or the person's (F1104)."""
+    from core.native_builder.build_plan import _CONNECTED
+
+    return bool(_CONNECTED.match(said)) or (_DONE.search(said) is not None and _NOT_YET.search(said) is None)
 
 
 def _made_tools(run: Any) -> list[str]:
@@ -699,7 +714,7 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
     connected go on to the save; "build without X" removes X's tools and goes back to the check with X left out;
     "stop" removes them all; anything else is asked again."""
     from core.http_tool import _UNCONNECTED
-    from core.native_builder.build_plan import _CONNECTED, _WITHOUT
+    from core.native_builder.build_plan import _WITHOUT
     from core.store.resources import load_tools
 
     _, run = _run()
@@ -719,7 +734,7 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
             run.step_history[:] = [_scrub(entry, said) for entry in run.step_history]
         return {"outcome": "again", "say": "That looks like a key, so I didn't keep it: paste it on the card above, "
                                            "which keeps it with the tool, never in this conversation."}
-    if _CONNECTED.match(said):
+    if not _WITHOUT.match(said) and not _STOP.match(said) and says_done(said):
         current = {t.get("name"): t for t in await load_tools()}
         waiting = [n for n in made if not _connected(current.get(n))]
         # Each tool the approved plan names, compared exactly with what is here now (SAI2: never a partial save).
@@ -734,8 +749,7 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
         if waiting or unconnected:
             who = " and ".join(dict.fromkeys([*(providers.get(n, n) for n in waiting),
                                               *(t.provider or t.name for t in unconnected)]))
-            return {"outcome": "again", "say": f"{who} is not connected yet: connect it on its card above, then "
-                                               "press Connect."}
+            return {"outcome": "again", "say": f"{who} is not connected yet: {_STILL}."}
         # Connected, but its tools are named otherwise (or only some are here): the plan is drawn again on the real
         # names, and the person says yes once more (Naveen, in SAI2-P3's tab).
         who = " and ".join(dict.fromkeys(t.provider or t.name for t in absent))
@@ -771,8 +785,7 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
         removed = await undo_made_tools(run, events, "the build stopped")
         say = f"I removed the {who} tools I'd made." if removed else ""
         return {"outcome": "stop", "say": f"{say} Nothing else was built.".strip()}
-    return {"outcome": "again", "say": "I'm waiting for the card above. Connect it, or say \"build without …\", or "
-                                       "\"stop\"."}
+    return {"outcome": "again", "say": f"I'm waiting: {_STILL}. Or say \"build without …\", or \"stop\"."}
 
 
 def _servers_of(server_module: Any) -> dict[str, list[str]]:
