@@ -9085,6 +9085,50 @@ async def check_tour(browser) -> str:
     return "a first visit shows the page's tour once, never the panel; the panel replays it; a section's tabs once"
 
 
+@check
+async def check_firsttour(browser) -> str:
+    """A first visit's tour waits for the first-run model step, then shows once (ONB3, D326, F1060).
+
+    Before, the tour's countdown ran from the page's load and looked for a dialog once: a model step whose readiness
+    answered late opened on top of a running tour, and one already up made the tour give up until the next page. A
+    fresh browser over an install whose model cannot answer, with the answer 3 s late: no tour while the step is
+    still to open or is open; Escape closes the step and Home's tour follows; a reload shows neither.
+    """
+    state = {"closed": False, "posts": []}
+    ctx, page = await _firstrun_page(browser, "/dashboard", state, fresh=True, late=3)
+    popover = page.locator(TOUR_POPOVER)
+    dialog = page.get_by_test_id("model-setup")
+    bad: list[str] = []
+    try:
+        deadline = time.monotonic() + 3 + SETTLE + 3
+        while time.monotonic() < deadline:
+            if await popover.is_visible():
+                bad.append("a tour showed before the model step had opened, or over it")
+                break
+            await asyncio.sleep(0.25)
+        if not await dialog.is_visible():
+            bad.append("the model step never opened")
+        await page.keyboard.press("Escape")
+        await dialog.wait_for(state="hidden", timeout=5_000)
+        try:
+            await popover.wait_for(state="visible", timeout=15_000)
+        except Exception:
+            bad.append("Home's tour did not follow the model step")
+        else:
+            await page.keyboard.press("Escape")
+            await popover.wait_for(state="hidden", timeout=5_000)
+        await page.reload(wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE + 2)
+        if await dialog.count() or await popover.is_visible():
+            bad.append("a reload brought the step or the tour back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "no tour while the model step is to open or open; the page's tour once after it closes; a reload shows neither"
+
+
 async def _open_help(page, how: str = "click"):
     """Press the page's "?" and wait for its panel. Returns (button, dialog)."""
     button = page.get_by_role("button", name=HELP_BUTTON, exact=True)
@@ -11747,10 +11791,13 @@ _FIRSTRUN_MODELS = {"providers": {
 }}
 
 
-async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE):
+async def _firstrun_page(browser, path: str, state: dict, theme: str | None = None, width=WIDE,
+                         fresh: bool = False, late: float = 0):
     """A page over a stubbed install whose model cannot answer (ONB2): `state["closed"]` is the setting,
-    `state["posts"]` every settings write."""
-    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    `state["posts"]` every settings write. `fresh` is a browser that has seen no tour (`firsttour`); `late` holds the
+    readiness answer back that many seconds while the step is still to open, as a slow backend would."""
+    opener = browser.fresh_context if fresh else browser.new_context
+    ctx = await opener(viewport={"width": width[0], "height": width[1]})
     if theme:
         await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{theme}')}}catch(e){{}}")
     await ctx.add_init_script("try{localStorage.removeItem('synapseHomeStartHidden')}catch(e){}")
@@ -11758,6 +11805,8 @@ async def _firstrun_page(browser, path: str, state: dict, theme: str | None = No
                 "gemini_key_hint": "x9Q2"}
 
     async def onboarding(route):
+        if late and not state["closed"]:
+            await asyncio.sleep(late)
         await route.fulfill(status=200, content_type="application/json", body=json.dumps(
             {"model": "ollama.mistral", "ready": False, "problem": _FIRSTRUN_PROBLEM, "closed": state["closed"]}))
 

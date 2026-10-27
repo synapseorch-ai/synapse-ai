@@ -14,6 +14,8 @@
  *
  * A page's guided tour (GUIDE1, F919) is the one thing shown without a click: once per browser on a page's first
  * visit, after the page settles, never over a dialog or the open panel, and never again once finished or put away.
+ * A dialog up when it is due makes it wait for that dialog to close; a first-run surface holds it back from the start
+ * (`tour/hold`, F1060), so onboarding and the model step always come first and the tour once after.
  * The panel's "Take the tour" runs it any time.
  */
 import { usePathname } from 'next/navigation';
@@ -24,6 +26,7 @@ import { PageHeaderSlotProvider } from '@/components/ui';
 import { HelpButton } from './HelpButton';
 import { HelpPanel } from './HelpPanel';
 import { HelpContext, useHelp, type HelpHost, type HelpState } from './host';
+import { tourMayStart, useToursHeld } from './tour/hold';
 import { markTourSeen, screenBusy, tourSeen } from './tour/tour';
 
 /** How long a page settles before its first-visit tour starts. */
@@ -64,14 +67,32 @@ export function HelpProvider({ host, children }: { host: HelpHost; children: Rea
     }, []);
     const startTour = useCallback(() => run(parts), [run, parts]);
 
+    // A first-run surface (onboarding, the model step) holds the tour back while it is up (F1060).
+    const held = useToursHeld();
     useEffect(() => {
         const unseen = parts.filter(p => !tourSeen(p.id, p.tour));
-        if (!unseen.length || open) return;
-        const timer = setTimeout(() => {
-            if (!screenBusy()) run(unseen);
-        }, TOUR_AFTER_MS);
-        return () => clearTimeout(timer);
-    }, [parts, open, run]);
+        if (!unseen.length || !tourMayStart({ held, panelOpen: open })) return;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let watch: MutationObserver | null = null;
+        const arm = () => {
+            timer = setTimeout(() => {
+                if (!screenBusy()) return run(unseen);
+                // A dialog has the screen: the tour waits for it to close, then lets the page settle again.
+                watch = new MutationObserver(() => {
+                    if (screenBusy()) return;
+                    watch?.disconnect();
+                    watch = null;
+                    arm();
+                });
+                watch.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role'] });
+            }, TOUR_AFTER_MS);
+        };
+        arm();
+        return () => {
+            clearTimeout(timer);
+            watch?.disconnect();
+        };
+    }, [parts, open, held, run]);
 
     const value = useMemo<HelpState>(
         () => ({

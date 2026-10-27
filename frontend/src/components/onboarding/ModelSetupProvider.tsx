@@ -14,6 +14,8 @@
  */
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
 
+import { useTourHold } from '@/components/help/tour/hold';
+
 import { ModelSetup } from './ModelSetup';
 
 type Readiness = { model: string; ready: boolean; problem: string | null; closed: boolean };
@@ -42,16 +44,22 @@ export function ModelSetupProvider({ children }: { children: ReactNode }) {
     const [state, setState] = useState<Readiness | null>(null);
     const [open, setOpen] = useState(false);
     const [version, setVersion] = useState(0);
+    const [asked, setAsked] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         void readiness().then(r => {
-            if (cancelled || !r) return;
+            if (cancelled) return;
+            setAsked(true);
+            if (!r) return;
             setState(r);
             if (!r.ready && !r.closed) setOpen(true);
         });
         return () => { cancelled = true; };
     }, []);
+
+    // A page's first-visit tour waits until the step is known not to open, or has closed (F1060).
+    useTourHold(!asked || open, 'model step');
 
     const reread = useCallback(async () => {
         const r = await readiness();
