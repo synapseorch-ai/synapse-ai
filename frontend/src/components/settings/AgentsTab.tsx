@@ -94,7 +94,7 @@ export const AgentsTab = ({
     const boardsOn = !!useNavFlags().boards_enabled;
     const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
-    const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string }[]>([]);
+    const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string; disabled?: boolean }[]>([]);
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -725,7 +725,7 @@ export const AgentsTab = ({
                                                     <Select
                                                         value={draftAgent.type || 'conversational'}
                                                         aria-label="Agent type"
-                                                        options={agentTypes.map(t => ({ value: t.value, label: t.label }))}
+                                                        options={agentTypes.map(t => ({ value: t.value, label: t.label, disabled: t.disabled, hint: t.disabled ? t.description : undefined }))}
                                                         onChange={newType => {
                                                             const oldAutoTools = AUTO_TOOLS_BY_TYPE[draftAgent.type] || [];
                                                             const cleanedTools = draftAgent.tools.filter(

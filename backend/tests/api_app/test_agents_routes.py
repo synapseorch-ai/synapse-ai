@@ -59,6 +59,13 @@ class TestAgentTypes:
         payload = resp.json()
         assert payload  # non-empty
 
+    async def test_the_browser_type_is_shown_but_cannot_be_chosen(self, client):
+        """F1068 (BRW1): the in-app browser is teased in the picker before it ships — listed, disabled."""
+        types = {t["value"]: t for t in (await client.get("/api/agent-types")).json()["types"]}
+        assert types["browser"]["disabled"] is True
+        assert types["browser"]["label"] == "Browser (coming soon)"
+        assert not any(t.get("disabled") for v, t in types.items() if v != "browser")
+
 
 class TestToolPolicySurvivesASave:
     """The regression this screen exists for.

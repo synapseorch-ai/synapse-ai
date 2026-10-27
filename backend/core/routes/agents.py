@@ -412,6 +412,8 @@ async def get_agent_types():
     ]
     if s.get("coding_agent_enabled"):
         types.insert(2, {"value": "code", "label": "Code", "description": "Automatically includes search_codebase for semantic code search."})
+    # Shown, never chosen, until the in-app browser ships (BRW1, D328).
+    types.append({"value": "browser", "label": "Browser (coming soon)", "description": "Works in a browser inside Synapse, together with you.", "disabled": True})
     return {"types": types}
 
 
