@@ -257,3 +257,42 @@ def test_the_pane_events_reach_the_chat_and_the_run():
     assert public_event({"type": "browser_session", "session_id": "s1", "owner": "chat:a"})
     assert public_event({"type": "browser_action", "session_id": "s1", "n": 1, "action": "browser_click",
                          "target": "Search button", "url": "https://example.com", "shot_ref": "1"})
+
+
+async def test_an_agents_browser_call_runs_under_its_chat_and_tells_the_pane(fake_llm):
+    """Through the real agent loop: the owner is the chat, and the pane's events come out of the turn."""
+    import types as _types
+
+    import core.react_engine as re_mod
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+    from core.models import ChatRequest
+    from core.tool_router import ToolRouter
+
+    host = _FakeHost()
+    original_call = host.call
+
+    async def call(method, path, *, json=None, params=None, timeout=120):
+        if path == "/tools":
+            return 200, {"tools": [{"name": "browser_navigate", "description": "Open a URL",
+                                    "inputSchema": {"type": "object", "properties": {"url": {"type": "string"}}},
+                                    "tags": {"read_only": True, "open_world": True}}]}
+        return await original_call(method, path, json=json, params=params, timeout=timeout)
+
+    host.call = call
+    tools = browser_client.BrowserTools(host)
+    router = ToolRouter()
+    router.register("Browser Automation", "browser_navigate")
+    agent = S.make_agent(id="agent_brw1", tools=["browser_navigate"], skip_default_tools=True)
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_navigate", url="https://example.com"), "It is the example page."])
+    events = [e async for e in re_mod.run_react_loop(
+        ChatRequest(message="Open example.com", session_id="s_brw1", agent_id=agent["id"]),
+        _types.SimpleNamespace(agent_sessions={"Browser Automation": tools}, memory_store=None,
+                               tool_router=router))]
+    opened = [c for c in host.calls if c[1] == "/session"]
+    assert opened == [("POST", "/session", {"owner": "chat:s_brw1", "mode": "read_only"})]
+    kinds = [e.get("type") for e in events]
+    assert "browser_session" in kinds and "browser_action" in kinds
+    assert kinds.index("browser_session") < kinds.index("browser_action")
+    assert browser_client.owner.get() is None, "the owner does not outlive the call"

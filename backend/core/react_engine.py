@@ -3739,8 +3739,9 @@ async def run_agent_step(
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
                     yield {"type": "tool_result", "tool_name": tool_name, "preview": preview}
                     # The pane's events: a browser opened, and what each action did.
-                    for _browser_event in _browser_client.tools.take_events(_browser_owner):
-                        yield _browser_event
+                    if _browser_owner and hasattr(session, "take_events"):
+                        for _browser_event in session.take_events(_browser_owner):
+                            yield _browser_event
                     if post_tool_hook is not None:
                         async for _extra in post_tool_hook(tool_name, raw_output):
                             yield _extra
