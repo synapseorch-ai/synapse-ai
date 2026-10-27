@@ -4502,6 +4502,15 @@ async def check_openthatchat(browser) -> str:
         await _send(page, "rename the digest")
         button = page.get_by_role("button", name="Open that chat")
         await button.wait_for(timeout=8_000)
+        # Under the answer that says why, not above it.
+        after = await page.evaluate("""() => {
+            const b = [...document.querySelectorAll('main button')].find(e => e.innerText.trim() === 'Open that chat');
+            const said = [...document.querySelectorAll('main *')].find(e => e.childElementCount === 0
+                && e.textContent.includes('heard: rename the digest'));
+            return !!(b && said && (said.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING));
+        }""")
+        if not after:
+            raise AssertionError("Open that chat is drawn above the answer that says why")
         await button.click()
         if not await _on_screen(page, "Here is the change: move it to 8am."):
             raise AssertionError("Open that chat did not open the chat holding the workflow in a tab")

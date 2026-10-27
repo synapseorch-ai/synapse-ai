@@ -465,10 +465,14 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                 ...state, messages: completeLastStep(state.messages), status: null, done: true, pending: null,
             };
             if (!summary) return withStatus;
-            return append(withStatus, {
+            const said = append(withStatus, {
                 role: 'assistant', content: withoutOpeningJson(String(summary)), kind: 'text',
                 key: `summary-${event.run_id ?? seq}`,
             });
+            // "Open that chat" came during the turn (F1063); it goes under the answer that says why.
+            const asked = said.messages.map((m) => m.role).lastIndexOf('user');
+            const ways = said.messages.filter((m, i) => i > asked && m.kind === 'open_chat');
+            return ways.length ? { ...said, messages: [...said.messages.filter((m) => !ways.includes(m)), ...ways] } : said;
         }
 
         // A Connect card (BWA1): where a key or a sign-in goes instead of the chat.
