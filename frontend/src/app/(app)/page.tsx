@@ -3669,6 +3669,7 @@ export default function Home() {
         closedBefore={frontBrowser.closed}
         onClosed={() => changeBrowser({ closed: true })}
         onHandedBack={() => resumers.current[frontId]?.()}
+        owner={front ? `chat:${front.sessionId}` : undefined}
         {...props}
       />
     );

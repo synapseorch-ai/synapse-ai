@@ -17,7 +17,18 @@ export const OSS_BROWSER_HOST: BrowserHost = {
     return res.ok || res.status === 404;
   },
   takeWheel: (sessionId) => post(`/api/browser/${enc(sessionId)}/wheel/take`, {}),
-  handBack: (sessionId, note) => post(`/api/browser/${enc(sessionId)}/wheel/hand-back`, note ? { note } : {}),
+  handBack: async (sessionId, note) => {
+    const res = await fetch(`/api/browser/${enc(sessionId)}/wheel/hand-back`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(note ? { note } : {}),
+    }).catch(() => null);
+    if (res?.status === 422) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(typeof body.detail === 'string' ? body.detail : 'That note was not taken.');
+    }
+    return !!res?.ok;
+  },
   input: (sessionId, input) => post(`/api/browser/${enc(sessionId)}/input`, input),
   release: (sessionId, allowAddress) => post(`/api/browser/${enc(sessionId)}/release`, { allow_address: allowAddress }),
   allowSite: (sessionId, host) => post(`/api/browser/${enc(sessionId)}/allow-site`, { host }),

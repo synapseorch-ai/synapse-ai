@@ -77,13 +77,16 @@ export type BrowserInput =
 export type BrowserHost = {
   framesUrl: (sessionId: string) => string;
   shotUrl: (sessionId: string, ref: string) => string;
-  /** The screenshot after action `n`, kept with its chat or run once the browser closed (the filmstrip). */
-  keptShotUrl?: (owner: 'chat' | 'run', id: string, n: number) => string;
+  /** The screenshot `shot_ref` names, kept with its chat or run once the browser closed (the filmstrip). */
+  keptShotUrl?: (owner: 'chat' | 'run', id: string, shotRef: number) => string;
   /** Ends the agent's turn or run and closes its browser. Resolves false when it could not. */
   stop: (sessionId: string) => Promise<boolean>;
   /** The person takes the wheel: the agent's action in flight finishes and its next one waits. */
   takeWheel?: (sessionId: string) => Promise<boolean>;
-  /** The wheel goes back to the agent, with what the person wants it to know. */
+  /**
+   * The wheel goes back to the agent, with what the person wants it to know. Resolves false when it could not; a
+   * note refused (a card number in it, BRW1) rejects with an Error whose message is the refusal, to show as it is.
+   */
   handBack?: (sessionId: string, note?: string) => Promise<boolean>;
   /** One input to the page; refused (false) unless the person holds the wheel. */
   input?: (sessionId: string, input: BrowserInput) => Promise<boolean>;

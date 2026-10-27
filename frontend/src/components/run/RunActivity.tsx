@@ -246,6 +246,7 @@ function RunBrowser({ runId, live, state }: { runId: string; live: boolean; stat
                     sessionId={state.browser.sessionId}
                     agentName="The agent"
                     actions={actions}
+                    owner={`run:${runId}`}
                     className="h-[30rem] overflow-hidden rounded-lg border border-border"
                 />
             </section>
@@ -258,7 +259,7 @@ function RunBrowser({ runId, live, state }: { runId: string; live: boolean; stat
             <h3 className="text-sm font-medium text-text">
                 The browser <span className="font-normal text-text-faint">· {actions.length} action{actions.length === 1 ? '' : 's'}</span>
             </h3>
-            <Filmstrip actions={actions} shotUrl={(a) => (kept ? kept('run', runId, a.n) : null)} />
+            <Filmstrip actions={actions} shotUrl={(a) => (kept && a.shot_ref ? kept('run', runId, Number(a.shot_ref)) : null)} />
         </section>
     );
 }

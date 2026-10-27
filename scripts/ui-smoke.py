@@ -12172,6 +12172,11 @@ window.fetch = function (input, init) {
     return Promise.resolve(new Response('{"stopped": true, "closed": true}', {
       status: 200, headers: {'Content-Type': 'application/json'}}));
   }
+  // A note carrying a card number is refused at the hand-back, as the engine refuses it (BRW1, F1100).
+  if (m[2] === 'wheel/hand-back' && body && /\d{13,19}/.test(String(body.note || '').replace(/[\s-]/g, ''))) {
+    return Promise.resolve(new Response(JSON.stringify({detail: "Card details go in the browser; you'll be asked there."}), {
+      status: 422, headers: {'Content-Type': 'application/json'}}));
+  }
   if (m[2] !== 'frames') {
     return Promise.resolve(new Response('{"ok": true}', {status: 200, headers: {'Content-Type': 'application/json'}}));
   }
@@ -12566,11 +12571,19 @@ async def check_brwwheel(browser) -> str:
         if not any(n.get("url") == "https://stock.example.com/orders" for n in navs):
             bad.append(f"the address bar sent {navs}")
 
-        await pane.get_by_role("textbox", name="Note for the agent").fill("I logged in, carry on")
+        # A card number in the note is refused, and the pane says the refusal's own words.
+        note = pane.get_by_role("textbox", name="Note for the agent")
+        await note.fill("card is 4111 1111 1111 1111")
+        await pane.get_by_role("button", name="Hand back").click()
+        if not await _wait(page, "() => document.body.innerText.includes('Card details go in the browser')"):
+            bad.append("a refused note is not said")
+        if not await pane.get_by_role("button", name="Hand back").count():
+            bad.append("a refused hand-back gave the wheel back anyway")
+        await note.fill("I logged in, carry on")
         await pane.get_by_role("button", name="Hand back").click()
         await asyncio.sleep(0.4)
         backs = [c["body"] for c in await _brw_calls(page, "wheel/hand-back")]
-        if backs != [{"note": "I logged in, carry on"}]:
+        if backs[-1:] != [{"note": "I logged in, carry on"}]:
             bad.append(f"Hand back sent {backs}")
     finally:
         await ctx.close()

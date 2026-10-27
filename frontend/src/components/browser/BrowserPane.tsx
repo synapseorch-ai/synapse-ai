@@ -30,7 +30,7 @@ import { useBrowserFrames, type FrameMemory } from './useBrowserFrames';
  * page, the address bar takes an address, and Hand back carries a note.
  */
 export function BrowserPane({
-  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, login,
+  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, login, owner,
   className, style, children,
 }: {
   host: BrowserHost;
@@ -53,6 +53,8 @@ export function BrowserPane({
    * browser either way; there is no Stop, Take over or Hand back.
    */
   login?: { sites: string[]; onFinish: (keep: boolean) => void; busy?: boolean };
+  /** Whose browser it is (`chat:<id>`, `run:<id>`): once it closes, its lines' screenshots are the kept ones. */
+  owner?: string;
   className?: string;
   style?: React.CSSProperties;
   /** The pane's own edge, such as its resize handle. */
@@ -103,7 +105,13 @@ export function BrowserPane({
   };
   const handBack = async () => {
     setWheelFailed(null);
-    const ok = await host.handBack?.(sessionId, note.trim() || undefined).catch(() => false);
+    let refused: string | null = null;
+    const ok = await host.handBack?.(sessionId, note.trim() || undefined)
+      .catch((e: unknown) => { refused = e instanceof Error ? e.message : null; return false; });
+    if (refused) {
+      setWheelFailed(refused);
+      return;
+    }
     if (ok) {
       setMoved({ wheel: 'agent', on: frame });
       setNote('');
@@ -126,6 +134,16 @@ export function BrowserPane({
   const release = host.release ? () => resuming(host.release!(sessionId, true)) : undefined;
   const allow = host.allowSite ? (site: string) => resuming(host.allowSite!(sessionId, site)) : undefined;
   const banner = !closed && frame?.banner && answeredOn !== frame ? frame.banner : null;
+
+  // A line's screenshot: the open browser's own; once it has closed, the copy kept with its chat or run.
+  const [ownerKind, ownerId] = (owner ?? '').split(':', 2) as [string, string | undefined];
+  const shotFor = (a: BrowserAction) => {
+    if (!a.shot_ref) return null;
+    if (closed && host.keptShotUrl && ownerId && (ownerKind === 'chat' || ownerKind === 'run')) {
+      return host.keptShotUrl(ownerKind, ownerId, Number(a.shot_ref));
+    }
+    return host.shotUrl(a.session_id, a.shot_ref);
+  };
 
   const url = frame?.url || actions[actions.length - 1]?.url || '';
   const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : `${agentName} is driving`;
@@ -273,7 +291,7 @@ export function BrowserPane({
         <ol ref={list} aria-label="What the agent did" className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">
           {actions.map(a => (
             <li key={`${a.session_id}:${a.n}`}>
-              <BrowserActionLine action={a} dense shot={a.shot_ref ? host.shotUrl(a.session_id, a.shot_ref) : null} />
+              <BrowserActionLine action={a} dense shot={shotFor(a)} />
             </li>
           ))}
         </ol>
