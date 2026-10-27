@@ -502,8 +502,15 @@ async def _tool_id_named(s, tenant: str, name: str) -> str | None:
 
 
 async def delete_tool(tool_id: str) -> bool:
+    """Delete a tool, and tell the host (F1127): a host that keeps a tool's credentials beside it (cloud's
+    `org_secrets`, `tool:{id}:…`) removes them, as its own route does, and records the delete. Whether one was."""
     from core.store.models import ToolDB
-    return await _delete(ToolDB, ToolDB.id, tool_id)
+
+    document = await get_tool(tool_id) if _deleted_observer is not None else None
+    deleted = await _delete(ToolDB, ToolDB.id, tool_id)
+    if deleted:
+        await _tell_deleted("tool", tool_id, document)
+    return deleted
 
 
 async def delete_tool_named(name: str) -> bool:

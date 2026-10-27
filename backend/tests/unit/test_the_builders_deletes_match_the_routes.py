@@ -104,6 +104,37 @@ class TestAHostThatKeepsRows:
         assert host_keeps_rows == [("agent", "agent_k1", "Front desk")]
 
 
+class TestADeletedToolIsTold:
+    """F1127: a tool deleted through the store (a build's made tools, removed on "build without", "stop", a give-up or
+    a cancel) told the host nothing, so cloud kept the tool's stored key (`tool:{id}:…` in `org_secrets`), still
+    decryptable, with no audit row. Workflows and agents always told it."""
+
+    async def test_by_name_and_by_id(self, host_keeps_rows):
+        from core.store.resources import delete_tool, delete_tool_named, get_tool, load_tools, save_tool
+
+        await save_tool({"id": "tool_k1", "name": "acme_send", "url": "https://api.acme.example/send"})
+        await save_tool({"id": "tool_k2", "name": "acme_list", "url": "https://api.acme.example/list"})
+
+        assert await delete_tool_named("acme_send") is True
+        assert await delete_tool("tool_k2") is True
+
+        assert await get_tool("tool_k1") is None and await load_tools() == []
+        assert host_keeps_rows == [("tool", "tool_k1", "acme_send"), ("tool", "tool_k2", "acme_list")]
+
+    async def test_one_that_is_not_there_is_not_told(self, host_keeps_rows):
+        from core.store.resources import delete_tool, delete_tool_named
+
+        assert await delete_tool_named("nobody") is False and await delete_tool("tool_none") is False
+        assert host_keeps_rows == []
+
+    async def test_with_no_host_it_is_deleted_as_before(self):
+        from core.store.resources import delete_tool_named, get_tool, save_tool
+
+        await save_tool({"id": "tool_s1", "name": "acme_send", "url": "https://api.acme.example/send"})
+        assert await delete_tool_named("acme_send") is True
+        assert await get_tool("tool_s1") is None
+
+
 class TestTheBuildersAgentDeleteWipesItsMemory:
     async def test_as_the_route_does(self):
         """An agent created later with the same id must not start out knowing this one's memories (F297)."""
