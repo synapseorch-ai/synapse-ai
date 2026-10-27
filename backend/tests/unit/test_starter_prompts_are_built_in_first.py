@@ -98,6 +98,27 @@ def test_no_row_promises_a_start_the_product_does_not_have():
     assert not promised, f"rows that promise a start on a file being added: {promised}"
 
 
+def test_the_starters_naveen_named_are_there():
+    # Naveen (2026-10-27): "e commerce agent for their business they'll paste open ai spec and we'll create tools and
+    # agent, developer connects github and checks PRs, product manager connect jira and analyse and report, connect
+    # figma for designers... and little more vast and varieties".
+    rows = {r["id"]: r for r in _rows()}
+    wanted = {
+        "ecomagent": ("ecommerce", None, "openapi"),
+        "prs": ("development", "github", "pull request"),
+        "jirareport": ("reporting", "jira", "report"),
+        "figmareview": ("design", "figma", "figma"),
+    }
+    for rid, (goal, need, words) in wanted.items():
+        assert rid in rows, f"{rid} is not in the table"
+        assert goal in rows[rid]["goals"], f"{rid} is not offered for the {goal} goal"
+        assert (need in rows[rid]["needs"]) if need else not rows[rid]["needs"], f"{rid} needs {rows[rid]['needs']}"
+        assert words in rows[rid]["text"].lower(), f"{rid} does not say {words!r}"
+    assert rows["prs"]["personas"] == ["engineer"] and "product" in rows["jirareport"]["personas"]
+    assert "designer" in rows["figmareview"]["personas"]
+    assert len(rows) >= 40, "the table should cover far more than two prompts per person"
+
+
 def test_most_rows_need_no_app():
     rows = _rows()
     built_in = [r for r in rows if not r["needs"]]

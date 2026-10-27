@@ -48,6 +48,12 @@ export const INDUSTRY_WORDS: Record<string, string> = {
 export const NEED_LABELS: Record<string, string> = {
     github: 'GitHub',
     google: 'Gmail',
+    jira: 'Jira',
+    figma: 'Figma',
+    slack: 'Slack',
+    notion: 'Notion',
+    linear: 'Linear',
+    stripe: 'Stripe',
 };
 
 export const STARTERS: Starter[] = [
@@ -138,5 +144,81 @@ export const STARTERS: Starter[] = [
     {
         id: 'agent', title: 'An assistant for our website', personas: ['anyone'], goals: ['saas_agents', 'chat', 'support'], needs: [],
         text: 'Make me an assistant that answers questions about the website I give it, using its pages as what it knows.',
+    },
+    {
+        id: 'ecomagent', title: 'A shopping assistant from your API', personas: ['founder', 'operations'], goals: ['ecommerce', 'custom_api', 'saas_agents', 'support'], needs: [],
+        text: 'Make me a shopping assistant for our store from the OpenAPI spec I paste: tools for its products and orders, and an agent that answers customers with them.',
+    },
+    {
+        id: 'jirareport', title: 'A weekly report from Jira', personas: ['product', 'operations'], goals: ['reporting', 'operations', 'development'], needs: ['jira'],
+        text: 'Make a workflow that connects to Jira and every Friday reads this week’s issues: what shipped, what slipped and what is blocked, as a one-page report for the team.',
+    },
+    {
+        id: 'figmareview', title: 'A copy check of a Figma file', personas: ['designer'], goals: ['design', 'writing'], needs: ['figma'],
+        text: 'Make a workflow that connects to Figma and, for a design file I name, lists every screen with its text and checks the copy for typos and tone, with notes saved in the Vault.',
+    },
+    {
+        id: 'linearweekly', title: 'A Monday update from Linear', personas: ['engineer', 'product'], goals: ['development', 'reporting'], needs: ['linear'],
+        text: 'Make a workflow that connects to Linear and every Monday lists last week’s finished issues and the oldest open ones, as a short update for the team.',
+    },
+    {
+        id: 'notionnotes', title: 'Meeting notes into Notion', personas: ['operations', 'product', 'founder'], goals: ['documents', 'writing', 'operations'], needs: ['notion'],
+        text: 'Make a workflow that connects to Notion and turns the meeting notes I paste into a tidy page there: decisions, owners and next steps.',
+    },
+    {
+        id: 'slackbrief', title: 'A morning brief in Slack', personas: ['founder', 'marketer'], goals: ['research', 'reporting'], needs: ['slack'],
+        text: 'Make a workflow that connects to Slack and every morning posts a five-line brief of the news on the topics I list to a channel I pick.',
+    },
+    {
+        id: 'stripeweekly', title: 'Last week in Stripe', personas: ['founder', 'analyst'], goals: ['finance', 'reporting', 'ecommerce'], needs: ['stripe'],
+        text: 'Make a workflow that connects to Stripe and every Monday reports last week’s revenue, new customers and failed payments in a short table.',
+    },
+    {
+        id: 'apitools', title: 'Tools from an API spec', personas: [], goals: ['custom_api', 'development'], needs: [],
+        text: 'Make tools from the OpenAPI spec I paste, then a workflow that calls them each morning to check the API answers, with a report of anything that failed saved in the Vault.',
+    },
+    {
+        id: 'supportbot', title: 'A support assistant from your help articles', personas: ['founder', 'product'], goals: ['support', 'chat', 'saas_agents'], needs: [],
+        text: 'Make me a support assistant that answers customer questions from the help articles I put in the Vault, and says so when it does not know.',
+    },
+    {
+        id: 'jobpost', title: 'A job post from a few lines', personas: ['founder', 'operations'], goals: ['writing', 'operations'], needs: [],
+        text: 'Make a workflow that turns a few lines about a role I describe into a job post and five screening questions, saved in the Vault.',
+    },
+    {
+        id: 'seo', title: 'An SEO check of a page', personas: ['marketer', 'content_creator'], goals: ['marketing'], needs: [],
+        text: 'Make a workflow that checks a web page I give it for SEO: title, description, headings, links and images, then lists the fixes in order of impact.',
+    },
+    {
+        id: 'newsletter', title: 'A newsletter from the week’s links', personas: ['marketer', 'content_creator', 'editor'], goals: ['writing', 'marketing'], needs: [],
+        text: 'Make a workflow that runs every Friday, reads the links I list in a note in the Vault and drafts our newsletter from them.',
+    },
+    {
+        id: 'outreach', title: 'First emails to a list of companies', personas: ['sales'], goals: ['sales', 'writing'], needs: [],
+        text: 'Make a workflow that writes a short, personal first email to each company in a spreadsheet in the Vault, using what its website says, and saves the drafts there.',
+    },
+    {
+        id: 'contract', title: 'A contract in one page', personas: ['operations', 'founder'], goals: ['documents', 'finance'], needs: [],
+        text: 'Make a workflow that reads a contract PDF I give it and lists the parties, dates, renewal terms, fees and anything unusual, as a one-page summary.',
+    },
+    {
+        id: 'expenses', title: 'Expenses by category', personas: ['operations', 'analyst'], goals: ['finance', 'data'], needs: [],
+        text: 'Make a workflow that, when I run it, totals the expense receipts in a Vault folder by category and month in a spreadsheet.',
+    },
+    {
+        id: 'chart', title: 'A chart from a CSV', personas: ['analyst'], goals: ['data', 'reporting'], needs: [],
+        text: 'Make a workflow that, when I run it, turns a CSV in the Vault into a chart and a short summary of what changed since the last run.',
+    },
+    {
+        id: 'translate', title: 'A document in other languages', personas: ['editor', 'content_creator'], goals: ['writing', 'documents'], needs: [],
+        text: 'Make a workflow that translates a document I give it into the languages I list, keeping its headings and tone, and saves each copy in the Vault.',
+    },
+    {
+        id: 'moodboard', title: 'A reference board of websites', personas: ['designer'], goals: ['design', 'research'], needs: [],
+        text: 'Make a workflow that screenshots five websites I list and notes the colours, type and layout each uses, as a reference page in the Vault.',
+    },
+    {
+        id: 'lesson', title: 'A lesson plan and quiz', personas: ['anyone'], goals: ['writing', 'documents'], needs: [],
+        text: 'Make a workflow that turns a topic I give it into a lesson plan with goals, a 10-question quiz and its answers, saved in the Vault.',
     },
 ];
