@@ -213,6 +213,40 @@ async def test_a_stronger_model_not_offered_is_never_read():
     assert answer["outcome"] == "revise"
 
 
+# ── a model the provider refuses ──────────────────────────────────────────────────────────────────────────────────
+
+#: A model its provider refuses today (BED1, 10-27: Grok 4.7's row enabled on dev, refused by AWS): the host's facts
+#: mark it unusable, and the strongest within the ceiling, so the most tempting pick and offer there is.
+REFUSED = _entry("synapse.grok-4-7", reasoning=True, vision=True, out=14, pay=False)
+
+
+@pytest.mark.parametrize("agent", [_writer(needs="reasoning"), _writer(stronger_helps=True),
+                                   _writer(needs="vision", stronger_helps=True)])
+async def test_a_refused_model_is_never_picked_nor_offered(workspace, agent):
+    workspace["now"] = [*MENU, REFUSED]
+    _, checked = await _check(_draft(agent))
+    pick = _pick(checked)
+    assert pick["model"] != REFUSED.id and pick.get("stronger") != REFUSED.id
+    assert REFUSED.id not in checked["review"] and not [o for o in checked["offers"] if REFUSED.id in o]
+
+
+async def test_a_wish_for_a_refused_model_is_said_never_picked(workspace):
+    workspace["now"] = [*MENU, REFUSED]
+    _, checked = await _check(_draft(_writer(model_wish="Grok")))
+    assert not checked["plan"].get("models") and "build" not in checked["offers"]
+    assert any(i.startswith("Warning writer: ") and REFUSED.id in i for i in checked["issues"])
+
+
+async def test_a_pick_refused_since_the_yes_stops_the_save(client, workspace):
+    run, _ = await _check(_draft(_writer(needs="reasoning")))
+    run.shared_state["review_feedback"] = {"feedback": "Build it"}
+    run.shared_state["plan_approval"], _ = await _call("approve_plan", {}, run)
+    workspace["now"] = [e if e.id != "synapse.claude-sonnet" else MM.ModelEntry(**{**e.__dict__, "can_pay": False})
+                        for e in MENU]
+    saved, _ = await _call("save_build", {}, run)
+    assert saved["outcome"] != "saved" and "synapse.claude-sonnet" in saved["reason"]
+
+
 # ── compiled, saved, priced ───────────────────────────────────────────────────────────────────────────────────────
 
 async def test_compile_writes_each_agents_pick():
