@@ -394,7 +394,7 @@ export function StepConfigPanel({
                     setPendingType(null);
                 }}
                 title="Change step type?"
-                description={`This step has ${meta.label}-specific configuration. It is kept but ignored by the new type — change back to see it again.${
+                description={`This step has ${meta?.label ?? step.type}-specific configuration. It is kept but ignored by the new type — change back to see it again.${
                     step.pass_images && pendingType !== 'agent' ? ' Sees attachments is turned off: only agent steps read attachments.' : ''}`}
                 confirmLabel="Change type"
             />

@@ -12,6 +12,7 @@ import { StepIcon } from '../run/StepIcon';
 import { pillText } from '../run/model';
 import { roleOf } from './roles';
 import { KIND_WORD, type AgentKind } from './agentKind';
+import { EditorBoundary } from './EditorBoundary';
 
 /**
  * A connection's handle and its word. Every handle is the same quiet grey: the
@@ -368,4 +369,14 @@ function TimePill({ time }: { time: NonNullable<StepNodeData['lastRun']> }) {
     );
 }
 
-export const StepNode = memo(StepNodeComponent);
+/** A step the canvas cannot draw is a card naming it, and every other step still draws (F1054). */
+function GuardedStepNode(props: { data: any; selected?: boolean }) {
+    const step = props.data?.step;
+    return (
+        <EditorBoundary compact what={`Step “${step?.name || step?.id || '?'}”`} resetKey={step}>
+            <StepNodeComponent {...props} />
+        </EditorBoundary>
+    );
+}
+
+export const StepNode = memo(GuardedStepNode);

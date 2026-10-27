@@ -15,6 +15,8 @@ import { RESOURCE_SAVED_EVENT, useBuilder } from '@/components/app/BuilderProvid
 import { cloneStep, generateStepId, removeStepFromGraph } from '../orchestration/graph';
 import { validateOrchestration } from '../orchestration/validate';
 import { useBuilderShortcuts, useDraftHistory } from '../orchestration/use-draft-history';
+import { EditorBoundary } from '../orchestration/EditorBoundary';
+import { readOrchestration, type ShapeNotes } from '../orchestration/readOrchestration';
 import type { EditorTabs } from '../tabs/editorTabs';
 import { readWithStallTimeout } from '@/lib/sse';
 import { refusedAnswerMessage } from '@/lib/answers';
@@ -214,8 +216,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     // The draft with undo/redo, dirty tracking and the unload guard.
     // `setDraft` records history (edits); `replaceDraft` resets it (navigation).
     // A tab coming forward starts from the draft it left with (TABS1 v2).
-    const { draft, setDraft, replaceDraft, markSaved, undo, redo, canUndo, canRedo, dirty, snapshot } =
+    const { draft, setDraft, replaceDraft: replaceDraftAsStored, markSaved, undo, redo, canUndo, canRedo, dirty, snapshot } =
         useDraftHistory(800, tabs?.history);
+    // Every workflow that opens is read into the shapes the editor draws, and what was read differently is said on
+    // its steps until a save writes it back (F1054: a builder-saved `human_fields` object took the page down).
+    const [shapeNotes, setShapeNotes] = useState<ShapeNotes>({});
+    const replaceDraft = useCallback((next: Orchestration | null, opts?: { saved?: boolean }) => {
+        const read = readOrchestration(next);
+        setShapeNotes(read.notes);
+        replaceDraftAsStored(read.orchestration, opts);
+    }, [replaceDraftAsStored]);
     const router = useRouter();
     // The "?" panel explains the editor while one is open, the list otherwise (H1).
     useHelpTopic(draft ? 'orchestrations.editor' : null);
@@ -2005,8 +2015,14 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                     into the run strip and drawer. */}
                 <div className="relative min-h-0 flex-1">
                     <RunHostProvider value={runHost}>
+                        <EditorBoundary
+                            what={`“${draft.name || draft.id}”`}
+                            resetKey={draft.id}
+                            action={<Button size="sm" variant="secondary" onClick={() => (tabs ? tabs.showList() : guardLeave(backToList))}>Back to workflows</Button>}
+                        >
                         <CanvasWorkbench
                             orchestration={draft}
+                            shapeNotes={shapeNotes}
                             onChange={updateOrchestration}
                             agents={agents}
                             workflowNames={workflowNames}
@@ -2157,6 +2173,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                 ),
                             } : undefined}
                         />
+                        </EditorBoundary>
 
                         <Modal
                             open={answerDialog && !!waitingRecord}

@@ -35,6 +35,17 @@ const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform',
  * caller with no agent list), that check is skipped rather than guessed at.
  */
 export function validateOrchestration(orch: Orchestration, agents?: { id: string }[]): ValidationResult {
+    // A check that throws on a shape it did not expect says so and lets the editor stand (F1054): the canvas, the
+    // step card and Save each run these, and an uncaught throw here took the whole page down (HOT2, D323).
+    try {
+        return checkOrchestration(orch, agents);
+    } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        return { byStep: {}, global: [warning(`Some checks could not run on this workflow: ${why}`)], errorCount: 0, warningCount: 1 };
+    }
+}
+
+function checkOrchestration(orch: Orchestration, agents?: { id: string }[]): ValidationResult {
     const byStep: Record<string, StepIssue[]> = {};
     const global: StepIssue[] = [];
     const ids = new Set(orch.steps.map((s) => s.id));

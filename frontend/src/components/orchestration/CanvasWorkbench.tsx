@@ -55,6 +55,8 @@ import { signalEdgeTypes, useRunEdges } from './workbench/signals';
 import { stepCommandGroups, TRANSFORM_NEEDS_CODE } from './workbench/stepCommands';
 import { FLOAT, TopBar } from './workbench/TopBar';
 import type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase } from './workbench/types';
+import { EditorBoundary } from './EditorBoundary';
+import type { ShapeNotes } from './readOrchestration';
 
 export type { WorkbenchIssue, WorkbenchMenuItem, WorkbenchRunPhase };
 
@@ -107,6 +109,9 @@ export interface CanvasWorkbenchProps {
      * `renderStep` and `renderSettings` render their own fields read-only.
      */
     readOnly?: boolean;
+    /** What the editor read differently from the stored workflow (`readOrchestration`), by step id: said as warnings
+     *  until a save writes it back (F1054). */
+    shapeNotes?: ShapeNotes;
     /** Beside the name: switch to another workflow. */
     switcher?: React.ReactNode;
     /** The ⋯ menu's entries after Workflow settings. */
@@ -189,7 +194,7 @@ function Workbench({
     orchestration, onChange, agents, workflowNames, knowledgeEnabled = false, canRunCode = true, selectedStepId,
     onSelectStep,
     renderStep, renderSettings, settingsAtOpen = false, board, stepActions, history, save, onBack, readOnly = false, switcher, menu, onChangeWithAI,
-    insetRight = 0, run, runStrip, runDrawer, lastRun, viewport, onViewport,
+    insetRight = 0, run, runStrip, runDrawer, lastRun, viewport, onViewport, shapeNotes,
 }: CanvasWorkbenchProps) {
     // The canvas is the page: the shell hides the page header and folds the menu (D204).
     useCanvasMode(true);
@@ -418,12 +423,17 @@ function Workbench({
     // ── Things to check ───────────────────────────────────────────────────
     const validation = useMemo(() => validateOrchestration(orchestration, agents), [orchestration, agents]);
     const issues: WorkbenchIssue[] = useMemo(() => [
+        ...(shapeNotes?.[''] ?? []).map((message) => ({ severity: 'warning' as const, message, stepId: null })),
         ...validation.global.map((i) => ({ ...i, stepId: null })),
+        ...Object.entries(shapeNotes ?? {}).filter(([stepId]) => stepId).flatMap(([stepId, list]) => {
+            const step = orchestration.steps.find((s) => s.id === stepId);
+            return list.map((message) => ({ severity: 'warning' as const, message, stepId, stepName: step?.name || stepId }));
+        }),
         ...Object.entries(validation.byStep).flatMap(([stepId, list]) => {
             const step = orchestration.steps.find((s) => s.id === stepId);
             return list.map((i) => ({ ...i, stepId, stepName: step?.name || stepId }));
         }),
-    ], [validation, orchestration.steps]);
+    ], [validation, orchestration.steps, shapeNotes]);
     const onIssue = useCallback((issue: WorkbenchIssue) => {
         if (issue.stepId) onSelectStep(issue.stepId);
         else openSettings();
@@ -622,7 +632,11 @@ function Workbench({
                     onClose={closeCard}
                     sheetRef={sheetRef}
                 >
-                    {view === 'step' && selectedStep ? renderStep(selectedStep)
+                    {view === 'step' && selectedStep ? (
+                        <EditorBoundary what={`Step “${selectedStep.name || selectedStep.id}”'s settings`} resetKey={selectedStep}>
+                            {renderStep(selectedStep)}
+                        </EditorBoundary>
+                    )
                         : view === 'board' && board ? board.render(() => setBoardOpen(false))
                             : view === 'result' && shownResult && resultStep ? (
                                 <StepResultCard

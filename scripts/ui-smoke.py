@@ -13230,5 +13230,107 @@ async def check_wftabspickrun(browser) -> str:
     return "the picker lists recent runs, the live one first, and picking one opens it as a tab"
 
 
+def odd_shape_orchestration(oid: str) -> dict:
+    """The workflow HOT2 read on prod (10-24, rc4.3's builder), its values cut to their shape: a human step's
+    `human_fields` saved as an object holding the list. The store refuses it now (F1047), so it reaches the page the
+    way it reached prod's, as the API's answer."""
+    def step(sid, name, kind, nxt, x, **extra):
+        return {"id": sid, "name": name, "type": kind, "next_step_id": nxt, "position_x": x, "position_y": 0.0,
+                "input_keys": [], "output_key": f"{sid}_out", "human_fields": [], "route_map": {},
+                "parallel_branches": [], "loop_step_ids": [], **extra}
+    return {
+        "id": oid, "name": "ui-smoke odd shape", "description": "", "avatar": "default", "trigger": "manual",
+        "entry_step_id": "step_account", "state_schema": {}, "max_total_turns": 100, "timeout_minutes": 30,
+        "steps": [
+            step("step_account", "Create Twitter Developer Account", "llm", "step_keys", -600),
+            step("step_keys", "Generate API Keys", "human", "step_tool", -340,
+                 human_prompt="Please generate and input your Twitter API keys.",
+                 human_fields={"fields": [{"name": "api_key", "type": "str"}, {"name": "api_secret_key", "type": "str"}]}),
+            step("step_tool", "Create Custom Python Tool", "llm", "step_end", -80),
+            step("step_end", "End", "end", None, 180, output_key=None),
+        ],
+    }
+
+
+@check
+async def check_oddshape(browser) -> str:
+    """A workflow saved in a shape the editor did not expect opens, says which step and what, and stays editable (F1054).
+
+    On prod a builder-made workflow whose human step held `human_fields: {"fields": [...]}` threw inside the canvas's
+    checks, and with no boundary anywhere the page went to Next's error card (HOT2, D323). The API's own answer is
+    replaced with that document, so the page reads exactly what prod's did, with nothing written to the store.
+    """
+    oid = f"orch_uismoke_odd_{int(time.time())}"
+    doc = odd_shape_orchestration(oid)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    thrown: list[str] = []
+    page.on("pageerror", lambda e: thrown.append(str(e)))
+
+    async def answer(route):
+        if route.request.method != "GET":
+            await route.continue_()
+            return
+        if route.request.url.split("?")[0].endswith(f"/api/orchestrations/{oid}"):
+            await route.fulfill(json=doc)
+            return
+        real = await route.fetch()
+        listed = await real.json()
+        await route.fulfill(response=real, json=[*(listed if isinstance(listed, list) else []), doc])
+
+    await page.route(re.compile(r"/api/orchestrations(/orch_uismoke_odd_\d+)?(\?.*)?$"), answer)
+    problems: list[str] = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        try:
+            await _wf_canvas(page)
+        except Exception:
+            body = await page.locator("body").inner_text()
+            raise AssertionError(f"the canvas never drew: {body[:200]!r}; thrown: {thrown[:2]}")
+        drawn = await page.locator(".react-flow__node").count()
+        if drawn != len(doc["steps"]):
+            problems.append(f"{drawn} of {len(doc['steps'])} steps drew")
+        if await page.locator("[data-editor-boundary]").count():
+            problems.append("a part of the editor fell to its boundary on a shape the reader knows")
+        # What was read differently is said, on its step.
+        await page.get_by_role("button", name=re.compile(r"to check$")).first.click()
+        await asyncio.sleep(0.6)
+        said = page.get_by_text(re.compile("form fields were saved inside an object")).first
+        if not await said.count():
+            problems.append("the step's warning does not say its form fields were read differently")
+        await page.keyboard.press("Escape")
+        # The step opens with its fields as the person reads them, and the step beside it is still editable.
+        await open_step(page, oid, "Generate API Keys")
+        values = await page.evaluate("() => [...document.querySelectorAll('input')].map(i => i.value)")
+        if "api_key" not in values or "api_secret_key" not in values:
+            problems.append(f"the human step's card does not show its two fields: {values[:12]}")
+        await open_step(page, oid, "Create Custom Python Tool")
+        if not await page.get_by_label(re.compile(r"^name$", re.I)).first.is_editable():
+            problems.append("the step beside it is not editable")
+        # A step that throws anyway (a Retrieve step's query saved as an object, which the reader does not open) is a
+        # card naming it, and the page and every other step still stand.
+        doc["steps"].insert(2, {"id": "step_find", "name": "Find notes", "type": "retrieve", "next_step_id": "step_tool",
+                                "position_x": -210, "position_y": 180.0, "retrieve": {"kb_ids": ["kb_notes"], "query": {"q": 1}}})
+        doc["steps"][1]["next_step_id"] = "step_find"
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await _wf_canvas(page)
+        card = page.locator("[data-editor-boundary]")
+        named = await card.first.inner_text() if await card.count() else ""
+        if "Find notes" not in named:
+            problems.append(f"the step that throws is not a card naming it: {named!r}")
+        if await page.locator(".react-flow__node").count() != len(doc["steps"]):
+            problems.append("the steps beside the one that throws did not all draw")
+        if not await page.get_by_role("button", name=re.compile(r"to check$")).count():
+            problems.append("the bar did not stand beside the step that throws")
+    finally:
+        await ctx.close()
+    if thrown:
+        problems.append(f"the page threw: {thrown[0][:200]}")
+    if problems:
+        raise AssertionError("; ".join(problems))
+    return ("the odd-shaped workflow opens, every step draws, its step says what was read, and the rest stays editable; "
+            "a step that throws anyway is a card naming it")
+
+
 if __name__ == "__main__":
     sys.exit(asyncio.run(main()))
