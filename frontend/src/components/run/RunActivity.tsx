@@ -197,7 +197,7 @@ export function RunActivity({
                     {/* A Team agent step's task list and members' lanes (TEAM1b; fed once a step runs a team, TEAM1e). */}
                     {/* Paused, nothing works: a member's question is answered, nothing stopped or written to. */}
                     <TeamView state={state.team} kept={!following || status === 'paused'} className="mb-3" {...teamHandlers} />
-                    <RunBrowser runId={runId} live={following} state={state} />
+                    <RunBrowser runId={runId} live={isLive(status)} state={state} />
                     {content}
                 </RCollapsible.Content>
             </RCollapsible.Root>
@@ -239,7 +239,7 @@ function RunBrowser({ runId, live, state }: { runId: string; live: boolean; stat
     if (!browser || !state.browser) return null;
     if (live) {
         return (
-            <section aria-label="Live browser" className="mb-3 grid gap-2">
+            <section id="live-browser" aria-label="Live browser" className="mb-3 grid scroll-mt-4 gap-2">
                 <h3 className="text-sm font-medium text-text">Live browser</h3>
                 <BrowserPane
                     host={browser}

@@ -36,7 +36,8 @@ import {
 import { cn } from '@/lib/utils';
 import { OSS_BROWSER_HOST } from '@/lib/browserHost';
 import {
-  BrowserActionLine, BrowserPane, BrowserTurnCard, PANE_SHARE, PaneHandle, actionOf, isBrowserEvent, parseShare,
+  BrowserActionLine, BrowserPane, BrowserTurnCard, PANE_SHARE, PaneHandle, actionOf, browserTurnOf, isBrowserEvent,
+  parseShare,
   type BrowserAction, type BrowserEvent, type FrameMemory,
 } from '@/components/browser';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -1480,7 +1481,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
     // never answered (F298).
     const lastHumanIdx = messages.findLastIndex(
       // A browser turn is answered in the browser, by handing it back (BRW2): a message is a new message.
-      m => m.msgType === 'human_input_required' && m.data?.kind !== 'tool_approval' && m.data?.kind !== 'browser_turn');
+      m => m.msgType === 'human_input_required' && m.data?.kind !== 'tool_approval' && m.data?.kind !== 'browser_turn'
+        && !browserTurnOf(m.data?.fields));
     if (lastHumanIdx !== -1) {
       const hasReplyAfter = messages.slice(lastHumanIdx + 1).some(m => m.role === 'user');
       if (!hasReplyAfter) {
@@ -1915,8 +1917,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   };
 
   /**
-   * A browser turn handed back (BRW2, F1077), from its card or from the pane: the turn goes on in the engine, and
-   * this reads it from where it paused, as a turn whose stream was lost is read again. Once per turn.
+   * A browser turn handed back (BRW2, F1077), from its card or from the pane (Done, or letting a held send through,
+   * or allowing a site): the engine goes on in a follow-up turn of its own, and this reads it, as a turn whose stream
+   * was lost is read again. Once per turn.
    */
   const resumeAfterBrowser = async () => {
     if (isLoading) return;
@@ -1929,6 +1932,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
     setDraftAnswer('');
     setTurnOutcome(null);
     turnAnsweredRef.current = false;
+    // A new turn (BRW1): the engine follows the hand-back with a turn of its own, and the paused one's cursor is
+    // gone (410), so it is read from its start.
+    lastCursorRef.current = null;
     lastThoughtRef.current = null;
     refusedRef.current = [];
     liveCallsRef.current = [];
@@ -2942,20 +2948,27 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
     }
 
     // ── A browser turn: the page is the person's for something only they should do (BRW2, F1077) ──
-    if (msg.msgType === 'human_input_required' && msg.data?.kind === 'browser_turn') {
-      const sid = String(msg.data?.session_id ?? '');
+    // A workflow's step parked the same way carries it in its fields (BRW1: the field's type says).
+    const runTurn = msg.msgType === 'human_input_required' ? browserTurnOf(msg.data?.fields) : null;
+    if (msg.msgType === 'human_input_required' && (msg.data?.kind === 'browser_turn' || runTurn)) {
+      const sid = String(runTurn?.session_id ?? msg.data?.session_id ?? '');
       const answered = messages.slice(idx + 1).some(m => m.role === 'user' || m.data?.handedBack);
       return (
         <AgentTurn key={idx} avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><User className="h-4 w-4" aria-hidden /></AgentAvatar>}>
           <BrowserTurnCard
-            reason={String(msg.data?.reason || msg.content)}
-            kind={msg.data?.banner_kind}
+            reason={String(runTurn?.reason || msg.data?.reason || msg.content)}
+            kind={runTurn?.banner_kind ?? msg.data?.banner_kind}
             answered={answered}
             onOpen={sid ? () => onShowBrowser(sid, agentName) : undefined}
             onDone={sid ? async () => {
               const ok = await OSS_BROWSER_HOST.handBack!(sid);
-              if (ok) void resumeAfterBrowser();
-              return ok;
+              if (!ok) return false;
+              // A chat's turn goes on in a follow-up turn, read here; a workflow's run goes on in its own step.
+              if (runTurn) {
+                setMessages(prev => [...prev, { role: 'assistant', msgType: 'note', data: { handedBack: true },
+                                                content: 'You handed the browser back. The run goes on.' }]);
+              } else void resumeAfterBrowser();
+              return true;
             } : undefined}
           />
         </AgentTurn>

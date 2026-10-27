@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Lock, Send, ShieldCheck } from 'lucide-react';
 
 import { Button, Input } from '@/components/ui';
@@ -127,37 +127,46 @@ export function SelectAsk({ select, onChoose }: { select: PageSelect; onChoose: 
   );
 }
 
-/** A file picker the page opened: the files this browser may hand it, never the person's disk. */
-export function FileAsk({ file, files, onOffer }: {
+/** The most a page is handed in one file here (BRW1's `/file`). */
+const FILE_LIMIT = 25 * 1024 * 1024;
+
+/** A file picker the page opened: the person picks from their own computer, and it fills the page's chooser. */
+export function FileAsk({ file, onOffer, onCancel }: {
   file: PageFile;
-  /** Read when the card opens; absent when this product offers none here. */
-  files?: () => Promise<{ id: string; name: string }[]>;
-  onOffer: (attachmentId: string) => void;
+  onOffer: (picked: File) => Promise<boolean>;
+  onCancel: () => void;
 }) {
-  const [list, setList] = useState<{ id: string; name: string }[] | null>(files ? null : []);
-  useEffect(() => {
-    if (!files) return;
-    let live = true;
-    files().then(l => { if (live) setList(l); }).catch(() => { if (live) setList([]); });
-    return () => { live = false; };
-  }, [files]);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   return (
     <Ask label="The page wants a file">
       <p className="text-xs font-medium text-text-faint">The page wants {file.multiple ? 'files' : 'a file'}</p>
-      {list === null ? (
-        <p className="text-sm text-text-muted">Reading the files…</p>
-      ) : list.length === 0 ? (
-        <p className="text-sm text-text-muted">No files to offer here. A page can be given the files of the chat or run it works for.</p>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {list.map(f => (
-            <button key={f.id} type="button" onClick={() => onOffer(f.id)}
-                    className="truncate rounded-md px-3 py-2 text-left text-sm text-text hover:bg-row-hover">
-              {f.name}
-            </button>
-          ))}
-        </div>
-      )}
+      <label className="flex flex-col gap-2 text-sm text-text">
+        Choose a file from your computer
+        <input
+          type="file"
+          accept={file.accept || undefined}
+          disabled={busy}
+          onChange={async (e) => {
+            const picked = e.currentTarget.files?.[0];
+            if (!picked) return;
+            if (picked.size > FILE_LIMIT) {
+              setFailed('That file is over 25 MB, the most a page is handed here.');
+              return;
+            }
+            setBusy(true);
+            setFailed(null);
+            const ok = await onOffer(picked).catch(() => false);
+            setBusy(false);
+            if (!ok) setFailed('The page did not take the file. Try again.');
+          }}
+          className="text-xs text-text-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-text"
+        />
+      </label>
+      {failed && <p role="alert" className="text-xs text-danger">{failed}</p>}
+      <div className="flex justify-end">
+        <Button variant="secondary" size="sm" onClick={onCancel}>Not now</Button>
+      </div>
     </Ask>
   );
 }

@@ -95,11 +95,20 @@ export type BrowserHost = {
   answerDialog?: (sessionId: string, accept: boolean, text?: string) => Promise<boolean>;
   /** The option picked in the page's own dropdown. */
   choose?: (sessionId: string, target: string, value: string) => Promise<boolean>;
-  /** A file the person offers the page: one of the run's, by its attachment id. */
-  offerFile?: (sessionId: string, attachmentId: string) => Promise<boolean>;
-  /** The files a page may be given here: the run's or the chat's. None: the file card says so. */
-  files?: (sessionId: string) => Promise<{ id: string; name: string }[]>;
+  /** A file the person picked from their own computer, for the chooser the page has open. */
+  offerFile?: (sessionId: string, file: File) => Promise<boolean>;
 };
+
+/** A run's browser turn, as its waiting step's fields carry it (BRW1: no column of its own; the field's type says). */
+export type RunBrowserTurn = { session_id: string; reason: string; banner_kind?: BannerKind };
+
+export function browserTurnOf(fields: unknown): RunBrowserTurn | null {
+  if (!Array.isArray(fields)) return null;
+  const f = fields.find((x) => x && typeof x === 'object' && (x as { type?: unknown }).type === 'browser_turn') as
+    { session_id?: unknown; label?: unknown; banner_kind?: unknown } | undefined;
+  if (!f || typeof f.session_id !== 'string') return null;
+  return { session_id: f.session_id, reason: String(f.label ?? ''), banner_kind: f.banner_kind as BannerKind | undefined };
+}
 
 /** The site a URL is on, for a sentence. */
 export function hostOf(url: string): string {

@@ -12799,6 +12799,45 @@ async def check_brwrunpage(browser) -> str:
     return "a running run shows its live browser; an ended one the filmstrip of kept screenshots"
 
 
+@check
+async def check_brwrunturn(browser) -> str:
+    """A run parked on a browser turn is answered by handing the browser back, not by a form (BRW2, F1077). The run
+    carries the turn in its waiting step's fields (BRW1: a field of type `browser_turn`), and every place a run waits
+    on a person draws it through one card: the run page here, Needs you and Waiting on you through the same card."""
+    reason = "Log in to Saltmarsh's partner portal."
+    run = {**_M2B_RUNS["run_smoke_m2b_wait"], "human_prompt": reason,
+           "human_fields": [{"name": "browser_turn", "type": "browser_turn", "label": reason,
+                             "session_id": "bsU", "banner_kind": "login_expired"}]}
+    handed: list[str] = []
+
+    async def hand_back(route):
+        handed.append(route.request.url)
+        await route.fulfill(status=200, json={"wheel": "agent", "resumed": {"kind": "run", "run_id": run["run_id"]}})
+
+    bad: list[str] = []
+    ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_wait", runs={"run_smoke_m2b_wait": run})
+    await ctx.route(re.compile(r".*/api/browser/bsU/wheel/hand-back$"), hand_back)
+    try:
+        card = page.locator("main [data-browser-turn]")
+        try:
+            await card.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("a run parked on a browser turn shows no browser turn card")
+        if reason not in await card.inner_text():
+            bad.append("the card does not say what the turn is for")
+        if await page.get_by_role("textbox").filter(has=page.locator("[name=browser_turn]")).count():
+            bad.append("the turn is drawn as a form field")
+        await card.get_by_role("button", name="Done").click()
+        await asyncio.sleep(0.8)
+        if not handed:
+            bad.append("Done did not hand the browser back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a run's browser turn is a card whose Done hands the browser back"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

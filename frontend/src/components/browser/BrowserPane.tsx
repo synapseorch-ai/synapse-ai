@@ -113,8 +113,13 @@ export function BrowserPane({
     setAnsweredOn(frame);
     call?.catch(() => false);
   };
-  const release = host.release ? () => answer(host.release!(sessionId, true)) : undefined;
-  const allow = host.allowSite ? (site: string) => answer(host.allowSite!(sessionId, site)) : undefined;
+  // Letting a held send through, or allowing a site, answers a turn waiting on the person as a hand-back does.
+  const resuming = (call: Promise<boolean>) => {
+    setAnsweredOn(frame);
+    call.then((ok) => { if (ok) onHandedBack?.(); }).catch(() => undefined);
+  };
+  const release = host.release ? () => resuming(host.release!(sessionId, true)) : undefined;
+  const allow = host.allowSite ? (site: string) => resuming(host.allowSite!(sessionId, site)) : undefined;
   const banner = !closed && frame?.banner && answeredOn !== frame ? frame.banner : null;
 
   const url = frame?.url || actions[actions.length - 1]?.url || '';
@@ -225,8 +230,12 @@ export function BrowserPane({
         ) : asks?.select ? (
           <SelectAsk select={asks.select} onChoose={(value) => answer(host.choose?.(sessionId, asks.select!.target, value))} />
         ) : asks?.file ? (
-          <FileAsk file={asks.file} files={host.files ? () => host.files!(sessionId) : undefined}
-                   onOffer={(id) => answer(host.offerFile?.(sessionId, id))} />
+          <FileAsk file={asks.file} onCancel={() => setAnsweredOn(frame)}
+                   onOffer={async (picked) => {
+                     const ok = (await host.offerFile?.(sessionId, picked).catch(() => false)) ?? false;
+                     if (ok) setAnsweredOn(frame);
+                     return ok;
+                   }} />
         ) : null}
         {nudge && canDrive && !driving && (
           <div className="absolute inset-0 flex items-center justify-center bg-scrim/60">

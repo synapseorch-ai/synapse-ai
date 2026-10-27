@@ -11,6 +11,7 @@ export {
   actionCount,
   actionOf,
   actionWords,
+  browserTurnOf,
   hostOf,
   isBrowserEvent,
   shortUrl,
@@ -25,5 +26,6 @@ export {
   type PageDialog,
   type PageFile,
   type PageSelect,
+  type RunBrowserTurn,
   type Wheel,
 } from './model';

@@ -24,7 +24,12 @@ export const OSS_BROWSER_HOST: BrowserHost = {
   answerDialog: (sessionId, accept, text) =>
     post(`/api/browser/${enc(sessionId)}/dialog`, text === undefined ? { accept } : { accept, text }),
   choose: (sessionId, target, value) => post(`/api/browser/${enc(sessionId)}/select`, { target, value }),
-  offerFile: (sessionId, attachmentId) => post(`/api/browser/${enc(sessionId)}/file`, { attachment_id: attachmentId }),
+  offerFile: async (sessionId, file) => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`/api/browser/${enc(sessionId)}/file`, { method: 'POST', body: form }).catch(() => null);
+    return !!res?.ok;
+  },
 };
 
 async function post(url: string, body: unknown): Promise<boolean> {
