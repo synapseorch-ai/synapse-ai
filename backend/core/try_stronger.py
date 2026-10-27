@@ -73,6 +73,35 @@ async def wrote(tool_names: list[str], server_module: Any) -> bool:
 
 # ── an agent's chat ─────────────────────────────────────────────────────────────────────────────────────────────────
 
+class TurnCalls:
+    """What a chat turn's events say it called: its own calls, and its helpers' and team members' inside the events
+    that wrap theirs (`helper_event`, `member_event`), so a write a helper made counts (SAI2's review of F1018). A
+    helper still working when the turn ends may write after it: such a turn is never offered."""
+
+    _WRAPS = ("helper_event", "member_event")
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+        self._open: set[str] = set()
+
+    def see(self, event: Any) -> None:
+        if not isinstance(event, dict):
+            return
+        kind = event.get("type")
+        if kind in self._WRAPS:
+            self.see(event.get("event"))
+        elif kind == "tool_result" and not event.get("refused") and event.get("tool_name"):
+            self.names.append(str(event["tool_name"]))
+        elif kind == "helper_started":
+            self._open.add(str(event.get("helper_id")))
+        elif kind == "helper_finished":
+            self._open.discard(str(event.get("helper_id")))
+
+    @property
+    def still_working(self) -> bool:
+        return bool(self._open)
+
+
 def chat_failed(final: dict | None, error: dict | None) -> bool:
     """Whether an agent's chat turn failed in a way a stronger model may mend: no answer for a reason other than a
     cap, or the model erred."""
@@ -97,9 +126,11 @@ def offers_for(agent: dict | None) -> bool:
     return bool(agent) and agent.get("type") not in ("orchestrator", "builder") and team.config_of(agent) is None
 
 
-def take_chat_offer(session_id: str | None, retry_of: str, agent_key: str) -> dict | str:
-    """The offer a press redeems, taken so it is used once, or why not: the conversation's last turn must be the
-    failed one (same chat, same agent), still holding its offer."""
+def chat_offer(session_id: str | None, retry_of: str, agent_key: str) -> tuple[Any, dict] | str:
+    """The failed turn a press redeems and its offer, or why not: the conversation's last turn must be the failed
+    one (same chat, same agent), still holding its offer. Read only: `spend` takes it once the new turn has started,
+    so a press refused as "a turn is running" (a double click, a second tab) leaves it to press again (SAI2's
+    review). Once it has started, the new turn replaces the failed one, so the offer is used once."""
     from core import chat_turns
 
     held = chat_turns.find(session_id) if session_id else None
@@ -108,8 +139,12 @@ def take_chat_offer(session_id: str | None, retry_of: str, agent_key: str) -> di
     kept = getattr(held, "retry_offer", None)
     if not kept:
         return TRIED if getattr(held, "retried", False) else NOT_THIS_TURN
+    return held, kept
+
+
+def spend(held: Any) -> None:
+    """The offer is used: the turn it started is running."""
     held.retry_offer, held.retried = None, True
-    return kept
 
 
 # ── the Synapse AI panel ────────────────────────────────────────────────────────────────────────────────────────────

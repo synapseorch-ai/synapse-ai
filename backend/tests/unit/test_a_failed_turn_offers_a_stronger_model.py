@@ -307,3 +307,77 @@ def test_both_pages_draw_the_offer_and_send_the_press_as_retry_of():
     # An agent's chat: the offer is read before the error ends the turn, and the press sends `retry_of`.
     assert "case 'try_stronger':" in chat and "...(retryOf ? { retry_of: retryOf } : {})" in chat
     assert "await processMessage(payload.content, payload.images, offer.retry_of);" in chat
+
+
+# ── a helper's writes count (SAI2's review) ───────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def helper_turn(monkeypatch):
+    """A turn whose loop is scripted: what its helper did, then no answer."""
+    import core.routes.chat as chat_route
+
+    script: dict = {"events": []}
+
+    async def loop(request, _server, **_kw):
+        for event in script["events"]:
+            yield event
+        yield {"type": "final", "response": "I couldn't finish that.", "no_answer": {"why": "repeating"}}
+
+    class _Tool:
+        def __init__(self, read_only):
+            self.annotations = {"readOnlyHint": read_only}
+            self.trusted = True
+
+    async def resolve(_server, name, _agent, _custom):
+        return {"read_web": _Tool(True), "send_email": _Tool(False)}.get(name)
+
+    async def no_custom():
+        return []
+
+    monkeypatch.setattr(chat_route, "run_react_loop", loop)
+    monkeypatch.setattr("core.tools.resolve_one_tool", resolve)
+    monkeypatch.setattr("core.routes.tools.load_custom_tools", no_custom)
+    return script
+
+
+def _helper(tool, *, finished=True):
+    events = [{"type": "helper_started", "helper_id": "h1", "helper_name": "Mailer", "task": "send it"},
+              {"type": "helper_event", "helper_id": "h1", "helper_name": "Mailer",
+               "event": {"type": "tool_result", "tool_name": tool, "preview": "ok"}}]
+    return events + ([{"type": "helper_finished", "helper_id": "h1", "helper_name": "Mailer"}] if finished else [])
+
+
+@pytest.mark.parametrize("events, offered", [
+    (_helper("send_email"), False),
+    (_helper("read_web"), True),
+    (_helper("read_web", finished=False), False),
+    ([{"type": "member_event", "member_id": "m1", "event": _helper("send_email")[1]}], False),
+], ids=["a helper that wrote", "a helper that only read", "a helper still working", "a member that wrote"])
+async def test_a_helpers_or_members_write_counts_as_the_turns(client, seed_agent, helper_turn, events, offered):
+    agent = await seed_agent(model="synapse.claude-haiku")
+    helper_turn["events"] = events
+    frames = _frames((await _say(client, agent)).text)
+    assert bool([f for f in frames if f["type"] == "try_stronger"]) is offered
+
+
+# ── a press refused as "a turn is running" keeps the offer (SAI2's review) ───────────────────────────────────────
+
+async def test_a_press_refused_while_a_turn_runs_can_be_pressed_again(client, seed_agent, model_calls, monkeypatch):
+    import core.routes.chat as chat_route
+
+    agent = await seed_agent(model="synapse.claude-haiku")
+    turn = next(f for f in _frames((await _say(client, agent)).text) if f["type"] == "try_stronger")
+    real = chat_route._start
+    calls = {"n": 0}
+
+    def busy_once(request, *a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise chat_turns.TurnAlreadyRunning(chat_turns.find("s1"))
+        return real(request, *a, **k)
+
+    monkeypatch.setattr(chat_route, "_start", busy_once)
+    assert (await _say(client, agent, retry_of=turn["retry_of"])).status_code == 409
+    model_calls["answers"] = {"synapse.claude-sonnet"}
+    again = await _say(client, agent, retry_of=turn["retry_of"])
+    assert again.status_code == 200 and any(f["type"] == "response" for f in _frames(again.text))
