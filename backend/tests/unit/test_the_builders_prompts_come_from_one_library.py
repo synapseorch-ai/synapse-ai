@@ -42,8 +42,9 @@ from core.native_builder import prompt_lint, seed
 #: P3c (F949): the wait waits for every way in, and a connection under other tool names re-plans, 452d13db….
 #: F966: the planner says what each agent's model needs, never a model, a1823d76…; F967: a step that only calls a
 #: tool needs no agent, and the steps passage teaches `config.tool_arguments`, f8874085…; F957: the steps passage
-#: says what an expression may use from the engine's tables (`{{EXPRESSION_VOCABULARY}}`), 05a8a85d….
-BUNDLE_SHA256 = "05a8a85d4644ec843e62ea94ae4c64dc68ab0ee9f12786c53ea2768985351d04"
+#: says what an expression may use from the engine's tables (`{{EXPRESSION_VOCABULARY}}`), 05a8a85d…; P3c:
+#: `step_researched_before` goes, unreachable since P4's override sends findings and a yes to the build (F766), 5cbb0a48….
+BUNDLE_SHA256 = "5cbb0a4849aac36756d8929e3a2e9e3a83851dbc8b207c3c8dcffa2891b1c693"
 
 
 def _sha(definitions) -> str:
