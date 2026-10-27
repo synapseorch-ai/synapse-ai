@@ -14,10 +14,11 @@ import { ActiveRunsBanner } from '@/components/ActiveRunsBanner';
 import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } from '@/components/app/ImageAttachments';
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { BuilderConversation } from '@/components/app/BuilderPanel';
-import { Button, IconButton, Markdown, PageHeaderSlot, Spinner, useOwnScroll } from '@/components/ui';
+import { useBuilderChat } from '@/components/app/BuilderProvider';
+import { Button, IconButton, Mark, Markdown, PageHeaderSlot, Spinner, useOwnScroll } from '@/components/ui';
 import {
-  MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, openTab, restoreChatTabs, restorePins,
-  useChatTabs, useTabShortcuts,
+  MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, openTab, readAssistantDraft, restoreChatTabs,
+  restorePins, useChatTabs, useTabShortcuts, withoutAssistantDraft,
   type ChatTab, type PickableAgent, type Pin as TabPin, type RailPanel, type SavedChatTabs, type StripTab, type TabStatus,
   type TabsState,
 } from '@/components/tabs';
@@ -33,6 +34,7 @@ import {
 
 import { cn } from '@/lib/utils';
 import { readWithStallTimeout } from '@/lib/sse';
+import { formatRelativeTime } from '@/lib/relativeTime';
 import { refusedAnswerMessage } from '@/lib/answers';
 import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
@@ -490,17 +492,6 @@ type StepState = {
 const newStepState = (): StepState => (
   { thoughts: [], reasoning: [], orchStepId: null, receivedAgentStep: false }
 );
-
-function formatRelativeTime(iso: string | null): string {
-  if (!iso) return '';
-  const ms = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(ms / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
 
 // ─── Welcome Screen ──────────────────────────────────────────────────────────
 /**
@@ -1081,7 +1072,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   useEffect(() => {
     if (firstQuestion) onChangeRef.current({ title: tabTitle(firstQuestion) });
   }, [firstQuestion]);
-  useEffect(() => { onBusyRef.current(isLoading); }, [isLoading]);
+  // A Synapse AI tab's chat says for itself whether it is working (`AssistantTab`).
+  useEffect(() => { if (!isAssistant) onBusyRef.current(isLoading); }, [isLoading, isAssistant]);
   // The composer's words go with the tab when it goes behind, and come back with it.
   const inputRef = useRef(input);
   useEffect(() => { inputRef.current = input; }, [input]);
@@ -2968,21 +2960,22 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
         {/* Synapse AI, the default agent (ASSIST1, D291): its own conversation in place, the panel's, with its
             cards; the composer's pill is still the agent picker. Any other agent is this page's chat. */}
         {isAssistant ? (
-          <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
-            <BuilderConversation
-              density="page"
-              pill={(
-                <AgentPicker
-                  agents={systemStatus?.agents
-                    ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
-                    : []}
-                  activeId={currentAgentId}
-                  activeName={agentName}
-                  onPick={handleSwitchAgent}
-                />
-              )}
-            />
-          </div>
+          <AssistantTab
+            tab={tab}
+            onChange={(edit) => onChangeRef.current(edit)}
+            onBusy={(busy) => onBusyRef.current(busy)}
+            onInput={setInput}
+            pill={(
+              <AgentPicker
+                agents={systemStatus?.agents
+                  ? Object.entries(systemStatus.agents).filter(([id]) => !id.startsWith('agent_native_builder'))
+                  : []}
+                activeId={currentAgentId}
+                activeName={agentName}
+                onPick={handleSwitchAgent}
+              />
+            )}
+          />
         ) : (<>
         {/* Chat Area */}
         <div className="custom-scrollbar relative flex-1 overflow-y-auto scroll-smooth">
@@ -3219,6 +3212,48 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   );
 }
 
+/**
+ * A Synapse AI tab: a chat of its own (TABS2, D327; F1061), drawn as the panel draws one, in place. A new tab is a
+ * new chat; one opened from History, the panel's list or a pin carries that chat on. The same chat open in the panel
+ * is the same conversation, one state.
+ */
+function AssistantTab({ tab, pill, onChange, onBusy, onInput }: {
+  tab: ChatTab;
+  pill: React.ReactNode;
+  onChange: (change: Partial<ChatTab>) => void;
+  onBusy: (busy: boolean) => void;
+  onInput: (text: string) => void;
+}) {
+  const chat = useBuilderChat(tab.sessionId, { fresh: Boolean(tab.fresh) });
+  const onBusyRef = useRef(onBusy);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onBusyRef.current = onBusy; onChangeRef.current = onChange; });
+  useEffect(() => { onBusyRef.current(chat.streaming); }, [chat.streaming]);
+  // The tab's title is the chat's first ask, as History's row is.
+  const firstQuestion = chat.state.messages.find(m => m.role === 'user')?.content ?? '';
+  useEffect(() => {
+    if (firstQuestion) onChangeRef.current({ title: tabTitle(firstQuestion) });
+  }, [firstQuestion]);
+  // A link's suggestion stops being one once the person makes the words their own.
+  const suggestion = tab.suggested ? tab.draft ?? '' : null;
+  const keep = useCallback((text: string) => {
+    onInput(text);
+    if (suggestion !== null && text !== suggestion) onChangeRef.current({ suggested: false });
+  }, [onInput, suggestion]);
+  return (
+    <div className="mx-auto flex min-h-0 w-full max-w-3xl flex-1 flex-col">
+      <BuilderConversation
+        density="page"
+        chat={chat}
+        pill={pill}
+        initialInput={tab.draft}
+        suggested={Boolean(tab.suggested)}
+        onInput={keep}
+      />
+    </div>
+  );
+}
+
 // ─── The tabs (TABS1, D319) ─────────────────────────────────────────────────
 
 /** Where this browser keeps its open tabs and pins. Self-hosted has one sign-in, so one set. */
@@ -3301,6 +3336,8 @@ export default function Home() {
   const [panel, setPanel] = useState<RailPanel | null>(null);
   // A link to a conversation (`/?session=…&agent=…`), opened once the tabs are read.
   const link = useRef<{ sessionId: string; agentId: string } | null>(null);
+  // A link to a new Synapse AI chat with words waiting (`/?assistant=new&draft=…`, TABS2): opened once, never sent.
+  const suggestion = useRef<{ draft: string } | null>(null);
 
   const isBuilder = useCallback((agentId: string) => {
     const info = systemStatus?.agents?.[agentId];
@@ -3310,7 +3347,6 @@ export default function Home() {
     load: async () => readSavedTabs(),
     save: saveTabs,
     readStatus: readTabStatus,
-    isAssistant: isBuilder,
     newSessionId: generateSessionId,
   });
   const { ready, start, make, state, front, pins, badges, statusLoaded, notice, setNotice } = tabs;
@@ -3341,6 +3377,7 @@ export default function Home() {
       const session = asked.get('session');
       const agent = asked.get('agent');
       if (session && agent) link.current = { sessionId: session, agentId: agent };
+      suggestion.current = readAssistantDraft(window.location.search);
       // Chat always has a tab: with no active agent the first one there is, and with none at all a tab with no
       // agent yet — its composer, and a kept conversation reopened, as the page before tabs did (stack 1's
       // baseline found the empty strip).
@@ -3364,6 +3401,18 @@ export default function Home() {
     tabs.openConversation(asked.sessionId, asked.agentId);
     router.replace('/', { scroll: false });
   }, [ready, state.tabs.length, statusLoaded, tabs, router]);
+
+  // The new Synapse AI chat a link asked for, once the tabs are read: its words in the composer, unsent, said to be a
+  // suggestion; the address loses the parameters, so a reload does not open another.
+  useEffect(() => {
+    const asked = suggestion.current;
+    if (!ready || !asked) return;
+    if (state.tabs.length >= MAX_TABS && !statusLoaded) return;
+    suggestion.current = null;
+    window.history.replaceState(null, '', withoutAssistantDraft(window.location.href));
+    const assistant = agents.find(a => a.assistant);
+    if (assistant) tabs.openAgent(assistant.id, { draft: asked.draft, suggested: true });
+  }, [ready, state.tabs.length, statusLoaded, tabs, agents]);
 
   useTabShortcuts((key) => {
     if (key.kind === 'new') setPicker(onPhone() ? 'phone' : 'strip');
@@ -3473,6 +3522,7 @@ export default function Home() {
             frontKey={front?.key ?? null}
             pins={pins}
             nameOf={nameOf}
+            isAssistant={isBuilder}
             onOpen={(s) => { setPanel(null); tabs.openConversation(s.session_id, s.agent_id, tabTitle(s.first_user_message || '')); }}
             onTogglePin={tabs.togglePin}
             onNewChat={() => { setPanel(null); setPicker(onPhone() ? 'phone' : 'strip'); }}
@@ -3489,12 +3539,14 @@ export default function Home() {
  * answer, its turns, Refresh, Delete, and New chat. Search asks the server, so
  * a conversation the list hasn't drawn is still found.
  */
-function ConversationList({ which, tabs, frontKey, pins, nameOf, onOpen, onTogglePin, onNewChat }: {
+function ConversationList({ which, tabs, frontKey, pins, nameOf, isAssistant, onOpen, onTogglePin, onNewChat }: {
   which: RailPanel;
   tabs: ChatTab[];
   frontKey: string | null;
   pins: TabPin[];
   nameOf: (agentId: string) => string;
+  /** Synapse AI's chats are listed among the agents' (TABS2, F1062), with its mark. */
+  isAssistant: (agentId: string) => boolean;
   onOpen: (s: SessionSummary) => void;
   onTogglePin: (pin: TabPin) => void;
   onNewChat: () => void;
@@ -3594,7 +3646,8 @@ function ConversationList({ which, tabs, frontKey, pins, nameOf, onOpen, onToggl
               >
                 <span className="mb-1 flex items-start justify-between gap-2">
                   {/* The agent's name, not its id in capitals (U59); the id stays for a deleted agent, and as the tooltip. */}
-                  <span className="truncate text-xs font-medium text-text-faint" title={s.agent_id || 'default'}>
+                  <span className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium text-text-faint" title={s.agent_id || 'default'}>
+                    {isAssistant(s.agent_id) && <Mark size={12} compact={false} className="shrink-0 text-accent" aria-hidden />}
                     {nameOf(s.agent_id) || s.agent_id || 'default'}
                     {openKeys.has(key) && !isFront && <span className="font-normal"> · open in a tab</span>}
                   </span>

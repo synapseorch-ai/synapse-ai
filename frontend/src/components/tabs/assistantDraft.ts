@@ -18,15 +18,14 @@ export const SUGGESTED_LABEL = 'Suggested prompt';
 
 // Control characters other than tab and newline, and the bidirectional overrides that can make words read
 // differently from what they say.
-// eslint-disable-next-line no-control-regex
-const UNSAFE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F‎‏‪-‮⁦-⁩]/g;
+const UNSAFE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
 
 /** `text` as a composer may hold it: no control characters, Windows line ends made plain, at most `MAX_DRAFT`. */
 export function cleanDraft(text: string): string {
     return text.replace(/\r\n?/g, '\n').replace(UNSAFE, '').slice(0, MAX_DRAFT).trim();
 }
 
-/** The address that opens a new Synapse AI chat on `chatPath` (OSS `/`, cloud `/org/chat`) with `draft` waiting. */
+/** The address that opens a new Synapse AI chat on `chatPath` (OSS `/`, cloud `/chat`) with `draft` waiting. */
 export function assistantChatHref(draft: string, chatPath = '/'): string {
     const params = new URLSearchParams({ assistant: NEW_ASSISTANT_CHAT });
     const words = cleanDraft(draft);

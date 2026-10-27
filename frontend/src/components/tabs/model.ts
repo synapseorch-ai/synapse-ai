@@ -40,7 +40,11 @@ export interface ChatTab extends Tab {
    * Opened just now with a new conversation: there is nothing on the server to
    * read back yet. Never saved, so a reloaded tab always reads its conversation.
    */
-  fresh?: boolean;
+  fresh?: boolean;  /**
+   * `draft` came from a link, not the person (TABS2: ONB3's starter prompts): the composer says so, and nothing is
+   * sent until they send it. Never saved: a reloaded tab's words are its own.
+   */
+  suggested?: boolean;
 }
 
 /** What happened while a tab was behind. */

@@ -297,7 +297,8 @@ def test_both_pages_draw_the_offer_and_send_the_press_as_retry_of():
 
     src = Path(__file__).resolve().parents[3] / "frontend" / "src"
     events = (src / "lib" / "builderEvents.ts").read_text()
-    provider = (src / "components" / "app" / "BuilderProvider.tsx").read_text()
+    # Each Synapse AI chat sends its own turns (TABS2): the body is built in the chat's store.
+    provider = (src / "components" / "app" / "builderChats.ts").read_text()
     panel = (src / "components" / "app" / "BuilderPanel.tsx").read_text()
     chat = (src / "app" / "(app)" / "page.tsx").read_text()
     # The panel: the event is a message under the failure, the press re-sends the asked message with `retry_of`.

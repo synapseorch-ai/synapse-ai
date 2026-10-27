@@ -12,6 +12,7 @@ import {
     CheckCircle2,
     ChevronDown,
     ChevronUp,
+    History,
     Trash2,
     Wrench,
     X,
@@ -34,7 +35,8 @@ import {
     UserBubble,
 } from '@/components/assistant';
 import { loadRunEstimate } from '@/lib/estimate';
-import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder } from '@/components/app/BuilderProvider';
+import { AssistantChats } from '@/components/app/AssistantChats';
+import { BUILDER_EXAMPLES, BUILDER_GREETING, useBuilder, type BuilderChatValue } from '@/components/app/BuilderProvider';
 import { HowImBuilt } from '@/components/app/HowImBuilt';
 import { selfHostedActor } from '@/components/app/assistantActor';
 import { selfHostedConnector } from '@/components/app/builderConnector';
@@ -44,6 +46,7 @@ import {
     AttachmentError,
     useImageAttachments,
 } from '@/components/app/ImageAttachments';
+import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown } from '@/components/ui';
 import { isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
@@ -138,38 +141,65 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
 
 /**
  * The conversation itself: the messages, their cards and the composer. The panel frames it on every screen; Chat
- * shows it in place when its agent is Synapse AI (ASSIST1, D291), so the two are one conversation, one state.
+ * shows it in place when its agent is Synapse AI (ASSIST1, D291). Each Synapse AI tab shows a chat of its own
+ * (`chat`, TABS2); without one this is the panel's, and the same chat in both is one conversation, one state.
  */
-export function BuilderConversation({ density = 'panel', active = true, pill }: {
+export function BuilderConversation({ density = 'panel', active = true, pill, chat, initialInput, suggested = false, onInput }: {
     density?: 'panel' | 'page';
     /** False while the panel is still sliding in or out: nothing scrolls then. */
     active?: boolean;
     /** The composer's agent pill; the panel's names Synapse AI, Chat's is its agent picker. */
     pill?: ReactNode;
+    /** The chat to show: a Synapse AI tab's own (`useBuilderChat`). Without it, the panel's. */
+    chat?: BuilderChatValue;
+    /** What a tab's composer starts with: its kept words, or a link's suggestion. The panel's come from `open`. */
+    initialInput?: string;
+    /** `initialInput` came from a link, not the person (ONB3's starter prompts): said above the composer, never sent
+     * by itself, until the person changes or sends it. */
+    suggested?: boolean;
+    /** The composer's words as they change, for a tab to keep while it is behind. */
+    onInput?: (text: string) => void;
 }) {
+    const builder = useBuilder();
+    const { state, streaming, send, stop, ready } = chat ?? builder;
     const {
-        state, streaming, send, stop, canAttach,
-        providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
-    } = useBuilder();
+        canAttach, providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
+    } = builder;
     const entered = active;
+    // The panel's hand-overs are the panel's: a tab's composer starts from its own words.
+    const handed = chat ? null : draft;
 
     // Words handed over by `open({ prompt })` land in the composer, unsent, for
     // the person to read and send. A conversation mounts when the panel opens,
     // after the words were handed over: it starts with them unless a composer took
     // them already (the provider's `draftTaken`), and adopts a newer hand-over
     // while rendering, not in an effect.
-    const [input, setInput] = useState(() => (draft && draft.n !== draftTaken ? draft.text : ''));
-    const [adopted, setAdopted] = useState(draft?.n ?? 0);
-    if (draft && draft.n !== adopted) {
-        setAdopted(draft.n);
-        setInput(draft.text);
+    const [input, setInput] = useState(() => (
+        chat ? initialInput ?? '' : handed && handed.n !== draftTaken ? handed.text : ''));
+    const [adopted, setAdopted] = useState(handed?.n ?? 0);
+    if (handed && handed.n !== adopted) {
+        setAdopted(handed.n);
+        setInput(handed.text);
     }
     useEffect(() => {
-        if (draft && draft.n !== draftTaken) takeDraft(draft.n);
-    }, [draft, draftTaken, takeDraft]);
+        if (handed && handed.n !== draftTaken) takeDraft(handed.n);
+    }, [handed, draftTaken, takeDraft]);
+    const onInputRef = useRef(onInput);
+    useEffect(() => { onInputRef.current = onInput; });
+    useEffect(() => { onInputRef.current?.(input); }, [input]);
+    // A suggestion is labelled as one for as long as it is the suggestion's words.
+    const showSuggested = suggested && Boolean(initialInput) && input === initialInput;
     const bottomRef = useRef<HTMLDivElement>(null);
     // The composer's field, for "Change something" and a suggestion to focus.
     const textarea = useRef<HTMLTextAreaElement>(null);
+    // A suggestion arrives ready to read and send: the composer has the focus, with the caret after its words.
+    useEffect(() => {
+        if (!suggested || !initialInput) return;
+        const field = textarea.current;
+        if (!field) return;
+        field.focus();
+        field.setSelectionRange(field.value.length, field.value.length);
+    }, [suggested, initialInput]);
     const attachments = useImageAttachments();
 
     useEffect(() => {
@@ -236,11 +266,13 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
         : planWaiting
           ? 'Ask something else, or press Change something to change the plan'
           : state.pending ? 'Answer the question above…' : 'Describe what you want to happen…';
-    const fresh = state.messages.every((m) => m.key === 'welcome') && !streaming;
+    const fresh = ready && state.messages.every((m) => m.key === 'welcome') && !streaming;
     return (
         <>
                 <div className="flex flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-4 py-5">
-                    {groups.map((group, i) => {
+                    {/* A chat being read back shows neither the greeting nor nothing: it says so (F873's class). */}
+                    {!ready && <p className="py-10 text-center text-xs text-text-faint">Opening the chat…</p>}
+                    {ready && groups.map((group, i) => {
                         if (group.type === 'activity') {
                             return (
                                 <div key={`activity-${i}`} className={TEXT_INSET}>
@@ -394,6 +426,11 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                         pasteHandlers={attachments.pasteHandlers}
                         top={(
                             <>
+                                {showSuggested && (
+                                    <span className="self-start rounded-full border border-border bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-text-muted">
+                                        {SUGGESTED_LABEL}
+                                    </span>
+                                )}
                                 {changingPlan && (
                                     <span className="inline-flex items-center gap-1 self-start rounded-full border border-person/60 bg-person-subtle py-0.5 pl-2.5 pr-1 text-xs font-medium text-person-ink">
                                         Changing the plan
@@ -469,8 +506,10 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
 }
 
 export function BuilderPanel() {
-    const { isOpen, entered, close, newConversation } = useBuilder();
+    const { isOpen, entered, close, newConversation, chatId, showChat } = useBuilder();
     const [how, setHow] = useState(false);
+    // The panel's list of Synapse AI's chats, in place of the conversation (TABS2, F1062).
+    const [listing, setListing] = useState(false);
 
     // `isOpen` stays true for the length of the exit transition — the provider
     // clears it when the card has finished leaving.
@@ -515,10 +554,26 @@ export function BuilderPanel() {
                         >
                             See how I&rsquo;m built
                         </button>
+                        <Hint content="Your Synapse AI chats">
+                            <button
+                                type="button"
+                                onClick={() => setListing((v) => !v)}
+                                aria-label="Your Synapse AI chats"
+                                aria-pressed={listing}
+                                data-tour="assistant-history"
+                                className={cn(
+                                    'rounded-md p-1.5 transition-colors hover:bg-surface-2 hover:text-text',
+                                    listing ? 'bg-surface-2 text-text' : 'text-text-faint',
+                                    focusRing,
+                                )}
+                            >
+                                <History size={14} aria-hidden />
+                            </button>
+                        </Hint>
                         <Hint content="Start a new conversation">
                             <button
                                 type="button"
-                                onClick={newConversation}
+                                onClick={() => { setListing(false); newConversation(); }}
                                 aria-label="Start a new conversation"
                                 className={cn('rounded-md p-1.5 text-text-faint transition-colors hover:bg-surface-2 hover:text-text', focusRing)}
                             >
@@ -536,7 +591,17 @@ export function BuilderPanel() {
                     </div>
                 </header>
 
-                <BuilderConversation active={entered} />
+                {listing ? (
+                    <AssistantChats
+                        currentId={chatId}
+                        onPick={(id) => { showChat(id); setListing(false); }}
+                        onNew={() => { newConversation(); setListing(false); }}
+                        onBack={() => setListing(false)}
+                    />
+                ) : (
+                    // Keyed by the chat: another chat is another composer, not this one's words carried over.
+                    <BuilderConversation key={chatId} active={entered} />
+                )}
             </aside>
 
             <HowImBuilt

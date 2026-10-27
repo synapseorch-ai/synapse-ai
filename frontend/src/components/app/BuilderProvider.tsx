@@ -5,6 +5,9 @@
  * It used to be mounted inside the orchestration editor, which meant it could
  * only be reached from one screen and its conversation was destroyed by
  * navigating away. It lives in the app shell now, so the state is here.
+ *
+ * Each Synapse AI chat is its own (TABS2, F1061): `builderChats` keeps one store per chat id. The panel shows one of
+ * them, a Synapse AI tab on the chat page another (`useBuilderChat`), and the same id in both is the same chat.
  */
 import {
     createContext,
@@ -14,23 +17,19 @@ import {
     useMemo,
     useRef,
     useState,
+    useSyncExternalStore,
 } from 'react';
 
 import {
-    applyBuilderEvent,
-    emptyBuilderState,
-    refusedAnswer,
-    SET_ASIDE_NOTE,
-    typedWhilePending,
     type BuilderMessage,
     type BuilderState,
     type SavedResource,
 } from '@/lib/builderEvents';
 import { AGENT_BUILDER_SWITCH, asksForAgentBuilderSwitch, withoutBuildParam } from '@/components/assistant';
 import { usePersisted } from '@/components/ui';
-import { isPanelEvent, reattachedState, type OpenConversation } from '@/lib/builderReattach';
+import type { OpenConversation } from '@/lib/builderReattach';
 import type { ProviderModels } from '@/lib/models';
-import { readWithStallTimeout } from '@/lib/sse';
+import { BuilderChats, newChatId, type ChatView, type SendOptions } from './builderChats';
 
 /**
  * Announced when the builder writes something, so the list screens refetch
@@ -43,13 +42,6 @@ export const RESOURCE_SAVED_EVENT = 'synapse-resource-saved';
  * card in `BuilderPanel`; kept here because this is where the timer runs.
  */
 export const EXIT_MS = 200;
-
-/**
- * How long Stop waits for the run's own cancel event before it stops waiting.
- * The run ends at its next step boundary, which is immediate unless a provider
- * call is holding it — and that is exactly the case Stop exists for.
- */
-const STOP_GRACE_MS = 5000;
 
 /**
  * What Synapse AI says before anything else, above the composer: what it answers
@@ -78,49 +70,6 @@ const WELCOME: BuilderMessage = {
     content: `${BUILDER_GREETING.title} ${BUILDER_GREETING.text}`,
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type RunEvent = Record<string, any>;
-
-/**
- * A journal event shrunk past 32 KB, completed from the run itself. The journal
- * marks what it cut `truncated: true`, and may have cut a completion's summary
- * or a plan down to 2,000 characters, or to its type alone; the run's own row
- * holds the whole of both.
- */
-async function fromTheRun(runId: string, event: RunEvent): Promise<RunEvent> {
-    try {
-        const response = await fetch(`/api/orchestrations/runs/${encodeURIComponent(runId)}`);
-        if (!response.ok) return event;
-        const run = await response.json();
-        if (event.type === 'orchestration_complete') {
-            return { ...event, run_id: runId, final_state: run.shared_state ?? {} };
-        }
-        if (event.type === 'human_input_required') {
-            return {
-                ...event, run_id: runId,
-                prompt: run.human_prompt ?? event.prompt,
-                fields: run.human_fields ?? event.fields,
-                orch_step_id: event.orch_step_id ?? run.current_step_id,
-            };
-        }
-    } catch {
-        /* the shrunk event is still better than none */
-    }
-    return event;
-}
-
-/** The conversation before the person's last message: what a re-run of that message is sent with (F1018). */
-function beforeLastAsked(messages: BuilderMessage[]): BuilderMessage[] {
-    const at = messages.map((m) => m.role).lastIndexOf('user');
-    return at < 0 ? messages : messages.slice(0, at);
-}
-
-function newSessionId(): string {
-    return typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : String(Date.now());
-}
-
 interface OpenOptions {
     currentOrchestrationId?: string | null;
     /**
@@ -130,12 +79,33 @@ interface OpenOptions {
     prompt?: string;
     /** Words sent at once, as the person's message: Home's ask line and its chips (ASSIST1). */
     ask?: string;
+    /** In a new chat, not the one the panel was showing (TABS2). */
+    fresh?: boolean;
 }
 
 /** Words waiting for the composer; `n` tells one hand-over from the next with the same words. */
 export type BuilderDraft = { text: string; n: number };
 
-interface BuilderContextValue {
+/** One chat as a view uses it: what it holds, and what it can be asked to do. */
+export interface BuilderChatValue {
+    /** The chat's id: the `client_session_id` its turns run under. */
+    chatId: string;
+    state: BuilderState;
+    streaming: boolean;
+    /** Read back, or needing no reading: until then a view shows neither greeting nor turns. */
+    ready: boolean;
+    /** `revising`: the words answer a waiting plan itself — its card's buttons, or typed after Change something
+     * (F759). Without it, words typed while a plan waits are a new request, and the plan is set aside. `retryOf`:
+     * a failed turn sent again on a stronger model (F1018). */
+    send: (text: string, images?: string[], options?: SendOptions) => Promise<void>;
+    /**
+     * End the chat's run — the one being built, or the one parked on a
+     * question. Both are the same POST; only who reports it back differs.
+     */
+    stop: () => Promise<void>;
+}
+
+interface BuilderContextValue extends BuilderChatValue {
     isOpen: boolean;
     /**
      * Declare the orchestration a screen is showing, for as long as it shows
@@ -158,19 +128,10 @@ interface BuilderContextValue {
     draftTaken: number;
     takeDraft: (n: number) => void;
     close: () => void;
-    state: BuilderState;
-    streaming: boolean;
-    /** `revising`: the words answer a waiting plan itself — its card's buttons, or typed after Change something
-     * (F759). Without it, words typed while a plan waits are a new request, and the plan is set aside.
-     * `retryOf`: the failed run a "Try again on a stronger model" press tries again (F1018); the server picks the
-     * model, and the next message is on the usual one. */
-    send: (text: string, images?: string[], options?: { revising?: boolean; retryOf?: string }) => Promise<void>;
-    /**
-     * End the attached run — the one being built, or the one parked on a
-     * question. Both are the same POST; only who reports it back differs.
-     */
-    stop: () => Promise<void>;
+    /** The panel starts a new chat. The one it showed stays where it was, to be picked up again from a list. */
     newConversation: () => void;
+    /** The panel shows chat `id`: one picked from its list, or a tab's (TABS2, F1062). */
+    showChat: (id: string) => void;
     providers: Record<string, ProviderModels>;
     /**
      * Whether the model this build will actually run on can see an attachment.
@@ -183,14 +144,43 @@ interface BuilderContextValue {
     sessionModel: string;
     setSessionModel: (model: string) => void;
     saveBuilderModel: (model: string) => Promise<void>;
+    /** Every chat something shows, for `useBuilderChat`. */
+    chats: BuilderChats;
+    /** A turn's model and screen, read when it is sent, for `useBuilderChat`. */
+    sendContext: () => { model: string; currentOrchestrationId: string | null };
 }
 
 const BuilderContext = createContext<BuilderContextValue | null>(null);
 
+/** The panel's chat and the builder's app-wide controls. */
 export function useBuilder(): BuilderContextValue {
     const ctx = useContext(BuilderContext);
     if (!ctx) throw new Error('useBuilder must be used inside <BuilderProvider>');
     return ctx;
+}
+
+/** Chat `id` as a view holds it while it shows it; `fresh` says there is nothing on the server to read back. */
+function useHeldChat(chats: BuilderChats, id: string, fresh: boolean): ChatView & { chat: ReturnType<BuilderChats['get']> } {
+    // Made on first sight, held from the effect: a view that never mounts holds nothing.
+    // `fresh` counts only when the chat is made: a chat already held is the one it is.
+    const chat = useMemo(() => chats.get(id, fresh), [chats, id, fresh]);
+    useEffect(() => chats.hold(id, fresh), [chats, id, fresh]);
+    const view = useSyncExternalStore(chat.subscribe, chat.getSnapshot, chat.getSnapshot);
+    return { ...view, chat };
+}
+
+/**
+ * One Synapse AI chat, for a view that shows a chat of its own: a Synapse AI tab (TABS2, F1061). The same id as the
+ * panel's is the panel's chat, so the two draw one conversation.
+ */
+export function useBuilderChat(id: string, { fresh = false }: { fresh?: boolean } = {}): BuilderChatValue {
+    const { chats, sendContext } = useBuilder();
+    const { chat, state, streaming, ready } = useHeldChat(chats, id, fresh);
+    const send = useCallback(
+        (text: string, images: string[] = [], options: SendOptions = {}) => chat.send(text, images, options, sendContext()),
+        [chat, sendContext],
+    );
+    return { chatId: id, state, streaming, ready, send, stop: chat.stop };
 }
 
 export function BuilderProvider({ children }: { children: React.ReactNode }) {
@@ -198,8 +188,6 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const [entered, setEntered] = useState(false);
     const [draft, setDraft] = useState<BuilderDraft | null>(null);
     const [draftTaken, takeDraft] = useState(0);
-    const [state, setState] = useState<BuilderState>(() => emptyBuilderState([WELCOME]));
-    const [streaming, setStreaming] = useState(false);
     const [providers, setProviders] = useState<Record<string, ProviderModels>>({});
     // Served by the backend rather than restated here: a second copy of which
     // model families can see would be wrong the first time only one was updated.
@@ -216,31 +204,25 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     // this one" means this one. Held in a ref: it is read when a message is
     // sent, and changing it should not re-render the panel.
     const currentOrchestrationId = useRef<string | null>(null);
-    // Minted on first use, not during render: `crypto.randomUUID()` and
-    // `Date.now()` are both impure, and a render that runs twice would
-    // otherwise produce two conversations.
-    const clientSessionId = useRef<string | null>(null);
-    const conversationId = useCallback(() => {
-        clientSessionId.current ??= newSessionId();
-        return clientSessionId.current;
-    }, []);
-    const abortRef = useRef<AbortController | null>(null);
-    /**
-     * The run and the open question, readable from callbacks that must not
-     * re-create themselves every time either changes.
-     */
-    const runIdRef = useRef<string | null>(null);
-    const pendingRef = useRef<BuilderState['pending']>(null);
-    /** Set by `stop`, so an aborted stream reads as stopped rather than as a fault. */
-    const stopRequested = useRef(false);
-    /**
-     * Whether this page has used the panel yet. The conversation a reload brings
-     * back (F214) is drawn only onto a panel nobody has typed into: a message
-     * sent before the lookup answered must not be replaced by an older one.
-     */
-    const touched = useRef(false);
     //: The pending unmount at the end of the close transition, so `open` can cancel it.
     const exitTimer = useRef<number | null>(null);
+
+    const announce = useCallback((saved: SavedResource) => {
+        window.dispatchEvent(new CustomEvent(RESOURCE_SAVED_EVENT, { detail: saved }));
+    }, []);
+    const [chats] = useState(() => new BuilderChats(WELCOME, announce));
+
+    // The panel's chat. Minted once, not per render: a render that runs twice must not make two chats. It is held
+    // for the life of the page, open or closed, so the panel's conversation survives navigating, as it always has.
+    const [panelChat, setPanelChat] = useState<{ id: string; fresh: boolean }>(() => ({ id: newChatId(), fresh: true }));
+    const panel = useHeldChat(chats, panelChat.id, panelChat.fresh);
+
+    const modelRef = useRef(sessionModel);
+    useEffect(() => { modelRef.current = sessionModel; }, [sessionModel]);
+    const sendContext = useCallback(
+        () => ({ model: modelRef.current, currentOrchestrationId: currentOrchestrationId.current }),
+        [],
+    );
 
     useEffect(() => {
         let cancelled = false;
@@ -276,6 +258,17 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const asked = useRef<string | null>(null);
     const [askTick, setAskTick] = useState(0);
 
+    const newConversation = useCallback(() => {
+        // A chat with nothing in it is already new. One with turns stays as it was — a question it waits on
+        // included — for the panel's list and History to pick up again (TABS2); a day's wait still ends it (F214).
+        if (panel.chat.isBlank()) return;
+        setPanelChat({ id: newChatId(), fresh: true });
+    }, [panel.chat]);
+
+    const showChat = useCallback((id: string) => {
+        setPanelChat((cur) => (cur.id === id ? cur : { id, fresh: false }));
+    }, []);
+
     const open = useCallback((options?: OpenOptions) => {
         // An explicit answer still wins, for a caller that opens the panel about
         // something other than what it is showing. Everything else comes from
@@ -283,6 +276,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         if (options && 'currentOrchestrationId' in options) {
             currentOrchestrationId.current = options.currentOrchestrationId ?? null;
         }
+        if (options?.fresh) newConversation();
         if (options?.prompt) {
             const text = options.prompt;
             setDraft((cur) => ({ text, n: (cur?.n ?? 0) + 1 }));
@@ -300,7 +294,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         // is told to open. Set both in one tick and there are no two values for
         // the transition to interpolate between.
         requestAnimationFrame(() => setEntered(true));
-    }, []);
+    }, [newConversation]);
 
     // Closing runs the transition first and unmounts after it. This lives here
     // rather than in the panel because the provider is what owns open/close;
@@ -331,334 +325,40 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
         return () => window.clearTimeout(timer);
     }, [open]);
 
-    useEffect(() => {
-        runIdRef.current = state.runId;
-        pendingRef.current = state.pending;
-    }, [state.runId, state.pending]);
-
-    /** Ask the server to end a run. The POST is the whole of it. */
-    const cancelRun = useCallback(async (runId: string) => {
-        const response = await fetch(
-            `/api/orchestrations/runs/${encodeURIComponent(runId)}/cancel`,
-            { method: 'POST' },
-        );
-        if (!response.ok) throw new Error(`The run could not be stopped (${response.status}).`);
-    }, []);
-
-    const newConversation = useCallback(() => {
-        touched.current = true;
-        // A run parked on a question has nothing else to end it: walking away
-        // leaves it paused for good. A run still *working* is left alone —
-        // stopping it mid-build could strand half of what it was writing, and
-        // the run is detached now, so abandoning its stream does not kill it.
-        const parked = pendingRef.current?.runId;
-        if (parked) void cancelRun(parked).catch(() => undefined);
-        abortRef.current?.abort();
-        clientSessionId.current = newSessionId();
-        setState(emptyBuilderState([WELCOME]));
-        setStreaming(false);
-    }, [cancelRun]);
-
-    const announce = useCallback((saved: SavedResource) => {
-        window.dispatchEvent(new CustomEvent(RESOURCE_SAVED_EVENT, { detail: saved }));
-    }, []);
-
-    /**
-     * Read a run's events into the panel.
-     *
-     * `following` is set when the stream is the run's journal rather than the
-     * response to a message (a reload brought the run back, F214). The journal
-     * stays open across a pause, where this product answers through
-     * `/api/builder/resume`'s own stream, so reading stops at the question the
-     * run is asking now — the journal replays the ones already answered, which
-     * sit at or before `following.cursor`. It also shrinks an event past 32 KB,
-     * so a shrunk completion or question is re-read from the run itself.
-     */
-    const consume = useCallback(
-        async (
-            response: Response,
-            following?: { runId: string; cursor: number },
-        ): Promise<'paused' | 'ended'> => {
-            const reader = response.body?.getReader();
-            if (!reader) return 'ended';
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let seq = 0;
-            // The journal's id for the event that follows (`id: N`).
-            let eventId: number | null = null;
-
-            for (;;) {
-                const { done, value } = await readWithStallTimeout(reader, abortRef.current!);
-                if (done) break;
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() ?? '';
-                for (const line of lines) {
-                    if (line.startsWith('id: ')) {
-                        eventId = Number(line.slice(4));
-                        continue;
-                    }
-                    if (!line.startsWith('data: ')) continue;
-                    const thisId = eventId;
-                    eventId = null;
-                    let event: unknown;
-                    try {
-                        event = JSON.parse(line.slice(6));
-                    } catch {
-                        continue; // a heartbeat or a half-written frame
-                    }
-                    let parsed = event as RunEvent;
-                    if (!isPanelEvent(parsed?.type)) continue;
-                    if (following && parsed.truncated) parsed = await fromTheRun(following.runId, parsed);
-                    seq += 1;
-                    setState((prev) => applyBuilderEvent(prev, parsed, seq));
-                    if (parsed?.type === 'resource_saved') announce(parsed as SavedResource);
-                    if (following && parsed?.type === 'human_input_required') {
-                        // Answered before the conversation was read: history.
-                        const replayed = thisId !== null && Number.isFinite(thisId) && thisId <= following.cursor;
-                        if (!replayed) {
-                            await reader.cancel().catch(() => undefined);
-                            return 'paused';
-                        }
-                    }
-                }
-            }
-            return 'ended';
-        },
-        [announce],
-    );
-
-    /** A failed or stopped stream, said in the conversation. */
-    const reportStreamEnd = useCallback((error: unknown) => {
-        const aborted = (error as Error)?.name === 'AbortError';
-        // Stop gave up waiting for the run's own cancel event. Say so
-        // here, because nothing else will now.
-        if (aborted && stopRequested.current) {
-            setState((prev) => ({
-                ...prev,
-                status: null, pending: null, done: true, error: null,
-                messages: [
-                    ...prev.messages,
-                    { role: 'assistant', content: 'Stopped.', kind: 'text', key: `stopped-${prev.messages.length}` },
-                ],
-            }));
-        } else if (!aborted) {
-            const message = (error as Error)?.message ?? 'Something went wrong.';
-            setState((prev) => ({
-                ...prev,
-                error: message,
-                messages: [
-                    ...prev.messages,
-                    { role: 'assistant', content: `**${message}**`, kind: 'text', key: `error-${prev.messages.length}` },
-                ],
-            }));
-        }
-    }, []);
-
-    /** Follow a run the panel did not start, from its journal's beginning (F214). */
-    const follow = useCallback(async (runId: string, cursor: number) => {
-        const controller = new AbortController();
-        abortRef.current = controller;
-        setStreaming(true);
-        try {
-            const response = await fetch(
-                `/api/orchestrations/runs/${encodeURIComponent(runId)}/events/stream?after=0`,
-                { signal: controller.signal },
-            );
-            if (!response.ok) throw new Error(`The build could not be followed (${response.status}).`);
-            await consume(response, { runId, cursor });
-        } catch (error) {
-            reportStreamEnd(error);
-        } finally {
-            setStreaming(false);
-            if (abortRef.current === controller) abortRef.current = null;
-            stopRequested.current = false;
-        }
-    }, [consume, reportStreamEnd]);
-
-    // A reload brings back the conversation still open (F214): the panel is
-    // redrawn from the run rows, and a run still working is followed.
+    // A reload brings back the panel's conversation still open (F214): the panel shows that chat, redrawn from its
+    // run rows, and a run still working is followed. Only onto a panel nobody has typed into yet.
+    const firstChat = useRef(panel.chat);
     useEffect(() => {
         let cancelled = false;
         (async () => {
             try {
                 const response = await fetch('/api/builder/conversation');
-                if (!response.ok || cancelled || touched.current) return;
+                if (!response.ok || cancelled) return;
                 const { conversation } = (await response.json()) as { conversation: OpenConversation | null };
-                if (!conversation || cancelled || touched.current) return;
-                touched.current = true;
-                clientSessionId.current = conversation.client_session_id;
-                setState(reattachedState(conversation, WELCOME));
-                if (conversation.status === 'running') {
-                    void follow(conversation.run_id, Number(conversation.cursor ?? 0) || 0);
-                }
+                if (!conversation || cancelled || !firstChat.current.isBlank()) return;
+                const id = conversation.client_session_id;
+                chats.get(id, true).adopt(conversation);
+                setPanelChat((cur) => (cur.id === firstChat.current.id ? { id, fresh: true } : cur));
             } catch {
                 /* the panel opens on its greeting, as before */
             }
         })();
         return () => { cancelled = true; };
-    }, [follow]);
+    }, [chats]);
 
     const send = useCallback(
-        async (text: string, images: string[] = [],
-            { revising = false, retryOf }: { revising?: boolean; retryOf?: string } = {}) => {
-            // An image on its own is a message. Only an empty one is nothing.
-            if ((!text.trim() && !images.length) || streaming) return;
-            touched.current = true;
-            // A new request while a plan waits (F759): the plan is stopped where it waits — nothing it planned was
-            // done — and this message starts a new turn instead of answering it.
-            const setAside = state.pending !== null && typedWhilePending(state.pending, text, revising) === 'set_aside';
-            const pending = setAside ? null : state.pending;
-            if (setAside && state.pending) {
-                const parked = state.pending.runId;
-                await cancelRun(parked).catch(() => undefined);
-            }
-
-            // An offer is for the turn it follows: any new message takes it down. A press says what it tries instead of
-            // the message again, which is already on screen (F1018).
-            const offered = retryOf ? state.messages.find((m) => m.tryStronger?.retry_of === retryOf)?.tryStronger : null;
-            setState((prev) => ({
-                ...prev,
-                pending: null,
-                done: false,
-                error: null,
-                messages: [
-                    ...prev.messages.filter((m) => m.kind !== 'try_stronger'),
-                    ...(offered
-                        ? [{ role: 'assistant' as const, content: `Trying again on ${offered.name}…`, kind: 'text' as const,
-                             key: `retry-${retryOf}` }]
-                        : []),
-                    ...(retryOf ? [] : setAside
-                        ? [{ role: 'assistant' as const, content: SET_ASIDE_NOTE, kind: 'text' as const,
-                             key: `aside-${prev.messages.length}` }]
-                        : []),
-                    ...(retryOf ? [] : [{
-                        role: 'user' as const,
-                        content: text || `(${images.length} ${images.length === 1 ? 'image' : 'images'})`,
-                        kind: 'text' as const,
-                        key: `user-${prev.messages.length}`,
-                    }]),
-                ],
-            }));
-            setStreaming(true);
-
-            const controller = new AbortController();
-            abortRef.current = controller;
-            try {
-                // Answering an open question resumes the paused run; anything
-                // else starts a new one.
-                const response = pending
-                    ? await fetch('/api/builder/resume', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          signal: controller.signal,
-                          body: JSON.stringify({
-                              run_id: pending.runId,
-                              response: { [pending.field]: text },
-                              images,
-                          }),
-                      })
-                    : await fetch('/api/builder/chat', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          signal: controller.signal,
-                          body: JSON.stringify({
-                              message: text,
-                              // A press re-runs the failed turn, so its message is not in its own history.
-                              history: (retryOf ? beforeLastAsked(state.messages) : state.messages)
-                                  .filter((m) => m.kind === 'text' && m.key !== 'welcome')
-                                  .map((m) => ({ role: m.role, content: m.content })),
-                              can_create_agents: true,
-                              model: sessionModel || undefined,
-                              images,
-                              current_orchestration_id: currentOrchestrationId.current,
-                              client_session_id: conversationId(),
-                              // A schedule the person names no timezone for runs on their own clock (F948).
-                              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-                              ...(retryOf ? { retry_of: retryOf } : {}),
-                          }),
-                      });
-
-                if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
-                await consume(response);
-                // A refused answer leaves its question open (BWA1): the run is
-                // still parked on it, so the next message answers it again.
-                if (pending) setState((prev) => (refusedAnswer(prev) && !prev.pending ? { ...prev, pending } : prev));
-            } catch (error) {
-                reportStreamEnd(error);
-            } finally {
-                setStreaming(false);
-                abortRef.current = null;
-                stopRequested.current = false;
-            }
-        },
-        [cancelRun, consume, conversationId, reportStreamEnd, sessionModel, state.messages, state.pending, streaming],
+        (text: string, images: string[] = [], options: SendOptions = {}) => panel.chat.send(text, images, options, sendContext()),
+        [panel.chat, sendContext],
     );
 
     // Home's ask line (ASSIST1): the words go as the person's message once the panel is open, and wait while a
     // turn is still answering, then go.
     useEffect(() => {
         const text = asked.current;
-        if (!text || !isOpen || streaming) return;
+        if (!text || !isOpen || panel.streaming) return;
         asked.current = null;
         void send(text);
-    }, [askTick, isOpen, streaming, send]);
-
-    /**
-     * Stop the attached run.
-     *
-     * The POST is what ends it; nothing is aborted first, because cutting the
-     * stream would drop the very event that says what happened. A run being
-     * built is followed by an open stream, so the engine's own cancel arrives
-     * on it and the reducer renders "Stopped." — with the timer below as the
-     * backstop for a run wedged inside a provider call.
-     *
-     * A run parked on a question has **no** open stream: this product ends a
-     * run's stream at the pause rather than holding it (which is why the
-     * composer works here and had to be fixed in the commercial edition). So
-     * nothing will report that cancel, and this says it itself.
-     */
-    const stop = useCallback(async () => {
-        const parked = pendingRef.current;
-        const runId = parked?.runId ?? runIdRef.current;
-        if (!runId) return;
-
-        const following = abortRef.current;
-        stopRequested.current = true;
-        setState((prev) => ({ ...prev, status: 'Stopping…' }));
-        let ended = true;
-        try {
-            await cancelRun(runId);
-        } catch {
-            // Already finished, or unreachable. A run being followed still has
-            // the timer below; a parked one is reported as it went.
-            ended = false;
-        }
-
-        if (!following) {
-            stopRequested.current = false;
-            setState((prev) => ({
-                ...prev,
-                status: null,
-                // The question stays open when the run did: it is still the
-                // one thing this conversation can do.
-                ...(ended ? { pending: null, done: true, error: null } : {}),
-                messages: [
-                    ...prev.messages,
-                    {
-                        role: 'assistant',
-                        content: ended ? 'Stopped.' : '**The run could not be stopped.**',
-                        kind: 'text',
-                        key: `stopped-${prev.messages.length}`,
-                    },
-                ],
-            }));
-            return;
-        }
-        window.setTimeout(() => {
-            if (abortRef.current === following) following.abort();
-        }, STOP_GRACE_MS);
-    }, [cancelRun]);
+    }, [askTick, isOpen, panel.streaming, send]);
 
     const saveBuilderModel = useCallback(async (model: string) => {
         const current = await (await fetch('/api/settings')).json();
@@ -678,15 +378,18 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     const resolvedModel = sessionModel || builderModel || workspaceModel;
     const canAttach = Boolean(resolvedModel) && visionCapable.includes(resolvedModel);
 
+    const { state, streaming, ready } = panel;
+    const stop = panel.chat.stop;
     const value = useMemo(
         () => ({
-            isOpen, entered, open, draft, draftTaken, takeDraft, close, state, streaming, send, stop, newConversation,
+            chatId: panelChat.id, state, streaming, ready, send, stop,
+            isOpen, entered, open, draft, draftTaken, takeDraft, close, newConversation, showChat,
             providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
-            setCurrentOrchestration,
+            setCurrentOrchestration, chats, sendContext,
         }),
-        [isOpen, entered, open, draft, draftTaken, close, state, streaming, send, stop, newConversation,
-         providers, canAttach, builderModel, sessionModel, setSessionModel, saveBuilderModel,
-         setCurrentOrchestration],
+        [panelChat.id, state, streaming, ready, send, stop, isOpen, entered, open, draft, draftTaken, close,
+         newConversation, showChat, providers, canAttach, builderModel, sessionModel, setSessionModel,
+         saveBuilderModel, setCurrentOrchestration, chats, sendContext],
     );
 
     return <BuilderContext.Provider value={value}>{children}</BuilderContext.Provider>;

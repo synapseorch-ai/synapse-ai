@@ -30,6 +30,7 @@ import argparse
 import asyncio
 import calendar
 import json
+from urllib.parse import quote
 import os
 import re
 import sys
@@ -4208,6 +4209,270 @@ async def check_tabsphone(browser) -> str:
     if overflow:
         raise AssertionError("the page scrolls sideways at phone width")
     return "the phone switcher counts the tabs and its sheet opens a new one"
+
+
+# ── several Synapse AI chats (TABS2, D327) ───────────────────────────────────
+
+#: Synapse AI's routes, kept per chat in the page: a turn (`/api/builder/chat`) is recorded and answered at once and
+#: its words kept under its `client_session_id`, so reading a chat back (`/api/builder/conversation?session=`) draws
+#: what was said in it. `window.__chatList` is the panel's list, `window.__history` History's rows. No model is called.
+ASSISTANT_STUB = r"""
+window.__chats = window.__chats || {};
+window.__sent = [];
+window.__asked = [];
+const _assistantInner = window.fetch;
+const _reply = (v) => Promise.resolve(new Response(JSON.stringify(v), {
+  status: 200, headers: {'Content-Type': 'application/json'},
+}));
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || 'GET').toUpperCase();
+  if (url.includes('/api/builder/conversations')) {
+    window.__asked.push(url);
+    return _reply({conversations: window.__chatList || []});
+  }
+  if (url.includes('/api/builder/conversation')) {
+    window.__asked.push(url);
+    const id = new URL(url, location.href).searchParams.get('session');
+    const turns = id ? window.__chats[id] : null;
+    return _reply({conversation: turns && turns.length ? {
+      client_session_id: id, run_id: 'run_' + id, status: 'completed', turns: turns, pending: null, cursor: '0',
+    } : null});
+  }
+  if (url.includes('/api/builder/chat') && method === 'POST') {
+    const body = JSON.parse((init && init.body) || '{}');
+    window.__sent.push(body);
+    const id = body.client_session_id;
+    (window.__chats[id] = window.__chats[id] || []).push({user: body.message, assistant: 'heard: ' + body.message});
+    const frames = 'data: ' + JSON.stringify({type: 'assistant_message', content: 'heard: ' + body.message}) + '\n\n'
+      + 'data: {"type":"done"}\n\n';
+    return Promise.resolve(new Response(frames, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  }
+  if (window.__history && method === 'GET' && /\/api\/sessions(\?|$)/.test(url)) {
+    window.__asked.push(url);
+    return _reply(window.__history);
+  }
+  return _assistantInner(input, init);
+};
+"""
+
+ASSISTANT_NAME = "Synapse AI"
+
+
+async def _assistant_page(browser, path: str = "", chats: dict | None = None, chat_list: list | None = None,
+                          history: list | None = None, width=WIDE):
+    """The chat page with Synapse AI's routes stubbed (ASSISTANT_STUB); its first tab is an agent's, as a new
+    install's is. `chats` are the chats on the "server", by id."""
+    _tab_agents()
+    ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+    await ctx.add_init_script(
+        "try { if (!sessionStorage.getItem('uismokeSeeded')) {"
+        f" localStorage.setItem('synapseSessionId', 'uismoke-sai-first');"
+        f" localStorage.setItem('synapseAgentId', {json.dumps(TAB_ALPHA)});"
+        " sessionStorage.setItem('uismokeSeeded', '1'); } } catch (e) {}"
+        f"\nwindow.__chats = {json.dumps(chats or {})};"
+        + (f"\nwindow.__chatList = {json.dumps(chat_list)};" if chat_list is not None else "")
+        + (f"\nwindow.__history = {json.dumps(history)};" if history is not None else ""))
+    await ctx.add_init_script(ASSISTANT_STUB)
+    page = await ctx.new_page()
+    await page.goto(f"{APP}/{path}", wait_until="domcontentloaded")
+    await asyncio.sleep(SETTLE)
+    return ctx, page
+
+
+async def _assistant_ids(page) -> list[str]:
+    return [b.get("client_session_id") for b in await page.evaluate("() => window.__sent")]
+
+
+def _conversation_text(page_js_main: str = "main") -> str:
+    """The conversation's words, without the strip's titles (a tab's title is its first question)."""
+    return f"""() => {{
+        const main = document.querySelector('{page_js_main}').innerText;
+        const strip = [...document.querySelectorAll('[role=tablist]')].map(e => e.innerText).join('\\n');
+        return main.replace(strip, '');
+    }}"""
+
+
+@check
+async def check_tabsassistantnew(browser) -> str:
+    """Each new Synapse AI tab is a new chat, and each keeps its own words (TABS2, F1061).
+
+    TABS1 kept one Synapse AI tab, the panel's one conversation. Naveen, 2026-10-27: a new tab is a new chat.
+    """
+    ctx, page = await _assistant_page(browser)
+    try:
+        await _new_tab(page, ASSISTANT_NAME)
+        await _send(page, "the first chat's ask")
+        if not await _on_screen(page, "heard: the first chat's ask"):
+            raise AssertionError("the first Synapse AI tab's turn never answered")
+        await _new_tab(page, ASSISTANT_NAME)
+        second = await page.evaluate(_conversation_text())
+        await _send(page, "the second chat's ask")
+        if not await _on_screen(page, "heard: the second chat's ask"):
+            raise AssertionError("the second Synapse AI tab's turn never answered")
+        titles = await _tab_titles(page)
+        await _strip(page).get_by_role("tab", name=re.compile("the first chat's ask")).click()
+        await asyncio.sleep(1.5)
+        first = await page.evaluate(_conversation_text())
+        ids = await _assistant_ids(page)
+    finally:
+        await ctx.close()
+    if "the first chat's ask" in second:
+        raise AssertionError("a new Synapse AI tab opened on the first chat, not a new one")
+    if sum("chat's ask" in t for t in titles) != 2:
+        raise AssertionError(f"two Synapse AI chats are not two tabs: {titles}")
+    if len(ids) != 2 or ids[0] == ids[1] or not all(ids):
+        raise AssertionError(f"the two tabs' turns did not go to two chats: {ids}")
+    if "the first chat's ask" not in first or "the second chat's ask" in first:
+        raise AssertionError("back on the first tab, its chat is not its own")
+    return "two Synapse AI tabs are two chats, each with its own words and its own id"
+
+
+@check
+async def check_tabsassistanthistory(browser) -> str:
+    """History lists a Synapse AI chat among the agents', and opening it carries that chat on (TABS2, F1062)."""
+    cid = "uismoke-sai-old"
+    history = [
+        {"session_id": cid, "agent_id": "agent_synapse_ai", "first_user_message": "the weekly digest chat",
+         "last_response": "Built it.", "last_updated": "2026-10-27T09:00:00.000000Z", "turn_count": 1},
+        {"session_id": "uismoke-agent-old", "agent_id": TAB_ALPHA, "first_user_message": "an agent's chat",
+         "last_response": "ok", "last_updated": "2026-10-27T08:00:00.000000Z", "turn_count": 1},
+    ]
+    ctx, page = await _assistant_page(browser, chats={cid: [{"user": "the weekly digest chat", "assistant": "Built it."}]},
+                                      history=history)
+    try:
+        await page.get_by_role("button", name="History").first.click()
+        row = page.get_by_role("button", name=re.compile("the weekly digest chat"))
+        await row.wait_for(timeout=8_000)
+        named = await page.evaluate(
+            "() => [...document.querySelectorAll('button')].find(b => b.innerText.includes('the weekly digest chat'))"
+            "?.innerText || ''")
+        await row.click()
+        if not await _on_screen(page, "Built it."):
+            raise AssertionError("the Synapse AI chat picked from History did not open with its turns")
+        await _send(page, "and add Fridays")
+        await _on_screen(page, "heard: and add Fridays")
+        ids = await _assistant_ids(page)
+    finally:
+        await ctx.close()
+    if ASSISTANT_NAME not in named:
+        raise AssertionError(f"History's row does not say it is Synapse AI's: {named!r}")
+    if ids != [cid]:
+        raise AssertionError(f"the next message did not carry the picked chat on: {ids}")
+    return "History lists Synapse AI's chat; opening it shows its turns and the next message continues it"
+
+
+@check
+async def check_panelhistory(browser) -> str:
+    """The panel's history icon lists Synapse AI's chats only, and a pick carries that chat on in the panel (F1062)."""
+    cid = "uismoke-sai-panel"
+    rows = [{"session_id": cid, "title": "move the digest to 8am", "last_response": "Moved.",
+             "last_updated": "2026-10-27T09:00:00.000000Z", "turn_count": 1, "running": False, "waiting": False}]
+    ctx, page = await _assistant_page(
+        browser, path="agents", chats={cid: [{"user": "move the digest to 8am", "assistant": "Moved."}]}, chat_list=rows)
+    try:
+        await page.locator('[data-testid="assistant-open"]').first.click()
+        await asyncio.sleep(0.8)
+        icon = page.locator('[data-testid="assistant-panel"] [data-tour="assistant-history"]')
+        await icon.click()
+        listed = page.locator('[data-testid="assistant-chats"]')
+        await listed.wait_for(timeout=8_000)
+        await listed.get_by_role("button", name=re.compile("move the digest to 8am")).click()
+        await asyncio.sleep(1.0)
+        text = await _panel_text(page)
+        await page.locator('[data-testid="assistant-panel"] textarea').fill("and on Mondays")
+        await page.locator('[data-testid="assistant-panel"] textarea').press("Enter")
+        await asyncio.sleep(1.0)
+        ids = await _assistant_ids(page)
+        asked = await page.evaluate("() => window.__asked")
+    finally:
+        await ctx.close()
+    if not any("/api/builder/conversations" in u for u in asked):
+        raise AssertionError("the panel's list did not read Synapse AI's own list")
+    if any(re.search(r"/api/sessions(\?|$)", u) for u in asked):
+        raise AssertionError("the panel's list read History's, which holds every agent's chats")
+    if "Moved." not in text:
+        raise AssertionError(f"the picked chat did not open in the panel: {text[:200]!r}")
+    if ids != [cid]:
+        raise AssertionError(f"the panel's next message did not carry the picked chat on: {ids}")
+    return "the panel's clock lists Synapse AI's chats; a pick opens it there and the next message continues it"
+
+
+@check
+async def check_panelandtab(browser) -> str:
+    """A chat begun in the panel carries on in a tab, as one conversation (TABS2, F1061)."""
+    ctx, page = await _assistant_page(browser, history=[])
+    try:
+        await page.locator('[data-testid="assistant-open"]').first.click()
+        await asyncio.sleep(0.8)
+        await page.locator('[data-testid="assistant-panel"] textarea').fill("begun in the panel")
+        await page.locator('[data-testid="assistant-panel"] textarea').press("Enter")
+        await asyncio.sleep(1.0)
+        [cid] = await _assistant_ids(page)
+        await page.locator('[data-testid="assistant-panel"] button[aria-label="Close Synapse AI"]').click()
+        await asyncio.sleep(0.5)
+        await page.evaluate(
+            "(id) => { window.__history = [{session_id: id, agent_id: 'agent_synapse_ai',"
+            " first_user_message: 'begun in the panel', last_response: 'heard: begun in the panel',"
+            " last_updated: new Date().toISOString(), turn_count: 1}]; }", cid)
+        await page.get_by_role("button", name="History").first.click()
+        await page.get_by_role("button", name=re.compile("begun in the panel")).first.click()
+        if not await _on_screen(page, "heard: begun in the panel"):
+            raise AssertionError("the panel's chat did not open in a tab")
+        await _send(page, "carried on in the tab")
+        await _on_screen(page, "heard: carried on in the tab")
+        ids = await _assistant_ids(page)
+        await page.locator('[data-testid="assistant-open"]').first.click()
+        await asyncio.sleep(0.8)
+        panel = await _panel_text(page)
+    finally:
+        await ctx.close()
+    if ids != [cid, cid]:
+        raise AssertionError(f"the tab did not carry the panel's chat on: {ids}")
+    if "carried on in the tab" not in panel:
+        raise AssertionError("the panel does not show what the tab added to the same chat")
+    return "a chat begun in the panel opens in a tab, carries on there, and the panel shows it"
+
+
+@check
+async def check_assistantdraft(browser) -> str:
+    """`?assistant=new&draft=` opens a new Synapse AI tab with the words waiting, labelled, never sent (TABS2; ONB3).
+
+    Anyone can make such a link, so the words are only a suggestion: nothing runs until the person presses Send.
+    """
+    words = "Make a lead list of design agencies in Leeds and keep it in the Vault"
+    ctx, page = await _assistant_page(browser, path=f"?assistant=new&draft={quote(words + chr(0x202E))}")
+    try:
+        box = page.locator("main textarea").last
+        for _ in range(30):
+            if await box.input_value() == words:
+                break
+            await asyncio.sleep(0.2)
+        held = await box.input_value()
+        labelled = await page.get_by_text("Suggested prompt", exact=True).count()
+        focused = await box.evaluate("(el) => document.activeElement === el && el.selectionStart === el.value.length")
+        await asyncio.sleep(3.0)
+        sent = await page.evaluate("() => window.__sent.length")
+        address = page.url
+        titles = await _tab_titles(page)
+        await page.reload(wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        after = await _tab_titles(page)
+    finally:
+        await ctx.close()
+    if held != words:
+        raise AssertionError(f"the composer holds {held!r}, not the link's words cleaned")
+    if not labelled:
+        raise AssertionError("the words are not said to be a suggestion")
+    if not focused:
+        raise AssertionError("the composer is not focused with the caret after the words")
+    if sent:
+        raise AssertionError("the link's words were sent without the person")
+    if "assistant=" in address or "draft=" in address:
+        raise AssertionError(f"the address keeps the link's parameters: {address}")
+    if len(after) != len(titles):
+        raise AssertionError(f"a reload opened another chat: {titles} → {after}")
+    return "the link opens a new Synapse AI tab with its words cleaned, labelled and focused, never sent, once"
 
 
 @check

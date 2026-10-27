@@ -5,8 +5,8 @@
  *
  * What is open, which is in front, what each tab's badge says, the pins, and
  * the rules: a conversation already open is brought forward rather than opened
- * twice, Synapse AI has one tab, ten at most with the oldest idle one closing
- * first, and chat always has a tab. Each product brings only its adapters:
+ * twice, a new tab is a new conversation — Synapse AI's too (TABS2) — ten at
+ * most with the oldest idle one closing first, and chat always has a tab. Each product brings only its adapters:
  * where tabs are kept (the browser in OSS, the server in cloud), how the tabs
  * behind are read, and how a new conversation is named before its first turn.
  */
@@ -47,15 +47,12 @@ export function useChatTabs({
   load,
   save,
   readStatus,
-  isAssistant,
   newSessionId,
 }: {
   /** What was kept, read once. `null` when nothing was. */
   load: () => Promise<SavedChatTabs | null>;
   save: (saved: SavedChatTabs) => void;
   readStatus: (tabs: ChatTab[]) => Promise<Record<string, TabStatus>>;
-  /** Synapse AI: one conversation, the builder's, so one tab at most. */
-  isAssistant: (agentId: string) => boolean;
   /** A new conversation's session id: minted here in OSS, a placeholder in cloud until its first turn. */
   newSessionId: () => string;
 }) {
@@ -65,8 +62,8 @@ export function useChatTabs({
   const [frontBusy, setFrontBusy] = React.useState(false);
   const [notice, setNotice] = React.useState<string | null>(null);
 
-  const adapters = React.useRef({ load, save, newSessionId, isAssistant });
-  React.useEffect(() => { adapters.current = { load, save, newSessionId, isAssistant }; });
+  const adapters = React.useRef({ load, save, newSessionId });
+  React.useEffect(() => { adapters.current = { load, save, newSessionId }; });
 
   const make = React.useCallback((sessionId: string, agentId: string, title = "", fresh = false): ChatTab => ({
     id: `tab_${adapters.current.newSessionId().replace(/[^A-Za-z0-9_.:-]/g, "")}`,
@@ -136,13 +133,15 @@ export function useChatTabs({
     setFrontBusy(false);
   }, [leaving]);
 
-  /** A new conversation with `agentId`; Synapse AI's one tab when it is open already. */
-  const openAgent = React.useCallback((agentId: string) => {
+  /**
+   * A new conversation with `agentId`, Synapse AI's included: each of its chats is its own (TABS2, F1061). `draft`
+   * waits in the composer, unsent; `suggested` says a link put it there, not the person.
+   */
+  const openAgent = React.useCallback((agentId: string, words?: { draft?: string; suggested?: boolean }) => {
     setState((s) => {
-      const assistant = adapters.current.isAssistant;
-      const existing = assistant(agentId) ? s.tabs.find((t) => assistant(t.agentId)) : undefined;
-      if (existing) return existing.id === s.activeId ? s : focusTab(leaving(s), existing.id, Date.now());
-      const result = openTab(leaving(s), make(adapters.current.newSessionId(), agentId, "", true), (t) => isBusy(statusRef.current[t.id]));
+      const tab = make(adapters.current.newSessionId(), agentId, "", true);
+      const result = openTab(leaving(s), { ...tab, ...(words?.draft ? { draft: words.draft, suggested: Boolean(words.suggested) } : {}) },
+        (t) => isBusy(statusRef.current[t.id]));
       if (result.refused) queueMicrotask(() => setNotice(result.refused));
       return result.state;
     });
