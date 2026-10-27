@@ -2306,7 +2306,7 @@
             "max_iterations": 3,
             "position_x": 1500,
             "position_y": 1050,
-            "tool_arguments": {}
+            "tool_arguments": {"by_route": true}
         },
         {
             "id": "step_lookup_route",

@@ -344,8 +344,9 @@ function jsonEnd(text: string): number {
 
 /**
  * A reply with the JSON it opened with cut (SAI2's rendering row: a stray `{}` opened a gpt-4.1-mini reporter
- * reply). Only a whole JSON value at the very start, with words after it, goes; a reply that is only JSON, or that
- * opens with a bracket that is not JSON, is left as it was.
+ * reply). Only a whole JSON object at the very start, or an array of objects, with words after it, goes. A reply
+ * that is only JSON, or that opens with a bracket that is words (`[ ] Connect…`, `[1] …`, a markdown link), is
+ * left as it was (SAI2's review, S3).
  */
 export function withoutOpeningJson(reply: string): string {
     const text = reply.trimStart();
@@ -353,12 +354,15 @@ export function withoutOpeningJson(reply: string): string {
     const end = jsonEnd(text);
     const rest = end > 0 ? text.slice(end).trim() : '';
     if (!rest) return reply;
+    let opened: unknown;
     try {
-        JSON.parse(text.slice(0, end));
+        opened = JSON.parse(text.slice(0, end));
     } catch {
         return reply;
     }
-    return rest;
+    const isObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v);
+    const data = isObject(opened) || (Array.isArray(opened) && opened.length > 0 && isObject(opened[0]));
+    return data ? rest : reply;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

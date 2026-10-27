@@ -61,7 +61,7 @@ def world(monkeypatch):
 async def test_a_report_passes_through_once_and_keeps_its_verdicts(world):
     """SAI2's hazard: the Researcher's report, then finish_findings, and no second report_findings."""
     world.update(request={"providers": ["Shippo", "Mailchimp"]}, user_message="Labels")
-    world["lookup"] = await lookup.look_up_providers({}, None, [])
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
     await br.read_web_page({"url": "https://mailchimp.com/developer/"}, None, [])
     reported_events: list[dict] = []
     world["findings"] = await br.report_findings({"goal": "Labels", "options": [
@@ -77,7 +77,7 @@ async def test_a_report_passes_through_once_and_keeps_its_verdicts(world):
 
 async def test_everything_found_by_code_is_the_card_with_no_model(world):
     world.update(request={"providers": ["Stripe", "Shippo"]}, user_message="Links and labels")
-    world["lookup"] = await lookup.look_up_providers({}, None, [])
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
     events: list[dict] = []
     done = await lookup.finish_findings({}, None, events)
     [card] = events
@@ -88,7 +88,7 @@ async def test_everything_found_by_code_is_the_card_with_no_model(world):
 
 async def test_a_researcher_that_never_reported_still_leaves_a_card(world):
     world.update(request={"providers": ["Stripe", "Mailchimp", "IRCTC"]})
-    world["lookup"] = await lookup.look_up_providers({}, None, [])
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
     world["findings"] = {"status": "no_report", "fallback": True}
     events: list[dict] = []
     done = await lookup.finish_findings({}, None, events)
@@ -130,7 +130,8 @@ def test_the_route_is_code_then_the_researcher_then_code():
 
     steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
     first = steps["step_research"]
-    assert (first["type"], first["forced_tool"], first["tool_arguments"]) == ("tool", "look_up_providers", {})
+    assert (first["type"], first["forced_tool"], first["tool_arguments"]) == (
+        "tool", "look_up_providers", {"by_route": True})
     assert first["next_step_id"] == "step_lookup_route"
     assert steps["step_lookup_route"]["switch_cases"] == {"found": "step_findings",
                                                           "research": "step_lookup_research"}
@@ -183,3 +184,14 @@ async def test_a_researcher_that_looked_up_its_own_and_never_reported_still_says
     events: list[dict] = []
     await lookup.finish_findings({}, None, events)
     assert [(o["provider"], o["how"]) for o in events[0]["options"]] == [("Stripe", "catalog_app")]
+
+
+async def test_a_researchers_own_unsettled_look_up_stays_on_the_fallback_card(world):
+    """SAI2's review, N3a: what the Researcher looked up itself and never reported is said unclear, with why."""
+    world["lookup"] = {"findings": {"goal": "Mail", "options": []}, "found": [], "left": []}
+    await lookup.look_up_providers({"providers": ["Mailchimp"]}, None, [])
+    world["findings"] = {"status": "no_report", "fallback": True}
+    events: list[dict] = []
+    await lookup.finish_findings({}, None, events)
+    [option] = events[0]["options"]
+    assert (option["provider"], option["how"]) == ("Mailchimp", "unclear") and "developer docs" in option["detail"]

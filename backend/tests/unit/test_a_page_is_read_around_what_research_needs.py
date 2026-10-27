@@ -62,3 +62,12 @@ def test_who_may_use_it_survives_sixty_api_sections():
 def test_a_page_with_no_api_word_keeps_its_gate():
     page = "# Integrations\n\n" + FILLER + "\n\nIntegrations are not offered to the public; contact our sales team."
     assert "not offered to the public" in page_extract(page)
+
+
+def test_json_and_read_only_words_never_crowd_out_the_partner_line():
+    """SAI2's review, S2: "application/json", "private key" and "read-only" are not who may use it."""
+    body = "\n\n".join(f"Send `Content-Type: application/json` with a private key; field {i} is read-only."
+                         for i in range(80))
+    page = "# API reference\n\n" + body + "\n\nThis API is available to approved partners only."
+    got = page_extract(page)
+    assert "approved partners only" in got and len(got) <= 3000

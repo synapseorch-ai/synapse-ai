@@ -66,9 +66,10 @@ SCHEMA = {
 
 
 async def look_up_providers(args: dict, server_module: Any, events: list[dict]) -> dict:
-    # The route's own look-up (its step sets no arguments, or the build's needs) locks what it finds; a look-up the
-    # Researcher asks for, of providers it named itself, is its own to report or leave out (SAI2, 10-24).
-    locked = not any(args.get(k) for k in ("providers", "need")) or bool(args.get("needs"))
+    # The route's own look-up locks what it finds: its step sets `by_route` (a step's set arguments only; the schema
+    # offers it to no model). A look-up the Researcher asks for, of providers it named itself, is its own to report or
+    # leave out (SAI2, 10-24; its review, N1).
+    locked = args.get("by_route") is True
     if not any(args.get(k) for k in ("providers", "needs", "need")):
         args = _from_the_run()
     need = str(args.get("need") or "").strip()
@@ -202,7 +203,7 @@ def _reachable(url: str | None) -> bool:
     if not url or "{" in url or "}" in url:
         return False
     parts = urlsplit(url)
-    host = (parts.hostname or "").lower()
+    host = (parts.hostname or "").lower().rstrip(".")  # `localhost.` is localhost (SAI2's review, N2)
     if parts.scheme != "https" or "." not in host or host.endswith((".local", ".internal", ".localhost", ".lan")):
         return False
     try:
@@ -355,10 +356,19 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
                         "detail": str(lead.get("detail") or left.get("note") or "")[:300],
                         "sources": [left["page"]] if left.get("page") else []})
     record = research._evidence()
+    listed = {research._slug(o["provider"]) for o in options}
     for v in (record.get(research.LOOKED_KEY) or {}).values():
-        # The Researcher's own look-up, never reported: what it found is said, as code found it.
-        if isinstance(v, dict) and v.get("found") and not v.get("locked"):
+        # The Researcher's own look-up, never reported: what it found is said as code found it, and what it left is
+        # said unclear with why (SAI2's review, N3a).
+        if not isinstance(v, dict) or v.get("locked"):
+            continue
+        if v.get("found"):
             options.append({"provider": v["found"]["provider"], "how": "unclear"})
+        elif (v.get("left") or {}).get("provider") and research._slug(v["left"]["provider"]) not in listed:
+            left = v["left"]
+            options.append({"provider": left["provider"], "how": "unclear",
+                            "detail": str((left.get("lead") or {}).get("detail") or left.get("note") or "")[:300],
+                            "sources": [left["page"]] if left.get("page") else []})
     if not options and not looked.get("found"):
         findings = {"status": "nothing", "goal": goal, "options": []}
         return {**findings, "said": said(findings)}

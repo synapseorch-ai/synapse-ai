@@ -97,7 +97,7 @@ async def _look(**args) -> dict:
 async def _route(state: dict, providers: list[str], need: str = "") -> dict:
     """The research route's own look-up: its step sets no arguments, and the run's request names the providers."""
     state["run"] = {"request": {"kind": "research", "providers": providers}, "user_message": need}
-    return await lookup.look_up_providers({}, None, [])
+    return await lookup.look_up_providers({"by_route": True}, None, [])
 
 
 # ── 1. The catalogue ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -365,15 +365,30 @@ async def test_a_model_cannot_upgrade_or_drop_a_look_up_final(world):
     assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app")], "one Stripe, code's"
 
 
-async def test_a_checked_none_on_the_providers_own_page_replaces_a_look_up_final(world):
-    """The one downgrade: a verdict of none resting on a page of the provider's own the research read."""
+async def test_a_checked_none_on_the_providers_own_page_replaces_its_own_server(world):
+    """The one downgrade: a verdict of none for the same provider, resting on a page of that server's own domain."""
     state, _ = world
-    state["pages"]["https://stripe.com/partners"] = "# Partners\n\nThis API is for partners only."
-    await _look(providers=["Stripe"])
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    state["pages"]["https://goshippo.com/partners"] = "# Partners\n\nThis API is for partners only."
+    await _route(state, ["Shippo"])
+    await br.read_web_page({"url": "https://goshippo.com/partners"}, None, [])
+    card = await br.report_findings({"options": [{"provider": "Shippo", "how": "none", "detail": "Partners only.",
+                                                  "sources": ["https://goshippo.com/partners"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Shippo", "none")]
+
+
+async def test_an_app_in_the_catalogue_is_never_replaced_by_a_none(world):
+    """SAI2's review, S1: an app in the catalogue connects whatever a page says; with or without a url of its own."""
+    state, _ = world
+    state["catalog"].append({"slug": "acme", "name": "Acme", "auth": "key"})
+    state["pages"]["https://acme.com/partners"] = "# Partners\n\nPartners only."
+    await _route(state, ["Stripe", "Acme"])
+    await br.read_web_page({"url": "https://acme.com/partners"}, None, [])
     await br.read_web_page({"url": "https://stripe.com/partners"}, None, [])
-    card = await br.report_findings({"options": [{"provider": "Stripe", "how": "none", "detail": "Partners only.",
-                                                  "sources": ["https://stripe.com/partners"]}]}, None, [])
-    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "none")]
+    card = await br.report_findings({"options": [
+        {"provider": "Acme", "how": "none", "sources": ["https://acme.com/partners"]},
+        {"provider": "Stripe", "how": "none", "sources": ["https://stripe.com/partners"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Acme", "catalog_app")]
 
 
 def test_the_look_up_is_a_read_the_builder_may_call():
@@ -452,13 +467,14 @@ async def test_an_account_takes_its_article(world):
 
 async def test_a_checked_none_wins_over_the_models_other_word_for_the_provider(world):
     state, _ = world
-    state["pages"]["https://stripe.com/partners"] = "# Partners\n\nThis API is for partners only."
-    await _look(providers=["Stripe"])
-    await br.read_web_page({"url": "https://stripe.com/partners"}, None, [])
+    state["registry"]["shippo"] = [SHIPPO_OWN]
+    state["pages"]["https://goshippo.com/partners"] = "# Partners\n\nThis API is for partners only."
+    await _route(state, ["Shippo"])
+    await br.read_web_page({"url": "https://goshippo.com/partners"}, None, [])
     card = await br.report_findings({"options": [
-        {"provider": "Stripe", "how": "none", "detail": "Partners only.", "sources": ["https://stripe.com/partners"]},
-        {"provider": "Stripe", "how": "unclear"}]}, None, [])
-    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "none")]
+        {"provider": "Shippo", "how": "none", "detail": "Partners only.", "sources": ["https://goshippo.com/partners"]},
+        {"provider": "Shippo", "how": "unclear"}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [("Shippo", "none")]
 
 
 async def test_the_models_option_folds_into_code_s_verdict_by_identity(world):
@@ -505,3 +521,35 @@ async def test_the_route_s_own_verdict_stays_locked_when_the_researcher_looks_it
     await _look(providers=["Stripe", "Linear"])
     card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
     assert [o["provider"] for o in card["options"]] == ["Stripe", "Linear"]
+
+
+# ── SAI2's review of 0b1ba1fe ─────────────────────────────────────────────────────────────────────────────────────
+
+async def test_another_product_under_the_same_umbrella_domain_is_its_own_option(world):
+    """B1: Google Calendar is in the catalogue; the Researcher reads developers.google.com for Sheets and says none.
+    Both stand: a shared umbrella domain alone never makes two products one."""
+    state, _ = world
+    state["pages"]["https://developers.google.com/sheets"] = "# Sheets API\n\nNot for this, partners only."
+    await _route(state, ["Google Calendar"])
+    await br.read_web_page({"url": "https://developers.google.com/sheets"}, None, [])
+    card = await br.report_findings({"options": [
+        {"provider": "Google Sheets", "how": "none", "sources": ["https://developers.google.com/sheets"]},
+        {"provider": "Google Drive", "how": "api", "sources": ["https://developers.google.com/sheets"]}]}, None, [])
+    assert [(o["provider"], o["how"]) for o in card["options"]] == [
+        ("Google Calendar", "catalog_app"), ("Google Sheets", "none"), ("Google Drive", "api")]
+
+
+async def test_a_researchers_needs_never_lock_its_own_look_up(world):
+    """N1: only the route's step sets `by_route`; a Researcher passing `needs` looks up for itself."""
+    got = await _look(needs=[{"tool": "close_deal", "does": "Close a deal", "provider": "Close"}])
+    assert [f["provider"] for f in got["found"]] == ["Close"]
+    card = await br.report_findings({"options": [{"provider": "Linear", "how": "unclear"}]}, None, [])
+    assert [o["provider"] for o in card["options"]] == ["Linear"]
+
+
+@pytest.mark.parametrize("remote", ["https://localhost./mcp", "https://mcp.acme.internal./mcp"])
+async def test_a_trailing_dot_hides_no_private_host(world, remote):
+    """N2."""
+    state, _ = world
+    state["registry"]["acme"] = [{"server": {"name": "com.acme/mcp", "remotes": [{"url": remote}]}}]
+    assert (await _look(providers=["Acme"]))["found"] == []

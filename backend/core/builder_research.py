@@ -629,11 +629,14 @@ PAGES_KEY = "pages"
 
 def _with_looked_up(seen: dict, options: list[dict]) -> list[dict]:
     """The look-up's verdicts first, then the model's other options; one option per provider. A verdict code found
-    (an app in the catalogue, the provider's own server) stands: a model can't upgrade or drop it, only replace it
-    with a `none` that rests on a page of that verdict's own domain (P3B-HANDOFF.md, P5's section). One the
-    Researcher's own look-up found is locked only by its report naming it. A model's option
-    is that provider's by identity, never by a shared word (SAI2: "Google Analytics" is not Google): the same name,
-    or an own domain in common ("Stripe Payments" on docs.stripe.com)."""
+    (an app in the catalogue, the provider's own server) stands: a model can't upgrade or drop it. Only the provider's
+    own MCP server may be replaced, and only by a `none` for that same provider resting on that server's own domain;
+    an app in the catalogue connects whatever a page says (SAI2's review, S1). One the Researcher's own look-up found
+    is kept only when its report names it.
+
+    A model's option is that verdict's provider by identity (SAI2's review, B1): the same name, or a shared own
+    domain *and* one name holding the other's words ("Stripe Payments" on docs.stripe.com is Stripe's). A shared
+    umbrella domain alone is not: "Google Sheets" on developers.google.com is not Google Calendar."""
     looked = [v for v in (seen.get(LOOKED_KEY) or {}).values() if isinstance(v, dict) and v.get("found")]
     if not looked:
         return options
@@ -641,16 +644,22 @@ def _with_looked_up(seen: dict, options: list[dict]) -> list[dict]:
     out = []
     for v in looked:
         final = v["found"]
-        slug, domains = _slug(final["provider"]), set(final.get("own_domains") or [])
-        mine = [i for i, o in enumerate(options) if i not in taken
-                and (_slug(o["provider"]) == slug or domains & set(o.get("own_domains") or []))]
+        slug, words = _slug(final["provider"]), set(_words(final["provider"]))
+        domains = set(final.get("own_domains") or [])
+
+        def same(o: dict) -> bool:
+            theirs = set(_words(o["provider"]))
+            return _slug(o["provider"]) == slug or bool(
+                domains & set(o.get("own_domains") or []) and words and theirs and (words <= theirs or theirs <= words))
+
+        mine = [i for i, o in enumerate(options) if i not in taken and same(options[i])]
         if not mine and not v.get("locked"):
             # A provider the Researcher named and looked up itself, then left out of its report: its call (SAI2).
             continue
         taken |= set(mine)
-        out.append(next((options[i] for i in mine if options[i]["how"] == "none"
-                         and (domains & set(options[i].get("own_domains") or [])
-                              or (not domains and _slug(options[i]["provider"]) == slug))), final))
+        out.append(next((options[i] for i in mine if final["how"] == "mcp" and options[i]["how"] == "none"
+                         and _slug(options[i]["provider"]) == slug
+                         and domains & set(options[i].get("own_domains") or [])), final))
     return out + [o for i, o in enumerate(options) if i not in taken]
 
 
@@ -688,9 +697,11 @@ _ACCESS_WORDS = frozenset({
 })
 #: Words that say who may use it: kept before anything else, so "available to approved partners only" survives a
 #: page with sixty API sections above it (SAI2's probe).
+#: Not `application`, `private` or `only` alone: "application/json", "private key" and "read-only" fill API pages and
+#: crowded the partner line out (SAI2's review, S2).
 _GATE_WORDS = frozenset({
-    "partner", "partners", "partnership", "affiliate", "affiliates", "apply", "application", "approval", "approved",
-    "invite", "invitation", "invited", "enterprise", "sales", "private", "beta", "only", "offered", "eligible",
+    "partner", "partners", "partnership", "affiliate", "affiliates", "apply", "approval", "approved",
+    "invite", "invitation", "invited", "enterprise", "sales", "beta", "eligible",
     "eligibility", "restricted", "waitlist", "allowlist", "whitelist",
 })
 #: Pages that are not results on a search page: the search engine's own.
