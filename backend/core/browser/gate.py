@@ -81,11 +81,14 @@ async def verdict(url: str, method: str, mode: str, *, sites: list[str] | None =
     return None
 
 
-async def socket_verdict(url: str, mode: str) -> str | None:
+async def socket_verdict(url: str, mode: str, *, scope: list[str] | None = None) -> str | None:
     """Why a page's WebSocket must not open, or None to let it (F1122).
 
     Once open, a socket carries anything both ways with no request to check, so a
     read-only browser opens none, and co-drive opens one only to a public address.
+    `scope`, given while the agent drives, is its listed and once-allowed sites: a
+    socket opens only on one of those sites (a subdomain counts, where a site's live
+    socket usually is), and with none, nowhere (V2-CONTRACT, Naveen 2026-10-28).
     Never fails open, as `verdict`.
     """
     try:
@@ -101,6 +104,8 @@ async def socket_verdict(url: str, mode: str) -> str | None:
         return f"{host or 'that host'} is not a public address"
     if mode != CO_DRIVE:
         return f"a WebSocket to {host}: this browser is read-only"
+    if scope is not None and not any(same_site(host, site.removeprefix("*.")) for site in scope):
+        return f"a WebSocket to {host}: not one of the agent's sites"
     return None
 
 

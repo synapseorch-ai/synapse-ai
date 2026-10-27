@@ -86,6 +86,24 @@ async def test_a_read_only_browser_opens_no_socket():
     assert await gate.socket_verdict("https://93.184.215.14/live", gate.CO_DRIVE)  # a socket is ws(s) only
 
 
+async def test_while_the_agent_drives_a_socket_opens_only_on_its_sites(monkeypatch):
+    """V2-CONTRACT (Naveen 2026-10-28): a subdomain of a listed or allowed site counts, a look-alike does not, and
+    no scope at all means nowhere. While the person drives there is no scope (None)."""
+    async def public(_host):
+        return None
+    monkeypatch.setattr(gate, "check_host", public)
+    ok = gate.CO_DRIVE
+    assert await gate.socket_verdict("wss://wss-primary.slack.com/x", ok, scope=["*.slack.com"]) is None
+    assert await gate.socket_verdict("wss://ws.example.com/live", ok, scope=["portal.example.com"]) is None
+    assert await gate.socket_verdict("wss://ws.example.co.uk/", ok, scope=["www.example.co.uk"]) is None
+    for url, scope in (("wss://evil-example.com/", ["example.com"]), ("wss://example.com.evil.io/", ["example.com"]),
+                       ("wss://ws-us3.pusher.com/app", ["portal.example.com"]), ("wss://other.co.uk/", ["a.co.uk"]),
+                       ("wss://ws.example.com/", [])):
+        reason = await gate.socket_verdict(url, ok, scope=scope)
+        assert reason and reason.endswith("not one of the agent's sites"), url
+    assert await gate.socket_verdict("wss://ws-us3.pusher.com/app", ok, scope=None) is None
+
+
 def test_chromium_takes_no_unguarded_path():
     """WebRTC's UDP and QUIC (WebTransport) pass no route; a service worker's fetches would not either (F1122)."""
     import inspect

@@ -232,9 +232,11 @@ class Session:
             pass  # the page or the request is already gone
 
     async def _route_socket(self, ws) -> None:
-        """A page's WebSocket, checked before it opens (F1122): the route above never sees one."""
+        """A page's WebSocket, checked before it opens (F1122): the route above never sees one. Unless the person
+        drives, it opens only on the agent's sites."""
+        scope = None if self.wheel == "person" else [*self.sites, *self.typing_hosts]
         try:
-            reason = await gate.socket_verdict(ws.url, self.mode)
+            reason = await gate.socket_verdict(ws.url, self.mode, scope=scope)
         except Exception:
             reason = "the browser's guard failed"
         if reason is None:

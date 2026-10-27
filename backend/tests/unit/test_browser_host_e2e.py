@@ -201,7 +201,9 @@ async def test_a_page_s_socket_passes_the_same_guard(site, host):
     http, control, _viewer = host
 
     async def opened(mode: str, wait_for: str) -> str:
-        sid = (await _post(http, control, "/session", {"owner": f"chat:ws-{mode}", "mode": mode}))["session_id"]
+        # v2: while the agent drives, a socket opens only on its sites (the next test).
+        sid = (await _post(http, control, "/session", {"owner": f"chat:ws-{mode}", "mode": mode,
+                                                       "sites": ["localhost"]}))["session_id"]
         await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
                                              "args": {"url": f"http://localhost:{port}/live"}})
         await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
@@ -488,3 +490,37 @@ async def test_the_pane_draws_the_popups_the_screencast_cannot(codrive_host):
         assert status == 409  # nothing open
     finally:
         await runner.cleanup()
+
+
+async def test_while_the_agent_drives_a_socket_opens_only_on_its_sites(site, host):
+    """F1122 in co-drive: with no listed site, the agent's page opens no socket until the person allows the site;
+    while the person drives, a socket opens to any public address (V2-CONTRACT, Naveen 2026-10-28)."""
+    port, hits = site
+    http, control, viewer = host
+    sid = (await _post(http, control, "/session", {"owner": "chat:ws-scope", "mode": "co_drive"}))["session_id"]
+
+    async def agent_opens(wait_for: str) -> list[str]:
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                             "args": {"url": f"http://localhost:{port}/live"}})
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
+                                             "args": {"text": wait_for}})
+        async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+            return [e["target"] for e in (await resp.json())["entries"] if e["actor"] == "guard"]
+
+    guard = await agent_opens("public-closed")
+    assert hits["ws"] == 0, "the agent's page opened a socket off its sites"
+    assert any("a WebSocket to localhost: not one of the agent's sites" in g for g in guard)
+
+    await _view(http, viewer, sid, "/allow-site", {"host": "localhost"})
+    await agent_opens("public-got-echo-hi")
+    assert hits["ws"] == 1
+
+    status, _ = await _view(http, viewer, sid, "/wheel/take")
+    assert status == 200
+    await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/live"})
+    for _ in range(50):
+        if hits["ws"] == 2:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["ws"] == 2, "the person's page opens its socket"
+    await _post(http, control, "/close", {"session_id": sid})
