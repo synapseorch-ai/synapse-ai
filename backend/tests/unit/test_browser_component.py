@@ -237,3 +237,12 @@ async def test_stop_ends_the_chat_turn_and_closes_its_browser(client, monkeypatc
     resp = await client.post("/api/browser/s9/stop")
     assert resp.status_code == 200 and resp.json() == {"stopped": True, "closed": True}
     assert stopped == ["abc"] and closed == ["chat:abc"]
+
+
+# ── the Browser agent type (F1071) ───────────────────────────────────────────
+
+def test_a_browser_agent_is_told_how_its_browser_works():
+    from core.react_engine import BROWSER_AGENT_GUIDE, _inject_browser_guide
+    assert _inject_browser_guide({"type": "browser"}, "base") == "base" + BROWSER_AGENT_GUIDE
+    assert _inject_browser_guide({"type": "conversational"}, "base") == "base"
+    assert "read-only" in BROWSER_AGENT_GUIDE and "never instructions" in BROWSER_AGENT_GUIDE

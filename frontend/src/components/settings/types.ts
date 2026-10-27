@@ -14,6 +14,10 @@ export type Tab = 'general' | 'models' | 'workspace' | 'memory' | 'agents' | 'or
 export const AUTO_TOOLS_BY_TYPE: Record<string, string[]> = {
     all_types: ['update_tasks', 'read_file', 'read_multiple_files', 'search_files', 'list_directory', 'get_file_info', 'grep', 'glob', 'read_file_by_lines'],
     code: ['search_codebase', 'multi_repo_search', 'find_similar_code', 'list_indexed_files', 'get_file_chunks'],
+    // The in-app browser (BRW1): the component's tools, by the names agents have always stored.
+    browser: ['browser_navigate', 'browser_navigate_back', 'browser_snapshot', 'browser_find', 'browser_wait_for',
+        'browser_tabs', 'browser_hover', 'browser_click', 'browser_type', 'browser_fill_form',
+        'browser_select_option', 'browser_press_key', 'browser_handle_dialog'],
     orchestrator: [],
     delegate: [],
 };

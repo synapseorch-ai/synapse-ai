@@ -59,12 +59,34 @@ class TestAgentTypes:
         payload = resp.json()
         assert payload  # non-empty
 
-    async def test_the_browser_type_is_shown_but_cannot_be_chosen(self, client):
-        """F1068 (BRW1): the in-app browser is teased in the picker before it ships — listed, disabled."""
+    async def test_the_browser_type_can_be_chosen(self, client):
+        """F1071 (BRW1): the in-app browser shipped; its teaser (F1068) is a real type now."""
         types = {t["value"]: t for t in (await client.get("/api/agent-types")).json()["types"]}
-        assert types["browser"]["disabled"] is True
-        assert types["browser"]["label"] == "Browser (coming soon)"
-        assert not any(t.get("disabled") for v, t in types.items() if v != "browser")
+        assert types["browser"]["label"] == "Browser"
+        assert "never sends a form" in types["browser"]["description"]
+        assert not any(t.get("disabled") for t in types.values())
+
+
+class TestOnlyRealTypesAreSaved:
+    """F1069 (BRW1): the API took any string as an agent's type, and an unknown one ran as conversational."""
+
+    async def test_an_unknown_type_is_refused(self, client):
+        resp = await client.post("/api/agents", json=_valid_agent_body(id="t1", type="made_up"))
+        assert resp.status_code == 422
+        assert "'made_up' is not an agent type" in resp.json()["detail"]
+
+    async def test_a_browser_agent_is_saved(self, client):
+        resp = await client.post("/api/agents", json=_valid_agent_body(id="b1", type="browser",
+                                                                       tools=["browser_snapshot"]))
+        assert resp.status_code == 200 and resp.json()["type"] == "browser"
+
+    async def test_an_agent_keeps_an_older_type_it_already_has(self, client):
+        from core.store.resources import save_agent
+        await save_agent(_valid_agent_body(id="old1", type="analysis"))
+        kept = await client.post("/api/agents", json=_valid_agent_body(id="old1", type="analysis", name="Renamed"))
+        assert kept.status_code == 200
+        changed = await client.post("/api/agents", json=_valid_agent_body(id="old1", type="something_else"))
+        assert changed.status_code == 422
 
 
 class TestToolPolicySurvivesASave:
