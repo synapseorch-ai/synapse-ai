@@ -180,6 +180,8 @@ def test_the_backend_spawns_it_in_that_folder_and_registers_the_gated_session():
 
 #: WebRTC's UDP goes round any proxy; with this, WebRTC uses the proxied path or nothing.
 NO_UNPROXIED_UDP = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+#: QUIC is UDP too, and WebTransport rides it with no proxy and no route in its way (BRW1's F1122).
+NO_QUIC = "--disable-quic"
 
 
 def test_its_browser_sends_no_udp_round_the_proxy(browser_spec):
@@ -188,7 +190,8 @@ def test_its_browser_sends_no_udp_round_the_proxy(browser_spec):
 
     spec = browser_spec()
     config = Path(_arg(spec["args"], "--config"))
-    assert NO_UNPROXIED_UDP in json.loads(config.read_text())["browser"]["launchOptions"]["args"]
+    launch_args = json.loads(config.read_text())["browser"]["launchOptions"]["args"]
+    assert NO_UNPROXIED_UDP in launch_args and NO_QUIC in launch_args
     # Outside the folder its own tools write to, so no tool of its own can rewrite it.
     assert not config.resolve().is_relative_to((browser_spec.data / "vault").resolve())
 
@@ -208,3 +211,4 @@ def test_the_scrapers_browser_sends_no_udp_round_the_proxy():
 
     assert NO_UNPROXIED_UDP in web_scraper.browser_config().extra_args
     assert NO_UNPROXIED_UDP in web_scraper.browser_config("http://127.0.0.1:1").extra_args
+    assert NO_QUIC in web_scraper.browser_config().extra_args
