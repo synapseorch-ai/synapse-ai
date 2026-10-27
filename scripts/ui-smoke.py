@@ -12838,6 +12838,68 @@ async def check_brwrunturn(browser) -> str:
     return "a run's browser turn is a card whose Done hands the browser back"
 
 
+@check
+async def check_brwloginsite(browser) -> str:
+    """"Log in to a site" opens a browser for the person alone, and keeping the login there saves it (BRW2, F1079).
+    No agent drives it: there is no Stop or Take over, only Keep this login and Don't keep it, and Keep is what makes
+    the row in Website logins."""
+    state = {"logins": []}
+    calls: list[tuple[str, str]] = []
+
+    async def logins(route):
+        await route.fulfill(status=200, json=state)
+
+    async def start(route):
+        calls.append(("start", route.request.post_data or ""))
+        await route.fulfill(status=200, json={"session_id": "bsLog"})
+
+    async def finish(route):
+        calls.append(("finish", route.request.post_data or ""))
+        state["logins"] = [{"id": "wl_" + "c" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
+                            "created_at": time.time(), "expires_at": time.time() + 30 * 86_400}]
+        await route.fulfill(status=200, json={"login_ref": "wl_" + "c" * 24})
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/website-logins$"), logins)
+    await ctx.route(re.compile(r".*/api/browser/login-sessions$"), start)
+    await ctx.route(re.compile(r".*/api/browser/bsLog/finish-login$"), finish)
+    await ctx.route(re.compile(r".*/api/browser/bsLog/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://portal.saltmarsh.example/sign-in", "person")))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Log in to a site").click()
+        ask = page.get_by_role("dialog", name="Log in to a site")
+        await ask.get_by_label("Site").fill("https://portal.saltmarsh.example/sign-in")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("no browser opened")
+        if not calls or json.loads(calls[0][1]) != {"sites": ["portal.saltmarsh.example"]}:
+            bad.append(f"the browser was opened with {calls[:1]}")
+        for absent in ("Stop", "Take over", "Hand back"):
+            if await pane.get_by_role("button", name=absent, exact=True).count():
+                bad.append(f"a browser with no agent offers {absent}")
+        await pane.get_by_role("button", name="Keep this login").click()
+        await asyncio.sleep(1.0)
+        if ("finish", json.dumps({"keep": True}).replace(" ", "")) not in [(k, b.replace(" ", "")) for k, b in calls]:
+            bad.append(f"Keep this login sent {calls}")
+        if await pane.count():
+            bad.append("the browser stayed open after the login was kept")
+        if not await _on_screen(page, "portal.saltmarsh.example"):
+            bad.append("the kept login is not listed")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Log in to a site opens a browser for the person alone; Keep this login saves it and lists it"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

@@ -24,6 +24,26 @@ export const OSS_BROWSER_HOST: BrowserHost = {
   answerDialog: (sessionId, accept, text) =>
     post(`/api/browser/${enc(sessionId)}/dialog`, text === undefined ? { accept } : { accept, text }),
   choose: (sessionId, target, value) => post(`/api/browser/${enc(sessionId)}/select`, { target, value }),
+  startLogin: async (sites) => {
+    const res = await fetch('/api/browser/login-sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sites }),
+    }).catch(() => null);
+    const body = await res?.json().catch(() => ({})) ?? {};
+    if (res?.ok && typeof body.session_id === 'string') return { sessionId: body.session_id };
+    return { refused: typeof body.detail === 'string' ? body.detail : 'The browser could not be opened. Try again.' };
+  },
+  finishLogin: async (sessionId, keep) => {
+    const res = await fetch(`/api/browser/${enc(sessionId)}/finish-login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ keep }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json().catch(() => ({}));
+    return typeof body.login_ref === 'string' ? body.login_ref : null;
+  },
   offerFile: async (sessionId, file) => {
     const form = new FormData();
     form.append('file', file);

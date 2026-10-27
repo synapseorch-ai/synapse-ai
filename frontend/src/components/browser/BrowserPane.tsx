@@ -30,7 +30,7 @@ import { useBrowserFrames, type FrameMemory } from './useBrowserFrames';
  * page, the address bar takes an address, and Hand back carries a note.
  */
 export function BrowserPane({
-  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack,
+  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, login,
   className, style, children,
 }: {
   host: BrowserHost;
@@ -48,6 +48,11 @@ export function BrowserPane({
   onHide?: () => void;
   /** The wheel went back to the agent: a turn waiting on the person can go on. */
   onHandedBack?: () => void;
+  /**
+   * "Log in to a site" (F1079): the person alone, no agent. The strip offers keeping the login, which ends the
+   * browser either way; there is no Stop, Take over or Hand back.
+   */
+  login?: { sites: string[]; onFinish: (keep: boolean) => void; busy?: boolean };
   className?: string;
   style?: React.CSSProperties;
   /** The pane's own edge, such as its resize handle. */
@@ -158,7 +163,7 @@ export function BrowserPane({
             {url ? shortUrl(url) : 'Opening the browser…'}
           </span>
         )}
-        {!closed && (
+        {!closed && !login && (
           <Button variant="ghost" size="sm" onClick={stop} loading={stopping}
                   title="Stop the agent and close its browser">
             {!stopping && <Square className="size-3.5" aria-hidden />}
@@ -168,7 +173,17 @@ export function BrowserPane({
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
       </header>
 
-      {banner ? (
+      {login && !closed ? (
+        <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-person-fg">
+          <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
+          <span className="min-w-0 flex-1 leading-relaxed">
+            <strong className="font-semibold">Log in to <span translate="no">{login.sites.join(', ')}</span>.</strong>{' '}
+            Only you drive this browser, and nothing is recorded. When you&apos;re in, keep the login so runs can use it.
+          </span>
+          <Button variant="secondary" size="sm" disabled={login.busy} onClick={() => login.onFinish(false)}>Don&apos;t keep it</Button>
+          <Button variant="person" size="sm" loading={login.busy} onClick={() => login.onFinish(true)}>Keep this login</Button>
+        </div>
+      ) : banner ? (
         <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
                      onRelease={release} onAllow={allow} />
       ) : driving ? (

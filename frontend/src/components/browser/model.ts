@@ -97,6 +97,10 @@ export type BrowserHost = {
   choose?: (sessionId: string, target: string, value: string) => Promise<boolean>;
   /** A file the person picked from their own computer, for the chooser the page has open. */
   offerFile?: (sessionId: string, file: File) => Promise<boolean>;
+  /** "Log in to a site": a browser for the person alone, on these sites. Resolves its session, or a refusal. */
+  startLogin?: (sites: string[]) => Promise<{ sessionId: string } | { refused: string }>;
+  /** Ends a login browser; `keep` saves its login. Resolves the saved login's id, or null when nothing was kept. */
+  finishLogin?: (sessionId: string, keep: boolean) => Promise<string | null>;
 };
 
 /** A run's browser turn, as its waiting step's fields carry it (BRW1: no column of its own; the field's type says). */

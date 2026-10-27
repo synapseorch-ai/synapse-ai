@@ -3,11 +3,14 @@
  * Settings › Website logins (BRW2, D330, F1079): the sites a person logged in to in the browser inside Synapse, kept
  * so a run can start logged in. A login is the site's session, not the password (agents never see or type one), kept
  * encrypted for 30 days at most or until the site ends it (DESIGN §3.4). The page shows what each is for and when it
- * ends, and Forget; the session itself never reaches the page.
+ * ends, and Forget; the session itself never reaches the page. "Log in to a site" opens the browser for the person
+ * alone, and keeping the login there saves it here.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { Globe } from 'lucide-react';
-import { Button, ConfirmDialog, EmptyState, ErrorNote, Section } from '@/components/ui';
+import { BrowserPane, parseSites } from '@/components/browser';
+import { Button, ConfirmDialog, EmptyState, ErrorNote, Field, Modal, Section, Textarea } from '@/components/ui';
+import { OSS_BROWSER_HOST } from '@/lib/browserHost';
 import { FORM } from './form';
 
 type WebsiteLogin = {
@@ -31,6 +34,41 @@ export const WebsiteLoginsTab = () => {
     const [failed, setFailed] = useState<string | null>(null);
     const [forgetting, setForgetting] = useState<WebsiteLogin | null>(null);
     const [busy, setBusy] = useState(false);
+    // "Log in to a site": which sites, then the browser for the person alone (BRW1's login sessions).
+    const [asking, setAsking] = useState(false);
+    const [sitesText, setSitesText] = useState('');
+    const [startFailed, setStartFailed] = useState<string | null>(null);
+    const [starting, setStarting] = useState(false);
+    const [session, setSession] = useState<{ id: string; sites: string[] } | null>(null);
+    const [finishing, setFinishing] = useState(false);
+
+    const startLogin = async () => {
+        const sites = parseSites(sitesText);
+        if (!sites.length) { setStartFailed('Name the site to log in to.'); return; }
+        setStarting(true);
+        setStartFailed(null);
+        const opened = await OSS_BROWSER_HOST.startLogin!(sites);
+        setStarting(false);
+        if ('refused' in opened) { setStartFailed(opened.refused); return; }
+        setAsking(false);
+        setSitesText('');
+        setSession({ id: opened.sessionId, sites });
+    };
+
+    const finishLogin = async (keep: boolean) => {
+        if (!session) return;
+        setFinishing(true);
+        try {
+            const kept = await OSS_BROWSER_HOST.finishLogin!(session.id, keep);
+            if (keep && !kept) setFailed('Nothing was kept: the site set no login in that browser. Log in, then keep it.');
+        } catch {
+            setFailed('The browser could not be closed. It closes by itself after 10 minutes.');
+        } finally {
+            setFinishing(false);
+            setSession(null);
+            load();
+        }
+    };
 
     const load = useCallback(async () => {
         try {
@@ -63,7 +101,12 @@ export const WebsiteLoginsTab = () => {
 
     return (
         <div className="space-y-8">
-            <Section variant="plain" collapsible={false} title="Saved logins">
+            <Section
+                variant="plain"
+                collapsible={false}
+                title="Saved logins"
+                actions={<Button size="sm" onClick={() => { setAsking(true); setStartFailed(null); }}>Log in to a site</Button>}
+            >
                 <div className={`${FORM} space-y-4`}>
                     <p className="text-sm text-text-muted">
                         When you log in to a site in the browser inside Synapse, its session can be kept here, so a run
@@ -75,7 +118,7 @@ export const WebsiteLoginsTab = () => {
                     {logins === null ? (
                         <p className="py-4 text-sm text-text-faint">Loading…</p>
                     ) : logins.length === 0 ? (
-                        <EmptyState title="No saved logins.">Logins you keep from the browser appear here.</EmptyState>
+                        <EmptyState title="No saved logins.">Log in to a site to keep its login for runs.</EmptyState>
                     ) : (
                         <ul aria-label="Saved logins" className="divide-y divide-border rounded-md border border-border">
                             {logins.map(l => (
@@ -97,6 +140,38 @@ export const WebsiteLoginsTab = () => {
                     )}
                 </div>
             </Section>
+
+            <Modal
+                open={asking}
+                onClose={() => setAsking(false)}
+                title="Log in to a site"
+                description="A browser opens here for you alone: no agent, nothing recorded. Log in as you normally do, then keep the login."
+                footer={(
+                    <>
+                        <Button variant="secondary" onClick={() => setAsking(false)}>Cancel</Button>
+                        <Button onClick={startLogin} loading={starting}>Open the browser</Button>
+                    </>
+                )}
+            >
+                <Field label="Site" hint="Its address, such as portal.saltmarsh.example. One per line for a login that spans sites." error={startFailed ?? undefined}>
+                    <Textarea rows={2} value={sitesText} onChange={e => setSitesText(e.target.value)} spellCheck={false}
+                              translate="no" placeholder="portal.saltmarsh.example" autoFocus />
+                </Field>
+            </Modal>
+
+            {session && (
+                <div role="dialog" aria-modal="true" aria-label="Log in to a site" className="fixed inset-0 z-50 bg-scrim/60 p-3 md:p-8">
+                    <BrowserPane
+                        host={OSS_BROWSER_HOST}
+                        sessionId={session.id}
+                        agentName="You"
+                        actions={[]}
+                        login={{ sites: session.sites, onFinish: finishLogin, busy: finishing }}
+                        onClosed={() => setSession(null)}
+                        className="h-full overflow-hidden rounded-xl border border-border shadow-elevated"
+                    />
+                </div>
+            )}
 
             <ConfirmDialog
                 open={forgetting !== null}

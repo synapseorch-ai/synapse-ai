@@ -456,7 +456,8 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         title: 'Website logins',
         summary: 'Sites you logged in to in the browser inside Synapse, kept so a run that needs one starts logged in.',
         steps: [
-            'Each row is a site’s session, kept encrypted: your password is never kept, and agents never see or type it.',
+            'Click “Log in to a site”, name it, and log in in the browser that opens; only you drive it, and nothing is recorded.',
+            'Click “Keep this login” when you are in. Each row is a site’s session, kept encrypted: your password is never kept, and agents never see or type it.',
             'A login lasts 30 days at most, or less when the site ends it sooner; the row says when it ends.',
             '“Forget” removes a login at once; a run that needs the site then asks you to log in again.',
         ],
