@@ -4373,6 +4373,8 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             background=_inbox is not None and not _automated,
             automated=_automated,
             board_scope=board_scope,
+            # A pressed "Try again on a stronger model" (F1018): that one turn on the model the server picked.
+            model_override=getattr(request, "_model_override", None),
         ):
             if event.get("type") == "human_input_required":
                 _parked = True

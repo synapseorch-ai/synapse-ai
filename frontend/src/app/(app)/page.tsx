@@ -1040,6 +1040,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   // `model`: the model failed rather than the app (F182), so the bar points at
   // Settings → Models as well as offering the turn again.
   const [turnOutcome, setTurnOutcome] = useState<null | { kind: 'failed' | 'cancelled'; message?: string; model?: boolean }>(null);
+  // A failed turn's one offer (F1018): the same question again, once, on a stronger model the server picked.
+  const [strongerOffer, setStrongerOffer] = useState<null | { label: string; retry_of: string }>(null);
   // What to send if they do. Held in a ref rather than state because the retry
   // reads it from inside a handler, not during a render.
   const lastSentRef = useRef<{ content: string; images?: string[] } | null>(null);
@@ -1733,6 +1735,19 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
     await processMessage(payload.content, payload.images);
   };
 
+  /** Run the last question again, once, on the stronger model its failed turn was offered (F1018). */
+  const handleTryStronger = async () => {
+    const payload = lastSentRef.current;
+    const offer = strongerOffer;
+    if (!payload || !offer || isLoading) return;
+    await popStoredTurn(payload.content);
+    setMessages(prev => {
+      const idx = prev.findLastIndex(m => m.role === 'user');
+      return idx === -1 ? prev : prev.slice(0, idx + 1);
+    });
+    await processMessage(payload.content, payload.images, offer.retry_of);
+  };
+
   /** Put a question back in the composer to be rewritten. */
   const handleEditMessage = (index: number) => {
     const message = messages[index];
@@ -1979,6 +1994,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
     turnAnsweredRef.current = false;
     lastCursorRef.current = null;
     setTurnOutcome(null);
+    setStrongerOffer(null);
     setIsLoading(true);
     setDraftAnswer('');
     setStreamingActivity(null);
@@ -2036,9 +2052,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
     }
   };
 
-  const processMessage = (content: string, images?: string[]) => inTurn(content, images, async () => {
+  const processMessage = (content: string, images?: string[], retryOf?: string) => inTurn(content, images, async () => {
     try {
-      await processMessageSSE(content, images);
+      await processMessageSSE(content, images, retryOf);
     } catch (sseError) {
       if ((sseError as { engineError?: boolean })?.engineError) throw sseError;
       if ((sseError as { turnRunning?: boolean })?.turnRunning) {
@@ -2573,12 +2589,19 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
         // session. Either way it ended on purpose, so it is not an error.
         setTurnOutcome({ kind: 'cancelled' });
         return { done: false };
+
+      case 'try_stronger':
+        // Sent before the turn's error, which ends the reading (F1018).
+        if (typeof data.retry_of === 'string' && typeof data.label === 'string') {
+          setStrongerOffer({ label: data.label, retry_of: data.retry_of });
+        }
+        return { done: false };
     }
     return { done: false };
   };
 
   // SSE Streaming implementation
-  const processMessageSSE = async (content: string, images?: string[]) => {
+  const processMessageSSE = async (content: string, images?: string[], retryOf?: string) => {
     const controller = new AbortController();
     sseAbortRef.current = controller;
     streamActiveRef.current = true;
@@ -2587,7 +2610,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
       const response = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: content, session_id: sessionId, agent_id: currentAgentId, images: images || [] }),
+        body: JSON.stringify({ message: content, session_id: sessionId, agent_id: currentAgentId, images: images || [],
+                               ...(retryOf ? { retry_of: retryOf } : {}) }),
         signal: controller.signal,
       });
       if (response.status === 409) {
@@ -3091,6 +3115,19 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
                     </Button>
                   )}
                   <IconButton icon={X} label="Dismiss" size="sm" onClick={() => setTurnOutcome(null)} />
+                </div>
+              </div>
+            )}
+
+            {/* A failed turn's one offer (F1018): the same question again on a stronger model, at its price. */}
+            {strongerOffer && !isLoading && !automatedTurnRef.current && (
+              <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs text-text-muted">
+                <span className="min-w-[12rem] flex-1">A stronger model may answer this.</span>
+                <div className="ml-auto flex shrink-0 items-center gap-3">
+                  <Button type="button" variant="secondary" size="sm" onClick={handleTryStronger}>
+                    {strongerOffer.label}
+                  </Button>
+                  <IconButton icon={X} label="Dismiss" size="sm" onClick={() => setStrongerOffer(null)} />
                 </div>
               </div>
             )}

@@ -35,6 +35,8 @@ PUBLIC_EVENT_TYPES = frozenset({
     "knowledge_search", "knowledge_read", "knowledge_citations",
     "human_input_required", "step_warning",
     "queued", "worker_picked_up", "paused", "cancelled", "error", "done",
+    # A failed turn's one offer: the same message again on a stronger model, at its price (F1018).
+    "try_stronger",
     # Helpers and team members, each wrapping a narrowed event of its own (`helpers.SHOWN`, `team.SHOWN`).
     "helper_started", "helper_event", "helper_finished", "helper_results_read", "helper_result_kept",
     "member_started", "member_event", "member_finished", "member_answered",

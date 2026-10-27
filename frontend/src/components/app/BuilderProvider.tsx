@@ -109,6 +109,12 @@ async function fromTheRun(runId: string, event: RunEvent): Promise<RunEvent> {
     return event;
 }
 
+/** The conversation before the person's last message: what a re-run of that message is sent with (F1018). */
+function beforeLastAsked(messages: BuilderMessage[]): BuilderMessage[] {
+    const at = messages.map((m) => m.role).lastIndexOf('user');
+    return at < 0 ? messages : messages.slice(0, at);
+}
+
 function newSessionId(): string {
     return typeof crypto !== 'undefined' && crypto.randomUUID
         ? crypto.randomUUID()
@@ -155,8 +161,10 @@ interface BuilderContextValue {
     state: BuilderState;
     streaming: boolean;
     /** `revising`: the words answer a waiting plan itself — its card's buttons, or typed after Change something
-     * (F759). Without it, words typed while a plan waits are a new request, and the plan is set aside. */
-    send: (text: string, images?: string[], options?: { revising?: boolean }) => Promise<void>;
+     * (F759). Without it, words typed while a plan waits are a new request, and the plan is set aside.
+     * `retryOf`: the failed run a "Try again on a stronger model" press tries again (F1018); the server picks the
+     * model, and the next message is on the usual one. */
+    send: (text: string, images?: string[], options?: { revising?: boolean; retryOf?: string }) => Promise<void>;
     /**
      * End the attached run — the one being built, or the one parked on a
      * question. Both are the same POST; only who reports it back differs.
@@ -492,7 +500,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
     }, [follow]);
 
     const send = useCallback(
-        async (text: string, images: string[] = [], { revising = false }: { revising?: boolean } = {}) => {
+        async (text: string, images: string[] = [],
+            { revising = false, retryOf }: { revising?: boolean; retryOf?: string } = {}) => {
             // An image on its own is a message. Only an empty one is nothing.
             if ((!text.trim() && !images.length) || streaming) return;
             touched.current = true;
@@ -505,23 +514,30 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                 await cancelRun(parked).catch(() => undefined);
             }
 
+            // An offer is for the turn it follows: any new message takes it down. A press says what it tries instead of
+            // the message again, which is already on screen (F1018).
+            const offered = retryOf ? state.messages.find((m) => m.tryStronger?.retry_of === retryOf)?.tryStronger : null;
             setState((prev) => ({
                 ...prev,
                 pending: null,
                 done: false,
                 error: null,
                 messages: [
-                    ...prev.messages,
-                    ...(setAside
+                    ...prev.messages.filter((m) => m.kind !== 'try_stronger'),
+                    ...(offered
+                        ? [{ role: 'assistant' as const, content: `Trying again on ${offered.name}…`, kind: 'text' as const,
+                             key: `retry-${retryOf}` }]
+                        : []),
+                    ...(retryOf ? [] : setAside
                         ? [{ role: 'assistant' as const, content: SET_ASIDE_NOTE, kind: 'text' as const,
                              key: `aside-${prev.messages.length}` }]
                         : []),
-                    {
-                        role: 'user',
+                    ...(retryOf ? [] : [{
+                        role: 'user' as const,
                         content: text || `(${images.length} ${images.length === 1 ? 'image' : 'images'})`,
-                        kind: 'text',
+                        kind: 'text' as const,
                         key: `user-${prev.messages.length}`,
-                    },
+                    }]),
                 ],
             }));
             setStreaming(true);
@@ -548,7 +564,8 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                           signal: controller.signal,
                           body: JSON.stringify({
                               message: text,
-                              history: state.messages
+                              // A press re-runs the failed turn, so its message is not in its own history.
+                              history: (retryOf ? beforeLastAsked(state.messages) : state.messages)
                                   .filter((m) => m.kind === 'text' && m.key !== 'welcome')
                                   .map((m) => ({ role: m.role, content: m.content })),
                               can_create_agents: true,
@@ -558,6 +575,7 @@ export function BuilderProvider({ children }: { children: React.ReactNode }) {
                               client_session_id: conversationId(),
                               // A schedule the person names no timezone for runs on their own clock (F948).
                               timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                              ...(retryOf ? { retry_of: retryOf } : {}),
                           }),
                       });
 

@@ -39,6 +39,13 @@ class ChatRequest(BaseModel):
     _automated: dict | None = PrivateAttr(default=None)
     #: Helper results a turn starts with: kept by a question it moved past (SUB1a).
     _inbox_seed: list[dict] | None = PrivateAttr(default=None)
+    #: "Try again on a stronger model" (F1018): the failed turn this one is pressed from. The server checks it and
+    #: picks the model; a caller never names one.
+    retry_of: str | None = None
+    #: The model the server picked for that one turn, and the turn it tries again — set by the route, never a caller.
+    _model_override: str | None = PrivateAttr(default=None)
+    _retried_from: str | None = PrivateAttr(default=None)
+    _retried_name: str | None = PrivateAttr(default=None)
 
     _check_images = checked_images()
 

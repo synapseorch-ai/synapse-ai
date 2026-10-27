@@ -72,6 +72,9 @@ class BuilderChatRequest(BaseModel):
     images: list[str] = []
     #: The person's own timezone, as the browser reports it (F948): a schedule they name no timezone for runs on it.
     timezone: str | None = None
+    #: "Try again on a stronger model" (F1018): the failed run this turn is pressed from. The server checks it and
+    #: picks the model (`try_stronger.panel_retry`); `model` is then the server's, never the caller's.
+    retry_of: str | None = None
 
     _check_images = checked_images()
 
@@ -255,12 +258,14 @@ def _quick_roles() -> dict[str, str]:
     return {"quick": quick} if quick else {}
 
 
-async def prepare_builder_run(request: BuilderChatRequest, server_module, *, panel: bool = False):
+async def prepare_builder_run(request: BuilderChatRequest, server_module, *, panel: bool = False,
+                              retried: dict | None = None):
     """Everything up to the first step: the run's id and the engine's generator.
 
     Separate from the streaming so the caller can decide *where* the run is
     spawned, and that turns out to matter — see `builder_chat`. `panel` is the
     builder panel's own door, whose conversations it can reopen (F214).
+    `retried` is a pressed "Try again on a stronger model" (F1018): the run it tries again and the model, recorded.
     """
     from core.store.resources import get_orchestration
 
@@ -332,6 +337,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # The change route's door (SAI2-P2): approver and up reach it, and each op's role is checked there.
         "may_act": True,
         "asker_role": "owner",
+        **({k: v for k, v in retried.items() if k != "model"} if retried else {}),
     }
 
     return run_id, engine.run(
@@ -594,12 +600,21 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
         return _one(checked.event())
     request = request.model_copy(update={"message": checked.text})
     await _expire_parked()
+    from core import try_stronger
+
+    retried = None
+    if request.retry_of:
+        # The press is checked as the turn it tries again, and the model is the server's own pick (F1018).
+        retried = await try_stronger.panel_retry(request.retry_of, _session_id(request.client_session_id, panel=True))
+        if isinstance(retried, str):
+            return _one({"type": "orchestration_error", "error": retried})
+        request = request.model_copy(update={"model": retried["model"]})
     prepared = await prepare_builder_run(
-        request, http_request.app.state.server_module, panel=True)
+        request, http_request.app.state.server_module, panel=True, retried=retried)
     if prepared is None:
         return _one(dict(MISSING_BUILDER))
     run_id, agen = prepared
-    _task, queue = spawn_engine_run(agen, run_id)
+    _task, queue = spawn_engine_run(try_stronger_after(agen, run_id, retried=retried is not None), run_id)
     return _stream(_after(checked.event(), _queue_events(queue)))
 
 
@@ -645,6 +660,18 @@ async def _pending_question(run_id: str) -> str | None:
             select(OrchestrationRunDB.human_prompt).where(
                 OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.run_id == run_id)
         )).scalar_one_or_none()
+
+
+async def try_stronger_after(agen, run_id: str, *, retried: bool):
+    """The run's events, then the offer a failed turn ends with (F1018): once the run has ended, from its stored
+    state. A turn tried again is not offered again."""
+    async for event in agen:
+        yield event
+    if not retried:
+        from core import try_stronger
+
+        if (offered := await try_stronger.panel_offer(run_id)) is not None:
+            yield offered
 
 
 async def _after(first: dict | None, events):

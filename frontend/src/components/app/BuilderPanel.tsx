@@ -44,7 +44,7 @@ import {
     AttachmentError,
     useImageAttachments,
 } from '@/components/app/ImageAttachments';
-import { Combobox, Hint, Mark, Markdown } from '@/components/ui';
+import { Button, Combobox, Hint, Mark, Markdown } from '@/components/ui';
 import { isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
@@ -293,6 +293,24 @@ export function BuilderConversation({ density = 'panel', active = true, pill }: 
                             return (
                                 <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
                                     <ActionCard spec={message.action} actor={selfHostedActor} />
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'try_stronger' && message.tryStronger) {
+                            // A failed turn's one offer (F1018): the same message again on the model the server picked.
+                            const retryOf = message.tryStronger.retry_of;
+                            const asked = [...state.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+                            return (
+                                <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
+                                    <Button
+                                        type="button"
+                                        variant="secondary"
+                                        size="sm"
+                                        disabled={streaming || !asked}
+                                        onClick={() => void send(asked, [], { retryOf })}
+                                    >
+                                        {message.tryStronger.label}
+                                    </Button>
                                 </AgentTurn>
                             );
                         }

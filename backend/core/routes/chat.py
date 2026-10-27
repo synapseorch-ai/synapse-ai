@@ -114,12 +114,28 @@ def _summarize(turn: chat_turns.ChatTurn) -> ChatResponse:
     return ChatResponse(response="I completed the requested actions.", intent="chat", data=None, tool_name=None)
 
 
+def _redeem_retry(request: ChatRequest) -> None:
+    """A pressed "Try again on a stronger model" (F1018): the failed turn's offer, taken so it is used once, puts this
+    one turn on the model the server picked. Refused (422, its sentence the page shows; 409 is "a turn is running")
+    when that turn is not this chat's last, failed one."""
+    if not request.retry_of:
+        return
+    from core import try_stronger
+
+    kept = try_stronger.take_chat_offer(request.session_id, request.retry_of, request.agent_id or "default")
+    if isinstance(kept, str):
+        raise HTTPException(status_code=422, detail=kept)
+    request._model_override, request._retried_from = kept["model"], request.retry_of
+    request._retried_name = kept.get("name") or kept["model"]
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     import core.server as _server
     if not _server.agent_sessions:
         raise HTTPException(status_code=500, detail="No agents connected")
     await _refuse_unread_images(request)
+    _redeem_retry(request)
     try:
         turn = _start(request, expand_mentions=True)
     except chat_turns.TurnAlreadyRunning:
@@ -135,6 +151,7 @@ async def chat_stream(request: ChatRequest):
     await _refuse_unread_images(request)
     # The app's chat (SUB1a): this turn's helpers may work in the background, and report back to it.
     request._app_chat = True
+    _redeem_retry(request)
     try:
         turn = _start(request, expand_mentions=True)
     except chat_turns.TurnAlreadyRunning:
@@ -244,6 +261,24 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
         # must not end this one.
         return bool(turn is not None and turn.stop_requested)
 
+    # "Try again on a stronger model" (F1018): the tools this turn ran, and the offer a failed turn ends with.
+    ran: list[str] = []
+
+    async def _offer_after(final: dict | None, error: dict | None) -> dict | None:
+        from core import try_stronger
+
+        if turn is None or getattr(request, "_retried_from", None) or not try_stronger.offers_for(agent):
+            return None  # a turn tried again is not offered again
+        if not try_stronger.chat_failed(final, error) or await try_stronger.wrote(ran, _server):
+            return None
+        made = await try_stronger.offer(try_stronger.model_of(agent), has_tools=bool(agent.get("tools")),
+                                        vision=bool(getattr(request, "images", None)), retry_of=turn.id)
+        turn.retry_offer = made
+        return made
+
+    if getattr(request, "_retried_from", None):
+        yield f"data: {json.dumps({'type': 'status', 'message': f'Trying again on {request._retried_name}…'})}\n\n"
+
     try:
         # The last turn-boundary snapshot. Kept so a pause can be resumed from
         # it rather than from the top: without it, allowing a gated call means
@@ -287,6 +322,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                 continue
             if etype in ("tool_execution", "tool_result"):
                 events_since_progress.append(event)
+                if etype == "tool_result" and not event.get("refused"):
+                    ran.append(event["tool_name"])
             elif etype in ("llm_reasoning", "llm_thought"):
                 thinking_events.append(event)
             elif etype in ("helper_started", "helper_finished", "member_started", "member_finished"):
@@ -345,6 +382,8 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
                         if event.get(key) is not None:
                             answer[key] = event[key]
                     yield f"data: {json.dumps(answer, default=str)}\n\n"
+                    if (offered := await _offer_after(event, None)) is not None:
+                        yield f"data: {json.dumps(offered)}\n\n"
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
             elif etype == "error":
@@ -436,6 +475,9 @@ async def _event_stream(request, _server, resume_state: dict | None = None, *,
             # The model failed, not the app: the page points at Settings →
             # Models rather than only offering the same turn again (F182).
             frame['kind'] = 'model'
+        # The offer before the error: a page stops reading a turn at its error (F1018).
+        if (offered := await _offer_after(None, frame)) is not None:
+            yield f"data: {json.dumps(offered)}\n\n"
         yield f"data: {json.dumps(frame)}\n\n"
 
 

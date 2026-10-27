@@ -124,6 +124,9 @@ class ChatTurn:
         self.stop_requested = False
         #: Run ids this turn started (an orchestrator or builder agent's run).
         self.runs: set[str] = set()
+        #: The offer a failed turn ended with, taken once by a press (F1018), and whether it was.
+        self.retry_offer: dict | None = None
+        self.retried = False
         #: Called once if the turn is stopped before it answered. Set by the
         #: producer once it knows whose turn this is (`routes/chat.py`).
         self.on_stop: Callable[[], Awaitable[None]] | None = None

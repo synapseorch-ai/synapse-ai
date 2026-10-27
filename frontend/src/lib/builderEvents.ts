@@ -24,7 +24,19 @@ export type BuilderMessageKind =
     | 'routing'
     | 'connect'
     | 'findings'
-    | 'action';
+    | 'action'
+    | 'try_stronger';
+
+/** A failed turn's one offer (F1018): the same message again, once, on a stronger model the server picked. */
+export interface TryStronger {
+    model: string;
+    name: string;
+    price: string;
+    /** "Try again on <name> (about $X per 1M output tokens)": the button's words, from the server. */
+    label: string;
+    /** The failed run the press tries again. */
+    retry_of: string;
+}
 
 /**
  * A Connect card the builder put up (BWA1, `prepare_connection`): what to
@@ -138,6 +150,8 @@ export interface BuilderMessage {
     findings?: ResearchFindings;
     /** An action card (`kind: 'action'`). */
     action?: ActionSpec;
+    /** A failed turn's offer (`kind: 'try_stronger'`, F1018). */
+    tryStronger?: TryStronger;
 }
 
 export interface BuilderState {
@@ -466,6 +480,14 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                 },
             );
         }
+
+        // A failed turn's one offer (F1018): drawn under the failure, keyed on the run it tries again.
+        case 'try_stronger':
+            if (typeof event.retry_of !== 'string' || typeof event.label !== 'string') return state;
+            return append(state, {
+                role: 'assistant', content: event.label, kind: 'try_stronger', key: `try-${event.retry_of}`,
+                tryStronger: event as TryStronger,
+            });
 
         case 'orchestration_error':
         case 'step_error':
