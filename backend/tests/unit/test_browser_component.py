@@ -319,7 +319,8 @@ async def test_an_agents_browser_call_runs_under_its_chat_and_tells_the_pane(fak
         _types.SimpleNamespace(agent_sessions={"Browser Automation": tools}, memory_store=None,
                                tool_router=router))]
     opened = [c for c in host.calls if c[1] == "/session"]
-    assert opened == [("POST", "/session", {"owner": "chat:s_brw1", "mode": "read_only"})]
+    assert opened == [("POST", "/session", {"owner": "chat:s_brw1", "mode": "read_only", "sites": [],
+                                            "limits": {"actions": 40}})]
     kinds = [e.get("type") for e in events]
     assert "browser_session" in kinds and "browser_action" in kinds
     assert kinds.index("browser_session") < kinds.index("browser_action")
@@ -413,3 +414,34 @@ async def test_an_agent_off_its_sites_is_refused_but_a_listed_wildcard_is_not():
     assert "not one of this agent's sites" in await gate.verdict(
         "https://93.184.215.14/", "GET", gate.CO_DRIVE, sites=["portal.example.com"])
     assert gate.site_allowed("a.portal.example.com", ["*.example.com"])
+
+
+
+async def test_an_agents_own_browser_settings_open_its_session():
+    tools = browser_client.BrowserTools(_FakeHost())
+    token = browser_client.settings.set({"mode": "co_drive", "sites": ["portal.example.com"], "action_budget": 12})
+    try:
+        await _call(tools, "run:r7")
+    finally:
+        browser_client.settings.reset(token)
+    opened = [c for c in tools.host.calls if c[1] == "/session"]
+    assert opened == [("POST", "/session", {"owner": "run:r7", "mode": "co_drive", "sites": ["portal.example.com"],
+                                            "limits": {"actions": 12}})]
+
+
+async def test_a_handover_is_kept_for_the_engine_and_told_to_the_agent():
+    host = _FakeHost()
+    original = host.call
+
+    async def call(method, path, *, json=None, params=None, timeout=120):
+        if path == "/tool":
+            return 200, {"text": "### Page", "is_error": True, "log": None,
+                         "handover": {"kind": "sensitive", "reason": "This field is yours.", "session_id": "s1"}}
+        return await original(method, path, json=json, params=params, timeout=timeout)
+
+    host.call = call
+    tools = browser_client.BrowserTools(host)
+    result = await _call(tools, "chat:h", "browser_type", {"target": "e3", "text": "x"})
+    assert "It is the person's turn in the browser: This field is yours." in result.content[0].text
+    assert tools.take_handover("chat:h") == {"kind": "sensitive", "reason": "This field is yours.", "session_id": "s1"}
+    assert tools.take_handover("chat:h") is None
