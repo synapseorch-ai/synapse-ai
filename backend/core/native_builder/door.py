@@ -42,8 +42,8 @@ REFUSALS: dict[str, str] = {
 
 MASKED_NOTICE = (
     "I took a key out of your message before reading it (it shows as ‹credential removed›). Please don't paste keys "
-    "in this chat again: if it was real, rotate it at the provider, then add the new one on its settings screen "
-    "here, where it is stored encrypted."
+    "in this chat again: if it was real, rotate it at the provider, then connect the service on its Connect card, or "
+    "add the new key in Settings → Vault, where it is kept encrypted."
 )
 
 #: What a conversation keeps, and the panel shows, in place of a message the door refused.

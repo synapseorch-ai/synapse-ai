@@ -29,6 +29,10 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     # mixes letters and digits, so a snake_case name never matches (F576, BWA1). Shapes only: a key with no
     # shape we know stays the person's to keep out of chat (Naveen's call, 2026-10-15).
     re.compile(r"\b[a-z][a-z0-9]{1,15}_(?:live|test)_(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{16,}"),
+    # The same with a shorter tail, when it mixes upper case, lower case and digits as no snake_case name does:
+    # team res-04's `shippo_test_…` canary was ten characters long (F1092, SAI2-P4).
+    re.compile(r"\b[a-z][a-z0-9]{1,15}_(?:live|test)_(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[a-z])(?=[A-Za-z0-9]*[A-Z])"
+               r"[A-Za-z0-9]{8,15}\b"),
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}"),
@@ -43,9 +47,18 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     # `$` or `<`, and not a URL. A sentence about a key ("the key is set", "token is expired") has no such value.
     re.compile(
         r"(?i)(\b(?:api[\s_-]?key|access[\s_-]?token|auth(?:entication)?[\s_-]?token|client[\s_-]?secret|"
-        r"secret[\s_-]?key|secret|token|key)\b\s*(?:\bis\b|\bwas\b|[:=-])\s*)"
+        r"secret[\s_-]?key|credential|secret|token|key)\b\s*(?:\bis\b|\bwas\b|[:=-])\s*)"
         r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
         r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{6,}[A-Za-z0-9=])"
+    ),
+    # A value straight after a label that can only mean a credential, with no "is" or ":" ("with the credential X",
+    # "API key X"): team res-04 (F1092). Never after a bare "key", "token" or "secret", and 12+ characters, so "the
+    # key user_id1" or "my credential manager2" is a sentence, not a key.
+    re.compile(
+        r"(?i)(\b(?:api[\s_-]?key|access[\s_-]?token|auth(?:entication)?[\s_-]?token|client[\s_-]?secret|"
+        r"secret[\s_-]?key|credential)s?\s+)"
+        r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
+        r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{10,}[A-Za-z0-9=])"
     ),
     # A quoted literal assigned to a name that says what it is. A value with a
     # space in it is prose or a placeholder, not a key; so is one already marked.

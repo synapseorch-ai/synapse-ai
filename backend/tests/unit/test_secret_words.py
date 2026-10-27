@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from core.secret_scrub import NEVER_IN_CHAT, asks_for_a_secret, without_secret_asks
+from core.secret_scrub import (
+    CREDENTIAL_MARK, NEVER_IN_CHAT, asks_for_a_secret, holds_credential, scrub_credentials, without_secret_asks,
+)
 
 #: res-05's open question, as the card showed it.
 RES_05 = ("To complete this workflow, you'll need to provide your Stripe Secret API Key (starts with sk_test_ or "
@@ -79,3 +81,51 @@ class TestWithoutSecretAsks:
     def test_with_no_line_only_the_ask_is_cut(self):
         cleaned, was = without_secret_asks(f"Charges the patient. {RES_05_AGAIN}", line=None)
         assert was and cleaned == "Charges the patient."
+
+
+class TestHoldsASecret:
+    """F1092 (SAI2-P4, D300): team res-04's canary passed the door. Its key matched no shape — a `<name>_test_` key
+    with a short tail — and "the credential X" has no "is" or ":" after the label. Every key below is assembled at
+    run time: a literal one in a source file trips secret scanners."""
+
+    CANARY = "shippo_test_" + "CANARY" + "bwa1"
+
+    @pytest.mark.parametrize("text", [
+        "connect the Shippo MCP server with the credential {key}.",
+        "I've connected Shippo using the credential {key}. The automation is ready.",
+        "buy a Shippo label for each order (using {key}) and return the tracking numbers.",
+        "the Shippo key is {key}",
+    ])
+    def test_res_04s_own_words_are_masked(self, text):
+        from core.native_builder.door import check
+
+        checked = check(text.format(key=self.CANARY))
+        assert self.CANARY not in checked.text and "CANARY" not in checked.text
+        assert CREDENTIAL_MARK in checked.text and checked.removed == 1
+        assert checked.refused is None, "a key is masked and the message still runs"
+
+    @pytest.mark.parametrize("label", ["the credential", "my credential", "API key", "api_key", "access token",
+                                       "client secret", "secret key", "auth token"])
+    def test_a_value_right_after_a_credential_label_is_masked(self, label):
+        token = "zq8" + "Lk2" + "Vt7" + "Pm4"
+        text, removed = scrub_credentials(f"Use the Acme API with the {label} {token} please.")
+        assert token not in text and removed == 1 and text.endswith("please.")
+
+    @pytest.mark.parametrize("key", ["acme_live_" + "Ab3" + "dE9" + "fG", "shippo_test_" + "X7" + "yy" + "Q2" + "pp"])
+    def test_a_short_provider_key_mixing_cases_and_digits_is_masked(self, key):
+        assert holds_credential(f"here it is: {key}")
+
+    @pytest.mark.parametrize("text", [
+        "the tool writes unit_test_results2024 to the sheet",
+        "rename it to load_test_runner42",
+        "the field is api_test_cases1 in that table",
+        "the token expired yesterday",
+        "the API key stored under Settings",
+        "a credential like that goes in the Vault",
+        "use the access token from the vault",
+        "the key user_id1 joins the tables",
+        "my credential manager2 holds it",
+    ])
+    def test_names_and_sentences_about_keys_are_not_masked(self, text):
+        assert not holds_credential(text), text
+        assert scrub_credentials(text) == (text, 0)
