@@ -77,6 +77,10 @@ def _key() -> bytes:
                 os.link(tmp, path)
             except FileExistsError:
                 pass
+            except OSError:
+                # No hard links here (FAT, some network mounts): moved into place instead, unless one appeared.
+                if not path.exists():
+                    os.replace(tmp, path)
         finally:
             tmp.unlink(missing_ok=True)
     if os.name == "posix" and path.stat().st_mode & 0o077:

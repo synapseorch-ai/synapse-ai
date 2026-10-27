@@ -162,6 +162,16 @@ def test_the_key_is_never_read_half_made(monkeypatch):
     assert len(set(keys)) == 1 and len(keys[0]) == 32
 
 
+def test_the_key_is_made_where_there_are_no_hard_links(monkeypatch):
+    def no_links(*_a, **_k):
+        raise OSError(1, "Operation not permitted")
+
+    monkeypatch.setattr(wl.os, "link", no_links)
+    ref = run(wl.keep(None, state=_state(-1), sites=["a.example"], owner="you"))
+    assert run(wl.state_for(ref)) == _state(-1)
+    assert not [p for p in wl.key_path().parent.iterdir() if p.name.startswith(".")], "a temp key was left behind"
+
+
 @pytest.mark.skipif(os.name != "posix", reason="file modes are POSIX")
 def test_a_key_others_can_read_is_warned_about(caplog):
     run(wl.keep(None, state=_state(-1), sites=["a.example"], owner="you"))
