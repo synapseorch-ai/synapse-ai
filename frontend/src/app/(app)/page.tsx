@@ -853,7 +853,7 @@ function tabTitle(text: string): string {
  * turn, an approval, a helper or a team: each is drawn from what the server
  * holds.
  */
-function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
+function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
   tab: ChatTab;
   /** Its title, its draft, or — before its first message — its agent changed. */
   onChange: (change: Partial<ChatTab>) => void;
@@ -861,6 +861,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   onBusy: (busy: boolean) => void;
   /** Another agent was picked once this conversation had started: that agent opens in a tab of its own. */
   onOpenAgent: (agentId: string) => void;
+  /** A conversation opened from inside this one (F1063's "Open that chat"): in its tab, or a new one. */
+  onOpenChat: (sessionId: string, agentId: string, title: string) => void;
 }) {
   const [sessionId, setSessionId] = useState(tab.sessionId);
 
@@ -1066,7 +1068,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
   // What the shell is told, through refs: a parent's new callback each render is not a change here.
   const onChangeRef = useRef(onChange);
   const onBusyRef = useRef(onBusy);
-  useEffect(() => { onChangeRef.current = onChange; onBusyRef.current = onBusy; });
+  const onOpenChatRef = useRef(onOpenChat);
+  useEffect(() => { onChangeRef.current = onChange; onBusyRef.current = onBusy; onOpenChatRef.current = onOpenChat; });
   // The tab's title is the conversation's first question, as History's row is.
   const firstQuestion = messages.find(m => m.role === 'user' && !m.data?.automated)?.content ?? '';
   useEffect(() => {
@@ -2965,6 +2968,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
             onChange={(edit) => onChangeRef.current(edit)}
             onBusy={(busy) => onBusyRef.current(busy)}
             onInput={setInput}
+            onOpenChat={(id, title) => onOpenChatRef.current(id, tab.agentId, title)}
             pill={(
               <AgentPicker
                 agents={systemStatus?.agents
@@ -3217,12 +3221,14 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent }: {
  * new chat; one opened from History, the panel's list or a pin carries that chat on. The same chat open in the panel
  * is the same conversation, one state.
  */
-function AssistantTab({ tab, pill, onChange, onBusy, onInput }: {
+function AssistantTab({ tab, pill, onChange, onBusy, onInput, onOpenChat }: {
   tab: ChatTab;
   pill: React.ReactNode;
   onChange: (change: Partial<ChatTab>) => void;
   onBusy: (busy: boolean) => void;
   onInput: (text: string) => void;
+  /** Another Synapse AI chat, opened or brought forward in its own tab (F1063's "Open that chat"). */
+  onOpenChat: (id: string, title: string) => void;
 }) {
   const chat = useBuilderChat(tab.sessionId, { fresh: Boolean(tab.fresh) });
   const onBusyRef = useRef(onBusy);
@@ -3249,6 +3255,7 @@ function AssistantTab({ tab, pill, onChange, onBusy, onInput }: {
         initialInput={tab.draft}
         suggested={Boolean(tab.suggested)}
         onInput={keep}
+        onOpenChat={(id, title) => onOpenChat(id, title)}
       />
     </div>
   );
@@ -3501,6 +3508,7 @@ export default function Home() {
             onChange={changeFront}
             onBusy={tabs.setFrontBusy}
             onOpenAgent={tabs.openAgent}
+            onOpenChat={(sessionId, agentId, title) => tabs.openConversation(sessionId, agentId, tabTitle(title))}
           />
         )}
       </div>

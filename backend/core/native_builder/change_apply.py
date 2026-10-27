@@ -18,7 +18,7 @@ import json
 from typing import Any
 
 from core.builder_tools import register_builder_tool
-from core.native_builder import change_ops as C
+from core.native_builder import change_ops as C, one_writer
 from core.native_builder.change_tools import (CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, candidates, read,
                                               reviewed_of)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
@@ -205,14 +205,21 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                               "it as it is now. Ask again to change it.")
                 continue
             call = item["call"]
-            try:
-                result = await registry.invoke(call["tool"], caller, call["args"], confirm_policy="approved_review",
-                                               review=approval, reviewed=reviewed)
-            except AlreadySpent:
-                result = None  # made by an earlier pass of this apply: found and checked below, not made again
-            except ToolRefusal as why:
-                failed.append(f"Not done: {label}: {why}")
-                continue
+            # One chat writes a workflow at a time (TABS2, F1063): under its lock, a chat whose turn began earlier
+            # and still holds it goes first.
+            async with one_writer.writing_op(op.name, target.get("id") or "", run_id=run_id,
+                                             session_id=run.session_id) as held:
+                if held is not None:
+                    failed.append(f"Not done: {label}: {one_writer.refusal(held, caller.user_id)['say']}")
+                    continue
+                try:
+                    result = await registry.invoke(call["tool"], caller, call["args"],
+                                                   confirm_policy="approved_review", review=approval, reviewed=reviewed)
+                except AlreadySpent:
+                    result = None  # made by an earlier pass of this apply: found and checked below, not made again
+                except ToolRefusal as why:
+                    failed.append(f"Not done: {label}: {why}")
+                    continue
             if isinstance(result, dict) and result.get("status") == "needs_confirmation":
                 failed.append(f"Not done: {label}: your approval does not cover this call.")
                 continue

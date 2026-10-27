@@ -25,7 +25,8 @@ export type BuilderMessageKind =
     | 'connect'
     | 'findings'
     | 'action'
-    | 'try_stronger';
+    | 'try_stronger'
+    | 'open_chat';
 
 /** A failed turn's one offer (F1018): the same message again, once, on a stronger model the server picked. */
 export interface TryStronger {
@@ -152,6 +153,8 @@ export interface BuilderMessage {
     action?: ActionSpec;
     /** A failed turn's offer (`kind: 'try_stronger'`, F1018). */
     tryStronger?: TryStronger;
+    /** "Open that chat" (`kind: 'open_chat'`): the person's own Synapse AI chat holding a workflow (TABS2, F1063). */
+    chat?: { id: string; title: string };
 }
 
 export interface BuilderState {
@@ -497,6 +500,15 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                 role: 'assistant', content: String(event.goal ?? 'Who can do it'), kind: 'findings',
                 key: `findings-${event.orch_step_id ?? ''}-${seq}`,
                 findings: { goal: event.goal, options: event.options } as ResearchFindings,
+            });
+
+        // The person's own Synapse AI chat holds the workflow this one was asked to change (TABS2, F1063): the reply
+        // says so, and this is the way there. Keyed on the chat, so a replay redraws it rather than adding one.
+        case 'open_chat':
+            if (typeof event.chat_id !== 'string' || !event.chat_id) return state;
+            return append(state, {
+                role: 'assistant', content: String(event.title ?? ''), kind: 'open_chat',
+                key: `open-chat-${event.chat_id}`, chat: { id: event.chat_id, title: String(event.title ?? '') },
             });
 
         // The builder's door (BWA1, D274): a message or an answer it would not keep

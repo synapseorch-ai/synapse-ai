@@ -20,6 +20,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from typing import Any
@@ -27,8 +28,8 @@ from typing import Any
 from core import http_tool
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O
-from core.native_builder.build_plan import (FINDINGS_KEY, MADE, _obj, _state, agent_fingerprint, checked_in,
+from core.native_builder import objects as O, one_writer
+from core.native_builder.build_plan import (FINDINGS_KEY, MADE, _obj, _orch_id, _state, agent_fingerprint, checked_in,
                                             dry_issues, placeholder_mint, reviewed_of, workspace)
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.errors import AlreadySpent, ToolRefusal
@@ -500,6 +501,11 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     if plan.kind == "update" and (moved := await _moved_since_read(state)):
         return _stopped(events, f"Nothing was changed: the workflow \"{moved}\" was changed since I read it for "
                                 "your review, so I left it as it is now. Ask again to change it.")
+    # One chat writes a workflow at a time (TABS2, F1063): a chat whose turn began earlier and still holds this one goes
+    # first, checked before anything is made and again under the workflow's lock at its own write.
+    target = (_orch_id(plan, state) or "") if plan.kind == "update" else ""
+    if target and (held := await one_writer.held_by(target, run.session_id, run_id=run_id)):
+        return _stopped(events, one_writer.refusal(held, _caller().user_id)["say"])
 
     calls = save_calls(plan, _prompts(checked), state)
     reviewed = reviewed_of(checked)
@@ -532,10 +538,17 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                 break
             # A read API's tool takes its lock here, and only here (F944; SAI2's review, blocker 1).
             making = http_tool.MAKING_TOOLS.set(call["kind"] == "tool")
+            writing = (one_writer.writing(target, run_id=run_id, session_id=run.session_id)
+                       if target and call["kind"] == "orchestration" else contextlib.nullcontext(None))
             try:
-                result = await registry.invoke(call["tool"], caller, _filled(call["args"], made),
-                                               confirm_policy="approved_review", review=approval, reviewed=reviewed,
-                                               made={real: placeholder for placeholder, real in made.items()})
+                async with writing as held:
+                    if held is not None:
+                        failure = one_writer.refusal(held, caller.user_id)["say"]
+                        break
+                    result = await registry.invoke(call["tool"], caller, _filled(call["args"], made),
+                                                   confirm_policy="approved_review", review=approval,
+                                                   reviewed=reviewed,
+                                                   made={real: placeholder for placeholder, real in made.items()})
             except AlreadySpent:
                 failure = (f"{call['name']}: an earlier pass of this save made this call and did not record what it "
                            "made")

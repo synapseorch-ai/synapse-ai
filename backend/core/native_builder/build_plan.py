@@ -28,7 +28,7 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O
+from core.native_builder import objects as O, one_writer
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -1150,6 +1150,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 else "That plan has no steps to build."}
     if plan.room:
         return {**base, "outcome": "said", "say": plan.room}
+    if plan.kind == "update" and (held := one_writer.asked(await one_writer.holds_now(), _orch_id(plan, state) or "",
+                                                           events)):
+        return {**base, "outcome": "said", "say": held}  # one chat writes a workflow at a time (TABS2, F1063)
     # A shared board the plan names is not made again, and nothing here posts to it: say so plainly, on the card and
     # after the save, so no one reads the build as posting there (SAI2's review, F866's second half).
     shared = {b.lower(): b for b in ws.shared_boards}

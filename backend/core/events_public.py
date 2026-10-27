@@ -50,6 +50,8 @@ PUBLIC_EVENT_TYPES = frozenset({
     "journal_truncated", "run_stream_end", "stream_complete",
     # The builder.
     "resource_saved", "builder_notice", "connection_needed", "action_needed", "research_findings",
+    # "Open that chat": the person's own Synapse AI chat holding a workflow this one may not write (TABS2, F1063).
+    "open_chat",
 })
 
 #: The engine's own: read inside the process, before any door, and never shown.

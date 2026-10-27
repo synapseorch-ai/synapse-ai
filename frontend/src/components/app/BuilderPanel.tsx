@@ -144,7 +144,9 @@ function ActivityGroup({ events, isLive }: { events: BuilderMessage[]; isLive: b
  * shows it in place when its agent is Synapse AI (ASSIST1, D291). Each Synapse AI tab shows a chat of its own
  * (`chat`, TABS2); without one this is the panel's, and the same chat in both is one conversation, one state.
  */
-export function BuilderConversation({ density = 'panel', active = true, pill, chat, initialInput, suggested = false, onInput }: {
+export function BuilderConversation({
+    density = 'panel', active = true, pill, chat, initialInput, suggested = false, onInput, onOpenChat,
+}: {
     density?: 'panel' | 'page';
     /** False while the panel is still sliding in or out: nothing scrolls then. */
     active?: boolean;
@@ -159,9 +161,12 @@ export function BuilderConversation({ density = 'panel', active = true, pill, ch
     suggested?: boolean;
     /** The composer's words as they change, for a tab to keep while it is behind. */
     onInput?: (text: string) => void;
+    /** "Open that chat" (F1063): a tab opens it in a tab; without this, the panel shows it. */
+    onOpenChat?: (id: string, title: string) => void;
 }) {
     const builder = useBuilder();
     const { state, streaming, send, stop, ready } = chat ?? builder;
+    const openChat = onOpenChat ?? ((id: string) => builder.showChat(id));
     const {
         canAttach, providers, builderModel, sessionModel, setSessionModel, saveBuilderModel, draft, draftTaken, takeDraft,
     } = builder;
@@ -344,6 +349,16 @@ export function BuilderConversation({ density = 'panel', active = true, pill, ch
                                         {message.tryStronger.label}
                                     </Button>
                                 </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'open_chat' && message.chat) {
+                            const to = message.chat;
+                            return (
+                                <div key={message.key} className={TEXT_INSET}>
+                                    <Button type="button" variant="secondary" size="sm" onClick={() => openChat(to.id, to.title)}>
+                                        Open that chat
+                                    </Button>
+                                </div>
                             );
                         }
                         if (message.kind === 'findings' && message.findings) {

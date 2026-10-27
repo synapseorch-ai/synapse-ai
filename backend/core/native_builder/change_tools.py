@@ -30,7 +30,7 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import change_ops as C
+from core.native_builder import change_ops as C, one_writer
 from core.product_tools.roles import Role
 
 _log = get_logger(__name__)
@@ -544,7 +544,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     if len(ops) == 1 and ops[0].get("op") == "create":
         return await _a_new_thing(base, ops[0])
     if handoffs and len(handoffs) == len(ops):
-        return await _handed_over(base, handoffs)
+        return await _handed_over(base, handoffs, events)
 
     caller = _caller()
     areas.ensure_loaded()
@@ -618,6 +618,15 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         # The pick list waits on the person's card, where a later turn reads "the second one" from (P4's read_turn).
         await _card(out, stage=WAITING, title=question.split("\n", 1)[0])
         return out
+
+    # One chat writes a workflow at a time (TABS2, F1063): an op on a workflow another Synapse AI chat holds is left
+    # out with why, and the rest of the change is still reviewed.
+    if any(i.get("status") == "resolved" and one_writer.guarded(i["op"]) for i in checked):
+        holds = await one_writer.holds_now()
+        for item in checked:
+            if item.get("status") == "resolved" and one_writer.guarded(item["op"]) and (
+                    held := one_writer.asked(holds, item["target"].get("id") or "", events)):
+                item.update(status="refused", say=held)
 
     # Each target is read once, and an op is checked against what the ops before it leave: two on one field (an add
     # and a remove of tools, two policy rules) each build on the last, rather than the second undoing the first
@@ -847,7 +856,7 @@ async def _a_new_thing(base: dict, raw: dict) -> dict:
     return out
 
 
-async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
+async def _handed_over(base: dict, handoffs: list[dict], events: list[dict]) -> dict:
     """`edit_steps` goes to the build route's update path with the workflow on it (Naveen's split, 10-22). Same turn:
     the person is not asked again. (One new thing is `_a_new_thing`'s: the review, then the maker.)"""
     first = handoffs[0]
@@ -860,6 +869,8 @@ async def _handed_over(base: dict, handoffs: list[dict]) -> dict:
         if not found:
             return {**base, "outcome": "said",
                     "say": f"No workflow is called {_quoted(first['target'].get('name') or first['target'].get('id'))}."}
+        if held := one_writer.asked(await one_writer.holds_now(), found[0]["id"], events):
+            return {**base, "outcome": "said", "ops": handoffs, "say": held}  # one writer at a time (F1063)
         _routed("update", current_orchestration_id=found[0]["id"], current_orchestration_name=found[0]["name"])
         return {**base, "outcome": "steps", "ops": handoffs, "workflow": {"id": found[0]["id"],
                                                                           "name": found[0]["name"]}}
