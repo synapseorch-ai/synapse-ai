@@ -283,6 +283,71 @@ def _refuse_unsafe_expression(steps: list) -> dict | None:
     }
 
 
+def _refuse_misshapen_steps(steps: list) -> dict | None:
+    """Refuse steps the engine's own step model would not read (F1047).
+
+    A field in the wrong shape — a human step's `human_fields` written as
+    `{"fields": [...]}` rather than the list itself, as rc4.3's saver did on
+    prod — saved as given, broke the editor's page on open and failed the run
+    at its first load. Each problem names the step, the field and the shape it
+    needs, so the model writes the step again; nothing is saved.
+    """
+    from pydantic import ValidationError
+
+    from core.models_orchestration import StepConfig
+
+    problems = []
+    for s in steps:
+        try:
+            StepConfig.model_validate(s)
+        except ValidationError as e:
+            said = "; ".join(dict.fromkeys(_shape_problem(err) for err in e.errors()))
+            problems.append(f"Step '{s.get('id', '?')}': {said}.")
+    if not problems:
+        return None
+    return {
+        "error": (
+            "Refusing to save: a step is not in the shape the engine reads, so the workflow would neither open "
+            "nor run. " + " ".join(problems) + " Write the step again with each field in that shape."
+        )
+    }
+
+
+def _shape_problem(err: dict) -> str:
+    """One pydantic error as the field, the shape it needs and what it was given."""
+    from core.models_orchestration import StepType
+
+    loc = err.get("loc") or ()
+    if not loc:  # a rule across fields: its own sentence
+        return str(err.get("msg", "")).removeprefix("Value error, ")
+    field = str(loc[0]) + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in loc[1:])
+    kind = err.get("type", "")
+    if kind == "missing":
+        return f"`{field}` is required"
+    if kind == "enum" and loc == ("type",):
+        return f"`type` must be one of {', '.join(t.value for t in StepType)}, not {err.get('input')!r}"
+    need = _NEEDS.get(kind)
+    if need is None:
+        return f"`{field}`: {err.get('msg', 'not readable')}"
+    if field == "human_fields":
+        need = 'a list of objects, e.g. [{"name": "email", "type": "string"}]'
+    return f"`{field}` must be {need}, not {_given(err.get('input'))}"
+
+
+_NEEDS = {
+    "list_type": "a list", "dict_type": "an object", "string_type": "a string",
+    "int_type": "a whole number", "int_parsing": "a whole number", "int_from_float": "a whole number",
+    "float_type": "a number", "float_parsing": "a number", "bool_type": "true or false", "bool_parsing": "true or false",
+}
+
+
+def _given(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true/false"
+    return {dict: "an object", list: "a list", str: "a string", int: "a number", float: "a number",
+            type(None): "null"}.get(type(value), type(value).__name__)
+
+
 # ─── JSON-string boundary ────────────────────────────────────────────────────
 # Gemini's function-calling layer hangs on deeply-nested object schemas (even
 # typed ones). The saver's step objects have ~25 optional fields and appear as
@@ -2239,6 +2304,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if not isinstance(steps, list) or not steps:
             return {"error": "steps_json must decode to a non-empty JSON array of step objects"}
         steps = _fill_step_defaults(steps)
+        refused = _refuse_misshapen_steps(steps)
+        if refused:
+            return refused
         refused = _refuse_ungated_transform(steps)
         if refused:
             return refused
@@ -2306,6 +2374,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         _normalize_steps_arg(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
+            refused = _refuse_misshapen_steps(fields["steps"])
+            if refused:
+                return refused
             refused = _refuse_ungated_transform(fields["steps"])
             if refused:
                 return refused
@@ -2385,6 +2456,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # pattern past any existing steps.
         offset = len(existing)
         filled = _fill_step_defaults(new_steps)
+        refused = _refuse_misshapen_steps(filled)
+        if refused:
+            return refused
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
@@ -2440,6 +2514,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         # Normalize *_json fields (route_map_json → route_map, etc.)
         step = _normalize_step_inputs(step)
         filled = _fill_step_defaults([step])
+        refused = _refuse_misshapen_steps(filled)
+        if refused:
+            return refused
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
@@ -2494,6 +2571,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             processed.append(step)
 
         filled = _fill_step_defaults(processed)
+        refused = _refuse_misshapen_steps(filled)
+        if refused:
+            return refused
         refused = _refuse_ungated_transform(filled)
         if refused:
             return refused
@@ -2559,6 +2639,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         merged = {**steps[sidx], **patch}
         merged["id"] = step_id  # id is immutable via patch
         steps[sidx] = _fill_step_defaults([merged])[0]
+        refused = _refuse_misshapen_steps([steps[sidx]])
+        if refused:
+            return refused
         refused = _refuse_ungated_transform([steps[sidx]])
         if refused:
             return refused
