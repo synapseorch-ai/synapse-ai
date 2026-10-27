@@ -204,6 +204,7 @@ async def get_crawler() -> AsyncWebCrawler:
             _crawler.crawler_strategy.set_hook(
                 "on_page_context_created", _attach_egress_guard
             )
+            _crawler.crawler_strategy.set_hook("before_goto", _send_headers)
             await _crawler.start()
     return _crawler
 
@@ -313,6 +314,31 @@ def _in_scope(config: CrawlerRunConfig) -> tuple[CrawlerRunConfig, bool]:
     return config.clone(**updates), ends_now
 
 
+#: The headers a run sends, and the site (host:port) they are for: read by `_send_headers` as the page opens.
+_page_headers: ContextVar[tuple[dict, str] | None] = ContextVar("web_scraper_headers", default=None)
+#: Each page's headers and site, set before each of its navigations; its route reads them.
+_routed_pages: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+async def _send_headers(page, context=None, url=None, **kwargs):
+    """crawl4ai's `before_goto`: the run's `headers` on its page, for requests to the run's own site only (F1123).
+
+    crawl4ai 0.9's `CrawlerRunConfig` takes no headers, so they are added here, at the page's own route, which
+    passes every request on to the context's (`_guard_route`: the egress guard still sees each one). A script or
+    image from another host does not get them: an `Authorization` meant for one site is not every host's."""
+    wanted = _page_headers.get()
+    if page not in _routed_pages:
+        async def route(r):
+            headers, site = _routed_pages.get(page) or ({}, "")
+            if headers and urlparse(r.request.url).netloc == site:
+                await r.fallback(headers={**r.request.headers, **headers})
+            else:
+                await r.fallback()
+        await page.route("**/*", route)
+    _routed_pages[page] = wanted or ({}, "")
+    return page
+
+
 async def _end_session(crawler, session_id: str) -> None:
     try:
         await crawler.crawler_strategy.kill_session(session_id)
@@ -324,18 +350,21 @@ async def _end_session(crawler, session_id: str) -> None:
 WAIT_FOR_TIMEOUT_MS = 10_000
 
 
-async def _arun(crawler, url: str, config: CrawlerRunConfig):
+async def _arun(crawler, url: str, config: CrawlerRunConfig, headers: dict | None = None):
     """`crawler.arun`, and when its `wait_for` never appeared, the page as it was rather than a failure (F569).
 
     gpt-4.1-mini waits for `title`, `head` or a selector that is not there, unprompted; crawl4ai then failed the
     call after its whole page timeout, and a 1-credit turn billed 4-5. One more fetch without the wait, which says
     so in `wait_missed`. Any other failure is left as it is.
 
-    Run in the caller's own browser context (`_in_scope`), and a run with no named session ends its own."""
+    Run in the caller's own browser context (`_in_scope`), and a run with no named session ends its own. `headers`
+    go to the page's own site (`_send_headers`)."""
     config, ends_now = _in_scope(config)
+    token = _page_headers.set((dict(headers), urlparse(url).netloc) if headers else None)
     try:
         return await _arun_once(crawler, url, config)
     finally:
+        _page_headers.reset(token)
         if ends_now:
             await _end_session(crawler, config.session_id)
 
@@ -388,8 +417,6 @@ def _build_run_config(
         kwargs["wait_for_timeout"] = WAIT_FOR_TIMEOUT_MS
     if js_code is not None:
         kwargs["js_code"] = js_code
-    if headers:
-        kwargs["headers"] = headers
     if extraction_strategy is not None:
         kwargs["extraction_strategy"] = extraction_strategy
     if session_id:
@@ -429,7 +456,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "headers": {
                         "type": "object",
-                        "description": "Additional HTTP headers (e.g. {\"Authorization\": \"Bearer token\"})",
+                        "description": "Additional HTTP headers, sent to the page's own site only (e.g. {\"Authorization\": \"Bearer token\"})",
                         "additionalProperties": {"type": "string"}
                     },
                     "remove_overlays": {
@@ -515,7 +542,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "headers": {
                         "type": "object",
-                        "description": "Additional HTTP headers",
+                        "description": "Additional HTTP headers, sent to the page's own site only",
                         "additionalProperties": {"type": "string"}
                     }
                 },
@@ -549,7 +576,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "headers": {
                         "type": "object",
-                        "description": "HTTP headers to send with every request",
+                        "description": "HTTP headers to send with every page's request to its own site",
                         "additionalProperties": {"type": "string"}
                     },
                     "include_links": {
@@ -681,7 +708,7 @@ async def list_tools() -> list[types.Tool]:
                     },
                     "headers": {
                         "type": "object",
-                        "description": "HTTP headers to use across all steps",
+                        "description": "HTTP headers for every step, sent to each page's own site only",
                         "additionalProperties": {"type": "string"}
                     }
                 },
@@ -771,7 +798,7 @@ async def _handle_scrape_url(args: dict) -> list[types.TextContent]:
     )
 
     with _stderr_stdout():
-        result = await _arun(crawler, url, run_config)
+        result = await _arun(crawler, url, run_config, headers=args.get("headers"))
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -813,7 +840,7 @@ async def _handle_scrape_structured(args: dict) -> list[types.TextContent]:
     )
 
     with _stderr_stdout():
-        result = await _arun(crawler, url, run_config)
+        result = await _arun(crawler, url, run_config, headers=args.get("headers"))
     if not result.success:
         return _err(f"Crawl failed: {result.error_message}")
 
@@ -846,7 +873,7 @@ async def _handle_crawl_multiple(args: dict) -> list[types.TextContent]:
             return {"url": url, "success": False, "error": blocked}
         try:
             with _stderr_stdout():
-                r = await _arun(crawler, url, run_config)
+                r = await _arun(crawler, url, run_config, headers=args.get("headers"))
             item: dict = {"url": url, "success": r.success}
             if r.success:
                 item["markdown"] = _truncate(r.markdown or "")
@@ -986,7 +1013,7 @@ async def _handle_scrape_with_session(args: dict) -> list[types.TextContent]:
                 headers=global_headers,
             )
             with _stderr_stdout():
-                r = await _arun(crawler, step_url, run_config)
+                r = await _arun(crawler, step_url, run_config, headers=global_headers)
             step_result: dict = {"step": i, "url": step_url, "success": r.success}
             if r.success and step.get("extract", True):
                 step_result["markdown"] = _truncate(r.markdown or "")
