@@ -4244,7 +4244,8 @@ window.fetch = function (input, init) {
     window.__sent.push(body);
     const id = body.client_session_id;
     (window.__chats[id] = window.__chats[id] || []).push({user: body.message, assistant: 'heard: ' + body.message});
-    const frames = 'data: ' + JSON.stringify({type: 'orchestration_complete', run_id: 'run_' + id + '_' + window.__sent.length,
+    const held = window.__openChat ? 'data: ' + JSON.stringify(Object.assign({type: 'open_chat'}, window.__openChat)) + '\n\n' : '';
+    const frames = held + 'data: ' + JSON.stringify({type: 'orchestration_complete', run_id: 'run_' + id + '_' + window.__sent.length,
       final_state: {summary: 'heard: ' + body.message}}) + '\n\n';
     return Promise.resolve(new Response(frames, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
   }
@@ -4483,6 +4484,43 @@ async def check_assistantdraft(browser) -> str:
     if len(after) != len(titles):
         raise AssertionError(f"a reload opened another chat: {titles} → {after}")
     return "the link opens a new Synapse AI tab with its words cleaned, labelled and focused, never sent, once"
+
+
+@check
+async def check_openthatchat(browser) -> str:
+    """A workflow another of the person's Synapse AI chats holds: "Open that chat" brings that chat forward (F1063).
+
+    In a tab it opens (or focuses) the holding chat's own tab; in the panel it shows that chat there.
+    """
+    held = "uismoke-sai-holder"
+    chats = {held: [{"user": "move the digest to 8am", "assistant": "Here is the change: move it to 8am."}]}
+    ctx, page = await _assistant_page(browser, chats=chats)
+    try:
+        await page.evaluate(
+            "(id) => { window.__openChat = {chat_id: id, title: 'move the digest to 8am'}; }", held)
+        await _new_tab(page, ASSISTANT_NAME)
+        await _send(page, "rename the digest")
+        button = page.get_by_role("button", name="Open that chat")
+        await button.wait_for(timeout=8_000)
+        await button.click()
+        if not await _on_screen(page, "Here is the change: move it to 8am."):
+            raise AssertionError("Open that chat did not open the chat holding the workflow in a tab")
+        titles = await _tab_titles(page)
+        # The panel: the same button shows that chat there.
+        await page.locator('[data-testid="assistant-open"]').first.click()
+        await asyncio.sleep(0.8)
+        await page.locator('[data-testid="assistant-panel"] textarea').fill("rename it again")
+        await page.locator('[data-testid="assistant-panel"] textarea').press("Enter")
+        await page.locator('[data-testid="assistant-panel"]').get_by_role("button", name="Open that chat").click()
+        await asyncio.sleep(1.0)
+        panel = await _panel_text(page)
+    finally:
+        await ctx.close()
+    if not any("move the digest" in t for t in titles):
+        raise AssertionError(f"no tab for the holding chat: {titles}")
+    if "Here is the change: move it to 8am." not in panel:
+        raise AssertionError("in the panel, Open that chat did not show the holding chat")
+    return "Open that chat brings the holding chat forward: its own tab on Chat, and in the panel"
 
 
 @check
