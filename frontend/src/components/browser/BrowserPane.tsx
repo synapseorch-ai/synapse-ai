@@ -1,17 +1,17 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Globe, Info, Square, X } from 'lucide-react';
 
 import { Button, IconButton, Input, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
-import { actionCount, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
+import { actionCount, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
          type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
-import { useBrowserFrames, type FrameMemory } from './useBrowserFrames';
+import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
 
 /**
  * The agent's browser, live, beside the chat or on a run's page (BRW2, D330).
@@ -60,7 +60,7 @@ export function BrowserPane({
   /** The pane's own edge, such as its resize handle. */
   children?: React.ReactNode;
 }) {
-  const { frame, closed: streamClosed } = useBrowserFrames(host.framesUrl(sessionId), !closedBefore, memory, sessionId);
+  const { frame, closed: streamClosed, log } = useBrowserFrames(host.framesUrl(sessionId), !closedBefore, memory, sessionId);
   const closed = closedBefore || streamClosed;
   const [stopping, setStopping] = useState(false);
   const [stopFailed, setStopFailed] = useState(false);
@@ -137,15 +137,26 @@ export function BrowserPane({
 
   // A line's screenshot: the open browser's own; once it has closed, the copy kept with its chat or run.
   const [ownerKind, ownerId] = (owner ?? '').split(':', 2) as [string, string | undefined];
+  const keptOwner = ownerId && (ownerKind === 'chat' || ownerKind === 'run') ? ownerKind : null;
+
+  // What was done: the agent's lines and the person's own while it is open; once closed, the whole log kept with
+  // its chat or run (the record of who pressed what), or what was heard when none was kept.
+  const kept = useKeptLog(closed && keptOwner && host.keptLogUrl ? host.keptLogUrl(keptOwner, ownerId!) : null);
+  const lines = useMemo(() => {
+    const heard = mergeActions(actions, log);
+    if (!kept) return heard;
+    const ours = kept.filter(a => !a.session_id || a.session_id === sessionId).map(a => ({ ...a, session_id: sessionId }));
+    return ours.length ? mergeActions(heard, ours) : heard;
+  }, [actions, log, kept, sessionId]);
   const shotFor = (a: BrowserAction) => {
     if (!a.shot_ref) return null;
-    if (closed && host.keptShotUrl && ownerId && (ownerKind === 'chat' || ownerKind === 'run')) {
-      return host.keptShotUrl(ownerKind, ownerId, Number(a.shot_ref));
+    if (closed && host.keptShotUrl && keptOwner) {
+      return host.keptShotUrl(keptOwner, ownerId!, Number(a.shot_ref));
     }
     return host.shotUrl(a.session_id, a.shot_ref);
   };
 
-  const url = frame?.url || actions[actions.length - 1]?.url || '';
+  const url = frame?.url || lines[lines.length - 1]?.url || '';
   const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : `${agentName} is driving`;
 
   // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A login is the person's alone.
@@ -158,7 +169,7 @@ export function BrowserPane({
   useEffect(() => {
     const el = list.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [actions.length]);
+  }, [lines.length]);
 
   return (
     <section
@@ -229,7 +240,7 @@ export function BrowserPane({
       ) : (
         <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-text-muted">
           {closed ? (
-            <span>Browser closed · {actionCount(actions.length)}</span>
+            <span>Browser closed · {actionCount(lines.length)}</span>
           ) : (
             <>
               <span aria-hidden className="relative flex size-2">
@@ -304,9 +315,9 @@ export function BrowserPane({
         </div>
       )}
 
-      {actions.length > 0 && (
+      {lines.length > 0 && (
         <ol ref={list} aria-label="What the agent did" className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">
-          {actions.map(a => (
+          {lines.map(a => (
             <li key={`${a.session_id}:${a.n}`}>
               <BrowserActionLine action={a} dense shot={shotFor(a)} />
             </li>

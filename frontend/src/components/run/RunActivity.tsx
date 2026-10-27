@@ -23,7 +23,7 @@ import * as React from 'react';
 import { Button, ErrorNote, Markdown, Modal, Spinner } from '@/components/ui';
 import { cn, focusRing } from '@/lib/cn';
 
-import { BrowserPane, Filmstrip, type BrowserAction } from '@/components/browser';
+import { BrowserPane, Filmstrip, useKeptLog, type BrowserAction } from '@/components/browser';
 import { TeamView, type LaneHandlers, type MemberAnswer } from '@/components/team';
 
 import { useRunHost } from './host';
@@ -233,9 +233,13 @@ export function RunActivity({
  */
 function RunBrowser({ runId, live, state }: { runId: string; live: boolean; state: RunLogState }) {
     const browser = useRunHost().browser;
-    const actions: BrowserAction[] = React.useMemo(
+    const heard: BrowserAction[] = React.useMemo(
         () => state.entries.filter((e): e is BrowserEntry => typeof e !== 'string' && e.kind === 'browser'),
         [state.entries]);
+    // Once the run ended, the whole log kept with it: the person's own presses and sends too, the record of who
+    // pressed what. A run that kept none shows what its journal carried.
+    const keptLog = useKeptLog(!live && browser?.keptLogUrl && state.browser ? browser.keptLogUrl('run', runId) : null);
+    const actions = keptLog?.length ? keptLog : heard;
     if (!browser || !state.browser) return null;
     if (live) {
         return (

@@ -91,6 +91,11 @@ export type BrowserHost = {
   shotUrl: (sessionId: string, ref: string) => string;
   /** The screenshot `shot_ref` names, kept with its chat or run once the browser closed (the filmstrip). */
   keptShotUrl?: (owner: 'chat' | 'run', id: string, shotRef: number) => string;
+  /**
+   * The whole log kept with its chat or run once the browser closed, `{entries}`: the agent's lines and the
+   * person's own, the record of who pressed what (BRW1, F1125).
+   */
+  keptLogUrl?: (owner: 'chat' | 'run', id: string) => string;
   /** Ends the agent's turn or run and closes its browser. Resolves false when it could not. */
   stop: (sessionId: string) => Promise<boolean>;
   /** The person takes the wheel: the agent's action in flight finishes and its next one waits. */
@@ -189,6 +194,16 @@ export function actionWords(a: Pick<BrowserAction, 'action' | 'target' | 'actor'
   if (verb) return a.target && a.action !== 'browser_navigate_back' ? `${verb} ${a.target}` : verb;
   const said = a.target.trim();
   return said ? said[0].toUpperCase() + said.slice(1) : a.action.replace(/^browser_/, '').replace(/_/g, ' ');
+}
+
+/**
+ * One list of what was done in a browser, from where its lines arrive: the agent's on its `browser_action` events,
+ * the person's and the guard's on the frames stream. A line is its session's `n`, so one heard twice is one line.
+ */
+export function mergeActions(...lists: BrowserAction[][]): BrowserAction[] {
+  const seen = new Map<string, BrowserAction>();
+  for (const list of lists) for (const a of list) seen.set(`${a.session_id}:${a.n}`, a);
+  return [...seen.values()].sort((a, b) => (a.session_id === b.session_id ? a.n - b.n : a.at - b.at));
 }
 
 /** The page's address without its scheme, for a header that has a line's room. */
