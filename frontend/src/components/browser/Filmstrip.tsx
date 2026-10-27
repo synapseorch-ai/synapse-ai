@@ -31,8 +31,9 @@ export function Filmstrip({ actions, shotUrl }: {
                 className="aspect-[16/10] w-full rounded-md border border-border bg-surface-2 object-cover object-top"
               />
             ) : (
-              <div className="flex aspect-[16/10] w-full items-center justify-center rounded-md border border-dashed border-border bg-surface-2 text-[11px] text-text-faint">
-                No picture
+              // No `shot_ref`, nothing asked for: the person's own driving is never pictured (BRW1 keeps none).
+              <div className="flex aspect-[16/10] w-full items-center justify-center rounded-md border border-dashed border-border bg-surface-2 px-2 text-center text-[11px] text-text-faint">
+                {a.actor === 'agent' ? 'No picture' : 'Nothing is recorded while you drive'}
               </div>
             )}
             <span className="line-clamp-2 text-xs text-text-muted" title={a.url || undefined}>
