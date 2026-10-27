@@ -14,6 +14,7 @@ import httpx
 
 from core.config import load_settings, HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core.telemetry import spans as _spans
+from core.tool_scope import call_kwargs
 from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
 from core.session import (
@@ -3637,7 +3638,8 @@ async def run_agent_step(
                     await _anyio.sleep(0)
 
                     with _anyio.fail_after(_timeout.total_seconds() + 5):
-                        result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout)
+                        result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout,
+                                                         **call_kwargs(agent_name, run_id or session_id))
                         raw_output = result.content[0].text
 
                     _log.debug(f"MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'")

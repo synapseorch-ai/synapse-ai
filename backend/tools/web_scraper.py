@@ -1,11 +1,15 @@
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import os
 import sys
 import time
+import uuid
 import weakref
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -35,10 +39,10 @@ from mcp.server.stdio import stdio_server
 logging.getLogger("crawl4ai").setLevel(logging.ERROR)
 logging.getLogger("crawl4ai.async_webcrawler").setLevel(logging.ERROR)
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
+from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, ProxyConfig
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
-from core import egress_proxy
+from core import egress_proxy, tool_scope
 from core.file_roots import within
 from core.egress_guard import BlockedEgress, check_host, check_url
 
@@ -150,6 +154,9 @@ async def _preflight(url: str) -> str | None:
 
 _crawler: AsyncWebCrawler | None = None
 _crawler_lock = asyncio.Lock()
+#: The proxy the browser was started with (the host's, else Synapse's own). Every call's context names it again,
+#: with the caller's label (`_in_scope`).
+_browser_proxy: str | None = None
 
 
 def _egress_proxy() -> str | None:
@@ -189,8 +196,10 @@ async def get_crawler() -> AsyncWebCrawler:
     global _crawler
     async with _crawler_lock:
         if _crawler is None:
+            global _browser_proxy
             local = None if _egress_proxy() else (await egress_proxy.shared()).url
             config = browser_config(local)
+            _browser_proxy = _egress_proxy() or local
             _crawler = AsyncWebCrawler(config=config)
             _crawler.crawler_strategy.set_hook(
                 "on_page_context_created", _attach_egress_guard
@@ -252,6 +261,65 @@ def _score_links(links: list[dict]) -> list[dict]:
     return sorted(scored, key=lambda x: x["score"], reverse=True)
 
 
+# ---------------------------------------------------------------------------
+# Whose browser state a call uses (F1067)
+# ---------------------------------------------------------------------------
+#
+# One browser serves every caller of this process (on a worker, every tenant of its task), and crawl4ai keeps one
+# context, one cookie jar, for every call with the same settings; a named session lived in it under a name any
+# caller could use. The engine says now who a call is for (`core.tool_scope`, MCP `_meta`), and each tenant + chat
+# or run gets a context of its own: its label is the proxy user name, which is part of the settings crawl4ai keys
+# contexts by, so two labels never share one. The proxy asks for no credentials, so the name goes nowhere.
+#
+# A call with no named session is a session of its own, ended when the call is: nothing it set stays in the
+# browser. A named session is the caller's, under its label, until crawl4ai's idle limit; a caller that does not say
+# who it is gets a label for the one call, and its sessions end with it.
+
+@dataclass
+class _Scope:
+    label: str
+    #: Sessions to end when the call does: a caller that said nothing keeps none.
+    ends: set[str] | None = field(default=None)
+
+
+_scope: ContextVar[_Scope | None] = ContextVar("web_scraper_scope", default=None)
+
+
+def _scope_for(meta) -> _Scope:
+    found = tool_scope.scope_from(meta)
+    if found is None:
+        return _Scope(label=f"call-{uuid.uuid4().hex[:16]}", ends=set())
+    return _Scope(label=hashlib.sha256("\0".join(found).encode()).hexdigest()[:16])
+
+
+def _in_scope(config: CrawlerRunConfig) -> tuple[CrawlerRunConfig, bool]:
+    """`config` in the caller's own context, and whether its session ends after this one run."""
+    scope = _scope.get()
+    direct = scope is None  # a handler called outside a request: this run is all there is
+    if direct:
+        scope = _Scope(label=f"call-{uuid.uuid4().hex[:16]}")
+    updates: dict = {}
+    if _browser_proxy:
+        updates["proxy_config"] = ProxyConfig(server=_browser_proxy, username=f"synapse-{scope.label}",
+                                              password="")
+    if config.session_id:
+        updates["session_id"] = f"{scope.label}:{config.session_id}"
+        if scope.ends is not None:
+            scope.ends.add(updates["session_id"])
+        ends_now = direct
+    else:
+        updates["session_id"] = f"{scope.label}:{uuid.uuid4().hex}"
+        ends_now = True
+    return config.clone(**updates), ends_now
+
+
+async def _end_session(crawler, session_id: str) -> None:
+    try:
+        await crawler.crawler_strategy.kill_session(session_id)
+    except Exception:  # noqa: BLE001 — the page may be gone already; nothing to end
+        pass
+
+
 #: How long a `wait_for` waits before the page is taken as it is (F569, SUB1b's number; fixed by BWA1).
 WAIT_FOR_TIMEOUT_MS = 10_000
 
@@ -261,7 +329,18 @@ async def _arun(crawler, url: str, config: CrawlerRunConfig):
 
     gpt-4.1-mini waits for `title`, `head` or a selector that is not there, unprompted; crawl4ai then failed the
     call after its whole page timeout, and a 1-credit turn billed 4-5. One more fetch without the wait, which says
-    so in `wait_missed`. Any other failure is left as it is."""
+    so in `wait_missed`. Any other failure is left as it is.
+
+    Run in the caller's own browser context (`_in_scope`), and a run with no named session ends its own."""
+    config, ends_now = _in_scope(config)
+    try:
+        return await _arun_once(crawler, url, config)
+    finally:
+        if ends_now:
+            await _end_session(crawler, config.session_id)
+
+
+async def _arun_once(crawler, url: str, config: CrawlerRunConfig):
     result = await crawler.arun(url=url, config=config)
     wait = getattr(config, "wait_for", None)
     if wait and not result.success and "Wait condition failed" in (result.error_message or ""):
@@ -271,6 +350,12 @@ async def _arun(crawler, url: str, config: CrawlerRunConfig):
         result.__dict__["wait_missed"] = (f"'{wait}' did not appear within {WAIT_FOR_TIMEOUT_MS // 1000} s; "
                                           "this is the page as it was")
     return result
+
+
+def _cache_mode(cache: bool, headers: dict | None, js_code) -> CacheMode:
+    """A page read with someone's headers, or after someone's script, is theirs: the cache, keyed by URL alone and
+    shared by every caller, is for a plain read only (F1110)."""
+    return CacheMode.ENABLED if cache and not headers and js_code is None else CacheMode.BYPASS
 
 
 def _build_run_config(
@@ -289,7 +374,7 @@ def _build_run_config(
     session_id: str | None = None,
 ) -> CrawlerRunConfig:
     kwargs: dict = dict(
-        cache_mode=CacheMode.ENABLED if cache else CacheMode.BYPASS,
+        cache_mode=_cache_mode(cache, headers, js_code),
         word_count_threshold=word_count_threshold,
         excluded_tags=excluded_tags or ["script", "style"],
         remove_overlay_elements=remove_overlay_elements,
@@ -511,7 +596,9 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="screenshot_url",
-            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+            # It saves a file (F1066's folder): not a read, and a second call saves a second file.
+            annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False,
+                                              openWorldHint=True),
             description=(
                 "Take a screenshot of a webpage and return it as a base64-encoded PNG. "
                 "Supports full-page capture and optional saving to the vault's screenshots folder. "
@@ -548,7 +635,9 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="scrape_with_session",
-            annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=True),
+            # It logs in, clicks and fills forms (its own description says so): what a POST does, by TAG1's table.
+            annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False,
+                                              openWorldHint=True),
             description=(
                 "Execute a multi-step scraping workflow using a persistent browser session. "
                 "Browser cookies, localStorage, and authentication state are preserved across all steps. "
@@ -970,6 +1059,23 @@ async def _handle_search_page(args: dict) -> list[types.TextContent]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
+    try:
+        meta = app.request_context.meta
+    except LookupError:
+        meta = None
+    scope = _scope_for(meta)
+    token = _scope.set(scope)
+    try:
+        return await _dispatch(name, arguments)
+    finally:
+        _scope.reset(token)
+        if scope.ends:  # a session was opened, so the browser is up
+            crawler = await get_crawler()
+            for session_id in scope.ends:
+                await _end_session(crawler, session_id)
+
+
+async def _dispatch(name: str, arguments: dict) -> list[types.TextContent]:
     try:
         match name:
             case "scrape_url":            return await _handle_scrape_url(arguments)
