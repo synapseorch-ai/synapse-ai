@@ -207,6 +207,7 @@ class BrowserTools:
         if body.get("log"):
             self._events.setdefault(key, []).append({"type": "browser_action", "session_id": sid, **body["log"]})
             await self._keep_shot(key, sid, body["log"])
+        await self.keep_lines(key, [*([body["log"]] if body.get("log") else []), *(body.get("notes") or [])])
         text = _scrub(body.get("text", ""))
         if body.get("handover"):
             self._handovers[key] = body["handover"]
@@ -230,6 +231,16 @@ class BrowserTools:
                     jpeg = await resp.read()
             from core.browser import kept
             await asyncio.to_thread(kept.keep, key, ref, jpeg)
+        except Exception:
+            pass
+
+    async def keep_lines(self, key: str, entries: list[dict]) -> None:
+        """The record of who pressed and sent what (F1125): best effort, never in the agent's way."""
+        if not entries or not key.startswith(("run:", "chat:")):
+            return
+        try:
+            from core.browser import kept
+            await asyncio.to_thread(kept.keep_lines, key, entries)
         except Exception:
             pass
 
@@ -343,6 +354,12 @@ class BrowserTools:
         self._forget(key)
         self._events.pop(key, None)
         if sid and self.host.proc is not None:
+            try:  # the whole log is kept before the browser goes: lines nobody's call carried are in it too
+                status, body = await self.host.call("GET", "/log", params={"session_id": sid}, timeout=30)
+                if status == 200:
+                    await self.keep_lines(key, body.get("entries") or [])
+            except Exception:
+                pass
             try:
                 await self.host.call("POST", "/close", json={"session_id": sid}, timeout=30)
             except Exception:

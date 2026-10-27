@@ -137,22 +137,6 @@ def same_site(a: str, b: str) -> bool:
     return bool(a) and bool(b) and _site_of(a) == _site_of(b)
 
 
-def is_send(method: str, url: str, *, navigation: bool, page_url: str) -> bool:
-    """A request that changes something: a form submission anywhere, or any non-read to the page's own
-    site. A third-party beacon is not one; the page's own scripts already send what they will."""
-    if method.upper() in _READS:
-        return False
-    if navigation:
-        return True
-    return same_site(urlparse(url).hostname or "", urlparse(page_url).hostname or "")
-
-
-def send_key(method: str, url: str) -> tuple[str, str]:
-    """What "don't ask again for this address" remembers: the method and the address without its query."""
-    parsed = urlparse(url)
-    return method.upper(), f"{parsed.scheme}://{(parsed.hostname or '').lower()}{parsed.path or '/'}"
-
-
 #: Tools that put the agent's text into a page.
 TYPES_TEXT = frozenset({"browser_type", "browser_fill_form", "browser_press_key", "browser_select_option"})
 
@@ -337,3 +321,21 @@ def quote_found(quote: str, texts) -> bool:
                 if not _NEGATIONS & set(s[:match.start()].split()):
                     return True
     return False
+
+
+#: Addresses that take money, by their words: a write to one is held at the network for the person (F1125).
+_MONEY_PATH = re.compile(r"\b(checkout|check out|payments?|pay|billing|purchases?|orders?|subscribe|subscriptions?|"
+                         r"donate|donations?|charges?|transactions?|transfers?)\b")
+
+
+def is_money_send(method: str, url: str, *, page_url: str) -> bool:
+    """The network's backstop behind the click stop (F1125): a write to a payment provider, to an address that
+    takes money, or from a checkout page. The person sends it themselves; nothing else is held."""
+    if method.upper() in _READS:
+        return False
+    parsed = urlparse(url)
+    if any(same_site(parsed.hostname or "", site) for site in PAYMENT_SITES):
+        return True
+    page = urlparse(page_url or "")
+    return bool(_MONEY_PATH.search(_words(parsed.path.replace("/", " ")))
+                or _CHECKOUT_PAGE.search(_words(page.path.replace("/", " "))))

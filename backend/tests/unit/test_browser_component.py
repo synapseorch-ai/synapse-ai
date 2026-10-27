@@ -8,6 +8,8 @@ page text framed as data, and the same server and tool names for saved agents.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from core.browser import client as browser_client
@@ -401,19 +403,19 @@ async def test_a_browser_agent_saves_its_settings(client):
 
 # ── v2's gate (F1097, F1098, F1101) ──────────────────────────────────────────
 
-def test_a_send_is_a_form_post_anywhere_or_a_non_read_to_the_pages_own_site():
-    assert gate.is_send("POST", "https://other.net/form", navigation=True, page_url="https://shop.example.com/")
-    assert gate.is_send("DELETE", "https://api.example.com/item/1", navigation=False,
-                        page_url="https://shop.example.com/")
-    assert not gate.is_send("POST", "https://beacon.tracker.io/t", navigation=False,
-                            page_url="https://shop.example.com/")
-    assert not gate.is_send("GET", "https://shop.example.com/search?q=x", navigation=True,
-                            page_url="https://shop.example.com/")
+def test_the_network_holds_only_what_takes_money():
+    """F1125 (Naveen 2026-10-28): the click stop decides; the network's backstop holds a payment provider's write,
+    an address that takes money, or a write from a checkout page, and nothing else."""
+    shop = "https://shop.example.com/account"
+    assert gate.is_money_send("POST", "https://api.stripe.com/v1/payment_intents/pi_1/confirm", page_url=shop)
+    assert gate.is_money_send("POST", "https://shop.example.com/api/orders", page_url=shop)
+    assert gate.is_money_send("POST", "https://shop.example.com/billing/update", page_url=shop)
+    assert gate.is_money_send("PUT", "https://shop.example.com/api/x", page_url="https://shop.example.com/checkout/2")
+    assert not gate.is_money_send("POST", "https://shop.example.com/feedback", page_url=shop)
+    assert not gate.is_money_send("POST", "https://beacon.tracker.io/t", page_url=shop)
+    assert not gate.is_money_send("GET", "https://shop.example.com/orders", page_url=shop)  # reading orders
+    assert not gate.is_money_send("POST", "https://shop.example.com/payroll-faq", page_url=shop)  # whole words
     assert gate.same_site("api.shop.co.uk", "www.shop.co.uk") and not gate.same_site("a.co.uk", "b.co.uk")
-
-
-def test_dont_ask_again_remembers_the_address_not_its_query():
-    assert gate.send_key("post", "https://x.com/graphql?op=1") == gate.send_key("POST", "https://x.com/graphql?op=2")
 
 
 @pytest.mark.parametrize("kind,auto,sensitive", [("password", "", True), ("text", "cc-number", True),
@@ -965,3 +967,61 @@ async def test_the_persons_words_are_their_own_messages_and_instructions_never_a
     presses = {c[2]["args"]["target"]: c[2]["press"]["confirmed"] for c in host.calls if c[1] == "/tool"}
     assert presses == {"e1": True, "e2": True, "e3": False, "e4": True}
     assert browser_client.own_words.get() is None, "the words do not outlive the call"
+
+
+
+# ── the record of who pressed and sent what (F1125) ──────────────────────────
+
+def test_a_runs_browser_log_is_kept_once_in_order_and_forgotten_with_it():
+    from core.browser import kept
+    a1 = {"session_id": "s1", "n": 1, "at": 10, "actor": "agent", "action": "pressed", "target": "Submit",
+          "because": "submit the form for me"}
+    p2 = {"session_id": "s1", "n": 2, "at": 20, "actor": "person", "action": "sent", "target": "POST shop.example.com"}
+    b1 = {"session_id": "s2", "n": 1, "at": 15, "actor": "guard", "action": "blocked", "target": "10.0.0.5"}
+    kept.keep_lines("run:r_f1125", [a1])
+    kept.keep_lines("run:r_f1125", [a1, p2])        # the client and the pane's relay both keep a line: once
+    kept.keep_lines("run:r_f1125", [b1, {"n": 9}])  # a line with no session is not kept
+    kept.keep_lines("login:x", [a1])                # a login session keeps nothing
+    assert [(e["session_id"], e["n"]) for e in kept.read_log("run", "r_f1125")] == [("s1", 1), ("s2", 1), ("s1", 2)]
+    assert kept.read_log("run", "../r_f1125") is None and kept.read_log("chat", "never") == []
+    kept.forget("run", "r_f1125")
+    assert kept.read_log("run", "r_f1125") == []
+
+
+async def test_the_run_page_reads_the_kept_log(client):
+    from core.browser import kept
+    kept.keep_lines("chat:c_f1125", [{"session_id": "s1", "n": 1, "at": 1, "actor": "person", "action": "sent",
+                                      "target": "POST x.example.com"}])
+    ok = await client.get("/api/browser/kept/chat/c_f1125/log")
+    assert ok.status_code == 200 and ok.json()["entries"][0]["target"] == "POST x.example.com"
+    assert (await client.get("/api/browser/kept/disk/c_f1125/log")).status_code == 404
+
+
+async def test_the_pane_relay_keeps_the_persons_lines_as_they_pass(monkeypatch):
+    from core.routes import browser as browser_routes
+    kept_lines = []
+
+    class _Tools:
+        async def keep_lines(self, owner, lines):
+            kept_lines.append((owner, lines))
+
+    monkeypatch.setattr(browser_client, "tools", _Tools())
+    line = {"session_id": "s1", "n": 4, "actor": "person", "action": "sent", "target": "POST shop.example.com"}
+    frame = b'data: {"jpeg_b64": "AAAA", "w": 1280}\n\n'
+    first = frame + b'data: {"log": ' + json.dumps(line).encode()[:20]   # an event cut across two chunks
+    rest = await browser_routes._keep_log_lines("chat:c1", first)
+    assert kept_lines == [] and rest.startswith(b'data: {"log"')
+    rest = await browser_routes._keep_log_lines("chat:c1", rest + json.dumps(line).encode()[20:] + b"}\n\n")
+    assert kept_lines == [("chat:c1", [line])] and rest == b""
+
+
+def test_a_viewer_skips_frames_but_never_a_log_line():
+    import asyncio as _asyncio
+    q = _asyncio.Queue()
+    host._offer(q, {"jpeg_b64": "1"})
+    host._offer(q, {"log": {"n": 1}})
+    host._offer(q, {"jpeg_b64": "2"})
+    host._offer(q, {"jpeg_b64": "3"})
+    host._offer(q, {"closed": True})
+    got = [q.get_nowait() for _ in range(q.qsize())]
+    assert got == [{"log": {"n": 1}}, {"jpeg_b64": "3"}, {"closed": True}]

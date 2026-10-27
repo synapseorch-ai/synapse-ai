@@ -157,7 +157,6 @@ class Session:
         self.mode = mode if mode in gate.MODES else gate.READ_ONLY
         self.sites = list(sites or [])
         self.typing_hosts: set[str] = set()            # allowed once by the person this session
-        self.allowed_sends: set[tuple[str, str]] = set()  # "it only loaded data: don't ask again"
         self.held: dict | None = None                  # an agent's send paused at the network
         self.banner: dict | None = None
         self.handover: dict | None = None              # what the agent's current call must hand over
@@ -274,8 +273,10 @@ class Session:
             if reason is None and nav:
                 reason = await self._pace(urlparse(req.url).hostname or "")
             hold = (reason is None and agent and self.mode == gate.CO_DRIVE
-                    and gate.is_send(req.method, req.url, navigation=nav, page_url=self._page_url())
-                    and gate.send_key(req.method, req.url) not in self.allowed_sends)
+                    and gate.is_money_send(req.method, req.url, page_url=self._page_url()))
+            if reason is None and self.wheel == "person" and req.method.upper() not in ("GET", "HEAD", "OPTIONS"):
+                # The record of who sent what (F1125): the method and the host, never the body or its fields.
+                self._note("person", "sent", f"{req.method.upper()} {urlparse(req.url).hostname or ''}")
         except Exception:
             reason, hold = "the browser's guard failed", False
         if hold:
@@ -308,13 +309,14 @@ class Session:
             pass  # the page is already gone
 
     async def _hold(self, route, req) -> None:
-        """An agent's send waits here for the person: let it go (it only loaded data), or take over
-        and send it themselves. Unanswered, it is dropped and stays their turn."""
+        """The backstop behind the click stop (F1125): a payment or checkout send the agent's press caused waits here
+        for the person, who takes over and sends it themselves. Unanswered, it is dropped and stays their turn."""
         host = urlparse(req.url).hostname or "the site"
         event = asyncio.Event()
-        self.held = {"method": req.method.upper(), "url": req.url, "event": event, "decision": None}
-        reason = f"The agent tried to send this to {host}. Nothing has gone."
-        self.banner = {"kind": "send", "reason": reason, "held": {"method": req.method.upper(), "url": req.url}}
+        self.held = {"method": req.method.upper(), "url": req.url, "event": event, "decision": None, "money": True}
+        reason = f"The agent's press would send a payment or an order to {host}. Nothing has gone."
+        self.banner = {"kind": "send", "reason": reason,
+                       "held": {"method": req.method.upper(), "url": req.url, "money": True}}
         self.handover = {"kind": "send", "reason": reason}
         self.wheel = "nobody"
         self._note("guard", "held", f"a {req.method.upper()} to {host}")
@@ -406,7 +408,8 @@ class Session:
             if self.handback:
                 text = f"### The person\n{self.handback}\n" + text
                 self.handback = None
-        out = {"text": text, "is_error": bool(result.isError), "log": entry}
+        out = {"text": text, "is_error": bool(result.isError), "log": entry,
+               "notes": [e for e in self.log[seen:] if e["actor"] != "agent"]}
         if self.handover:
             out["handover"] = {**self.handover, "session_id": self.id}
         return out
@@ -497,6 +500,22 @@ class Session:
         info["key"] = key
         return info
 
+    async def _note_persons_press(self, page, x: float, y: float) -> None:
+        """The record of who pressed what (F1125): the person's click on a button that acts or pays, by its label."""
+        try:
+            raw = await page.evaluate(
+                "([x, y]) => { const el = document.elementFromPoint(x, y); if (!el) return null;"
+                " if (el.tagName === 'IFRAME') return JSON.stringify({label: '', tag: 'iframe', frame: el.src});"
+                f" return ({_PRESS_INFO_JS})(el, false); }}", [x, y])
+            info = json.loads(raw) if raw else None
+        except Exception:
+            return
+        if not isinstance(info, dict):
+            return
+        tier, _does = gate.classify_press(info, self._page_url())
+        if tier != gate.FREE:
+            self._note("person", "pressed", (info.get("label") or "").strip()[:120] or "a button", tier=tier)
+
     async def _sensitive(self, target: str) -> bool:
         """Read the field's own type and autocomplete through Playwright MCP's ref, never failing open."""
         try:
@@ -541,11 +560,13 @@ class Session:
         self._push_state()
         return {"wheel": self.wheel}
 
-    def release(self, allow_address: bool = True) -> dict | None:
+    def release(self) -> dict | None:
+        """What the network still holds is a payment's or a checkout's (F1125), and those are the person's to send:
+        Take over is the only way on."""
         if not self.held:
             return None
-        if allow_address:
-            self.allowed_sends.add(gate.send_key(self.held["method"], self.held["url"]))
+        if self.held.get("money"):
+            return {"refused": "A payment is the person's: take over and press it yourself."}
         self.held["decision"] = "release"
         self.held["event"].set()
         self.wheel = "agent"
@@ -572,6 +593,8 @@ class Session:
             return None
         page = self.page
         kind = body.get("type")
+        if kind == "mouse" and body.get("event", "click") in ("click", "down"):
+            await self._note_persons_press(page, float(body.get("x", 0)), float(body.get("y", 0)))
         if kind == "mouse" and body.get("event", "click") == "click":
             x, y = float(body.get("x", 0)), float(body.get("y", 0))
             found = await page.evaluate(
@@ -636,7 +659,8 @@ class Session:
 
     def state(self) -> dict:
         return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner, **self.popups(),
-                "held": ({"method": self.held["method"], "url": self.held["url"]} if self.held else None)}
+                "held": ({"method": self.held["method"], "url": self.held["url"], "money": bool(self.held.get("money"))}
+                         if self.held else None)}
 
     def _push_state(self) -> None:
         """Viewers see the wheel and the banner change at once, on the last frame."""
@@ -672,9 +696,12 @@ class Session:
             url = self.page.url if self.page else ""
         except Exception:
             pass
-        entry = {"n": len(self.log) + 1, "at": time.time(), "actor": actor, "action": action,
+        entry = {"n": len(self.log) + 1, "at": time.time(), "session_id": self.id, "actor": actor, "action": action,
                  "target": target, "url": url, "shot_ref": shot_ref, **extra}
         self.log.append(entry)
+        if actor != "agent":  # an agent's line comes on its own call's event; these have no call (F1125)
+            for q in list(self.viewers):
+                _offer(q, {"log": entry})
         return entry
 
     # ── the person's view ────────────────────────────────────────────────────
@@ -822,12 +849,16 @@ def _is_main_frame(req) -> bool:
 
 
 def _offer(q: asyncio.Queue, item: dict) -> None:
-    """Newest frame wins: a slow viewer skips frames rather than lagging."""
-    while q.full():
-        try:
-            q.get_nowait()
-        except asyncio.QueueEmpty:
-            break
+    """Newest frame wins: a slow viewer skips frames rather than lagging. A log line or the close is never dropped
+    (F1125): it waits, in order, ahead of the frame that follows it."""
+    if "jpeg_b64" in item:
+        waiting = []
+        while not q.empty():
+            older = q.get_nowait()
+            if "jpeg_b64" not in older:
+                waiting.append(older)
+        for older in waiting:
+            q.put_nowait(older)
     q.put_nowait(item)
 
 
@@ -935,7 +966,7 @@ class Host:
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache",
                                            "X-Accel-Buffering": "no"})
         await resp.prepare(request)
-        q: asyncio.Queue = asyncio.Queue(maxsize=2)
+        q: asyncio.Queue = asyncio.Queue()  # `_offer` keeps one frame in it; lines all wait
         first = await s.first_frame()
         if first:
             _offer(q, first)
@@ -986,9 +1017,11 @@ class Host:
 
     async def release(self, request):
         s, body = await self._viewer_body(request)
-        done = s.release(bool(body.get("allow_address", True)))
+        done = s.release()
         if done is None:
             return web.json_response({"error": "Nothing is held."}, status=409)
+        if done.get("refused"):
+            return web.json_response({"error": done["refused"]}, status=409)
         return web.json_response(done)
 
     async def allow_site(self, request):

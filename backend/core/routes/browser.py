@@ -9,6 +9,8 @@ holds it, and its id is never guessable.
 """
 from __future__ import annotations
 
+import json
+
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
@@ -28,11 +30,12 @@ def _owner(session_id: str) -> str:
 
 @router.get("/api/browser/{session_id}/frames")
 async def frames(session_id: str, request: Request):
-    _owner(session_id)
+    owner = _owner(session_id)
     host = browser_client.tools.host
 
     async def relay():
         timeout = aiohttp.ClientTimeout(total=None, sock_read=60)
+        pending = b""
         async with aiohttp.ClientSession(headers=host._headers(), timeout=timeout) as http:
             async with http.get(host.viewer_url("/frames"), params={"session_id": session_id}) as resp:
                 if resp.status != 200:
@@ -41,9 +44,26 @@ async def frames(session_id: str, request: Request):
                     if await request.is_disconnected():
                         break
                     yield chunk
+                    pending = await _keep_log_lines(owner, pending + chunk)
 
     return StreamingResponse(relay(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+async def _keep_log_lines(owner: str, pending: bytes) -> bytes:
+    """The person's and the guard's log lines, kept with the run or chat as they pass to the pane (F1125): you
+    drive only while watching, so every line of yours goes by here. Returns what is left of an unfinished event."""
+    *events, rest = pending.split(b"\n\n")
+    lines = []
+    for event in events:
+        if event.startswith(b'data: {"log"'):
+            try:
+                lines.append(json.loads(event[6:])["log"])
+            except (ValueError, KeyError):
+                pass
+    if lines:
+        await browser_client.tools.keep_lines(owner, lines)
+    return rest if len(rest) < 4_000_000 else b""
 
 
 @router.get("/api/browser/{session_id}/shot/{ref}")
@@ -156,6 +176,17 @@ async def give_file(session_id: str, file: UploadFile):
     if status >= 400:
         raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")
     return answer
+
+
+@router.get("/api/browser/kept/{kind}/{ident}/log")
+async def kept_log(kind: str, ident: str):
+    """The record of who pressed and sent what in a run's or chat's browsers, kept with it (F1125)."""
+    import asyncio
+    from core.browser import kept
+    entries = await asyncio.to_thread(kept.read_log, kind, ident)
+    if entries is None:
+        raise HTTPException(status_code=404, detail="No such run or chat.")
+    return {"entries": entries}
 
 
 @router.get("/api/browser/kept/{kind}/{ident}/{n}")

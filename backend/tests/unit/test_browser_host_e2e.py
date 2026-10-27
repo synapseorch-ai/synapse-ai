@@ -10,6 +10,7 @@ Chromium or npx is missing.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import secrets
@@ -256,7 +257,9 @@ async def form_site():
     async def index(request):
         port = request.url.port
         return web.Response(content_type="text/html", text=(
-            "<html><body><h1>Form</h1><form method='post' action='/submit'>"
+            # An orders address behind a plain label: the click stop lets it run on the person's words, and the
+            # network's backstop holds it (F1125).
+            "<html><body><h1>Form</h1><form method='post' action='/orders/submit'>"
             "<input name='q' aria-label='Query'><input type='password' name='pw' aria-label='Password'>"
             "<button type='submit'>Send it</button></form>"
             f"<a href='http://other.localhost:{port}/'>Elsewhere</a></body></html>"))
@@ -267,7 +270,7 @@ async def form_site():
 
     app = web.Application()
     app.router.add_get("/", index)
-    app.router.add_post("/submit", submit)
+    app.router.add_post("/orders/submit", submit)
     runner = web.AppRunner(app)
     await runner.setup()
     tcp = web.TCPSite(runner, "127.0.0.1", 0)
@@ -332,23 +335,19 @@ async def test_an_agents_send_waits_for_the_person(form_site, codrive_host):
 
     click = await _tool(http, control, sid, "browser_click",
                         {"element": "Send it", "target": _ref(page["text"], "button", "Send it")}, ASKED)
-    assert click["handover"]["kind"] == "send", click
+    assert click["handover"]["kind"] == "send", click  # the press ran on the person's words; its order is held
     state = await _state(http, control, sid)
-    assert state["wheel"] == "nobody" and state["held"]["method"] == "POST" and hits["submit"] == 0
+    assert state["wheel"] == "nobody" and state["held"]["method"] == "POST" and state["held"]["money"] is True
+    assert hits["submit"] == 0
 
-    status, _ = await _view(http, viewer, sid, "/release", {"allow_address": False})
+    status, body = await _view(http, viewer, sid, "/release", {})
+    assert status == 409 and "take over" in body["error"], "a payment is never let go by the agent's side"
+    await asyncio.sleep(0.3)
+    assert hits["submit"] == 0
+    status, _ = await _view(http, viewer, sid, "/wheel/take")
     assert status == 200
-    for _ in range(50):
-        if hits["submit"]:
-            break
-        await asyncio.sleep(0.1)
-    assert hits["submit"] == 1, "a released send goes"
-    assert (await _state(http, control, sid))["wheel"] == "agent"
-    status, _ = await _view(http, viewer, sid, "/release", {})
-    assert status == 409  # nothing held now
-
-    again = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
-    assert "### The person" in again["text"] and "only loaded data" in again["text"]
+    await asyncio.sleep(0.5)
+    assert hits["submit"] == 0 and not (await _state(http, control, sid)).get("held"), "taking over drops it"
 
 
 async def test_taking_over_drops_the_agents_send_and_the_person_sends_it(form_site, codrive_host):
@@ -365,6 +364,17 @@ async def test_taking_over_drops_the_agents_send_and_the_person_sends_it(form_si
                         {"element": "Send it", "target": _ref(page["text"], "button", "Send it")}, ASKED)
     assert click["handover"]["kind"] == "send"
 
+    heard: list[dict] = []
+
+    async def listen():  # frames are long lines: read chunks and split events, as the app's relay does
+        pending = b""
+        async with http.get(f"http://127.0.0.1:{viewer}/frames", params={"session_id": sid}) as resp:
+            async for chunk in resp.content.iter_any():
+                *events, pending = (pending + chunk).split(b"\n\n")
+                heard.extend(json.loads(e[6:])["log"] for e in events if e.startswith(b'data: {"log"'))
+
+    listening = asyncio.ensure_future(listen())  # the pane, open while the person drives
+    await asyncio.sleep(0.3)
     status, body = await _view(http, viewer, sid, "/wheel/take")
     assert status == 200 and body["wheel"] == "person"
     await asyncio.sleep(0.5)
@@ -383,6 +393,11 @@ async def test_taking_over_drops_the_agents_send_and_the_person_sends_it(form_si
             break
         await asyncio.sleep(0.1)
     assert hits["submit"] == 1, "the person's own send goes"
+    async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+        mine = [(e["actor"], e["action"], e["target"]) for e in (await resp.json())["entries"] if e["actor"] == "person"]
+    assert ("person", "sent", "POST localhost") in mine, "the record says who sent it, never what"
+    listening.cancel()
+    assert any(e["action"] == "sent" and e["session_id"] == sid for e in heard), "person lines reach the pane"
 
     await _view(http, viewer, sid, "/wheel/hand-back", {"note": "I sent it"})
     after = await _tool(http, control, sid, "browser_snapshot", {})
@@ -606,9 +621,7 @@ async def test_a_press_that_acts_for_the_person_runs_only_on_their_words(press_s
     async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
         pressed = [e for e in (await resp.json())["entries"] if e["action"] == "pressed"]
     assert pressed and pressed[-1]["target"] == "Submit feedback" and pressed[-1]["because"] == ASKED["because"]
-    if asked.get("handover", {}).get("kind") == "send":  # the network still holds its send until F1125
-        await _view(http, viewer, sid, "/release", {"allow_address": False})
-    for _ in range(50):
+    for _ in range(50):  # feedback takes no money: nothing holds it at the network (F1125)
         if hits["feedback"]:
             break
         await asyncio.sleep(0.1)
