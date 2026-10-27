@@ -4244,8 +4244,8 @@ window.fetch = function (input, init) {
     window.__sent.push(body);
     const id = body.client_session_id;
     (window.__chats[id] = window.__chats[id] || []).push({user: body.message, assistant: 'heard: ' + body.message});
-    const frames = 'data: ' + JSON.stringify({type: 'assistant_message', content: 'heard: ' + body.message}) + '\n\n'
-      + 'data: {"type":"done"}\n\n';
+    const frames = 'data: ' + JSON.stringify({type: 'orchestration_complete', run_id: 'run_' + id + '_' + window.__sent.length,
+      final_state: {summary: 'heard: ' + body.message}}) + '\n\n';
     return Promise.resolve(new Response(frames, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
   }
   if (window.__history && method === 'GET' && /\/api\/sessions(\?|$)/.test(url)) {
@@ -4259,11 +4259,21 @@ window.fetch = function (input, init) {
 ASSISTANT_NAME = "Synapse AI"
 
 
+def _assistant_agent() -> None:
+    """Synapse AI, the agent a new install starts with (the installer makes it; a scratch store has none)."""
+    try:
+        api("/api/agents/agent_synapse_ai")
+    except urllib.error.HTTPError:
+        api("/api/agents", "POST", {**_agent("agent_synapse_ai", ASSISTANT_NAME), "type": "builder",
+                                    "system_prompt": ""})
+
+
 async def _assistant_page(browser, path: str = "", chats: dict | None = None, chat_list: list | None = None,
                           history: list | None = None, width=WIDE):
     """The chat page with Synapse AI's routes stubbed (ASSISTANT_STUB); its first tab is an agent's, as a new
     install's is. `chats` are the chats on the "server", by id."""
     _tab_agents()
+    _assistant_agent()
     ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
     await ctx.add_init_script(
         "try { if (!sessionStorage.getItem('uismokeSeeded')) {"
@@ -4342,7 +4352,7 @@ async def check_tabsassistanthistory(browser) -> str:
                                       history=history)
     try:
         await page.get_by_role("button", name="History").first.click()
-        row = page.get_by_role("button", name=re.compile("the weekly digest chat"))
+        row = page.get_by_role("button", name=re.compile("the weekly digest chat")).first
         await row.wait_for(timeout=8_000)
         named = await page.evaluate(
             "() => [...document.querySelectorAll('button')].find(b => b.innerText.includes('the weekly digest chat'))"
