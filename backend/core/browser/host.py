@@ -43,6 +43,11 @@ _VIEWPORT = {"width": 1280, "height": 800}
 #: allowed, and there is no proxy for it (F1122). QUIC is off for the same reason, and WebTransport rides it.
 _CHROMIUM_ARGS = ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
                   "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic"]
+#: A worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket, starts no worker
+#: (F1122, SEC2's review). Run in every frame before its scripts; the page cannot define them again.
+_NO_WORKERS = """(() => { for (const name of ["Worker", "SharedWorker"]) {
+  try { Object.defineProperty(globalThis, name, {value: undefined, writable: false, configurable: false}); }
+  catch (e) {} } })();"""
 _TOKEN_HEADER = "X-Browser-Token"
 _SNAPSHOT_LINK = re.compile(r"- \[Snapshot\]\(([^)\s]+\.yml)\)")
 
@@ -102,6 +107,8 @@ class Session:
         )
         await self.ctx.route("**/*", self._route)
         await self.ctx.route_web_socket(lambda _url: True, self._route_socket)
+        if self.mode != gate.CO_DRIVE:
+            await self.ctx.add_init_script(_NO_WORKERS)
         self.ctx.on("page", self._on_page)
         self.page = self.ctx.pages[0] if self.ctx.pages else await self.ctx.new_page()
         port = await self._devtools_port()

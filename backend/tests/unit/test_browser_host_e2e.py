@@ -63,6 +63,22 @@ async def site():
             "  ws.onclose = () => { seen.push(name + '-closed'); show(); };"
             "}</script></body></html>"))
 
+    async def workers(request):
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><p id='out'>waiting</p><script>"
+            "const src = (u) => URL.createObjectURL(new Blob([`new WebSocket('${u}')`]));"
+            f"const inside = 'ws://127.0.0.1:{port}/ws', outside = 'ws://localhost:{port}/ws';"
+            "let made = 0;"
+            "for (const u of [inside, outside]) { try { new Worker(src(u)); made++; } catch (e) {} }"
+            "try { new SharedWorker(src(inside)); made++; } catch (e) {}"
+            # A fresh frame's own globals, used before anything could load in it.
+            "const f = document.createElement('iframe'); document.body.append(f);"
+            "try { new f.contentWindow.Worker(src(inside)); made++; } catch (e) {}"
+            "try { const w = window.open(''); new w.Worker(src(inside)); made++; } catch (e) {}"
+            "document.getElementById('out').textContent = 'made-' + made;"
+            "</script></body></html>"))
+
     async def socket(request):
         hits["ws"] += 1
         ws = web.WebSocketResponse()
@@ -77,6 +93,7 @@ async def site():
     app.router.add_post("/submit", submit)
     app.router.add_get("/live", live)
     app.router.add_get("/ws", socket)
+    app.router.add_get("/workers", workers)
     runner = web.AppRunner(app)
     await runner.setup()
     tcp = web.TCPSite(runner, "127.0.0.1", 0)
@@ -192,3 +209,19 @@ async def test_a_page_s_socket_passes_the_same_guard(site, host):
     assert hits["ws"] == 1, "only the public socket reached the server"
     assert "inside-got" not in text and "inside-closed" in text
     assert any("127.0.0.1 is not a public address" in g for g in guard)
+
+
+async def test_a_read_only_page_starts_no_worker(site, host):
+    """F1122: a worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket at all,
+    starts no worker either (SEC2's review): not from the page, and not from a fresh frame's own globals."""
+    port, hits = site
+    http, control, _viewer = host
+    sid = (await _post(http, control, "/session", {"owner": "chat:workers", "mode": "read_only"}))["session_id"]
+    await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                         "args": {"url": f"http://localhost:{port}/workers"}})
+    await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for", "args": {"text": "made-"}})
+    snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+    await asyncio.sleep(1.5)  # time for any socket a worker opened to arrive
+    assert "made-0" in snap["text"]
+    assert hits["ws"] == 0, "a worker opened a socket from a read-only browser"
+    await _post(http, control, "/close", {"session_id": sid})

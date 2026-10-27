@@ -93,7 +93,7 @@ def test_chromium_takes_no_unguarded_path():
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in host._CHROMIUM_ARGS
     assert "--disable-quic" in host._CHROMIUM_ARGS
     source = inspect.getsource(host.Session.start)
-    assert 'service_workers="block"' in source and "route_web_socket" in source
+    assert 'service_workers="block"' in source and "route_web_socket" in source and "_NO_WORKERS" in source
 
 
 # ── the engine's client ──────────────────────────────────────────────────────
