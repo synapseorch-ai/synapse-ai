@@ -8,6 +8,8 @@ is left out** — never "(cron expression: )", never "None".
 """
 from __future__ import annotations
 
+from collections.abc import Set as AbstractSet
+
 from core.native_builder.objects import Gate, Plan, Step
 
 _TYPE_WORDS = {"agent": "agent", "llm": "llm", "tool": "tool", "evaluator": "evaluator", "parallel": "parallel",
@@ -16,13 +18,16 @@ _TYPE_WORDS = {"agent": "agent", "llm": "llm", "tool": "tool", "evaluator": "eva
                "end": "end", "retrieve": "retrieve", "ingest": "ingest", "workflow": "workflow"}
 
 
-def _step_line(n: int, step: Step, agent_names: dict[str, str], inner: set[str]) -> str:
+def _step_line(n: int, step: Step, agent_names: dict[str, str], inner: set[str],
+               fills: AbstractSet[str] = frozenset()) -> str:
     line = f"{n}. **{step.name}** ({_TYPE_WORDS.get(step.type, step.type)})"
     if step.does and step.does.strip() and step.does.strip() != step.name.strip():
         line += f": {step.does.strip()}"
     extras = []
     if step.tool:
         extras.append(f"uses `{step.tool}`")
+    if step.id in fills:
+        extras.append("a model fills in its inputs")  # none set on the step (F967)
     if step.agent:
         extras.append(f"agent: {agent_names.get(step.agent, step.agent)}")
     if step.workflow:
@@ -69,7 +74,9 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         parts.append(f"## Overview\n{overview}")
 
     if plan.steps or plan.edits:
-        lines = [_step_line(i, s, names, inner) for i, s in enumerate((s for s in plan.steps if s.type != "end"), 1)]
+        fills = set(getattr(plan, "model_fills", []))
+        lines = [_step_line(i, s, names, inner, fills)
+                 for i, s in enumerate((s for s in plan.steps if s.type != "end"), 1)]
         for e in plan.edits:
             what = {"add_step": f"Add **{e.step.name if e.step else '?'}** after {e.after}",
                     "update_step": f"Change **{e.step_id}**", "remove_step": f"Remove **{e.step_id}**",
@@ -97,6 +104,8 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         agent_lines += [f"- {names.get(a, a)}" for a in plan.reuse_agents]
     if agent_lines:
         parts.append("## Agents\n" + "\n".join(agent_lines))
+    elif getattr(plan, "calls_no_model", False):
+        parts.append("## Agents\nNo agents: it runs on tools only, with no model called.")
 
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()

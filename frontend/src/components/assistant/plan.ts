@@ -109,6 +109,8 @@ export interface Plan {
     limits?: string | null;
     /** Each new agent's model and why, as code picked it (F966): drawn only from the plan's object. */
     models?: string | null;
+    /** No step of a run calls a model (F967): drawn only from the plan's object. */
+    noModel?: boolean;
     /** The stronger models the card offers (`stronger:<agent>`), each with its price (F966). */
     stronger?: { agent: string; label: string }[];
 }
@@ -600,6 +602,10 @@ export interface PlanObjectView {
         agents?: { name: string; type?: string; why?: string | null }[];
         /** Each new agent's model, by its name, as code picked it (F966). */
         models?: Record<string, PlanModelPick>;
+        /** No step of a run calls a model (F967): it runs on tools only. Set by code. */
+        calls_no_model?: boolean;
+        /** The tool steps whose inputs a model fills in, by id: none set on the step (F967). Set by code. */
+        model_fills?: string[];
         schedule?: { cron?: string; says?: string; timezone?: string | null; input?: string | null } | null;
         caps?: { credits?: number | null; dollars?: number | null } | null;
         questions?: string[];
@@ -655,8 +661,11 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
             ? changes.map((c, i) => ({ n: i + 1, name: c, type: null, label: '', role: 'logic' as const }))
             : steps.map((s, i) => {
                 const step = stepOf(i + 1, s.name, known(s.type));
-                const detail = [s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '', s.tool ? `uses ${s.tool}` : '']
-                    .filter(Boolean).join(' — ');
+                const detail = [
+                    s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '',
+                    s.tool ? `uses ${s.tool}` : '',
+                    view.plan.model_fills?.includes(s.id) ? 'a model fills in its inputs' : '',
+                ].filter(Boolean).join(' — ');
                 const model = s.agent ? view.plan.models?.[s.agent]?.model : undefined;
                 return { ...step, ...(detail ? { detail } : {}), ...(model ? { model } : {}) };
             }),
@@ -669,6 +678,7 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
             view.plan.caps?.dollars != null ? `$${view.plan.caps.dollars} of models` : '',
         ].filter(Boolean).join(' and ') || null,
         newAgents: (view.plan.agents ?? []).map((a) => a.name).filter(Boolean),
+        noModel: view.plan.calls_no_model === true,
         openQuestions: bullets(view.plan.questions),
         notCarried: bullets(view.plan.not_carried_over),
         needs: view.say?.trim() || null,

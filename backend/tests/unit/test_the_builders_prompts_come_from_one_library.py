@@ -40,7 +40,9 @@ from core.native_builder import prompt_lint, seed
 #: SAI2's review of P4: the reporter's own prompt teaches no tool (each step's does), talk has room for the answer
 #: turn, and the talker says only its role, c2b8ebd2….
 #: P3c (F949): the wait waits for every way in, and a connection under other tool names re-plans, 452d13db….
-BUNDLE_SHA256 = "a1823d76dcc1457074cc66cc9104ef1e2af8ff9f7ba3f20075e2147a696905f9"
+#: F966: the planner says what each agent's model needs, never a model, a1823d76…; F967: a step that only calls a
+#: tool needs no agent, and the steps passage teaches `config.tool_arguments`, f8874085….
+BUNDLE_SHA256 = "f8874085b1470d1c927396a7cde8de40ad02d0d51da24ad6908c7b35a5ec3f60"
 
 
 def _sha(definitions) -> str:

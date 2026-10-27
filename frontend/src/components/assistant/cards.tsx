@@ -219,7 +219,7 @@ export function PlanCard({
         plan.limits ? `each run is capped at ${plan.limits}` : null,
         plan.newAgents.length
             ? `creates ${plan.newAgents.length === 1 ? 'an agent' : `${plan.newAgents.length} agents`}: ${plan.newAgents.join(', ')}`
-            : null,
+            : plan.noModel ? 'no agents: it runs on tools only, with no model called' : null,
     ].filter(Boolean) as string[] : [];
 
     return (

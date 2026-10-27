@@ -1,7 +1,7 @@
 Each step has an `id` (short snake_case, unique), a `type`, a `name` a person reads, and `does` (one sentence). By type:
 - `agent`: an agent works with its tools; `agent` is a new agent's name from `agents` or an existing agent's id; `prompt` is what it is asked.
 - `llm`: one model call with no tools, for writing or reshaping text; `prompt` is the instruction.
-- `tool`: calls one tool with no model; `tool` is its exact name.
+- `tool`: calls one tool; `tool` is its exact name. When its inputs are known, set them in `config.tool_arguments` and no model is called: fixed values, or what an earlier step wrote as `{{state.<step id>}}`, e.g. `{"city": "Rotterdam"}` or `{"text": "Today: {{state.check_weather}}"}`, and `{}` when it takes none. Left out, a model reads the run so far and fills them in.
 - `human`: waits for a person; `prompt` is what they are asked. A check the person wants before something goes out ("a summary I can check before it goes to the client") is a human step right before the step that sends it.
 - `if_else`: `condition` is an expression over what earlier steps wrote, read by their step ids, e.g. `state.check_weather.wind_kmh > 40`; `branches` are `{"true": id, "false": id}`.
 - `switch`: `condition` is such an expression; `branches` map each of its values to a step id, plus `default`.

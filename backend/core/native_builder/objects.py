@@ -195,6 +195,10 @@ class Plan(PlanDraft):
     gates: list[Gate] = Field(default_factory=list)
     #: Each new agent's model, by its name, picked in code (F966): never the planner's.
     models: dict[str, ModelPick] = Field(default_factory=dict)
+    #: No step of a run calls a model (F967): the card says it runs on tools only. Set by `fill`.
+    calls_no_model: bool = False
+    #: The tool steps whose inputs a model fills in, by id: none set in `config.tool_arguments` (F967). Set by `fill`.
+    model_fills: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":
@@ -553,6 +557,30 @@ async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str,
     return gates
 
 
+#: Steps that call no model as the engine runs them, yet may call one where it cannot be read from the plan: a
+#: workflow from elsewhere runs its own steps, and a knowledge base is searched or filled through its embedding model.
+_MAY_CALL_A_MODEL = frozenset({"retrieve", "ingest"})
+
+
+def fills_in(step: Step) -> bool:
+    """A tool step with no inputs set on it: a model reads the run so far and fills them in (E1, F967)."""
+    return step.type == "tool" and (step.config or {}).get("tool_arguments") is None
+
+
+def calls_no_model(plan: PlanDraft) -> bool:
+    """Whether no step of a run calls a model, its inner workflows' included, read as the engine runs them
+    (`step_models.calls_a_model`, F967). A plan with no steps, a step that runs a workflow from elsewhere, or a
+    knowledge step is never said to."""
+    from core.orchestration.step_models import calls_a_model
+
+    inner = {w.title for w in plan.inner_workflows}
+    steps = [s for s in (*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)) if s.type != "end"]
+    return bool(steps) and not any(
+        s.type in _MAY_CALL_A_MODEL or (s.type == "workflow" and s.workflow not in inner)
+        or calls_a_model({"type": s.type, "tool_arguments": (s.config or {}).get("tool_arguments")})
+        for s in steps)
+
+
 async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] | None = None,
                agents: dict[str, dict] | None = None) -> Plan:
     """What code knows about a plan, written onto it (a copy): each tool's status, its approvals, what is missing,
@@ -565,6 +593,7 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
       `builder_guard.unapproved` reads them), unless the person already moved it to act without asking — a choice
       kept across fills while the tool is still in the plan. The **gates** are each approval the run will ask for
       and each block, by who asks (`_gates`, F964): the person's choice lifts the build's own confirm only.
+    * **What calls a model** (F967): whether no step does, and which tool steps a model fills in.
     * **Plan room** is the host's check (cloud's F154; self-hosted has none).
     """
     from core import builder_guard
@@ -604,6 +633,9 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     denied = {g.tool for g in out.gates if g.decision == "deny" and g.set_by == "workspace"}
     out.approvals = Approvals(asks_first=[n for n in acting if n not in kept and n not in denied],
                               acts_without_asking=[n for n in acting if n in kept and n not in held | denied])
+
+    out.calls_no_model = calls_no_model(out)
+    out.model_fills = [s.id for s in out.steps if fills_in(s)]
 
     out.room = None
     if _room_check is not None:
