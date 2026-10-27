@@ -12177,6 +12177,11 @@ window.fetch = function (input, init) {
     return Promise.resolve(new Response(JSON.stringify({detail: "Card details go in the browser; you'll be asked there."}), {
       status: 422, headers: {'Content-Type': 'application/json'}}));
   }
+  // A closed browser's whole log, kept with its chat or run (BRW1, F1125): what a check put in __keptLog, or none.
+  if (/^(chat|run)\/[^/]+\/log$/.test(m[2]) && m[1] === 'kept') {
+    return Promise.resolve(new Response(JSON.stringify({entries: window.__keptLog || []}), {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
   if (m[2] !== 'frames') {
     return Promise.resolve(new Response('{"ok": true}', {status: 200, headers: {'Content-Type': 'application/json'}}));
   }
@@ -12744,19 +12749,34 @@ async def check_brwpress(browser) -> str:
             if not await _brw_calls(page, "wheel/take"):
                 bad.append("Take over on a held payment did not take the wheel")
 
-        for i, a in enumerate([
-                {"actor": "agent", "action": "pressed", "target": "Submit feedback",
-                 "because": "send the feedback form when it's filled in"},
-                {"actor": "person", "action": "pressed", "target": "Pay now"},
-                {"actor": "person", "action": "sent", "target": "POST shop.example.com"}]):
-            await _brw_push(page, "post", _frame({"type": "browser_action", "session_id": "bsP", "n": 10 + i,
-                                                  "at": 0, "url": "https://example.com/", "shot_ref": None, **a},
-                                                 f"p-{2 + i}"))
+        # The agent's press comes on its browser_action; the person's own lines, which no agent call carries, on
+        # the frames stream (BRW1, V2-CONTRACT "Where they arrive").
+        pressed = {"session_id": "bsP", "n": 10, "at": 0, "url": "https://example.com/", "shot_ref": None,
+                   "actor": "agent", "action": "pressed", "target": "Submit feedback",
+                   "because": "send the feedback form when it's filled in"}
+        theirs = [{"session_id": "bsP", "n": 11, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "pressed", "target": "Pay now"},
+                  {"session_id": "bsP", "n": 12, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "sent", "target": "POST shop.example.com"}]
+        await _brw_push(page, "post", _frame({"type": "browser_action", **pressed}, "p-2"))
+        await _brw_push(page, "frames:bsP", "".join(_frame({"log": e}) for e in theirs))
         listed = pane.get_by_role("list", name="What the agent did")
         for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
                       "You pressed ‘Pay now’", "You sent POST to shop.example.com"):
             if not await listed.get_by_text(words, exact=False).count():
                 bad.append(f"the log does not read “{words}”")
+
+        # Closed: the whole log is the one kept with the chat, the record of who pressed what.
+        guard = {"session_id": "bsP", "n": 13, "at": 0, "url": "https://example.com/", "shot_ref": None,
+                 "actor": "guard", "action": "blocked", "target": "a WebSocket to 10.0.0.4"}
+        await page.evaluate(f"() => {{ window.__keptLog = {json.dumps([pressed, *theirs, guard])}; }}")
+        await _brw_push(page, "frames:bsP", _frame({"closed": True}))
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/kept/chat/uismoke-brw-press/log'))"):
+            bad.append("a closed browser did not read the log kept with its chat")
+        elif not await listed.get_by_text("Kept from leaving the browser: a WebSocket to 10.0.0.4").count():
+            bad.append("a closed browser's list is not the kept log")
+        elif not await listed.get_by_text("You pressed ‘Pay now’", exact=False).count():
+            bad.append("the kept log lost the person's own press")
 
         # Once per person: it is remembered in this browser, and the next browser does not say it again.
         if not await page.evaluate("() => localStorage.getItem('browser-disclaimer-seen')"):
@@ -12862,7 +12882,8 @@ async def check_brwbox(browser) -> str:
 @check
 async def check_brwrunpage(browser) -> str:
     """A run's page shows the browser its agent works in (BRW2, F1075): live while the run runs, then, once it has
-    ended, a filmstrip of what the agent did, from the screenshots kept with the run."""
+    ended, a filmstrip of what was done in it, from the log and screenshots kept with the run (the person's own
+    presses included: the record of who pressed what)."""
     global _M2B_STREAM
     kept = _M2B_STREAM
     events = "".join([
@@ -12892,6 +12913,15 @@ async def check_brwrunpage(browser) -> str:
         _M2B_STREAM = events + _frame({"type": "stream_complete"})
         ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
                                        runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]})
+        # The whole log kept with the run (BRW1, F1125): the agent's lines and the person's own press, which the
+        # journal never carried.
+        whole = [{**_BRW_ACTION, "session_id": "bsR"},
+                 {**_BRW_ACTION, "session_id": "bsR", "n": 2, "action": "browser_navigate",
+                  "target": "https://stock.example.com/orders", "shot_ref": "2"},
+                 {"session_id": "bsR", "n": 3, "at": 0, "actor": "person", "action": "pressed",
+                  "target": "Pay now", "url": "https://stock.example.com/orders", "shot_ref": None}]
+        await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
+                        lambda r: r.fulfill(status=200, json={"entries": whole}))
         try:
             strip = page.get_by_role("list", name="What the agent did in the browser")
             try:
@@ -12901,6 +12931,8 @@ async def check_brwrunpage(browser) -> str:
                     bad.append(f"the filmstrip shows {srcs}")
             except Exception:
                 bad.append("an ended run with a browser shows no filmstrip")
+            if not await _wait(page, "() => document.body.innerText.includes('You pressed ‘Pay now’')"):
+                bad.append("the filmstrip is not the log kept with the run (the person's own press is missing)")
             if await page.get_by_role("region", name="Live browser").count():
                 bad.append("an ended run still shows the live browser")
         finally:
@@ -12909,7 +12941,7 @@ async def check_brwrunpage(browser) -> str:
         _M2B_STREAM = kept
     if bad:
         raise AssertionError("; ".join(bad))
-    return "a running run shows its live browser; an ended one the filmstrip of kept screenshots"
+    return "a running run shows its live browser; an ended one the filmstrip of the log and screenshots kept with it"
 
 
 @check
