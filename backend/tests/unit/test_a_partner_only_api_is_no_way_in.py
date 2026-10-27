@@ -97,3 +97,28 @@ def test_the_partner_value_stays_out_of_the_models_schema():
 def test_the_words_keep_the_name_before_them_but_not_an_article():
     assert br.partner_words("A Kayak partner account and test keys.") == ["Kayak partner account"]
     assert br.partner_words("A partner account.") == ["partner account"]
+
+
+# ── SAI2's review of a0f640fa: words public developer docs use too ────────────────────────────────────────────────
+
+@pytest.mark.parametrize("needs", [
+    "A key. Its OpenAPI contract is published.",
+    "An account; the API contract and contract tests are on GitHub.",
+    "A data contract for each event, and an API key.",
+    "A Google Cloud project; production needs OAuth app review approval.",
+    "Production needs Meta's app review approval for the messaging permission.",
+])
+async def test_a_public_apis_own_words_stay_api(needs):
+    option = await _report("Acme", "api", needs, page="https://acme.com/developers")
+    assert option["how"] == "api" and "partner_words" not in option
+
+
+@pytest.mark.parametrize("needs, words", [
+    ("It needs a signed contract.", ["signed contract"]),
+    ("Access is under contract only.", ["under contract"]),
+    ("A commercial contract with Booking.com and a key.", ["commercial contract"]),
+    ("A contract with Expedia Group.", ["contract with Expedia"]),
+])
+async def test_a_contract_beside_a_gate_word_is_partner_only(needs, words):
+    option = await _report("Acme", "api", needs, page="https://acme.com/developers")
+    assert option["how"] == "partner" and option["partner_words"] == words

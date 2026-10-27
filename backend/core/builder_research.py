@@ -564,7 +564,10 @@ _GATE = re.compile(
     r"(?<![-\w])(?:approved partners?|partners?[- ]only|partnership(?: agreement| contract)?"
     r"|affiliate(?: partner)?(?: registration| program(?:me)?)?"
     r"|partner (?:registration|program(?:me)?|agreement|account|api key|api|centre|center|portal|approval)"
-    r"|apply for access|contract|needs? [^.\n]{0,40}?approval)(?![-\w])", re.IGNORECASE)
+    r"|apply for access|(?:signed|commercial|business|reseller) contract|under contract|contract with (?-i:[A-Z])\S*"
+    r"|needs? [^.\n]{0,40}?approval)(?![-\w])", re.IGNORECASE)
+#: Not a gate (SAI2's review): an app review any developer passes ("needs OAuth app review approval", Google, Meta).
+_APP_REVIEW = re.compile(r"\b(?:review|oauth|verification|verified)\b", re.IGNORECASE)
 #: A sentence that only wonders is no gate: "I did not read whether production keys need partner approval".
 _WONDERS = re.compile(r"\b(?:whether|not confirmed|did not|didn't|unclear|if|may|might|could not|couldn't)\b",
                       re.IGNORECASE)
@@ -580,7 +583,8 @@ def partner_words(text: str) -> list[str]:
         if _WONDERS.search(sentence):
             continue
         for m in _GATE.finditer(sentence):
-            if _SAYS_NO.search(sentence[:m.start()]):
+            if _SAYS_NO.search(sentence[:m.start()]) or (
+                    m.group().lower().startswith("need") and _APP_REVIEW.search(m.group())):
                 continue
             start = m.start()
             for _ in range(3):
