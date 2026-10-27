@@ -217,6 +217,26 @@ async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.Mo
     return picks, issues, ""
 
 
+def go_ahead_request(state: dict) -> str | None:
+    """What a bare go-ahead right after findings asks for (F1064, from P5's res-02 measure): the findings' goal, in
+    code's words. "build it" alone has no request of its own, and a planner given only those words asked what to
+    build and went on to plan whatever was said next. A go-ahead that says more is a request of its own, and with no
+    findings there is no goal to build: both are None, and the person's words stand alone as before."""
+    from core.native_builder.read_turn import _GO_ON, _plain
+    from core.native_builder.review import is_yes
+
+    said = str(state.get("user_message") or "")
+    if not (is_yes(said) or _plain(said) in _GO_ON):
+        return None
+    for key in (FINDINGS_KEY, "prior_findings"):
+        found = _obj(state.get(key))
+        goal = " ".join(str(found.get("goal") or "").split()) if isinstance(found, dict) else ""
+        if goal:
+            return (f"Build this: {goal.rstrip('.')}. Use what the findings say about each provider; a tool no option "
+                    f"provides is marked missing. (They said only \"{said.strip()}\" after the findings.)")
+    return None
+
+
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_help import product_capabilities
 
@@ -243,6 +263,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
         # What this product does and does not, so a `cannot` names the nearest thing that works (SAI2's review, nit).
         "capabilities": (await product_capabilities({}, server_module, []))["capabilities"],
     }
+    # A bare "build it" after findings: their goal is the request (F1064); the person's words stay theirs. Always
+    # present, empty when there is none, so the planner's template never shows an unfilled reference.
+    pack["request"] = go_ahead_request(state) or ""
     if pack["may_make_agents"] and (models := await _menu_lines()):
         # What a new agent's model can be, so the planner says what each needs, or the person's wish (F966).
         pack["models"] = models
