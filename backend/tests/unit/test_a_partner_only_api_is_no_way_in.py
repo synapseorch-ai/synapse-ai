@@ -122,3 +122,34 @@ async def test_a_public_apis_own_words_stay_api(needs):
 async def test_a_contract_beside_a_gate_word_is_partner_only(needs, words):
     option = await _report("Acme", "api", needs, page="https://acme.com/developers")
     assert option["how"] == "partner" and option["partner_words"] == words
+
+
+# ── SAI2's (a), from the gate measure's res-03: the provider grants or approves the developer's access ─────────────
+
+@pytest.mark.parametrize("needs, words", [
+    ("A Uber developer account and an OAuth 2.0 app. For production use across all riders, Uber must grant FULL "
+     "ACCESS; a sandbox is available.", ["Uber must grant FULL ACCESS"]),
+    ("The ride-request scope is privileged, so Uber must approve the app before it is used beyond development.",
+     ["Uber must approve the app"]),
+    ("A developer account; ride booking requires Expedia Group to approve your access.",
+     ["requires Expedia Group to approve your access"]),
+    ("A key. Production access is granted by Kayak.", ["Production access is granted by Kayak"]),
+])
+async def test_a_provider_that_grants_the_access_is_partner_only(needs, words):
+    option = await _report("Acme", "api", needs, page="https://acme.com/developers")
+    assert option["how"] == "partner" and option["partner_words"] == words
+
+
+@pytest.mark.parametrize("needs", [
+    "Each patient must sign in to Uber and grant permission before any ride can be requested.",
+    "An OAuth app; the user grants your app access to their calendar.",
+    "Users grant access on the consent screen, and the token is kept on the Connect card.",
+    "Patients must grant the app access on Uber's consent screen.",
+    "You must grant the app access in Settings before the first call.",
+    "Google must approve your OAuth app before it reads Gmail for anyone outside your organisation.",
+    "A Stripe administrator must enable MCP access for the team.",
+    "A Google account, and OAuth access granted to this workspace for the calendar.",
+])
+async def test_the_person_granting_the_app_access_stays_api(needs):
+    option = await _report("Acme", "api", needs, page="https://acme.com/developers")
+    assert option["how"] == "api" and "partner_words" not in option

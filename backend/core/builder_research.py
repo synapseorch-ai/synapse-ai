@@ -559,15 +559,26 @@ def check_api_spec(raw: Any, provider: str, own_domains: list[str], own_pages: l
     }, ""
 
 
+#: A provider, by name, that grants or approves the developer's access (SAI2's (a), the gate measure's res-03: "Uber
+#: must grant FULL ACCESS"), never the person granting the app access on a consent screen ("the user grants your app
+#: access", "Patients must grant the app access").
+_NAME = (r"(?!(?-i:(?:Users?|Patients?|Customers?|Clients?|Riders?|Members?|Owners?|Admins?|Administrators?|Staff"
+         r"|People|Persons?|Each|Every|You|Your|They|We|I|It|This|That|The|A|An))\b)"
+         r"(?-i:[A-Z][\w&'-]*(?:\.\w+)*)(?: (?-i:[A-Z][\w&'-]*(?:\.\w+)*)){0,2}")
+_GRANTS = (_NAME + r" (?:must|has to|needs to|will need to|will have to)(?: first)? (?:grant|approve)\b[^.;\n]{0,40}?"
+           r"\b(?:access|app|application)"
+           r"|(?:requires?|needs?) " + _NAME + r" to (?:grant|approve)\b[^.;\n]{0,40}?\b(?:access|app|application)"
+           r"|(?:access|it) (?:is|must be|has to be) (?:granted|approved) by " + _NAME)
 #: What says only approved partners get in (F1094): P5's measure, Booking.com, Uber and OpenTable reported as `api`.
 _GATE = re.compile(
     r"(?<![-\w])(?:approved partners?|partners?[- ]only|partnership(?: agreement| contract)?"
     r"|affiliate(?: partner)?(?: registration| program(?:me)?)?"
     r"|partner (?:registration|program(?:me)?|agreement|account|api key|api|centre|center|portal|approval)"
     r"|apply for access|(?:signed|commercial|business|reseller) contract|under contract|contract with (?-i:[A-Z])\S*"
-    r"|needs? [^.\n]{0,40}?approval)(?![-\w])", re.IGNORECASE)
+    r"|needs? [^.\n]{0,40}?approval|" + _GRANTS + r")(?![-\w])", re.IGNORECASE)
 #: Not a gate (SAI2's review): an app review any developer passes ("needs OAuth app review approval", Google, Meta).
 _APP_REVIEW = re.compile(r"\b(?:review|oauth|verification|verified)\b", re.IGNORECASE)
+_READ_FOR_REVIEW = re.compile(r"^needs?\b|\b(?:grant|approve|granted|approved)\b", re.IGNORECASE)
 #: A sentence that only wonders is no gate: "I did not read whether production keys need partner approval".
 _WONDERS = re.compile(r"\b(?:whether|not confirmed|did not|didn't|unclear|if|may|might|could not|couldn't)\b",
                       re.IGNORECASE)
@@ -584,7 +595,7 @@ def partner_words(text: str) -> list[str]:
             continue
         for m in _GATE.finditer(sentence):
             if _SAYS_NO.search(sentence[:m.start()]) or (
-                    m.group().lower().startswith("need") and _APP_REVIEW.search(m.group())):
+                    _READ_FOR_REVIEW.search(m.group()) and _APP_REVIEW.search(m.group())):
                 continue
             start = m.start()
             for _ in range(3):
