@@ -2767,7 +2767,6 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
         .join(', ');
     }
 
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
     setDraftAnswer('');
     setStreamingActivity('Resuming workflow...');
@@ -2792,6 +2791,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
         setMessages(prev => [...prev, { role: 'assistant', content: reason }]);
         return;
       }
+      // Drawn once accepted, never before (BRW2, F1078): a refused answer left the person's words on screen (a card
+      // number the box held back, for one) and the question read as answered.
+      setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No reader available');

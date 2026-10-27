@@ -12703,6 +12703,49 @@ async def check_brwturn(browser) -> str:
     return "the browser turn's card opens the browser; Done hands back and the turn is read on"
 
 
+@check
+async def check_brwbox(browser) -> str:
+    """An answer the run refuses never stays in the conversation (BRW2, F1078). The box keeps card numbers from the
+    model: the engine refuses one with "Card details go in the browser; you'll be asked there." The chat drew the
+    typed answer as the person's message before it was accepted, so the refused card number stayed on screen, and the
+    question read as answered. Now the refusal is said, the number is gone, and the question can be answered again."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-box")
+    refusal = "Card details go in the browser; you'll be asked there."
+    posts: list[str] = []
+
+    async def refuse(route):
+        posts.append(route.request.post_data or "")
+        await route.fulfill(status=422, json={"detail": refusal})
+
+    await ctx.route(re.compile(r".*/api/orchestrations/runs/run_uismoke_box/human-input$"), refuse)
+    bad: list[str] = []
+    card = "4111 1111 1111 1111"
+    try:
+        await _brw_push(page, "post", _frame({
+            "type": "human_input_required", "run_id": "run_uismoke_box", "orch_step_id": "ask",
+            "prompt": "What should the order note say?",
+            "fields": [{"name": "note", "type": "text", "label": "Order note"}]}, "x-1"))
+        if not await _on_screen(page, "What should the order note say?"):
+            raise AssertionError("the question never showed")
+        field = page.get_by_label("Order note")
+        await field.fill(card)
+        await field.press("Enter")
+        if not await _wait(page, "() => document.body.innerText.includes(\"Card details go in the browser\")"):
+            bad.append("the refusal is not said")
+        if not posts:
+            bad.append("the answer was never sent")
+        text = await page.evaluate("() => document.body.innerText")
+        if card in text:
+            bad.append("the refused card number is still on screen")
+        if not await page.get_by_label("Order note").count():
+            bad.append("the question can no longer be answered")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a refused answer is said, leaves no trace of what was typed, and the question stays open"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
