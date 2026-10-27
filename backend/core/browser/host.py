@@ -39,6 +39,10 @@ PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
 DEFAULT_LIMITS = {"actions": 40, "loads_per_min": 30, "idle_s": 600}
 _HOST_GAP_S = 1.0          # at most one page load a second per host
 _VIEWPORT = {"width": 1280, "height": 800}
+#: Chromium's switches. WebRTC may reach any address a page names over UDP, which no route sees: only proxied UDP is
+#: allowed, and there is no proxy for it (F1122). QUIC is off for the same reason, and WebTransport rides it.
+_CHROMIUM_ARGS = ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
+                  "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic"]
 _TOKEN_HEADER = "X-Browser-Token"
 _SNAPSHOT_LINK = re.compile(r"- \[Snapshot\]\(([^)\s]+\.yml)\)")
 
@@ -91,12 +95,13 @@ class Session:
     # ── lifecycle ────────────────────────────────────────────────────────────
     async def start(self, pw) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
+        # No service workers: a worker's own fetches would not pass the route below.
         self.ctx = await pw.chromium.launch_persistent_context(
-            str(self.dir / "profile"), headless=True, viewport=_VIEWPORT,
-            args=["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1"],
-            env=_clean_env(),
+            str(self.dir / "profile"), headless=True, viewport=_VIEWPORT, args=_CHROMIUM_ARGS,
+            env=_clean_env(), service_workers="block",
         )
         await self.ctx.route("**/*", self._route)
+        await self.ctx.route_web_socket(lambda _url: True, self._route_socket)
         self.ctx.on("page", self._on_page)
         self.page = self.ctx.pages[0] if self.ctx.pages else await self.ctx.new_page()
         port = await self._devtools_port()
@@ -155,6 +160,21 @@ class Session:
                 self._note("guard", "blocked", reason)
         except Exception:
             pass  # the page or the request is already gone
+
+    async def _route_socket(self, ws) -> None:
+        """A page's WebSocket, checked before it opens (F1122): the route above never sees one."""
+        try:
+            reason = await gate.socket_verdict(ws.url, self.mode)
+        except Exception:
+            reason = "the browser's guard failed"
+        if reason is None:
+            ws.connect_to_server()
+            return
+        self._note("guard", "blocked", reason)
+        try:
+            await ws.close(code=1008, reason="blocked by Synapse")
+        except Exception:
+            pass  # the page is already gone
 
     async def _pace(self, host: str) -> str | None:
         now = time.monotonic()

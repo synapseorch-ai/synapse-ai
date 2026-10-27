@@ -9,7 +9,8 @@ Two gates, both code, so neither depends on what the model was told:
 * **The network.** Every request of every page passes `verdict`: http(s) only, a
   public address only (`core.egress_guard`, the scraper's rule), and in read-only
   mode nothing that changes state. The check sits on the browser's own network
-  layer, so redirects, scripts and in-page fetches pass it too.
+  layer, so redirects, scripts and in-page fetches pass it too. A page's WebSocket
+  passes `socket_verdict`, its own check, before it opens.
 """
 from __future__ import annotations
 
@@ -72,4 +73,27 @@ async def verdict(url: str, method: str, mode: str) -> str | None:
         return f"{host or 'that host'} is not a public address"
     if mode != CO_DRIVE and method.upper() not in _READS:
         return f"a {method.upper()} to {host}: this browser is read-only"
+    return None
+
+
+async def socket_verdict(url: str, mode: str) -> str | None:
+    """Why a page's WebSocket must not open, or None to let it (F1122).
+
+    Once open, a socket carries anything both ways with no request to check, so a
+    read-only browser opens none, and co-drive opens one only to a public address.
+    Never fails open, as `verdict`.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "a malformed address"
+    if parsed.scheme not in {"ws", "wss"}:
+        return f"{parsed.scheme or 'a schemeless'} socket"
+    host = parsed.hostname or ""
+    try:
+        await check_host(host)
+    except Exception:
+        return f"{host or 'that host'} is not a public address"
+    if mode != CO_DRIVE:
+        return f"a WebSocket to {host}: this browser is read-only"
     return None

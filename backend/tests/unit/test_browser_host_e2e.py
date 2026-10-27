@@ -39,7 +39,7 @@ BACKEND = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 async def site():
-    hits = {"submit": 0}
+    hits = {"submit": 0, "ws": 0}
 
     async def index(_):
         return web.Response(content_type="text/html", text=(
@@ -51,9 +51,32 @@ async def site():
         hits["submit"] += 1
         return web.Response(text="submitted")
 
+    async def live(request):
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><p id='out'>waiting</p><script>"
+            "const seen = []; const show = () => { document.getElementById('out').textContent = seen.join(' '); };"
+            f"for (const [name, url] of [['inside', 'ws://127.0.0.1:{port}/ws'], ['public', 'ws://localhost:{port}/ws']]) {{"
+            "  const ws = new WebSocket(url);"
+            "  ws.onopen = () => ws.send('hi');"
+            "  ws.onmessage = (e) => { seen.push(name + '-got-' + e.data); show(); };"
+            "  ws.onclose = () => { seen.push(name + '-closed'); show(); };"
+            "}</script></body></html>"))
+
+    async def socket(request):
+        hits["ws"] += 1
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for msg in ws:
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                await ws.send_str("echo-" + msg.data)
+        return ws
+
     app = web.Application()
     app.router.add_get("/", index)
     app.router.add_post("/submit", submit)
+    app.router.add_get("/live", live)
+    app.router.add_get("/ws", socket)
     runner = web.AppRunner(app)
     await runner.setup()
     tcp = web.TCPSite(runner, "127.0.0.1", 0)
@@ -139,3 +162,33 @@ async def test_the_component_reads_but_never_sends_and_never_reaches_inside(site
     assert closed["closed"] is True
     async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
         assert resp.status == 404
+
+
+async def test_a_page_s_socket_passes_the_same_guard(site, host):
+    """F1122: a WebSocket never passes the request route. A read-only browser opens none; co-drive opens one to a
+    public address and its messages flow, and none reaches a private address either way."""
+    port, hits = site
+    http, control, _viewer = host
+
+    async def opened(mode: str, wait_for: str) -> str:
+        sid = (await _post(http, control, "/session", {"owner": f"chat:ws-{mode}", "mode": mode}))["session_id"]
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                             "args": {"url": f"http://localhost:{port}/live"}})
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
+                                             "args": {"text": wait_for}})
+        snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+        async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+            guard = [e["target"] for e in (await resp.json())["entries"] if e["actor"] == "guard"]
+        await _post(http, control, "/close", {"session_id": sid})
+        return snap["text"], guard
+
+    text, guard = await opened("read_only", "public-closed")
+    assert hits["ws"] == 0, "a read-only browser opened a socket"
+    assert "inside-got" not in text and "public-got" not in text
+    assert any("this browser is read-only" in g for g in guard)
+    assert any("127.0.0.1 is not a public address" in g for g in guard)
+
+    text, guard = await opened("co_drive", "public-got-echo-hi")
+    assert hits["ws"] == 1, "only the public socket reached the server"
+    assert "inside-got" not in text and "inside-closed" in text
+    assert any("127.0.0.1 is not a public address" in g for g in guard)

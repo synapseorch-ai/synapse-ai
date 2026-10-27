@@ -12,6 +12,7 @@ import pytest
 
 from core.browser import client as browser_client
 from core.browser import gate
+from core.browser import host
 from core import egress_guard
 
 
@@ -67,6 +68,32 @@ async def test_a_read_only_browser_sends_nothing():
 
 async def test_an_unknown_mode_is_read_only():
     assert await gate.verdict("https://93.184.215.14/form", "POST", "anything")
+
+
+@pytest.mark.parametrize("url", ["ws://127.0.0.1:8765/api/ws", "ws://169.254.169.254/", "wss://10.0.0.5/live",
+                                 "ws://[::1]:9222/devtools/browser", "ws://localhost:3000/"])
+async def test_no_socket_reaches_a_private_address(url):
+    """F1122: a page's WebSocket gets its own check; the request route never sees one."""
+    reason = await gate.socket_verdict(url, gate.CO_DRIVE)
+    assert reason and "not a public address" in reason
+
+
+async def test_a_read_only_browser_opens_no_socket():
+    assert await gate.socket_verdict("wss://93.184.215.14/live", gate.READ_ONLY) \
+        == "a WebSocket to 93.184.215.14: this browser is read-only"
+    assert await gate.socket_verdict("wss://93.184.215.14/live", "anything")
+    assert await gate.socket_verdict("wss://93.184.215.14/live", gate.CO_DRIVE) is None
+    assert await gate.socket_verdict("https://93.184.215.14/live", gate.CO_DRIVE)  # a socket is ws(s) only
+
+
+def test_chromium_takes_no_unguarded_path():
+    """WebRTC's UDP and QUIC (WebTransport) pass no route; a service worker's fetches would not either (F1122)."""
+    import inspect
+
+    assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in host._CHROMIUM_ARGS
+    assert "--disable-quic" in host._CHROMIUM_ARGS
+    source = inspect.getsource(host.Session.start)
+    assert 'service_workers="block"' in source and "route_web_socket" in source
 
 
 # ── the engine's client ──────────────────────────────────────────────────────
