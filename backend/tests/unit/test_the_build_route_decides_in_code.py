@@ -570,6 +570,49 @@ async def test_a_none_verdict_is_missing_and_the_card_says_why(client):
     assert {"without:send_mailchimp_campaign", "find"} <= set(out["offers"])
 
 
+BOOK = {"id": "book", "type": "tool", "name": "Book the room", "does": "Books the Booking.com hotel room",
+        "tool": "book_booking_com_room"}
+#: H45 res-02's own option, as the research reported it (P5's measure, 10-27): `api`, with the gate in its needs.
+RES_02 = {"provider": "Booking.com", "how": "api",
+          "detail": "Booking.com Demand API enables search, view and full booking of accommodations with real-time "
+                    "inventory.",
+          "needs": "Registered Booking.com Managed Affiliate Partner account; API key and X-Affiliate-Id from Partner "
+                   "Centre; Booking.com Account Manager contact to sign partnership contract.",
+          "sources": ["https://developers.booking.com/demand/docs"]}
+
+
+async def test_a_partner_only_api_is_missing_and_the_card_says_approved_partners_only(client):
+    """F1094: res-02/03/06 built on Booking.com, Uber and OpenTable, whose APIs are for approved partners. The
+    research's code reads its own words for that (`partner`, P5's half); the build reads `partner` as no way in, and
+    the card says why in those words, never the model's line that the API "enables full booking"."""
+    from core.builder_research import partner_words
+
+    gate = partner_words(f"{RES_02['needs']}\n{RES_02['detail']}")
+    assert gate, "P5's half reads res-02's own words as a gate"
+    option = {**RES_02, "how": "partner", "partner_words": gate}
+    run = await _run(plan_findings={"goal": "Book hotel rooms for staff conferences", "options": [option]})
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(BOOK)})
+    [tool] = out["plan"]["tools"]
+    assert (tool["status"], tool["via"], tool["provider"]) == ("missing", "none", "Booking.com")
+    assert out["plan"]["missing"] == ["book_booking_com_room"]
+    assert "Booking.com's API is for approved partners only" in out["say"]
+    assert gate[0] in out["say"], "in the research's own words"
+    assert "enables search" not in out["say"], "never the line that reads as a way in"
+    # As a `none` verdict: Find who can may turn up another provider.
+    assert "build" not in out["offers"] and {"without:book_booking_com_room", "find"} <= set(out["offers"])
+
+
+async def test_a_public_api_from_the_same_findings_is_still_a_lead(client):
+    findings = {"goal": "x", "options": [
+        {**RES_02, "how": "partner", "partner_words": ["Managed Affiliate Partner account"]},
+        {"provider": "Mailchimp", "how": "api", "detail": "REST", "sources": ["https://mailchimp.com/developer/"]}]}
+    run = await _run(plan_findings=findings)
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(SEND)})
+    [tool] = out["plan"]["tools"]
+    assert (tool["status"], tool["via"], tool["provider"]) == ("found", "none", "Mailchimp")
+    assert "approved partners" not in out["say"]
+
+
 async def test_an_api_with_its_spec_is_found_as_a_tool_to_make(client):
     # A7: the plan calls the endpoint by its tool's name, and the status carries that one endpoint.
     spec = {**SPEC, "endpoints": [{**SPEC["endpoints"][0], "tool": "send_mailchimp_campaign"}]}

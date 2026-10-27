@@ -865,8 +865,13 @@ def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> 
                            "api": ("found", "http_tool" if endpoint else "none")}.get(how, ("missing", "none"))
             api = ({**{k: v for k, v in spec.items() if k != "endpoints"}, "endpoint": endpoint}
                    if spec and endpoint else None)
-            found[name] = O.ToolStatus(name=name, status=status, provider=provider, via=via,
-                                       detail=str(option.get("detail") or "") or None, api=api)
+            detail = str(option.get("detail") or "") or None
+            if how == "partner":
+                # F1094: the research's own words say only approved partners get in; its line on what the API does
+                # would read as a way in, so the card says the gate instead.
+                words = ", ".join(str(w) for w in option.get("partner_words") or [] if str(w).strip())
+                detail = f"{provider}'s API is for approved partners only" + (f" ({words})" if words else "")
+            found[name] = O.ToolStatus(name=name, status=status, provider=provider, via=via, detail=detail, api=api)
             break
     return found
 
