@@ -22,7 +22,7 @@ RUN npm install -g \
     @modelcontextprotocol/server-filesystem \
     @modelcontextprotocol/server-memory \
     @modelcontextprotocol/server-sequential-thinking \
-    @playwright/mcp
+    @playwright/mcp@0.0.83
 
 RUN pip install playwright && playwright install chromium --with-deps
 

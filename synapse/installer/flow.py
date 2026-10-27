@@ -497,15 +497,12 @@ class Installer:
         present = {p.name.split("-")[0] for p in path.iterdir()} if path.is_dir() else set()
         env = self._runtime_env()
         env["PLAYWRIGHT_BROWSERS_PATH"] = str(path)
-        parts = Downloads(parts=3)
+        parts = Downloads(parts=2)
         if "chromium" not in present:
             run([self.s.tool_python, "-m", "playwright", "install", "chromium"], self.log, env=env,
-                on_line=lambda line: self.screen.progress("browser", parts.feed(line) * 0.6))
-        if not any(p.startswith("mcp") for p in present):
-            npx = shutil.which("npx.cmd" if IS_WIN else "npx", path=env["PATH"]) or "npx"
-            later = Downloads(parts=1)
-            run([npx, "-y", "@playwright/mcp", "install-browser", "chrome-for-testing"], self.log, env=env,
-                on_line=lambda line: self.screen.progress("browser", 0.6 + later.feed(line) * 0.4))
+                on_line=lambda line: self.screen.progress("browser", parts.feed(line)))
+        # The browser component (BRW1) drives this Chromium; Playwright MCP no
+        # longer needs its own Chrome for Testing (525 MB), and is not fetched here.
         self.s.answers.setdefault("playwright_browsers_path", str(path))
         return "Chromium"
 

@@ -361,7 +361,7 @@ def _save_browsers_path(browsers_path: Path) -> None:
 
 
 def _ensure_playwright_browsers():
-    """The browsers the web reader and the browser MCP server run on, installed when missing (F1106).
+    """The browsers the web reader and the browser component run on, installed when missing (F1106).
 
     Python Playwright's are the builds its own `browsers.json` names — Chromium and, since 1.49, the headless shell
     that headless Chromium runs on. Playwright is not pinned, so after an upgrade an older build is not enough: the
@@ -383,38 +383,23 @@ def _ensure_playwright_browsers():
     else:
         has_any = any(n.startswith("chromium-") for n in names)
         need_chromium = not has_any or (current is not None and _saved_playwright_version() != current)
-    # `mcp-chrome*`/`mcp-chromium` is what `@playwright/mcp install-browser` creates and what the MCP server uses;
-    # a Python Playwright browser does not stand in for it.
-    has_mcp_browser = any(n.startswith("mcp-chrome") or n.startswith("mcp-chromium") for n in names)
-
-    if not need_chromium and has_mcp_browser:
+    # The browser component (BRW1) drives Python Playwright's Chromium; the
+    # separate Chrome for Testing Playwright MCP used to download is not needed.
+    if not need_chromium:
         return
 
-    npx_cmd = shutil.which("npx.cmd") if IS_WIN else "npx"
-    if not npx_cmd:
-        npx_cmd = "npx"
     env = os.environ.copy()
     env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
 
-    if need_chromium:
-        print("Installing Playwright browsers...", end="", flush=True)
-        try:
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], env=env, check=True,
-                           capture_output=True)
-            if current:
-                _save_playwright_version(current)
-            print(" done.")
-        except Exception as e:
-            print(f"\n  Warning: Failed to install Playwright browsers: {e}")
-
-    if not has_mcp_browser:
-        print("Installing browser for Browser Automation MCP server...", end="", flush=True)
-        try:
-            subprocess.run([npx_cmd, "-y", "@playwright/mcp", "install-browser", "chrome-for-testing"], env=env, check=True, capture_output=True)
-            print(" done.")
-        except Exception as e:
-            print(f"\n  Warning: Failed to install MCP browser: {e}")
-            return
+    print("Installing Playwright browsers...", end="", flush=True)
+    try:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], env=env, check=True,
+                       capture_output=True)
+        if current:
+            _save_playwright_version(current)
+        print(" done.")
+    except Exception as e:
+        print(f"\n  Warning: Failed to install Playwright browsers: {e}")
 
     _save_browsers_path(browsers_path)
 
