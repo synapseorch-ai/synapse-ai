@@ -10,6 +10,8 @@
   (as-act-03).
 * **pressed:** "done" after a press says what the press did; after no press, that nothing has been pressed yet
   (P2's after-pass: "not executed yet").
+* **the card above** (F985): past code's own pointing replies (a typed label, a "done"), the card above is still the
+  one an earlier turn put up, with its presses: card, typed "Run it", the press, "done" said what the press did.
 * **yes_without_review:** "approve" with nothing waiting says so, and what was done last (F959's third part). A yes
   after findings is F766's and goes on to classify; a yes to a question the last reply asked goes on to classify.
 * Otherwise **classify**.
@@ -18,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.native_builder.read_turn import decide, pick_from
+from core.native_builder.read_turn import card_above, decide, pick_from
 
 RUN_CARD = {"title": 'Run "Invoice chaser"',
             "buttons": [{"label": "Run now", "tool": "run_orchestration",
@@ -96,6 +98,42 @@ class TestAPress:
     def test_done_with_nothing_pressed_says_the_card_waits(self):
         turn = decide("done", previous={}, facts={"cards": [RUN_CARD]})
         assert turn.route == "pressed" and "hasn't been pressed" in turn.say and "Run now" in turn.say
+
+
+class TestTheCardAbove:
+    """F985 (P4's panel shots): card, typed "Run it" (code points at the card), the press, "done". The press is kept on
+    the card's own turn, so "done" read only the pointing turn and went on to classify."""
+
+    PRESSED = {"cards": [RUN_CARD], "presses": [{"card": RUN_CARD["title"], "label": "Run now",
+                                                 "tool": "run_orchestration", "done": True, "say": "Started."}]}
+    POINTED = {"turn": {"route": "card_label"}}
+
+    def test_past_a_typed_label_the_card_is_the_earlier_turns(self):
+        facts = card_above([(self.POINTED, {}), ({"turn": {"route": "classify"}}, self.PRESSED)])
+        assert facts["cards"] == [RUN_CARD] and facts["presses"] == self.PRESSED["presses"]
+        turn = decide("done", previous={"summary": "Press it."}, facts=facts)
+        assert (turn.route, turn.then) == ("pressed", "said") and "Started." in turn.say
+
+    def test_a_label_typed_twice_still_points_at_the_card(self):
+        """label-01: "Run now", then "Run now" again went on to classify."""
+        facts = card_above([(self.POINTED, {}), (self.POINTED, {}), ({}, {"cards": [RUN_CARD]})])
+        assert decide("Run now", previous={}, facts=facts).route == "card_label"
+
+    def test_the_newest_turns_own_card_is_the_card_above(self):
+        newer = {"cards": [{"title": "Pause it", "buttons": [{"label": "Pause", "tool": "x"}]}]}
+        assert card_above([({}, newer), ({}, self.PRESSED)])["cards"] == newer["cards"]
+
+    def test_a_turn_that_moved_on_ends_the_look_back(self):
+        """An answer or a build in between is a new subject: its card is not "above" any more."""
+        facts = card_above([({"turn": {"route": "classify"}}, {}), ({}, self.PRESSED)])
+        assert not facts.get("cards") and decide("done", previous={}, facts=facts).route == "classify"
+
+    def test_the_newest_turns_own_facts_are_kept(self):
+        facts = card_above([(self.POINTED, {"also": "pause it"}), ({}, self.PRESSED)])
+        assert facts["also"] == "pause it" and facts["cards"] == [RUN_CARD]
+
+    def test_no_earlier_turn(self):
+        assert card_above([]) == {}
 
 
 class TestAYesWhileACardWaits:
@@ -220,6 +258,23 @@ class TestTheStep:
         [card] = [e for e in events if e.get("type") == "action_needed"]
         assert card["buttons"][0]["arguments"]["orchestration_id"] == "orch_second"
         assert "card is up" in turn["say"].lower()
+
+    async def test_done_after_a_typed_label_and_the_press_says_what_the_press_did(self):
+        """F985, as the panel shots had it: the press is kept on the card's turn, two turns back."""
+        from core.boards import assistant
+
+        session = "builder:t:panel:f985"
+        await self._turn("builder_k1", session, {"summary": 'A card is up: Run "Invoice chaser".',
+                                                 "turn": {"route": "classify"}})
+        await assistant.note("builder_k1", owner_id=None, cards=[RUN_CARD], presses=[{
+            "card": RUN_CARD["title"], "label": "Run now", "tool": "run_orchestration", "done": True,
+            "say": "Started."}])
+        await self._turn("builder_k2", session, {"summary": 'Press "Run now" on the card above.',
+                                                 "turn": {"route": "card_label"}})
+        now = await self._turn("builder_k3", session, {"user_message": "done"})
+        turn, _ = await self._read(now)
+        assert (turn["route"], turn["previous_run_id"]) == ("pressed", "builder_k2")
+        assert "Started." in turn["say"]
 
     async def test_another_conversations_turn_is_never_read(self):
         from core.boards import assistant

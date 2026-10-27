@@ -77,6 +77,30 @@ def _pressed_line(press: dict) -> str:
     return f"You pressed {where}, and it didn't go through: {press.get('say') or 'it was refused.'}"
 
 
+#: Code's own replies that point at a card and put up none ("Press Run it on the card above", "done"): past them, the
+#: card above is still the one an earlier turn put up (F985).
+_POINTING = frozenset({"card_label", "pressed"})
+#: How many of those replies in a row the card above is looked for past.
+LOOK_BACK = 5
+
+
+def card_above(turns: list[tuple[dict, dict]]) -> dict:
+    """The previous turn's facts with the card above filled in. `turns` are this conversation's earlier turns, newest
+    first, as (state, facts). When the newest put up no card and was one of code's own pointing replies, the cards and
+    their presses are the earlier turn's that put the card up: a press is kept on its card's own turn, so card, typed
+    "Run it", the press, "done" read only the pointing turn and said nothing of the press (F985)."""
+    if not turns:
+        return {}
+    facts = dict(turns[0][1])
+    for state, earlier in turns[:LOOK_BACK + 1]:
+        if earlier.get("cards"):
+            facts["cards"], facts["presses"] = earlier["cards"], earlier.get("presses") or []
+            return facts
+        if (state.get("turn") or {}).get("route") not in _POINTING:
+            return facts
+    return facts
+
+
 def decide(message: str, *, previous: dict, facts: dict, change: dict | None = None,
            prior_findings: Any = None) -> Turn:
     """What code makes of `message`, given the previous turn's state (`previous`), its card's facts (`facts`, F977),
@@ -159,10 +183,10 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
 
 # ── the step ──────────────────────────────────────────────────────────────────────────────────────────────────────
 
-async def _previous(session_id: str | None, run_id: str) -> tuple[str, dict]:
-    """The newest earlier turn of this conversation: its run id and state, or nothing."""
+async def _earlier(session_id: str | None, run_id: str, limit: int) -> list[tuple[str, dict]]:
+    """This conversation's earlier turns, newest first: their run ids and states."""
     if not session_id:
-        return "", {}
+        return []
     from sqlalchemy import select
 
     from core.store import session
@@ -170,12 +194,12 @@ async def _previous(session_id: str | None, run_id: str) -> tuple[str, dict]:
     from core.tenancy import get_tenant
 
     async with session() as s:
-        row = (await s.execute(
+        rows = (await s.execute(
             select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state)
             .where(OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.session_id == session_id,
                    OrchestrationRunDB.run_id != run_id)
-            .order_by(OrchestrationRunDB.created_at.desc()).limit(1))).first()
-    return (row[0], row[1] or {}) if row else ("", {})
+            .order_by(OrchestrationRunDB.created_at.desc()).limit(limit))).all()
+    return [(row[0], row[1] or {}) for row in rows]
 
 
 async def previous_turns(session_id: str | None, run_id: str, limit: int = 20) -> list[str]:
@@ -207,11 +231,12 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     run = live_run(run_id) if run_id else None
     state = run.shared_state if run is not None else {}
     message = str(state.get("user_message") or "")
-    previous_id, previous = await _previous(getattr(run, "session_id", None), run_id)
+    earlier = await _earlier(getattr(run, "session_id", None), run_id, LOOK_BACK + 1)
+    previous_id, previous = earlier[0] if earlier else ("", {})
     facts, change = {}, None
     if previous_id:
         try:
-            facts = await assistant.turn(previous_id)
+            facts = card_above([(state_, await assistant.turn(rid)) for rid, state_ in earlier])
             card = await assistant.card(previous_id)
             change = card.data if card is not None and card.status in ("open", "claimed") else None
         except Exception as exc:  # noqa: BLE001 — no board yet: the turn is read from its message alone
