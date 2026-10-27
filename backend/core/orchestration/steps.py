@@ -1202,11 +1202,19 @@ class ToolStepExecutor:
             agent_name, actual_tool_name = tool_router[tool_name]
             session = server_module.agent_sessions.get(agent_name)
             if session:
-                result = await session.call_tool(
-                    actual_tool_name, tool_args,
-                    read_timeout_seconds=timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args)),
-                    **call_kwargs(agent_name, run_id),
-                )
+                # A run drives its own browser (BRW1); the component reads whose call this is.
+                from core.browser import client as browser_client
+                token = (browser_client.owner.set(browser_client.owner_for(None, run_id))
+                         if agent_name == browser_client.SERVER_NAME and run_id else None)
+                try:
+                    result = await session.call_tool(
+                        actual_tool_name, tool_args,
+                        read_timeout_seconds=timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args)),
+                        **call_kwargs(agent_name, run_id),
+                    )
+                finally:
+                    if token is not None:
+                        browser_client.owner.reset(token)
                 text = result.content[0].text if result.content else ""
                 if getattr(result, "isError", False):
                     # MCP's own way of saying the call failed; it was never read.

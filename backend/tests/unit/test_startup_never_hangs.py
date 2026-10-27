@@ -71,7 +71,10 @@ async def test_the_native_server_list_builds_with_an_s3_blob_store(s3_like_store
     servers = await server._build_native_mcp_servers()
 
     names = [s["name"] for s in servers]
-    assert "Filesystem" in names and "Browser Automation" in names
+    assert "Filesystem" in names
+    # The browser is no longer an npx server in this list (BRW1): it registers
+    # separately and starts nothing at boot, so it cannot hang it either.
+    assert "Browser Automation" not in names
 
 
 async def test_the_memory_mcp_server_is_not_a_native_server(native_list):

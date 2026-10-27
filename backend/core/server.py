@@ -74,6 +74,7 @@ from core.routes.api_v1_knowledge import router as api_v1_knowledge_router
 from core.routes.api_v2 import router as api_v2_router
 from core.routes.scale import router as scale_router
 from core.routes.notifications import router as notifications_router
+from core.routes.browser import router as browser_router
 from core.profiling import TimingMiddleware
 from core.internal_auth import InternalTokenMiddleware
 
@@ -195,6 +196,22 @@ def _native_mcp_off() -> bool:
     return os.environ.get("SYNAPSE_NATIVE_MCP", "").strip().lower() in ("off", "0", "false", "no")
 
 
+def _register_browser() -> None:
+    """Put the browser component where the npx Playwright server used to be.
+
+    Same server name and tool names, so saved agents keep their tools. Nothing
+    starts here: the component and each Chromium start on the first browser call.
+    """
+    if _native_mcp_off() or not load_settings().get("browser_automation_enabled", True):
+        return
+    from core.browser import client as browser_client
+    from core.browser.gate import ALLOWED
+
+    agent_sessions[browser_client.SERVER_NAME] = browser_client.tools
+    for name in ALLOWED:
+        tool_router.register(browser_client.SERVER_NAME, name)
+
+
 async def _build_native_mcp_servers() -> list[dict]:
     """
     Build the list of native MCP servers to connect at startup.
@@ -208,50 +225,9 @@ async def _build_native_mcp_servers() -> list[dict]:
     # --- Filesystem MCP Server ---
     servers.append(await _filesystem_server_spec())
 
-    # --- Playwright MCP Server (browser automation) ---
-    from core.vault import _vault_root
-
-    _settings = load_settings()
-    if _settings.get("browser_automation_enabled", True):
-        env_dict = {}
-        pw_path = _settings.get("playwright_browsers_path")
-        if pw_path:
-            env_dict["PLAYWRIGHT_BROWSERS_PATH"] = pw_path
-        else:
-            # Fallback for old configs
-            env_dict["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/.cache/ms-playwright")
-
-        from core import egress_proxy
-        from core.browser_automation import BROWSER_AUTOMATION, PLAYWRIGHT_MCP
-
-        # Its own folder is its output directory and its working directory: the server reads and writes files only
-        # inside those two, and the working directory used to be the home directory.
-        folder = _vault_root() / "playwright"
-        folder.mkdir(parents=True, exist_ok=True)
-        # The host's proxy when it names one, else Synapse's: the browser's network is the egress proxy's.
-        import urllib.request
-
-        found = urllib.request.getproxies_environment()
-        proxy = found.get("https") or found.get("http") or (await egress_proxy.shared()).url
-        # Its browser's own flags, in a file outside that folder (its tools write there) and rewritten at every start.
-        from core.runtime_dirs import state_dir
-
-        config = state_dir("browser_automation") / "config.json"
-        config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps({"browser": {"launchOptions": {"args": list(egress_proxy.CHROMIUM_ARGS)}}}))
-
-        servers.append({
-            "name": BROWSER_AUTOMATION,
-            "command": _NPX_CMD,
-            # Was the relative string "data/vault/playwright", resolved
-            # against the npx subprocess's cwd rather than anything the engine
-            # controls — so screenshots landed wherever the server happened to
-            # be started from.
-            "args": ["-y", PLAYWRIGHT_MCP, "--browser", "chrome",
-                     "--output-dir", str(folder), "--proxy-server", proxy, "--config", str(config)],
-            "env": env_dict,
-            "cwd": str(folder),
-        })
+    # "Browser Automation" is no longer an npx server here: it is the browser
+    # component (core/browser, BRW1), registered by `_register_browser` below —
+    # a browser per chat or run inside the product, behind the network gate.
 
     # --- Google Workspace MCP Server (Gmail, Drive, Calendar) ---
     google_env = await _get_google_oauth_env()
@@ -693,6 +669,8 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"  Failed to connect native MCP server '{mcp_name}': {e}")
 
+        _register_browser()
+
         # --- Initialize External MCP Servers ---
         global mcp_manager
         mcp_manager = MCPClientManager(exit_stack)
@@ -959,6 +937,12 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         print("Shutting down agents...")
+        if "Browser Automation" in agent_sessions:
+            try:
+                from core.browser import client as browser_client
+                await browser_client.tools.host.stop()
+            except Exception as e:
+                print(f"Warning: browser shutdown error: {e}")
         if messaging_manager:
             try:
                 await messaging_manager.stop_all()
@@ -1168,6 +1152,7 @@ app.include_router(api_v1_knowledge_router)  # paths carry /api/v1 (Knowledge, D
 app.include_router(api_v2_router, prefix="/api/v2")
 app.include_router(scale_router, prefix="/api")
 app.include_router(notifications_router)
+app.include_router(browser_router)  # the person's view of a browser session (BRW1, D328)
 
 if __name__ == "__main__":
     import uvicorn

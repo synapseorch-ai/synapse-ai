@@ -253,8 +253,11 @@ async def test_the_native_server_list_still_builds(layout, monkeypatch):
     servers = await server._build_native_mcp_servers()
     by_name = {s["name"]: s for s in servers}
     assert by_name["Filesystem"]["args"][2:] == [str(layout["repo"]), str(layout["vault"]), str(layout["allowed"])]
-    browser = by_name["Browser Automation"]["args"]
-    assert browser[browser.index("--output-dir") + 1] == str(layout["vault"] / "playwright")
+    # "Browser Automation" left this list (BRW1): it is the browser component,
+    # whose files live in a private per-session folder removed when it closes,
+    # and no npx process writes anywhere for it.
+    assert "Browser Automation" not in by_name
+    assert not any("@playwright/mcp" in " ".join(s.get("args", [])) for s in servers)
 
 
 async def test_an_allowed_directory_saved_after_the_tools_started_reaches_them(layout, tmp_path):
