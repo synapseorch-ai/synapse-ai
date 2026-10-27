@@ -396,6 +396,11 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
             errors.append(f"step {s.id}: a loop names its body steps")
         if s.type == "human" and not s.prompt:
             errors.append(f"step {s.id}: a human step says what it asks")
+        if s.type == "llm" and not (s.prompt or "").strip():
+            # An llm step has no agent's instructions: with no prompt its model has only the step's name (HOT2's read
+            # of the Weekly Twitter Post plan). An agent step runs on its agent's instructions, an evaluator on its
+            # routes, so either may leave its prompt out.
+            errors.append(f"step {s.id}: an llm step says what it asks its model: write its prompt")
         if s.branches and s.type not in ("if_else", "switch", "evaluator"):
             errors.append(f"step {s.id}: a {s.type} step cannot branch; branch in an if_else, a switch or an "
                           "evaluator step after it")

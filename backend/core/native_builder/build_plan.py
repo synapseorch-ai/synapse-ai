@@ -417,6 +417,10 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                 errors.append(f"step {s.id}: a person is never asked for a key, a password or how to connect a "
                               "service while a workflow runs: a key is added in Settings → Vault or on a Connect "
                               "card. Ask only what the person alone knows.")
+        if setup_step(f"{s.name} {s.does}"):
+            errors.append(f"step {s.id}: \"{s.name}\" is done once by the person, never by each run: the plan's "
+                          "Connect card after the yes covers connecting a service, and a step only does what each run "
+                          "does; take it out")
         if s.type == "tool" and s.tool in TOOL_NAMES:
             errors.append(f"step {s.id}: board tools are an agent's, not a Tool step's: give `{s.tool}` to the "
                           "agent of an agent step")
@@ -644,6 +648,29 @@ _BUILT_IN_SCRAPE = ("scrape_url", "scrape_structured", "crawl_multiple", "search
 #: word, when the request says it and no built-in's own description does, lets another service be looked up.
 SCRAPE_BEYOND = {"proxy": ("proxy", "proxies"), "javascript": ("javascript", "js"), "rendering": ("rendering",),
                  "thousands": ("thousands", "000")}
+
+
+#: The person's own setup, done once, written as a step (HOT2's read of the Weekly Twitter Post plan): never a step of
+#: each run. Matched on a step's name and what it does; tight, so an act of each run ("create a customer account in
+#: Stripe", "connect to the database") is never one.
+_SETUP = tuple(re.compile(p, re.I) for p in (
+    r"\bsign\s*-?\s*up\b",
+    r"\b(?:create|register|open|set\s*up)\b[^.]{0,40}\bdeveloper\s+(?:account|app|portal|access)\b",
+    r"\b(?:create|register|open|set\s*up)\s+(?:your|my|our)\b[^.]{0,30}\baccount\b",
+    r"\b(?:get|obtain|generate|request|create|copy|fetch)\b[^.]{0,30}\b(?:api\s+key|access\s+token|api\s+token|"
+    r"bearer\s+token|credentials?|client\s+secret|secret\s+key)\b",
+    r"\b(?:integrate|install|add|plug)\b[^.]{0,30}\b(?:tool|integration|plugin|app|connector)\b[^.]{0,20}"
+    r"\b(?:into|to|in)\b[^.]{0,20}\b(?:orchestration|workflow|workspace|synapse)\b",
+    r"\binstall\s+(?:the\s+)?\w+\s+(?:app|plugin|integration|connector)\b",
+    r"\b(?:connect|link|authori[sz]e|authenticate)\s+(?:your|my|our)\b[^.]{0,30}\b(?:account|app|workspace)\b",
+    r"\benable\s+(?:the\s+)?\w+(?:\s+\w+)?\s+(?:api|setting|permission|integration|access)\b",
+))
+
+
+def setup_step(text: str) -> bool:
+    """Whether a step's name and what it does say the person's own setup, done once: a developer account, a key or
+    a token, installing or integrating a tool, connecting an account, enabling a setting."""
+    return any(p.search(text or "") for p in _SETUP)
 
 
 def model_work(name: str) -> bool:
