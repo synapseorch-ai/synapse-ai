@@ -12708,11 +12708,15 @@ async def check_brwpress(browser) -> str:
                 bad.append("Got it left the disclaimer up")
 
         await _brw_push(page, "frames:bsP", _brw_moment("person", banner={
-            "kind": "press", "reason": "Send the feedback form",
+            "kind": "press", "reason": "Press 'Submit feedback' yourself: submits the form on example.com.",
             "press": {"label": "Submit feedback", "does": "submits the form on example.com",
                       "host": "example.com", "tier": "acts"}}))
         if not await _on_screen(page, "Press ‘Submit feedback’ yourself"):
             bad.append("a press turn does not name its button")
+        # BRW1's reason is the same sentence: the strip says it once.
+        told = await pane.evaluate("el => (el.innerText.match(/Press .Submit feedback. yourself/g) || []).length")
+        if told != 1:
+            bad.append(f"the press strip says its button {told} times")
         if not await _on_screen(page, "submits the form on example.com"):
             bad.append("a press turn does not say what the button does")
         if await pane.get_by_role("button", name=re.compile("only loaded data")).count():
@@ -12722,16 +12726,18 @@ async def check_brwpress(browser) -> str:
         if not await _brw_calls(page, "wheel/hand-back"):
             bad.append("Done on a press turn did not hand the wheel back")
 
-        await _brw_push(page, "frames:bsP", _brw_moment("nobody", banner={
-            "kind": "press", "reason": "Pay for the order",
+        # A press turn hands the person the wheel (BRW1, F1124), money or not. Tier money covers permanent deletes
+        # and closing an account too.
+        await _brw_push(page, "frames:bsP", _brw_moment("person", banner={
+            "kind": "press", "reason": "Press 'Pay now' yourself: pays £42.00 on shop.example.com.",
             "press": {"label": "Pay now", "does": "pays £42.00 on shop.example.com",
                       "host": "shop.example.com", "tier": "money"}}))
         if not await _on_screen(page, "Press ‘Pay now’ yourself"):
             bad.append("a payment turn does not name its button")
-        if not await _on_screen(page, "Payments are always yours"):
-            bad.append("a payment turn does not say payments are the person's")
-        if not await pane.get_by_role("button", name="Take over").count():
-            bad.append("a payment turn waiting on the person has no Take over")
+        if not await _on_screen(page, "Payments, permanent deletes and closing an account are always yours"):
+            bad.append("a money turn does not say payments, permanent deletes and closing an account are the person's")
+        if not await pane.get_by_role("button", name="Done", exact=True).count():
+            bad.append("a payment turn, with the wheel the person's, has no Done")
 
         await _brw_push(page, "frames:bsP", _brw_moment("nobody", banner={
             "kind": "send", "reason": "Place order",
@@ -12757,12 +12763,19 @@ async def check_brwpress(browser) -> str:
         theirs = [{"session_id": "bsP", "n": 11, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
                    "actor": "person", "action": "pressed", "target": "Pay now"},
                   {"session_id": "bsP", "n": 12, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
-                   "actor": "person", "action": "sent", "target": "POST shop.example.com"}]
+                   "actor": "person", "action": "sent", "target": "POST shop.example.com"},
+                  {"session_id": "bsP", "n": 14, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "took over", "target": ""},
+                  {"session_id": "bsP", "n": 15, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "handed back", "target": ""},
+                  {"session_id": "bsP", "n": 16, "at": 0, "url": "https://pay.example.com/", "shot_ref": None,
+                   "actor": "guard", "action": "held", "target": "POST pay.example.com"}]
         await _brw_push(page, "post", _frame({"type": "browser_action", **pressed}, "p-2"))
         await _brw_push(page, "frames:bsP", "".join(_frame({"log": e}) for e in theirs))
         listed = pane.get_by_role("list", name="What the agent did")
         for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
-                      "You pressed ‘Pay now’", "You sent POST to shop.example.com"):
+                      "You pressed ‘Pay now’", "You sent POST to shop.example.com", "You took over",
+                      "You handed the browser back", "Held for you: POST pay.example.com"):
             if not await listed.get_by_text(words, exact=False).count():
                 bad.append(f"the log does not read “{words}”")
 
