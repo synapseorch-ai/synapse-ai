@@ -55,14 +55,14 @@ class TestEachChatIsItsOwn:
 
     async def test_each_chats_earlier_turn_is_its_own(self, client, builder, fake_llm):
         # The front door reads "the second one" against the conversation's previous turn (P4's F984): never another's.
-        from core.native_builder.read_turn import _previous
+        from core.native_builder.read_turn import _earlier
         from core.tenancy import get_tenant
 
         a = await _park(client, fake_llm, message="in a", cid="turn-a")
         await asyncio.sleep(0.01)
         await _park(client, fake_llm, message="in b", cid="turn-b")
 
-        run_id, state = await _previous(f"builder:{get_tenant()}:panel:turn-a", "a-run-not-yet-made")
+        [(run_id, state)] = await _earlier(f"builder:{get_tenant()}:panel:turn-a", "a-run-not-yet-made", 1)
         assert run_id == a["run_id"] and state.get("user_message") == "in a"
 
     async def test_a_finished_chat_comes_back_by_its_id(self, client, builder, fake_llm):
