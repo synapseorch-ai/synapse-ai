@@ -291,7 +291,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “New shared board” for work between workflows and schedules, then name who may use it under “Who can use this board”.',
             'An agent’s own board is on unless its Boards section turns it off; its shared boards come from each board’s list, at most 3.',
         ],
-        guide: '/guides/start/workflows',
+        guide: '/boards',
     },
     'boards.board': {
         title: 'Working on a board',
@@ -302,7 +302,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Open a card for its comments and history; “Undo” takes back any change, an agent’s or yours, for 30 days.',
             'Search finds cards by title, text or key, archived ones too.',
         ],
-        guide: '/guides/start/workflows',
+        guide: '/boards/tasks',
     },
     'orchestrations.board': {
         title: 'A workflow’s board',
@@ -312,7 +312,7 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
             'Click “Add a card” to tell the next run something; it reads your card first.',
             'Every board, shared ones too, is in Knowledge → Boards.',
         ],
-        guide: '/guides/start/workflows',
+        guide: '/boards/agents',
     },
 
     // ── Settings ────────────────────────────────────────────────────────────

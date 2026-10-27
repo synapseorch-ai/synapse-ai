@@ -52,7 +52,7 @@
    "Under Build, make Workflows (with Schedules and Templates) and Agents (with Skills), keep files in the Vault, search them with Knowledge when it is on, and Chat.",
    "Under Connect, give agents Apps and Tools to call, and Channels and Widgets to meet people on.",
    "Press Ctrl+K (⌘K on a Mac), or click “Jump to…”, to go to any page or tab by name.",
-   "Click “Synapse AI” in the menu to ask about your workspace or build with AI from any page; on a phone, the mark in the top bar. Settings sits at the foot."
+   "Click “Synapse AI” in the menu to ask about your workspace or build with AI from any page; on a phone, the mark in the top bar. Its clock button lists your Synapse AI chats to pick one up again, and the bin starts a new one. Settings sits at the foot."
   ],
   "guide": "/guides/start/how-it-fits"
  },
@@ -65,7 +65,7 @@
    "Click “New shared board” for work between workflows and schedules, then name who may use it under “Who can use this board”.",
    "An agent’s own board is on unless its Boards section turns it off; its shared boards come from each board’s list, at most 3."
   ],
-  "guide": "/guides/start/workflows",
+  "guide": "/boards",
   "where": {
    "label": "Boards",
    "href": "/boards"
@@ -80,19 +80,19 @@
    "Open a card for its comments and history; “Undo” takes back any change, an agent’s or yours, for 30 days.",
    "Search finds cards by title, text or key, archived ones too."
   ],
-  "guide": "/guides/start/workflows"
+  "guide": "/boards/tasks"
  },
  "chat": {
   "title": "Chat",
   "summary": "Talk to your agents and watch them work: their thinking, the tools they call and what they return. Each conversation is a tab, so several can be open and working at once, and every one is kept for you to pick up again.",
   "steps": [
    "Click + beside the tabs, or press Alt+T, and pick who to talk to: the conversation opens in a tab of its own. Alt+1 to 9 goes to a tab, Alt+W closes the one in front, and a tab can be dragged to another place.",
-   "A tab keeps its agent. Picking another agent at the foot of the message box changes it while the conversation is empty, and opens the agent in a new tab once it has started. Synapse AI has one tab, the same conversation as its side panel.",
+   "A tab keeps its agent. Picking another agent at the foot of the message box changes it while the conversation is empty, and opens the agent in a new tab once it has started. Synapse AI too: each new Synapse AI tab is a new chat, and a chat open in the side panel and in a tab is the same chat.",
    "A tab behind keeps working: it shows a spinner while its agent works, an amber dot when it needs you, a tick when your answer has arrived, and a bold title with a dot when a message you didn’t ask for has. Up to 10 tabs stay open; past that the one you used least long ago closes, never one that is working or waiting on you.",
    "Type your message and press Enter; Shift+Enter adds a line, and “Stop” halts the agent.",
    "An agent that can send helpers shows each one as a line beside its answer, with its own “Stop” while it works; open the line to see what it did, and “Save as agent” there opens a new agent made from it, saved only when you click “Save”. One sent to work in the background posts its result here when it finishes, marked “From your helper”; helpers that finish close together post one reply between them.",
    "Attach, paste or drop images when the agent’s model can read them; a workflow agent takes them when one of its steps has “Sees attachments” on.",
-   "History, Pinned and Search are on the right: open an earlier conversation in a tab, pin one to find it again, search every question and answer, or delete one. On a phone, the button above the conversation lists your tabs."
+   "History, Pinned and Search are on the right, Synapse AI’s chats among them: open an earlier conversation in a tab, pin one to find it again, search every question and answer, or delete one. On a phone, the button above the conversation lists your tabs."
   ],
   "guide": "/guides/start/chat",
   "where": {
@@ -357,7 +357,7 @@
    "Click “Add a card” to tell the next run something; it reads your card first.",
    "Every board, shared ones too, is in Knowledge → Boards."
   ],
-  "guide": "/guides/start/workflows"
+  "guide": "/boards/agents"
  },
  "orchestrations.editor": {
   "title": "Editing a workflow",
