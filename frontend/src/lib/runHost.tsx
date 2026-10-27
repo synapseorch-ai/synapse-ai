@@ -11,6 +11,7 @@ import {
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
 import { refusedAnswerMessage } from '@/lib/answers';
+import { OSS_BROWSER_HOST } from '@/lib/browserHost';
 import type { Orchestration } from '@/types/orchestration';
 
 const enc = encodeURIComponent;
@@ -142,6 +143,7 @@ export const OSS_RUN_HOST: RunHost = {
     // One login (F452): whoever is here may answer, cancel and replay.
     canAnswer: true,
     canControl: true,
+    browser: OSS_BROWSER_HOST,
     // A Team step's lines (TEAM1e): a question answered by its own id — a paused run resumes, a working one carries
     // that member on — and a member stopped or written to.
     team: {

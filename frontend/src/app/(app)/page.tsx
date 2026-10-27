@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback, useId, useMemo } from 'react';
-import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Pin, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square, Users } from 'lucide-react';
+import { Bot, User, Plus, Server, ChevronDown, ChevronRight, GitBranch, AlertCircle, History, RefreshCw, Clock, Trash2, X, Pin, Paperclip, Cpu, Wrench, Network, CalendarClock, Sparkles, Copy, Check, Brain, Pencil, RotateCcw, Search, Square, Users, Globe, MessageSquare } from 'lucide-react';
 import * as RPopover from '@radix-ui/react-popover';
 import { Command } from 'cmdk';
 
@@ -15,7 +15,8 @@ import { AttachButton, AttachmentChips, AttachmentError, useImageAttachments } f
 import { ImageThumbnails } from '@/components/app/ImageThumbnails';
 import { BuilderConversation } from '@/components/app/BuilderPanel';
 import { useBuilderChat } from '@/components/app/BuilderProvider';
-import { Button, IconButton, Mark, Markdown, PageHeaderSlot, Spinner, useOwnScroll } from '@/components/ui';
+import { Button, IconButton, Mark, Markdown, PageHeaderSlot, Spinner, useOwnScroll, usePersisted } from '@/components/ui';
+import { useIsPhone } from '@/components/app/PhoneBar';
 import {
   MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, draftHome, openTab, readAssistantDraft, restoreChatTabs,
   restorePins, SUGGESTED_LABEL, useChatTabs, useTabShortcuts, withoutAssistantDraft,
@@ -33,6 +34,11 @@ import {
 } from '@/components/team';
 
 import { cn } from '@/lib/utils';
+import { OSS_BROWSER_HOST } from '@/lib/browserHost';
+import {
+  BrowserActionLine, BrowserPane, PANE_SHARE, PaneHandle, actionOf, isBrowserEvent, parseShare,
+  type BrowserAction, type BrowserEvent, type FrameMemory,
+} from '@/components/browser';
 import { readWithStallTimeout } from '@/lib/sse';
 import { formatRelativeTime } from '@/lib/relativeTime';
 import { refusedAnswerMessage } from '@/lib/answers';
@@ -357,7 +363,13 @@ function ToolsUsed({ calls }: { calls: SavedCall[] }) {
                   <span className="font-code text-text" translate="no">{call.tool}</span>
                   {call.refused && <span className="text-warning">not run{call.reason ? ` — ${call.reason}` : ''}</span>}
                 </div>
-                {args && <div className="truncate font-code text-2xs text-text-faint" title={args}>{args}</div>}
+                {call.browser ? (
+                  <BrowserActionLine
+                    action={call.browser}
+                    className="mt-1 text-text-muted"
+                    shot={call.browser.shot_ref ? OSS_BROWSER_HOST.shotUrl(call.browser.session_id, call.browser.shot_ref) : null}
+                  />
+                ) : args && <div className="truncate font-code text-2xs text-text-faint" title={args}>{args}</div>}
                 {call.result && (
                   <div className="line-clamp-2 whitespace-pre-wrap break-words text-2xs text-text-faint">
                     {call.result.slice(0, 300)}
@@ -394,7 +406,9 @@ type SessionSummary = {
 };
 
 /** One tool call as a saved turn keeps it (F242); `refused` marks a call that was not run (U68). */
-type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string };
+type SavedCall = { tool: string; args: Record<string, unknown> | null; result: string; refused?: boolean; reason?: string;
+                   /** What a browser tool did in the page, while the turn is on screen (BRW2, F1074). */
+                   browser?: BrowserAction };
 
 type SessionTurn = {
   user: string;
@@ -856,7 +870,7 @@ function tabTitle(text: string): string {
  * turn, an approval, a helper or a team: each is drawn from what the server
  * holds.
  */
-function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
+function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBrowser }: {
   tab: ChatTab;
   /** Its title, its draft, or — before its first message — its agent changed. */
   onChange: (change: Partial<ChatTab>) => void;
@@ -866,6 +880,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
   onOpenAgent: (agentId: string) => void;
   /** A conversation opened from inside this one (F1063's "Open that chat"): in its tab, or a new one. */
   onOpenChat: (sessionId: string, agentId: string, title: string) => void;
+  /** The agent opened a browser, or did something in it (BRW2): the pane beside the conversation is the shell's. */
+  onBrowser: (event: BrowserEvent, agentName: string) => void;
 }) {
   const [sessionId, setSessionId] = useState(tab.sessionId);
 
@@ -873,6 +889,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
   const [input, setInput] = useState(tab.draft ?? '');
   const [isLoading, setIsLoading] = useState(false);
   const [agentName, setAgentName] = useState('Loading...');
+  // For a stream that started on an earlier render: who is driving the browser it opens (BRW2).
+  const agentNameRef = useRef(agentName);
+  agentNameRef.current = agentName;
   // Whether the name came from the active agent. The workspace's own name, from
   // settings, is only the fallback when no agent is active: both requests set
   // the name, and when /api/status answered first the page said "Synapse" in
@@ -2174,6 +2193,25 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
         break;
       }
 
+      // The browser inside Synapse (BRW1): the pane opens on the session, and each action joins its call's line.
+      case 'browser_session':
+        if (isBrowserEvent(data)) onBrowser(data, agentNameRef.current);
+        break;
+
+      case 'browser_action': {
+        if (!isBrowserEvent(data)) break;
+        const action = actionOf(data);
+        const calls = liveCallsRef.current;
+        const at = calls.findLastIndex(c => c.tool === action.action && !c.browser);
+        if (at !== -1) {
+          const next = [...calls];
+          next[at] = { ...next[at], browser: action };
+          liveCallsRef.current = next;
+        }
+        onBrowser(data, agentNameRef.current);
+        break;
+      }
+
       case 'tool_result': {
         const rawToolName = data.tool_name as string || 'Tool';
         if (!data.orch_step_id && !data.delegate_from) {
@@ -3360,6 +3398,27 @@ function pickableAgents(status: SystemStatus | null): PickableAgent[] {
 
 const onPhone = () => window.matchMedia('(max-width: 767px)').matches;
 
+/** A tab's browser (BRW2): the session its agent opened, what it did there, and whether the pane is showing. */
+type TabBrowser = {
+  sessionId: string;
+  agentName: string;
+  actions: BrowserAction[];
+  /** The pane is open beside the chat. Closing it leaves the browser running. */
+  shown: boolean;
+  /** The browser is closed: its last page stays, dimmed. */
+  closed: boolean;
+};
+
+/** A browser event folded into the tab's browser. A turn read again replays its events, which change nothing. */
+function foldBrowser(had: TabBrowser | undefined, event: BrowserEvent, agentName: string): TabBrowser | undefined {
+  const fresh = (sessionId: string): TabBrowser => ({ sessionId, agentName, actions: [], shown: true, closed: false });
+  if (event.type === 'browser_session') return had?.sessionId === event.session_id ? had : fresh(event.session_id);
+  const action = actionOf(event);
+  const base = had?.sessionId === action.session_id ? had : fresh(action.session_id);
+  if (base.actions.some(a => a.n === action.n)) return had;
+  return { ...base, actions: [...base.actions, action] };
+}
+
 /**
  * Chat: several conversations open at once, as tabs (TABS1, D319).
  *
@@ -3481,6 +3540,48 @@ export default function Home() {
     if (frontId) tabs.change(frontId, edit);
   }, [frontId, tabs]);
 
+  // The browser an agent opened, per tab (BRW2, F1073). Kept here, not in the conversation: a tab going behind
+  // unmounts its conversation, and its pane comes back with it. So does the last frame of each browser.
+  const [browsers, setBrowsers] = useState<Record<string, TabBrowser>>({});
+  const [frames] = useState<FrameMemory>(() => new Map());
+  const phone = useIsPhone();
+  // A phone shows the chat or the browser, never both squeezed side by side. The browser is shown for the tab it
+  // was asked for; another tab opens on its chat.
+  const [phoneShows, setPhoneShows] = useState<{ tab: string; view: 'chat' | 'browser' } | null>(null);
+  const phoneView = phoneShows && phoneShows.tab === frontId ? phoneShows.view : 'chat';
+  const setPhoneView = (view: 'chat' | 'browser') => { if (frontId) setPhoneShows({ tab: frontId, view }); };
+  const [keptShare, keepShare] = usePersisted<string>('browser-pane-share', parseShare, String(PANE_SHARE.start));
+  const [dragShare, setDragShare] = useState<number | null>(null);
+  const onBrowser = useCallback((tabId: string, event: BrowserEvent, agentName: string) => {
+    setBrowsers(all => {
+      const next = foldBrowser(all[tabId], event, agentName);
+      return next === all[tabId] || !next ? all : { ...all, [tabId]: next };
+    });
+  }, []);
+  const frontBrowser = frontId ? browsers[frontId] : undefined;
+  const changeBrowser = useCallback((edit: Partial<TabBrowser>) => {
+    if (!frontId) return;
+    setBrowsers(all => (all[frontId] ? { ...all, [frontId]: { ...all[frontId], ...edit } } : all));
+  }, [frontId]);
+  const phoneBrowser = phone && !!frontBrowser && phoneView === 'browser';
+  const pane = (props: { onHide: () => void; className?: string; style?: React.CSSProperties; children?: React.ReactNode }) => {
+    if (!frontBrowser || !frontId) return null;
+    const sid = frontBrowser.sessionId;
+    return (
+      <BrowserPane
+        key={`${frontId}:${sid}`}
+        host={OSS_BROWSER_HOST}
+        sessionId={sid}
+        agentName={frontBrowser.agentName}
+        actions={frontBrowser.actions}
+        memory={frames}
+        closedBefore={frontBrowser.closed}
+        onClosed={() => changeBrowser({ closed: true })}
+        {...props}
+      />
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
       <div className="relative flex min-w-0 flex-1 flex-col">
@@ -3505,6 +3606,12 @@ export default function Home() {
                 />
               )}
             />
+          )}
+          {frontBrowser && !frontBrowser.shown && (
+            <Button variant="ghost" size="sm" className="mb-1.5" onClick={() => changeBrowser({ shown: true })}>
+              <Globe className="size-3.5" aria-hidden />
+              Show the browser
+            </Button>
           )}
           <div className="mb-1.5 shrink-0"><PageHeaderSlot /></div>
         </div>
@@ -3532,6 +3639,13 @@ export default function Home() {
             tour={{ button: 'chat-new-tab', list: 'chat-agent' }}
             className="size-11"
           />
+          {phone && frontBrowser && (
+            <Button variant="secondary" size="sm" onClick={() => setPhoneView(phoneView === 'browser' ? 'chat' : 'browser')}>
+              {phoneView === 'browser'
+                ? <><MessageSquare className="size-3.5" aria-hidden />Chat</>
+                : <><Globe className="size-3.5" aria-hidden />Browser</>}
+            </Button>
+          )}
           <IconButton icon={History} label="History" onClick={() => setPanel('history')} />
         </div>
 
@@ -3545,17 +3659,37 @@ export default function Home() {
           </div>
         )}
 
+        {phoneBrowser && pane({ onHide: () => setPhoneView('chat'), className: 'flex-1' })}
+
         {front && (
-          <ChatConversation
-            key={front.id}
-            tab={front}
-            onChange={changeFront}
-            onBusy={tabs.setFrontBusy}
-            onOpenAgent={tabs.openAgent}
-            onOpenChat={(sessionId, agentId, title) => tabs.openConversation(sessionId, agentId, tabTitle(title))}
-          />
+          // Hidden, never unmounted, while a phone shows the browser: the turn keeps being read.
+          <div className={phoneBrowser ? 'hidden' : 'contents'}>
+            <ChatConversation
+              key={front.id}
+              tab={front}
+              onChange={changeFront}
+              onBusy={tabs.setFrontBusy}
+              onOpenAgent={tabs.openAgent}
+              onOpenChat={(sessionId, agentId, title) => tabs.openConversation(sessionId, agentId, tabTitle(title))}
+              onBrowser={(event, agentName) => onBrowser(front.id, event, agentName)}
+            />
+          </div>
         )}
       </div>
+
+      {!phone && frontBrowser?.shown && pane({
+        onHide: () => changeBrowser({ shown: false }),
+        className: 'shrink-0 border-l border-border',
+        style: { width: `${(dragShare ?? Number(keptShare)) * 100}%` },
+        children: (
+          <PaneHandle
+            share={dragShare ?? Number(keptShare)}
+            onShare={setDragShare}
+            onDone={(n) => { keepShare(String(n)); setDragShare(null); }}
+            label="Resize the browser pane"
+          />
+        ),
+      })}
 
       <SideRail
         open={panel}

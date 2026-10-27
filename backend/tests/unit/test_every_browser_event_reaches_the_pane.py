@@ -29,7 +29,7 @@ def _browser_events() -> list[str]:
 def _cases(path: Path, fn: str) -> set[str]:
     source = path.read_text("utf-8")
     start = source.index(fn)
-    return set(re.findall(r"case '([a-z_]+)'", source[start:]))
+    return set(re.findall(r"""case ['"]([a-z_]+)['"]""", source[start:]))
 
 
 def test_the_browser_announces_itself():
