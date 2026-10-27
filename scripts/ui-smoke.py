@@ -12406,6 +12406,57 @@ async def check_brwlog(browser) -> str:
 
 
 
+@check
+async def check_brwlogins(browser) -> str:
+    """Settings → Website logins lists the sites kept for runs, says when each ends, and forgets one only once asked
+    (BRW2, F1079). The session itself never reaches the page."""
+    now = time.time()
+    state = {"logins": [{"id": "wl_" + "a" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
+                         "created_at": now - 86_400, "expires_at": now + 12 * 86_400 + 600}]}
+    deleted: list[str] = []
+
+    async def logins(route):
+        if route.request.method == "DELETE":
+            deleted.append(route.request.url)
+            state["logins"] = []
+            return await route.fulfill(status=200, json={"forgotten": True})
+        return await route.fulfill(status=200, json=state)
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/website-logins(/[^/?]+)?$"), logins)
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if (await page.locator("main h1").first.inner_text()).strip() != "Website logins":
+            bad.append("the page is not Website logins")
+        rows = page.get_by_role("list", name="Saved logins").get_by_role("listitem")
+        if await rows.count() != 1:
+            bad.append(f"{await rows.count()} rows, not 1")
+        else:
+            text = await rows.first.inner_text()
+            if "portal.saltmarsh.example" not in text or "Ends in 12 days" not in text:
+                bad.append(f"the row reads {text!r}")
+        await page.get_by_role("button", name=re.compile("Forget the login")).click()
+        dialog = page.get_by_role("dialog")
+        await dialog.wait_for(timeout=5_000)
+        if deleted:
+            bad.append("Forget deleted before it was confirmed")
+        await dialog.get_by_role("button", name="Forget").click()
+        await asyncio.sleep(0.8)
+        if not any(u.endswith("/api/website-logins/wl_" + "a" * 24) for u in deleted):
+            bad.append(f"Forget sent {deleted}")
+        if not await _on_screen(page, "No saved logins."):
+            bad.append("the forgotten login is still listed")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "lists the kept site with when it ends; Forget asks, then deletes; the list empties"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

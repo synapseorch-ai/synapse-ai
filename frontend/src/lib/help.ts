@@ -452,6 +452,17 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         media: { id: 'settings/oss-databases', alt: 'Settings → DB configs: databases your agents can query.' },
         guide: '/guides/start/tools',
     },
+    website_logins: {
+        title: 'Website logins',
+        summary: 'Sites you logged in to in the browser inside Synapse, kept so a run that needs one starts logged in.',
+        steps: [
+            'Each row is a site’s session, kept encrypted: your password is never kept, and agents never see or type it.',
+            'A login lasts 30 days at most, or less when the site ends it sooner; the row says when it ends.',
+            '“Forget” removes a login at once; a run that needs the site then asks you to log in again.',
+        ],
+        // The browser's own guide is written with the docs at the announcement (outline in pro drafts/brw2).
+        guide: '/guides/start/agents',
+    },
     api_keys: {
         title: 'API keys',
         summary: 'Keys let your own code, or AI tools like Claude Code and Cursor, use Synapse without opening this app.',
