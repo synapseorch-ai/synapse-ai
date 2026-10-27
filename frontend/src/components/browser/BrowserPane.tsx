@@ -9,6 +9,7 @@ import { cn } from '@/lib/cn';
 import { BrowserActionLine } from './BrowserActionLine';
 import { actionCount, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
          type Wheel } from './model';
+import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
 import { useBrowserFrames, type FrameMemory } from './useBrowserFrames';
 
@@ -102,6 +103,17 @@ export function BrowserPane({
     } else setWheelFailed('The wheel could not be handed back. Try again.');
   };
 
+  // A moment the person answered stays answered until the next frame says what the page did.
+  const [answeredOn, setAnsweredOn] = useState<BrowserFrame | null>(null);
+  const asks = driving && frame && answeredOn !== frame ? frame : null;
+  const answer = (call: Promise<boolean> | undefined) => {
+    setAnsweredOn(frame);
+    call?.catch(() => false);
+  };
+  const release = host.release ? () => answer(host.release!(sessionId, true)) : undefined;
+  const allow = host.allowSite ? (site: string) => answer(host.allowSite!(sessionId, site)) : undefined;
+  const banner = !closed && frame?.banner && answeredOn !== frame ? frame.banner : null;
+
   const url = frame?.url || actions[actions.length - 1]?.url || '';
   const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : `${agentName} is driving`;
 
@@ -148,7 +160,10 @@ export function BrowserPane({
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
       </header>
 
-      {driving ? (
+      {banner ? (
+        <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
+                     onRelease={release} onAllow={allow} />
+      ) : driving ? (
         <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2 text-xs">
           <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
           <span className="whitespace-nowrap font-medium text-person-fg">{driver}</span>
@@ -201,6 +216,15 @@ export function BrowserPane({
             Opening the browser…
           </div>
         )}
+        {asks?.dialog ? (
+          <DialogAsk key={asks.dialog.message} dialog={asks.dialog}
+                     onAnswer={(accept, text) => answer(host.answerDialog?.(sessionId, accept, text))} />
+        ) : asks?.select ? (
+          <SelectAsk select={asks.select} onChoose={(value) => answer(host.choose?.(sessionId, asks.select!.target, value))} />
+        ) : asks?.file ? (
+          <FileAsk file={asks.file} files={host.files ? () => host.files!(sessionId) : undefined}
+                   onOffer={(id) => answer(host.offerFile?.(sessionId, id))} />
+        ) : null}
         {nudge && canDrive && !driving && (
           <div className="absolute inset-0 flex items-center justify-center bg-scrim/60">
             <div role="dialog" aria-label={`${agentName} is driving`}

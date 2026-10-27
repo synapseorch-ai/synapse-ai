@@ -18,6 +18,12 @@ export const OSS_BROWSER_HOST: BrowserHost = {
   takeWheel: (sessionId) => post(`/api/browser/${enc(sessionId)}/wheel/take`, {}),
   handBack: (sessionId, note) => post(`/api/browser/${enc(sessionId)}/wheel/hand-back`, note ? { note } : {}),
   input: (sessionId, input) => post(`/api/browser/${enc(sessionId)}/input`, input),
+  release: (sessionId, allowAddress) => post(`/api/browser/${enc(sessionId)}/release`, { allow_address: allowAddress }),
+  allowSite: (sessionId, host) => post(`/api/browser/${enc(sessionId)}/allow-site`, { host }),
+  answerDialog: (sessionId, accept, text) =>
+    post(`/api/browser/${enc(sessionId)}/dialog`, text === undefined ? { accept } : { accept, text }),
+  choose: (sessionId, target, value) => post(`/api/browser/${enc(sessionId)}/select`, { target, value }),
+  offerFile: (sessionId, attachmentId) => post(`/api/browser/${enc(sessionId)}/file`, { attachment_id: attachmentId }),
 };
 
 async function post(url: string, body: unknown): Promise<boolean> {

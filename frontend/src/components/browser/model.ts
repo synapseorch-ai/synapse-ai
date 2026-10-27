@@ -12,6 +12,24 @@
 /** Who holds the wheel: the agent, the person, or nobody (DESIGN §2.4). */
 export type Wheel = 'agent' | 'person' | 'nobody';
 
+/** What the person is asked to handle, in the strip under the address (BRW1's v2 contract). */
+export type BannerKind = 'send' | 'sensitive' | 'captcha' | 'asked' | 'login_expired' | 'allow_typing';
+export type BrowserBanner = {
+  kind: BannerKind;
+  reason: string;
+  /** A send the agent tried, paused at the network until the person presses the page's own button. */
+  held?: { method: string; url: string };
+  /** For `allow_typing`: the site it wants to type on. */
+  host?: string;
+};
+
+/** The page's own alert, confirm or prompt, which the screencast cannot show. */
+export type PageDialog = { type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string; default?: string };
+/** A native dropdown the page opened: its popup is the browser's, not the page's, so it is never in a frame. */
+export type PageSelect = { target: string; options: { value: string; label: string }[]; selected?: string };
+/** A file picker the page opened. */
+export type PageFile = { multiple: boolean; accept?: string };
+
 /** One screencast frame (`GET …/frames`, DESIGN §6). */
 export type BrowserFrame = {
   jpeg_b64: string;
@@ -19,6 +37,10 @@ export type BrowserFrame = {
   h: number;
   url: string;
   wheel: Wheel;
+  banner?: BrowserBanner;
+  dialog?: PageDialog;
+  select?: PageSelect;
+  file?: PageFile;
 };
 
 /** `browser_session`: an agent opened a browser for this chat or run. */
@@ -63,7 +85,28 @@ export type BrowserHost = {
   handBack?: (sessionId: string, note?: string) => Promise<boolean>;
   /** One input to the page; refused (false) unless the person holds the wheel. */
   input?: (sessionId: string, input: BrowserInput) => Promise<boolean>;
+  /** "It only loaded data": the held request carries on, and with `allowAddress` that address is not held again. */
+  release?: (sessionId: string, allowAddress: boolean) => Promise<boolean>;
+  /** Typing on `host` is allowed for the rest of this session. */
+  allowSite?: (sessionId: string, host: string) => Promise<boolean>;
+  /** The answer to the page's own dialog. */
+  answerDialog?: (sessionId: string, accept: boolean, text?: string) => Promise<boolean>;
+  /** The option picked in the page's own dropdown. */
+  choose?: (sessionId: string, target: string, value: string) => Promise<boolean>;
+  /** A file the person offers the page: one of the run's, by its attachment id. */
+  offerFile?: (sessionId: string, attachmentId: string) => Promise<boolean>;
+  /** The files a page may be given here: the run's or the chat's. None: the file card says so. */
+  files?: (sessionId: string) => Promise<{ id: string; name: string }[]>;
 };
+
+/** The site a URL is on, for a sentence. */
+export function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
 
 export function isBrowserEvent(data: unknown): data is BrowserEvent {
   const type = (data as { type?: unknown } | null)?.type;

@@ -12580,6 +12580,89 @@ async def check_brwwheel(browser) -> str:
             "page; Hand back carries the note")
 
 
+def _brw_moment(wheel: str = "agent", **extra) -> str:
+    """A frame carrying one of the moments the screencast cannot draw by itself: a banner, a dialog, a select."""
+    return _frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "https://stock.example.com/orders/new",
+                   "wheel": wheel, **extra})
+
+
+@check
+async def check_brwbanner(browser) -> str:
+    """The moments the person must handle show in the strip under the address, each with its own action (BRW2,
+    F1077; Naveen's pick A): a send the agent tried is held and named, with "It only loaded data" to let it carry on;
+    a turn the agent handed over (here a login that ended) ends with Done; typing on an unlisted site is allowed once;
+    and the page's own dialog and dropdown, which the screencast cannot show, are answered in cards of ours."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-banner")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsB",
+                                              "owner": "chat:uismoke-brw-banner"}, "b-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsB")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", banner={
+            "kind": "send", "reason": "Submit order", "held": {"method": "POST", "url": "https://stock.example.com/orders"}}))
+        if not await _on_screen(page, "Nothing has gone"):
+            bad.append("a held send is not said")
+        if not await pane.get_by_text("stock.example.com", exact=False).count():
+            bad.append("the held send does not name its site")
+        await pane.get_by_role("button", name=re.compile("only loaded data")).click()
+        await asyncio.sleep(0.4)
+        if [c["body"] for c in await _brw_calls(page, "release")] != [{"allow_address": True}]:
+            bad.append(f"'only loaded data' sent {[c['body'] for c in await _brw_calls(page, 'release')]}")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", banner={
+            "kind": "login_expired", "reason": "Log in to Saltmarsh again"}))
+        if not await _on_screen(page, "Log in to Saltmarsh again"):
+            bad.append("a turn's reason is not shown")
+        await pane.get_by_role("button", name="Done", exact=True).click()
+        await asyncio.sleep(0.4)
+        if not await _brw_calls(page, "wheel/hand-back"):
+            bad.append("Done did not hand the wheel back")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("agent", banner={
+            "kind": "allow_typing", "reason": "To search for HP-2041", "host": "tracking.carrier.example"}))
+        allow = pane.get_by_role("button", name=re.compile("Allow typing on tracking.carrier.example"))
+        try:
+            await allow.wait_for(timeout=5_000)
+            await allow.click()
+            await asyncio.sleep(0.4)
+        except Exception:
+            bad.append("typing on an unlisted site is not asked")
+        if [c["body"] for c in await _brw_calls(page, "allow-site")] != [{"host": "tracking.carrier.example"}]:
+            bad.append(f"allow sent {[c['body'] for c in await _brw_calls(page, 'allow-site')]}")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", dialog={
+            "type": "confirm", "message": "Leave this page? Your changes may not be saved."}))
+        card = pane.get_by_role("dialog", name=re.compile("The page asks"))
+        try:
+            await card.wait_for(timeout=5_000)
+            await card.get_by_role("button", name="OK").click()
+            await asyncio.sleep(0.4)
+        except Exception:
+            bad.append("the page's dialog has no card")
+        if [c["body"] for c in await _brw_calls(page, "dialog")] != [{"accept": True}]:
+            bad.append(f"the dialog's answer sent {[c['body'] for c in await _brw_calls(page, 'dialog')]}")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", select={
+            "target": "Deliver to", "selected": "dock-1",
+            "options": [{"value": "dock-1", "label": "Dock 1"}, {"value": "dock-2", "label": "Dock 2, Portside"}]}))
+        try:
+            await pane.get_by_role("option", name="Dock 2, Portside").click(timeout=5_000)
+            await asyncio.sleep(0.4)
+        except Exception:
+            bad.append("the page's dropdown has no picker")
+        if [c["body"] for c in await _brw_calls(page, "select")] != [{"target": "Deliver to", "value": "dock-2"}]:
+            bad.append(f"the pick sent {[c['body'] for c in await _brw_calls(page, 'select')]}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a held send is named with 'only loaded data'; a turn ends with Done; typing on a site is allowed once; "
+            "the page's dialog and dropdown are answered in our cards")
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
