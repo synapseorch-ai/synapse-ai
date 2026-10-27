@@ -74,8 +74,16 @@ class TestAFragment:
             seed.expand_prompts("Before. {{PROMPT:no_such_passage}} After.")
 
     def test_it_expands_where_it_is_named(self):
-        name = seed.fragment_names()[0]
-        assert seed.expand_prompts(f"A {{{{PROMPT:{name}}}}} B") == f"A {seed.prompt_fragment(name)} B"
+        # Every passage, with the engine's own tokens it names written in as `expand_prompts` writes them (F957's
+        # `{{EXPRESSION_VOCABULARY}}` in plan_steps): the first passage alone stopped being a token-free one when P5
+        # took findings_call_report_findings out.
+        from core.expressions import vocabulary_sentence
+        from core.native_builder import STEP_TYPE_CHEATSHEET
+
+        for name in seed.fragment_names():
+            passage = (seed.prompt_fragment(name).replace("{{STEP_TYPE_CHEATSHEET}}", STEP_TYPE_CHEATSHEET)
+                       .replace("{{EXPRESSION_VOCABULARY}}", vocabulary_sentence()))
+            assert seed.expand_prompts(f"A {{{{PROMPT:{name}}}}} B") == f"A {passage} B", name
 
 
 class TestThePromptFormRules:

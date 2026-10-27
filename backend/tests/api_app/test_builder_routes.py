@@ -247,8 +247,9 @@ class TestSeeHowImBuilt:
         # and its wait for their connection (F944–F946): the make, its route, the wait, its answer, its route, giving
         # up, its end; 67 with the front door read in code (SAI2-P4): the 8-label router and the how-to, connect and
         # can't-do look-ups out (4), and the turn read in code, its route and what code says, the classify call and its
-        # route, the answer's pack and its route, and the three answers — talk, the help, the workspace — in (9).
-        assert legend["step_count"] == 67
+        # route, the answer's pack and its route, and the three answers — talk, the help, the workspace — in (9);
+        # 66 since P3c: step_researched_before out, which nothing led to after the front door's override (F766).
+        assert legend["step_count"] == 66
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
