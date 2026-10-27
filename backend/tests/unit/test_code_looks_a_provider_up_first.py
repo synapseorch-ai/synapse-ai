@@ -282,7 +282,7 @@ async def test_file_names_are_not_providers(world):
 async def test_a_message_naming_nothing_known_leaves_it_all_to_the_research(world):
     got = await _look(need="Can an agent book hotel rooms for our staff conferences?")
     assert got == {"findings": {"goal": "Can an agent book hotel rooms for our staff conferences?", "options": []},
-                   "found": [], "left": []}
+                   "found": [], "left": [], "unmatched": []}  # `unmatched`: F997's guard (SAI2's b)
 
 
 async def test_a_need_without_a_provider_takes_a_catalogue_name_as_a_lead_only(world):

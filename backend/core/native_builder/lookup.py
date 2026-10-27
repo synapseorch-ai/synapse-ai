@@ -76,7 +76,7 @@ async def look_up_providers(args: dict, server_module: Any, events: list[dict]) 
     asks = await _asks(args, need)
     record, run = research._record()
     looked = record.setdefault(research.LOOKED_KEY, {})
-    found, left = [], []
+    found, left, unmatched = [], [], []
     for ask in asks[:MAX_PROVIDERS]:
         provider, said = ask.get("provider"), {k: ask[k] for k in ("provider", "tool", "does") if ask.get(k)}
         if not provider:
@@ -106,7 +106,11 @@ async def look_up_providers(args: dict, server_module: Any, events: list[dict]) 
                 found.append(got["found"])
         else:
             left.append(said | got["left"])
-    return {"findings": {"goal": need[:200], "options": found}, "found": found, "left": left}
+            if not got.get("matched") and not got.get("failed") and not ask.get("domain"):
+                unmatched.append(provider)
+    # `unmatched`: named, looked up in full, and nothing of it found (F997's guard: the classify can name a category,
+    # "hotel booking"). Never in the Researcher's prompt, which reads only `left`.
+    return {"findings": {"goal": need[:200], "options": found}, "found": found, "left": left, "unmatched": unmatched}
 
 
 def _from_the_run() -> dict:
@@ -214,7 +218,8 @@ def _reachable(url: str | None) -> bool:
 
 
 async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
-    """One named provider: `{"found": Finding}`, or `{"left": {"provider", "note", "lead"?, "page"?}, "failed"?}`."""
+    """One named provider: `{"found": Finding}`, or `{"left": {"provider", "note", "lead"?, "page"?}, "failed"?,
+    "matched"?}`. `matched`: something of the provider's own was seen (a Registry server, a page on its own site)."""
     from core.builder_connect import _read_options
 
     entry = research.catalog_entry(provider, (await _read_options()).get("catalog") or [])
@@ -228,7 +233,7 @@ async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
             _an(name), own, sorted({research._registrable_domain(research._host(u)) for u in own}),
             app={"slug": str(entry.get("slug") or ""), "name": name})}
 
-    notes, anchors, failed = [], set(), False
+    notes, anchors, failed, matched = [], set(), False, False
     servers, error = await research.registry_servers(provider, domain)
     if servers is None:
         notes.append(f"The MCP Registry could not be read ({error}).")
@@ -246,6 +251,7 @@ async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
                 _an(provider), [page], sorted(domains))}
         for s in own:
             anchors |= research._server_domains(s)
+        matched = bool(own)
         unverified = [s for s in servers if s["providers_own"] and not _verified(s)]
         notes.append(f"{provider}'s own server is in the MCP Registry but can't be reached from here." if own else
                      f"A GitHub account named for {provider} publishes {unverified[0]['name']} in the MCP Registry; "
@@ -255,7 +261,7 @@ async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
     record, run = research._record()
     if record.get("web_down"):
         notes.append("The web can't be read here right now.")
-        return {"left": {"provider": provider, "note": " ".join(notes)}, "failed": failed}
+        return {"left": {"provider": provider, "note": " ".join(notes)}, "failed": True, "matched": matched}
     web = await _developer_page(provider, anchors, server_module)
     notes.append(web["said"])
     if web.get("down"):
@@ -271,7 +277,7 @@ async def _look(provider: str, domain: str | None, server_module: Any) -> dict:
         await research._keep(run)
     if web.get("lead") is not None:
         left["lead"] = web["lead"]
-    return {"left": left, "failed": failed or bool(web.get("failed"))}
+    return {"left": left, "failed": failed or bool(web.get("failed")), "matched": matched or bool(web.get("page"))}
 
 
 async def _developer_page(provider: str, anchors: set[str], server_module: Any) -> dict:
@@ -343,12 +349,15 @@ async def finish_findings(args: dict, server_module: Any, events: list[dict]) ->
 
     state = _state()
     request = _obj(state.get("request"))
-    # F997 (SAI2, cnt-02): the person named no provider. Only a run whose front door wrote a request knows that.
-    unnamed = isinstance(request, dict) and not request.get("providers")
+    # F997 (SAI2, cnt-02): the person named no provider. Only a run whose front door wrote a request knows that. A
+    # "provider" the look-up matched to nothing (a category the classify wrote, "hotel booking") is not one (SAI2's b).
+    looked = _obj(state.get("lookup")) or {}
+    nothing = {research._slug(p) for p in looked.get("unmatched") or [] if isinstance(p, str)}
+    unnamed = isinstance(request, dict) and all(
+        research._slug(p) in nothing for p in request.get("providers") or [] if isinstance(p, str))
     reported = _obj(state.get("findings"))
     if isinstance(reported, dict) and reported.get("status") == "reported":
         return {**reported, "said": said(reported, unnamed)}
-    looked = _obj(state.get("lookup")) or {}
     goal = str(((looked.get("findings") or {}).get("goal")) or state.get("user_message") or "")[:200]
     options = []
     for left in looked.get("left") or []:

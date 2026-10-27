@@ -243,3 +243,36 @@ async def test_a_run_with_no_request_claims_nothing_about_the_workspace(world):
     world["findings"] = {"status": "no_report", "fallback": True}
     done = await lookup.finish_findings({}, None, [])
     assert SEEN_NOTHING not in done["said"]
+
+
+@pytest.mark.parametrize("category", ["hotel booking", "phone call"])
+async def test_a_category_the_classify_named_as_a_provider_still_gets_the_line(world, category):
+    """SAI2's (b), from res-02: the classify wrote request.providers = ["hotel booking"]. A "provider" the look-up
+    matched to nothing (no catalogue entry, no Registry server of its own, no own site) and that is no domain counts
+    as unnamed, so it can't hide the line. True even of a real company too small to find: code still saw nothing here
+    that does the job."""
+    world.update(request={"providers": [category]}, user_message="Call my mom right now.")
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
+    assert world["lookup"]["unmatched"] == [category]
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert done["said"].startswith(SEEN_NOTHING)
+
+
+async def test_a_provider_the_look_up_found_anything_of_keeps_its_name(world):
+    """Shippo has its own server, Mailchimp its own developer page: both matched, so no line."""
+    world.update(request={"providers": ["Mailchimp", "Shippo"]}, user_message="Mail and labels")
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
+    assert world["lookup"]["unmatched"] == []
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert SEEN_NOTHING not in done["said"]
+
+
+async def test_one_matched_provider_among_unmatched_ones_keeps_the_request_named(world):
+    world.update(request={"providers": ["hotel booking", "Stripe"]}, user_message="Book hotels and pay with Stripe")
+    world["lookup"] = await lookup.look_up_providers({"by_route": True}, None, [])
+    assert world["lookup"]["unmatched"] == ["hotel booking"]
+    world["findings"] = {"status": "no_report", "fallback": True}
+    done = await lookup.finish_findings({}, None, [])
+    assert SEEN_NOTHING not in done["said"]
