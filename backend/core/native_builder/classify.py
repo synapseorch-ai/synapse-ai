@@ -71,6 +71,12 @@ _AUTOMATE = re.compile(r"\b(?:every|each|whenever|when|daily|weekly|automat\w*|w
 _BUILD = re.compile(r"\b(?:build|make|create|set it up|set up|go ahead|do it|proceed)\b")
 
 #: Workspace nouns and run questions: an answer that names one reads the workspace (SAI2's review: err towards it).
+#: Words that ask for something to be done ("can you", "I want", "build"): a musing has none of them (F987).
+_ASKS_FOR = re.compile(r"\b(?:build|make|create|set (?:it |this |that )?up|go ahead|do it|proceed|can you|could you|"
+                       r"would you|will you|please|i want|i need|i d like|we want|we need|let s|lets)\b")
+#: A command's first word ("send … every Monday?", "Every Friday, email me …?"): a request, whatever its punctuation.
+_COMMAND_FIRST = re.compile(r"^(?:send|email|text|post|notify|remind|fetch|pull|check|watch|summari[sz]e|add|run|"
+                            r"schedule|track|collect|every|each|whenever|daily|weekly|monthly|on|at)\b")
 _WORKSPACE = re.compile(
     r"\b(?:agents?|workflows?|orchestrations?|runs?|ran|schedules?|scheduled|tools?|skills?|channels?|"
     r"boards?|cards?|knowledge|bases?|credits?|usage|spend|spent|cost|plan|keys?|models?|variables?|widgets?|phone|"
@@ -146,6 +152,10 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     elif kind in ("change", "build") and not _ACT.search(text) and (
             _QUESTION.match(text) or (_QUESTION_IF_ASKED.match(text) and message.rstrip().endswith("?"))):
         kind, by = "answer", "question"
+    # Thinking aloud ("I wonder if there's a way … maybe a reminder system?") asks for nothing: talk, not a plan (F987).
+    elif kind == "build" and message.rstrip().endswith("?") and not _ASKS_FOR.search(text) and not \
+            _COMMAND_FIRST.match(text):
+        kind, by = "answer", "musing"
     # Connecting a named service is the answer route's Connect card, unless an automation through it is asked for.
     elif kind in ("change", "build") and request.providers and _CONNECT_DO.search(text) and not _AUTOMATE.search(
             text) and any(_words(p) and _words(p) in text for p in request.providers):

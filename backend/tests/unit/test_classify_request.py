@@ -151,6 +151,40 @@ class TestAQuestionIsAnswered:
         assert _route(message, "change").kind == "change"
 
 
+class TestThinkingAloudIsAnswered:
+    """F987 (talk_brainstorm-02, P4's class measure): "Hmm, I wonder if there's a way to reduce no-shows using
+    automation... like, maybe an automated text or email reminder system?" asked for nothing, and the model said build:
+    the person got a plan. A build-shaped message that asks for nothing, starts with no command and ends on a question
+    mark is an answer: the talk route, which offers the build when they want one."""
+
+    @pytest.mark.parametrize("message", [
+        "Hmm, I wonder if there's a way to reduce appointment no-shows at the clinic using automation... like, maybe an "
+        "automated text or email reminder system?",
+        "what if we automated the weekly stock count?",
+        "Maybe a daily summary of missed calls would help us?",
+        "Thinking about automating patient follow-ups, would that even work for a small clinic?"])
+    def test_a_musing_is_an_answer(self, message):
+        routed = _route(message, "build")
+        # "what if …?" was already the question rule's: either way it is talk.
+        assert (routed.kind, routed.route) == ("answer", "step_answer") and routed.overridden_by in ("musing", "question")
+        assert routed.needs == "none"
+
+    @pytest.mark.parametrize("message", [
+        "Can you build a workflow that texts patients a reminder the day before?",
+        "Could you set up a daily summary of missed calls?",
+        "send the weekly stock count to Slack every Monday?",
+        "I want an automated reminder for no-shows, can that work?",
+        "Every Friday, email me the unpaid invoices?",
+        "Build me a reminder flow",
+        "maybe an automated reminder for no-shows"])
+    def test_a_request_is_still_a_build(self, message):
+        """A request with a question mark, a command first, or no question mark at all stays the model's build."""
+        assert _route(message, "build").kind == "build"
+
+    def test_only_a_build_is_turned(self):
+        assert _route("what if we paused the nightly digest?", "change").overridden_by != "musing"
+
+
 class TestConnectingANamedServiceIsAnswered:
     """P4's router replay: Haiku and gpt-oss labelled "Hook up Notion" a build. Connecting a named service is the
     answer route's Connect card; asking for an automation that uses it is still a build."""
