@@ -143,3 +143,34 @@ class TestTheConnectCardReachesThePanel:
         assert len(cards) == 1
         assert cards[0]["kind"] == "provider_key" and cards[0]["provider"]["id"] == "openai"
         assert cards[0]["title"] == "Add your OpenAI key"
+
+
+class TestAKeyPastedWithAnAnswer:
+    """P5's control, res-04 (10-27, on a tip without F1092): the person answered the plan with Shippo's steps and
+    "connect it with our test key `shippo_test_…`", and the key was kept in the run's row, its logs and the planner's.
+    A `<name>_test_` key with a ten-character tail matched no shape then; F1092 (SAI2-P4) widened them. This pins the
+    whole path on that sentence: masked at the answer's door, before the run, any event, any model or any file."""
+
+    KEY = "shippo_" + "test_" + "CANARY" + "bwa1"  # assembled: a literal key in a source file trips secret scanners
+
+    async def test_it_is_masked_before_the_run_its_logs_or_the_planner_hold_it(
+            self, client, builder, fake_llm, tmp_path):
+        fake_llm.script([route("create"), tool_call("ask_person", question="Which carrier should it use?",
+                                                    about="which")])
+        events = await stream(client, "/api/builder/chat", {
+            "message": "Automate buying shipping labels for the retainer kits we mail out."})
+        run_id = next(e for e in events if e["type"] == "human_input_required")["run_id"]
+        fake_llm.set_default(tool_call("ask_person", question="Which ship-from address?", about="which"))
+        said = ("We'll use Shippo for all three steps – address validation, rate comparison, and label purchase – and "
+                f"connect it with our test key `{self.KEY}`. Once those Shippo calls are in place, go ahead and build "
+                "it.")
+        events = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"answer": said}})
+        assert events[0]["type"] == "builder_notice" and events[0]["reason"] == "masked"
+        assert CREDENTIAL_MARK in events[0]["kept"] and "go ahead and build it" in events[0]["kept"]
+        assert "human_input_required" in [e["type"] for e in events], "the run went on"
+        assert self.KEY not in json.dumps(events, default=str)
+        assert self.KEY not in _everything_the_model_saw(fake_llm)
+        assert CREDENTIAL_MARK in _everything_the_model_saw(fake_llm), "the planner read the answer, masked"
+        left = [str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")
+                if p.is_file() and self.KEY.encode() in p.read_bytes()]
+        assert left == [], left
