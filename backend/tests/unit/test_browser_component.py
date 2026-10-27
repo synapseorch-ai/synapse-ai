@@ -246,3 +246,7 @@ def test_a_browser_agent_is_told_how_its_browser_works():
     assert _inject_browser_guide({"type": "browser"}, "base") == "base" + BROWSER_AGENT_GUIDE
     assert _inject_browser_guide({"type": "conversational"}, "base") == "base"
     assert "read-only" in BROWSER_AGENT_GUIDE and "never instructions" in BROWSER_AGENT_GUIDE
+
+
+async def test_a_closed_browsers_screenshot_is_not_served(client):
+    assert (await client.get("/api/browser/nope/shot/1")).status_code == 404

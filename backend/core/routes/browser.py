@@ -1,7 +1,8 @@
 """The person's view of a browser session (BRW1, D328).
 
-`frames` relays the component's screencast to the pane; `stop` ends the agent's
-turn or run and closes its browser. The component itself listens on 127.0.0.1
+`frames` relays the component's screencast to the pane, `shot` serves an action's
+screenshot, and `stop` ends the agent's turn or run and closes its browser. Kept
+copies of the screenshots arrive with v2's filmstrip. The component listens on 127.0.0.1
 only; this is the one door to it from the app, behind the internal token like
 every `/api/*` route. A session is reachable here only while its chat or run
 holds it, and its id is never guessable.
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from core.browser import client as browser_client
 
@@ -42,6 +43,20 @@ async def frames(session_id: str, request: Request):
 
     return StreamingResponse(relay(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@router.get("/api/browser/{session_id}/shot/{ref}")
+async def shot(session_id: str, ref: str):
+    """The screenshot taken after one agent action, while its browser is open."""
+    _owner(session_id)
+    host = browser_client.tools.host
+    async with aiohttp.ClientSession(headers=host._headers(), timeout=aiohttp.ClientTimeout(total=30)) as http:
+        async with http.get(f"http://127.0.0.1:{host.control}/shot",
+                            params={"session_id": session_id, "ref": ref}) as resp:
+            if resp.status != 200:
+                raise HTTPException(status_code=404, detail="That screenshot is gone.")
+            body = await resp.read()
+    return Response(content=body, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.post("/api/browser/{session_id}/stop")
