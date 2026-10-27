@@ -15,6 +15,7 @@ from core.state_types import (
     matches_declared_type,
     normalize_state_type,
 )
+from core.expressions import vocabulary_sentence
 from core.store import collections
 from core.store.resources import load_mcp_servers
 from core.store.ids import new_id as _mint_id
@@ -438,6 +439,11 @@ def _builder_tags(tool: dict, before: dict | None, claimed: dict | None) -> dict
         tool["annotations_by"] = BUILDER_HINTS
     return tool
 
+
+#: What a condition or switch expression may use, from the engine's own tables (F957): one source with the save's
+#: refusal and the planner's steps passage, so a function the engine adds or refuses is said everywhere at once.
+_EXPRESSION_DIALECT = ("Restricted Python over `state`. " + vocabulary_sentence()
+                       + " No f-strings, comprehensions or lambdas.")
 
 BUILDER_TOOL_SCHEMAS = [
     {
@@ -1073,7 +1079,8 @@ BUILDER_TOOL_SCHEMAS = [
                         "description": (
                             "Condition for if_else steps, evaluated against shared state. "
                             "Use dot-notation: e.g. `state.result.flag == True` or `state.score > 5`. "
-                            "Missing keys are treated as None. Restricted Python over `state`: dot-notation, comparisons, and/or/not, arithmetic, `in`, the functions str/int/float/bool/list/dict/len/abs/min/max/round, and the common string methods. No f-strings, comprehensions or lambdas."
+                            "Missing keys are treated as None. "
+                            + _EXPRESSION_DIALECT
                         ),
                     },
                     "if_true_step_id": {"type": "string", "description": "Step to go to when if_condition is True (if_else steps)"},
@@ -1082,7 +1089,8 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "string",
                         "description": (
                             "Expression whose str() result is matched against switch_cases (switch steps). "
-                            "Example: `state.category` or `state.result.status.lower()`. Restricted Python over `state`: dot-notation, comparisons, and/or/not, arithmetic, `in`, the functions str/int/float/bool/list/dict/len/abs/min/max/round, and the common string methods. No f-strings, comprehensions or lambdas."
+                            "Example: `state.category` or `state.result.status.lower()`. "
+                            + _EXPRESSION_DIALECT
                         ),
                     },
                     "switch_cases_json": {
@@ -1193,7 +1201,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                                 "transform_code": {"type": "string"},
                                 "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {state.key} interpolation."},
-                                "if_condition": {"type": "string", "description": "Condition for if_else steps (e.g. `state.flag == True`). Restricted Python over `state`: dot-notation, comparisons, and/or/not, arithmetic, `in`, the functions str/int/float/bool/list/dict/len/abs/min/max/round, and the common string methods. No f-strings, comprehensions or lambdas."},
+                                "if_condition": {"type": "string", "description": "Condition for if_else steps (e.g. `state.flag == True`). " + _EXPRESSION_DIALECT},
                                 "if_true_step_id": {"type": "string", "description": "Step ID when condition is True"},
                                 "if_false_step_id": {"type": "string", "description": "Step ID when condition is False"},
                                 "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps. Same restricted expression syntax as if_condition."},

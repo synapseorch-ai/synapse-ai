@@ -72,14 +72,18 @@ def prompt_fragment(name: str) -> str:
 
 
 def expand_prompts(text: str) -> str:
-    """A prompt as it runs: its library passages, then the step-type cheatsheet, written in where they are named.
-    A name the library does not have is an error, never a blank."""
+    """A prompt as it runs: its library passages, then the step-type cheatsheet and what an expression may use (the
+    engine's own tables, F957), written in where they are named. A name the library does not have is an error, never
+    a blank."""
     # Imported lazily to avoid a circular import (this module is imported from __init__.py).
+    from core.expressions import vocabulary_sentence
+
     from . import STEP_TYPE_CHEATSHEET
     if not isinstance(text, str):
         return text
     text = FRAGMENT.sub(lambda m: prompt_fragment(m.group(1)), text)
-    return text.replace("{{STEP_TYPE_CHEATSHEET}}", STEP_TYPE_CHEATSHEET)
+    return (text.replace("{{STEP_TYPE_CHEATSHEET}}", STEP_TYPE_CHEATSHEET)
+            .replace("{{EXPRESSION_VOCABULARY}}", vocabulary_sentence()))
 
 
 def _apply_cheatsheet_to_agent(agent: dict) -> dict:
