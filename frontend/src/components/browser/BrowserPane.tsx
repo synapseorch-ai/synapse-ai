@@ -30,7 +30,7 @@ import { useBrowserFrames, type FrameMemory } from './useBrowserFrames';
  * page, the address bar takes an address, and Hand back carries a note.
  */
 export function BrowserPane({
-  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide,
+  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack,
   className, style, children,
 }: {
   host: BrowserHost;
@@ -46,6 +46,8 @@ export function BrowserPane({
   onClosed?: () => void;
   /** Close the pane, leaving the browser as it is. */
   onHide?: () => void;
+  /** The wheel went back to the agent: a turn waiting on the person can go on. */
+  onHandedBack?: () => void;
   className?: string;
   style?: React.CSSProperties;
   /** The pane's own edge, such as its resize handle. */
@@ -100,6 +102,7 @@ export function BrowserPane({
     if (ok) {
       setMoved({ wheel: 'agent', on: frame });
       setNote('');
+      onHandedBack?.();
     } else setWheelFailed('The wheel could not be handed back. Try again.');
   };
 

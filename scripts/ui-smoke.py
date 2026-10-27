@@ -12663,6 +12663,46 @@ async def check_brwbanner(browser) -> str:
             "the page's dialog and dropdown are answered in our cards")
 
 
+@check
+async def check_brwturn(browser) -> str:
+    """A browser turn shows in the conversation as the same card as the pane's strip, and is acted on there (BRW2,
+    F1077; Naveen: act where you read): it opens the browser, Done hands the wheel back, and the turn is read on
+    from where it paused. It is never answered by typing: a message under it is a new message."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-turn")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", "".join(_frame(e, f"t-{i + 1}") for i, e in enumerate([
+            {"type": "browser_session", "session_id": "bsT", "owner": "chat:uismoke-brw-turn"},
+            {"type": "human_input_required", "kind": "browser_turn", "session_id": "bsT",
+             "reason": "Log in to Saltmarsh's partner portal.", "banner_kind": "login_expired",
+             "prompt": "Log in to Saltmarsh's partner portal."}])))
+        card = page.locator("main [data-browser-turn]")
+        try:
+            await card.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("a browser turn has no card in the conversation")
+        if "Log in to Saltmarsh" not in await card.inner_text():
+            bad.append("the card does not say what the turn is for")
+        await page.get_by_role("button", name="Close the browser pane").click()
+        await card.get_by_role("button", name="Open the browser").click()
+        try:
+            await _pane(page).wait_for(timeout=5_000)
+        except Exception:
+            bad.append("Open the browser did not show the pane")
+        await card.get_by_role("button", name="Done").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsT/wheel/hand-back'))"):
+            bad.append("the card's Done did not hand the wheel back")
+        if not await _wait(page, "() => window.__calls.some(c => /\\/api\\/chat\\/[^/]+\\/events/.test(c.url))"):
+            bad.append("the turn was not read on after the hand-back")
+        if not await _on_screen(page, "You handed the browser back"):
+            bad.append("the conversation does not say the browser was handed back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the browser turn's card opens the browser; Done hands back and the turn is read on"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

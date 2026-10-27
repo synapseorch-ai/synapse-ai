@@ -36,7 +36,7 @@ import {
 import { cn } from '@/lib/utils';
 import { OSS_BROWSER_HOST } from '@/lib/browserHost';
 import {
-  BrowserActionLine, BrowserPane, PANE_SHARE, PaneHandle, actionOf, isBrowserEvent, parseShare,
+  BrowserActionLine, BrowserPane, BrowserTurnCard, PANE_SHARE, PaneHandle, actionOf, isBrowserEvent, parseShare,
   type BrowserAction, type BrowserEvent, type FrameMemory,
 } from '@/components/browser';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -870,7 +870,7 @@ function tabTitle(text: string): string {
  * turn, an approval, a helper or a team: each is drawn from what the server
  * holds.
  */
-function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBrowser }: {
+function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBrowser, onShowBrowser, onResumeHook }: {
   tab: ChatTab;
   /** Its title, its draft, or — before its first message — its agent changed. */
   onChange: (change: Partial<ChatTab>) => void;
@@ -882,6 +882,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   onOpenChat: (sessionId: string, agentId: string, title: string) => void;
   /** The agent opened a browser, or did something in it (BRW2): the pane beside the conversation is the shell's. */
   onBrowser: (event: BrowserEvent, agentName: string) => void;
+  /** A browser turn's "Open the browser": the shell shows that session's pane. */
+  onShowBrowser: (sessionId: string, agentName: string) => void;
+  /** Gives the shell what to call when the person hands the browser back in the pane: the waiting turn goes on. */
+  onResumeHook: (resume: () => void) => void;
 }) {
   const [sessionId, setSessionId] = useState(tab.sessionId);
 
@@ -1475,7 +1479,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
     // "ok" ran the call, and anything else was taken as the refusal's reason and
     // never answered (F298).
     const lastHumanIdx = messages.findLastIndex(
-      m => m.msgType === 'human_input_required' && m.data?.kind !== 'tool_approval');
+      // A browser turn is answered in the browser, by handing it back (BRW2): a message is a new message.
+      m => m.msgType === 'human_input_required' && m.data?.kind !== 'tool_approval' && m.data?.kind !== 'browser_turn');
     if (lastHumanIdx !== -1) {
       const hasReplyAfter = messages.slice(lastHumanIdx + 1).some(m => m.role === 'user');
       if (!hasReplyAfter) {
@@ -1908,6 +1913,43 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       }
     }
   };
+
+  /**
+   * A browser turn handed back (BRW2, F1077), from its card or from the pane: the turn goes on in the engine, and
+   * this reads it from where it paused, as a turn whose stream was lost is read again. Once per turn.
+   */
+  const resumeAfterBrowser = async () => {
+    if (isLoading) return;
+    const parked = messages.findLastIndex(m => m.msgType === 'human_input_required' && m.data?.kind === 'browser_turn');
+    if (parked === -1 || messages.slice(parked + 1).some(m => m.role === 'user' || m.data?.handedBack)) return;
+    const question = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
+    setMessages(prev => [...prev, { role: 'assistant', msgType: 'note', content: 'You handed the browser back.',
+                                    data: { handedBack: true } }]);
+    setIsLoading(true);
+    setDraftAnswer('');
+    setTurnOutcome(null);
+    turnAnsweredRef.current = false;
+    lastThoughtRef.current = null;
+    refusedRef.current = [];
+    liveCallsRef.current = [];
+    sourcesRef.current = null;
+    notesRef.current = [];
+    try {
+      await recoverTurn(sessionId, question);
+    } catch (e) {
+      if ((e as { engineError?: boolean })?.engineError) {
+        setTurnOutcome({ kind: 'failed', message: (e as Error).message,
+                         model: Boolean((e as Error & { modelError?: boolean }).modelError) });
+      }
+    } finally {
+      setIsLoading(false);
+      setStreamingActivity(null);
+      setIsThinking(false);
+      setThinkingPreview(null);
+    }
+  };
+  // Given again each render, so the shell always calls the one that sees this render's conversation.
+  useEffect(() => { onResumeHook(() => { void resumeAfterBrowser(); }); });
 
   /**
    * Allow or refuse a tool call the agent stopped to ask about.
@@ -2543,6 +2585,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
             // has no run behind it — the turn itself is what resumes — so it
             // is answered somewhere else and rendered as a decision, not a form.
             kind: data.kind,
+            // A browser turn (BRW2): the page is the person's until they hand it back.
+            session_id: data.session_id,
+            reason: data.reason,
+            banner_kind: data.banner_kind,
             tool_name: data.tool_name,
             tool_args: data.tool_args,
             category: data.category,
@@ -2890,6 +2936,27 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           disabled={isLoading}
           movedPast={messages.slice(idx + 1).some(m => m.role === 'user')}
         />
+      );
+    }
+
+    // ── A browser turn: the page is the person's for something only they should do (BRW2, F1077) ──
+    if (msg.msgType === 'human_input_required' && msg.data?.kind === 'browser_turn') {
+      const sid = String(msg.data?.session_id ?? '');
+      const answered = messages.slice(idx + 1).some(m => m.role === 'user' || m.data?.handedBack);
+      return (
+        <AgentTurn key={idx} avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><User className="h-4 w-4" aria-hidden /></AgentAvatar>}>
+          <BrowserTurnCard
+            reason={String(msg.data?.reason || msg.content)}
+            kind={msg.data?.banner_kind}
+            answered={answered}
+            onOpen={sid ? () => onShowBrowser(sid, agentName) : undefined}
+            onDone={sid ? async () => {
+              const ok = await OSS_BROWSER_HOST.handBack!(sid);
+              if (ok) void resumeAfterBrowser();
+              return ok;
+            } : undefined}
+          />
+        </AgentTurn>
       );
     }
 
@@ -3559,6 +3626,15 @@ export default function Home() {
     });
   }, []);
   const frontBrowser = frontId ? browsers[frontId] : undefined;
+  // What the front conversation does when the person hands its browser back in the pane: its waiting turn goes on.
+  const resumers = useRef<Record<string, () => void>>({});
+  const showBrowser = useCallback((tabId: string, sessionId: string, agentName: string) => {
+    setBrowsers(all => {
+      const had = foldBrowser(all[tabId], { type: 'browser_session', session_id: sessionId, owner: '' }, agentName)!;
+      return { ...all, [tabId]: { ...had, shown: true } };
+    });
+    setPhoneShows({ tab: tabId, view: 'browser' });
+  }, []);
   const changeBrowser = useCallback((edit: Partial<TabBrowser>) => {
     if (!frontId) return;
     setBrowsers(all => (all[frontId] ? { ...all, [frontId]: { ...all[frontId], ...edit } } : all));
@@ -3577,6 +3653,7 @@ export default function Home() {
         memory={frames}
         closedBefore={frontBrowser.closed}
         onClosed={() => changeBrowser({ closed: true })}
+        onHandedBack={() => resumers.current[frontId]?.()}
         {...props}
       />
     );
@@ -3672,6 +3749,8 @@ export default function Home() {
               onOpenAgent={tabs.openAgent}
               onOpenChat={(sessionId, agentId, title) => tabs.openConversation(sessionId, agentId, tabTitle(title))}
               onBrowser={(event, agentName) => onBrowser(front.id, event, agentName)}
+              onShowBrowser={(sessionId, agentName) => showBrowser(front.id, sessionId, agentName)}
+              onResumeHook={(resume) => { resumers.current[front.id] = resume; }}
             />
           </div>
         )}
