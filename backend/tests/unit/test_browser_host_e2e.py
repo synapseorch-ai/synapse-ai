@@ -76,6 +76,7 @@ async def site():
             "const f = document.createElement('iframe'); document.body.append(f);"
             "try { new f.contentWindow.Worker(src(inside)); made++; } catch (e) {}"
             "try { const w = window.open(''); new w.Worker(src(inside)); made++; } catch (e) {}"
+            "try { const w = f.contentWindow.open(''); new w.Worker(src(inside)); made++; } catch (e) {}"
             # A popup that loads a page of its own, which starts its own worker.
             "window.open('/spawn');"
             "document.getElementById('out').textContent = 'made-' + made;"
