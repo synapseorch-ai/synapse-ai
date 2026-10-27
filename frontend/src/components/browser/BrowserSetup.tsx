@@ -29,6 +29,8 @@ export function browserConfig(value: Partial<BrowserConfig> | null | undefined):
 /** One site per line or comma, as a host: "https://portal.example.com/x" is "portal.example.com". */
 export function parseSites(text: string): string[] {
   const hosts = text.split(/[\n,]+/).map(s => s.trim().toLowerCase()).filter(Boolean).map((s) => {
+    // `*.host` covers its subdomains (BRW1's AgentBrowser); kept as written.
+    if (/^\*\.[a-z0-9.-]+$/.test(s)) return s;
     try {
       return new URL(s.includes('://') ? s : `https://${s}`).hostname;
     } catch {
@@ -72,7 +74,7 @@ export function BrowserSetup({ value, onChange, logins }: {
 
       <Field
         label="Sites it may use"
-        hint="One per line. It cannot open a page anywhere else, even when a page links there. Blank: any public site, to read."
+        hint="One per line, as an address or *.example.com for its subdomains. Listed, it cannot open a page anywhere else, even when a page links there. Blank: it may read any public site, and asks you before typing on one. List sites to let a scheduled run type on them."
       >
         <Textarea
           rows={3}
