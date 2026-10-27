@@ -104,6 +104,38 @@ class AgentTeam(BaseModel):
     spend_limit_usd: float | None = Field(default=None, gt=0)
 
 
+class AgentBrowser(BaseModel):
+    """A Browser agent's settings (BRW1 v2, DESIGN.md §2.6): where it may go, whose login it uses,
+    how many actions a task gets, and whether the person may co-drive."""
+    #: Hosts its top-level navigation may reach, redirects included: "portal.example.com" or
+    #: "*.example.com". Empty means any public site (chat's reading).
+    sites: list[str] = []
+    #: A saved website login (`core.website_logins`), loaded into each session it opens.
+    login_ref: str | None = None
+    action_budget: int = Field(default=40, ge=1, le=200)
+    mode: Literal["read_only", "co_drive"] = "read_only"
+
+    @field_validator("sites")
+    @classmethod
+    def _hosts(cls, value: list[str]) -> list[str]:
+        """Each a host or a `*.` wildcard, lower-case, once; a pasted URL keeps only its host."""
+        from urllib.parse import urlparse
+        out: list[str] = []
+        for raw in value:
+            text = (raw or "").strip().lower()
+            if not text:
+                continue
+            host = urlparse(text if "://" in text else f"//{text}").hostname or ""
+            wild = text.startswith("*.")
+            host = ("*." + host.lstrip("*.")) if wild else host
+            label = host[2:] if wild else host
+            if not label or "." not in label or "@" in text or any(c in label for c in "/:*"):
+                raise ValueError(f"'{raw}' is not a site: give a host such as portal.example.com or *.example.com")
+            if host not in out:
+                out.append(host)
+        return out
+
+
 class Agent(BaseModel):
     id: str
     name: str = Field(max_length=AGENT_NAME_MAX)
@@ -146,6 +178,8 @@ class Agent(BaseModel):
     delegate_agent_ids: list[str] = []  # for delegate-type agents; empty = allow all
     # A delegate's "How members work" (Team, TEAM1a): None = one at a time, as every delegate did.
     team: AgentTeam | None = None
+    # A Browser agent's settings (BRW1 v2): None = the defaults (read-only, any public site, 40 actions).
+    browser: AgentBrowser | None = None
     # What this agent may do with the tools it holds, by behaviour rather than
     # by name: {"destructive"|"open_world"|"undeclared": "allow"|"confirm"|"deny"}.
     # An absent category inherits the deployment's `tool_policy_defaults`, which

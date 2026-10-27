@@ -346,3 +346,34 @@ async def test_the_chat_stream_carries_the_pane_events(client, monkeypatch):
     kinds = [e["type"] for e in events]
     assert kinds == ["tool_execution", "tool_result", "browser_session", "browser_action", "response", "done"]
     assert events[3]["shot_ref"] == "1" and events[2]["session_id"] == "s1"
+
+
+# ── a Browser agent's settings (v2) ──────────────────────────────────────────
+
+def test_a_browser_agents_settings_default_to_read_only_anywhere():
+    from core.models import AgentBrowser
+    s = AgentBrowser()
+    assert (s.sites, s.login_ref, s.action_budget, s.mode) == ([], None, 40, "read_only")
+
+
+def test_sites_are_hosts_whatever_was_pasted():
+    from core.models import AgentBrowser
+    s = AgentBrowser(sites=["https://Portal.Example.com/login?x=1", "*.vendor.io", "portal.example.com", " "])
+    assert s.sites == ["portal.example.com", "*.vendor.io"]
+
+
+@pytest.mark.parametrize("bad", ["localhost", "*", "*.", "http://", "a/b", "user@host.com"])
+def test_a_site_that_is_not_a_host_is_refused(bad):
+    from pydantic import ValidationError
+    from core.models import AgentBrowser
+    with pytest.raises(ValidationError):
+        AgentBrowser(sites=[bad])
+
+
+async def test_a_browser_agent_saves_its_settings(client):
+    body = {"id": "b2", "name": "B", "description": "d", "type": "browser", "tools": [], "system_prompt": "x",
+            "browser": {"sites": ["portal.example.com"], "action_budget": 25, "mode": "co_drive"}}
+    resp = await client.post("/api/agents", json=body)
+    assert resp.status_code == 200
+    assert resp.json()["browser"] == {"sites": ["portal.example.com"], "login_ref": None, "action_budget": 25,
+                                      "mode": "co_drive"}
