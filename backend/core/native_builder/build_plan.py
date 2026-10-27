@@ -1031,7 +1031,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
 
     catalog = (await _read_options()).get("catalog") or []
     offered = list(prior.get("offered") or [])
-    no_way, connect, said, leads, makes = [], [], [], [], []
+    no_way, connect, said, leads, makes, later, after_yes = [], [], [], [], [], [], []
     for t in plan.tools:
         if t.status == "missing" and t.provider:
             # The research's verdict, with why (A6): no way in that it could find.
@@ -1057,22 +1057,17 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
             # The build makes it after the yes, on the provider's own host, and asks for its key then (F944).
             makes.append(t)
         elif t.status == "found":
-            connect.append(t.name)
+            # Plan first, connect after the yes (F949, Naveen 10-24): the review shows the plan alone, and its Connect
+            # card comes after the yes, one per provider, before the save.
+            later.append(t.name)
             app = _app_for(t.provider or "", catalog)
             if app is not None:
                 t.via = "catalog_app"
-                slug = str(app.get("slug"))
-                if slug not in offered:
-                    shown = await prepare_connection({"kind": "app", "catalog_slug": slug,
-                                                      "title": f"Connect {app.get('name')}",
-                                                      "why": f"This plan's `{t.name}` needs it."}, None, events)
-                    if shown.get("status") == "card_shown":
-                        offered.append(slug)
-                said.append(f"`{t.name}`: {app.get('name')} is in the Apps catalog. Connect it with the card above; "
-                            "I'll use its tools once it is connected.")
+                after_yes.append(f"`{t.name}`: after your yes, I'll ask you to connect {app.get('name')} "
+                                 "(in the Apps catalog).")
             else:
-                said.append(f"`{t.name}`: {t.provider} has its own MCP server. Add it under Apps and MCP servers, "
-                            "then tell me it is connected.")
+                after_yes.append(f"`{t.name}`: after your yes, I'll ask you to connect {t.provider}'s own MCP "
+                                 "server, under Apps and MCP servers.")
     if found.errors:
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]
@@ -1088,7 +1083,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 "research": prior.get("research") or [],
                 "for": {a.name: agent_fingerprint(a.model_dump()) for a in plan.agents}}
     offers = ["build"] if buildable else []
-    offers += [f"without:{n}" for n in dict.fromkeys([*no_way, *connect, *found.blocks])]
+    offers += [f"without:{n}" for n in dict.fromkeys([*no_way, *connect, *later, *found.blocks])]
     # Only where a press changes what the run asks (F964, 2): it lifts this build's own confirm, or the Human step a
     # Tool step needs; where only an agent's or the workspace's policy asks, it would change nothing.
     gated = {g.tool for g in plan.gates if g.decision == "confirm"}
@@ -1101,6 +1096,12 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
 
     names = {i: a.get("name") or i for i, a in ws.agents.items()}
     review = render(plan, agent_names=names)
+    if answer.get("outcome") == "replan":
+        # The second review after connecting (F949): why it is asked again, before the plan on the real names.
+        who = " and ".join(answer.get("connected") or []) or "it"
+        review = (f"After connecting {who}, its tools are "
+                  + ", ".join(f"`{n}`" for n in (answer.get("tools") or [])[:12])
+                  + ": here is the plan on them, for one more yes.\n\n" + review)
     changes = changes_of(plan, state)
     if changes:
         review = review.replace("## Steps\n", "## What changes\n" + "\n".join(f"- {c}" for c in changes)
@@ -1112,6 +1113,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         review += "\n## Can't be saved yet\n" + "\n".join(f"- {e}" for e in found.errors) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
+    if after_yes:
+        # What it asks after the yes, one card per provider (F949): never beside the plan.
+        review += "\n## After your yes\n" + "\n".join(f"- {n}" for n in after_yes) + "\n"
     if makes:
         # What the person says yes to: each call, its host and its path, made only from this approved spec (F944).
         review += "\n## The tools it makes\n" + "\n".join(
@@ -1121,6 +1125,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,
            "research": prior.get("research") or [], "notes": board_notes, "changes": changes,
+           "after_yes": after_yes,
            # The review's lead-in follows what the card offers: no "approve to build it" where it can't be built.
            "lead": LEAD_BUILD if buildable else LEAD_NOT_YET}
     out["digest"] = digest(reviewed_of(out))

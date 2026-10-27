@@ -70,8 +70,9 @@ def test_the_route_makes_the_tools_waits_for_them_and_then_saves():
     answer = steps["step_connect_answer"]
     assert answer["forced_tool"] == "read_connect_answer" and answer["output_key"] == "plan_answer"
     cases = steps[answer["next_step_id"]]["switch_cases"]
+    # F949: connected under other tool names → the plan drawn again on them, and one more yes.
     assert cases == {"connected": "step_save", "without": "step_check_plan", "stop": "step_connect_stopped",
-                     "again": "step_wait_connect"}
+                     "again": "step_wait_connect", "replan": "step_plan_context"}
     assert build_plan.MAKES_HTTP_TOOLS, "Build it is offered for a read API's tools now that the wait exists"
 
 

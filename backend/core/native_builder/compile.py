@@ -310,6 +310,9 @@ async def validate(compiled: Compiled, plan: Plan, server_module: Any,
     # A read API's tools the build makes after the yes, by method: held to decision 4 now, not after (F944).
     to_make = {t.name: str((t.api or {}).get("endpoint", {}).get("method") or "POST").upper()
                for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api}
+    # An app's or an MCP server's tool, connected after the yes (F949): not here to read, so it acts until shown
+    # otherwise, held to decision 4 now rather than at a save after the person connected it.
+    to_make |= {t.name: "POST" for t in plan.tools if t.status == "found" and t.via in ("catalog_app", "mcp_server")}
     from core import builder_guard
 
     workflows = [compiled.orchestration, *(i.orchestration for i in compiled.inner)]

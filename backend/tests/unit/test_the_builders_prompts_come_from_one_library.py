@@ -39,7 +39,8 @@ from core.native_builder import prompt_lint, seed
 #: built from what it needs, talk with no tools — and the reporter's one read tool per job (F756), 8d5a358b…;
 #: SAI2's review of P4: the reporter's own prompt teaches no tool (each step's does), talk has room for the answer
 #: turn, and the talker says only its role, c2b8ebd2….
-BUNDLE_SHA256 = "c2b8ebd2f705e2473c55f0ff2702ce7ea7caebd254d50e40195647093feee164"
+#: P3c (F949): the wait waits for every way in, and a connection under other tool names re-plans, 452d13db….
+BUNDLE_SHA256 = "452d13dbd0ff50ffb95af834c964195933c9aaaa442031af9abe398dda939128"
 
 
 def _sha(definitions) -> str:

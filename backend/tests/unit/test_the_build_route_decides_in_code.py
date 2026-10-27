@@ -158,7 +158,29 @@ async def test_an_api_only_provider_has_no_way_in_yet_so_build_it_is_never_offer
     assert "public API" in out["say"] and not [e for e in events if e.get("type") == "connection_needed"]
 
 
-async def test_an_app_in_the_catalog_gets_its_connect_card_once_and_build_it_waits_for_it(client):
+async def test_an_app_in_the_catalog_is_connected_after_the_yes_never_beside_the_plan(client):
+    """Was P3a's "its card at the review, Build it waits for it" (Q3); since F949 (Naveen 10-24: plan first, connect
+    after the yes) the review shows the plan alone, says what it will ask after the yes, and puts up no card, on any
+    pass. The card itself, after the yes, is test_a_build_connects_after_the_yes."""
+    async def options():
+        return {"catalog": [{"slug": "notion", "name": "Notion", "auth": "oauth", "url": "https://mcp.notion.com"}]}
+
+    builder_connect.set_connect_options(options)
+    findings = {"goal": "x", "options": [{"provider": "Notion", "how": "mcp", "sources": ["https://notion.so"]}]}
+    run = await _run(plan_findings=findings)
+    ask = {"id": "ok", "type": "human", "name": "Approve", "does": "x", "prompt": "Add it?"}
+    note = {"id": "note", "type": "tool", "name": "Write it down", "does": "Adds a Notion page",
+            "tool": "notion_add_page"}
+    out, events = await _check(run, {"finish": "submit_plan", **_plan(ask, note)})
+    assert not [e for e in events if e.get("type") == "connection_needed"]
+    assert "build" in out["offers"] and "I'll ask you to connect Notion" in out["after_yes"][0]
+    _, again = await _check(run, {"finish": "submit_plan", **_plan(ask, note)})
+    assert not [e for e in again if e.get("type") == "connection_needed"]
+
+
+async def test_an_apps_tool_it_will_connect_is_held_to_an_approval_before_the_yes(client):
+    """Not here to read until it is connected, an app's tool is held as one that acts, as a made tool is (F944): a
+    plan with nobody approving it is not offered Build it before the person has connected anything."""
     async def options():
         return {"catalog": [{"slug": "notion", "name": "Notion", "auth": "oauth", "url": "https://mcp.notion.com"}]}
 
@@ -167,12 +189,8 @@ async def test_an_app_in_the_catalog_gets_its_connect_card_once_and_build_it_wai
     run = await _run(plan_findings=findings)
     note = {"id": "note", "type": "tool", "name": "Write it down", "does": "Adds a Notion page",
             "tool": "notion_add_page"}
-    out, events = await _check(run, {"finish": "submit_plan", **_plan(note)})
-    cards = [e for e in events if e.get("type") == "connection_needed"]
-    assert [c["app"]["slug"] for c in cards] == ["notion"]
-    assert "build" not in out["offers"] and "card above" in out["say"]
-    _, again = await _check(run, {"finish": "submit_plan", **_plan(note)})
-    assert not [e for e in again if e.get("type") == "connection_needed"]
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(note)})
+    assert "build" not in out["offers"] and any("Human step" in i for i in out["issues"])
 
 
 async def test_build_without_x_drops_its_steps_in_code_and_then_build_it_is_offered(client):

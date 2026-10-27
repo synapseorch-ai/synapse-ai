@@ -94,6 +94,8 @@ export interface Plan {
     actsAlone: string | null;
     /** What a policy blocks here, by who (F964): render's "Blocked here". Absent for a plan read from its words. */
     blocked?: string | null;
+    /** What it asks after the yes (F949): render's "After your yes". Absent for a plan read from its words. */
+    afterYes?: string | null;
     /**
      * The answers the card offers, when it is drawn from the plan's object (SAI2-P3): `build`, `without:<tool>`,
      * `find`, `change`, `stop`. Absent for a plan read from its words, which offers what it always did.
@@ -587,6 +589,8 @@ export interface PlanObjectView {
     changes?: string[];
     /** Code's words: each missing tool and its reason, and what the plan could not be saved for. */
     say?: string;
+    /** What it asks after the yes, one Connect card per provider (F949): never beside the plan. */
+    after_yes?: string[];
 }
 
 export function planOf(context: unknown): PlanObjectView | null {
@@ -640,6 +644,7 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
         needs: view.say?.trim() || null,
         asksFirst: asksOf(view),
         blocked: blockedOf(view),
+        afterYes: bullets(view.after_yes),
         actsAlone: bullets(view.plan.approvals?.acts_without_asking, true),
         offers: view.offers,
         agentInstructions: Object.entries(view.prompts ?? {})

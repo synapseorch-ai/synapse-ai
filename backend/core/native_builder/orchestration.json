@@ -1244,7 +1244,7 @@
             "output_key": "make_route",
             "tool_arguments": null,
             "next_step_id": null,
-            "switch_expression": "\"wait\" if state.tools_made.tools else state.tools_made.outcome",
+            "switch_expression": "\"wait\" if state.tools_made.waits else state.tools_made.outcome",
             "switch_cases": {
                 "wait": "step_wait_connect",
                 "tools_made": "step_save",
@@ -1362,7 +1362,8 @@
                 "connected": "step_save",
                 "without": "step_check_plan",
                 "stop": "step_connect_stopped",
-                "again": "step_wait_connect"
+                "again": "step_wait_connect",
+                "replan": "step_plan_context"
             },
             "switch_default_step_id": "step_wait_connect"
         },

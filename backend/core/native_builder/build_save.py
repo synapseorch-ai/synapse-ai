@@ -454,8 +454,12 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     # this build's own to make (F944), so they are found, not gone.
     only = str(args.get("only") or "")
     making = {t.name: t for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api}
+    # An app's or an MCP server's tools are connected after the yes (F949): not here yet while the tools are made;
+    # the save itself needs every one of them here.
+    later = {t.name for t in plan.tools if t.status == "found" and t.via in ("catalog_app", "mcp_server")}
     now = await O.fill(plan, server_module, found=making)
-    gone = [t.name for t in now.tools if t.status != "present" and t.name not in making]
+    gone = [t.name for t in now.tools if t.status != "present" and t.name not in making
+            and not (only == "tools" and t.name in later)]
     if gone:
         return _stopped(events, _why_missing(gone, plan, state))
     if moved := _gates_moved(plan.gates, now.gates):
@@ -464,8 +468,10 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         return _stopped(events, "Nothing was built: what the run asks you for changed since your yes — "
                                 + "; ".join(moved) + ". Ask again to see the plan as it is now.")
     issues = [i for i in await dry_issues(plan, server_module, await workspace(server_module), state)
-              # A tool this build makes is not there until `step_make_tools` makes it (F944).
-              if not ("nothing here provides" in i and any(f"'{n}'" in i or f"`{n}`" in i for n in making))]
+              # A tool this build makes is not there until `step_make_tools` makes it (F944), nor one connected after
+              # the yes until it is (F949).
+              if not ("nothing here provides" in i and any(f"'{n}'" in i or f"`{n}`" in i for n in
+                                                           [*making, *(later if only == "tools" else [])]))]
     if issues:
         return _stopped(events, _issues_reason(issues))
     if plan.kind == "update" and (moved := await _moved_since_read(state)):
@@ -479,7 +485,11 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
     areas.ensure_loaded()
     kept = run.step_progress.get(PROGRESS_KEY) or {}
     if kept.get("approval") != approval.id:
-        kept = {}  # another yes's record: this approval's save starts clean (MCP2's note 1)
+        # Another yes's record: this approval's save starts clean (MCP2's note 1), but for the tools an earlier yes of
+        # this build made and never saved (F949's second yes): carried, so a stop still removes them, and the save
+        # removes those the new plan no longer uses (SAI2's change 2).
+        carried = [d for d in kept.get("done") or [] if d[0] == "tool"] if not kept.get("saved") else []
+        kept = {"done": carried} if carried else {}
     made: dict[str, str] = dict(kept.get("made") or {})
     done: list[tuple[str, str, str]] = [tuple(d) for d in kept.get("done") or []]  # type: ignore[misc]
     calls_done: list[int] = list(kept.get("calls_done") or [])
@@ -540,8 +550,12 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         return _stopped(events, f"Nothing was built: {reason}.")
     if only == "tools":
         made_tools = [c["name"] for c in calls if c["kind"] == "tool"]
-        say = await _connect_cards(plan, made_tools, events) if made_tools else ""
-        return {"outcome": "tools_made", "tools": made_tools, "say": say}
+        waits, say = await _connect_cards(plan, made_tools, events)
+        return {"outcome": "tools_made", "tools": made_tools, "waits": waits, "say": say}
+    # A tool an earlier yes made that the plan saved no longer uses is never left behind (F949; SAI2's change 2).
+    unused = [real for kind, real, _ in done if kind == "tool" and real not in O.tool_names(plan)]
+    if unused:
+        await _undo([("tool", n, n) for n in unused], state, events, "the plan you approved no longer uses it")
     # Saved: what it made is the build's now, never removed by a later cancel (F946).
     run.step_progress[PROGRESS_KEY] = {**(run.step_progress.get(PROGRESS_KEY) or {}), "saved": True}
     from core.orchestration.state import SharedState
@@ -556,15 +570,33 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             "effect": await _read_back(calls, made) + notes}
 
 
-async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> str:
-    """One Connect card per provider for the tools this build made for it (F945), from the approved spec: its key
-    once, its header and scheme, and what its host needs. Returns what the wait says."""
-    from core.builder_connect import prepare_connection
+async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> tuple[list[str], str]:
+    """One Connect card per provider after the yes (F945, F949): for the tools this build made for it, from the
+    approved spec, its key once, its header and scheme, and what its host needs; for an app in the catalog, its own
+    card; for an MCP server, the Apps screen's. Returns the providers it waits for, and what the wait says."""
+    from core.builder_connect import _read_options, prepare_connection
+    from core.native_builder.build_plan import _app_for
 
     by: dict[str, list[O.ToolStatus]] = {}
+    later: dict[str, list[O.ToolStatus]] = {}
     for t in plan.tools:
         if t.name in names and t.api:
             by.setdefault(t.provider or t.name, []).append(t)
+        elif t.status == "found" and t.via in ("catalog_app", "mcp_server"):
+            later.setdefault(t.provider or t.name, []).append(t)
+    if later:
+        catalog = (await _read_options()).get("catalog") or []
+        for provider, tools in later.items():
+            app = _app_for(provider, catalog)
+            uses = ", ".join(f"`{t.name}`" for t in tools)
+            if app is not None:
+                await prepare_connection({"kind": "app", "catalog_slug": str(app.get("slug")),
+                                          "title": f"Connect {app.get('name')}",
+                                          "why": f"This build uses {uses}."}, None, events)
+            else:
+                await prepare_connection({"kind": "settings", "screen": "apps", "title": f"Connect {provider}",
+                                          "why": f"Add {provider}'s MCP server under Apps and MCP servers: this "
+                                                 f"build uses {uses}."}, None, events)
     for provider, tools in by.items():
         api = tools[0].api or {}
         auth = api.get("auth") or {}
@@ -575,9 +607,13 @@ async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> 
                    f"tool{'s' if len(tools) > 1 else ''}, never in this conversation.",
             "tools": [t.name for t in tools], "header": auth.get("name") or "Authorization",
             "scheme": auth.get("scheme") or "", "host_params": api.get("host_params") or []}, None, events)
-    who = " and ".join(by)
-    return (f"I made the tools for {who}. Connect {who} on the card above, and I'll save the rest of the build. Or "
-            f"say \"build without {next(iter(by))}\", or \"stop\".")
+    waits = list(dict.fromkeys([*by, *later]))
+    if not waits:
+        return [], ""
+    who = " and ".join(waits)
+    made = f"I made the tools for {' and '.join(by)}. " if by else ""
+    return waits, (f"{made}Connect {who} on the card{'s' if len(waits) > 1 else ''} above, and I'll save the rest "
+                   f"of the build. Or say \"build without {waits[0]}\", or \"stop\".")
 
 
 #: Ending words at the wait for a connection (F946), read in code like the review's.
@@ -635,7 +671,9 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
     said = "stop" if args.get("give_up") else str((_obj(state.get("connect_answer")) or {}).get("feedback") or "")
     plan = _plan_of(checked_in(state))
     made = _made_tools(run)
-    providers = {t.name: t.provider or t.name for t in plan.tools if t.name in made}
+    # An app's or an MCP server's tools, connected after the yes (F949), and every tool's provider.
+    later = [t for t in plan.tools if t.status == "found" and t.via in ("catalog_app", "mcp_server")]
+    providers = {t.name: t.provider or t.name for t in plan.tools if t.name in made or t in later}
     from core.secret_scrub import holds_credential
 
     if holds_credential(said):
@@ -648,16 +686,35 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
     if _CONNECTED.match(said):
         current = {t.get("name"): t for t in await load_tools()}
         waiting = [n for n in made if not _connected(current.get(n))]
-        if not waiting:
+        # Each tool the approved plan names, compared exactly with what is here now (SAI2: never a partial save).
+        from core import builder_guard
+
+        exists = await builder_guard._resolver(server_module)
+        absent = [t for t in later if not await exists(t.name)]
+        servers = _servers_of(server_module)
+        unconnected = [t for t in absent if not _provider_tools(t.provider or t.name, servers, current)]
+        if not waiting and not unconnected and not absent:
             return {"outcome": "connected"}
-        who = " and ".join(dict.fromkeys(providers.get(n, n) for n in waiting))
-        return {"outcome": "again", "say": f"{who} is not connected yet: fill in its card above, then press Connect."}
+        if waiting or unconnected:
+            who = " and ".join(dict.fromkeys([*(providers.get(n, n) for n in waiting),
+                                              *(t.provider or t.name for t in unconnected)]))
+            return {"outcome": "again", "say": f"{who} is not connected yet: connect it on its card above, then "
+                                               "press Connect."}
+        # Connected, but its tools are named otherwise (or only some are here): the plan is drawn again on the real
+        # names, and the person says yes once more (Naveen, in SAI2-P3's tab).
+        who = " and ".join(dict.fromkeys(t.provider or t.name for t in absent))
+        real = sorted({n for t in absent for n in _provider_tools(t.provider or t.name, servers, current)})
+        return {"outcome": "replan", "connected": list(dict.fromkeys(t.provider or t.name for t in absent)),
+                "tools": real,
+                "say": f"After connecting {who}, its tools are " + ", ".join(f"`{n}`" for n in real[:12])
+                       + ": I'll draw the plan on them, and ask you for one more yes before I save it."}
     m = _WITHOUT.match(said)
     if m:
         # Only the provider named loses its tools (SAI2's review, 3); another's tool not yet connected goes too, as
         # the new yes makes it again; one already connected stays, and the new check finds it present with its key.
         asked = {w.strip(" `'\"").lower() for w in re.split(r",|\s+and\s+", m.group("what")) if w.strip(" `'\"")}
-        named = [n for n in made if n.lower() in asked or providers.get(n, "").lower() in asked]
+        named = [n for n in [*made, *(t.name for t in later)]
+                 if n.lower() in asked or providers.get(n, "").lower() in asked]
         if not named:
             return {"outcome": "again", "say": "Which one? Say \"build without\" and the provider's name, or "
                                                "\"stop\"."}
@@ -680,6 +737,22 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
         return {"outcome": "stop", "say": f"{say} Nothing else was built.".strip()}
     return {"outcome": "again", "say": "I'm waiting for the card above. Connect it, or say \"build without …\", or "
                                        "\"stop\"."}
+
+
+def _servers_of(server_module: Any) -> dict[str, list[str]]:
+    from core.native_builder.build_plan import _servers
+
+    return _servers(server_module)
+
+
+def _provider_tools(provider: str, servers: dict[str, list[str]], current: dict[str, dict]) -> list[str]:
+    """The tools here that are this provider's: those of a server named for it (`notion`), or tools named for it."""
+    from core.builder_research import _words
+
+    words = set(_words(provider))
+    named = [tool for server, tools in servers.items() if words and words <= set(_words(server.replace("_", " ")))
+             for tool in tools]
+    return named or [n for n in current if words and words <= set(_words(str(n).replace("_", " ")))]
 
 
 async def _cancelled(run: Any) -> None:
