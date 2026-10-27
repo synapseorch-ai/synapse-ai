@@ -15,4 +15,16 @@ export const OSS_BROWSER_HOST: BrowserHost = {
     // Already closed is stopped too.
     return res.ok || res.status === 404;
   },
+  takeWheel: (sessionId) => post(`/api/browser/${enc(sessionId)}/wheel/take`, {}),
+  handBack: (sessionId, note) => post(`/api/browser/${enc(sessionId)}/wheel/hand-back`, note ? { note } : {}),
+  input: (sessionId, input) => post(`/api/browser/${enc(sessionId)}/input`, input),
 };
+
+async function post(url: string, body: unknown): Promise<boolean> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => null);
+  return !!res?.ok;
+}

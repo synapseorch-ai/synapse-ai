@@ -12164,12 +12164,16 @@ const _chatFetch = window.fetch;
 window.fetch = function (input, init) {
   const url = String((input && input.url) || input || '');
   const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-  const m = /\/api\/browser\/([^/?]+)\/(frames|stop)/.exec(url);
+  const m = /\/api\/browser\/([^/?]+)\/([a-z/-]+)/.exec(url);
   if (!m) return _chatFetch(input, init);
-  window.__browserCalls.push({url: url, method: method});
+  const body = init && typeof init.body === 'string' ? JSON.parse(init.body) : null;
+  window.__browserCalls.push({url: url, method: method, body: body});
   if (m[2] === 'stop') {
     return Promise.resolve(new Response('{"stopped": true, "closed": true}', {
       status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  if (m[2] !== 'frames') {
+    return Promise.resolve(new Response('{"ok": true}', {status: 200, headers: {'Content-Type': 'application/json'}}));
   }
   const name = 'frames:' + m[1];
   const body = new ReadableStream({start(c) {
@@ -12502,6 +12506,78 @@ async def check_brwagent(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "the Browser section sets the mode, the sites as hosts, the saved login and the action budget; Save sends them"
+
+
+@check
+async def check_brwwheel(browser) -> str:
+    """The person takes the wheel, drives the page, and hands it back with a note (BRW2, F1076; DESIGN §2.4).
+
+    Taking over is an explicit button: a click on the page while the agent drives offers it instead of acting, because
+    "any input takes over" races the agent's next action. While the person drives, clicks land where they were made on
+    the page, typing goes in as text and keys, the address bar takes an address, and Hand back carries a note.
+    """
+    ctx, page = await _brw_page(browser, "uismoke-brw-wheel")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsW",
+                                              "owner": "chat:uismoke-brw-wheel"}, "w-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsW")
+        await _brw_push(page, "frames:bsW", _brw_frame())
+        screen = pane.get_by_role("application", name=re.compile("The page"))
+        await screen.wait_for(timeout=5_000)
+
+        await screen.click()
+        await asyncio.sleep(0.4)
+        if await _brw_calls(page, "input"):
+            bad.append("a click while the agent drove went to the page")
+        nudge = page.get_by_role("dialog", name=re.compile("driving"))
+        if not await nudge.count():
+            bad.append("a click while the agent drove did not offer Take over")
+        else:
+            await nudge.get_by_role("button", name="Take over").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsW/wheel/take') && c.method === 'POST')"):
+            bad.append("Take over did not take the wheel")
+        await _brw_push(page, "frames:bsW", _brw_frame(wheel="person"))
+        if not await pane.get_by_text("You're driving").count():
+            bad.append("the pane does not say the person is driving")
+
+        box = await screen.locator("img").bounding_box()
+        await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
+        await page.keyboard.type("abc")
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(0.8)
+        sent = [c["body"] for c in await _brw_calls(page, "input")]
+        clicks = [b for b in sent if b and b.get("type") == "mouse" and b.get("event") == "click"]
+        if not clicks or abs(clicks[0]["x"] - 640) > 16 or abs(clicks[0]["y"] - 200) > 16:
+            bad.append(f"the click reached the page as {clicks[:1]}, not near (640, 200)")
+        typed = "".join(b["text"] for b in sent if b and b.get("type") == "text")
+        if typed != "abc":
+            bad.append(f"typing reached the page as {typed!r}")
+        if not any(b and b.get("type") == "key" and b.get("key") == "Enter" for b in sent):
+            bad.append("Enter did not reach the page")
+
+        address = pane.get_by_role("textbox", name="Address")
+        await address.fill("https://stock.example.com/orders")
+        await address.press("Enter")
+        await asyncio.sleep(0.4)
+        navs = [c["body"] for c in await _brw_calls(page, "input") if c["body"] and c["body"].get("type") == "nav"]
+        if not any(n.get("url") == "https://stock.example.com/orders" for n in navs):
+            bad.append(f"the address bar sent {navs}")
+
+        await pane.get_by_role("textbox", name="Note for the agent").fill("I logged in, carry on")
+        await pane.get_by_role("button", name="Hand back").click()
+        await asyncio.sleep(0.4)
+        backs = [c["body"] for c in await _brw_calls(page, "wheel/hand-back")]
+        if backs != [{"note": "I logged in, carry on"}]:
+            bad.append(f"Hand back sent {backs}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a click while the agent drives offers Take over; the person's clicks, text, keys and address reach the "
+            "page; Hand back carries the note")
 
 
 async def main() -> int:

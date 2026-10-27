@@ -15,6 +15,7 @@ export {
   type BrowserEvent,
   type BrowserFrame,
   type BrowserHost,
+  type BrowserInput,
   type BrowserSessionEvent,
   type Wheel,
 } from './model';

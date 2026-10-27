@@ -38,12 +38,31 @@ export type BrowserAction = {
 
 export type BrowserEvent = BrowserSessionEvent | ({ type: 'browser_action' } & BrowserAction);
 
-/** How a product reaches a session's frames, screenshots and Stop. */
+/** What the person does to the page while they hold the wheel (`POST …/input`), in page CSS pixels. */
+export type BrowserInput =
+  | { type: 'mouse'; event: 'click' | 'down' | 'up' | 'move'; x: number; y: number;
+      button: 'left' | 'right' | 'middle'; clicks: number; modifiers: string[] }
+  | { type: 'scroll'; x: number; y: number; dx: number; dy: number }
+  | { type: 'key'; key: string; modifiers: string[] }
+  | { type: 'text'; text: string }
+  | { type: 'nav'; url: string }
+  | { type: 'nav'; action: 'back' | 'forward' | 'reload' };
+
+/**
+ * How a product reaches a session's frames, screenshots and Stop, and, where the person may drive, the wheel and
+ * the page's input. A host without the wheel's calls gives a pane the person only watches (BRW1's v1).
+ */
 export type BrowserHost = {
   framesUrl: (sessionId: string) => string;
   shotUrl: (sessionId: string, ref: string) => string;
   /** Ends the agent's turn or run and closes its browser. Resolves false when it could not. */
   stop: (sessionId: string) => Promise<boolean>;
+  /** The person takes the wheel: the agent's action in flight finishes and its next one waits. */
+  takeWheel?: (sessionId: string) => Promise<boolean>;
+  /** The wheel goes back to the agent, with what the person wants it to know. */
+  handBack?: (sessionId: string, note?: string) => Promise<boolean>;
+  /** One input to the page; refused (false) unless the person holds the wheel. */
+  input?: (sessionId: string, input: BrowserInput) => Promise<boolean>;
 };
 
 export function isBrowserEvent(data: unknown): data is BrowserEvent {
