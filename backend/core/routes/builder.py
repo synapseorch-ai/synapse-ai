@@ -19,7 +19,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -478,6 +478,24 @@ async def _expire_parked() -> list[str]:
     return expired
 
 
+def _panel_prefix() -> str:
+    """Every panel chat's session id starts with this: one workspace's Synapse AI chats."""
+    from core.tenancy import get_tenant
+    return f"builder:{get_tenant()}:{PANEL}"
+
+
+def _driven(run) -> bool:
+    """Whether a run someone could come back to still is one: parked on its question, or working on this process.
+
+    A `running` row is offered only while this process drives it: after a restart one is left `running` with nothing
+    writing to it, and following it would wait for ever.
+    """
+    if run.status == "paused":
+        return bool(run.waiting_for_human)
+    task = _active_tasks.get(run.run_id)
+    return task is not None and not task.done()
+
+
 async def _open_conversation() -> dict | None:
     """The panel's newest conversation that is still open, from its run rows (F214).
 
@@ -485,19 +503,16 @@ async def _open_conversation() -> dict | None:
     greeting while the server finished the turn, and a plan waiting for approval
     sat paused on no screen. Cloud's F148, in open source: read back from the
     runs rather than the run's event journal, so the turns survive whatever the
-    journal does not. A `running` run is offered only while this process drives
-    it — after a restart one is left `running` with nothing writing to it, and
-    following it would wait for ever.
+    journal does not.
     """
     from sqlalchemy import select
     from sqlalchemy.orm import defer
 
-    from core.orchestration.pauses import asking_step_id
     from core.store import session
     from core.store.models import OrchestrationRunDB
     from core.tenancy import get_tenant
 
-    prefix = f"builder:{get_tenant()}:{PANEL}"
+    prefix = _panel_prefix()
     async with session() as s:
         candidates = (await s.execute(
             select(OrchestrationRunDB)
@@ -512,46 +527,75 @@ async def _open_conversation() -> dict | None:
             .order_by(OrchestrationRunDB.created_at.desc())
             .limit(5)
         )).scalars().all()
+        # LIKE's `_` matches any one character.
+        run = next((row for row in candidates if (row.session_id or "").startswith(prefix) and _driven(row)), None)
+        return await _drawn(s, run) if run is not None else None
 
-        def live(row) -> bool:
-            if not (row.session_id or "").startswith(prefix):
-                return False  # LIKE's `_` matches any one character
-            if row.status == "paused":
-                return bool(row.waiting_for_human)
-            task = _active_tasks.get(row.run_id)
-            return task is not None and not task.done()
 
-        run = next((row for row in candidates if live(row)), None)
-        if run is None:
-            return None
-        rows = (await s.execute(
-            select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state,
-                   OrchestrationRunDB.human_prompt)
+async def _chat(client_session_id: str) -> dict | None:
+    """One Synapse AI chat by its id, open or finished, to carry on with (TABS2, F1061).
+
+    A chat is picked from History or the panel's list long after it ended, so this reads it whatever its newest turn
+    did; only a turn still working on this process is `running`, to be followed.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import defer
+
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        run = (await s.execute(
+            select(OrchestrationRunDB)
+            .options(defer(OrchestrationRunDB.definition))
             .where(
                 OrchestrationRunDB.tenant_id == get_tenant(),
-                OrchestrationRunDB.session_id == run.session_id,
+                OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,
+                OrchestrationRunDB.session_id == _panel_prefix() + client_session_id,
             )
             .order_by(OrchestrationRunDB.created_at.desc())
-            .limit(HISTORY_TURNS)
-        )).all()
+            .limit(1)
+        )).scalars().first()
+        return await _drawn(s, run) if run is not None else None
+
+
+async def _drawn(s, run) -> dict:
+    """A chat as the panel draws it: its newest turns, the question its newest run is asking, and where to follow from."""
+    from sqlalchemy import select
+
+    from core.orchestration.pauses import asking_step_id
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    live = _driven(run)
+    rows = (await s.execute(
+        select(OrchestrationRunDB.run_id, OrchestrationRunDB.shared_state,
+               OrchestrationRunDB.human_prompt)
+        .where(
+            OrchestrationRunDB.tenant_id == get_tenant(),
+            OrchestrationRunDB.session_id == run.session_id,
+        )
+        .order_by(OrchestrationRunDB.created_at.desc())
+        .limit(HISTORY_TURNS)
+    )).all()
 
     turns = []
     for run_id, state, asked in reversed(rows):
         state = state or {}
         # The open run's question is `pending`, not something already said.
-        said = "" if run_id == run.run_id else str(
-            state.get("summary") or asked or state.get("requirements") or "")
-        turns.append({"user": str(state.get("user_message") or ""), "assistant": said.strip()})
+        said = "" if (run_id == run.run_id and live) else _said(state, asked)
+        turns.append({"user": str(state.get("user_message") or ""), "assistant": said})
 
     # Where the run's journal stood when it was read. A working run is followed
     # from its journal's start, which replays the questions it has already had
     # answered; only one past this is the question it is asking now.
     from core.orchestration.journal import open_journal
-    journal = open_journal(run.run_id) if run.status == "running" else None
+    journal = open_journal(run.run_id) if (run.status == "running" and live) else None
     cursor = journal.last_id() if journal is not None else 0
 
     pending = None
-    if run.status == "paused":
+    if run.status == "paused" and live:
         fields = run.human_fields if isinstance(run.human_fields, list) else []
         first = fields[0] if fields and isinstance(fields[0], dict) else {}
         pending = {
@@ -560,21 +604,158 @@ async def _open_conversation() -> dict | None:
             "step_id": asking_step_id(run.step_history, run.current_step_id),
             "prompt": run.human_prompt or "",
         }
+    status = run.status
+    if status == "running" and not live:
+        status = "stopped"  # left `running` by a restart: nothing will finish it
     return {
-        "client_session_id": run.session_id[len(prefix):],
+        "client_session_id": run.session_id[len(_panel_prefix()):],
         "run_id": run.run_id,
-        "status": run.status,
+        "status": status,
         "turns": turns,
         "pending": pending,
         "cursor": str(cursor),
     }
 
 
+def _said(state: dict, asked: str | None) -> str:
+    """What a finished turn said: its summary, else the question it asked, else what it read the ask as."""
+    return str(state.get("summary") or asked or state.get("requirements") or "").strip()
+
+
+#: Where a chat's turns go when History deletes it: kept, as every run is (what it cost is on it), but no longer one
+#: of the panel's, so no list, no reopen and no next turn finds them.
+REMOVED = "removed:"
+
+#: The most chats one list returns: History and the panel draw a page, not an archive.
+MAX_CHATS = 200
+
+
+async def assistant_chats(containing: str | None = None, limit: int = MAX_CHATS) -> list[dict]:
+    """This workspace's Synapse AI chats, newest first, one row each (TABS2, F1062).
+
+    Read from the builder's runs, a turn each, grouped by the chat's id. `containing` (already case-folded) keeps the
+    chats where any turn's ask or answer holds it: History's search asks the server (TABS1, F926). Shaped like a chat
+    session's row, so History draws both alike; `title` is the chat's first ask.
+    """
+    from sqlalchemy import select
+
+    from core.default_agent import DEFAULT_AGENT_ID
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    prefix = _panel_prefix()
+    async with session() as s:
+        rows = (await s.execute(
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.session_id, OrchestrationRunDB.status,
+                   OrchestrationRunDB.waiting_for_human, OrchestrationRunDB.created_at,
+                   OrchestrationRunDB.shared_state["user_message"].as_string(),
+                   OrchestrationRunDB.shared_state["summary"].as_string(),
+                   OrchestrationRunDB.human_prompt)
+            .where(
+                OrchestrationRunDB.tenant_id == get_tenant(),
+                OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,
+                OrchestrationRunDB.session_id.like(f"{prefix}%"),
+            )
+            .order_by(OrchestrationRunDB.created_at.asc())
+        )).all()
+
+    chats: dict[str, dict] = {}
+    for run_id, session_id, status, waiting, created_at, asked, summary, prompt in rows:
+        if not (session_id or "").startswith(prefix):
+            continue  # LIKE's `_` matches any one character
+        chat = chats.setdefault(session_id, {
+            "session_id": session_id[len(prefix):], "agent_id": DEFAULT_AGENT_ID,
+            "title": "", "first_user_message": None, "last_response": None, "last_updated": None,
+            "turn_count": 0, "running": False, "waiting": False, "_words": [],
+        })
+        said = str(summary or prompt or "").strip()
+        chat["turn_count"] += 1
+        if chat["first_user_message"] is None and asked:
+            chat["first_user_message"] = chat["title"] = str(asked).strip()
+        chat["last_response"] = said or chat["last_response"]
+        chat["last_updated"] = _stamp(created_at)
+        # The newest turn says how the chat stands now.
+        chat["running"] = status == "running" and _driven(_Row(run_id, status, waiting))
+        chat["waiting"] = status == "paused" and bool(waiting)
+        chat["_words"] += [str(asked or ""), said]
+
+    listed = sorted(chats.values(), key=lambda c: c["last_updated"] or "", reverse=True)
+    if containing:
+        listed = [c for c in listed if any(containing in w.casefold() for w in c["_words"])]
+    for chat in listed:
+        del chat["_words"]
+    return listed[:limit]
+
+
+class _Row:
+    """The three columns `_driven` reads, for a row read as columns."""
+    def __init__(self, run_id: str, status: str, waiting_for_human: bool | None):
+        self.run_id, self.status, self.waiting_for_human = run_id, status, waiting_for_human
+
+
+def _stamp(when: datetime | None) -> str | None:
+    """A run's time as a chat session's `last_updated` is written, so History orders both alike."""
+    from core.store.sessions import _iso
+    return _iso(when)
+
+
+async def assistant_chat_status(client_session_id: str) -> dict:
+    """How one Synapse AI chat stands, for a tab behind the front one (TABS1's status read; F1061)."""
+    found = next((c for c in await assistant_chats() if c["session_id"] == client_session_id), None)
+    return {
+        "running": bool(found and found["running"]),
+        "pending_approval": bool(found and found["waiting"]),
+        "turn_count": found["turn_count"] if found else 0,
+        "last_updated": found["last_updated"] if found else None,
+    }
+
+
+async def remove_assistant_chat(client_session_id: str) -> bool:
+    """Take a Synapse AI chat out of every list (History's Delete; F1062). True when there was one.
+
+    A question it was waiting on is cancelled first, so nothing is left paused on no screen. Its runs are kept, as
+    every run is, under a session id no list reads: what they cost is on them.
+    """
+    from sqlalchemy import select, update
+
+    from core.orchestration.cancel import cancel_run
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    held = _panel_prefix() + client_session_id
+    where = (OrchestrationRunDB.tenant_id == get_tenant(),
+             OrchestrationRunDB.orchestration_id == NATIVE_BUILDER_ORCH_ID,
+             OrchestrationRunDB.session_id == held)
+    async with session() as s:
+        waiting = (await s.execute(select(OrchestrationRunDB.run_id).where(
+            *where, OrchestrationRunDB.status == "paused"))).scalars().all()
+    for run_id in waiting:
+        try:
+            await cancel_run(run_id)
+        except Exception:  # noqa: BLE001 — a run that will not cancel must not keep the chat listed
+            _log.warning("could not cancel builder run %s of a removed chat", run_id, exc_info=True)
+    async with session() as s:
+        moved = await s.execute(update(OrchestrationRunDB).where(*where).values(
+            session_id=f"builder:{get_tenant()}:{REMOVED}{client_session_id}"))
+        return bool(moved.rowcount)
+
+
 @router.get("/api/builder/conversation")
-async def builder_conversation():
-    """The panel's conversation that is still open, if any, to redraw after a reload."""
+async def builder_conversation(session: str | None = Query(default=None, min_length=1, max_length=255)):
+    """A Synapse AI chat to draw: the one `session` names, open or finished (TABS2), else the panel's conversation
+    that is still open, if any, to redraw after a reload (F214)."""
     await _expire_parked()
-    return {"conversation": await _open_conversation()}
+    return {"conversation": await (_chat(session) if session else _open_conversation())}
+
+
+@router.get("/api/builder/conversations")
+async def builder_conversations(q: str | None = Query(default=None, max_length=200)):
+    """Synapse AI's chats and nothing else, newest first: the panel's own list (TABS2, F1062)."""
+    await _expire_parked()
+    words = (q or "").strip().casefold()
+    return {"conversations": await assistant_chats(containing=words or None)}
 
 
 @router.post("/api/builder/chat")

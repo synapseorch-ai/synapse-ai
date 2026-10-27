@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from core import chat_turns
+from core.default_agent import DEFAULT_AGENT_ID
+from core.routes.builder import assistant_chat_status, assistant_chats, remove_assistant_chat
 
 from core.session import (
     _turns,
@@ -71,8 +73,13 @@ async def get_sessions(agent_id: str | None = Query(default=None),
     in any turn, ignoring case.
     """
     words = (q or "").strip().casefold()
-    return [s for s in await list_chat_sessions(agent_id=agent_id, containing=words or None)
-            if not _the_builders_own(s) and not _a_runs_own(s) and not _an_api_turns_own(s)]
+    listed = [s for s in await list_chat_sessions(agent_id=agent_id, containing=words or None)
+              if not _the_builders_own(s) and not _a_runs_own(s) and not _an_api_turns_own(s)]
+    if agent_id in (None, DEFAULT_AGENT_ID):
+        # Synapse AI's chats, kept as the builder's runs rather than chat rows (TABS2, F1062): one list, newest first.
+        listed += await assistant_chats(containing=words or None)
+        listed.sort(key=lambda s: s.get("last_updated") or "", reverse=True)
+    return listed
 
 
 #: The most tabs a person keeps open in one area (TABS1); the status read takes no more.
@@ -103,6 +110,11 @@ async def get_sessions_status(body: TabStatusRequest):
 
     rows = []
     for tab in body.sessions:
+        if tab.agent_id == DEFAULT_AGENT_ID:
+            # A Synapse AI chat is its builder runs, not a chat row (TABS2, F1061).
+            rows.append({"session_id": tab.session_id, "agent_id": tab.agent_id, "automated": False,
+                         **await assistant_chat_status(tab.session_id)})
+            continue
         saved = await store.get(tab.session_id, tab.agent_id)
         turn = chat_turns.live(tab.session_id)
         pending = await store.get_pending_approval(tab.session_id, tab.agent_id)
@@ -207,6 +219,8 @@ async def pop_session_last_turn(session_id: str, body: PopTurnRequest | None = N
 @router.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, agent_id: str | None = Query(default=None)):
     """Delete a session's persisted history."""
+    if agent_id == DEFAULT_AGENT_ID and await remove_assistant_chat(session_id):
+        return {"status": "deleted", "session_id": session_id}
     deleted = await delete_chat_session(session_id, agent_id=agent_id)
     if deleted:
         return {"status": "deleted", "session_id": session_id}
