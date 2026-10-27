@@ -37,6 +37,7 @@ logging.getLogger("crawl4ai.async_webcrawler").setLevel(logging.ERROR)
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 
+from core import egress_proxy
 from core.egress_guard import BlockedEgress, check_host, check_url
 
 # ---------------------------------------------------------------------------
@@ -110,15 +111,18 @@ def _egress_proxy() -> str | None:
     Smokescreen, which refuses any address that is not public) passed them to this process and nothing used them:
     every `scrape_url` left the worker directly. `NO_PROXY` is not read: it names the platform's own hosts, never a
     page an agent asks for (Knowledge's fetch takes its proxies the same way). The in-browser guard below stays the
-    first layer either way."""
+    first layer either way, and with no proxy here the browser takes Synapse's own (`browser_config`)."""
     import urllib.request
 
     found = urllib.request.getproxies_environment()
     return found.get("https") or found.get("http") or None
 
 
-def browser_config() -> BrowserConfig:
-    proxy = _egress_proxy()
+def browser_config(local_proxy: str | None = None) -> BrowserConfig:
+    """`local_proxy` is Synapse's own egress proxy (`core.egress_proxy`), used when the host names none: the
+    browser's whole network goes through one or the other, so what the route guard does not see (a page's
+    WebSockets, its service workers) is refused there."""
+    proxy = _egress_proxy() or local_proxy
     return BrowserConfig(
         headless=True,
         browser_type="chromium",
@@ -137,7 +141,8 @@ async def get_crawler() -> AsyncWebCrawler:
     global _crawler
     async with _crawler_lock:
         if _crawler is None:
-            config = browser_config()
+            local = None if _egress_proxy() else (await egress_proxy.shared()).url
+            config = browser_config(local)
             _crawler = AsyncWebCrawler(config=config)
             _crawler.crawler_strategy.set_hook(
                 "on_page_context_created", _attach_egress_guard
