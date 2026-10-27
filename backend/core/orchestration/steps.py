@@ -399,6 +399,20 @@ class AgentStepExecutor:
                         await SharedState(run).checkpoint(columns=("tasks",))
                     except Exception as ckpt_err:
                         _log.warning(f"task-list checkpoint failed: {ckpt_err}")
+                if event.get("type") == "human_input_required" and event.get("kind") == "browser_turn":
+                    # The person's turn in the browser (F1099): the step stops with its transcript kept,
+                    # and the answer re-enters it where it stopped, never past it.
+                    progress = dict(run.step_progress.get(step.id) or {})
+                    progress["pending_browser_turn"] = {"session_id": event.get("session_id"),
+                                                        "banner_kind": event.get("banner_kind"),
+                                                        "reason": event.get("prompt")}
+                    run.step_progress[step.id] = progress
+                    try:
+                        await SharedState(run).checkpoint(columns=("step_progress",))
+                    except Exception as ckpt_err:
+                        _log.warning(f"browser-turn checkpoint failed: {ckpt_err}")
+                    yield {**event, "orch_step_id": step.id, "step_name": step.name, "run_id": run.run_id}
+                    return
                 if event.get("type") == "human_input_required" and event.get("kind") == "tool_approval":
                     # A tool call is waiting on a person. Record it on the run
                     # so the resume can turn their answer into an approval the

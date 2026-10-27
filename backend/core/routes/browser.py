@@ -65,7 +65,7 @@ _VIEWER_ACTIONS = {"input": "/input", "release": "/release", "allow-site": "/all
 
 
 async def _relay(session_id: str, action: str, request: Request):
-    _owner(session_id)
+    owner = _owner(session_id)
     try:
         body = await request.json()
     except Exception:
@@ -73,7 +73,38 @@ async def _relay(session_id: str, action: str, request: Request):
     status, answer = await browser_client.tools.viewer(session_id, _VIEWER_ACTIONS[action], body)
     if status >= 400:
         raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")
+    said = {"hand-back": ("I handed the browser back. " + str(body.get("note") or "")).strip(),
+            "release": "It only loaded data: carry on.",
+            "allow-site": f"You may type on {body.get('host') or 'that site'}. Carry on."}.get(action)
+    if said:
+        resumed = await _resume(owner, said, str(body.get("note") or ""), request)
+        if resumed:
+            answer = {**answer, "resumed": resumed}
     return answer
+
+
+async def _resume(owner: str, said: str, note: str, request: Request) -> dict | None:
+    """A chat or run parked on the person's turn carries on (F1099): a run resumes its step; a chat
+    gets the person's word as its next message. A turn that was never parked (Take over mid-turn)
+    needs nothing: the agent's call is waiting for the wheel."""
+    parked = browser_client.tools.take_parked(owner)
+    if not parked:
+        return None
+    kind, _, ident = owner.partition(":")
+    if kind == "run":
+        from core.orchestration.answers import answer_paused_run
+        await answer_paused_run(request.app.state, ident,
+                                {"browser_turn": "answered", "note": note or said})
+        return {"kind": "run", "run_id": ident}
+    if kind == "chat":
+        from core.models import ChatRequest
+        from core.routes.chat import _start
+        agent_key = parked.get("agent_key") or "default"
+        follow = ChatRequest(message=said, session_id=ident, agent_id=None if agent_key == "default" else agent_key)
+        follow._app_chat = True
+        _start(follow, expand_mentions=False)
+        return {"kind": "chat", "session_id": ident}
+    return None
 
 
 @router.post("/api/browser/{session_id}/input")

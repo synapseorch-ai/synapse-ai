@@ -128,6 +128,7 @@ class BrowserTools:
         self._owners: dict[str, str] = {}            # session id -> owner
         self._events: dict[str, list[dict]] = {}
         self._handovers: dict[str, dict] = {}       # owner -> the person's turn the agent must stop for
+        self._parked: dict[str, dict] = {}          # owner -> the turn the chat or run is parked on
         self._tools: list[types.Tool] | None = None
 
     # ── what the engine's MCP paths call ─────────────────────────────────────
@@ -197,8 +198,16 @@ class BrowserTools:
             await asyncio.sleep(1)
         return False
 
-    def take_handover(self, key: str | None) -> dict | None:
-        return self._handovers.pop(key, None) if key else None
+    def take_handover(self, key: str | None, **where) -> dict | None:
+        """The person's turn this call ended on, now parked: the engine stops the agent here."""
+        handover = self._handovers.pop(key, None) if key else None
+        if handover:
+            self._parked[key] = {**handover, **where}
+        return handover
+
+    def take_parked(self, key: str | None) -> dict | None:
+        """The parked turn the person just answered, once."""
+        return self._parked.pop(key, None) if key else None
 
     # ── sessions ─────────────────────────────────────────────────────────────
     async def _session_for(self, key: str) -> str:

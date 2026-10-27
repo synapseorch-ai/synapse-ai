@@ -14,6 +14,7 @@ import httpx
 
 from core.config import load_settings, HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core.browser import client as _browser_client
+from core import chat_turns as _chat_turns
 from core.telemetry import spans as _spans
 from core.tool_scope import call_kwargs
 from core.vault import maybe_vault, MentionReader
@@ -3746,6 +3747,26 @@ async def run_agent_step(
                     if _browser_owner and hasattr(session, "take_events"):
                         for _browser_event in session.take_events(_browser_owner):
                             yield _browser_event
+                    # The person's turn in the browser (BRW1 v2, F1099): the call ran and handed over —
+                    # a send held, a field that is theirs, a CAPTCHA, a site to allow. The agent stops
+                    # here; the person's answer brings it back (a chat's next message, a run's resume).
+                    if _browser_owner and hasattr(session, "take_handover"):
+                        _chat_turn = _chat_turns.current_turn.get()
+                        _person_turn = session.take_handover(
+                            _browser_owner, agent_key=getattr(_chat_turn, "agent_key", None))
+                        if _person_turn:
+                            if progress_events:
+                                yield {"type": "_step_progress", **_snapshot(turn + 1)}
+                            _turn_field = {"name": "browser_turn", "type": "browser_turn",
+                                           "label": _person_turn.get("reason", ""),
+                                           "session_id": _person_turn.get("session_id"),
+                                           "banner_kind": _person_turn.get("kind")}
+                            yield {"type": "human_input_required", "kind": "browser_turn",
+                                   "prompt": _person_turn.get("reason", ""),
+                                   "session_id": _person_turn.get("session_id"),
+                                   "banner_kind": _person_turn.get("kind"),
+                                   "fields": [_turn_field]}
+                            return
                     if post_tool_hook is not None:
                         async for _extra in post_tool_hook(tool_name, raw_output):
                             yield _extra

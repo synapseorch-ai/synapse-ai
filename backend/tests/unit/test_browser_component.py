@@ -445,3 +445,134 @@ async def test_a_handover_is_kept_for_the_engine_and_told_to_the_agent():
     assert "It is the person's turn in the browser: This field is yours." in result.content[0].text
     assert tools.take_handover("chat:h") == {"kind": "sensitive", "reason": "This field is yours.", "session_id": "s1"}
     assert tools.take_handover("chat:h") is None
+
+
+# ── the person's turn parks the chat or the run (F1099) ──────────────────────
+
+class _HandoverHost(_FakeHost):
+    """The component, answering the first action with the person's turn."""
+
+    def __init__(self, kind="send"):
+        super().__init__()
+        self.kind = kind
+        self.turns = 0
+
+    async def call(self, method, path, *, json=None, params=None, timeout=120):
+        if path == "/tools":
+            return 200, {"tools": [{"name": "browser_click", "description": "Click",
+                                    "inputSchema": {"type": "object", "properties": {"target": {"type": "string"}}},
+                                    "tags": {"open_world": True}}]}
+        if path == "/tool":
+            self.turns += 1
+            return 200, {"text": "### Page\n- Page URL: https://shop.example.com/cart", "is_error": False,
+                         "log": {"n": self.turns, "action": "browser_click", "shot_ref": str(self.turns)},
+                         "handover": {"kind": self.kind, "reason": "The agent tried to send this to shop.example.com.",
+                                      "session_id": json["session_id"]}}
+        return await super().call(method, path, json=json, params=params, timeout=timeout)
+
+
+def _browser_server(tools):
+    import types as _types
+    from core.tool_router import ToolRouter
+    router = ToolRouter()
+    router.register("Browser Automation", "browser_click")
+    return _types.SimpleNamespace(agent_sessions={"Browser Automation": tools}, memory_store=None, tool_router=router)
+
+
+async def test_the_persons_turn_ends_the_agents_turn_with_a_park(fake_llm):
+    import core.react_engine as re_mod
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+    from core.models import ChatRequest
+
+    tools = browser_client.BrowserTools(_HandoverHost())
+    agent = S.make_agent(id="agent_turn", tools=["browser_click"], skip_default_tools=True)
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_click", target="e5"), "This must never be written."])
+    events = [e async for e in re_mod.run_react_loop(
+        ChatRequest(message="buy it", session_id="s_turn", agent_id=agent["id"]), _browser_server(tools))]
+    park = [e for e in events if e.get("type") == "human_input_required"]
+    assert len(park) == 1 and park[0]["kind"] == "browser_turn" and park[0]["banner_kind"] == "send"
+    assert park[0]["fields"] == [{"name": "browser_turn", "type": "browser_turn",
+                                  "label": "The agent tried to send this to shop.example.com.",
+                                  "session_id": "s1", "banner_kind": "send"}]
+    assert len(fake_llm.calls) == 1, "the agent stopped at the person's turn"
+    assert tools.take_parked("chat:s_turn")["kind"] == "send"
+
+
+async def test_a_chat_parked_on_the_persons_turn_stores_no_approval(client, monkeypatch):
+    import core.routes.chat as chat
+    from _fakes import engine_events as E
+    from _fakes.fake_redis_stream import data_events
+    from core.store import sessions as store
+
+    monkeypatch.setattr(chat, "run_react_loop", E.gen_from([
+        {"type": "human_input_required", "kind": "browser_turn", "prompt": "Your turn", "session_id": "s1",
+         "banner_kind": "send", "fields": [{"name": "browser_turn", "type": "browser_turn"}]},
+    ]))
+    resp = await client.post("/chat/stream", json={"message": "buy", "session_id": "s_park"})
+    kinds = [e["type"] for e in data_events(resp.text.split("\n\n"))]
+    assert kinds[-2:] == ["human_input_required", "done"]
+    assert await store.get_pending_approval("s_park", "default") is None
+
+
+async def test_handing_back_a_parked_chat_sends_the_persons_word_as_its_next_message(client, monkeypatch):
+    import core.routes.chat as chat
+    started = []
+    monkeypatch.setattr(chat, "_start", lambda request, **kw: started.append(request))
+    fake = browser_client.BrowserTools(_FakeHost())
+    fake._owners["s9"] = "chat:conv1"
+    fake._parked["chat:conv1"] = {"kind": "send", "agent_key": "agent_buyer"}
+
+    async def viewer(sid, path, body=None):
+        return 200, {"wheel": "agent"}
+
+    monkeypatch.setattr(fake, "viewer", viewer)
+    monkeypatch.setattr(browser_client, "tools", fake)
+    resp = await client.post("/api/browser/s9/wheel/hand-back", json={"note": "I paid"})
+    assert resp.status_code == 200
+    assert resp.json() == {"wheel": "agent", "resumed": {"kind": "chat", "session_id": "conv1"}}
+    assert started[0].message == "I handed the browser back. I paid"
+    assert started[0].session_id == "conv1" and started[0].agent_id == "agent_buyer"
+    again = await client.post("/api/browser/s9/wheel/hand-back", json={})
+    assert "resumed" not in again.json(), "a park is answered once"
+
+
+async def test_releasing_a_parked_runs_send_resumes_the_run(client, monkeypatch):
+    from core.orchestration import answers
+    answered = []
+
+    async def fake_answer(app_state, run_id, response, **kw):
+        answered.append((run_id, response))
+
+    monkeypatch.setattr(answers, "answer_paused_run", fake_answer)
+    fake = browser_client.BrowserTools(_FakeHost())
+    fake._owners["s8"] = "run:run42"
+    fake._parked["run:run42"] = {"kind": "send"}
+
+    async def viewer(sid, path, body=None):
+        return 200, {"released": True}
+
+    monkeypatch.setattr(fake, "viewer", viewer)
+    monkeypatch.setattr(browser_client, "tools", fake)
+    resp = await client.post("/api/browser/s8/release", json={"allow_address": True})
+    assert resp.json()["resumed"] == {"kind": "run", "run_id": "run42"}
+    assert answered == [("run42", {"browser_turn": "answered", "note": "It only loaded data: carry on."})]
+
+
+def test_a_run_resumes_the_same_step_with_the_persons_word():
+    import types as _types
+    from core.orchestration.engine import OrchestrationEngine
+    run = _types.SimpleNamespace(
+        step_progress={"buy": {"context_text": "…clicked Pay", "turn": 3, "attempt": 2,
+                               "pending_browser_turn": {"banner_kind": "send", "session_id": "s1"}}},
+        waiting_for_human=True, status="paused",
+        step_history=[{"step_id": "buy", "status": "paused"}])
+    OrchestrationEngine._resume_browser_turn(None, run, {"note": "I paid"}, {"banner_kind": "send"}, "buy")
+    progress = run.step_progress["buy"]
+    assert "pending_browser_turn" not in progress and "attempt" not in progress
+    assert progress["context_text"].endswith(
+        "[The person, in the browser] They took their turn (send) and handed the browser back: I paid. "
+        "Read the page again before you act.\n")
+    assert progress["turn"] == 3 and run.status == "running" and not run.waiting_for_human
+    assert run.step_history[-1]["status"] == "running"

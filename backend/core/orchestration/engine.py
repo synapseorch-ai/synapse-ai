@@ -1176,6 +1176,10 @@ class OrchestrationEngine:
             if outcome.get("status") == "paused":
                 return
             answered = outcome.get("status") == "done"
+        elif (turn := (run.step_progress.get(asker_id) or {}).get("pending_browser_turn")):
+            # The person's turn in the browser (F1099): the agent step carries on where it
+            # stopped, its transcript and the person's word on what they did.
+            self._resume_browser_turn(run, human_response, turn, asker_id)
         elif (pending := (run.step_progress.get(asker_id) or {}).get("pending_approval")):
             # A tool call inside an agent step, not a human step: the answer is an
             # approval for that call, and the step has to be re-entered rather than
@@ -1282,6 +1286,26 @@ class OrchestrationEngine:
         cleaned = text.strip().lower()
         yes = cleaned in ("y", "yes", "true", "1", "ok", "okay", "approve", "approved", "allow", "go")
         return yes, "" if yes else (text.strip() or "the user declined")
+
+    def _resume_browser_turn(self, run, human_response, turn: dict, step_id: str) -> None:
+        """Re-open an agent step parked on the person's turn in the browser. Nothing runs here: the
+        caller's `_execute_loop` re-enters the step, which resumes from its transcript."""
+        progress = dict(run.step_progress.get(step_id) or {})
+        progress.pop("pending_browser_turn", None)
+        progress.pop("attempt", None)  # an answer, not a crash retry
+        said = human_response.get("note") if isinstance(human_response, dict) else human_response
+        said = str(said or "").strip()
+        progress["context_text"] = (progress.get("context_text") or "") + (
+            f"\n[The person, in the browser] They took their turn ({turn.get('banner_kind') or 'asked'})"
+            f" and handed the browser back{': ' + said if said else ''}. Read the page again before you act.\n")
+        run.step_progress[step_id] = progress
+        run.waiting_for_human = False
+        run.status = "running"
+        for entry in reversed(run.step_history):
+            if entry.get("step_id") == step_id and entry.get("status") == "paused":
+                entry["status"] = "running"
+                entry["resumed_ms"] = int(time.time() * 1000)
+                break
 
     async def _resume_tool_approval(self, run, human_response, pending, step_id: str):
         """Give an agent step the decision on the one tool call it stopped to ask about.
