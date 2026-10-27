@@ -77,6 +77,31 @@ def _blank(value: Any) -> bool:
     return value is None or (isinstance(value, str) and not value.strip()) or value == {}
 
 
+async def refuse_card_for_browser(run: Any, response: Any) -> None:
+    """A card number never reaches a Browser agent through an answer (F1100): it is the person's to
+    type in the browser, in their turn. Raises `BadAnswer`. Other steps are untouched: a workflow
+    that collects card digits for its own tools keeps doing so."""
+    from core.browser.gate import CARD_WORDS, looks_like_card, strings_in
+
+    if not any(looks_like_card(text) for text in strings_in(response)):
+        return
+    if await _waits_on_browser_agent(run):
+        from core.orchestration.human_fields import BadAnswer
+        raise BadAnswer("card", CARD_WORDS)
+
+
+async def _waits_on_browser_agent(run: Any) -> bool:
+    from core.store.resources import get_agent, get_orchestration
+    try:
+        orch = await get_orchestration(getattr(run, "orchestration_id", "") or "")
+        step = next((s for s in (orch or {}).get("steps") or [] if s.get("id") == getattr(run, "current_step_id", None)),
+                    None)
+        agent = await get_agent(step.get("agent_id")) if step and step.get("agent_id") else None
+    except Exception:
+        return False
+    return bool(agent) and (agent.get("type") == "browser" or bool(agent.get("browser")))
+
+
 def refuse_empty(response: Any) -> None:
     """Raise `EmptyAnswer` for an answer that says nothing (F232).
 
@@ -246,6 +271,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         check_question(row, question_id)
         response = _through_door(run_id, response, getattr(row, "human_prompt", None))
         response = check_answer(row.human_fields, response)
+        await refuse_card_for_browser(row, response)
         from core.orchestration.pauses import pause_ordinal
         from core.scale.config import QUEUE_NAME
 
@@ -288,7 +314,9 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             raise RunNotWaiting(run_id, run.status)
         check_question(run, question_id)
         response = _through_door(run_id, response, run.human_prompt)
-        response = _named(check_answer(run.human_fields, response), question_id)
+        response = check_answer(run.human_fields, response)
+        await refuse_card_for_browser(run, response)
+        response = _named(response, question_id)
 
         from core.orchestration.engine import OrchestrationEngine
 

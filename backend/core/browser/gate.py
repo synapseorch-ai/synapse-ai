@@ -14,6 +14,7 @@ Two gates, both code, so neither depends on what the model was told:
 """
 from __future__ import annotations
 
+import re
 from urllib.parse import urlparse
 
 from core.egress_guard import check_host
@@ -158,6 +159,39 @@ def is_captcha_frame(url: str) -> bool:
 
 #: What makes a field the person's: a password, a card, a one-time code (DESIGN.md §2.4).
 SENSITIVE_AUTOCOMPLETE = ("cc-", "one-time-code", "current-password", "new-password")
+
+
+#: What the box says when an answer holds a card number (DESIGN.md §2.4, F1100).
+CARD_WORDS = "Card details go in the browser; you'll be asked there."
+
+_CARD_RUN = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
+
+
+def looks_like_card(text: str) -> bool:
+    """A 13–19 digit run (spaces or dashes allowed) that passes the Luhn check: a payment card's number."""
+    for match in _CARD_RUN.finditer(text or ""):
+        digits = [int(c) for c in match.group(0) if c.isdigit()]
+        if not 13 <= len(digits) <= 19:
+            continue
+        total = 0
+        for i, d in enumerate(reversed(digits)):
+            if i % 2:
+                d *= 2
+                d -= 9 if d > 9 else 0
+            total += d
+        if total % 10 == 0:
+            return True
+    return False
+
+
+def strings_in(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in strings_in(v)]
+    if isinstance(value, (list, tuple)):
+        return [s for v in value for s in strings_in(v)]
+    return []
 
 
 def is_sensitive_field(input_type: str, autocomplete: str) -> bool:

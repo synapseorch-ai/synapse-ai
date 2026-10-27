@@ -688,3 +688,51 @@ async def test_finishing_a_login_keeps_it_or_not_and_only_for_a_login_session(cl
     assert resp.json() == {"login_ref": "wl_new"}
     assert logins_store[-1][2:] == (["portal.example.com"], "you")
     assert fake.owner_of(sid) is None, "the login session is closed"
+
+
+# ── a card number never reaches a Browser agent through the box (F1100) ──────
+
+@pytest.mark.parametrize("text,card", [("4111 1111 1111 1111", True), ("pay 5500-0000-0000-0004", True),
+                                       ("378282246310005", True), ("4111 1111 1111 1112", False),
+                                       ("call 0207 946 0018", False), ("order 123456789012", False)])
+def test_a_card_number_is_told_apart_by_luhn(text, card):
+    assert gate.looks_like_card(text) is card
+
+
+async def test_a_browser_agent_is_not_sent_a_card_number_in_chat(client, monkeypatch):
+    import core.routes.chat as chat
+    from _fakes import engine_events as E
+    from _fakes import seed as S
+    await S.seed_agents([S.make_agent(id="agent_shop", type="browser"), S.make_agent(id="agent_plain")])
+    monkeypatch.setattr(chat, "run_react_loop", E.gen_from([E.final("ok", intent="chat")]))
+    refused = await client.post("/chat/stream", json={"message": "my card is 4111 1111 1111 1111",
+                                                      "agent_id": "agent_shop"})
+    assert refused.status_code == 422 and refused.json()["detail"] == gate.CARD_WORDS
+    other = await client.post("/chat/stream", json={"message": "my card is 4111 1111 1111 1111",
+                                                    "agent_id": "agent_plain"})
+    assert other.status_code == 200
+
+
+async def test_a_runs_answer_to_a_browser_agents_step_holds_no_card():
+    import types as _types
+    from _fakes import seed as S
+    from core.orchestration.answers import refuse_card_for_browser
+    from core.orchestration.human_fields import BadAnswer
+    await S.seed_agents([S.make_agent(id="agent_buyer", type="browser"), S.make_agent(id="agent_clerk")])
+    await S.seed_orchestrations([S.make_orchestration(id="orch_card", entry_step_id="buy", steps=[
+        {"id": "buy", "name": "Buy", "type": "agent", "agent_id": "agent_buyer", "next_step_id": "note"},
+        {"id": "note", "name": "Note", "type": "agent", "agent_id": "agent_clerk", "next_step_id": None}])])
+    at_buyer = _types.SimpleNamespace(orchestration_id="orch_card", current_step_id="buy")
+    at_clerk = _types.SimpleNamespace(orchestration_id="orch_card", current_step_id="note")
+    with pytest.raises(BadAnswer, match="Card details go in the browser"):
+        await refuse_card_for_browser(at_buyer, {"note": "used 4111-1111-1111-1111"})
+    await refuse_card_for_browser(at_buyer, {"note": "paid, reference 88231"})
+    await refuse_card_for_browser(at_clerk, {"note": "used 4111-1111-1111-1111"})  # not a browser step
+
+
+async def test_a_hand_back_note_with_a_card_number_is_refused(client, monkeypatch):
+    fake = browser_client.BrowserTools(_FakeHost())
+    fake._owners["s3"] = "chat:c3"
+    monkeypatch.setattr(browser_client, "tools", fake)
+    resp = await client.post("/api/browser/s3/wheel/hand-back", json={"note": "card 4111 1111 1111 1111"})
+    assert resp.status_code == 422 and resp.json()["detail"] == gate.CARD_WORDS

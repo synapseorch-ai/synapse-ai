@@ -71,6 +71,9 @@ async def _relay(session_id: str, action: str, request: Request):
         body = await request.json()
     except Exception:
         body = {}
+    from core.browser.gate import CARD_WORDS, looks_like_card
+    if action == "hand-back" and looks_like_card(str(body.get("note") or "")):
+        raise HTTPException(status_code=422, detail=CARD_WORDS)  # the note reaches the agent (F1100)
     status, answer = await browser_client.tools.viewer(session_id, _VIEWER_ACTIONS[action], body)
     if status >= 400:
         raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")

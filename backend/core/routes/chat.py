@@ -69,6 +69,18 @@ def _start(request: ChatRequest, resume_state: dict | None = None, *,
     return turn
 
 
+async def _refuse_card_for_browser(request: ChatRequest) -> None:
+    """A card number never reaches a Browser agent in a message (F1100): the person types it in the
+    browser, in their turn. Other agents are untouched."""
+    from core.browser.gate import CARD_WORDS, looks_like_card
+    if not request.agent_id or not looks_like_card(request.message or ""):
+        return
+    from core.store.resources import get_agent
+    agent = await get_agent(request.agent_id)
+    if agent and (agent.get("type") == "browser" or agent.get("browser")):
+        raise HTTPException(status_code=422, detail=CARD_WORDS)
+
+
 def _read(turn: chat_turns.ChatTurn, after: int = 0):
     """The turn's events for one reader, each with its cursor."""
     async def body():
@@ -160,6 +172,7 @@ async def chat(request: ChatRequest):
 async def chat_stream(request: ChatRequest):
     """Real-time streaming endpoint with SSE"""
     await _refuse_unread_images(request)
+    await _refuse_card_for_browser(request)
     # The app's chat (SUB1a): this turn's helpers may work in the background, and report back to it.
     request._app_chat = True
     held = _redeem_retry(request)
