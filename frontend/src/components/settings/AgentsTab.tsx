@@ -20,6 +20,7 @@ import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type 
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
 import { AgentBoards } from '@/components/boards/AgentBoards';
 import { TeamSetup, newTeamBlock } from '@/components/team';
+import { BrowserSetup, browserConfig, type LoginChoice } from '@/components/browser';
 import { useNavFlags } from '@/components/app/NavFlags';
 import { OssBoardsHost } from '@/lib/boardsHost';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
@@ -95,6 +96,8 @@ export const AgentsTab = ({
     const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
     const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string; disabled?: boolean }[]>([]);
+    // The saved logins a Browser agent may start with (Settings → Website logins, BRW2).
+    const [websiteLogins, setWebsiteLogins] = useState<LoginChoice[]>([]);
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -325,6 +328,10 @@ export const AgentsTab = ({
             .then(res => res.json())
             .then(data => setAgentTypes(data.types || []))
             .catch(err => console.error("Failed to fetch agent types", err));
+        fetch('/api/website-logins')
+            .then(res => (res.ok ? res.json() : { logins: [] }))
+            .then(data => setWebsiteLogins(Array.isArray(data?.logins) ? data.logins : []))
+            .catch(() => setWebsiteLogins([]));
         fetch('/api/settings')
             .then(res => res.json())
             .then(data => {
@@ -739,6 +746,8 @@ export const AgentsTab = ({
                                                                 max_turns: draftAgent.max_turns ?? defaultMaxTurns,
                                                                 // A new Team agent starts as a team (Q1); one that has its block keeps it.
                                                                 ...(newType === 'delegate' && !draftAgent.team ? { team: newTeamBlock() } : {}),
+                                                                // A Browser agent starts read-only, 40 actions a task (BRW2, F1080).
+                                                                ...(newType === 'browser' && !draftAgent.browser ? { browser: browserConfig(null) } : {}),
                                                             });
                                                         }}
                                                     />
@@ -888,6 +897,17 @@ export const AgentsTab = ({
                                             </div>
 
                                         </SetupSection>
+
+                                        {draftAgent.type === 'browser' && (
+                                            /* ── A Browser agent: what bounds it, set here so no page can change it (BRW2, F1080) ── */
+                                            <SetupSection id="setup-browser" title="Browser">
+                                                <BrowserSetup
+                                                    value={draftAgent.browser}
+                                                    onChange={browser => setDraftAgent({ ...draftAgent, browser })}
+                                                    logins={websiteLogins}
+                                                />
+                                            </SetupSection>
+                                        )}
 
                                         {draftAgent.type === 'delegate' && (
                                             /* ── A Team agent (stored `delegate`): its members and how they work (TEAM1b; Q1, Q2a, Q11) ── */

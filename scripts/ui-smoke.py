@@ -12457,6 +12457,53 @@ async def check_brwlogins(browser) -> str:
     return "lists the kept site with when it ends; Forget asks, then deletes; the list empties"
 
 
+@check
+async def check_brwagent(browser) -> str:
+    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080): how it works the page,
+    the sites it may use (typed as addresses, kept as hosts), the saved login it starts with, and its actions per task.
+    These live in the agent's settings so that no page the agent reads can change them (DESIGN §3.1)."""
+    aid = f"agent_uismoke_browser_{int(time.time())}"
+    api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
+    login = {"id": "wl_" + "b" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
+             "created_at": time.time(), "expires_at": time.time() + 9 * 86_400}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/website-logins$"), lambda r: r.fulfill(status=200, json={"logins": [login]}))
+    page = await ctx.new_page()
+    seen: list[dict] = []
+    page.on("request", lambda r: seen.append({"url": r.url, "method": r.method, "body": r.post_data}))
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+        await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        section = page.locator("section[data-tour='setup-browser']")
+        if not await section.count():
+            raise AssertionError("a Browser agent has no Browser section")
+        await section.get_by_role("radio", name="Works with you").click()
+        await section.get_by_label("Sites it may use").fill("https://portal.saltmarsh.example/stock\ntracking.carrier.example")
+        await section.get_by_role("combobox", name="Saved login").click()
+        await page.get_by_role("option", name="portal.saltmarsh.example").click()
+        await section.get_by_label("Actions per task").fill("25")
+        await asyncio.sleep(0.3)
+        await page.get_by_role("button", name="Save agent", exact=True).click()
+        await asyncio.sleep(1.5)
+        posts = [json.loads(r["body"] or "{}") for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]
+        sent = (posts[-1] if posts else {}).get("browser")
+        want = {"mode": "co_drive", "sites": ["portal.saltmarsh.example", "tracking.carrier.example"],
+                "login_ref": login["id"], "action_budget": 25}
+        if sent != want:
+            bad.append(f"Save sent browser={sent!r}, not {want!r}")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the Browser section sets the mode, the sites as hosts, the saved login and the action budget; Save sends them"
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
