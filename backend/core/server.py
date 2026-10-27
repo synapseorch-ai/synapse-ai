@@ -100,6 +100,7 @@ _PROJECT_ROOT = BACKEND_ROOT.parent
 # process later served. llm_providers._ollama_base_url() reads the setting it is
 # given and falls back to the OLLAMA_BASE_URL env var as a deployment default.
 
+from core.browser_automation import gated
 from core.tools_registry import ALL_NATIVE_TOOLS
 TOOLS_LIST = dict(ALL_NATIVE_TOOLS)
 
@@ -210,16 +211,30 @@ async def _build_native_mcp_servers() -> list[dict]:
             # Fallback for old configs
             env_dict["PLAYWRIGHT_BROWSERS_PATH"] = os.path.expanduser("~/.cache/ms-playwright")
 
+        from core import egress_proxy
+        from core.browser_automation import BROWSER_AUTOMATION, PLAYWRIGHT_MCP
+
+        # Its own folder is its output directory and its working directory: the server reads and writes files only
+        # inside those two, and the working directory used to be the home directory.
+        folder = _vault_root() / "playwright"
+        folder.mkdir(parents=True, exist_ok=True)
+        # The host's proxy when it names one, else Synapse's: the browser's network is the egress proxy's.
+        import urllib.request
+
+        found = urllib.request.getproxies_environment()
+        proxy = found.get("https") or found.get("http") or (await egress_proxy.shared()).url
+
         servers.append({
-            "name": "Browser Automation",
+            "name": BROWSER_AUTOMATION,
             "command": _NPX_CMD,
             # Was the relative string "data/vault/playwright", resolved
             # against the npx subprocess's cwd rather than anything the engine
             # controls — so screenshots landed wherever the server happened to
             # be started from.
-            "args": ["-y", "@playwright/mcp", "--browser", "chrome",
-                     "--output-dir", str(_vault_root() / "playwright")],
+            "args": ["-y", PLAYWRIGHT_MCP, "--browser", "chrome",
+                     "--output-dir", str(folder), "--proxy-server", proxy],
             "env": env_dict,
+            "cwd": str(folder),
         })
 
     # --- Google Workspace MCP Server (Gmail, Drive, Calendar) ---
@@ -643,13 +658,15 @@ async def lifespan(app: FastAPI):
                     command=cmd,
                     args=mcp_cfg["args"],
                     env=env,
-                    cwd=str(Path.home()),
+                    cwd=mcp_cfg.get("cwd") or str(Path.home()),
                 )
                 read, write = await exit_stack.enter_async_context(stdio_client(server_params))
                 session = await exit_stack.enter_async_context(
                     ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
                 )
                 await session.initialize()
+                # The Browser Automation server offers only what its gate allows (`core.browser_automation`).
+                session = gated(mcp_name, session)
 
                 agent_sessions[mcp_name] = session
 
