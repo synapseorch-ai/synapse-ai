@@ -187,7 +187,10 @@ export function actionWords(a: Pick<BrowserAction, 'action' | 'target' | 'actor'
     return a.because ? `Pressed ‘${a.target}’, as you asked: “${a.because}”` : `Pressed ‘${a.target}’`;
   }
   if (a.action === 'took over') return 'You took over';
-  if (a.action === 'handed back') return a.target ? `You handed the browser back: ${a.target}` : 'You handed the browser back';
+  // Its target is how long the person drove ("after 12 s"); the record never holds their own words (BRW1).
+  if (a.action === 'handed back') {
+    return /^after \d/.test(a.target) ? `You handed the browser back ${a.target}` : 'You handed the browser back';
+  }
   // What left the browser while the person drove: "POST shop.example.com", never a body or a field.
   if (a.action === 'sent') {
     const [method, ...rest] = a.target.trim().split(/\s+/);
