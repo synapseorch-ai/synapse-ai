@@ -21,6 +21,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { AlertTriangle, Blocks, Bot, Clock, MessagesSquare, Workflow } from 'lucide-react';
 
 import { AppScreen } from '@/components/app/AppScreen';
@@ -33,11 +34,13 @@ import { NOTIFICATION_EVENT, useNotifications } from '@/components/notifications
 import { ToolApprovalActions } from '@/components/notifications/ToolApproval';
 import {
     byHandFavourite, ComingUp, firstName, GettingStarted, greeting, HomeSection, HomeStats, MAX_CARDS, NeedsYou,
-    AskLine, askSuggestions, RecentRuns, RunHostProvider, RunWeek, START_SUGGESTIONS, startDone, startSteps, statusLine, today, upcoming,
+    AskLine, askSuggestions, RecentRuns, RunHostProvider, RunWeek, startDone, startSteps, statusLine, today, upcoming,
     weekRuns, weekStats, useClock, MoreToTry, moreToTry, type RunRecord, type RunRow, type ToolCall, type TryKey,
     type WaitingBrief,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
+import { pickStarters, StarterPrompts, WORK_IN, type Persona } from '@/components/starters';
+import { assistantChatHref } from '@/components/tabs';
 import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
 import { plainText } from '@/lib/plainText';
@@ -78,6 +81,12 @@ const keyOf = (r: RunSummary) => `${r.run_id}:${r.current_step_id ?? ''}:${r.ste
 export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
     const clock = useClock();
     const { open: openBuilder } = useBuilder();
+    const router = useRouter();
+    // OSS asks nothing up front, so Getting started asks what you work in and writes your first prompts (ONB3, F1059).
+    const [workIn, setWorkIn] = usePersisted<Persona>(
+        'synapseHomeRole', raw => WORK_IN.find(w => w.key === raw)?.key ?? 'anyone', 'anyone',
+    );
+    const starters = useMemo(() => pickStarters({ persona: workIn }), [workIn]);
     const modelSetup = useModelSetup();
     // "Don't show again" on the first-workflow path: this browser's, as OSS has one person.
     const [startHidden, setStartHidden] = usePersisted<'0' | '1'>('synapseHomeStartHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
@@ -319,7 +328,17 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
                         steps={steps}
                         foldable={startFolded}
                         onDismiss={() => setStartHidden('1')}
-                        describe={{ onSubmit: text => openBuilder(text ? { prompt: text } : undefined), suggestions: START_SUGGESTIONS }}
+                        describe={{
+                            onSubmit: text => openBuilder(text ? { prompt: text } : undefined),
+                            suggestions: [],
+                            starters: (
+                                <StarterPrompts
+                                    picks={starters}
+                                    onPick={text => router.push(assistantChatHref(text))}
+                                    workIn={{ value: workIn, onChange: setWorkIn }}
+                                />
+                            ),
+                        }}
                         actions={{
                             model: <Button size="sm" variant="primary" onClick={modelSetup.open}>Connect a model</Button>,
                             build: (

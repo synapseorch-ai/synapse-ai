@@ -10229,8 +10229,9 @@ async def _composer(page) -> str:
 @check
 async def check_homestart(browser) -> str:
     """A new workspace's Home leads with its first workflow as a path (M2a, Naveen's ask): steps that tick themselves,
-    the current one with its action and tip; "describe what you want to automate" and a suggestion each open Build
-    with AI with the words typed, unsent; Don't show again puts it away."""
+    the current one with its action and tip; "describe what you want to automate" opens Build with AI with the words
+    typed, unsent; the prompts written for you (ONB3, F1059) follow "I work in" and open a new Synapse AI chat with
+    the words waiting, unsent; Don't show again puts it away."""
     ctx, page, _ = await _m2b_page(browser, "/dashboard", runs={})
     bad: list[str] = []
     try:
@@ -10259,10 +10260,39 @@ async def check_homestart(browser) -> str:
         if sent:
             bad.append("the words were sent, not left in the composer")
         await page.get_by_role("button", name="Close Synapse AI").click()
-        await page.get_by_role("button", name="A weekly report").click()
-        if not (await _composer(page)).startswith("Every Monday at 9, write a short report"):
-            bad.append(f"the suggestion opened the builder with {await _composer(page)!r}")
-        await page.get_by_role("button", name="Close Synapse AI").click()
+
+        # The prompts written for you (ONB3, F1059): two rows; "I work in" swaps them and is remembered; a press opens
+        # a new Synapse AI chat on Chat with the words waiting, unsent.
+        starters = path.get_by_test_id("starter")
+        ids = await starters.evaluate_all("els => els.map(e => e.dataset.starter)")
+        if ids != ["brief", "summarise"]:
+            bad.append(f"with nothing chosen the prompts are {ids}")
+        await path.get_by_role("radio", name="Engineering").click()
+        ids = await starters.evaluate_all("els => els.map(e => e.dataset.starter)")
+        if ids != ["apiclient", "prs"]:
+            bad.append(f"Engineering's prompts are {ids}")
+        elif "Needs GitHub · you’ll connect it after your yes" not in await starters.nth(1).inner_text():
+            bad.append("the GitHub prompt does not say it needs GitHub")
+        await page.reload(wait_until="domcontentloaded")
+        await path.wait_for(timeout=15_000)
+        if await path.get_by_role("radio", name="Engineering").get_attribute("aria-checked") != "true":
+            bad.append("I work in was not remembered")
+        await starters.first.click()
+        words = "Read the API docs page I give you and write a small client for it with an example call, saved in the Vault."
+        box = page.get_by_role("textbox", name="Message Synapse AI").first
+        await box.wait_for(timeout=30_000)
+        await page.wait_for_function(
+            "w => [...document.querySelectorAll('textarea')].some(t => t.value === w)", arg=words, timeout=15_000)
+        if urllib.parse.urlparse(page.url).path != "/":
+            bad.append(f"the prompt opened {page.url}, not Chat")
+        if "assistant=" in page.url:
+            bad.append("the address still asks for a new chat, so a reload would open another")
+        sent = await page.evaluate("w => [...document.querySelectorAll('main *')].some(e => e.tagName !== 'TEXTAREA' && e.children.length === 0 && e.textContent.trim() === w)", words)
+        if sent:
+            bad.append("the prompt was sent, not left in the composer")
+        await page.evaluate("localStorage.removeItem('synapseHomeRole')")
+        await page.goto(f"{APP}/dashboard", wait_until="domcontentloaded")
+        await path.wait_for(timeout=15_000)
         await page.get_by_role("button", name="Don’t show again").click()
         await page.get_by_text("Nothing is waiting on you.").wait_for(timeout=5_000)
         if await path.count():
@@ -10271,7 +10301,8 @@ async def check_homestart(browser) -> str:
         await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return "the path with one current step, the describe field and a suggestion fill the builder unsent, it hides"
+    return ("the path with one current step, the describe field fills the builder unsent, the written prompts follow I "
+            "work in and open a new Synapse AI chat unsent, it hides")
 
 
 @check

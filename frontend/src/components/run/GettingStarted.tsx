@@ -34,8 +34,11 @@ export function GettingStarted({ steps, actions, onDismiss, describe, foldable =
     /** Each step's own button or links, from the product. */
     actions: Partial<Record<StartStepId, ReactNode>>;
     onDismiss: () => void;
-    /** Describe it to Build with AI: what opens the builder with the text, and a few things to try. */
-    describe?: { onSubmit: (text: string) => void; suggestions: StartSuggestion[] };
+    /**
+     * Describe it to Build with AI: what opens the builder with the text, and a few things to try. `starters` (ONB3,
+     * F1059) are the prompts written for this person (`components/starters`), shown above the field.
+     */
+    describe?: { onSubmit: (text: string) => void; suggestions: StartSuggestion[]; starters?: ReactNode };
 }) {
     const [text, setText] = useState('');
     const [opened, setOpened] = usePersisted<'0' | '1'>('synapseHomeStartOpen', (raw) => (raw === '1' ? '1' : '0'), '0');
@@ -143,6 +146,7 @@ export function GettingStarted({ steps, actions, onDismiss, describe, foldable =
                     className="grid min-w-0 gap-2.5 border-t border-border pt-4"
                     onSubmit={(e) => { e.preventDefault(); describe.onSubmit(text.trim()); }}
                 >
+                    {describe.starters}
                     <label htmlFor="home-describe" className="text-xs font-semibold tracking-[0.02em] text-text-faint">
                         Or describe what you want to automate
                     </label>
