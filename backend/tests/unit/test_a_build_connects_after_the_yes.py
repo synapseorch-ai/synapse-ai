@@ -321,3 +321,12 @@ async def test_build_without_and_stop_go_before_a_done_word():
     run, _, _ = await _waiting_for_shippo()
     out, _ = await _answer(run, "stop")
     assert out["outcome"] == "stop"
+
+
+@pytest.mark.parametrize("words", ["how do I set it up?", "is it added?", "Done? What next?"])
+async def test_a_question_at_the_wait_is_answered_never_saved(words):
+    """SAI2's tightening: "set up" and "added" are done-words, but a question asks; with Shippo here it still waits."""
+    run, _, _ = await _waiting_for_shippo()
+    await _add_shippo()
+    out, _ = await _answer(run, words)
+    assert out["outcome"] == "again" and "tell me when it's done" in out["say"]

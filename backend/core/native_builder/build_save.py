@@ -668,7 +668,9 @@ def says_done(said: str) -> bool:
     """Whether a reply at the wait says it is done: the card's own words, or the person's (F1104)."""
     from core.native_builder.build_plan import _CONNECTED
 
-    return bool(_CONNECTED.match(said)) or (_DONE.search(said) is not None and _NOT_YET.search(said) is None)
+    # A question asks, never says it is done ("how do I set it up?", "is it added?"; SAI2's tightening).
+    return bool(_CONNECTED.match(said)) or ("?" not in said and _DONE.search(said) is not None
+                                             and _NOT_YET.search(said) is None)
 
 
 def _made_tools(run: Any) -> list[str]:
