@@ -10359,10 +10359,11 @@ async def check_homestart(browser) -> str:
             bad.append(f"with nothing chosen the prompts are {ids}")
         await path.get_by_role("radio", name="Engineering").click()
         ids = await starters.evaluate_all("els => els.map(e => e.dataset.starter)")
-        if ids != ["apiclient", "prs"]:
+        # Self-hosted's rows: GitHub's PR triage is cloud-only until the builder can connect it here (ONB3's re-measure).
+        if ids != ["apiclient", "linearweekly"]:
             bad.append(f"Engineering's prompts are {ids}")
-        elif "Needs GitHub · you’ll connect it after your yes" not in await starters.nth(1).inner_text():
-            bad.append("the GitHub prompt does not say it needs GitHub")
+        elif "Needs Linear · you’ll connect it after your yes" not in await starters.nth(1).inner_text():
+            bad.append("the Linear prompt does not say it needs Linear")
         await page.reload(wait_until="domcontentloaded")
         await path.wait_for(timeout=15_000)
         if await path.get_by_role("radio", name="Engineering").get_attribute("aria-checked") != "true":

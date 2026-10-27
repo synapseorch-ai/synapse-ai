@@ -28,6 +28,11 @@ export type Starter = {
     goals: string[];
     /** Onboarding's tool keys an app the prompt needs connected (`TOOLS` in onboarding.py); empty = built-ins only. */
     needs: string[];
+    /**
+     * Offered on cloud only: self-hosted has no Apps catalogue, and its builder does not yet reach a Connect card for
+     * this app's token (ONB3's re-measure, 2026-10-27; Naveen: keep it on cloud, hide it on self-hosted).
+     */
+    cloudOnly?: true;
 };
 
 /** An industry key as it reads inside a sentence ("25 software companies", "the healthcare market"). */
@@ -78,7 +83,7 @@ export const STARTERS: Starter[] = [
         text: 'Make a workflow that designs a one-page website for a product I describe: it writes the copy and the HTML and saves them in the Vault so I can open it.',
     },
     {
-        id: 'prs', title: 'Triage pull requests', personas: ['engineer'], goals: ['development'], needs: ['github'],
+        id: 'prs', title: 'Triage pull requests', personas: ['engineer'], goals: ['development'], needs: ['github'], cloudOnly: true,
         text: 'Make a workflow that connects to GitHub and triages our open pull requests each morning: it labels each by size and risk and lists the ones waiting longest for review.',
     },
     {
@@ -102,7 +107,7 @@ export const STARTERS: Starter[] = [
         text: 'Make a workflow that, when I run it, reads the invoice and receipt PDFs in a Vault folder and adds the vendor, date, amount and due date of each to a spreadsheet there.',
     },
     {
-        id: 'inbox', title: 'Sort the morning inbox', personas: ['operations', 'founder'], goals: ['operations'], needs: ['google'],
+        id: 'inbox', title: 'Sort the morning inbox', personas: ['operations', 'founder'], goals: ['operations'], needs: ['google'], cloudOnly: true,
         text: 'Make a workflow that connects to Gmail and each morning sorts new email into needs reply, FYI and can wait, with a one-line summary of each.',
     },
     {
@@ -135,7 +140,7 @@ export const STARTERS: Starter[] = [
     },
     {
         id: 'brief', title: 'A researched brief', personas: ['anyone'], goals: ['research'], needs: [],
-        text: 'Make a workflow that researches a topic I give it across the web and writes a two-page brief with sources.',
+        text: 'Make a workflow that reads the web pages I list on a topic and writes a two-page brief from them, with sources.',
     },
     {
         id: 'summarise', title: 'Summarise a page', personas: ['anyone'], goals: [], needs: [],
@@ -150,7 +155,7 @@ export const STARTERS: Starter[] = [
         text: 'Make me a shopping assistant for our store from the OpenAPI spec I paste: tools for its products and orders, and an agent that answers customers with them.',
     },
     {
-        id: 'jirareport', title: 'A weekly report from Jira', personas: ['product', 'operations'], goals: ['reporting', 'operations', 'development'], needs: ['jira'],
+        id: 'jirareport', title: 'A weekly report from Jira', personas: ['product', 'operations'], goals: ['reporting', 'operations', 'development'], needs: ['jira'], cloudOnly: true,
         text: 'Make a workflow that connects to Jira and every Friday reads this week’s issues: what shipped, what slipped and what is blocked, as a one-page report for the team.',
     },
     {
@@ -166,16 +171,12 @@ export const STARTERS: Starter[] = [
         text: 'Make a workflow that connects to Notion and turns the meeting notes I paste into a tidy page there: decisions, owners and next steps.',
     },
     {
-        id: 'slackbrief', title: 'A morning brief in Slack', personas: ['founder', 'marketer'], goals: ['research', 'reporting'], needs: ['slack'],
+        id: 'slackbrief', title: 'A morning brief in Slack', personas: ['founder', 'marketer'], goals: ['research', 'reporting'], needs: ['slack'], cloudOnly: true,
         text: 'Make a workflow that connects to Slack and every morning posts a five-line brief of the news on the topics I list to a channel I pick.',
     },
     {
         id: 'stripeweekly', title: 'Last week in Stripe', personas: ['founder', 'analyst'], goals: ['finance', 'reporting', 'ecommerce'], needs: ['stripe'],
         text: 'Make a workflow that connects to Stripe and every Monday reports last week’s revenue, new customers and failed payments in a short table.',
-    },
-    {
-        id: 'apitools', title: 'Tools from an API spec', personas: [], goals: ['custom_api', 'development'], needs: [],
-        text: 'Make tools from the OpenAPI spec I paste, then a workflow that calls them each morning to check the API answers, with a report of anything that failed saved in the Vault.',
     },
     {
         id: 'supportbot', title: 'A support assistant from your help articles', personas: ['founder', 'product'], goals: ['support', 'chat', 'saas_agents'], needs: [],
@@ -195,7 +196,7 @@ export const STARTERS: Starter[] = [
     },
     {
         id: 'outreach', title: 'First emails to a list of companies', personas: ['sales'], goals: ['sales', 'writing'], needs: [],
-        text: 'Make a workflow that writes a short, personal first email to each company in a spreadsheet in the Vault, using what its website says, and saves the drafts there.',
+        text: 'Make a workflow that reads the website of a company I name and drafts a short, personal first email to them, saved in the Vault.',
     },
     {
         id: 'contract', title: 'A contract in one page', personas: ['operations', 'founder'], goals: ['documents', 'finance'], needs: [],
@@ -222,3 +223,6 @@ export const STARTERS: Starter[] = [
         text: 'Make a workflow that turns a topic I give it into a lesson plan with goals, a 10-question quiz and its answers, saved in the Vault.',
     },
 ];
+
+/** The rows self-hosted offers: every row but those its builder cannot connect yet (`cloudOnly`). */
+export const SELF_HOSTED_STARTERS: Starter[] = STARTERS.filter((row) => !row.cloudOnly);

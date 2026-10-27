@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 STARTERS = Path(__file__).resolve().parents[3] / "frontend" / "src" / "components" / "starters"
+SRC_APP = STARTERS.parent / "app"
 
 #: Scraping, crawling and search vendors: the built-ins do their job.
 VENDORS = ("firecrawl", "apify", "browserbase", "simplescraper", "exa", "tavily", "serpapi", "scrapingbee",
@@ -29,6 +30,7 @@ def _rows() -> list[dict]:
             "personas": re.findall(r"'([a-z_]+)'", re.search(r"personas: \[([^\]]*)\]", block).group(1)),
             "goals": re.findall(r"'([a-z_]+)'", re.search(r"goals: \[([^\]]*)\]", block).group(1)),
             "needs": re.findall(r"'([a-z_]+)'", re.search(r"needs: \[([^\]]*)\]", block).group(1)),
+            "cloud_only": "cloudOnly: true" in block,
         })
     return rows
 
@@ -76,10 +78,10 @@ def test_every_home_persona_has_rows_of_its_own():
     block = re.search(r"export const WORK_IN.*?\];", pick, re.S).group(0)
     personas = re.findall(r"key: '([a-z_]+)'", block)
     assert personas, "WORK_IN lists no personas"
-    rows = _rows()
+    rows = [r for r in _rows() if not r["cloud_only"]]  # OSS Home picks from self-hosted's rows
     thin = [p for p in personas
             if sum(1 for r in rows if p in r["personas"]) < 2]
-    assert not thin, f"personas Home offers with fewer than two rows: {thin}"
+    assert not thin, f"personas Home offers with fewer than two self-hosted rows: {thin}"
 
 
 def test_every_row_asks_for_something_to_build():
@@ -117,6 +119,24 @@ def test_the_starters_naveen_named_are_there():
     assert rows["prs"]["personas"] == ["engineer"] and "product" in rows["jirareport"]["personas"]
     assert "designer" in rows["figmareview"]["personas"]
     assert len(rows) >= 40, "the table should cover far more than two prompts per person"
+
+
+def test_rows_self_hosted_cannot_connect_yet_are_cloud_only():
+    # ONB3's re-measure on Claude Code Haiku (2026-10-27): on self-hosted, GitHub, Gmail, Jira and Slack stop at "can't be
+    # built as it is yet" — the builder finds their APIs but no Connect card for the token (no Apps catalogue there),
+    # while Figma, Linear, Notion and Stripe reach one. Naveen: keep them on cloud (its catalogue connects them in a
+    # click), hide them on self-hosted. OSS Home picks from `SELF_HOSTED_STARTERS`.
+    rows = {r["id"]: r for r in _rows()}
+    assert {i for i, r in rows.items() if r["cloud_only"]} == {"prs", "inbox", "jirareport", "slackbrief"}
+    home = (SRC_APP / "Dashboard.tsx").read_text("utf-8")
+    assert re.search(r"pickStarters\(\{[^)]*\},\s*2,\s*SELF_HOSTED_STARTERS\)", home), \
+        "OSS Home must pick from the self-hosted rows"
+
+
+def test_a_row_that_failed_the_measure_is_out():
+    # ONB3's re-measure: "Make tools from the OpenAPI spec I paste, then a workflow…" planned the tools inside the daily
+    # run and stopped at "can't be built" twice; the shopping assistant from a spec (ecomagent) is the way in.
+    assert "apitools" not in {r["id"] for r in _rows()}
 
 
 def test_most_rows_need_no_app():

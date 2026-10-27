@@ -39,7 +39,7 @@ import {
     type WaitingBrief,
 } from '@/components/run';
 import type { RunSummary } from '@/components/runs/summary';
-import { pickStarters, StarterPrompts, WORK_IN, type Persona } from '@/components/starters';
+import { pickStarters, SELF_HOSTED_STARTERS, StarterPrompts, WORK_IN, type Persona } from '@/components/starters';
 import { assistantChatHref } from '@/components/tabs';
 import { Button, LinkButton, Mark, StatStrip, TextLink, usePersisted } from '@/components/ui';
 import { usdCompact } from '@/lib/money';
@@ -86,7 +86,8 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
     const [workIn, setWorkIn] = usePersisted<Persona>(
         'synapseHomeRole', raw => WORK_IN.find(w => w.key === raw)?.key ?? 'anyone', 'anyone',
     );
-    const starters = useMemo(() => pickStarters({ persona: workIn }), [workIn]);
+    // Self-hosted's rows: those its builder can connect (cloud-only ones left out).
+    const starters = useMemo(() => pickStarters({ persona: workIn }, 2, SELF_HOSTED_STARTERS), [workIn]);
     const modelSetup = useModelSetup();
     // "Don't show again" on the first-workflow path: this browser's, as OSS has one person.
     const [startHidden, setStartHidden] = usePersisted<'0' | '1'>('synapseHomeStartHidden', (raw) => (raw === '1' ? '1' : '0'), '0');
