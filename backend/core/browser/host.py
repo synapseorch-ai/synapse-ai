@@ -54,6 +54,29 @@ def _browser_proxy_env() -> str | None:
 
     found = urllib.request.getproxies_environment()
     return found.get("https") or found.get("http") or None
+#: The element a press lands on, as `gate.classify_press` reads it. With `enter`, what Enter does there: it submits
+#: a form from a one-line field (a message box's Enter is read by `editable`).
+_PRESS_INFO_JS = """(el, enter) => {
+  const pressable = 'button, [role=button], input[type=submit], input[type=button], input[type=image], input[type=reset], a, [role=link], [role=menuitem]';
+  const tagOf = (x) => ((x && x.tagName) || '').toLowerCase();
+  const typeOf = (x) => ((x && x.getAttribute && x.getAttribute('type')) || '').toLowerCase();
+  const isField = (x) => !!x && (x.isContentEditable || ['textarea', 'select'].includes(tagOf(x)) || (tagOf(x) === 'input'
+    && !['checkbox', 'radio', 'button', 'submit', 'image', 'reset', 'file'].includes(typeOf(x))));
+  const button = (el && el.closest && el.closest(pressable)) || null;
+  const b = button || el || document.body;
+  const tag = tagOf(b), type = typeOf(b), field = !button && isField(b);
+  const form = b.form || (b.closest && b.closest('form'));
+  const own = (b.getAttribute && (b.getAttribute('aria-label') || b.getAttribute('title') || b.getAttribute('alt'))) || '';
+  const label = (own || (button ? (b.innerText || b.value || '') : '')).trim().slice(0, 120);
+  const oneLine = field && tag === 'input';
+  const submits = !!form && (enter && !button ? oneLine : ((tag === 'button' && (type === '' || type === 'submit'))
+                                                          || (tag === 'input' && (type === 'submit' || type === 'image'))));
+  return JSON.stringify({label, tag, type, href: tag === 'a' ? (b.getAttribute('href') || '') : '',
+    in_form: !!form, submits, form_method: form ? (form.getAttribute('method') || 'get').toLowerCase() : '',
+    form_search: !!form && ((form.getAttribute('role') || '') === 'search' || !!form.querySelector('input[type=search]')),
+    field, editable: field && tag !== 'select', nothing: !!enter && !button && !field,
+    frame: location.href, title: document.title});
+}"""
 #: A worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket, starts no worker
 #: (F1122, SEC2's review). Run in every frame before its scripts; the page cannot define them again. A popup is a new
 #: target that Playwright MCP, a second client of this Chromium, may let run before this script reaches it, so the
@@ -92,6 +115,40 @@ def _summary(name: str, args: dict) -> str:
     return str(element)
 
 
+def _result_json(text: str):
+    """The value a `browser_evaluate` returned, from Playwright MCP's answer (`### Result`, then it as JSON)."""
+    found = re.search(r"### Result\s*\n(.*?)(?:\n###|\Z)", text or "", re.S)
+    raw = "\n".join(line for line in (found.group(1) if found else text or "").strip().splitlines()
+                    if not line.startswith("```")).strip()
+    for _ in range(2):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(raw, str):
+            return raw
+    return None
+
+
+#: What the agent passes to press a button that acts for the person (V2-CONTRACT "Final buttons and sends").
+_CONFIRM = {"type": "string", "description": (
+    "Only to press a button that acts for the person (submit, send, post, book…) after Synapse stopped it: the "
+    "person's exact words that ask for it, copied from their message or your instructions. Leave it out otherwise.")}
+_HAND_OVER_SCHEMA = {"name": "browser_hand_over", "description": (
+    "Give the person the browser: they press a button themselves, choose, or log in. Say what they should do."),
+    "inputSchema": {"type": "object", "properties": {"reason": {
+        "type": "string", "description": "What the person should do, in one sentence."}}, "required": ["reason"]},
+    "tags": {"read_only": True, "open_world": False}}
+
+
+def _with_confirm(tool) -> dict:
+    """A press tool's schema with `confirm` beside Playwright MCP's own arguments (which never receive it)."""
+    schema = dict(tool.inputSchema or {})
+    if tool.name in gate.PRESSES:
+        schema["properties"] = {**(schema.get("properties") or {}), "confirm": _CONFIRM}
+    return schema
+
+
 class Session:
     def __init__(self, sid: str, owner: str, mode: str, limits: dict, root: Path, sites: list[str] | None = None,
                  wheel: str = "agent"):
@@ -108,6 +165,8 @@ class Session:
         self.took_at: float | None = None
         self.last_frame: dict | None = None
         self.dialog = None          # a page's alert/confirm/prompt, while the person drives
+        self.agent_dialog = ""      # the message of the dialog the agent faces (Playwright MCP handles it)
+        self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
         self.limits = {**DEFAULT_LIMITS, **(limits or {})}
@@ -299,8 +358,11 @@ class Session:
         return None
 
     # ── the agent's tools ────────────────────────────────────────────────────
-    async def call(self, name: str, args: dict) -> dict:
+    async def call(self, name: str, args: dict, press: dict | None = None) -> dict:
+        """`press` is the engine's word on a quote the agent gave (`confirm`): `{because, confirmed}`, checked
+        against the person's own text where that text is, never here."""
         self.last_used = time.monotonic()
+        args = {k: v for k, v in (args or {}).items() if k != "confirm"}
         refused = gate.refusal(name)
         if refused:
             return {"refused": refused}
@@ -308,9 +370,19 @@ class Session:
             return {"waiting": "person_driving"}
         if self.actions >= self.limits["actions"]:
             return {"refused": f"This browser session has used its {self.limits['actions']} actions."}
+        if name == gate.HAND_OVER:
+            reason = str(args.get("reason") or "").strip()[:300] or "The agent asked you to take it from here."
+            turn = self._turn("asked", reason)
+            self._note("agent", "handed over", reason)
+            return {"text": "The person has the browser now. Stop here; you will continue when they hand it back.",
+                    "is_error": False, "log": None, "handover": {**turn, "session_id": self.id}}
         async with self._lock:
             if name in gate.TYPES_TEXT:
                 stop = await self._before_typing(name, args or {})
+                if stop:
+                    return stop
+            if name in gate.PRESSES and self.mode == gate.CO_DRIVE:  # read-only sends nothing at all
+                stop = await self._before_press(name, args, press)
                 if stop:
                     return stop
             self.actions += 1
@@ -324,7 +396,10 @@ class Session:
                 text += ("\n### Synapse\nNothing left the browser for: " + "; ".join(dict.fromkeys(blocked))
                          + ". The page may show an error because of it.")
             entry = None
-            if name in gate.CHANGES_PAGE:
+            pressing, self._pressing = self._pressing, None
+            if pressing:
+                entry = await self._record("agent", "pressed", pressing["label"], because=pressing["because"])
+            elif name in gate.CHANGES_PAGE:
                 entry = await self._record("agent", name, _summary(name, args or {}))
                 if self.handover is None and self._captcha_showing():
                     self._turn("captcha", "A CAPTCHA or a bot check is showing: it is yours to solve.")
@@ -363,6 +438,64 @@ class Session:
                                 "they have been asked. Stop here.",
                         "is_error": True, "log": None, "handover": {**turn, "session_id": self.id}}
         return None
+
+    async def _before_press(self, name: str, args: dict, press: dict | None) -> dict | None:
+        """A press that acts for the person runs only on their own words; money, permanent deletes and closing an
+        account are always theirs; anything else runs (V2-CONTRACT "Final buttons and sends")."""
+        if name == "browser_type" and not args.get("submit"):
+            return None
+        if name == "browser_press_key" and str(args.get("key") or "") not in ("Enter", "NumpadEnter"):
+            return None
+        if name == "browser_handle_dialog":
+            if not args.get("accept"):
+                return None
+            info = {"label": self.agent_dialog, "dialog": True}
+        else:
+            info = await self._press_info(None if name == "browser_press_key" else args.get("target"),
+                                          key=name != "browser_click")
+            if info is None:
+                return None  # no such element: Playwright MCP's own call says so
+        page = self._page_url()
+        tier, does = gate.classify_press(info, page)
+        if tier == gate.FREE:
+            return None
+        label = (info.get("label") or "").strip()[:120]
+        label = (f"Enter in {label}" if label else "Enter") if info.get("key") else (label or "this button")
+        if tier == gate.ACTS and press and press.get("confirmed"):
+            self._pressing = {"label": label, "because": str(press.get("because") or "")[:300]}
+            return None
+        detail = {"label": label, "does": does, "host": urlparse(page).hostname or "", "tier": tier}
+        if tier == gate.MONEY or press:
+            why = ("Payments, permanent deletes and closing an account are always the person's"
+                   if tier == gate.MONEY else "the words quoted are not the person's own asking for it")
+            turn = self._turn("press", f"Press '{label}' yourself: {does}.", press=detail)
+            return {"text": f"Not pressed: '{label}' is the person's to press ({why}). They have been asked; "
+                            "stop here.", "is_error": True, "log": None,
+                    "handover": {**turn, "session_id": self.id}}
+        return {"text": (f"Not pressed: '{label}': {does}. Press it only if the person asked for this in their "
+                         f"own words: call {name} again with the same arguments and `confirm` set to their exact "
+                         "words. If they did not, call browser_hand_over so they press it themselves."),
+                "is_error": False, "log": None}
+
+    async def _press_info(self, target: str | None, *, key: bool) -> dict | None:
+        """What the page says about the element a press lands on, read through Playwright MCP's ref (or the
+        focused element, for Enter). None when there is no such element; unreadable fails closed."""
+        fn = _PRESS_INFO_JS if target else f"() => ({_PRESS_INFO_JS})(document.activeElement, true)"
+        call = {"function": fn, **({"element": "the element pressed", "target": target} if target else {})}
+        try:
+            res = await self.mcp.call_tool("browser_evaluate", call)
+            text = " ".join(getattr(c, "text", "") for c in res.content)
+            if res.isError:
+                if "not found" in text.lower() or "does not match" in text.lower():
+                    return None
+                return {"label": "", "submits": True, "form_method": "post", "key": key}
+            info = _result_json(text)
+        except Exception:
+            info = None
+        if not isinstance(info, dict):
+            return {"label": "", "submits": True, "form_method": "post", "key": key}
+        info["key"] = key
+        return info
 
     async def _sensitive(self, target: str) -> bool:
         """Read the field's own type and autocomplete through Playwright MCP's ref, never failing open."""
@@ -523,7 +656,7 @@ class Session:
             return "```yaml\n" + path.read_text(errors="replace") + "\n```"
         return _SNAPSHOT_LINK.sub(put, text)
 
-    async def _record(self, actor: str, action: str, target: str) -> dict:
+    async def _record(self, actor: str, action: str, target: str, **extra) -> dict:
         ref = None
         try:
             shot = await self.page.screenshot(type="jpeg", quality=60)
@@ -531,16 +664,16 @@ class Session:
             self.shots[ref] = shot
         except Exception:
             pass
-        return self._note(actor, action, target, ref)
+        return self._note(actor, action, target, ref, **extra)
 
-    def _note(self, actor: str, action: str, target: str, shot_ref: str | None = None) -> dict:
+    def _note(self, actor: str, action: str, target: str, shot_ref: str | None = None, **extra) -> dict:
         url = ""
         try:
             url = self.page.url if self.page else ""
         except Exception:
             pass
         entry = {"n": len(self.log) + 1, "at": time.time(), "actor": actor, "action": action,
-                 "target": target, "url": url, "shot_ref": shot_ref}
+                 "target": target, "url": url, "shot_ref": shot_ref, **extra}
         self.log.append(entry)
         return entry
 
@@ -554,6 +687,8 @@ class Session:
         if self.wheel == "person":  # the agent's are Playwright MCP's (browser_handle_dialog)
             self.dialog = dialog
             self._push_state()
+        else:
+            self.agent_dialog = dialog.message or ""
 
     def _on_chooser(self, chooser) -> None:
         if self.wheel == "person":
@@ -738,8 +873,9 @@ class Host:
         async with stdio_client(params) as (read, write), ClientSession(read, write) as mcp:
             await mcp.initialize()
             listed = (await mcp.list_tools()).tools
-        self._schemas = [{"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema,
+        self._schemas = [{"name": t.name, "description": t.description or "", "inputSchema": _with_confirm(t),
                           "tags": gate.ALLOWED[t.name]} for t in listed if t.name in gate.ALLOWED]
+        self._schemas.append(_HAND_OVER_SCHEMA)
         return self._schemas
 
     async def open_session(self, request):
@@ -764,7 +900,8 @@ class Host:
     async def call_tool(self, request):
         body = await request.json()
         s = self._session(body.get("session_id", ""))
-        return web.json_response(await s.call(str(body.get("name", "")), body.get("args") or {}))
+        return web.json_response(await s.call(str(body.get("name", "")), body.get("args") or {},
+                                              body.get("press") if isinstance(body.get("press"), dict) else None))
 
     async def get_log(self, request):
         s = self._session(request.query.get("session_id", ""))

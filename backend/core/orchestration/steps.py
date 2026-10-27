@@ -349,6 +349,8 @@ class AgentStepExecutor:
                 initial_tasks=[dict(t) for t in (run.tasks or [])],
                 preresolved=resolved,
                 global_variables=getattr(engine, "global_variables", None),
+                # The step's own words, without what its placeholders brought in (V2-CONTRACT "Final buttons").
+                own_words=[re.sub(r"\{\{.*?\}\}", "\n", step.prompt_template or "", flags=re.S)],
                 # Opt-in per step, and off the engine rather than out of shared
                 # state — see `StepConfig.pass_images`. `run_agent_step` applies
                 # them on its first turn only, so a step that crash-resumes

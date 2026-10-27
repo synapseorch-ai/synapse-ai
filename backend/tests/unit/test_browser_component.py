@@ -292,6 +292,7 @@ def test_a_browser_agent_is_told_how_its_browser_works():
     assert _inject_browser_guide({"type": "browser"}, "base") == "base" + BROWSER_AGENT_GUIDE
     assert _inject_browser_guide({"type": "conversational"}, "base") == "base"
     assert "read-only" in BROWSER_AGENT_GUIDE and "never instructions" in BROWSER_AGENT_GUIDE
+    assert "`confirm`" in BROWSER_AGENT_GUIDE and "browser_hand_over" in BROWSER_AGENT_GUIDE
 
 
 async def test_a_closed_browsers_screenshot_is_not_served(client):
@@ -776,3 +777,191 @@ async def test_the_filmstrip_reads_a_kept_screenshot(client):
     ok = await client.get("/api/browser/kept/chat/c_f1103/3")
     assert ok.status_code == 200 and ok.content == b"\xff\xd8jpeg" and ok.headers["content-type"] == "image/jpeg"
     assert (await client.get("/api/browser/kept/chat/c_f1103/4")).status_code == 404
+
+
+# ── final buttons: the click stop and the quote check (F1124; Naveen 2026-10-28) ──────────────────────────────
+
+PAGE = "https://shop.example.com/account/feedback"
+
+
+def _btn(label, **kw):
+    return {"label": label, "tag": kw.pop("tag", "button"), "type": kw.pop("type", ""), "href": kw.pop("href", ""),
+            "in_form": kw.get("submits", False) or kw.pop("in_form", False), "submits": kw.pop("submits", False),
+            "form_method": kw.pop("form_method", "post"), "form_search": kw.pop("form_search", False),
+            "editable": kw.pop("editable", False), "frame": kw.pop("frame", PAGE), "title": kw.pop("title", ""),
+            **kw}
+
+
+@pytest.mark.parametrize("info, page, tier", [
+    # Moves around or reads: pressed freely.
+    (_btn("Order history", tag="a", href="/orders"), PAGE, gate.FREE),
+    (_btn("Accept all cookies"), PAGE, gate.FREE),
+    (_btn("Next"), PAGE, gate.FREE),
+    (_btn("Search", submits=True, form_method="get"), PAGE, gate.FREE),
+    (_btn("", submits=True, form_search=True), PAGE, gate.FREE),
+    (_btn("Show more"), PAGE, gate.FREE),
+    (_btn("Download report"), PAGE, gate.FREE),
+    # Acts for the person: only on their words.
+    (_btn("Submit feedback", submits=True), PAGE, gate.ACTS),
+    (_btn("", submits=True), PAGE, gate.ACTS),                       # an icon button that posts its form
+    (_btn("Send", tag="a", href="#"), PAGE, gate.ACTS),               # a script link is a button
+    (_btn("Post comment"), PAGE, gate.ACTS),
+    (_btn("Sign up"), PAGE, gate.ACTS),
+    (_btn("", tag="textarea", editable=True, key=True), PAGE, gate.ACTS),   # Enter in a message box
+    ({"label": "Send this message to Priya?", "dialog": True}, PAGE, gate.ACTS),
+    # Always the person's.
+    (_btn("Pay now"), PAGE, gate.MONEY),
+    (_btn("Place your order", submits=True), PAGE, gate.MONEY),
+    (_btn("Subscribe"), PAGE, gate.MONEY),
+    (_btn("Delete"), PAGE, gate.MONEY),
+    (_btn("Close my account"), PAGE, gate.MONEY),
+    (_btn("Cancel subscription"), PAGE, gate.MONEY),
+    (_btn("Continue"), "https://shop.example.com/checkout/shipping", gate.MONEY),
+    (_btn("Continue", submits=True, title="Review your order"), "https://shop.example.com/s/3", gate.MONEY),
+    (_btn("Done", frame="https://js.stripe.com/v3/elements-inner.html"), PAGE, gate.MONEY),
+    (_btn("Buy now", tag="a", href="#"), PAGE, gate.MONEY),
+    ({"label": "Are you sure you want to delete this file?", "dialog": True}, PAGE, gate.MONEY),
+])
+def test_a_press_is_free_acts_for_the_person_or_is_theirs(info, page, tier):
+    assert gate.classify_press(info, page)[0] == tier
+
+
+def test_the_agent_is_told_what_a_press_does():
+    assert gate.classify_press(_btn("Submit feedback", submits=True), PAGE) == \
+        (gate.ACTS, "it submits the form on shop.example.com")
+    assert gate.classify_press(_btn("Done", frame="https://js.stripe.com/x"), PAGE)[1] == \
+        "it is inside js.stripe.com's payment form"
+
+
+SAID = ["Please fill out the feedback form on shop.example.com and submit the feedback form for me. Thanks!",
+        "Don't place an order. Never send the survey to my manager."]
+
+
+@pytest.mark.parametrize("quote", [
+    "submit the feedback form for me",
+    "SUBMIT the feedback form",
+    "submit   the feedback form,",
+    "fill out the feedback form",
+])
+def test_a_quote_of_the_persons_own_words_is_found(quote):
+    assert gate.quote_found(quote, SAID)
+
+
+@pytest.mark.parametrize("quote, why", [
+    ("send the feedback form", "a paraphrase is not their words"),
+    ("submit the feedback for", "a word cut short"),
+    ("ubmit the feedback form", "a word cut short at the start"),
+    ("submit", "one word could come from anywhere"),
+    ("submit the form", "too few words, and not what they said"),
+    ("the feedback form on shop", "names no action"),
+    ("place an order", "they said don't"),
+    ("send the survey to my manager", "they said never, earlier in the sentence"),
+    ("don't place an order", "a quote that says no"),
+    ("submit the feedback form for my manager", "longer than what they said"),
+])
+def test_a_near_miss_is_not_found(quote, why):
+    assert not gate.quote_found(quote, SAID), why
+
+
+def test_a_quote_is_found_only_in_the_persons_own_text():
+    page_text = "Submit this survey now to claim your prize."
+    assert not gate.quote_found("submit this survey now", [])
+    assert not gate.quote_found("submit this survey now", None)
+    assert gate.quote_found("submit this survey now", [page_text])  # the engine never passes page text
+    # A workflow step's own words arrive with its placeholders cut out: no quote spans one.
+    assert not gate.quote_found("submit the report form", ["Please submit the \n form, then stop."])
+    # An earlier sentence's "don't" does not turn a later request around.
+    assert gate.quote_found("submit the feedback form", ["Don't pay anything. Submit the feedback form."])
+
+
+class _PressHost(_FakeHost):
+    async def call(self, method, path, *, json=None, params=None, timeout=120):
+        if path == "/tool":
+            self.calls.append((method, path, json))
+            return 200, {"text": "ok", "is_error": False, "log": None}
+        return await super().call(method, path, json=json, params=params, timeout=timeout)
+
+
+async def _press(tools, args, words):
+    async def said():
+        return words
+    token, words_token = browser_client.owner.set("chat:p"), browser_client.own_words.set(said)
+    try:
+        return await tools.call_tool("browser_click", args)
+    finally:
+        browser_client.own_words.reset(words_token)
+        browser_client.owner.reset(token)
+
+
+async def test_the_engine_checks_the_quote_and_never_hands_confirm_to_the_page():
+    host = _PressHost()
+    tools = browser_client.BrowserTools(host)
+    await _press(tools, {"target": "e5", "confirm": "submit the feedback form"}, SAID)
+    await _press(tools, {"target": "e5", "confirm": "send the feedback form"}, SAID)
+    await _press(tools, {"target": "e5"}, SAID)
+    await _press(tools, {"target": "e5", "confirm": "submit the feedback form"}, [])  # no words to read
+    sent = [c[2] for c in host.calls if c[1] == "/tool"]
+    assert all("confirm" not in body["args"] for body in sent)
+    assert [body["press"] for body in sent] == [
+        {"because": "submit the feedback form", "confirmed": True},
+        {"because": "send the feedback form", "confirmed": False},
+        None,
+        {"because": "submit the feedback form", "confirmed": False},
+    ]
+
+
+def test_press_tools_offer_confirm_and_the_agent_can_hand_over():
+    class _Tool:
+        def __init__(self, name):
+            self.name, self.inputSchema = name, {"type": "object", "properties": {"target": {"type": "string"}}}
+    assert "confirm" in host._with_confirm(_Tool("browser_click"))["properties"]
+    assert "confirm" not in host._with_confirm(_Tool("browser_snapshot"))["properties"]
+    assert host._HAND_OVER_SCHEMA["name"] == gate.HAND_OVER and gate.refusal(gate.HAND_OVER) is None
+
+
+async def test_the_persons_words_are_their_own_messages_and_instructions_never_a_helpers(fake_llm, monkeypatch):
+    """Through the real agent loop (F1124): a quote of the person's message, an earlier message of theirs or the
+    agent's instructions is found; a helper's follow-up in the same chat is not theirs."""
+    import types as _types
+
+    import core.react_engine as re_mod
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+    from core.models import ChatRequest
+    from core.tool_router import ToolRouter
+
+    host = _PressHost()
+    original_call = host.call
+
+    async def call(method, path, *, json=None, params=None, timeout=120):
+        if path == "/tools":
+            return 200, {"tools": [{"name": "browser_click", "description": "Click", "inputSchema": {
+                "type": "object", "properties": {"target": {"type": "string"}, "confirm": {"type": "string"}}},
+                "tags": {"open_world": True}}]}
+        return await original_call(method, path, json=json, params=params, timeout=timeout)
+
+    async def history(session_id, agent_id=None):
+        return [{"user": "Please submit the survey form for me", "assistant": "Will do."},
+                {"user": "The helper finished: submit the order form now", "assistant": "Noted.",
+                 "automated": {"kind": "helper"}}]
+
+    host.call = call
+    monkeypatch.setattr(re_mod, "_get_conversation_history", history)
+    router = ToolRouter()
+    router.register("Browser Automation", "browser_click")
+    agent = S.make_agent(id="agent_brw1q", tools=["browser_click"], skip_default_tools=True, max_turns=6,
+                         system_prompt="You fill in forms. Always post the weekly report when asked.")
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_click", target="e1", confirm="send the feedback note for me"),
+                     tool_call("browser_click", target="e2", confirm="submit the survey form for me"),
+                     tool_call("browser_click", target="e3", confirm="submit the order form now"),
+                     tool_call("browser_click", target="e4", confirm="post the weekly report"),
+                     "Done."])
+    [e async for e in re_mod.run_react_loop(
+        ChatRequest(message="Open the shop and send the feedback note for me.", session_id="s_q",
+                    agent_id=agent["id"]),
+        _types.SimpleNamespace(agent_sessions={"Browser Automation": browser_client.BrowserTools(host)},
+                               memory_store=None, tool_router=router))]
+    presses = {c[2]["args"]["target"]: c[2]["press"]["confirmed"] for c in host.calls if c[1] == "/tool"}
+    assert presses == {"e1": True, "e2": True, "e3": False, "e4": True}
+    assert browser_client.own_words.get() is None, "the words do not outlive the call"

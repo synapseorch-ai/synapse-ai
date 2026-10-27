@@ -292,8 +292,12 @@ async def codrive_host():
     await proc.wait()
 
 
-async def _tool(http, control, sid, name, args):
-    return await _post(http, control, "/tool", {"session_id": sid, "name": name, "args": args})
+async def _tool(http, control, sid, name, args, press=None):
+    return await _post(http, control, "/tool", {"session_id": sid, "name": name, "args": args, "press": press})
+
+
+#: The engine's word that the agent quoted the person asking for this press (F1124).
+ASKED = {"because": "send it for me please", "confirmed": True}
 
 
 async def _view(http, viewer, sid, path, body=None):
@@ -307,7 +311,7 @@ async def _state(http, control, sid):
 
 
 def _ref(text, role, name):
-    return re.search(rf'{role} "{name}" \[ref=(e\d+)\]', text).group(1)
+    return re.search(rf'{role} "{name}" \[ref=(\w+)\]', text).group(1)  # e5, or f2e5 after a reload
 
 
 async def test_an_agents_send_waits_for_the_person(form_site, codrive_host):
@@ -327,7 +331,7 @@ async def test_an_agents_send_waits_for_the_person(form_site, codrive_host):
     await _view(http, viewer, sid, "/wheel/hand-back", {})
 
     click = await _tool(http, control, sid, "browser_click",
-                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")})
+                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")}, ASKED)
     assert click["handover"]["kind"] == "send", click
     state = await _state(http, control, sid)
     assert state["wheel"] == "nobody" and state["held"]["method"] == "POST" and hits["submit"] == 0
@@ -358,7 +362,7 @@ async def test_taking_over_drops_the_agents_send_and_the_person_sends_it(form_si
     status, _ = await _view(http, viewer, sid, "/input", {"type": "text", "text": "x"})
     assert status == 409  # the agent holds the wheel
     click = await _tool(http, control, sid, "browser_click",
-                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")})
+                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")}, ASKED)
     assert click["handover"]["kind"] == "send"
 
     status, body = await _view(http, viewer, sid, "/wheel/take")
@@ -523,4 +527,101 @@ async def test_while_the_agent_drives_a_socket_opens_only_on_its_sites(site, hos
             break
         await asyncio.sleep(0.1)
     assert hits["ws"] == 2, "the person's page opens its socket"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── final buttons: the click stop (F1124; Naveen 2026-10-28) ──────────────────
+
+@pytest.fixture
+async def press_site():
+    hits = {"feedback": 0, "search": 0, "pay": 0, "message": 0}
+
+    async def index(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body><h1>Shop</h1>"
+            "<form method='get' action='/search'><input name='q' aria-label='Find'><button>Search</button></form>"
+            "<form method='post' action='/feedback'><input name='note' aria-label='Note'>"
+            "<button type='submit'>Submit feedback</button></form>"
+            "<button onclick=\"fetch('/pay', {method: 'POST'})\">Pay now</button>"
+            "<textarea aria-label='Message' onkeydown=\"if (event.key === 'Enter') "
+            "fetch('/message', {method: 'POST', body: this.value})\"></textarea></body></html>"))
+
+    def counter(name):
+        async def count(_):
+            hits[name] += 1
+            return web.Response(content_type="text/html", text=f"<h1>{name} done</h1>")
+        return count
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/search", counter("search"))
+    for name in ("feedback", "pay", "message"):
+        app.router.add_post(f"/{name}", counter(name))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1], hits
+    await runner.cleanup()
+
+
+async def test_a_press_that_acts_for_the_person_runs_only_on_their_words(press_site, codrive_host):
+    port, hits = press_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:press", "mode": "co_drive",
+                                                   "sites": ["localhost"]}))["session_id"]
+
+    async def page():
+        return (await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"}))["text"]
+
+    text = await page()
+    search = await _tool(http, control, sid, "browser_click", {"element": "Search", "target": _ref(text, "button", "Search")})
+    assert not search.get("handover") and hits["search"] == 1, "a search is pressed freely"
+
+    text = await page()
+    submit = {"element": "Submit feedback", "target": _ref(text, "button", "Submit feedback")}
+    told = await _tool(http, control, sid, "browser_click", submit)
+    assert told["text"].startswith("Not pressed: 'Submit feedback': it submits the form on localhost.")
+    assert not told.get("handover") and hits["feedback"] == 0
+    assert (await _state(http, control, sid))["wheel"] == "agent", "the agent decides; nobody is asked yet"
+
+    wrong = await _tool(http, control, sid, "browser_click", submit, {"because": "go on", "confirmed": False})
+    assert wrong["handover"]["kind"] == "press" and wrong["handover"]["press"]["tier"] == "acts"
+    assert wrong["handover"]["press"]["label"] == "Submit feedback" and hits["feedback"] == 0
+    assert (await _state(http, control, sid))["wheel"] == "person"
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+
+    text = await page()
+    pay = await _tool(http, control, sid, "browser_click",
+                      {"element": "Pay now", "target": _ref(text, "button", "Pay now")}, ASKED)
+    assert pay["handover"]["press"]["tier"] == "money", "money is the person's whatever was said"
+    await asyncio.sleep(0.5)
+    assert hits["pay"] == 0
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+
+    text = await page()
+    asked = await _tool(http, control, sid, "browser_click",
+                        {"element": "Submit feedback", "target": _ref(text, "button", "Submit feedback")}, ASKED)
+    assert asked.get("handover", {}).get("kind") != "press", asked
+    async with http.get(f"http://127.0.0.1:{control}/log", params={"session_id": sid}) as resp:
+        pressed = [e for e in (await resp.json())["entries"] if e["action"] == "pressed"]
+    assert pressed and pressed[-1]["target"] == "Submit feedback" and pressed[-1]["because"] == ASKED["because"]
+    if asked.get("handover", {}).get("kind") == "send":  # the network still holds its send until F1125
+        await _view(http, viewer, sid, "/release", {"allow_address": False})
+    for _ in range(50):
+        if hits["feedback"]:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["feedback"] == 1
+
+    text = await page()
+    await _tool(http, control, sid, "browser_click", {"element": "Message", "target": _ref(text, "textbox", "Message")})
+    enter = await _tool(http, control, sid, "browser_press_key", {"key": "Enter"})
+    assert enter["text"].startswith("Not pressed: 'Enter in Message': Enter sends what is in the message box"), \
+        enter["text"]
+    assert hits["message"] == 0
+
+    over = await _tool(http, control, sid, "browser_hand_over", {"reason": "Pick the delivery slot you want."})
+    assert over["handover"]["kind"] == "asked" and over["handover"]["reason"] == "Pick the delivery slot you want."
+    assert (await _state(http, control, sid))["wheel"] == "person"
     await _post(http, control, "/close", {"session_id": sid})

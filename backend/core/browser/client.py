@@ -35,12 +35,27 @@ owner: contextvars.ContextVar[str | None] = contextvars.ContextVar("browser_owne
 #: The calling agent's browser settings (`core.models.AgentBrowser` as a dict), read when a session opens.
 settings: contextvars.ContextVar[dict | None] = contextvars.ContextVar("browser_settings", default=None)
 
+#: The person's own words for this call, read only when the agent quotes them to press a button that acts for
+#: them (`confirm`): an async callable returning their messages, the agent's instructions and the step's own text,
+#: never page text or a model's (V2-CONTRACT "Final buttons and sends").
+own_words: contextvars.ContextVar = contextvars.ContextVar("browser_own_words", default=None)
+
 #: How long an agent's call waits while the person drives before it gives up and says so: inside the
 #: engine's 60 s for one MCP call (`MCP_TOOL_CALL_TIMEOUT`). A longer wait is a park, not a call.
 WAIT_FOR_PERSON_S = 45
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _READY = "BROWSER_HOST_READY"
+
+
+async def _own_words() -> list[str]:
+    source = own_words.get()
+    if source is None:
+        return []
+    try:
+        return [w for w in await source() if isinstance(w, str) and w.strip()]
+    except Exception:
+        return []  # unreadable: no quote is found, and the person presses it
 
 
 def owner_for(session_id: str | None, run_id: str | None) -> str:
@@ -158,6 +173,11 @@ class BrowserTools:
         refused = gate.refusal(name)
         if refused:
             return _result(refused, error=True)
+        arguments = dict(arguments or {})
+        quote = arguments.pop("confirm", None)
+        press = None
+        if name in gate.PRESSES and isinstance(quote, str) and quote.strip():
+            press = {"because": quote.strip()[:300], "confirmed": gate.quote_found(quote, await _own_words())}
         try:
             sid = await self._session_for(key)
             if key in self._expired:  # the saved login ran out: the person logs in again first
@@ -166,12 +186,12 @@ class BrowserTools:
                 return _result("The saved login has expired. It is the person's turn in the browser to log in "
                                "again; stop here, and you will continue when they hand it back.", error=True)
             status, body = await self.host.call("POST", "/tool", json={
-                "session_id": sid, "name": name, "args": arguments or {}})
+                "session_id": sid, "name": name, "args": arguments, "press": press})
             if status == 404:  # the session was closed (idle) or the component restarted
                 self._forget(key)
                 sid = await self._session_for(key)
                 status, body = await self.host.call("POST", "/tool", json={
-                    "session_id": sid, "name": name, "args": arguments or {}})
+                    "session_id": sid, "name": name, "args": arguments, "press": press})
         except Exception as exc:
             return _result(f"Synapse's browser is not available: {exc}", error=True)
         if body.get("waiting"):
@@ -179,7 +199,7 @@ class BrowserTools:
                 return _result("The person is still driving the browser. Stop here and say so; carry on when "
                                "they hand it back.", error=True)
             status, body = await self.host.call("POST", "/tool", json={
-                "session_id": sid, "name": name, "args": arguments or {}})
+                "session_id": sid, "name": name, "args": arguments, "press": press})
         if body.get("refused"):
             return _result(body["refused"], error=True)
         if body.get("waiting"):

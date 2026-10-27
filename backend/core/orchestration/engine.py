@@ -1298,6 +1298,8 @@ class OrchestrationEngine:
         progress["context_text"] = (progress.get("context_text") or "") + (
             f"\n[The person, in the browser] They took their turn ({turn.get('banner_kind') or 'asked'})"
             f" and handed the browser back{': ' + said if said else ''}. Read the page again before you act.\n")
+        if said:  # their own words: a press they ask for here may run on a quote of them
+            progress["persons_words"] = [*(progress.get("persons_words") or []), said]
         run.step_progress[step_id] = progress
         run.waiting_for_human = False
         run.status = "running"
