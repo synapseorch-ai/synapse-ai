@@ -59,8 +59,11 @@ _USE = re.compile(
 _CONNECT = re.compile(r"\b(?:connect|reconnect|hook up|hook into|link|sign in|plug in|how do i|how to|set up)\b")
 #: A question about how or whether (P4's router replay): an answer, whatever the model labelled it.
 _QUESTION = re.compile(r"^(?:how do i|how can i|how to|how does|where do i|where can i|can i|can a|can an|"
-                       r"is it possible|is there a way|is|are|was|were|did|does|do i|what|which|why|when|who|"
-                       r"how many|how much|has|have)\b")
+                       r"is it possible|is there a way)\b")
+#: A weaker start ("when", "is", "what"…) is a question only when the message ends asking ("?"): "When a plan is
+#: accepted, send…" is a trigger, not a question (the combined-suite check, 10-27).
+_QUESTION_IF_ASKED = re.compile(r"^(?:is|are|was|were|did|does|do i|what|which|why|when|who|how many|how much|has|"
+                                r"have)\b")
 #: Connecting a named service, said as an instruction; and what makes it an automation instead.
 _CONNECT_DO = re.compile(r"\b(?:connect|reconnect|hook up|hook into|link|plug in|sign in to)\b")
 _AUTOMATE = re.compile(r"\b(?:every|each|whenever|when|daily|weekly|automat\w*|workflow|build|create|schedule)\b")
@@ -140,7 +143,8 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
             kind == "research" or is_yes(message) or (_BUILD.search(text) and kind != "answer")):
         kind, by = "build", "after_findings"
     # A question about how or whether is an answer (P4's router replay: Nova Pro labelled how-tos as changes).
-    elif kind in ("change", "build") and _QUESTION.match(text) and not _ACT.search(text):
+    elif kind in ("change", "build") and not _ACT.search(text) and (
+            _QUESTION.match(text) or (_QUESTION_IF_ASKED.match(text) and message.rstrip().endswith("?"))):
         kind, by = "answer", "question"
     # Connecting a named service is the answer route's Connect card, unless an automation through it is asked for.
     elif kind in ("change", "build") and request.providers and _CONNECT_DO.search(text) and not _AUTOMATE.search(

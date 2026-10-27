@@ -129,6 +129,22 @@ class TestAQuestionIsAnswered:
         routed = _route(message, kind)
         assert (routed.kind, routed.route, routed.overridden_by) == ("answer", "step_answer", "question")
 
+    @pytest.mark.parametrize("message", ["When a treatment plan is accepted, send the patient a Stripe payment link",
+                                         "When a new lead arrives, add it to the sheet",
+                                         "What I need is a weekly report every Monday",
+                                         "Is it ok to build me an invoice reminder. Every Friday."])
+    def test_a_request_that_starts_like_a_question_is_still_a_build(self, message):
+        """The combined-suite check (10-27): "When X happens, do Y" is a trigger, not a question. A weak question word
+        counts only when the message asks, with a question mark."""
+        assert _route(message, "build").kind == "build"
+
+    @pytest.mark.parametrize("message", ["When does the nightly digest run?", "Is the invoice sync on?",
+                                         "Is there a way to send invoices automatically"])
+    def test_a_real_question_is_still_an_answer(self, message):
+        """SAI2's pair: a weak start with a "?" asks; a strong start asks with or without one."""
+        routed = _route(message, "build")
+        assert (routed.kind, routed.route) == ("answer", "step_answer")
+
     @pytest.mark.parametrize("message", ["can you pause the morning digest?", "please turn on Nightly invoices",
                                          "change Nightly invoices to 09:00"])
     def test_a_request_said_politely_is_still_a_request(self, message):
