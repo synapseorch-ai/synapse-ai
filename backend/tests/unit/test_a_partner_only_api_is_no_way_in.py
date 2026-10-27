@@ -153,3 +153,12 @@ async def test_a_provider_that_grants_the_access_is_partner_only(needs, words):
 async def test_the_person_granting_the_app_access_stays_api(needs):
     option = await _report("Acme", "api", needs, page="https://acme.com/developers")
     assert option["how"] == "api" and "partner_words" not in option
+
+
+@pytest.mark.xfail(strict=True, reason="known limit (SAI2, e89fdcfe): an app review said with no review word reads as a "
+                                       "provider's grant; Meta's review is open to any developer. No recorded option "
+                                       "says it this way (the 313-option replay); fix if a measure shows one")
+async def test_an_app_review_with_no_review_word_stays_api():
+    option = await _report("Meta", "api", "A Meta app. Meta must approve your app before it can post to a Page.",
+                           page="https://developers.facebook.com/docs/pages-api")
+    assert option["how"] == "api"
