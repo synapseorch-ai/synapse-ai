@@ -1,3 +1,5 @@
+'use client';
+
 /*
  * What holds a first-visit tour back (ONB3, D326, F1060): a first-run surface that has the screen or is about to
  * (OSS's model step while its readiness is read, cloud's onboarding while the workspace has not been through it).
