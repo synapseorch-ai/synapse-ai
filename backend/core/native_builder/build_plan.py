@@ -417,6 +417,33 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                     blocks=blocked(filled, state), notes=room_notes)
 
 
+def _needs(plan: O.Plan, tools: list[str], state: dict) -> list[dict[str, str]]:
+    """What each missing tool is for, as the route's lookup reads it (`{{state.plan_checked.needs}}`, SAI2-P5's
+    `look_up_providers`): `{tool, does, provider?}`. `does` is the first step's own sentence that calls it, else the
+    purpose of the new agent that holds it. `provider` is a service the person named (the request's `providers`), set
+    only on the need whose own words name it: the lookup gives a final only to a named provider, so code never
+    guesses one, and one named for one tool is never given to another."""
+    from core.builder_research import _words
+
+    request = _obj(state.get("request"))
+    named = [p.strip() for p in (request.get("providers") if isinstance(request, dict) else None) or []
+             if isinstance(p, str) and p.strip()]
+    steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+    out: list[dict[str, str]] = []
+    for tool in tools:
+        step = next((s for s in steps if s.tool == tool), None)
+        agent = next((a for a in plan.agents if tool in a.tools), None)
+        does = (step.does or step.name) if step else (agent.purpose if agent else "")
+        need = {"tool": tool, **({"does": does.strip()[:200]} if does and does.strip() else {})}
+        said = set(_words(" ".join([tool.replace("_", " "), does or "",
+                                    *((step.name, step.prompt or "") if step else ())])))
+        provider = [p for p in named if set(_words(p)) and set(_words(p)) <= said]
+        if len(provider) == 1:
+            need["provider"] = provider[0][:80]
+        out.append(need)
+    return out
+
+
 def blocked(plan: O.Plan, state: dict) -> dict[str, str]:
     """Each tool a policy blocks where this plan uses it, with why, in the person's words: the run could not call it,
     so the plan cannot be built as it is (F964; SAI2's point 1: a block is not an approval). Only the plan's own
@@ -1116,7 +1143,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What code could name instead is the planner's, never research's (F950, F1043).
     to_research = [t for t in plan.missing if t not in found.misnamed]
     if to_research and not looked and not prior.get("research"):
-        return {**base, "outcome": "research", "research": to_research, "plan": plan.model_dump()}
+        return {**base, "outcome": "research", "research": to_research, "needs": _needs(plan, to_research, state),
+                "plan": plan.model_dump()}
 
     plan.models, model_issues, model_question = await pick_models(plan, stronger)
     if model_question:
