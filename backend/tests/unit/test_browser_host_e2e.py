@@ -39,7 +39,7 @@ BACKEND = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 async def site():
-    hits = {"submit": 0, "ws": 0}
+    hits = {"submit": 0, "ws": 0, "spawn": 0}
 
     async def index(_):
         return web.Response(content_type="text/html", text=(
@@ -76,8 +76,18 @@ async def site():
             "const f = document.createElement('iframe'); document.body.append(f);"
             "try { new f.contentWindow.Worker(src(inside)); made++; } catch (e) {}"
             "try { const w = window.open(''); new w.Worker(src(inside)); made++; } catch (e) {}"
+            # A popup that loads a page of its own, which starts its own worker.
+            "window.open('/spawn');"
             "document.getElementById('out').textContent = 'made-' + made;"
             "</script></body></html>"))
+
+    async def spawn(request):
+        hits["spawn"] += 1
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><script>"
+            f"try {{ new Worker(URL.createObjectURL(new Blob([\"new WebSocket('ws://localhost:{port}/ws')\"]))); }}"
+            " catch (e) {}</script></body></html>"))
 
     async def socket(request):
         hits["ws"] += 1
@@ -94,6 +104,7 @@ async def site():
     app.router.add_get("/live", live)
     app.router.add_get("/ws", socket)
     app.router.add_get("/workers", workers)
+    app.router.add_get("/spawn", spawn)
     runner = web.AppRunner(app)
     await runner.setup()
     tcp = web.TCPSite(runner, "127.0.0.1", 0)
@@ -213,15 +224,21 @@ async def test_a_page_s_socket_passes_the_same_guard(site, host):
 
 async def test_a_read_only_page_starts_no_worker(site, host):
     """F1122: a worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket at all,
-    starts no worker either (SEC2's review): not from the page, and not from a fresh frame's own globals."""
+    starts no worker either (SEC2's review): not from the page, a fresh frame's own globals, or a popup it opened.
+    Eight loads in one warm browser: a popup is a new target, and Playwright MCP, a second client of the same
+    Chromium, may let it run before the guard reaches it (found by BRW2), so the page gets no handle on one."""
     port, hits = site
     http, control, _viewer = host
     sid = (await _post(http, control, "/session", {"owner": "chat:workers", "mode": "read_only"}))["session_id"]
-    await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
-                                         "args": {"url": f"http://localhost:{port}/workers"}})
-    await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for", "args": {"text": "made-"}})
-    snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+    for _ in range(8):
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                             "args": {"url": f"http://localhost:{port}/workers"}})
+        await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for",
+                                             "args": {"text": "made-"}})
+        snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+        assert "made-0" in snap["text"], snap["text"]
     await asyncio.sleep(1.5)  # time for any socket a worker opened to arrive
-    assert "made-0" in snap["text"]
+    assert hits["spawn"] >= 1, "the popup's own page loaded"
     assert hits["ws"] == 0, "a worker opened a socket from a read-only browser"
     await _post(http, control, "/close", {"session_id": sid})
+

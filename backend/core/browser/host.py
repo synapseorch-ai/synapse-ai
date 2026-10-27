@@ -44,10 +44,16 @@ _VIEWPORT = {"width": 1280, "height": 800}
 _CHROMIUM_ARGS = ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
                   "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic"]
 #: A worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket, starts no worker
-#: (F1122, SEC2's review). Run in every frame before its scripts; the page cannot define them again.
+#: (F1122, SEC2's review). Run in every frame before its scripts; the page cannot define them again. A popup is a new
+#: target that Playwright MCP, a second client of this Chromium, may let run before this script reaches it, so the
+#: page gets no handle on one: `window.open` opens it `noopener` and returns null, as a blocked popup does.
 _NO_WORKERS = """(() => { for (const name of ["Worker", "SharedWorker"]) {
   try { Object.defineProperty(globalThis, name, {value: undefined, writable: false, configurable: false}); }
-  catch (e) {} } })();"""
+  catch (e) {} }
+  const open = window.open;
+  try { Object.defineProperty(window, "open", {writable: false, configurable: false, value: function (url, target, features) {
+    open.call(window, url, target, (features ? features + "," : "") + "noopener"); return null; }}); } catch (e) {}
+})();"""
 _TOKEN_HEADER = "X-Browser-Token"
 _SNAPSHOT_LINK = re.compile(r"- \[Snapshot\]\(([^)\s]+\.yml)\)")
 
