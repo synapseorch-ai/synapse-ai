@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Lock, Send, ShieldCheck } from 'lucide-react';
+import { CreditCard, Lock, MousePointerClick, Send, ShieldCheck } from 'lucide-react';
 
 import { Button, Input } from '@/components/ui';
 import { cn } from '@/lib/cn';
@@ -13,25 +13,48 @@ import { hostOf, type BrowserBanner, type PageDialog, type PageFile, type PageSe
  * Naveen's pick A of the co-drive prototype). A send the agent tried is held at the network and named, with
  * "It only loaded data" for sites that send to read. A turn the agent handed over (a password, a code, a check that
  * you're a person, a login that ended, or something it asked) ends with Done, which hands the wheel back. Typing on
- * a site no one listed is allowed here, once a session.
+ * a site no one listed is allowed here, once a session. A final button the agent stopped at (`press`) is named with
+ * what it does, for the person to press; money is always theirs, so a held payment is never let through, only taken
+ * over (Naveen 2026-10-28).
  */
-export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow }: {
+export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onTakeOver, failed }: {
   banner: BrowserBanner;
   agentName: string;
   /** Hands the wheel back; absent while the agent still holds it. */
   onDone?: () => void;
   onRelease?: () => void;
   onAllow?: (host: string) => void;
+  /** Takes the wheel, so the person can press the page's button; absent while they hold it. */
+  onTakeOver?: () => void;
+  /** Why the last move of the wheel did not happen. */
+  failed?: string | null;
 }) {
-  const Icon = banner.kind === 'send' ? Send : banner.kind === 'captcha' ? ShieldCheck : Lock;
+  const money = banner.press?.tier === 'money' || !!banner.held?.money;
+  const Icon = money ? CreditCard : banner.kind === 'send' ? Send : banner.kind === 'press' ? MousePointerClick
+    : banner.kind === 'captcha' ? ShieldCheck : Lock;
   const reason = banner.reason?.trim();
   let words: React.ReactNode;
   if (banner.kind === 'send') {
     const site = hostOf(banner.held?.url ?? '') || 'the site';
-    words = (
+    const button = <>the page&apos;s own {reason ? <>“{reason}”</> : 'button'}</>;
+    words = money ? (
+      <><strong className="font-semibold">Your turn: payments are always yours.</strong>{' '}
+        {agentName} tried to pay on <span translate="no">{site}</span>. Nothing has gone. If it&apos;s right, take
+        over and press {button} yourself.</>
+    ) : (
       <><strong className="font-semibold">Your turn: the send is yours.</strong>{' '}
         {agentName} tried to send this to <span translate="no">{site}</span>. Nothing has gone. If it&apos;s right,
-        press the page&apos;s own {reason ? <>“{reason}”</> : 'button'} yourself.</>
+        press {button} yourself.</>
+    );
+  } else if (banner.kind === 'press' && banner.press) {
+    const { label, does } = banner.press;
+    words = (
+      <><strong className="font-semibold">Your turn. Press ‘{label}’ yourself.</strong>{' '}
+        It {does.replace(/\.$/, '')}.{' '}
+        {money
+          ? 'Payments are always yours: an agent never presses them.'
+          : `${agentName} presses a button like this only when you’ve asked it to in your own words.`}
+        {reason ? <> {agentName} was going to: {reason.replace(/\.$/, '')}.</> : null}</>
     );
   } else if (banner.kind === 'allow_typing') {
     words = (
@@ -40,30 +63,37 @@ export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow }: {
     );
   } else {
     const fallback = { sensitive: 'this field is yours', captcha: 'the site wants to check you’re a person',
-                       asked: 'the agent needs you here', login_expired: 'log in again' }[banner.kind];
+                       asked: 'the agent needs you here', login_expired: 'log in again',
+                       press: 'press the page’s button yourself' }[banner.kind];
     words = (
       <><strong className="font-semibold">Your turn:</strong> {reason || fallback}.
         {banner.kind === 'sensitive' || banner.kind === 'login_expired'
           ? ' The agent can’t see what you type, and nothing is recorded while you drive.' : ''}</>
     );
   }
+  // A held payment is never let through: `/release` answers 409 for it.
+  const release = banner.kind === 'send' && banner.held && !money ? onRelease : undefined;
   return (
     <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-person-fg">
       <div className="flex items-start gap-2.5">
         <Icon className="mt-0.5 size-4 shrink-0 text-person-ink" aria-hidden />
         <p className="min-w-0 flex-1 leading-relaxed">{words}</p>
         {onDone && banner.kind !== 'allow_typing' && <Button variant="person" size="sm" onClick={onDone}>Done</Button>}
+        {!onDone && onTakeOver && banner.kind !== 'allow_typing' && (
+          <Button variant="person" size="sm" onClick={onTakeOver}>Take over</Button>
+        )}
       </div>
-      {(banner.kind === 'send' && banner.held && onRelease) || (banner.kind === 'allow_typing' && banner.host && onAllow) ? (
+      {release || (banner.kind === 'allow_typing' && banner.host && onAllow) ? (
         <div className="flex flex-wrap gap-2 pl-6">
-          {banner.kind === 'send' && onRelease && (
-            <Button variant="secondary" size="sm" onClick={onRelease}>It only loaded data: let the agent carry on</Button>
+          {release && (
+            <Button variant="secondary" size="sm" onClick={release}>It only loaded data: let the agent carry on</Button>
           )}
           {banner.kind === 'allow_typing' && banner.host && onAllow && (
             <Button variant="person" size="sm" onClick={() => onAllow(banner.host!)}>Allow typing on {banner.host}</Button>
           )}
         </div>
       ) : null}
+      {failed && <p className="pl-6 text-danger">{failed}</p>}
     </div>
   );
 }

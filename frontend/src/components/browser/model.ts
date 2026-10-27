@@ -13,14 +13,24 @@
 export type Wheel = 'agent' | 'person' | 'nobody';
 
 /** What the person is asked to handle, in the strip under the address (BRW1's v2 contract). */
-export type BannerKind = 'send' | 'sensitive' | 'captcha' | 'asked' | 'login_expired' | 'allow_typing';
+export type BannerKind = 'send' | 'sensitive' | 'captcha' | 'asked' | 'login_expired' | 'allow_typing' | 'press';
+/**
+ * A final button the agent stopped at (BRW1's "Final buttons and sends", Naveen 2026-10-28): one that acts for the
+ * person, which the agent presses only on their own words, or one with money in it, which is always theirs.
+ */
+export type PressAsk = { label: string; does: string; host: string; tier: 'acts' | 'money' };
 export type BrowserBanner = {
   kind: BannerKind;
   reason: string;
-  /** A send the agent tried, paused at the network until the person presses the page's own button. */
-  held?: { method: string; url: string };
+  /**
+   * A send the agent tried, paused at the network until the person presses the page's own button. `money`: a
+   * payment, which is never let through (`/release` answers 409), so the person takes over and presses it.
+   */
+  held?: { method: string; url: string; money?: boolean };
   /** For `allow_typing`: the site it wants to type on. */
   host?: string;
+  /** For `press`: the button, what it does, and whether money is in it. */
+  press?: PressAsk;
 };
 
 /** The page's own alert, confirm or prompt, which the screencast cannot show. */
@@ -56,6 +66,8 @@ export type BrowserAction = {
   target: string;
   url: string;
   shot_ref: string | null;
+  /** A final press by the agent: the person's own words that asked for it. */
+  because?: string;
 };
 
 export type BrowserEvent = BrowserSessionEvent | ({ type: 'browser_action' } & BrowserAction);
@@ -143,6 +155,7 @@ export function actionOf(data: Record<string, unknown>): BrowserAction {
     target: String(data.target ?? ''),
     url: String(data.url ?? ''),
     shot_ref: data.shot_ref == null ? null : String(data.shot_ref),
+    ...(data.because ? { because: String(data.because) } : {}),
   };
 }
 
@@ -160,8 +173,18 @@ const VERBS: Record<string, string> = {
  * The component already words typing, choosing and keys ("typed into Email"),
  * so those only gain a capital.
  */
-export function actionWords(a: Pick<BrowserAction, 'action' | 'target' | 'actor'>): string {
+export function actionWords(a: Pick<BrowserAction, 'action' | 'target' | 'actor' | 'because'>): string {
   if (a.actor === 'guard') return `Kept from leaving the browser: ${a.target}`;
+  // A final button, pressed by the agent on the person's words or by the person after a turn.
+  if (a.action === 'pressed') {
+    if (a.actor === 'person') return `You pressed ‘${a.target}’`;
+    return a.because ? `Pressed ‘${a.target}’, as you asked: “${a.because}”` : `Pressed ‘${a.target}’`;
+  }
+  // What left the browser while the person drove: "POST shop.example.com", never a body or a field.
+  if (a.action === 'sent') {
+    const [method, ...rest] = a.target.trim().split(/\s+/);
+    return rest.length ? `You sent ${method} to ${rest.join(' ')}` : `You sent ${a.target}`;
+  }
   const verb = VERBS[a.action];
   if (verb) return a.target && a.action !== 'browser_navigate_back' ? `${verb} ${a.target}` : verb;
   const said = a.target.trim();

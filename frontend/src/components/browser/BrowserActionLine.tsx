@@ -14,7 +14,7 @@ import { actionWords, type BrowserAction } from './model';
  * open (v1), so a gone one leaves the words alone.
  */
 export function BrowserActionLine({ action, shot, dense = false, className }: {
-  action: Pick<BrowserAction, 'action' | 'target' | 'actor' | 'url'>;
+  action: Pick<BrowserAction, 'action' | 'target' | 'actor' | 'url' | 'because'>;
   /** The screenshot's address, or none. */
   shot?: string | null;
   /** The pane's list: a smaller thumbnail. */

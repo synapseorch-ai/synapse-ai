@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Globe, Square, X } from 'lucide-react';
+import { Globe, Info, Square, X } from 'lucide-react';
 
-import { Button, IconButton, Input, Spinner } from '@/components/ui';
+import { Button, IconButton, Input, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
@@ -148,6 +148,11 @@ export function BrowserPane({
   const url = frame?.url || actions[actions.length - 1]?.url || '';
   const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : `${agentName} is driving`;
 
+  // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A login is the person's alone.
+  const [disclaimerSeen, setDisclaimerSeen] = usePersisted<'0' | '1'>(
+    'browser-disclaimer-seen', raw => (raw === '1' ? '1' : '0'), '1');
+  const disclaimer = !login && !closed && disclaimerSeen === '0';
+
   // The newest action stays in view as the list grows.
   const list = useRef<HTMLOListElement>(null);
   useEffect(() => {
@@ -203,7 +208,8 @@ export function BrowserPane({
         </div>
       ) : banner ? (
         <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
-                     onRelease={release} onAllow={allow} />
+                     onRelease={release} onAllow={allow} onTakeOver={canDrive && !driving ? takeOver : undefined}
+                     failed={wheelFailed} />
       ) : driving ? (
         <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2 text-xs">
           <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
@@ -286,6 +292,17 @@ export function BrowserPane({
           </div>
         )}
       </div>
+
+      {disclaimer && (
+        <div role="note" className="flex shrink-0 items-start gap-2 border-t border-border bg-surface px-3 py-2 text-xs text-text-muted">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-text-faint" aria-hidden />
+          <p className="min-w-0 flex-1 leading-relaxed">
+            Agents can make mistakes. You press every payment, and an agent presses Submit or Send only when
+            you&apos;ve asked it to.
+          </p>
+          <Button variant="ghost" size="sm" onClick={() => setDisclaimerSeen('1')}>Got it</Button>
+        </div>
+      )}
 
       {actions.length > 0 && (
         <ol ref={list} aria-label="What the agent did" className="max-h-36 shrink-0 space-y-1.5 overflow-y-auto border-t border-border px-3 py-2 text-xs text-text-muted">

@@ -14,6 +14,7 @@ const LEADS: Record<BannerKind, string> = {
   asked: 'Your turn in the browser',
   login_expired: 'Your turn: log in again',
   allow_typing: 'Your turn: may it type on this site?',
+  press: 'Your turn: press it yourself',
 };
 
 /**
