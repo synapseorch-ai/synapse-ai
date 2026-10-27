@@ -177,3 +177,37 @@ def test_the_backend_spawns_it_in_that_folder_and_registers_the_gated_session():
     gate = source.index("session = gated(mcp_name, session)")
     assert gate < source.index("agent_sessions[mcp_name] = session")
     assert gate < source.index("tools = await session.list_tools()", gate)
+
+
+#: WebRTC's UDP goes round any proxy; with this, WebRTC uses the proxied path or nothing.
+NO_UNPROXIED_UDP = "--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+
+
+async def test_its_browser_sends_no_udp_round_the_proxy(browser_spec):
+    import json
+    from pathlib import Path
+
+    from core.vault import _vault_root
+
+    spec = await browser_spec()
+    config = Path(_arg(spec["args"], "--config"))
+    assert NO_UNPROXIED_UDP in json.loads(config.read_text())["browser"]["launchOptions"]["args"]
+    # Outside the folder its own tools write to, so no tool of its own can rewrite it.
+    assert not config.resolve().is_relative_to(_vault_root().resolve())
+
+
+async def test_the_config_is_written_afresh_at_every_start(browser_spec):
+    import json
+    from pathlib import Path
+
+    config = Path(_arg((await browser_spec())["args"], "--config"))
+    config.write_text('{"allowUnrestrictedFileAccess": true}')
+    assert Path(_arg((await browser_spec())["args"], "--config")) == config
+    assert "allowUnrestrictedFileAccess" not in json.loads(config.read_text())
+
+
+def test_the_scrapers_browser_sends_no_udp_round_the_proxy():
+    from tools import web_scraper
+
+    assert NO_UNPROXIED_UDP in web_scraper.browser_config().extra_args
+    assert NO_UNPROXIED_UDP in web_scraper.browser_config("http://127.0.0.1:1").extra_args

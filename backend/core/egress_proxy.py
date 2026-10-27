@@ -35,6 +35,10 @@ from urllib.parse import urlsplit
 
 from core import egress_guard
 
+#: What a Chromium behind this proxy is started with. WebRTC's UDP never goes through a proxy; with this flag WebRTC
+#: takes the proxied path or none.
+CHROMIUM_ARGS = ("--force-webrtc-ip-handling-policy=disable_non_proxied_udp",)
+
 #: A request head larger than this is not one a browser sends.
 _HEAD_LIMIT = 64 * 1024
 _HEAD_TIMEOUT_SECONDS = 30.0

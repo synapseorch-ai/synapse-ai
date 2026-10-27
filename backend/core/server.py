@@ -223,6 +223,12 @@ async def _build_native_mcp_servers() -> list[dict]:
 
         found = urllib.request.getproxies_environment()
         proxy = found.get("https") or found.get("http") or (await egress_proxy.shared()).url
+        # Its browser's own flags, in a file outside that folder (its tools write there) and rewritten at every start.
+        from core.runtime_dirs import state_dir
+
+        config = state_dir("browser_automation") / "config.json"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps({"browser": {"launchOptions": {"args": list(egress_proxy.CHROMIUM_ARGS)}}}))
 
         servers.append({
             "name": BROWSER_AUTOMATION,
@@ -232,7 +238,7 @@ async def _build_native_mcp_servers() -> list[dict]:
             # controls — so screenshots landed wherever the server happened to
             # be started from.
             "args": ["-y", PLAYWRIGHT_MCP, "--browser", "chrome",
-                     "--output-dir", str(folder), "--proxy-server", proxy],
+                     "--output-dir", str(folder), "--proxy-server", proxy, "--config", str(config)],
             "env": env_dict,
             "cwd": str(folder),
         })
