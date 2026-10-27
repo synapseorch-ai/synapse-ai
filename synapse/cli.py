@@ -290,35 +290,104 @@ def ensure_run_dir():
     _run_dir().mkdir(parents=True, exist_ok=True)
 
 
-def _ensure_playwright_browsers():
-    import json
+def _playwright_browsers_path() -> Path:
+    """Where Playwright keeps its browsers: `PLAYWRIGHT_BROWSERS_PATH` when set, as Playwright reads it, else its default."""
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        return Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"])
     if IS_WIN:
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
-        browsers_path = Path(base) / "ms-playwright"
-    elif sys.platform == "darwin":
-        browsers_path = Path.home() / "Library" / "Caches" / "ms-playwright"
-    else:
-        browsers_path = Path.home() / ".cache" / "ms-playwright"
+        return Path(base) / "ms-playwright"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "ms-playwright"
+    return Path.home() / ".cache" / "ms-playwright"
 
-    # Check independently: chromium-* is for Python playwright; mcp-chrome*/mcp-chromium
-    # is what `@playwright/mcp install-browser` creates and what the MCP server uses.
-    # A fresh install via setup.py only creates chromium-*, so the MCP browser can be
-    # missing even when the Python playwright browser is present.
-    has_chromium = False
-    has_mcp_browser = False
+
+def _playwright_version() -> "str | None":
+    try:
+        from importlib.metadata import version
+        return version("playwright")
+    except Exception:
+        return None
+
+
+def _playwright_browsers_json() -> "Path | None":
+    """Playwright's own list of the browser builds it drives (`driver/package/browsers.json`)."""
+    try:
+        import playwright
+        return Path(playwright.__file__).resolve().parent / "driver" / "package" / "browsers.json"
+    except Exception:
+        return None
+
+
+def _wanted_chromium_folders() -> "set[str] | None":
+    """The Chromium folders this Playwright runs, by build (`chromium-1234`, `chromium_headless_shell-1234`), or
+    None when its list cannot be read."""
+    import json
+    try:
+        listed = json.loads(_playwright_browsers_json().read_text("utf-8"))["browsers"]
+    except Exception:
+        return None
+    wanted = {f"{b['name'].replace('-', '_')}-{b['revision']}" for b in listed
+              if b.get("installByDefault") and b.get("name") in ("chromium", "chromium-headless-shell")}
+    return wanted or None
+
+
+def _playwright_version_file() -> Path:
+    return _var_dir() / "playwright-browsers.version"
+
+
+def _saved_playwright_version() -> "str | None":
+    try:
+        return _playwright_version_file().read_text("utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _save_playwright_version(version: str) -> None:
+    try:
+        path = _playwright_version_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(version, "utf-8")
+    except OSError:
+        pass
+
+
+def _save_browsers_path(browsers_path: Path) -> None:
+    try:
+        from synapse import _store
+        _store.save_settings({"playwright_browsers_path": str(browsers_path)})
+    except Exception as e:
+        print(f"\n  Warning: Failed to save playwright_browsers_path to settings: {e}")
+
+
+def _ensure_playwright_browsers():
+    """The browsers the web reader and the browser MCP server run on, installed when missing (F1106).
+
+    Python Playwright's are the builds its own `browsers.json` names — Chromium and, since 1.49, the headless shell
+    that headless Chromium runs on. Playwright is not pinned, so after an upgrade an older build is not enough: the
+    folders for this version's builds must be there. With that list unreadable, the Playwright version a browser
+    install last succeeded for is compared instead, and saved only when an install succeeds.
+    """
+    browsers_path = _playwright_browsers_path()
+    names: set[str] = set()
     if browsers_path.exists():
         try:
-            for d in browsers_path.iterdir():
-                if not d.is_dir():
-                    continue
-                if d.name.startswith("chromium-"):
-                    has_chromium = True
-                if d.name.startswith("mcp-chrome") or d.name.startswith("mcp-chromium"):
-                    has_mcp_browser = True
+            names = {d.name for d in browsers_path.iterdir() if d.is_dir()}
         except Exception:
             pass
 
-    if has_chromium and has_mcp_browser:
+    current = _playwright_version()
+    wanted = _wanted_chromium_folders()
+    if wanted is not None:
+        need_chromium = not wanted <= names
+    else:
+        has_any = any(n.startswith("chromium-") for n in names)
+        need_chromium = not has_any or (current is not None and _saved_playwright_version() != current)
+    # `mcp-chrome*`/`mcp-chromium` is what `@playwright/mcp install-browser` creates and what the MCP server uses;
+    # a Python Playwright browser does not stand in for it.
+    has_mcp_browser = any(n.startswith("mcp-chrome") or n.startswith("mcp-chromium") for n in names)
+
+    if not need_chromium and has_mcp_browser:
         return
 
     npx_cmd = shutil.which("npx.cmd") if IS_WIN else "npx"
@@ -327,10 +396,13 @@ def _ensure_playwright_browsers():
     env = os.environ.copy()
     env["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
 
-    if not has_chromium:
+    if need_chromium:
         print("Installing Playwright browsers...", end="", flush=True)
         try:
-            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True, capture_output=True)
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], env=env, check=True,
+                           capture_output=True)
+            if current:
+                _save_playwright_version(current)
             print(" done.")
         except Exception as e:
             print(f"\n  Warning: Failed to install Playwright browsers: {e}")
@@ -344,11 +416,7 @@ def _ensure_playwright_browsers():
             print(f"\n  Warning: Failed to install MCP browser: {e}")
             return
 
-    try:
-        from synapse import _store
-        _store.save_settings({"playwright_browsers_path": str(browsers_path)})
-    except Exception as e:
-        print(f"\n  Warning: Failed to save playwright_browsers_path to settings: {e}")
+    _save_browsers_path(browsers_path)
 
 
 #: A service log is rotated at start once it passes this size; three old ones kept.
