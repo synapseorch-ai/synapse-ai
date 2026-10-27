@@ -12767,7 +12767,7 @@ async def check_brwpress(browser) -> str:
                   {"session_id": "bsP", "n": 14, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
                    "actor": "person", "action": "took over", "target": ""},
                   {"session_id": "bsP", "n": 15, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
-                   "actor": "person", "action": "handed back", "target": ""},
+                   "actor": "person", "action": "handed back", "target": "after 12 s"},
                   {"session_id": "bsP", "n": 16, "at": 0, "url": "https://pay.example.com/", "shot_ref": None,
                    "actor": "guard", "action": "held", "target": "POST pay.example.com"}]
         await _brw_push(page, "post", _frame({"type": "browser_action", **pressed}, "p-2"))
@@ -12775,7 +12775,7 @@ async def check_brwpress(browser) -> str:
         listed = pane.get_by_role("list", name="What the agent did")
         for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
                       "You pressed ‘Pay now’", "You sent POST to shop.example.com", "You took over",
-                      "You handed the browser back", "Held for you: POST pay.example.com"):
+                      "You handed the browser back after 12 s", "Held for you: POST pay.example.com"):
             if not await listed.get_by_text(words, exact=False).count():
                 bad.append(f"the log does not read “{words}”")
 
