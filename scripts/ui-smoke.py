@@ -12142,6 +12142,270 @@ async def check_firstrun(browser) -> str:
             "two models saved, Escape remembered, Home and Chat reopen it")
 
 
+# ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
+
+#: A 16×10 JPEG: a frame of the screencast, and the screenshot after an action.
+BRW_JPEG = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABsSFBcUERsXFhceHBsgKEIrKCUlKFE6PTBCYFVlZF9VXVtqeJmBanGQc1tdhbWGkJ6jq62rZ4C8ybq"
+    "mx5moq6T/2wBDARweHigjKE4rK06kbl1upKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKT/wAARCAAKABAD"
+    "ASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKB"
+    "kaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZ"
+    "mqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQF"
+    "BgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5"
+    "OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX"
+    "2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCtRRRXUcJ//9k=")
+
+#: The component's routes, driven from the test: `/frames` is a stream this
+#: script feeds frame by frame, `/stop` is recorded and answered. The pane reads
+#: frames with fetch, so this stands in front of CHAT_STUB's fetch.
+BROWSER_STUB = r"""
+window.__browserCalls = [];
+const _chatFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  const m = /\/api\/browser\/([^/?]+)\/(frames|stop)/.exec(url);
+  if (!m) return _chatFetch(input, init);
+  window.__browserCalls.push({url: url, method: method});
+  if (m[2] === 'stop') {
+    return Promise.resolve(new Response('{"stopped": true, "closed": true}', {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  const name = 'frames:' + m[1];
+  const body = new ReadableStream({start(c) {
+    window.__streams[name] = {
+      push: (frame) => c.enqueue(new TextEncoder().encode(frame)),
+      close: () => { try { c.close(); } catch (e) {} },
+      fail: () => { try { c.error(new TypeError('network error')); } catch (e) {} },
+    };
+  }});
+  const signal = init && init.signal;
+  if (signal) signal.addEventListener('abort', () => window.__browserCalls.push({url: url, method: 'ABORT'}));
+  return Promise.resolve(new Response(body, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+};
+"""
+
+
+async def _brw_shots(ctx) -> None:
+    import base64
+    jpeg = base64.b64decode(BRW_JPEG)
+    await ctx.route(re.compile(r".*/api/browser/[^/]+/shot/[^/?]+$"),
+                    lambda r: r.fulfill(status=200, body=jpeg, headers={"Content-Type": "image/jpeg"}))
+
+
+async def _brw_page(browser, session_id: str, width=WIDE):
+    """A chat page with the browser's routes stubbed; its first turn is sent and its stream open."""
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, session_id, width=width)
+    await _brw_shots(ctx)
+    await page.add_script_tag(content=BROWSER_STUB)
+    await _send(page, "check the stock page")
+    await _stream_open(page, "post")
+    return ctx, page
+
+
+def _brw_frame(url: str = "https://stock.example.com/items", wheel: str = "agent") -> str:
+    return _frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": url, "wheel": wheel})
+
+
+async def _brw_push(page, stream: str, frames: str) -> None:
+    await page.evaluate(f"() => window.__streams[{json.dumps(stream)}].push({json.dumps(frames)})")
+
+
+def _pane(page):
+    return page.get_by_role("region", name="Browser")
+
+
+async def _brw_calls(page, kind: str) -> list[dict]:
+    return [c for c in await page.evaluate("() => window.__browserCalls") if f"/{kind}" in c["url"]]
+
+
+@check
+async def check_brwpane(browser) -> str:
+    """The agent's browser opens beside the chat, live, and the person can stop it (BRW2, F1073).
+
+    Before the pane, a browser_session event reached the chat and was dropped: the agent read the page and the
+    person saw nothing. Now the pane opens on that event, about 60% of the row (Naveen, 2026-10-27), shows each
+    frame and the page's address, closes without ending the session, comes back, follows its own tab, stops the
+    agent with Stop, and keeps the last page dimmed once the browser closes.
+    """
+    ctx, page = await _brw_page(browser, "uismoke-brw-a")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsA",
+                                              "owner": "chat:uismoke-brw-a"}, "b-1"))
+        pane = _pane(page)
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("browser_session opened no pane beside the chat")
+        await _stream_open(page, "frames:bsA")
+        await _brw_push(page, "frames:bsA", _brw_frame())
+        shown = pane.locator("img[src^='data:image/jpeg']")
+        if not await _wait(page, "() => !!document.querySelector(\"[aria-label='Browser'] img[src^='data:image/jpeg']\")"):
+            bad.append("a frame never painted")
+        if not await _on_screen(page, "stock.example.com"):
+            bad.append("the page's address is not shown")
+        if not await pane.get_by_text(re.compile(r"is driving")).count():
+            bad.append("the pane does not say who is driving")
+        share = await page.evaluate("""() => {
+            const p = document.querySelector("[aria-label='Browser']").getBoundingClientRect();
+            const row = document.querySelector("[aria-label='Browser']").parentElement.getBoundingClientRect();
+            return p.width / row.width; }""")
+        if not 0.5 <= share <= 0.7:
+            bad.append(f"the pane takes {share:.0%} of the row, not about 60%")
+
+        # Closing the pane keeps the browser: nothing is stopped, the frames stop being read, and it comes back.
+        await pane.get_by_role("button", name="Close the browser pane").click()
+        await asyncio.sleep(0.4)
+        if await pane.count():
+            bad.append("Close left the pane open")
+        if await _brw_calls(page, "stop"):
+            bad.append("closing the pane stopped the browser")
+        if not [c for c in await _brw_calls(page, "frames") if c["method"] == "ABORT"]:
+            bad.append("a closed pane kept reading frames")
+        await page.get_by_role("button", name="Show the browser").click()
+        await pane.wait_for(timeout=5_000)
+        await _stream_open(page, "frames:bsA")
+
+        # The pane belongs to its tab.
+        await _new_tab(page, "UI smoke Tab Beta")
+        await asyncio.sleep(0.5)
+        if await pane.count():
+            bad.append("the pane followed the person into another tab")
+        await _strip(page).get_by_role("tab", name=re.compile("check the stock page")).click()
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            bad.append("the pane did not come back with its tab")
+
+        await pane.get_by_role("button", name="Stop").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.includes('/api/browser/bsA/stop') && c.method === 'POST')"):
+            bad.append("Stop did not stop the browser")
+
+        await _brw_push(page, "frames:bsA", _brw_frame() + _frame({"closed": True}))
+        if not await _on_screen(page, "Browser closed"):
+            bad.append("the pane does not say the browser closed")
+        elif not await shown.count():
+            bad.append("the last page went away when the browser closed")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "opens on browser_session at ~60%, paints frames, closes and returns, follows its tab, Stop, last page kept"
+
+
+@check
+async def check_brwpanephone(browser) -> str:
+    """On a phone the browser is a view the person switches to, never a squeezed split (BRW2, F1073).
+
+    A 60% split of a 400 px screen leaves neither chat nor page readable. On a phone the chat stays in front;
+    a Browser button shows the page full width, and Chat goes back, with nothing scrolling sideways.
+    """
+    ctx, page = await _brw_page(browser, "uismoke-brw-phone", width=PHONE)
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsP",
+                                              "owner": "chat:uismoke-brw-phone"}, "p-1"))
+        show = page.get_by_role("button", name="Browser", exact=True)
+        try:
+            await show.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("no Browser button on a phone after the browser opened")
+        if await _pane(page).is_visible():
+            bad.append("the pane took the phone's screen by itself")
+        await show.click()
+        await _pane(page).wait_for(timeout=5_000)
+        await _stream_open(page, "frames:bsP")
+        await _brw_push(page, "frames:bsP", _brw_frame())
+        width = await page.evaluate("() => document.querySelector(\"[aria-label='Browser']\").getBoundingClientRect().width")
+        if width < PHONE[0] * 0.9:
+            bad.append(f"the browser is {width:.0f} px wide on a {PHONE[0]} px phone")
+        if await page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth"):
+            bad.append("the page scrolls sideways")
+        await page.get_by_role("button", name="Chat", exact=True).click()
+        await asyncio.sleep(0.4)
+        if await _pane(page).is_visible():
+            bad.append("Chat did not go back to the conversation")
+        if not await page.locator("main textarea").last.is_visible():
+            bad.append("the composer is not back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the chat stays in front; Browser shows the page full width; Chat goes back; nothing scrolls sideways"
+
+
+_BRW_ACTION = {"type": "browser_action", "session_id": "bsL", "n": 1, "at": 0, "actor": "agent",
+               "action": "browser_click", "target": "Search button", "url": "https://stock.example.com/",
+               "shot_ref": "1"}
+
+
+@check
+async def check_brwlog(browser) -> str:
+    """Each agent action in the browser is a line with its screenshot, in the chat turn and on the run's page
+    (BRW2, F1074).
+
+    The component writes a line and a screenshot per action; without a reader for browser_action, the chat's
+    Tools used and the run log never showed what the agent did in the page.
+    """
+    bad: list[str] = []
+    ctx, page = await _brw_page(browser, "uismoke-brw-log")
+    try:
+        frames = "".join(_frame(e, f"l-{i + 1}") for i, e in enumerate([
+            {"type": "browser_session", "session_id": "bsL", "owner": "chat:uismoke-brw-log"},
+            {"type": "tool_execution", "tool_name": "browser_click", "args": {"element": "Search button"}},
+            _BRW_ACTION,
+            {"type": "tool_result", "tool_name": "browser_click", "preview": "clicked"},
+            {"type": "response", "content": "Twelve in stock."}, {"type": "done"}]))
+        await _brw_push(page, "post", frames)
+        if not await _on_screen(page, "Twelve in stock."):
+            raise AssertionError("the turn never answered")
+        chip = page.get_by_role("button", name=re.compile(r"Tools used"))
+        if await chip.count():
+            await chip.last.click()
+        line = page.locator("main [data-browser-action]").filter(has_text="Search button")
+        if not await line.count():
+            bad.append("the chat turn has no line for the browser action")
+        elif not await line.locator("img[src*='/api/browser/bsL/shot/1']").count():
+            bad.append("the chat's browser line has no screenshot")
+    finally:
+        await ctx.close()
+
+    run = dict(_M2B_RUNS["run_smoke_m2b_done"])
+    runs = {"run_smoke_m2b_done": run}
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    _M2B_STREAM = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsL", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame(_BRW_ACTION, "3"),
+        _frame({"type": "stream_complete"})])
+    try:
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs=runs)
+        await _brw_shots(ctx)
+        try:
+            for opener in ("Activity", "Show the log", "Log"):
+                b = page.get_by_role("button", name=re.compile(rf"^{opener}"))
+                if await b.count():
+                    await b.first.click()
+                    break
+            await asyncio.sleep(0.6)
+            line = page.locator("main [data-browser-action]").filter(has_text="Search button")
+            if not await line.count():
+                bad.append("the run log has no line for the browser action")
+            elif not await line.locator("img[src*='/api/browser/bsL/shot/1']").count():
+                bad.append("the run log's browser line has no screenshot")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a browser action is a line with its screenshot in the chat turn and in the run log"
+
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
