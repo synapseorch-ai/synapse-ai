@@ -624,6 +624,43 @@ class WorkerServerModule:
                 pass
 
 
+#: What a tool server shared by every tenant is given of this process's
+#: environment, by name (F1112). These are the names Python, the HTTP client, the
+#: browser and the shared tools themselves read. Anything else this process holds
+#: (a database URL, a signing key, a mail password) stays here: a shared server
+#: handles pages and files for every tenant and needs none of it.
+SHARED_TOOL_ENV_NAMES: frozenset[str] = frozenset({
+    # The process
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "TMPDIR", "TZ", "LANG", "LANGUAGE",
+    # Python
+    "PYTHONPATH", "PYTHONHOME", "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE",
+    "PYTHONIOENCODING", "PYTHONUTF8", "VIRTUAL_ENV",
+    # Outbound HTTP: the egress proxy and its certificates
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+    # What the shared tools' own modules read
+    "EGRESS_ALLOW_HOSTS", "SYNAPSE_HOME", "SYNAPSE_STATE_DIR",
+    "SYNAPSE_LOG_LEVEL", "SYNAPSE_LOG_FORMAT",
+})
+#: Locale and desktop directories, and the browser the scraper drives.
+SHARED_TOOL_ENV_PREFIXES: tuple[str, ...] = ("LC_", "XDG_", "PLAYWRIGHT_", "CRAWL4_AI_")
+
+
+def shared_tool_environment(environ: dict[str, str] | None = None) -> dict[str, str]:
+    """This process's environment, cut down to what a shared tool server is given.
+
+    `SYNAPSE_TOOL_ENV_EXTRA`, a comma-separated list of names, adds to it for a
+    deployment whose shared tools read something more, without a code change.
+    """
+    source = os.environ if environ is None else environ
+    extra = {n.strip() for n in source.get("SYNAPSE_TOOL_ENV_EXTRA", "").split(",") if n.strip()}
+    names = SHARED_TOOL_ENV_NAMES | extra
+    return {
+        k: v for k, v in source.items() if k in names or k.startswith(SHARED_TOOL_ENV_PREFIXES)
+    }
+
+
 def _get_native_mcp_servers(
     tools_dir: Path, backend_root: Path, scope: str = "all"
 ) -> dict:
@@ -653,10 +690,19 @@ def _get_native_mcp_servers(
 
     # Tool subprocesses need the backend root on PYTHONPATH so they can do
     # `from core.config import ...` — same as when the main server spawns them.
-    tool_env = os.environ.copy()
-    existing_pp = tool_env.get("PYTHONPATH", "")
     backend_root_str = str(backend_root)
-    tool_env["PYTHONPATH"] = f"{backend_root_str}{os.pathsep}{existing_pp}" if existing_pp else backend_root_str
+
+    def _with_backend_root(env: dict[str, str]) -> dict[str, str]:
+        existing_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = f"{backend_root_str}{os.pathsep}{existing_pp}" if existing_pp else backend_root_str
+        return env
+
+    # **Shared servers get an allowlist** (`SHARED_TOOL_ENV_NAMES`, F1112).
+    # Tenant-scoped servers still inherit this process's environment: they open
+    # the store and, under an embedder, resolve stored credentials, and what that
+    # takes is the embedder's to name. Narrowing them is its own change.
+    shared_env = _with_backend_root(shared_tool_environment())
+    tool_env = _with_backend_root(os.environ.copy())
 
     servers = {}
 
@@ -671,7 +717,7 @@ def _get_native_mcp_servers(
         # Python-native tools (subset safe for headless worker processes) that
         # advertise the same behaviour to everybody.
         for name in sorted(WORKER_NATIVE_TOOLS - TENANT_SCOPED_TOOLS):
-            _python_tool(name, tool_env)
+            _python_tool(name, shared_env)
 
         # npx-based tools available to workers
         for name, args in WORKER_NPX_TOOLS.items():
