@@ -438,6 +438,44 @@ def test_a_checkout_and_a_v2_carrier_are_not_installs(fake_home):
     assert legacy.find(fake_home / ".synapse").installs == []
 
 
+def _cloned_v1(root: Path, marker: bool = True) -> Path:
+    """What v1.x's setup left when the release download failed: a git clone."""
+    (root / ".git").mkdir(parents=True)
+    (root / "backend" / "data").mkdir(parents=True)
+    (root / "backend" / "data" / "settings.json").write_text('{"model": "gemini.pro"}')
+    (root / "pyproject.toml").write_text('version = "1.7.4"\n')
+    if marker:
+        (root / ".installed").write_text("{}")
+    return root
+
+
+def test_a_v1_install_setup_cloned_is_found(fake_home):
+    """v1.x's setup fell back to `git clone` when the release download failed (F1057)."""
+    root = _cloned_v1(_script_root(fake_home))
+
+    m = legacy.find(fake_home / ".synapse")
+
+    assert [(i.kind, i.root, i.version) for i in m.installs] == [("script", root, "1.7.4")]
+    assert m.data_dirs == [root / "backend" / "data"]
+    assert root in m.leftovers
+
+
+def test_a_v1_checkout_nobody_installed_is_still_skipped(fake_home):
+    _cloned_v1(_script_root(fake_home), marker=False)
+    assert legacy.find(fake_home / ".synapse").installs == []
+
+
+def test_a_cloned_v1_install_is_found_where_windows_put_it(fake_home, monkeypatch):
+    """Naveen's: %LOCALAPPDATA%\\Programs\\SynapseAI, with .git, .installed and data."""
+    monkeypatch.setattr(legacy, "IS_WIN", True)
+    root = _cloned_v1(fake_home / "AppData" / "Local" / "Programs" / "SynapseAI")
+
+    m = legacy.find(fake_home / ".synapse")
+
+    assert [(i.kind, i.root, i.bin_dir) for i in m.installs] == [("script", root, root / "bin")]
+    assert m.has_model()
+
+
 def test_an_npm_install_is_found_by_its_venv_and_data(fake_home):
     home_dir = fake_home / ".synapse"
     (home_dir / "venv").mkdir(parents=True)

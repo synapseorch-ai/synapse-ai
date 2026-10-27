@@ -140,11 +140,15 @@ def has_logs(root: Path) -> bool:
 
 
 def _script_install(root: Path) -> OldInstall | None:
-    if (root / ".git").exists():
-        return None              # a checkout is somebody's working tree, not an install
     if not (root / "backend").is_dir():
         return None
     version = _version_of(root)
+    if (root / ".git").exists() and not (version.startswith("1.") and (root / ".installed").exists()):
+        # A checkout is somebody's working tree, not an install. But v1.x's setup
+        # script cloned into this folder whenever the release download failed, and
+        # a finished one wrote .installed: Naveen's Windows 1.7.4 was missed, so 2.0
+        # neither moved its data nor took its place on PATH (F1057).
+        return None
     # The marker a finished v1.x install wrote, a v1.x tree without one (an
     # install that stopped half way), or data in its folder whatever its code
     # says — an old setup.sh unpacks the newest source over an unmarked
