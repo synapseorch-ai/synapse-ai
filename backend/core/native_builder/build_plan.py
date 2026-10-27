@@ -221,20 +221,23 @@ def go_ahead_request(state: dict) -> str | None:
     """What a bare go-ahead right after findings asks for (F1064, from P5's res-02 measure): the findings' goal, in
     code's words. "build it" alone has no request of its own, and a planner given only those words asked what to
     build and went on to plan whatever was said next. A go-ahead that says more is a request of its own, and with no
-    findings there is no goal to build: both are None, and the person's words stand alone as before."""
+    findings there is no goal to build: both are None, and the person's words stand alone as before.
+
+    Only the previous turn's findings count (`prior_findings`, as F766's override reads them: the newest run's own card,
+    so an unrelated turn in between leaves none), never findings this build's own look-up wrote (`plan_findings`
+    mid-run): an old goal is never revived by a later "yes" (SAI2's check)."""
     from core.native_builder.read_turn import _GO_ON, _plain
     from core.native_builder.review import is_yes
 
     said = str(state.get("user_message") or "")
     if not (is_yes(said) or _plain(said) in _GO_ON):
         return None
-    for key in (FINDINGS_KEY, "prior_findings"):
-        found = _obj(state.get(key))
-        goal = " ".join(str(found.get("goal") or "").split()) if isinstance(found, dict) else ""
-        if goal:
-            return (f"Build this: {goal.rstrip('.')}. Use what the findings say about each provider; a tool no option "
-                    f"provides is marked missing. (They said only \"{said.strip()}\" after the findings.)")
-    return None
+    found = _obj(state.get("prior_findings"))
+    goal = " ".join(str(found.get("goal") or "").split()) if isinstance(found, dict) else ""
+    if not goal:
+        return None
+    return (f"Build this: {goal.rstrip('.')}. Use what the findings say about each provider; a tool no option provides "
+            f"is marked missing. (They said only \"{said.strip()}\" after the findings.)")
 
 
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:

@@ -89,3 +89,31 @@ async def test_the_planner_never_sees_an_unfilled_reference(message, findings):
     shown = _planner_input(state)
     head = shown[:shown.index("The conversation so far:")]
     assert "{{" not in head and "{state." not in head, head
+
+
+# ── only the previous turn's findings (SAI2's check) ──────────────────────────────────────────────────────────────
+
+async def test_findings_this_builds_own_look_up_wrote_are_not_a_previous_turns():
+    """`plan_findings` written mid-run by the build's own look-up is not what the person said yes to."""
+    run_state = {builder_access.CALLER_KEY: {"user_id": "u1"}, "intent": "create", "user_message": "yes",
+                 "plan_findings": FINDINGS}
+    run = OrchestrationRun(run_id="builder_go_ahead_own", orchestration_id="orch_native_builder",
+                           shared_state=run_state)
+    await SharedState(run).checkpoint()
+    with live(run):
+        raw, _ = await execute_builder_tool_with_events("read_plan_context", {}, _Server(), run_id=run.run_id)
+    pack = json.loads(raw) if isinstance(raw, str) else raw
+    assert pack["request"] == ""
+
+
+def test_an_unrelated_turn_in_between_leaves_no_findings_to_revive():
+    """The host carries only the newest run's own card (F766): research, then a change, then "yes" finds none."""
+    from core.builder_research import previous_findings
+
+    research_turn = {"findings": json.dumps(FINDINGS)}
+    change_turn = {"user_message": "rename the digest", "prior_findings": previous_findings(research_turn),
+                   "plan_findings": previous_findings(research_turn)}
+    assert previous_findings(research_turn)["goal"] == GOAL
+    assert previous_findings(change_turn) == {}
+    assert build_plan.go_ahead_request({"user_message": "yes",
+                                        "prior_findings": previous_findings(change_turn)}) is None
