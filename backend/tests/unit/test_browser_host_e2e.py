@@ -184,8 +184,9 @@ async def test_the_component_reads_but_never_sends_and_never_reaches_inside(site
         pass
     assert frames >= 1
 
-    async with http.post(f"http://127.0.0.1:{viewer}/input", json={"type": "mouse"}) as resp:
-        assert resp.status == 409  # v1: the person watches
+    async with http.post(f"http://127.0.0.1:{viewer}/input", params={"session_id": sid},
+                         json={"type": "mouse"}) as resp:
+        assert resp.status == 409  # the agent holds the wheel: the person's input waits for Take over
 
     closed = await _post(http, control, "/close", {"session_id": sid})
     assert closed["closed"] is True
@@ -243,3 +244,160 @@ async def test_a_read_only_page_starts_no_worker(site, host):
     assert hits["ws"] == 0, "a worker opened a socket from a read-only browser"
     await _post(http, control, "/close", {"session_id": sid})
 
+
+# ── v2: co-driving (F1096, F1097, F1098, F1101) ──────────────────────────────
+
+@pytest.fixture
+async def form_site():
+    hits = {"submit": 0, "read": 0}
+
+    async def index(request):
+        port = request.url.port
+        return web.Response(content_type="text/html", text=(
+            "<html><body><h1>Form</h1><form method='post' action='/submit'>"
+            "<input name='q' aria-label='Query'><input type='password' name='pw' aria-label='Password'>"
+            "<button type='submit'>Send it</button></form>"
+            f"<a href='http://other.localhost:{port}/'>Elsewhere</a></body></html>"))
+
+    async def submit(_):
+        hits["submit"] += 1
+        return web.Response(content_type="text/html", text="<h1>Sent</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_post("/submit", submit)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1], hits
+    await runner.cleanup()
+
+
+@pytest.fixture
+async def codrive_host():
+    token = secrets.token_urlsafe(32)
+    env = {**os.environ, "SYNAPSE_BROWSER_TOKEN": token, "EGRESS_ALLOW_HOSTS": "localhost,other.localhost",
+           "PYTHONPATH": str(BACKEND)}
+    proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "core.browser.host", cwd=str(BACKEND),
+                                                env=env, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.DEVNULL)
+    line = (await asyncio.wait_for(proc.stdout.readline(), 60)).decode().split()
+    http = aiohttp.ClientSession(headers={"X-Browser-Token": token})
+    yield http, int(line[1]), int(line[2])
+    await http.close()
+    proc.terminate()
+    await proc.wait()
+
+
+async def _tool(http, control, sid, name, args):
+    return await _post(http, control, "/tool", {"session_id": sid, "name": name, "args": args})
+
+
+async def _view(http, viewer, sid, path, body=None):
+    async with http.post(f"http://127.0.0.1:{viewer}{path}", params={"session_id": sid}, json=body or {}) as r:
+        return r.status, await r.json()
+
+
+async def _state(http, control, sid):
+    async with http.get(f"http://127.0.0.1:{control}/state", params={"session_id": sid}) as r:
+        return await r.json()
+
+
+def _ref(text, role, name):
+    return re.search(rf'{role} "{name}" \[ref=(e\d+)\]', text).group(1)
+
+
+async def test_an_agents_send_waits_for_the_person(form_site, codrive_host):
+    port, hits = form_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:v2", "mode": "co_drive",
+                                                   "sites": ["localhost"]}))["session_id"]
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    typed = await _tool(http, control, sid, "browser_type",
+                        {"element": "Query", "target": _ref(page["text"], "textbox", "Query"), "text": "hello"})
+    assert not typed.get("handover"), typed  # a listed site takes typing
+
+    pw = await _tool(http, control, sid, "browser_type",
+                     {"element": "Password", "target": _ref(page["text"], "textbox", "Password"), "text": "x"})
+    assert pw["handover"]["kind"] == "sensitive" and pw["is_error"]
+    assert (await _state(http, control, sid))["wheel"] == "person"
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+
+    click = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")})
+    assert click["handover"]["kind"] == "send", click
+    state = await _state(http, control, sid)
+    assert state["wheel"] == "nobody" and state["held"]["method"] == "POST" and hits["submit"] == 0
+
+    status, _ = await _view(http, viewer, sid, "/release", {"allow_address": False})
+    assert status == 200
+    for _ in range(50):
+        if hits["submit"]:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["submit"] == 1, "a released send goes"
+    assert (await _state(http, control, sid))["wheel"] == "agent"
+    status, _ = await _view(http, viewer, sid, "/release", {})
+    assert status == 409  # nothing held now
+
+    again = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    assert "### The person" in again["text"] and "only loaded data" in again["text"]
+
+
+async def test_taking_over_drops_the_agents_send_and_the_person_sends_it(form_site, codrive_host):
+    port, hits = form_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:v2b", "mode": "co_drive",
+                                                   "sites": ["localhost"]}))["session_id"]
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    query = _ref(page["text"], "textbox", "Query")
+    await _tool(http, control, sid, "browser_type", {"element": "Query", "target": query, "text": "hi"})
+    status, _ = await _view(http, viewer, sid, "/input", {"type": "text", "text": "x"})
+    assert status == 409  # the agent holds the wheel
+    click = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send it", "target": _ref(page["text"], "button", "Send it")})
+    assert click["handover"]["kind"] == "send"
+
+    status, body = await _view(http, viewer, sid, "/wheel/take")
+    assert status == 200 and body["wheel"] == "person"
+    await asyncio.sleep(0.5)
+    assert hits["submit"] == 0, "taking over drops the agent's send"
+    waiting = await _tool(http, control, sid, "browser_snapshot", {})
+    assert waiting == {"waiting": "person_driving"}
+
+    await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+    await asyncio.sleep(0.5)
+    status, _ = await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 60, "y": 75})
+    assert status == 200
+    await _view(http, viewer, sid, "/input", {"type": "text", "text": "mine"})
+    await _view(http, viewer, sid, "/input", {"type": "key", "key": "Enter"})
+    for _ in range(50):
+        if hits["submit"]:
+            break
+        await asyncio.sleep(0.1)
+    assert hits["submit"] == 1, "the person's own send goes"
+
+    await _view(http, viewer, sid, "/wheel/hand-back", {"note": "I sent it"})
+    after = await _tool(http, control, sid, "browser_snapshot", {})
+    assert 'said: "I sent it"' in after["text"]
+
+
+async def test_typing_on_an_unlisted_site_asks_first_and_scope_holds_redirects_too(form_site, codrive_host):
+    port, _ = form_site
+    http, control, viewer = codrive_host
+    open_sid = (await _post(http, control, "/session", {"owner": "chat:v2c", "mode": "co_drive"}))["session_id"]
+    page = await _tool(http, control, open_sid, "browser_navigate", {"url": f"http://localhost:{port}/"})
+    ask = await _tool(http, control, open_sid, "browser_type",
+                      {"element": "Query", "target": _ref(page["text"], "textbox", "Query"), "text": "hi"})
+    assert ask["handover"]["kind"] == "allow_typing" and ask["handover"]["host"] == "localhost"
+    await _view(http, viewer, open_sid, "/allow-site", {"host": "localhost"})
+    typed = await _tool(http, control, open_sid, "browser_type",
+                        {"element": "Query", "target": _ref(page["text"], "textbox", "Query"), "text": "hi"})
+    assert not typed.get("handover") and not typed["is_error"]
+
+    scoped = (await _post(http, control, "/session", {"owner": "run:v2d", "mode": "co_drive",
+                                                      "sites": ["localhost"]}))["session_id"]
+    off = await _tool(http, control, scoped, "browser_navigate", {"url": f"http://other.localhost:{port}/"})
+    assert off["is_error"] and "ERR_BLOCKED_BY_CLIENT" in off["text"]
+    assert "other.localhost is not one of this agent's sites" in off["text"]

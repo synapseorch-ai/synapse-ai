@@ -377,3 +377,39 @@ async def test_a_browser_agent_saves_its_settings(client):
     assert resp.status_code == 200
     assert resp.json()["browser"] == {"sites": ["portal.example.com"], "login_ref": None, "action_budget": 25,
                                       "mode": "co_drive"}
+
+
+# ── v2's gate (F1097, F1098, F1101) ──────────────────────────────────────────
+
+def test_a_send_is_a_form_post_anywhere_or_a_non_read_to_the_pages_own_site():
+    assert gate.is_send("POST", "https://other.net/form", navigation=True, page_url="https://shop.example.com/")
+    assert gate.is_send("DELETE", "https://api.example.com/item/1", navigation=False,
+                        page_url="https://shop.example.com/")
+    assert not gate.is_send("POST", "https://beacon.tracker.io/t", navigation=False,
+                            page_url="https://shop.example.com/")
+    assert not gate.is_send("GET", "https://shop.example.com/search?q=x", navigation=True,
+                            page_url="https://shop.example.com/")
+    assert gate.same_site("api.shop.co.uk", "www.shop.co.uk") and not gate.same_site("a.co.uk", "b.co.uk")
+
+
+def test_dont_ask_again_remembers_the_address_not_its_query():
+    assert gate.send_key("post", "https://x.com/graphql?op=1") == gate.send_key("POST", "https://x.com/graphql?op=2")
+
+
+@pytest.mark.parametrize("kind,auto,sensitive", [("password", "", True), ("text", "cc-number", True),
+                                                 ("text", "billing cc-exp", True), ("tel", "one-time-code", True),
+                                                 ("text", "email", False), ("text", "", False)])
+def test_the_persons_fields(kind, auto, sensitive):
+    assert gate.is_sensitive_field(kind, auto) is sensitive
+
+
+def test_captcha_frames_are_the_persons():
+    assert gate.is_captcha_frame("https://www.google.com/recaptcha/api2/anchor?k=x")
+    assert gate.is_captcha_frame("https://challenges.cloudflare.com/cdn-cgi/challenge-platform/x")
+    assert not gate.is_captcha_frame("https://shop.example.com/")
+
+
+async def test_an_agent_off_its_sites_is_refused_but_a_listed_wildcard_is_not():
+    assert "not one of this agent's sites" in await gate.verdict(
+        "https://93.184.215.14/", "GET", gate.CO_DRIVE, sites=["portal.example.com"])
+    assert gate.site_allowed("a.portal.example.com", ["*.example.com"])

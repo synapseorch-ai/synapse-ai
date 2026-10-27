@@ -59,6 +59,48 @@ async def shot(session_id: str, ref: str):
     return Response(content=body, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
 
 
+#: The person's actions on their view, relayed to the component (V2-CONTRACT.md).
+_VIEWER_ACTIONS = {"input": "/input", "release": "/release", "allow-site": "/allow-site",
+                   "take": "/wheel/take", "hand-back": "/wheel/hand-back"}
+
+
+async def _relay(session_id: str, action: str, request: Request):
+    _owner(session_id)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    status, answer = await browser_client.tools.viewer(session_id, _VIEWER_ACTIONS[action], body)
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")
+    return answer
+
+
+@router.post("/api/browser/{session_id}/input")
+async def person_input(session_id: str, request: Request):
+    return await _relay(session_id, "input", request)
+
+
+@router.post("/api/browser/{session_id}/release")
+async def release(session_id: str, request: Request):
+    return await _relay(session_id, "release", request)
+
+
+@router.post("/api/browser/{session_id}/allow-site")
+async def allow_site(session_id: str, request: Request):
+    return await _relay(session_id, "allow-site", request)
+
+
+@router.post("/api/browser/{session_id}/wheel/take")
+async def take(session_id: str, request: Request):
+    return await _relay(session_id, "take", request)
+
+
+@router.post("/api/browser/{session_id}/wheel/hand-back")
+async def hand_back(session_id: str, request: Request):
+    return await _relay(session_id, "hand-back", request)
+
+
 @router.post("/api/browser/{session_id}/stop")
 async def stop(session_id: str):
     owner = _owner(session_id)

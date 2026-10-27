@@ -3665,6 +3665,8 @@ async def run_agent_step(
                     _browser_owner = (_browser_client.owner_for(session_id, run_id)
                                       if agent_name == _browser_client.SERVER_NAME else None)
                     _owner_token = _browser_client.owner.set(_browser_owner) if _browser_owner else None
+                    _settings_token = (_browser_client.settings.set(active_agent.get("browser") or {})
+                                       if _browser_owner else None)
                     try:
                         with _anyio.fail_after(_timeout.total_seconds() + 5):
                             result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout,
@@ -3673,6 +3675,8 @@ async def run_agent_step(
                     finally:
                         if _owner_token is not None:
                             _browser_client.owner.reset(_owner_token)
+                        if _settings_token is not None:
+                            _browser_client.settings.reset(_settings_token)
 
                     _log.debug(f"MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'")
 

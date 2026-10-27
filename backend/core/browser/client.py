@@ -32,6 +32,12 @@ SERVER_NAME = "Browser Automation"
 
 #: Whose browser a call belongs to: "chat:<session>" or "run:<run id>".
 owner: contextvars.ContextVar[str | None] = contextvars.ContextVar("browser_owner", default=None)
+#: The calling agent's browser settings (`core.models.AgentBrowser` as a dict), read when a session opens.
+settings: contextvars.ContextVar[dict | None] = contextvars.ContextVar("browser_settings", default=None)
+
+#: How long an agent's call waits while the person drives before it gives up and says so: inside the
+#: engine's 60 s for one MCP call (`MCP_TOOL_CALL_TIMEOUT`). A longer wait is a park, not a call.
+WAIT_FOR_PERSON_S = 45
 
 _BACKEND_DIR = Path(__file__).resolve().parents[2]
 _READY = "BROWSER_HOST_READY"
@@ -121,6 +127,7 @@ class BrowserTools:
         self._sessions: dict[str, str] = {}          # owner -> session id
         self._owners: dict[str, str] = {}            # session id -> owner
         self._events: dict[str, list[dict]] = {}
+        self._handovers: dict[str, dict] = {}       # owner -> the person's turn the agent must stop for
         self._tools: list[types.Tool] | None = None
 
     # ── what the engine's MCP paths call ─────────────────────────────────────
@@ -159,20 +166,49 @@ class BrowserTools:
                     "session_id": sid, "name": name, "args": arguments or {}})
         except Exception as exc:
             return _result(f"Synapse's browser is not available: {exc}", error=True)
+        if body.get("waiting"):
+            if not await self._wait_for_wheel(sid):
+                return _result("The person is still driving the browser. Stop here and say so; carry on when "
+                               "they hand it back.", error=True)
+            status, body = await self.host.call("POST", "/tool", json={
+                "session_id": sid, "name": name, "args": arguments or {}})
         if body.get("refused"):
             return _result(body["refused"], error=True)
         if body.get("waiting"):
             return _result("The person is driving the browser; wait for them to hand it back.", error=True)
         if body.get("log"):
             self._events.setdefault(key, []).append({"type": "browser_action", "session_id": sid, **body["log"]})
-        return _result(_scrub(body.get("text", "")), error=bool(body.get("is_error")))
+        text = _scrub(body.get("text", ""))
+        if body.get("handover"):
+            self._handovers[key] = body["handover"]
+            text += ("\n### Synapse\nIt is the person's turn in the browser: " + body["handover"]["reason"]
+                     + " Stop here; you will continue when they hand it back.")
+        return _result(text, error=bool(body.get("is_error")))
+
+    async def _wait_for_wheel(self, sid: str) -> bool:
+        """While the person drives, the agent's call waits for the wheel to come back."""
+        deadline = asyncio.get_running_loop().time() + WAIT_FOR_PERSON_S
+        while asyncio.get_running_loop().time() < deadline:
+            status, state = await self.host.call("GET", "/state", params={"session_id": sid}, timeout=30)
+            if status != 200:
+                return False
+            if state.get("wheel") == "agent":
+                return True
+            await asyncio.sleep(1)
+        return False
+
+    def take_handover(self, key: str | None) -> dict | None:
+        return self._handovers.pop(key, None) if key else None
 
     # ── sessions ─────────────────────────────────────────────────────────────
     async def _session_for(self, key: str) -> str:
         sid = self._sessions.get(key)
         if sid:
             return sid
-        status, body = await self.host.call("POST", "/session", json={"owner": key, "mode": gate.READ_ONLY})
+        chosen = settings.get() or {}
+        status, body = await self.host.call("POST", "/session", json={
+            "owner": key, "mode": chosen.get("mode") or gate.READ_ONLY, "sites": chosen.get("sites") or [],
+            "limits": {"actions": int(chosen.get("action_budget") or 40)}})
         if status != 200 or not body.get("session_id"):
             raise RuntimeError(body.get("error") or "the browser did not open")
         sid = body["session_id"]
@@ -188,6 +224,18 @@ class BrowserTools:
 
     def owner_of(self, session_id: str) -> str | None:
         return self._owners.get(session_id)
+
+    async def viewer(self, session_id: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+        """The person's action on their view: the wheel, input, release, allow a site."""
+        await self.host.ensure()
+        async with aiohttp.ClientSession(headers=self.host._headers(),
+                                         timeout=aiohttp.ClientTimeout(total=60)) as http:
+            async with http.post(self.host.viewer_url(path), params={"session_id": session_id},
+                                 json=body or {}) as resp:
+                try:
+                    return resp.status, await resp.json(content_type=None)
+                except Exception:
+                    return resp.status, {}
 
     def take_events(self, key: str | None) -> list[dict]:
         return self._events.pop(key, []) if key else []

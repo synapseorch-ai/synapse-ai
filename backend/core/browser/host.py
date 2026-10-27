@@ -38,6 +38,8 @@ from core.browser import gate
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
 
 DEFAULT_LIMITS = {"actions": 40, "loads_per_min": 30, "idle_s": 600}
+#: How long an agent's held send waits for the person before it is dropped and stays their turn.
+HOLD_S = 600
 _HOST_GAP_S = 1.0          # at most one page load a second per host
 _VIEWPORT = {"width": 1280, "height": 800}
 #: Chromium's switches: the debugging port Playwright MCP connects to, and the egress proxy's own (WebRTC only on
@@ -91,10 +93,20 @@ def _summary(name: str, args: dict) -> str:
 
 
 class Session:
-    def __init__(self, sid: str, owner: str, mode: str, limits: dict, root: Path):
+    def __init__(self, sid: str, owner: str, mode: str, limits: dict, root: Path, sites: list[str] | None = None,
+                 wheel: str = "agent"):
         self.id = sid
         self.owner = owner
         self.mode = mode if mode in gate.MODES else gate.READ_ONLY
+        self.sites = list(sites or [])
+        self.typing_hosts: set[str] = set()            # allowed once by the person this session
+        self.allowed_sends: set[tuple[str, str]] = set()  # "it only loaded data: don't ask again"
+        self.held: dict | None = None                  # an agent's send paused at the network
+        self.banner: dict | None = None
+        self.handover: dict | None = None              # what the agent's current call must hand over
+        self.handback: str | None = None               # what the agent hears on its next call
+        self.took_at: float | None = None
+        self.last_frame: dict | None = None
         self.limits = {**DEFAULT_LIMITS, **(limits or {})}
         self.dir = root / sid
         self.log: list[dict] = []
@@ -103,7 +115,7 @@ class Session:
         self.loads: deque[float] = deque()
         self.host_last: dict[str, float] = {}
         self.last_used = time.monotonic()
-        self.wheel = "agent"
+        self.wheel = wheel
         self.viewers: set[asyncio.Queue] = set()
         self.ctx = None
         self.page = None
@@ -171,12 +183,22 @@ class Session:
     # ── the network gate ─────────────────────────────────────────────────────
     async def _route(self, route) -> None:
         req = route.request
+        agent = self.wheel == "agent"
         try:
-            reason = await gate.verdict(req.url, req.method, self.mode)
-            if reason is None and req.is_navigation_request():
+            nav = req.is_navigation_request()
+            top = nav and _is_main_frame(req)
+            reason = await gate.verdict(req.url, req.method, self.mode,
+                                        sites=self.sites if (agent and top) else None)
+            if reason is None and nav:
                 reason = await self._pace(urlparse(req.url).hostname or "")
+            hold = (reason is None and agent and self.mode == gate.CO_DRIVE
+                    and gate.is_send(req.method, req.url, navigation=nav, page_url=self._page_url())
+                    and gate.send_key(req.method, req.url) not in self.allowed_sends)
         except Exception:
-            reason = "the browser's guard failed"
+            reason, hold = "the browser's guard failed", False
+        if hold:
+            await self._hold(route, req)
+            return
         try:
             if reason is None:
                 await route.continue_()
@@ -200,6 +222,43 @@ class Session:
             await ws.close(code=1008, reason="blocked by Synapse")
         except Exception:
             pass  # the page is already gone
+
+    async def _hold(self, route, req) -> None:
+        """An agent's send waits here for the person: let it go (it only loaded data), or take over
+        and send it themselves. Unanswered, it is dropped and stays their turn."""
+        host = urlparse(req.url).hostname or "the site"
+        event = asyncio.Event()
+        self.held = {"method": req.method.upper(), "url": req.url, "event": event, "decision": None}
+        reason = f"The agent tried to send this to {host}. Nothing has gone."
+        self.banner = {"kind": "send", "reason": reason, "held": {"method": req.method.upper(), "url": req.url}}
+        self.handover = {"kind": "send", "reason": reason}
+        self.wheel = "nobody"
+        self._note("guard", "held", f"a {req.method.upper()} to {host}")
+        self._push_state()
+        try:
+            await asyncio.wait_for(event.wait(), timeout=HOLD_S)
+        except asyncio.TimeoutError:
+            pass
+        decision = self.held.get("decision") if self.held else None
+        self.held = None
+        try:
+            if decision == "release":
+                await route.continue_()
+            else:
+                await route.abort("blockedbyclient")
+        except Exception:
+            pass
+        if decision is None:  # nobody answered: it stays the person's turn, with nothing held
+            self.wheel = "person"
+            self.banner = {"kind": "send", "reason": f"Your turn: check the page on {host} and press its "
+                                                     "Submit yourself."}
+            self._push_state()
+
+    def _page_url(self) -> str:
+        try:
+            return self.page.url if self.page else ""
+        except Exception:
+            return ""
 
     async def _pace(self, host: str) -> str | None:
         now = time.monotonic()
@@ -225,8 +284,13 @@ class Session:
         if self.actions >= self.limits["actions"]:
             return {"refused": f"This browser session has used its {self.limits['actions']} actions."}
         async with self._lock:
+            if name in gate.TYPES_TEXT:
+                stop = await self._before_typing(name, args or {})
+                if stop:
+                    return stop
             self.actions += 1
             seen = len(self.log)
+            self.handover = None
             result = await self.mcp.call_tool(name, args)
             text = self._inline_snapshots("\n".join(getattr(c, "text", "") for c in result.content
                                                     if getattr(c, "type", "") == "text"))
@@ -237,7 +301,170 @@ class Session:
             entry = None
             if name in gate.CHANGES_PAGE:
                 entry = await self._record("agent", name, _summary(name, args or {}))
-        return {"text": text, "is_error": bool(result.isError), "log": entry}
+                if self.handover is None and self._captcha_showing():
+                    self._turn("captcha", "A CAPTCHA or a bot check is showing: it is yours to solve.")
+            if self.handback:
+                text = f"### The person\n{self.handback}\n" + text
+                self.handback = None
+        out = {"text": text, "is_error": bool(result.isError), "log": entry}
+        if self.handover:
+            out["handover"] = {**self.handover, "session_id": self.id}
+        return out
+
+    def _turn(self, kind: str, reason: str, **extra) -> dict:
+        """Hand the wheel to the person, and tell the agent's call it must stop here."""
+        self.wheel = "nobody" if kind == "send" else "person"
+        self.banner = {"kind": kind, "reason": reason, **extra}
+        self.handover = {"kind": kind, "reason": reason, **extra}
+        self._push_state()
+        return self.handover
+
+    async def _before_typing(self, name: str, args: dict) -> dict | None:
+        """Typing goes only where it may: a listed site or one the person allowed, and never into a
+        password, card or one-time-code field (DESIGN.md §2.4, §3.3)."""
+        host = (urlparse(self._page_url()).hostname or "").lower()
+        allowed = gate.site_allowed(host, self.sites) if self.sites else host in self.typing_hosts
+        if not allowed:
+            reason = f"The agent wants to type on {host or 'this page'}."
+            turn = self._turn("allow_typing", reason, host=host)
+            return {"text": f"Typing on {host} needs the person's OK first; they have been asked. Stop here.",
+                    "is_error": True, "log": None, "handover": {**turn, "session_id": self.id}}
+        targets = ([f.get("target") for f in (args.get("fields") or [])] if name == "browser_fill_form"
+                   else [args.get("target")])
+        for target in [t for t in targets if t]:
+            if await self._sensitive(target):
+                turn = self._turn("sensitive", "This field is yours: a password, a card or a one-time code.")
+                return {"text": "That field is the person's to fill (a password, a card or a one-time code); "
+                                "they have been asked. Stop here.",
+                        "is_error": True, "log": None, "handover": {**turn, "session_id": self.id}}
+        return None
+
+    async def _sensitive(self, target: str) -> bool:
+        """Read the field's own type and autocomplete through Playwright MCP's ref, never failing open."""
+        try:
+            res = await self.mcp.call_tool("browser_evaluate", {
+                "element": "field", "target": target,
+                "function": "(el) => JSON.stringify([el.type || '', el.getAttribute('autocomplete') || ''])"})
+            text = " ".join(getattr(c, "text", "") for c in res.content)
+            found = re.search(r'\[\\?"([^"\\]*)\\?",\s*\\?"([^"\\]*)\\?"\]', text)
+            if res.isError or not found:
+                return False if res.isError and "not found" in text.lower() else not found
+            return gate.is_sensitive_field(found.group(1), found.group(2))
+        except Exception:
+            return True
+
+    def _captcha_showing(self) -> bool:
+        try:
+            return any(gate.is_captcha_frame(f.url) for f in (self.page.frames if self.page else []))
+        except Exception:
+            return False
+
+    # ── the person's turn ────────────────────────────────────────────────────
+    def take(self) -> dict:
+        if self.held:
+            self.held["decision"] = "take"
+            self.held["event"].set()
+        self.wheel = "person"
+        self.banner = None
+        self.took_at = time.monotonic()
+        self._note("person", "took over", "")
+        self._push_state()
+        return {"wheel": self.wheel}
+
+    def hand_back(self, note: str = "") -> dict:
+        drove = int(time.monotonic() - self.took_at) if self.took_at else 0
+        self.took_at = None
+        self.wheel = "agent"
+        self.banner = None
+        said = f' and said: "{note.strip()}"' if note and note.strip() else ""
+        self.handback = (f"The person drove for {drove} s and handed the browser back{said}. "
+                         f"The page is now {self._page_url()}. Read it before you act.")
+        self._note("person", "handed back", f"after {drove} s")
+        self._push_state()
+        return {"wheel": self.wheel}
+
+    def release(self, allow_address: bool = True) -> dict | None:
+        if not self.held:
+            return None
+        if allow_address:
+            self.allowed_sends.add(gate.send_key(self.held["method"], self.held["url"]))
+        self.held["decision"] = "release"
+        self.held["event"].set()
+        self.wheel = "agent"
+        self.banner = None
+        self.handback = "The person let it go: it only loaded data. Carry on."
+        self._note("person", "released", self.held["url"])
+        self._push_state()
+        return {"released": True}
+
+    def allow_site(self, host: str) -> dict:
+        host = (host or "").lower().strip()
+        self.typing_hosts.add(host)
+        if self.banner and self.banner.get("kind") == "allow_typing":
+            self.banner = None
+            self.wheel = "agent"
+            self.handback = f"The person allowed typing on {host}. Carry on."
+        self._push_state()
+        return {"allowed": host}
+
+    async def input(self, body: dict) -> dict | None:
+        """The person's mouse, keys and address bar, while they hold the wheel."""
+        if self.wheel != "person" or self.page is None:
+            return None
+        kind = body.get("type")
+        page = self.page
+        mods = [m for m in (body.get("modifiers") or []) if m in ("Shift", "Control", "Alt", "Meta")]
+        for m in mods:
+            await page.keyboard.down(m)
+        try:
+            if kind == "mouse":
+                x, y = float(body.get("x", 0)), float(body.get("y", 0))
+                button = body.get("button") if body.get("button") in ("left", "right", "middle") else "left"
+                event = body.get("event", "click")
+                if event == "click":
+                    await page.mouse.click(x, y, button=button, click_count=2 if body.get("clicks") == 2 else 1)
+                elif event == "move":
+                    await page.mouse.move(x, y)
+                elif event == "down":
+                    await page.mouse.move(x, y)
+                    await page.mouse.down(button=button)
+                elif event == "up":
+                    await page.mouse.move(x, y)
+                    await page.mouse.up(button=button)
+            elif kind == "scroll":
+                await page.mouse.move(float(body.get("x", 0)), float(body.get("y", 0)))
+                await page.mouse.wheel(float(body.get("dx", 0)), float(body.get("dy", 0)))
+            elif kind == "key" and body.get("key"):
+                await page.keyboard.press(str(body["key"]))
+            elif kind == "text" and body.get("text"):
+                await page.keyboard.insert_text(str(body["text"]))
+            elif kind == "nav":
+                if body.get("url"):
+                    await page.goto(str(body["url"]), wait_until="commit")
+                elif body.get("action") == "back":
+                    await page.go_back(wait_until="commit")
+                elif body.get("action") == "forward":
+                    await page.go_forward(wait_until="commit")
+                elif body.get("action") == "reload":
+                    await page.reload(wait_until="commit")
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+        finally:
+            for m in reversed(mods):
+                await page.keyboard.up(m)
+        self.last_used = time.monotonic()
+        return {"ok": True}
+
+    def state(self) -> dict:
+        return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner,
+                "held": ({"method": self.held["method"], "url": self.held["url"]} if self.held else None)}
+
+    def _push_state(self) -> None:
+        """Viewers see the wheel and the banner change at once, on the last frame."""
+        if self.last_frame and self.viewers:
+            meta = {**self.last_frame, "wheel": self.wheel, "banner": self.banner, "url": self._page_url()}
+            for q in list(self.viewers):
+                _offer(q, meta)
 
     def _inline_snapshots(self, text: str) -> str:
         """Playwright MCP links an action's page snapshot to a file in this session's
@@ -296,7 +523,8 @@ class Session:
         def on_frame(ev):
             meta = {"jpeg_b64": ev["data"], "w": ev.get("metadata", {}).get("deviceWidth"),
                     "h": ev.get("metadata", {}).get("deviceHeight"), "url": self.page.url if self.page else "",
-                    "wheel": self.wheel}
+                    "wheel": self.wheel, "banner": self.banner}
+            self.last_frame = meta
             for q in list(self.viewers):
                 _offer(q, meta)
             asyncio.ensure_future(cdp.send("Page.screencastFrameAck", {"sessionId": ev["sessionId"]}))
@@ -320,8 +548,16 @@ class Session:
             shot = await self.page.screenshot(type="jpeg", quality=60)
         except Exception:
             return None
-        return {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"], "h": _VIEWPORT["height"],
-                "url": self.page.url, "wheel": self.wheel}
+        self.last_frame = {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"],
+                           "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel, "banner": self.banner}
+        return self.last_frame
+
+
+def _is_main_frame(req) -> bool:
+    try:
+        return req.frame.parent_frame is None
+    except Exception:
+        return True  # a request with no frame (a service worker) is treated as top-level: scoped
 
 
 def _offer(q: asyncio.Queue, item: dict) -> None:
@@ -384,7 +620,8 @@ class Host:
         body = await request.json()
         sid = uuid.uuid4().hex
         s = Session(sid, str(body.get("owner", "")), body.get("mode", gate.READ_ONLY), body.get("limits") or {},
-                    self.root)
+                    self.root, sites=body.get("sites") or [],
+                    wheel="person" if body.get("person_only") else "agent")
         try:
             await s.start(self.pw)
         except Exception as exc:
@@ -447,9 +684,41 @@ class Host:
                 await s._stop_screencast()
         return resp
 
-    async def input(self, _request):
-        # v1: the person watches. Taking the wheel arrives in v2 (DESIGN.md §2.4).
-        return web.json_response({"refused": "In this version you watch; taking over comes next."}, status=409)
+    async def get_state(self, request):
+        return web.json_response(self._session(request.query.get("session_id", "")).state())
+
+    async def _viewer_body(self, request) -> tuple[Session, dict]:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        return self._session(request.query.get("session_id", "") or body.get("session_id", "")), body
+
+    async def input(self, request):
+        s, body = await self._viewer_body(request)
+        done = await s.input(body)
+        if done is None:
+            return web.json_response({"error": "You don't hold the wheel."}, status=409)
+        return web.json_response(done)
+
+    async def wheel_take(self, request):
+        s, _ = await self._viewer_body(request)
+        return web.json_response(s.take())
+
+    async def wheel_hand_back(self, request):
+        s, body = await self._viewer_body(request)
+        return web.json_response(s.hand_back(str(body.get("note") or "")))
+
+    async def release(self, request):
+        s, body = await self._viewer_body(request)
+        done = s.release(bool(body.get("allow_address", True)))
+        if done is None:
+            return web.json_response({"error": "Nothing is held."}, status=409)
+        return web.json_response(done)
+
+    async def allow_site(self, request):
+        s, body = await self._viewer_body(request)
+        return web.json_response(s.allow_site(str(body.get("host") or "")))
 
     async def reap(self) -> None:
         while True:
@@ -470,6 +739,7 @@ def control_app(host: Host) -> web.Application:
     app.router.add_get("/log", host.get_log)
     app.router.add_get("/shot", host.get_shot)
     app.router.add_post("/close", host.close_session)
+    app.router.add_get("/state", host.get_state)
     return app
 
 
@@ -477,6 +747,10 @@ def viewer_app(host: Host) -> web.Application:
     app = web.Application(middlewares=[host.auth])
     app.router.add_get("/frames", host.frames)
     app.router.add_post("/input", host.input)
+    app.router.add_post("/wheel/take", host.wheel_take)
+    app.router.add_post("/wheel/hand-back", host.wheel_hand_back)
+    app.router.add_post("/release", host.release)
+    app.router.add_post("/allow-site", host.allow_site)
     return app
 
 
