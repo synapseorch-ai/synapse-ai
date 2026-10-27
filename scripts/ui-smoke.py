@@ -12677,6 +12677,106 @@ async def check_brwbanner(browser) -> str:
 
 
 @check
+async def check_brwpress(browser) -> str:
+    """A final button is the person's to press, and the pane says so (BRW2, F1077; Naveen 2026-10-28, BRW1's
+    "Final buttons and sends"): a `press` turn names the button and what it does, and ends with Done once the
+    person drives; money is always theirs, so a held payment offers no "it only loaded data", only Take over; the
+    log says what was pressed and on whose words, and what the person sent; and the pane says once, to each person,
+    that agents can make mistakes and who presses what."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-press")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsP",
+                                              "owner": "chat:uismoke-brw-press"}, "p-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsP")
+        await _brw_push(page, "frames:bsP", _brw_frame())
+
+        said = "Agents can make mistakes. You press every payment"
+        if not await pane.get_by_text(said, exact=False).count():
+            bad.append("the pane does not say once that agents can make mistakes")
+        else:
+            await pane.get_by_role("button", name="Got it").click()
+            await asyncio.sleep(0.3)
+            if await pane.get_by_text(said, exact=False).count():
+                bad.append("Got it left the disclaimer up")
+
+        await _brw_push(page, "frames:bsP", _brw_moment("person", banner={
+            "kind": "press", "reason": "Send the feedback form",
+            "press": {"label": "Submit feedback", "does": "submits the form on example.com",
+                      "host": "example.com", "tier": "acts"}}))
+        if not await _on_screen(page, "Press ‘Submit feedback’ yourself"):
+            bad.append("a press turn does not name its button")
+        if not await _on_screen(page, "submits the form on example.com"):
+            bad.append("a press turn does not say what the button does")
+        if await pane.get_by_role("button", name=re.compile("only loaded data")).count():
+            bad.append("a press turn offers 'only loaded data'")
+        await pane.get_by_role("button", name="Done", exact=True).click()
+        await asyncio.sleep(0.4)
+        if not await _brw_calls(page, "wheel/hand-back"):
+            bad.append("Done on a press turn did not hand the wheel back")
+
+        await _brw_push(page, "frames:bsP", _brw_moment("nobody", banner={
+            "kind": "press", "reason": "Pay for the order",
+            "press": {"label": "Pay now", "does": "pays £42.00 on shop.example.com",
+                      "host": "shop.example.com", "tier": "money"}}))
+        if not await _on_screen(page, "Press ‘Pay now’ yourself"):
+            bad.append("a payment turn does not name its button")
+        if not await _on_screen(page, "Payments are always yours"):
+            bad.append("a payment turn does not say payments are the person's")
+        if not await pane.get_by_role("button", name="Take over").count():
+            bad.append("a payment turn waiting on the person has no Take over")
+
+        await _brw_push(page, "frames:bsP", _brw_moment("nobody", banner={
+            "kind": "send", "reason": "Place order",
+            "held": {"method": "POST", "url": "https://pay.example.com/checkout", "money": True}}))
+        if not await _on_screen(page, "Nothing has gone"):
+            bad.append("a held payment is not said")
+        if await pane.get_by_role("button", name=re.compile("only loaded data")).count():
+            bad.append("a held payment offers 'only loaded data' (release answers 409)")
+        take = pane.get_by_role("button", name="Take over")
+        if not await take.count():
+            bad.append("a held payment has no Take over")
+        else:
+            await take.first.click()
+            await asyncio.sleep(0.4)
+            if not await _brw_calls(page, "wheel/take"):
+                bad.append("Take over on a held payment did not take the wheel")
+
+        for i, a in enumerate([
+                {"actor": "agent", "action": "pressed", "target": "Submit feedback",
+                 "because": "send the feedback form when it's filled in"},
+                {"actor": "person", "action": "pressed", "target": "Pay now"},
+                {"actor": "person", "action": "sent", "target": "POST shop.example.com"}]):
+            await _brw_push(page, "post", _frame({"type": "browser_action", "session_id": "bsP", "n": 10 + i,
+                                                  "at": 0, "url": "https://example.com/", "shot_ref": None, **a},
+                                                 f"p-{2 + i}"))
+        listed = pane.get_by_role("list", name="What the agent did")
+        for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
+                      "You pressed ‘Pay now’", "You sent POST to shop.example.com"):
+            if not await listed.get_by_text(words, exact=False).count():
+                bad.append(f"the log does not read “{words}”")
+
+        # Once per person: it is remembered in this browser, and the next browser does not say it again.
+        if not await page.evaluate("() => localStorage.getItem('browser-disclaimer-seen')"):
+            bad.append("reading the disclaimer is not remembered")
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsP2",
+                                              "owner": "chat:uismoke-brw-press"}, "p-9"))
+        await _stream_open(page, "frames:bsP2")
+        await _brw_push(page, "frames:bsP2", _brw_frame())
+        await asyncio.sleep(0.4)
+        if await pane.get_by_text("Agents can make mistakes", exact=False).count():
+            bad.append("the disclaimer showed again to a person who had read it")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a press turn names its button and ends with Done; a payment offers only Take over; the log says what "
+            "was pressed and on whose words; the disclaimer shows once")
+
+
+@check
 async def check_brwturn(browser) -> str:
     """A browser turn shows in the conversation as the same card as the pane's strip, and is acted on there (BRW2,
     F1077; Naveen: act where you read): it opens the browser, Done hands the wheel back, and the turn is read on
