@@ -264,6 +264,10 @@ async def test_a_scraped_pages_websocket_and_fetch_never_reach_loopback(scraper,
     async with Canary(echo=True) as ws_canary, Canary() as fetch_canary:
         page = (f"<html><body><p id=done>{'words ' * 20}</p><script>"
                 f"try {{ new WebSocket('ws://127.0.0.1:{ws_canary.port}/'); }} catch (e) {{}}"
+                # A worker's own WebSocket, which no route in the browser sees (found reviewing BRW1's F1122).
+                f"try {{ new Worker(URL.createObjectURL(new Blob(["
+                f"\"new WebSocket('ws://127.0.0.1:{ws_canary.port}/worker')\"], {{type: 'text/javascript'}}))); }}"
+                f" catch (e) {{}}"
                 f"fetch('http://127.0.0.1:{fetch_canary.port}/').catch(() => {{}});"
                 f"</script></body></html>").encode()
 
