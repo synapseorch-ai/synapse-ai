@@ -4270,9 +4270,9 @@ def _assistant_agent() -> None:
 
 
 async def _assistant_page(browser, path: str = "", chats: dict | None = None, chat_list: list | None = None,
-                          history: list | None = None, width=WIDE):
+                          history: list | None = None, width=WIDE, init: str = ""):
     """The chat page with Synapse AI's routes stubbed (ASSISTANT_STUB); its first tab is an agent's, as a new
-    install's is. `chats` are the chats on the "server", by id."""
+    install's is. `chats` are the chats on the "server", by id; `init` runs before the page's own scripts."""
     _tab_agents()
     _assistant_agent()
     ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
@@ -4285,6 +4285,8 @@ async def _assistant_page(browser, path: str = "", chats: dict | None = None, ch
         + (f"\nwindow.__chatList = {json.dumps(chat_list)};" if chat_list is not None else "")
         + (f"\nwindow.__history = {json.dumps(history)};" if history is not None else ""))
     await ctx.add_init_script(ASSISTANT_STUB)
+    if init:
+        await ctx.add_init_script(init)
     page = await ctx.new_page()
     await page.goto(f"{APP}/{path}", wait_until="domcontentloaded")
     await asyncio.sleep(SETTLE)
@@ -4484,6 +4486,94 @@ async def check_assistantdraft(browser) -> str:
     if len(after) != len(titles):
         raise AssertionError(f"a reload opened another chat: {titles} → {after}")
     return "the link opens a new Synapse AI tab with its words cleaned, labelled and focused, never sent, once"
+
+
+#: `/api/status` as the server says it, less any builder-typed agent: an install whose person deleted Synapse AI.
+NO_ASSISTANT_STATUS = r"""
+const _noAssistantFetch = window.fetch;
+window.fetch = async function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const res = await _noAssistantFetch(input, init);
+  if (!/\/api\/status(\?|$)/.test(url) || !res.ok) return res;
+  const body = await res.json();
+  for (const [id, a] of Object.entries(body.agents || {})) if (a && a.type === 'builder') delete body.agents[id];
+  if (body.active_agent_id && !(body.active_agent_id in (body.agents || {}))) body.active_agent_id = null;
+  return new Response(JSON.stringify(body), {status: 200, headers: {'Content-Type': 'application/json'}});
+};
+"""
+
+
+@check
+async def check_assistantdraftnoassistant(browser) -> str:
+    """With no Synapse AI agent, a link's words still land, never lost (F1095; ONB3's starter prompts).
+
+    A person may delete Synapse AI. The front tab's empty composer then takes the words, labelled and unsent; a front
+    tab already holding the person's own words keeps them, and the link's words open in a new tab with that tab's
+    agent. Either way the address is cleaned only once the words have a home.
+    """
+    words = "Summarise any web page I give you into five bullet points and save them in the Vault."
+    own = "my own half-written question"
+    link = f"?assistant=new&draft={quote(words)}"
+    sent_js = ("w => [...document.querySelectorAll('main *')].some(e => e.tagName !== 'TEXTAREA'"
+               " && e.children.length === 0 && e.textContent.trim() === w)")
+    bad: list[str] = []
+
+    # The front composer is empty: the words go there.
+    ctx, page = await _assistant_page(browser, path=link, init=NO_ASSISTANT_STATUS)
+    try:
+        box = page.locator("main textarea").last
+        for _ in range(30):
+            if await box.input_value() == words:
+                break
+            await asyncio.sleep(0.2)
+        if (held := await box.input_value()) != words:
+            bad.append(f"empty front tab: the composer holds {held!r}, not the link's words")
+        if not await page.get_by_text("Suggested prompt", exact=True).count():
+            bad.append("empty front tab: the words are not labelled as a suggestion")
+        if len(titles := await _tab_titles(page)) != 1:
+            bad.append(f"empty front tab: the words opened another tab: {titles}")
+        await asyncio.sleep(2.0)
+        if await page.evaluate(sent_js, words) or await page.evaluate("() => window.__sent.length"):
+            bad.append("empty front tab: the words were sent")
+        if "assistant=" in page.url or "draft=" in page.url:
+            bad.append(f"empty front tab: the address keeps the link: {page.url}")
+    finally:
+        await ctx.close()
+
+    # The front tab holds the person's own words: they stay, and the link's open in a new tab with that agent.
+    seeded = {"tabs": [{"id": "uismoke-own", "sessionId": "uismoke-own-session", "agentId": TAB_ALPHA,
+                        "key": f"{TAB_ALPHA}\u0000uismoke-own-session", "title": "", "usedAt": 1, "draft": own}],
+              "activeId": "uismoke-own", "pins": []}
+    seed = f"try {{ localStorage.setItem('synapseTabs:chat', {json.dumps(json.dumps(seeded))}); }} catch (e) {{}}\n"
+    ctx, page = await _assistant_page(browser, path=link, init=seed + NO_ASSISTANT_STATUS)
+    try:
+        box = page.locator("main textarea").last
+        for _ in range(30):
+            if await box.input_value() == words:
+                break
+            await asyncio.sleep(0.2)
+        if (held := await box.input_value()) != words:
+            bad.append(f"own words in front: the front composer holds {held!r}, not the link's words")
+        if not await page.get_by_text("Suggested prompt", exact=True).count():
+            bad.append("own words in front: the words are not labelled as a suggestion")
+        await asyncio.sleep(1.5)
+        saved = json.loads(await page.evaluate("() => localStorage.getItem('synapseTabs:chat')") or "{}")
+        tabs = {t["id"]: t for t in saved.get("tabs", [])}
+        if tabs.get("uismoke-own", {}).get("draft") != own:
+            bad.append(f"own words in front: the person's words were not kept: {tabs.get('uismoke-own')}")
+        new = [t for i, t in tabs.items() if i != "uismoke-own"]
+        if len(new) != 1 or new[0].get("agentId") != TAB_ALPHA or saved.get("activeId") != new[0].get("id"):
+            bad.append(f"own words in front: no new front tab with the same agent: {saved}")
+        if await page.evaluate(sent_js, words):
+            bad.append("own words in front: the words were sent")
+        if "assistant=" in page.url or "draft=" in page.url:
+            bad.append(f"own words in front: the address keeps the link: {page.url}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("with no Synapse AI the words land in the front tab's empty composer, labelled and unsent, or in a new tab "
+            "with its agent when the front tab holds the person's own words; the address is cleaned once they land")
 
 
 @check

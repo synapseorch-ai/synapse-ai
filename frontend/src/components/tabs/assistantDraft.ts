@@ -40,6 +40,22 @@ export function readAssistantDraft(search: string): { draft: string } | null {
     return { draft: cleanDraft(params.get('draft') ?? '') };
 }
 
+/**
+ * Where a link's draft goes (F1095): a new Synapse AI chat when there is one; without it (the person deleted it), the
+ * front tab's composer when that is empty, else a new tab with the front tab's agent, so the person's own words stay.
+ * `null` until there is a front tab: the words wait, never dropped.
+ */
+export type DraftHome = { open: string } | { into: string };
+
+export function draftHome(
+    assistantId: string | undefined,
+    front: { id: string; agentId: string; draft?: string } | null | undefined,
+): DraftHome | null {
+    if (assistantId) return { open: assistantId };
+    if (!front) return null;
+    return front.draft?.trim() ? { open: front.agentId } : { into: front.id };
+}
+
 /** `href` without the parameters `readAssistantDraft` reads, so a reload does not open the chat again. */
 export function withoutAssistantDraft(href: string): string {
     const url = new URL(href);

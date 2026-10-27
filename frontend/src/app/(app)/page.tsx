@@ -17,8 +17,8 @@ import { BuilderConversation } from '@/components/app/BuilderPanel';
 import { useBuilderChat } from '@/components/app/BuilderProvider';
 import { Button, IconButton, Mark, Markdown, PageHeaderSlot, Spinner, useOwnScroll } from '@/components/ui';
 import {
-  MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, openTab, readAssistantDraft, restoreChatTabs,
-  restorePins, useChatTabs, useTabShortcuts, withoutAssistantDraft,
+  MAX_TABS, NewTabMenu, SideRail, TabStrip, TabSwitcher, chatKey, draftHome, openTab, readAssistantDraft, restoreChatTabs,
+  restorePins, SUGGESTED_LABEL, useChatTabs, useTabShortcuts, withoutAssistantDraft,
   type ChatTab, type PickableAgent, type Pin as TabPin, type RailPanel, type SavedChatTabs, type StripTab, type TabStatus,
   type TabsState,
 } from '@/components/tabs';
@@ -1082,6 +1082,21 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
   useEffect(() => { inputRef.current = input; }, [input]);
   // Once it has been on screen, a fresh tab's conversation is the server's to read back.
   useEffect(() => () => { onChangeRef.current({ draft: inputRef.current, fresh: false }); }, []);
+  // A link's words handed to this tab (F1095: no Synapse AI to open them in) wait in the composer, unsent, said to be
+  // a suggestion until the person makes them their own — as a Synapse AI tab's do.
+  useEffect(() => {
+    if (!tab.suggested || !tab.draft) return;
+    setInput(tab.draft);
+    requestAnimationFrame(() => {
+      const field = textareaRef.current;
+      if (field) { field.focus(); field.setSelectionRange(field.value.length, field.value.length); }
+    });
+  }, [tab.suggested, tab.draft]);
+  const showSuggested = Boolean(tab.suggested && tab.draft) && input === tab.draft;
+  const type = useCallback((text: string) => {
+    setInput(text);
+    if (tab.suggested && text !== tab.draft) onChangeRef.current({ suggested: false });
+  }, [tab.suggested, tab.draft]);
 
   // Leaving closes this page's stream and nothing else. The turn runs on the
   // server whether or not anyone is reading, its answer is saved to the
@@ -3149,7 +3164,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
             <AttachmentError error={attachments.error} onDismiss={attachments.dismissError} />
             <Composer
               value={input}
-              onChange={setInput}
+              onChange={type}
               // Typing ahead is allowed; sending a second turn on top of a running
               // one is not — `handleSubmit` returns early, and the draft is kept.
               onSend={() => (teamAtWork ? void sendToTeam()
@@ -3170,7 +3185,16 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
               onEscape={editingIndex !== null ? () => { setEditingIndex(null); setInput(''); } : undefined}
               dropHandlers={attachments.dropHandlers}
               pasteHandlers={attachments.pasteHandlers}
-              top={<AttachmentChips images={attachedImages} onRemove={attachments.remove} />}
+              top={(
+                <>
+                  {showSuggested && (
+                    <span className="self-start rounded-full border border-border bg-surface-2 px-2.5 py-0.5 text-xs font-medium text-text-muted">
+                      {SUGGESTED_LABEL}
+                    </span>
+                  )}
+                  <AttachmentChips images={attachedImages} onRemove={attachments.remove} />
+                </>
+              )}
               pill={teamAtWork ? (
                 // While a team works, whom the words go to (TEAM1b, Q5): its lead or a member still working.
                 <label className="flex min-w-0 items-center gap-1.5 text-xs text-text-muted">
@@ -3410,16 +3434,19 @@ export default function Home() {
   }, [ready, state.tabs.length, statusLoaded, tabs, router]);
 
   // The new Synapse AI chat a link asked for, once the tabs are read: its words in the composer, unsent, said to be a
-  // suggestion; the address loses the parameters, so a reload does not open another.
+  // suggestion; the address loses the parameters, so a reload does not open another. With no Synapse AI the words
+  // still land (F1095, `draftHome`), and the link is let go of only once they have.
   useEffect(() => {
     const asked = suggestion.current;
     if (!ready || !asked) return;
     if (state.tabs.length >= MAX_TABS && !statusLoaded) return;
+    const home = draftHome(agents.find(a => a.assistant)?.id, front);
+    if (!home) return;
     suggestion.current = null;
     window.history.replaceState(null, '', withoutAssistantDraft(window.location.href));
-    const assistant = agents.find(a => a.assistant);
-    if (assistant) tabs.openAgent(assistant.id, { draft: asked.draft, suggested: true });
-  }, [ready, state.tabs.length, statusLoaded, tabs, agents]);
+    if ('open' in home) tabs.openAgent(home.open, { draft: asked.draft, suggested: true });
+    else tabs.change(home.into, { draft: asked.draft, suggested: true });
+  }, [ready, state.tabs.length, statusLoaded, tabs, agents, front]);
 
   useTabShortcuts((key) => {
     if (key.kind === 'new') setPicker(onPhone() ? 'phone' : 'strip');

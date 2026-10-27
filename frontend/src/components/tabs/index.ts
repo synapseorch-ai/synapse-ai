@@ -15,5 +15,6 @@ export { MAX_PINS, restorePins, useChatTabs, type Pin, type SavedChatTabs } from
 export { useWorkflowTabs, type FrontReport, type KeptTab } from "./useWorkflowTabs";
 export type { EditorTabs } from "./editorTabs";
 export {
-  assistantChatHref, cleanDraft, MAX_DRAFT, NEW_ASSISTANT_CHAT, readAssistantDraft, SUGGESTED_LABEL, withoutAssistantDraft,
+  assistantChatHref, cleanDraft, draftHome, MAX_DRAFT, NEW_ASSISTANT_CHAT, readAssistantDraft, SUGGESTED_LABEL,
+  withoutAssistantDraft, type DraftHome,
 } from "./assistantDraft";
