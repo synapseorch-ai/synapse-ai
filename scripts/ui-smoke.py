@@ -10331,7 +10331,11 @@ async def check_homestart(browser) -> str:
     """A new workspace's Home leads with its first workflow as a path (M2a, Naveen's ask): steps that tick themselves,
     the current one with its action and tip; "describe what you want to automate" opens Build with AI with the words
     typed, unsent; the prompts written for you (ONB3, F1059) follow "I work in" and open a new Synapse AI chat with
-    the words waiting, unsent; Don't show again puts it away."""
+    the words waiting, unsent; Don't show again puts it away.
+
+    A new install has Synapse AI; a scratch store may not, and then a prompt lands in the front tab (F1095) and no
+    "Message Synapse AI" box opens, so it is made first (F1108)."""
+    _assistant_agent()
     ctx, page, _ = await _m2b_page(browser, "/dashboard", runs={})
     bad: list[str] = []
     try:
