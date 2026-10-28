@@ -26,7 +26,7 @@ import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
 import { RunCapFields } from '../orchestration/RunCapFields';
 import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
-import { SessionPicker, listSessions, type SiteSession } from '@/components/browser';
+import { listSessions, type SiteSession } from '@/components/browser';
 import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
@@ -381,7 +381,6 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     const [runInput, setRunInput] = useState('');
     // The sessions a Browser agent's steps start signed in with for the next run (F1140), and the library they come
     // from: read only for a workflow that has such a step.
-    const [runSessions, setRunSessions] = useState<string[]>([]);
     const [siteSessions, setSiteSessions] = useState<SiteSession[] | null>(null);
     // The run log, the plan and what the model is doing right now: the run
     // screens' `RunLogState`, folded by their `applyRunEvent` (M3a-2).
@@ -1259,8 +1258,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         lastEventIdRef.current = 0;  // fresh run, fresh journal
         setRunDrawer('run');
 
-        streamSSE(`/api/orchestrations/${draft.id}/run`,
-                  usesBrowser && runSessions.length ? { message: runInput, browser_sessions: runSessions } : { message: runInput });
+        // Sessions are the Browser agent's and its step's, set once there (Naveen 10-29); a run sends only its input.
+        streamSSE(`/api/orchestrations/${draft.id}/run`, { message: runInput });
     };
 
     // `fromJournal` marks events arriving from the replay/tail stream. A
@@ -2139,16 +2138,6 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     value: runInput,
                                     onChange: setRunInput,
                                     estimate: <EstimateLine estimate={estimate} busy={estimating} error={estimateError} compact cap={draft} capUnits={OSS_CAP_UNITS} />,
-                                    sessions: usesBrowser ? (
-                                        <SessionPicker
-                                            label="Sessions for this run"
-                                            sessions={siteSessions}
-                                            value={runSessions}
-                                            onChange={setRunSessions}
-                                            libraryHref={OSS_SESSIONS_HOST.libraryHref}
-                                            hint="One per site. A step's own session for a site is used over these."
-                                        />
-                                    ) : undefined,
                                 },
                                 runKey,
                                 trail,

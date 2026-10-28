@@ -1,11 +1,11 @@
 'use client';
 
 import { useState } from 'react';
+import { X } from 'lucide-react';
 
-import { Field, Input, Segmented, Textarea } from '@/components/ui';
+import { Button, Field, IconButton, Input, Segmented, Select } from '@/components/ui';
 
-import { SessionPicker } from './SessionPicker';
-import type { SiteSession } from './sessions';
+import { expiresIn, mayUse, onSite, shortDate, whose, type SiteSession } from './sessions';
 
 /**
  * What bounds a Browser agent (DESIGN §2.6, §3.1), in its own settings so no page it reads can change them: the sites
@@ -55,9 +55,29 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
   locked?: { upgradeHref: string };
 }) {
   const config = browserConfig(value);
-  // The text as typed, so a half-typed line is not tidied away under the cursor; saved as hosts.
-  const [sitesText, setSitesText] = useState(config.sites.join('\n'));
+  const [adding, setAdding] = useState('');
   const put = (edit: Partial<BrowserConfig>) => onChange({ ...config, ...edit });
+
+  // Sessions follow the sites (Naveen 10-29): only the listed sites' sessions are kept, one per site, so a site taken
+  // off takes its session, and none listed means signed in to none.
+  const keepFor = (sites: string[], ids: string[]) =>
+    ids.filter(id => {
+      const row = (sessions ?? []).find(s => s.id === id);
+      return !row || sites.some(host => onSite(host, row.site));
+    });
+  const setSites = (sites: string[]) => put({ sites, sessions: sites.length ? keepFor(sites, config.sessions) : [] });
+  const addSites = () => {
+    const more = parseSites(adding).filter(h => !config.sites.includes(h));
+    if (more.length) setSites([...config.sites, ...more]);
+    setAdding('');
+  };
+  const pick = (host: string, id: string) => {
+    const others = config.sessions.filter(sid => {
+      const row = (sessions ?? []).find(s => s.id === sid);
+      return !row || !onSite(host, row.site);
+    });
+    put({ sessions: id === 'none' ? others : [...others, id] });
+  };
 
   return (
     <div className="grid gap-5">
@@ -81,28 +101,36 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
 
       <Field
         label="Sites it may use"
-        hint="One per line, as an address or *.example.com for its subdomains. Listed, it cannot open a page anywhere else, even when a page links there. Blank: it may read any public site, and asks you before typing on one. List sites to let a scheduled run type on them."
+        composite
+        hint={<>Listed, it cannot open a page anywhere else, even when a page links there, and starts signed in to each
+          with the session beside it. Blank: it may read any public site, signed in to none, and asks you before typing
+          on one. <a href={libraryHref} className="font-medium text-accent-ink underline-offset-2 hover:underline">Manage sessions</a></>}
       >
-        <Textarea
-          rows={3}
-          value={sitesText}
-          placeholder={'portal.saltmarsh.example\ntracking.carrier.example'}
-          onChange={e => { setSitesText(e.target.value); put({ sites: parseSites(e.target.value) }); }}
-          onBlur={() => setSitesText(config.sites.join('\n'))}
-          spellCheck={false}
-          translate="no"
-        />
+        <div className="grid gap-2">
+          {config.sites.length > 0 && (
+            <ul aria-label="Sites it may use" className="divide-y divide-border rounded-md border border-border">
+              {config.sites.map(host => (
+                <SiteRow key={host} host={host} sessions={sessions} picked={config.sessions} libraryHref={libraryHref}
+                         locked={locked} onPick={id => pick(host, id)}
+                         onRemove={() => setSites(config.sites.filter(h => h !== host))} />
+              ))}
+            </ul>
+          )}
+          <div className="flex gap-2">
+            <Input
+              value={adding}
+              onChange={e => setAdding(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addSites(); } }}
+              placeholder="portal.saltmarsh.example, or *.example.com for its subdomains"
+              aria-label="Add a site"
+              spellCheck={false}
+              translate="no"
+              className="min-w-0 flex-1"
+            />
+            <Button variant="secondary" onClick={addSites} disabled={!adding.trim()}>Add</Button>
+          </div>
+        </div>
       </Field>
-
-      <SessionPicker
-        label="Sessions it starts with"
-        sessions={sessions}
-        value={config.sessions}
-        onChange={ids => put({ sessions: ids })}
-        libraryHref={libraryHref}
-        locked={locked}
-        hint="It starts signed in to these sites, one session per site. When one has expired, it asks you to sign in again."
-      />
 
       <div className="grid gap-x-6 gap-y-5 @xl:grid-cols-2">
         <Field label="Actions per task" hint="The most it does in the page for one request. At the limit it stops and says so.">
@@ -120,5 +148,53 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
         </Field>
       </div>
     </div>
+  );
+}
+
+/**
+ * One site it may use, and how it is signed in there: a usable session picked (the person's own, or one shared with
+ * them), not signed in, or, when its only session has expired, Sign in again. Never another site's session.
+ */
+function SiteRow({ host, sessions, picked, libraryHref, locked, onPick, onRemove }: {
+  host: string;
+  sessions: SiteSession[] | null;
+  picked: string[];
+  libraryHref: string;
+  locked?: { upgradeHref: string };
+  onPick: (id: string) => void;
+  onRemove: () => void;
+}) {
+  const here = (sessions ?? []).filter(s => onSite(host, s.site));
+  const usable = here.filter(s => mayUse(s) && !s.expired);
+  const current = usable.find(s => picked.includes(s.id));
+  const expired = here.some(s => s.mine && s.expired);
+  return (
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2">
+      <span className="min-w-0 grow basis-48 text-sm text-text [overflow-wrap:anywhere]" translate="no">{host}</span>
+      <div className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
+        {locked ? (
+          <span>Sessions come with Solo and up. <a href={locked.upgradeHref} className="font-medium text-accent-ink underline-offset-2 hover:underline">See plans</a></span>
+        ) : sessions === null ? (
+          <span className="text-text-faint">Loading…</span>
+        ) : usable.length ? (
+          <Select
+            size="sm"
+            aria-label={`Session for ${host}`}
+            value={current?.id ?? 'none'}
+            onChange={onPick}
+            className="w-64 max-w-full"
+            options={[
+              { value: 'none', label: 'Not signed in' },
+              ...usable.map(s => ({ value: s.id, label: `${whose(s)} · kept ${shortDate(s.created_at)} · ${expiresIn(s)}` })),
+            ]}
+          />
+        ) : expired ? (
+          <span>Expired. <a href={libraryHref} className="font-medium text-accent-ink underline-offset-2 hover:underline">Sign in again</a></span>
+        ) : (
+          <span>Not signed in. <a href={libraryHref} className="font-medium text-accent-ink underline-offset-2 hover:underline">Keep a session</a></span>
+        )}
+        <IconButton icon={X} label={`Remove ${host}`} size="sm" onClick={onRemove} />
+      </div>
+    </li>
   );
 }

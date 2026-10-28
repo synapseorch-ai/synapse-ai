@@ -4,6 +4,21 @@ export {
 } from './BrowserSetup';
 export { BrowserPane } from './BrowserPane';
 export { BrowserTurnCard } from './BrowserTurnCard';
+export { RecordingEditor, type EditorFrame } from './RecordingEditor';
+export { RecordingsLibrary } from './RecordingsLibrary';
+export {
+  changeRecording,
+  deleteRecording,
+  getRecording,
+  listRecordings,
+  openRecordBrowser,
+  stepWords,
+  stopRecording,
+  type Recording,
+  type RecordingStep,
+  type RecordingSummary,
+  type RecordingsHost,
+} from './recordings';
 export { SessionPicker } from './SessionPicker';
 export { SessionsLibrary } from './SessionsLibrary';
 export { useChatPicks } from './useChatPicks';
@@ -13,6 +28,7 @@ export {
   lastUsed,
   listSessions,
   mayUse,
+  onSite,
   removeSession,
   shortDate,
   startSignIn,

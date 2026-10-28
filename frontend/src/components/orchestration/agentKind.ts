@@ -19,6 +19,8 @@ export type KindAgent = {
     delegate_agent_ids?: string[] | null;
     /** A workflow agent's workflow. */
     orchestration_id?: string | null;
+    /** A Browser agent's bounds: the sites it may use, which its step's sessions are picked among. */
+    browser?: { sites?: string[] | null } | null;
 };
 
 export function agentKind(agent?: KindAgent | null): AgentKind {
