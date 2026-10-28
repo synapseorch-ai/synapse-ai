@@ -400,7 +400,15 @@ async def test_the_chat_stream_carries_the_pane_events(client, monkeypatch):
 def test_a_browser_agents_settings_default_to_read_only_anywhere():
     from core.models import AgentBrowser
     s = AgentBrowser()
-    assert (s.sites, s.login_ref, s.action_budget, s.mode) == ([], None, 40, "read_only")
+    assert (s.sites, s.sessions, s.action_budget, s.mode) == ([], [], 40, "read_only")
+
+
+def test_an_agent_saved_with_one_login_has_it_as_its_session():
+    """F1138: `login_ref` (before sessions) reads as that one session, and is not written back."""
+    from core.models import AgentBrowser
+    s = AgentBrowser(login_ref="wl_old", sites=["portal.example.com"])
+    assert s.sessions == ["wl_old"] and "login_ref" not in s.model_dump()
+    assert AgentBrowser(sessions=["ss_a", "ss_a", "ss_b"]).sessions == ["ss_a", "ss_b"]
 
 
 def test_sites_are_hosts_whatever_was_pasted():
@@ -422,7 +430,7 @@ async def test_a_browser_agent_saves_its_settings(client):
             "browser": {"sites": ["portal.example.com"], "action_budget": 25, "mode": "co_drive"}}
     resp = await client.post("/api/agents", json=body)
     assert resp.status_code == 200
-    assert resp.json()["browser"] == {"sites": ["portal.example.com"], "login_ref": None, "action_budget": 25,
+    assert resp.json()["browser"] == {"sites": ["portal.example.com"], "sessions": [], "action_budget": 25,
                                       "mode": "co_drive"}
 
 
@@ -623,68 +631,93 @@ def test_a_run_resumes_the_same_step_with_the_persons_word():
     assert run.step_history[-1]["status"] == "running"
 
 
-# ── saved website logins (F1102) ─────────────────────────────────────────────
+# ── kept sessions (F1102, renamed F1138) ─────────────────────────────────────
 
 @pytest.fixture
 def logins_store(monkeypatch):
-    """BRW2's `core.website_logins`, stood in by its two calls."""
-    import sys
-    import types as _types
-    kept: dict = {"wl_live": {"cookies": [{"name": "sid", "value": "abc", "domain": "portal.example.com",
-                                           "path": "/"}], "origins": []}}
+    """The kept sessions, stood in by the calls the client makes (`state_for`, `get`, `keep`)."""
+    live = {"cookies": [{"name": "sid", "value": "abc", "domain": "portal.example.com", "path": "/"}], "origins": []}
+    other = {"cookies": [{"name": "t", "value": "x", "domain": ".vendor.io", "path": "/"}], "origins": []}
+    rows = {"ss_live": {"id": "ss_live", "site": "example.com", "owner": "you", "expired": False,
+                        "expires_at": 2_000_000_000},
+            "ss_vendor": {"id": "ss_vendor", "site": "vendor.io", "owner": "you", "expired": False},
+            "ss_gone": {"id": "ss_gone", "site": "example.com", "owner": "you", "expired": True},
+            "ss_hers": {"id": "ss_hers", "site": "hers.io", "owner": "priya", "expired": False}}
     saved: list = []
 
-    async def state_for(ref):
-        return kept.get(ref)
+    class _Store:
+        async def state_for(self, sid, *, for_user=None):
+            row = rows.get(sid)
+            if not row or row["expired"] or (for_user is not None and row["owner"] != for_user):
+                return None
+            return {"ss_live": live, "ss_vendor": other}.get(sid)
 
-    async def keep(ref, *, state, sites, owner):
-        saved.append((ref, state, sites, owner))
-        return ref or "wl_new"
+        async def get(self, sid):
+            return rows.get(sid)
 
-    module = _types.ModuleType("core.website_logins")
-    module.state_for, module.keep = state_for, keep
-    monkeypatch.setitem(sys.modules, "core.website_logins", module)
-    import core
-    monkeypatch.setattr(core, "website_logins", module, raising=False)
+        async def keep(self, sid, *, state, site, owner):
+            saved.append((sid, state, site, owner))
+            return sid or "ss_new"
+
+    monkeypatch.setattr(browser_client, "_login_store", _Store())
     return saved
 
 
-async def test_an_agents_saved_login_opens_its_browser_logged_in(logins_store):
+async def test_an_agents_kept_sessions_open_its_browser_signed_in_to_each_site(logins_store):
     tools = browser_client.BrowserTools(_FakeHost())
-    token = browser_client.settings.set({"login_ref": "wl_live", "sites": ["portal.example.com"]})
+    token = browser_client.settings.set({"sessions": ["ss_live", "ss_vendor"], "sites": ["portal.example.com"]})
     try:
         await _call(tools, "run:r1")
     finally:
         browser_client.settings.reset(token)
     opening = [c[2] for c in tools.host.calls if c[1] == "/session"][0]
-    assert opening["login_state"]["cookies"][0]["name"] == "sid" and "turn" not in opening
+    assert [c["name"] for c in opening["login_state"]["cookies"]] == ["sid", "t"] and "turn" not in opening
 
 
-async def test_an_expired_login_is_the_persons_turn_before_anything_else(logins_store):
+async def test_an_expired_session_is_the_persons_turn_before_anything_else(logins_store):
     tools = browser_client.BrowserTools(_FakeHost())
-    token = browser_client.settings.set({"login_ref": "wl_gone", "sites": ["portal.example.com"]})
+    token = browser_client.settings.set({"sessions": ["ss_gone"], "sites": ["portal.example.com"]})
     try:
         result = await _call(tools, "run:r2", "browser_navigate", {"url": "https://portal.example.com"})
     finally:
         browser_client.settings.reset(token)
     opening = [c[2] for c in tools.host.calls if c[1] == "/session"][0]
-    assert opening["turn"]["kind"] == "login_expired" and "login_state" not in opening
-    assert result.isError and "log in again" in result.content[0].text
-    assert not [c for c in tools.host.calls if c[1] == "/tool"], "nothing is done on an expired login"
+    assert opening["turn"]["kind"] == "session_expired" and "login_state" not in opening
+    assert opening["turn"]["site"] == "example.com" and opening["turn"]["site_session_id"] == "ss_gone"
+    assert result.isError and "sign in again" in result.content[0].text and "example.com" in result.content[0].text
+    assert not [c for c in tools.host.calls if c[1] == "/tool"], "nothing is done on an expired session"
     turn = await tools.take_handover("run:r2")
-    assert turn["kind"] == "login_expired" and turn["login_ref"] == "wl_gone"
+    assert turn["kind"] == "session_expired" and turn["site_session_id"] == "ss_gone"
 
 
-async def test_handing_back_after_logging_in_again_keeps_it_under_the_same_ref(client, monkeypatch):
+async def test_a_session_that_is_not_the_persons_is_left_out(logins_store):
+    tools = browser_client.BrowserTools(_FakeHost())
+    token = browser_client.settings.set({"sessions": ["ss_live", "ss_hers"]})
+    who = browser_client.for_user.set("you")
+    try:
+        await _call(tools, "run:r3")
+    finally:
+        browser_client.for_user.reset(who)
+        browser_client.settings.reset(token)
+    opening = [c[2] for c in tools.host.calls if c[1] == "/session"][0]
+    assert [c["name"] for c in opening["login_state"]["cookies"]] == ["sid"] and "turn" not in opening
+
+
+async def test_handing_back_after_signing_in_again_keeps_it_in_the_same_session(client, monkeypatch, logins_store):
+    """F1138: the fresh sign-in is kept into the same session, only that site's part of it, and the answer says so."""
     from core.orchestration import answers
     fake = browser_client.BrowserTools(_FakeHost())
-    await _parked_on(fake, "run:run5", "s5", {"kind": "login_expired", "login_ref": "wl_gone",
-                                              "sites": ["portal.example.com"], "session_id": "s5"})
-    kept = []
+    await _parked_on(fake, "run:run5", "s5", {"kind": "session_expired", "site_session_id": "ss_gone",
+                                              "site": "example.com", "session_id": "s5"})
+    original = fake.host.call
 
-    async def keep_login(sid, *, login_ref, sites, owner):
-        kept.append((sid, login_ref, sites, owner))
-        return login_ref
+    async def call(method, path, *, json=None, params=None, timeout=120):
+        if path == "/login-state":
+            return 200, {"login_state": {"cookies": [{"name": "new", "value": "v", "domain": ".portal.example.com"},
+                                                     {"name": "ad", "value": "v", "domain": ".tracker.net"}],
+                                         "origins": [{"origin": "https://portal.example.com", "localStorage": []},
+                                                     {"origin": "https://tracker.net", "localStorage": []}]}}
+        return await original(method, path, json=json, params=params, timeout=timeout)
 
     async def viewer(sid, path, body=None):
         return 200, {"wheel": "agent"}
@@ -692,46 +725,55 @@ async def test_handing_back_after_logging_in_again_keeps_it_under_the_same_ref(c
     async def fake_answer(app_state, run_id, response, **kw):
         pass
 
-    monkeypatch.setattr(fake, "keep_login", keep_login)
+    fake.host.call = call
     monkeypatch.setattr(fake, "viewer", viewer)
     monkeypatch.setattr(answers, "answer_paused_run", fake_answer)
     monkeypatch.setattr(browser_client, "tools", fake)
-    resp = await client.post("/api/browser/s5/wheel/hand-back", json={})
-    assert resp.json()["resumed"] == {"kind": "run", "run_id": "run5"}
-    assert kept == [("s5", "wl_gone", ["portal.example.com"], "you")]
+    resp = (await client.post("/api/browser/s5/wheel/hand-back", json={})).json()
+    assert resp["resumed"] == {"kind": "run", "run_id": "run5"}
+    assert resp["kept"] == {"id": "ss_gone", "site": "example.com", "expires_at": None}
+    sid, state, site, owner = logins_store[-1]
+    assert (sid, site, owner) == ("ss_gone", "example.com", "you")
+    assert [c["name"] for c in state["cookies"]] == ["new"] and len(state["origins"]) == 1, "only the site's part"
 
 
-async def test_log_in_to_a_site_opens_a_browser_that_is_the_persons_alone(client, monkeypatch):
+async def test_keeping_a_session_opens_a_browser_that_is_the_persons_alone(client, monkeypatch):
     fake = browser_client.BrowserTools(_FakeHost())
     monkeypatch.setattr(browser_client, "tools", fake)
-    resp = await client.post("/api/browser/login-sessions", json={"sites": ["https://Portal.Example.com/login"]})
-    sid = resp.json()["session_id"]
+    resp = await client.post("/api/site-sessions/new", json={"site": "https://Portal.Example.com/login"})
+    sid = resp.json()["browser_session_id"]
     opening = [c[2] for c in fake.host.calls if c[1] == "/session"][0]
     assert opening["person_only"] is True and opening["owner"].startswith("login:")
-    assert (await fake.store.get_owner(await fake.owner_of(sid)))["sessions"] == ["portal.example.com"]
-    bad = await client.post("/api/browser/login-sessions", json={"sites": ["localhost"]})
-    assert bad.status_code == 422
+    assert (await fake.store.get_owner(await fake.owner_of(sid)))["sessions"] == ["example.com"]
+    assert (await client.post("/api/site-sessions/new", json={"site": "localhost"})).status_code == 422
+    old = await client.post("/api/browser/login-sessions", json={"sites": ["portal.example.com"]})
+    assert old.status_code == 200 and old.json()["session_id"], "the old route answers for one release"
 
 
-async def test_finishing_a_login_keeps_it_or_not_and_only_for_a_login_session(client, monkeypatch, logins_store):
+async def test_finishing_keeps_the_session_or_says_nothing_was_signed_in(client, monkeypatch, logins_store):
     fake = browser_client.BrowserTools(_FakeHost())
     monkeypatch.setattr(browser_client, "tools", fake)
     await _parked_on(fake, "chat:c", "chat_sid", None)
-    assert (await client.post("/api/browser/chat_sid/finish-login", json={"keep": True})).status_code == 409
+    assert (await client.post("/api/browser/chat_sid/finish-session", json={"keep": True})).status_code == 409
 
-    sid = (await client.post("/api/browser/login-sessions", json={"sites": ["portal.example.com"]})).json()["session_id"]
+    sid = (await client.post("/api/site-sessions/new", json={"site": "portal.example.com"})).json()["browser_session_id"]
+    state = {"login_state": {"cookies": [], "origins": []}}
     original = fake.host.call
 
     async def call(method, path, *, json=None, params=None, timeout=120):
         if path == "/login-state":
-            return 200, {"login_state": {"cookies": [{"name": "sid", "value": "new"}], "origins": []}}
+            return 200, state
         return await original(method, path, json=json, params=params, timeout=timeout)
 
     fake.host.call = call
-    resp = await client.post(f"/api/browser/{sid}/finish-login", json={"keep": True})
-    assert resp.json() == {"login_ref": "wl_new"}
-    assert logins_store[-1][2:] == (["portal.example.com"], "you")
-    assert await fake.owner_of(sid) is None, "the login session is closed"
+    nothing = await client.post(f"/api/browser/{sid}/finish-session", json={"keep": True})
+    assert nothing.status_code == 422 and nothing.json()["detail"]["site"] == "example.com"
+    assert await fake.owner_of(sid) is not None, "the browser stays open for another try"
+    state["login_state"] = {"cookies": [{"name": "sid", "value": "new", "domain": "portal.example.com"}], "origins": []}
+    kept = await client.post(f"/api/browser/{sid}/finish-session", json={"keep": True})
+    assert kept.json() == {"id": "ss_new", "site": "example.com", "expires_at": None}
+    assert logins_store[-1][2:] == ("example.com", "you")
+    assert await fake.owner_of(sid) is None, "the browser is closed once kept"
 
 
 # ── a card number never reaches a Browser agent through the box (F1100) ──────
@@ -1153,15 +1195,15 @@ async def test_the_action_gate_is_asked_before_every_action_but_a_hand_over():
 
 async def test_kept_sign_ins_can_live_elsewhere(monkeypatch):
     class _Logins:
-        async def state_for(self, ref):
+        async def state_for(self, ref, *, for_user=None):
             return {"cookies": [{"name": "a", "value": "b"}], "origins": []} if ref == "ss_1" else None
 
-        async def keep(self, ref, *, state, sites, owner):
+        async def keep(self, ref, *, state, site, owner):
             return "ss_kept"
 
     monkeypatch.setattr(browser_client, "_login_store", _Logins())
-    assert (await browser_client._login_state("ss_1"))["cookies"][0]["name"] == "a"
-    assert await browser_client._login_state("ss_gone") is None
+    state, expired = await browser_client._sessions_state(["ss_1", "ss_gone"])
+    assert state["cookies"][0]["name"] == "a" and expired is None, "a store with no get() says nothing expired"
 
 
 def test_kept_screenshots_and_logs_can_live_elsewhere():

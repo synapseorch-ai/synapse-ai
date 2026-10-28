@@ -3,7 +3,7 @@ Pydantic models and data classes used across the backend.
 Extracted from server.py for better readability.
 """
 from typing import List, Dict, Any, Literal, Optional
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from core.images import checked_images
 
@@ -105,15 +105,30 @@ class AgentTeam(BaseModel):
 
 
 class AgentBrowser(BaseModel):
-    """A Browser agent's settings (BRW1 v2, DESIGN.md §2.6): where it may go, whose login it uses,
-    how many actions a task gets, and whether the person may co-drive."""
+    """A Browser agent's settings (BRW1 v2, DESIGN.md §2.6): where it may go, which kept sessions it starts signed
+    in with, how many actions a task gets, and whether the person may co-drive."""
     #: Hosts its top-level navigation may reach, redirects included: "portal.example.com" or
     #: "*.example.com". Empty means any public site (chat's reading).
     sites: list[str] = []
-    #: A saved website login (`core.website_logins`), loaded into each session it opens.
-    login_ref: str | None = None
+    #: Kept sessions (`core.site_sessions`), one per site, loaded into each browser it opens (F1138; DESIGN §v5.1).
+    sessions: list[str] = []
     action_budget: int = Field(default=40, ge=1, le=200)
     mode: Literal["read_only", "co_drive"] = "read_only"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _one_login_was_a_session(cls, value):
+        """An agent saved before sessions named one login (`login_ref`): it is that session."""
+        if isinstance(value, dict) and value.get("login_ref") and not value.get("sessions"):
+            value = {**value, "sessions": [value["login_ref"]]}
+        if isinstance(value, dict):
+            value = {k: v for k, v in value.items() if k != "login_ref"}
+        return value
+
+    @field_validator("sessions")
+    @classmethod
+    def _session_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(v for v in (value or []) if isinstance(v, str) and v.strip()))
 
     @field_validator("sites")
     @classmethod

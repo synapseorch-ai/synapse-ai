@@ -101,32 +101,36 @@ async def _relay(session_id: str, action: str, request: Request):
             "release": "It only loaded data: carry on.",
             "allow-site": f"You may type on {body.get('host') or 'that site'}. Carry on."}.get(action)
     if said:
-        resumed = await _resume(owner, said, str(body.get("note") or ""), request)
+        resumed, kept = await _resume(owner, said, str(body.get("note") or ""), request)
         if resumed:
             answer = {**answer, "resumed": resumed}
+        if kept:
+            answer = {**answer, "kept": kept}
     return answer
 
 
-async def _resume(owner: str, said: str, note: str, request: Request) -> dict | None:
+async def _resume(owner: str, said: str, note: str, request: Request) -> tuple[dict | None, dict | None]:
     """A chat or run parked on the person's turn carries on (F1099): a run resumes its step; a chat
     gets the person's word as its next message. A turn that was never parked (Take over mid-turn)
     needs nothing: the agent's call is waiting for the wheel."""
     parked = await browser_client.tools.take_parked(owner)
     if not parked:
-        return None
-    if parked.get("kind") == "login_expired" and parked.get("login_ref"):
-        # The person logged in again in their turn: that login is kept under the same ref.
+        return None, None
+    kept = None
+    if parked.get("kind") in ("session_expired", "login_expired") and parked.get("site_session_id"):
+        # The person signed in again in their turn: it is kept into the same session, with a fresh expiry.
         try:
-            await browser_client.tools.keep_login(parked["session_id"], login_ref=parked["login_ref"],
-                                                  sites=parked.get("sites") or [], owner=_person())
+            kept = await browser_client.tools.keep_session(parked["session_id"],
+                                                           site_session_id=parked["site_session_id"],
+                                                           site=parked.get("site") or "", owner=_person())
         except Exception:
-            pass
+            kept = None
     kind, _, ident = owner.partition(":")
     if kind == "run":
         from core.orchestration.answers import answer_paused_run
         await answer_paused_run(request.app.state, ident,
                                 {"browser_turn": "answered", "note": note or said})
-        return {"kind": "run", "run_id": ident}
+        return {"kind": "run", "run_id": ident}, kept
     if kind == "chat":
         from core.models import ChatRequest
         from core.routes.chat import _start
@@ -134,8 +138,8 @@ async def _resume(owner: str, said: str, note: str, request: Request) -> dict | 
         follow = ChatRequest(message=said, session_id=ident, agent_id=None if agent_key == "default" else agent_key)
         follow._app_chat = True
         _start(follow, expand_mentions=False)
-        return {"kind": "chat", "session_id": ident}
-    return None
+        return {"kind": "chat", "session_id": ident}, kept
+    return None, kept
 
 
 @router.post("/api/browser/{session_id}/input")
@@ -211,10 +215,30 @@ async def hand_back(session_id: str, request: Request):
 
 
 def _person() -> str:
-    """Who a kept login belongs to: the install's one sign-in, or "you" without one."""
-    from core.config import load_settings
-    return load_settings().get("login_username") or "you"
+    """Who keeps a session: the install's one sign-in, or "you" without one."""
+    from core.routes.site_sessions import person
+    return person()
 
+
+class FinishSession(BaseModel):
+    keep: bool = True
+
+
+@router.post("/api/browser/{session_id}/finish-session")
+async def finish_session(session_id: str, body: FinishSession):
+    """Keep what the person signed in to in a "Keep me signed in" browser (F1138): the kept row, or 422 when nothing
+    on the site was signed in, the browser staying open for another try."""
+    await _owner(session_id)
+    done = await browser_client.tools.finish_session(session_id, keep=body.keep, owner=_person())
+    if done is None:
+        raise HTTPException(status_code=409, detail="This browser is not for keeping a session.")
+    site, row = done
+    if body.keep and row is None:
+        raise HTTPException(status_code=422, detail={"detail": f"Nothing on {site} is signed in yet.", "site": site})
+    return row or {}
+
+
+# ── for one release: BRW2's Website logins screen (F1079) ───────────────────
 
 class LoginSession(BaseModel):
     sites: list[str] = []
@@ -222,26 +246,19 @@ class LoginSession(BaseModel):
 
 @router.post("/api/browser/login-sessions")
 async def open_login_session(body: LoginSession):
-    """"Log in to a site" (Website logins): a browser that is the person's alone."""
-    from core.models import AgentBrowser
-    try:
-        sites = AgentBrowser(sites=body.sites).sites
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from None
-    return {"session_id": await browser_client.tools.open_login_session(sites)}
-
-
-class FinishLogin(BaseModel):
-    keep: bool = True
+    from core.routes.site_sessions import _site_of
+    if not body.sites:
+        raise HTTPException(status_code=422, detail="Name the site to log in to.")
+    return {"session_id": await browser_client.tools.open_login_session([_site_of(body.sites[0].removeprefix("*."))])}
 
 
 @router.post("/api/browser/{session_id}/finish-login")
-async def finish_login(session_id: str, body: FinishLogin):
-    owner = await _owner(session_id)
-    if not owner.startswith("login:"):
+async def finish_login(session_id: str, body: FinishSession):
+    await _owner(session_id)
+    done = await browser_client.tools.finish_session(session_id, keep=body.keep, owner=_person())
+    if done is None:
         raise HTTPException(status_code=409, detail="This browser is not a login session.")
-    ref = await browser_client.tools.finish_login(session_id, keep=body.keep, owner=_person())
-    return {"login_ref": ref}
+    return {"login_ref": (done[1] or {}).get("id")}
 
 
 @router.post("/api/browser/{session_id}/stop")

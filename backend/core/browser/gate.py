@@ -124,17 +124,10 @@ def site_allowed(host: str, sites: list[str]) -> bool:
     return False
 
 
-def _site_of(host: str) -> str:
-    """The registrable part, near enough: the last two labels (three under a two-letter country's
-    second level, as in example.co.uk)."""
-    labels = (host or "").lower().rstrip(".").split(".")
-    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in {"co", "com", "net", "org", "gov", "ac", "edu"}:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
-
-
 def same_site(a: str, b: str) -> bool:
-    return bool(a) and bool(b) and _site_of(a) == _site_of(b)
+    """Two hosts of one site (`core.sites`): its registrable domain, the rule the kept sessions use too."""
+    from core.sites import same_site as _same
+    return _same(a, b)
 
 
 #: Tools that put the agent's text into a page.

@@ -995,8 +995,10 @@ class Host:
         except Exception as exc:
             await s.close()
             return web.json_response({"error": f"the browser did not start: {exc}"}, status=503)
-        if isinstance(body.get("turn"), dict):  # it opens on the person's turn (a saved login that expired)
-            s._turn(str(body["turn"].get("kind") or "asked"), str(body["turn"].get("reason") or ""))
+        if isinstance(body.get("turn"), dict):  # it opens on the person's turn (a kept session that expired)
+            turn = body["turn"]
+            s._turn(str(turn.get("kind") or "asked"), str(turn.get("reason") or ""),
+                    **{k: v for k, v in turn.items() if k in ("site", "site_session_id", "mine")})
             s.handover = None
         self.sessions[sid] = s
         return web.json_response({"session_id": sid})

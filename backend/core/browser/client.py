@@ -40,6 +40,10 @@ settings: contextvars.ContextVar[dict | None] = contextvars.ContextVar("browser_
 #: never page text or a model's (V2-CONTRACT "Final buttons and sends").
 own_words: contextvars.ContextVar = contextvars.ContextVar("browser_own_words", default=None)
 
+#: Whose kept sessions this call may open (F1138): the chat's person, the run's starter, the schedule's or the API
+#: key's owner. Unset (None), the install's one person: OSS has one. Cloud sets it around each job.
+for_user: contextvars.ContextVar[str | None] = contextvars.ContextVar("browser_for_user", default=None)
+
 #: How long an agent's call waits while the person drives before it gives up and says so: inside the
 #: engine's 60 s for one MCP call (`MCP_TOOL_CALL_TIMEOUT`). A longer wait is a park, not a call.
 WAIT_FOR_PERSON_S = 45
@@ -268,12 +272,13 @@ class BrowserTools:
         try:
             host, sid = await self._session_for(key)
             record = await self.store.get_owner(key) or {}
-            if record.get("expired"):  # the saved login ran out: the person logs in again first
-                self._handovers[key] = {"kind": "login_expired", "reason": _EXPIRED, "session_id": sid,
+            if record.get("expired"):  # a kept session ran out: the person signs in again first
+                site = record["expired"].get("site") or "the site"
+                self._handovers[key] = {"kind": "session_expired", "reason": _expired_words(site), "session_id": sid,
                                         **record["expired"]}
                 await self.store.set_owner(key, {**record, "expired": None})
-                return _result("The saved login has expired. It is the person's turn in the browser to log in "
-                               "again; stop here, and you will continue when they hand it back.", error=True)
+                return _result(f"The kept session for {site} has expired. It is the person's turn in the browser to "
+                               "sign in again; stop here, and you will continue when they hand it back.", error=True)
             status, body = await host.call("POST", "/tool", json={
                 "session_id": sid, "name": name, "args": arguments, "press": press})
             if status == 404:  # the session was closed (idle) or the component restarted
@@ -359,17 +364,23 @@ class BrowserTools:
             await self.hosts.resume(key)
         return parked
 
-    async def keep_login(self, session_id: str, *, login_ref: str | None, sites: list[str], owner: str) -> str | None:
-        """Keep the session's current sign-in (the person just signed in), under `login_ref` or a new one."""
+    async def keep_session(self, session_id: str, *, site_session_id: str | None, site: str,
+                           owner: str) -> dict | None:
+        """Keep what the person just signed in to on `site`, under `site_session_id` (signing in again) or a new one;
+        its row (`{id, site, expires_at}`), or None when nothing on that site was signed in. Only that site's cookies
+        and storage are kept: a cookie only ever goes to its own site."""
         key = await self.store.owner_of(session_id)
         host = await self.hosts.host_for(key, opening=False) if key else None
         if host is None:
             return None
         status, body = await host.call("GET", "/login-state", params={"session_id": session_id})
-        state = body.get("login_state") if status == 200 else None
-        if not state or not (state.get("cookies") or state.get("origins")):
+        state = _for_site(body.get("login_state") if status == 200 else None, site)
+        if not state:
             return None
-        return await _logins().keep(login_ref, state=state, sites=sites, owner=owner)
+        store = _logins()
+        kept = await store.keep(site_session_id, state=state, site=site, owner=owner)
+        row = await store.get(kept) if hasattr(store, "get") else None
+        return {"id": kept, "site": (row or {}).get("site") or site, "expires_at": (row or {}).get("expires_at")}
 
     async def open_login_session(self, sites: list[str]) -> str:
         """"Log in to a site": the person's alone, no agent, the wheel theirs from the start."""
@@ -384,15 +395,21 @@ class BrowserTools:
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
         return sid
 
-    async def finish_login(self, session_id: str, *, keep: bool, owner: str) -> str | None:
-        """End a "Log in to a site" session, keeping its sign-in when the person asked to."""
+    async def finish_session(self, session_id: str, *, keep: bool, owner: str) -> tuple[str, dict | None] | None:
+        """End a "Keep me signed in" browser: `(site, row)`, the row None when nothing on the site was signed in (the
+        browser then stays open, so the person can try again); None when this is no such browser."""
         key = await self.store.owner_of(session_id)
         record = await self.store.get_owner(key) if key else None
-        if not record or record.get("sessions") is None:
+        if not record or not record.get("sessions"):
             return None
-        ref = await self.keep_login(session_id, login_ref=None, sites=record["sessions"], owner=owner) if keep else None
-        await self.close_owner(key)
-        return ref
+        site = record["sessions"][0]
+        if not keep:
+            await self.close_owner(key)
+            return site, None
+        row = await self.keep_session(session_id, site_session_id=None, site=site, owner=owner)
+        if row is not None:
+            await self.close_owner(key)
+        return site, row
 
     # ── sessions ─────────────────────────────────────────────────────────────
     async def _session_for(self, key: str):
@@ -405,15 +422,15 @@ class BrowserTools:
                 return host, record["sid"]
             await self.store.pop_owner(key)  # its browser is gone
         chosen = settings.get() or {}
-        login_ref = chosen.get("login_ref")
-        state = await _login_state(login_ref) if login_ref else None
-        expired = bool(login_ref) and state is None
+        picked = list(chosen.get("sessions") or ([chosen["login_ref"]] if chosen.get("login_ref") else []))
+        state, expired = await _sessions_state(picked)
         opening = {"owner": key, "mode": chosen.get("mode") or gate.READ_ONLY, "sites": chosen.get("sites") or [],
                    "limits": {"actions": int(chosen.get("action_budget") or 40)}}
         if state:
             opening["login_state"] = state
         if expired:
-            opening["turn"] = {"kind": "login_expired", "reason": _EXPIRED}
+            opening["turn"] = {"kind": "session_expired", "reason": _expired_words(expired["site"]),
+                               "site": expired["site"], "site_session_id": expired["site_session_id"], "mine": True}
         host = await self.hosts.host_for(key, opening=True)
         status, body = await host.call("POST", "/session", json=opening)
         if status != 200 or not body.get("session_id"):
@@ -421,7 +438,7 @@ class BrowserTools:
         sid = body["session_id"]
         await self.store.set_owner(key, {
             "sid": sid, "parked": None, "sessions": None,
-            "expired": {"login_ref": login_ref, "sites": chosen.get("sites") or []} if expired else None})
+            "expired": expired})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
         return host, sid
 
@@ -491,7 +508,8 @@ _login_store = None
 
 
 def set_login_store(store) -> None:
-    """Where kept sign-ins live: async `state_for(ref)` and `keep(ref, *, state, sites, owner)`."""
+    """Where kept sessions live: async `state_for(id, *, for_user)` and `keep(id_or_None, *, state, site, owner)`
+    (optional `get(id)` for its row: site, expires_at, expired)."""
     global _login_store
     _login_store = store
 
@@ -499,8 +517,8 @@ def set_login_store(store) -> None:
 def _logins():
     if _login_store is not None:
         return _login_store
-    from core import website_logins
-    return website_logins
+    from core import site_sessions
+    return site_sessions
 
 
 _SCHEMAS = Path(__file__).with_name("tool_schemas.json")
@@ -525,15 +543,46 @@ def _npx_hint() -> str:
     return "npx is not on this backend's PATH (Node is needed)" if shutil.which("npx") is None else "see the log"
 
 
-_EXPIRED = "The saved login has expired: log in again, then hand the browser back."
+def _expired_words(site: str) -> str:
+    return f"The kept session for {site} has expired: sign in again, then hand the browser back."
 
 
-async def _login_state(login_ref: str) -> dict | None:
-    """The kept sign-in, decrypted, or None once expired, forgotten or never kept."""
-    try:
-        return await _logins().state_for(login_ref)
-    except Exception:
+async def _sessions_state(picked: list[str]) -> tuple[dict | None, dict | None]:
+    """The picked sessions' state, merged into one (each cookie scoped to its own site already), and the first one
+    that expired and is the person's (`{site_session_id, site}`), for a "sign in again" turn. One that isn't theirs is
+    left out (F1140 says so on the pane)."""
+    store, who = _logins(), for_user.get()
+    cookies, origins, expired = [], [], None
+    for sid in picked:
+        try:
+            state = await store.state_for(sid, for_user=who)
+        except Exception:
+            state = None
+        if state:
+            cookies += [c for c in state.get("cookies") or [] if isinstance(c, dict)]
+            origins += [o for o in state.get("origins") or [] if isinstance(o, dict)]
+            continue
+        try:
+            row = await store.get(sid) if hasattr(store, "get") else None
+        except Exception:
+            row = None
+        if expired is None and row and row.get("expired") and (who is None or row.get("owner") == who):
+            expired = {"site_session_id": sid, "site": row.get("site") or ""}
+    return ({"cookies": cookies, "origins": origins} if cookies or origins else None), expired
+
+
+def _for_site(state: dict | None, site: str) -> dict | None:
+    """The part of a browser's storage state that belongs to `site`: its cookies and its origins' storage."""
+    if not state or not site:
         return None
+    from urllib.parse import urlparse
+
+    from core.sites import same_site
+    cookies = [c for c in state.get("cookies") or [] if isinstance(c, dict)
+               and same_site(str(c.get("domain") or "").lstrip("."), site)]
+    origins = [o for o in state.get("origins") or [] if isinstance(o, dict)
+               and same_site(urlparse(str(o.get("origin") or "")).hostname or "", site)]
+    return {"cookies": cookies, "origins": origins} if cookies or origins else None
 
 
 def _scrub(text: str) -> str:

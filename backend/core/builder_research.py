@@ -347,30 +347,10 @@ FINDINGS_SCHEMA = {
 }
 
 
-#: Two-part public suffixes, so `dev.tesco.co.uk`'s registrable name is "tesco".
-_TWO_PART_SUFFIXES = {"co.uk", "org.uk", "ac.uk", "com.au", "net.au", "co.in", "co.jp", "com.br", "co.nz", "com.sg",
-                      "co.za", "com.mx"}
-
-
-#: Hosts on which each tenant has its own name (SAI2's whole-P3b review, 2): `acme.workers.dev` and `evil.workers.dev`
-#: are two owners, as `tesco.co.uk` and `asda.co.uk` are, so the tenant's label is part of the registrable domain.
-_SHARED_HOST_SUFFIXES = {"workers.dev", "pages.dev", "vercel.app", "netlify.app", "github.io", "gitlab.io",
-                         "herokuapp.com", "onrender.com", "fly.dev", "web.app", "firebaseapp.com", "appspot.com",
-                         "azurewebsites.net", "cloudfront.net", "azure-api.net", "ngrok.io", "ngrok-free.app",
-                         "glitch.me", "replit.app", "repl.co", "myshopify.com", "azurestaticapps.net"}
-#: Clouds that put a tenant more than one label deep (`abc.execute-api.us-east-1.amazonaws.com`,
-#: `acme.blob.core.windows.net`): there each host is its own, and no host vouches for another (SAI2's re-check of 2).
-_WHOLE_HOST_SUFFIXES = ("amazonaws.com", "windows.net", "cloudapp.azure.com")
-
-
-def _whole_host(labels: list[str]) -> bool:
-    host = ".".join(labels)
-    return any(host.endswith("." + s) for s in _WHOLE_HOST_SUFFIXES)
-
-
-def _suffix_labels(labels: list[str]) -> int:
-    """How many of a host's last labels are its public suffix: 2 for `co.uk` or `workers.dev`, else 1."""
-    return 2 if len(labels) >= 3 and ".".join(labels[-2:]) in (_TWO_PART_SUFFIXES | _SHARED_HOST_SUFFIXES) else 1
+# The site rules live in `core.sites`; these names stay for this module's callers.
+from core.sites import (SHARED_HOST_SUFFIXES as _SHARED_HOST_SUFFIXES, TWO_PART_SUFFIXES as _TWO_PART_SUFFIXES,
+                        WHOLE_HOST_SUFFIXES as _WHOLE_HOST_SUFFIXES, registrable_domain as _registrable_domain,
+                        suffix_labels as _suffix_labels, whole_host as _whole_host)
 
 
 def _registrable_name(host: str) -> str:
@@ -399,13 +379,6 @@ _NOT_A_BRAND = frozenset({"open", "smart", "cloud", "simple", "quick", "super", 
                           "health", "money", "store", "books", "teams", "mobile", "secure", "local", "daily", "first",
                           "united", "national", "general", "central", "great", "happy", "point", "trust", "prime"})
 
-
-def _registrable_domain(host: str) -> str:
-    """`learn.microsoft.com` → "microsoft.com"; `dev.tesco.co.uk` → "tesco.co.uk"."""
-    labels = [x for x in (host or "").lower().removeprefix("www.").split(".") if x]
-    if _whole_host(labels):
-        return ".".join(labels)
-    return ".".join(labels[-1 - _suffix_labels(labels):])
 
 
 def _common_ending(host: str) -> bool:

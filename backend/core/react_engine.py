@@ -690,7 +690,7 @@ BROWSER_AGENT_GUIDE = (
     "for them (submit, send, post, book) and tells you what it does: press it only if the person asked for "
     "it in their own words, by calling again with `confirm` set to those exact words; otherwise call "
     "`browser_hand_over`. Payments, permanent deletes and closing an account are always theirs. Anything "
-    "you need from the person (a choice, a name, a login), ask them for.\n"
+    "you need from the person (a choice, a name, signing in to a site), ask them for.\n"
 )
 
 
