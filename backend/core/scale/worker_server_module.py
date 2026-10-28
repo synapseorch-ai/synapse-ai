@@ -763,7 +763,8 @@ def _get_native_mcp_servers(
         from core.tenancy import get_tenant
 
         tenant_env = dict(tool_env)
-        tenant_env["SYNAPSE_TENANT_ID"] = get_tenant()
+        tenant = get_tenant()
+        tenant_env["SYNAPSE_TENANT_ID"] = tenant
 
         # Passed through explicitly rather than left to `os.environ.copy()`
         # above. It would be inherited either way, and that is the problem: a
@@ -792,7 +793,7 @@ def _get_native_mcp_servers(
                 # Handed each call's connection by the caller (`core/tool_scope.py`), so it
                 # opens no store and gets the shared allowlist (F1118).
                 sql_env = _with_backend_root(shared_tool_environment())
-                sql_env["SYNAPSE_TENANT_ID"] = tenant_env["SYNAPSE_TENANT_ID"]
+                sql_env["SYNAPSE_TENANT_ID"] = tenant  # from this scope, never read back
                 sql_env["SYNAPSE_SQL_HANDOVER"] = "required"
                 _python_tool(name, sql_env)
             else:
