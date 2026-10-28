@@ -12448,68 +12448,140 @@ async def check_brwlog(browser) -> str:
 
 
 
-@check
-async def check_brwlogins(browser) -> str:
-    """Settings → Website logins lists the sites kept for runs, says when each ends, and forgets one only once asked
-    (BRW2, F1079). The session itself never reaches the page."""
+def _site_session(sid: str, site: str, **kw) -> dict:
+    """A row of `GET /api/site-sessions` as frozen in BRW1's DESIGN §v5.5 (agreed 2026-10-29)."""
     now = time.time()
-    state = {"logins": [{"id": "wl_" + "a" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
-                         "created_at": now - 86_400, "expires_at": now + 12 * 86_400 + 600}]}
+    return {"id": sid, "site": site, "owner": "you", "owner_name": "You", "shared_with": [],
+            "created_at": now - 3 * 86_400, "last_used_at": now - 3_600, "expires_at": now + 12 * 86_400 + 600,
+            "expired": False, "mine": True, "uses": {"agents": 0, "chats": 0, "workflows": 0}, **kw}
+
+
+#: What the Browser page must no longer say (v5-1, Naveen 10-28: "we save your logins" breeds distrust).
+NO_LOGIN_WORDS = re.compile(r"\blog(?:ged)?[ -]?ins?\b|\blogins?\b|\bpassword is kept\b", re.I)
+
+
+@check
+async def check_brwsessions(browser) -> str:
+    """Agents › Browser › Sessions lists each site's kept session: whose it is, when it was last used and when it
+    expires, and Remove, which says first what uses it (BRW2, F1138/F1139; DESIGN v5-1, v5-2, v5-10). It says
+    "session", never "login", and Settings no longer has Website logins: its old address lands here. An expired
+    session offers Sign in again; someone else's can't be removed from here; OSS has no Share. Recordings is a tab of
+    its own (empty until F1142)."""
+    state = {"sessions": [
+        _site_session("ss_" + "a" * 24, "saltmarsh.example", uses={"agents": 2, "chats": 0, "workflows": 1}),
+        _site_session("ss_" + "b" * 24, "carrier.example", expired=True, expires_at=time.time() - 86_400),
+        _site_session("ss_" + "c" * 24, "ledger.example", mine=False, owner="u_priya", owner_name="Priya"),
+    ]}
     deleted: list[str] = []
 
-    async def logins(route):
+    async def sessions(route):
         if route.request.method == "DELETE":
             deleted.append(route.request.url)
-            state["logins"] = []
-            return await route.fulfill(status=200, json={"forgotten": True})
+            state["sessions"] = [s for s in state["sessions"] if not route.request.url.endswith(s["id"])]
+            return await route.fulfill(status=200, json={"removed": True})
         return await route.fulfill(status=200, json=state)
 
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
-    await ctx.route(re.compile(r".*/api/website-logins(/[^/?]+)?$"), logins)
+    await ctx.route(re.compile(r".*/api/site-sessions(/ss_[^/?]+)?$"), sessions)
+    await ctx.route(re.compile(r".*/api/website-logins(/[^/?]+)?$"),
+                    lambda r: r.fulfill(status=500, json={"detail": "the page still reads the old route"}))
     page = await ctx.new_page()
     bad: list[str] = []
     try:
-        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/settings/general", wait_until="domcontentloaded")
         await page.locator("main h1").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        if (await page.locator("main h1").first.inner_text()).strip() != "Website logins":
-            bad.append("the page is not Website logins")
-        rows = page.get_by_role("list", name="Saved logins").get_by_role("listitem")
-        if await rows.count() != 1:
-            bad.append(f"{await rows.count()} rows, not 1")
+        if await page.get_by_role("link", name=re.compile("Website logins")).count():
+            bad.append("Settings still lists Website logins")
+
+        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        try:
+            await page.wait_for_url(re.compile(r".*/browser/sessions$"), timeout=15_000)
+        except Exception:
+            bad.append(f"the old Website logins address lands on {page.url}, not /browser/sessions")
+            await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if (await page.locator("main h1").first.inner_text()).strip() != "Browser":
+            bad.append(f"the page is titled {await page.locator('main h1').first.inner_text()!r}, not Browser")
+        hub = page.get_by_role("navigation", name="Agents")
+        for tab in ("Agents", "Skills", "Browser"):
+            if not await hub.get_by_role("link", name=tab, exact=True).count():
+                bad.append(f"the Agents hub has no {tab} tab")
+        if await hub.get_by_role("link", name="Browser", exact=True).get_attribute("aria-current") != "page":
+            bad.append("the Agents hub does not mark Browser as the page")
+        tabs = page.get_by_role("navigation", name="Browser")
+        if await tabs.get_by_role("link", name="Sessions", exact=True).get_attribute("aria-current") != "page":
+            bad.append("the Browser page does not open on Sessions")
+        if not await tabs.get_by_role("link", name="Recordings", exact=True).count():
+            bad.append("the Browser page has no Recordings tab")
+
+        rows = page.get_by_role("list", name="Sessions").get_by_role("listitem")
+        if await rows.count() != 3:
+            bad.append(f"{await rows.count()} rows, not 3")
         else:
-            text = await rows.first.inner_text()
-            if "portal.saltmarsh.example" not in text or "Ends in 12 days" not in text:
-                bad.append(f"the row reads {text!r}")
-        await page.get_by_role("button", name=re.compile("Forget the login")).click()
+            mine, expired, theirs = [await rows.nth(i).inner_text() for i in range(3)]
+            for want in ("saltmarsh.example", "Expires in 12 days", "Last used"):
+                if want not in mine:
+                    bad.append(f"the row reads {mine!r}, without {want!r}")
+            if "Expired" not in expired:
+                bad.append(f"the expired row reads {expired!r}")
+            if not await rows.nth(1).get_by_role("button", name=re.compile("Sign in again")).count():
+                bad.append("an expired session does not offer Sign in again")
+            if "Priya" not in theirs:
+                bad.append(f"someone else's row does not say whose it is: {theirs!r}")
+            if await rows.nth(2).get_by_role("button", name=re.compile("^Remove")).count():
+                bad.append("someone else's session can be removed from here")
+        if await page.get_by_role("button", name=re.compile("^Share")).count():
+            bad.append("OSS offers Share, which has no one to share with")
+        said = NO_LOGIN_WORDS.findall(await page.locator("main").inner_text())
+        if said:
+            bad.append(f"the page still says {sorted(set(said))}")
+
+        await page.get_by_role("button", name="Remove the session for saltmarsh.example").click()
         dialog = page.get_by_role("dialog")
         await dialog.wait_for(timeout=5_000)
         if deleted:
-            bad.append("Forget deleted before it was confirmed")
-        await dialog.get_by_role("button", name="Forget").click()
+            bad.append("Remove deleted before it was confirmed")
+        if "Used by 2 agents and 1 workflow" not in await dialog.inner_text():
+            bad.append(f"Remove does not say what uses it: {await dialog.inner_text()!r}")
+        await dialog.get_by_role("button", name="Remove", exact=True).click()
         await asyncio.sleep(0.8)
-        if not any(u.endswith("/api/website-logins/wl_" + "a" * 24) for u in deleted):
-            bad.append(f"Forget sent {deleted}")
-        if not await _on_screen(page, "No saved logins."):
-            bad.append("the forgotten login is still listed")
+        if not any(u.endswith("/api/site-sessions/ss_" + "a" * 24) for u in deleted):
+            bad.append(f"Remove sent {deleted}")
+        if await page.get_by_role("list", name="Sessions").get_by_text("saltmarsh.example").count():
+            bad.append("the removed session is still listed")
+
+        await tabs.get_by_role("link", name="Recordings", exact=True).click()
+        try:
+            await page.wait_for_url(re.compile(r".*/browser/recordings$"), timeout=10_000)
+        except Exception:
+            bad.append(f"Recordings goes to {page.url}")
+        if not await _on_screen(page, "No recordings yet"):
+            bad.append("Recordings has no empty state")
     finally:
         await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return "lists the kept site with when it ends; Forget asks, then deletes; the list empties"
+    return ("Agents › Browser lists sessions with whose, last used and expiry; Remove says what uses it, then "
+            "deletes; no 'login' left; the old address lands here; Recordings has its tab")
 
 
 @check
 async def check_brwagent(browser) -> str:
-    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080): how it works the page,
-    the sites it may use (typed as addresses, kept as hosts), the saved login it starts with, and its actions per task.
-    These live in the agent's settings so that no page the agent reads can change them (DESIGN §3.1)."""
+    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138): how it works the
+    page, the sites it may use (typed as addresses, kept as hosts), the sessions it starts with, and its actions per
+    task. These live in the agent's settings so that no page the agent reads can change them (DESIGN §3.1). The
+    sessions are picked several at once but one per site (v5-3): picking a second one for a site replaces the first,
+    and the picker links to the Sessions library."""
     aid = f"agent_uismoke_browser_{int(time.time())}"
     api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
-    login = {"id": "wl_" + "b" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
-             "created_at": time.time(), "expires_at": time.time() + 9 * 86_400}
+    first, second, carrier = "ss_" + "d" * 24, "ss_" + "e" * 24, "ss_" + "f" * 24
+    listed = {"sessions": [_site_session(first, "saltmarsh.example"),
+                           _site_session(second, "saltmarsh.example", created_at=time.time() - 86_400),
+                           _site_session(carrier, "carrier.example")]}
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
-    await ctx.route(re.compile(r".*/api/website-logins$"), lambda r: r.fulfill(status=200, json={"logins": [login]}))
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
     page = await ctx.new_page()
     seen: list[dict] = []
     page.on("request", lambda r: seen.append({"url": r.url, "method": r.method, "body": r.post_data}))
@@ -12529,17 +12601,32 @@ async def check_brwagent(browser) -> str:
             bad.append("the Works with you hint does not say it presses only on your words, and every payment is yours")
         if "held and handed to you" in hint:
             bad.append("the Works with you hint still says a send is held and handed to you")
+        said = NO_LOGIN_WORDS.findall(hint)
+        if said:
+            bad.append(f"the Browser section still says {sorted(set(said))}")
         await section.get_by_label("Sites it may use").fill("https://portal.saltmarsh.example/stock\ntracking.carrier.example")
-        await section.get_by_role("combobox", name="Saved login").click()
-        await page.get_by_role("option", name="portal.saltmarsh.example").click()
+        picker = section.get_by_role("group", name="Sessions it starts with")
+        salt = picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox")
+        if await salt.count() != 2:
+            bad.append(f"saltmarsh.example offers {await salt.count()} sessions, not 2")
+        else:
+            await salt.nth(0).check()
+            await picker.get_by_role("group", name="carrier.example").get_by_role("checkbox").check()
+            await salt.nth(1).check()
+            if await salt.nth(0).is_checked():
+                bad.append("a second session for saltmarsh.example was picked beside the first")
+        manage = section.get_by_role("link", name=re.compile("Manage sessions"))
+        if not await manage.count() or not (await manage.get_attribute("href") or "").endswith("/browser/sessions"):
+            bad.append("the picker does not link to the Sessions library")
         await section.get_by_label("Actions per task").fill("25")
         await asyncio.sleep(0.3)
         await page.get_by_role("button", name="Save agent", exact=True).click()
         await asyncio.sleep(1.5)
         posts = [json.loads(r["body"] or "{}") for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]
-        sent = (posts[-1] if posts else {}).get("browser")
+        sent = dict((posts[-1] if posts else {}).get("browser") or {})
+        sent["sessions"] = sorted(sent.get("sessions") or [])
         want = {"mode": "co_drive", "sites": ["portal.saltmarsh.example", "tracking.carrier.example"],
-                "login_ref": login["id"], "action_budget": 25}
+                "sessions": sorted([second, carrier]), "action_budget": 25}
         if sent != want:
             bad.append(f"Save sent browser={sent!r}, not {want!r}")
     finally:
@@ -12550,7 +12637,8 @@ async def check_brwagent(browser) -> str:
             pass
     if bad:
         raise AssertionError("; ".join(bad))
-    return "the Browser section sets the mode, the sites as hosts, the saved login and the action budget; Save sends them"
+    return ("the Browser section sets the mode, the sites as hosts, sessions one per site and the action budget; "
+            "Save sends them")
 
 
 @check
@@ -12643,7 +12731,7 @@ def _brw_moment(wheel: str = "agent", **extra) -> str:
 async def check_brwbanner(browser) -> str:
     """The moments the person must handle show in the strip under the address, each with its own action (BRW2,
     F1077; Naveen's pick A): a send the agent tried is held and named, with "It only loaded data" to let it carry on;
-    a turn the agent handed over (here a login that ended) ends with Done; typing on an unlisted site is allowed once;
+    a turn the agent handed over (here a session that expired) ends with Done; typing on an unlisted site is allowed once;
     and the page's own dialog and dropdown, which the screencast cannot show, are answered in cards of ours."""
     ctx, page = await _brw_page(browser, "uismoke-brw-banner")
     bad: list[str] = []
@@ -12666,13 +12754,18 @@ async def check_brwbanner(browser) -> str:
             bad.append(f"'only loaded data' sent {[c['body'] for c in await _brw_calls(page, 'release')]}")
 
         await _brw_push(page, "frames:bsB", _brw_moment("person", banner={
-            "kind": "login_expired", "reason": "Log in to Saltmarsh again"}))
-        if not await _on_screen(page, "Log in to Saltmarsh again"):
+            "kind": "session_expired", "reason": "Sign in to Saltmarsh again", "site": "saltmarsh.example",
+            "site_session_id": "ss_" + "a" * 24, "mine": True}))
+        if not await _on_screen(page, "Sign in to Saltmarsh again"):
             bad.append("a turn's reason is not shown")
         await pane.get_by_role("button", name="Done", exact=True).click()
         await asyncio.sleep(0.4)
         if not await _brw_calls(page, "wheel/hand-back"):
             bad.append("Done did not hand the wheel back")
+        # A component a release behind still says login_expired (F1138's alias): the kit reads it as a session's.
+        await _brw_push(page, "frames:bsB", _brw_moment("person", banner={"kind": "login_expired", "reason": ""}))
+        if not await _on_screen(page, "Your turn: sign in again"):
+            bad.append("an old login_expired is not read as a session that expired")
 
         await _brw_push(page, "frames:bsB", _brw_moment("agent", banner={
             "kind": "allow_typing", "reason": "To search for HP-2041", "host": "tracking.carrier.example"}))
@@ -12862,7 +12955,7 @@ class _Themed:
 @check
 async def check_brwcontrast(browser) -> str:
     """Every strip the pane shows reads at AA in both themes (BRW2, F1073–F1077): who is driving, the person's own
-    strip, a press turn, a held payment, a login turn and the disclaimer. The strips sit on the person's pale tint,
+    strip, a press turn, a held payment, an expired session's turn and the disclaimer. The strips sit on the person's pale tint,
     where the solid tint's text colour (`person-fg`) is dark on dark (found in the first shots)."""
     states = [
         ("agent driving", {"wheel": "agent"}),
@@ -12874,7 +12967,8 @@ async def check_brwcontrast(browser) -> str:
         ("payment held", {"wheel": "nobody", "banner": {
             "kind": "send", "reason": "Place order",
             "held": {"method": "POST", "url": "https://pay.example.com/checkout", "money": True}}}),
-        ("login", {"wheel": "person", "banner": {"kind": "login_expired", "reason": "Log in to Saltmarsh again"}}),
+        ("session expired", {"wheel": "person", "banner": {"kind": "session_expired", "reason": "Sign in to Saltmarsh again",
+                                                            "site": "saltmarsh.example", "mine": True}}),
     ]
     bad: list[str] = []
     for theme in ("light", "dark"):
@@ -12913,17 +13007,19 @@ async def check_brwturn(browser) -> str:
             # As the engine yields it (react_engine: prompt, session_id, banner_kind and the run-shaped field), then
             # the chat route's done: the turn ends at the park.
             {"type": "human_input_required", "kind": "browser_turn", "session_id": "bsT",
-             "banner_kind": "login_expired", "prompt": "Log in to Saltmarsh's partner portal.",
-             "fields": [{"name": "browser_turn", "type": "browser_turn", "label": "Log in to Saltmarsh's partner portal.",
-                         "session_id": "bsT", "banner_kind": "login_expired"}]},
+             "banner_kind": "session_expired", "prompt": "Sign in to Saltmarsh's partner portal.",
+             "fields": [{"name": "browser_turn", "type": "browser_turn", "label": "Sign in to Saltmarsh's partner portal.",
+                         "session_id": "bsT", "banner_kind": "session_expired"}]},
             {"type": "done"}])))
         card = page.locator("main [data-browser-turn]")
         try:
             await card.wait_for(timeout=8_000)
         except Exception:
             raise AssertionError("a browser turn has no card in the conversation")
-        if "Log in to Saltmarsh" not in await card.inner_text():
+        if "Sign in to Saltmarsh" not in await card.inner_text():
             bad.append("the card does not say what the turn is for")
+        if "Your turn: sign in again" not in await card.inner_text():
+            bad.append("an expired session's card does not lead with Your turn: sign in again")
         await page.get_by_role("button", name="Close the browser pane").click()
         await card.get_by_role("button", name="Open the browser").click()
         try:
@@ -13063,10 +13159,10 @@ async def check_brwrunturn(browser) -> str:
     """A run parked on a browser turn is answered by handing the browser back, not by a form (BRW2, F1077). The run
     carries the turn in its waiting step's fields (BRW1: a field of type `browser_turn`), and every place a run waits
     on a person draws it through one card: the run page here, Needs you and Waiting on you through the same card."""
-    reason = "Log in to Saltmarsh's partner portal."
+    reason = "Sign in to Saltmarsh's partner portal."
     run = {**_M2B_RUNS["run_smoke_m2b_wait"], "human_prompt": reason,
            "human_fields": [{"name": "browser_turn", "type": "browser_turn", "label": reason,
-                             "session_id": "bsU", "banner_kind": "login_expired"}]}
+                             "session_id": "bsU", "banner_kind": "session_expired"}]}
     handed: list[str] = []
 
     async def hand_back(route):
@@ -13098,40 +13194,49 @@ async def check_brwrunturn(browser) -> str:
 
 
 @check
-async def check_brwloginsite(browser) -> str:
-    """"Log in to a site" opens a browser for the person alone, and keeping the login there saves it (BRW2, F1079).
-    No agent drives it: there is no Stop or Take over, only Keep this login and Don't keep it, and Keep is what makes
-    the row in Website logins."""
-    state = {"logins": []}
+async def check_brwsessionsite(browser) -> str:
+    """"Keep me signed in to a site" opens a browser for the person alone, and the consent card there keeps the
+    site's session (BRW2, F1138/F1139; DESIGN v5-1, v5.1). No agent drives it: there is no Stop or Take over. The card
+    says what is kept in Naveen's words: the site's session, never the password, 30 days, removable. Keeping a
+    session where nothing was signed in is refused (422) and said on the card, with the browser left open to sign in;
+    keeping it then closes the browser and lists the session. An expired session's Sign in again opens the same
+    browser for its site."""
+    expired = _site_session("ss_" + "g" * 24, "carrier.example", expired=True, expires_at=time.time() - 86_400)
+    state = {"sessions": [expired]}
     calls: list[tuple[str, str]] = []
+    refused = {"left": 1}
 
-    async def logins(route):
+    async def sessions(route):
         await route.fulfill(status=200, json=state)
 
     async def start(route):
         calls.append(("start", route.request.post_data or ""))
-        await route.fulfill(status=200, json={"session_id": "bsLog"})
+        await route.fulfill(status=200, json={"browser_session_id": "bsLog"})
 
     async def finish(route):
         calls.append(("finish", route.request.post_data or ""))
-        state["logins"] = [{"id": "wl_" + "c" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
-                            "created_at": time.time(), "expires_at": time.time() + 30 * 86_400}]
-        await route.fulfill(status=200, json={"login_ref": "wl_" + "c" * 24})
+        if refused["left"]:
+            refused["left"] -= 1
+            return await route.fulfill(status=422, json={
+                "detail": "Nothing is signed in to saltmarsh.example yet. Sign in, then keep it.", "site": "saltmarsh.example"})
+        row = _site_session("ss_" + "h" * 24, "saltmarsh.example", last_used_at=None, expires_at=time.time() + 30 * 86_400)
+        state["sessions"] = [row, expired]
+        await route.fulfill(status=200, json={k: row[k] for k in ("id", "site", "expires_at")})
 
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
-    await ctx.route(re.compile(r".*/api/website-logins$"), logins)
-    await ctx.route(re.compile(r".*/api/browser/login-sessions$"), start)
-    await ctx.route(re.compile(r".*/api/browser/bsLog/finish-login$"), finish)
+    await ctx.route(re.compile(r".*/api/site-sessions$"), sessions)
+    await ctx.route(re.compile(r".*/api/site-sessions/new$"), start)
+    await ctx.route(re.compile(r".*/api/browser/bsLog/finish-session$"), finish)
     await ctx.route(re.compile(r".*/api/browser/bsLog/frames$"), lambda r: r.fulfill(
         status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://portal.saltmarsh.example/sign-in", "person")))
     page = await ctx.new_page()
     bad: list[str] = []
     try:
-        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
         await page.locator("main h1").first.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await page.get_by_role("button", name="Log in to a site").click()
-        ask = page.get_by_role("dialog", name="Log in to a site")
+        await page.get_by_role("button", name="Keep me signed in to a site").click()
+        ask = page.get_by_role("dialog", name="Keep me signed in to a site")
         await ask.get_by_label("Site").fill("https://portal.saltmarsh.example/sign-in")
         await ask.get_by_role("button", name="Open the browser").click()
         pane = page.get_by_role("region", name="Browser")
@@ -13139,24 +13244,49 @@ async def check_brwloginsite(browser) -> str:
             await pane.wait_for(timeout=8_000)
         except Exception:
             raise AssertionError("no browser opened")
-        if not calls or json.loads(calls[0][1]) != {"sites": ["portal.saltmarsh.example"]}:
+        if not calls or json.loads(calls[0][1]) != {"site": "portal.saltmarsh.example"}:
             bad.append(f"the browser was opened with {calls[:1]}")
         for absent in ("Stop", "Take over", "Hand back"):
             if await pane.get_by_role("button", name=absent, exact=True).count():
                 bad.append(f"a browser with no agent offers {absent}")
-        await pane.get_by_role("button", name="Keep this login").click()
+        card = re.sub(r"\s+", " ", (await pane.inner_text()).replace("’", "'"))
+        for want in ("Keep me signed in to portal.saltmarsh.example for your agents.",
+                     "Synapse keeps the site's session, never your password.",
+                     "It expires in 30 days; remove it anytime."):
+            if want not in card:
+                bad.append(f"the consent card does not say {want!r}")
+        said = NO_LOGIN_WORDS.findall(card)
+        if said:
+            bad.append(f"the consent card still says {sorted(set(said))}")
+        await pane.get_by_role("button", name="Keep", exact=True).click()
+        if not await _on_screen(page, "Nothing is signed in to saltmarsh.example yet"):
+            bad.append("a refused keep is not said")
+        if not await pane.count():
+            bad.append("the browser closed on a refused keep, so the person cannot sign in")
+        await pane.get_by_role("button", name="Keep", exact=True).click()
         await asyncio.sleep(1.0)
-        if ("finish", json.dumps({"keep": True}).replace(" ", "")) not in [(k, b.replace(" ", "")) for k, b in calls]:
-            bad.append(f"Keep this login sent {calls}")
+        finishes = [b.replace(" ", "") for k, b in calls if k == "finish"]
+        if finishes != [json.dumps({"keep": True}).replace(" ", "")] * 2:
+            bad.append(f"Keep sent {finishes}")
         if await pane.count():
-            bad.append("the browser stayed open after the login was kept")
-        if not await _on_screen(page, "portal.saltmarsh.example"):
-            bad.append("the kept login is not listed")
+            bad.append("the browser stayed open after the session was kept")
+        if not await page.get_by_role("list", name="Sessions").get_by_text("saltmarsh.example").count():
+            bad.append("the kept session is not listed")
+
+        await page.get_by_role("button", name=re.compile("Sign in again")).first.click()
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            bad.append("Sign in again opened no browser")
+        starts = [json.loads(b) for k, b in calls if k == "start"]
+        if starts[-1:] != [{"site": "carrier.example"}]:
+            bad.append(f"Sign in again opened the browser with {starts[-1:]}")
     finally:
         await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return "Log in to a site opens a browser for the person alone; Keep this login saves it and lists it"
+    return ("Keep me signed in opens a browser for the person alone; the consent card says what is kept; a refused "
+            "keep is said and the browser stays; Keep lists it; Sign in again opens the browser for its site")
 
 
 async def main() -> int:
