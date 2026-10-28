@@ -63,7 +63,10 @@ class TestAgentTypes:
         """F1071 (BRW1): the in-app browser shipped; its teaser (F1068) is a real type now."""
         types = {t["value"]: t for t in (await client.get("/api/agent-types")).json()["types"]}
         assert types["browser"]["label"] == "Browser"
-        assert "never sends a form" in types["browser"]["description"]
+        # Naveen's rule (10-28, V2-CONTRACT "Final buttons and sends"): payments are the person's, and a send runs
+        # only on their own words.
+        assert "payments are always yours" in types["browser"]["description"]
+        assert "only when you've asked it to" in types["browser"]["description"]
         assert not any(t.get("disabled") for t in types.values())
 
 
