@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 import logging
 import os
 import secrets
@@ -278,6 +279,8 @@ class BrowserTools:
             if refused:
                 return _result(refused, error=True)
         arguments = dict(arguments or {})
+        if name == gate.RUN_RECORDING:
+            return await self._run_recording(key, arguments)
         quote = arguments.pop("confirm", None)
         press = None
         if name in gate.PRESSES and isinstance(quote, str) and quote.strip():
@@ -321,6 +324,63 @@ class BrowserTools:
             text += ("\n### Synapse\nIt is the person's turn in the browser: " + body["handover"]["reason"]
                      + " Stop here; you will continue when they hand it back.")
         return _result(text, error=bool(body.get("is_error")))
+
+    async def _run_recording(self, key: str, args: dict) -> types.CallToolResult:
+        """`browser_run_recording` (F1145): one of the agent's picked recordings, replayed by code in its browser.
+        Only a picked one runs, whatever the model asks (the picks are the person's, `settings`); a miss leaves the
+        agent to find the step again, and its way comes back on `carry_on` as a pending edit, never applied (F1144)."""
+        from core.browser import recordings as recs
+        want = str(args.get("recording") or "").strip()
+        docs = await recs.picked(list((settings.get() or {}).get("recordings") or []))
+        doc = next((d for d in docs if want and want in (d["id"], recs.slug(d))), None)
+        if doc is None:
+            yours = ", ".join(recs.slug(d) for d in docs) or "none"
+            return _result(f"'{want}' is not one of the recordings picked for you (yours: {yours}).", error=True)
+        name, inputs = recs.slug(doc), dict(args.get("inputs") or {})
+        if not args.get("carry_on"):
+            missing = [i for i in recs.input_names(doc) if inputs.get(i) in (None, "")]
+            if missing:
+                return _result(f"'{name}' needs its inputs: {', '.join(missing)}.", error=True)
+        try:
+            host, sid = await self._session_for(key)
+            if args.get("carry_on"):
+                status, body = await host.call("POST", "/replay/continue", json={"session_id": sid}, timeout=600)
+            else:
+                status, body = await host.call("POST", "/replay", timeout=600, json={
+                    "session_id": sid, "steps": doc["steps"], "inputs": inputs, "recording_id": doc["id"],
+                    "unattended": key.startswith("run:")})
+        except Exception as exc:
+            return _result(f"Synapse's browser is not available: {exc}", error=True)
+        if status >= 400 or body.get("refused") or body.get("error"):
+            return _result(body.get("refused") or body.get("error") or "The recording could not run.", error=True)
+        said: list[str] = []
+        fix = body.get("fix")
+        if fix and fix.get("steps"):
+            run_id = key.split(":", 1)[1] if key.startswith("run:") else None
+            try:
+                await recs.add_edit(doc["id"], step_id=fix["step_id"], steps=fix["steps"], by="agent", run_id=run_id,
+                                    shots=fix.get("shots") or None)
+                said.append(f"Your way through step {fix['n']} is kept as a proposed change to '{name}' for the "
+                            "person to approve; the recording itself is unchanged until they do.")
+            except recs.NotFound:
+                said.append(f"'{name}' was deleted meanwhile: your way through step {fix['n']} was not kept.")
+        if body.get("handover"):
+            self._handovers[key] = body["handover"]
+            said.append(f"'{name}' stopped at step {body.get('at')}: it is the person's turn in the browser: "
+                        f"{body['handover'].get('reason', '')} Stop here; when they hand it back, call "
+                        "browser_run_recording again with carry_on: true.")
+        elif body.get("miss"):
+            miss = body["miss"]
+            said.append(
+                f"'{name}' stopped at step {miss.get('n')}, \"{miss.get('line')}\": {miss.get('why')}. Find the way "
+                "for that step with your browser tools, for this run only: do what that step did, on the same site "
+                "(a press the person made there may be redone once; payments and deletes stay theirs). Then call "
+                "browser_run_recording again with carry_on: true. If you can't find it, call browser_hand_over.\n"
+                "### The page now\n" + _scrub(miss.get("snapshot") or ""))
+        else:
+            said.append(f"Ran '{name}' to the end ({body.get('done')} steps). What it read:\n"
+                        + json.dumps(body.get("outputs") or {}, ensure_ascii=False, indent=1)[:20000])
+        return _result("\n".join(said), error=bool(body.get("miss")))
 
     async def _keep_shot(self, host, key: str, sid: str, entry: dict) -> None:
         """The filmstrip's copy (F1103): best effort, never in the agent's way."""
@@ -575,10 +635,10 @@ def _committed_tool_schemas() -> list[dict] | None:
         listed = json.loads(_SCHEMAS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    from core.browser.host import _HAND_OVER_SCHEMA, _with_confirm_schema
+    from core.browser.host import _HAND_OVER_SCHEMA, _RUN_RECORDING_SCHEMA, _with_confirm_schema
     return [{"name": t["name"], "description": t["description"], "inputSchema": _with_confirm_schema(t["name"],
              t["inputSchema"]), "tags": gate.ALLOWED[t["name"]]} for t in listed if t["name"] in gate.ALLOWED] \
-        + [_HAND_OVER_SCHEMA]
+        + [_HAND_OVER_SCHEMA, _RUN_RECORDING_SCHEMA]
 
 
 def _npx_hint() -> str:

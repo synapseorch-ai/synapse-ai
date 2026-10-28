@@ -112,6 +112,8 @@ class AgentBrowser(BaseModel):
     sites: list[str] = []
     #: Kept sessions (`core.site_sessions`), one per site, loaded into each browser it opens (F1138; DESIGN §v5.1).
     sessions: list[str] = []
+    #: Recordings it may run by code with `browser_run_recording` (F1145; DESIGN §v5.4), listed in its instructions.
+    recordings: list[str] = []
     action_budget: int = Field(default=40, ge=1, le=200)
     mode: Literal["read_only", "co_drive"] = "read_only"
 
@@ -125,7 +127,7 @@ class AgentBrowser(BaseModel):
             value = {k: v for k, v in value.items() if k != "login_ref"}
         return value
 
-    @field_validator("sessions")
+    @field_validator("sessions", "recordings")
     @classmethod
     def _session_ids(cls, value: list[str]) -> list[str]:
         return list(dict.fromkeys(v for v in (value or []) if isinstance(v, str) and v.strip()))
