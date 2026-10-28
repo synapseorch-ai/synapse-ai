@@ -4449,7 +4449,8 @@ MODEL_PILL = """() => { const panel = document.querySelector('[data-testid="assi
   const b = panel && panel.querySelector('[aria-label="Model for this build"]');
   const s = b && b.querySelector('span');
   const attach = panel && panel.querySelector('[aria-label="Attach images"]');
-  const agent = attach && attach.previousElementSibling && attach.previousElementSibling.firstElementChild;
+  // The row's first child holds the agent label; the image button's own sibling is its hidden file input.
+  const agent = attach && attach.parentElement.firstElementChild && attach.parentElement.firstElementChild.firstElementChild;
   const right = (el) => el ? Math.round(el.getBoundingClientRect().right) : null;
   return b && s ? {label: s.textContent.trim(), cut: s.scrollWidth > s.clientWidth + 1,
                    width: Math.round(b.getBoundingClientRect().width), title: b.getAttribute('title'),
