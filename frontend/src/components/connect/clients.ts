@@ -20,8 +20,13 @@ export type DesktopRoute = 'stdio' | 'oauth' | 'unavailable';
 export type AiClient = {
     id: AiClientId;
     label: string;
-    /** The host's logo for it (`logos`), or none for a letter tile. */
-    logo?: 'claude' | 'openai';
+    /**
+     * The host's logo for it (`logos`), or none for a letter tile. Cursor's and VS Code's are their makers' own,
+     * unmodified (F1179): cursor.com/brand (CUBE_25D.svg, no usage terms published) and code.visualstudio.com/brand
+     * (vscode.svg; "Visual Studio Code, VS Code, and the Visual Studio Code icon are trademarks of Microsoft
+     * Corporation"), each naming the tool it connects.
+     */
+    logo?: 'claude' | 'openai' | 'cursor' | 'vscode';
     /** Where the snippet goes, in a few words. */
     where: string;
     /** The snippet's language, for its font and its copy label. */
@@ -39,8 +44,8 @@ export const AI_CLIENTS: AiClient[] = [
         where: 'Run this in a terminal. Keep the export in your shell profile so Codex finds the key next time.',
         kind: 'shell',
     },
-    { id: 'cursor', label: 'Cursor', where: 'In ~/.cursor/mcp.json, or .cursor/mcp.json inside a project.', kind: 'json' },
-    { id: 'vscode', label: 'VS Code', where: 'In .vscode/mcp.json inside a project, then press Start above the entry.', kind: 'json' },
+    { id: 'cursor', label: 'Cursor', logo: 'cursor', where: 'In ~/.cursor/mcp.json, or .cursor/mcp.json inside a project.', kind: 'json' },
+    { id: 'vscode', label: 'VS Code', logo: 'vscode', where: 'In .vscode/mcp.json inside a project, then press Start above the entry.', kind: 'json' },
 ];
 
 /** What a snippet is filled from. `key` empty draws the placeholder, so the shape is readable before a key exists. */
@@ -66,6 +71,48 @@ export function snippetFor(client: AiClientId, { url, key, desktop }: SnippetInp
             return json({ mcpServers: { synapse: { url, headers: { Authorization: bearer } } } });
         case 'vscode':
             return json({ servers: { synapse: { type: 'http', url, headers: { Authorization: bearer } } } });
+    }
+}
+
+/**
+ * The tools that sign in to a remote MCP server with OAuth from its address alone (F1178; each one's own docs,
+ * 2026-10-29): Claude Code (`/mcp` → Authenticate), Codex (`codex mcp login`), Cursor and VS Code (a url-only entry).
+ * Each registers itself with the product's OAuth server (dynamic registration or a metadata document) and calls back
+ * on loopback or https, which D127's redirect rule already admits. Claude's app signs in by its own connectors page.
+ */
+export const SIGN_IN_CLIENTS: readonly AiClientId[] = ['claude_code', 'codex', 'cursor', 'vscode'];
+
+export const canSignIn = (client: AiClientId) => SIGN_IN_CLIENTS.includes(client);
+
+/** What to paste for a tool that signs in: its address and nothing else, so no key exists to leak or revoke. */
+export function signInSnippet(client: AiClientId, url: string): string | null {
+    switch (client) {
+        case 'claude_code':
+            return `claude mcp add --transport http synapse ${url}`;
+        case 'codex':
+            return `codex mcp add synapse --url ${url}\ncodex mcp login synapse`;
+        case 'cursor':
+            return json({ mcpServers: { synapse: { url } } });
+        case 'vscode':
+            return json({ servers: { synapse: { type: 'http', url } } });
+        default:
+            return null;
+    }
+}
+
+/** Where a sign-in snippet goes, and how the tool then signs in. */
+export function signInWhere(client: AiClientId): string {
+    switch (client) {
+        case 'claude_code':
+            return 'Run this in a terminal. Then, in Claude Code, type /mcp, pick synapse and choose Authenticate: your browser opens to sign in.';
+        case 'codex':
+            return 'Run these in a terminal. The second opens your browser to sign in.';
+        case 'cursor':
+            return 'In ~/.cursor/mcp.json, or .cursor/mcp.json inside a project. Cursor asks you to sign in, in your browser.';
+        case 'vscode':
+            return 'In .vscode/mcp.json inside a project, then press Start above the entry. VS Code asks you to sign in, in your browser.';
+        default:
+            return '';
     }
 }
 

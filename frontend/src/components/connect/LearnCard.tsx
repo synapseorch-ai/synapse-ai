@@ -17,13 +17,14 @@ import { useState } from 'react';
 import { AppMark, Button, CopyButton, IconButton, TextLink } from '@/components/ui';
 
 import { CLAUDE_CONNECTORS, DOCS_MCP_URL, installLink, publicCommand, type AiClientId } from './clients';
+import type { ConnectHost } from './ConnectAiTools';
 
 const NAME = 'synapse-docs';
 
 /** A first question that shows what Synapse is for, answered from its docs. */
 export const FIRST_QUESTION = 'Using the Synapse docs, how do I build a workflow that checks new supplier invoices every Monday and asks me before paying any over $1,000?';
 
-export function LearnCard({ logos, onDismiss }: { logos: { claude: string; openai: string }; onDismiss: () => void }) {
+export function LearnCard({ logos, onDismiss }: { logos: ConnectHost['logos']; onDismiss: () => void }) {
     const [done, setDone] = useState<{ said: string; text?: string } | null>(null);
 
     async function add(client: AiClientId | 'claude', label: string) {
@@ -44,12 +45,12 @@ export function LearnCard({ logos, onDismiss }: { logos: { claude: string; opena
         setDone({ said: `Paste this in a terminal, then ask ${label} the question below.`, text: command });
     }
 
-    const tools: { id: AiClientId | 'claude'; label: string; logo?: 'claude' | 'openai' }[] = [
+    const tools: { id: AiClientId | 'claude'; label: string; logo?: keyof ConnectHost['logos'] }[] = [
         { id: 'claude', label: 'Claude', logo: 'claude' },
         { id: 'claude_code', label: 'Claude Code', logo: 'claude' },
         { id: 'codex', label: 'Codex', logo: 'openai' },
-        { id: 'cursor', label: 'Cursor' },
-        { id: 'vscode', label: 'VS Code' },
+        { id: 'cursor', label: 'Cursor', logo: 'cursor' },
+        { id: 'vscode', label: 'VS Code', logo: 'vscode' },
     ];
 
     return (

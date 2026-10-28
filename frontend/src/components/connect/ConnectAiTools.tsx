@@ -19,7 +19,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { AppMark, Button, Checkbox, CopyButton, ErrorNote, Field, Input, TextLink } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
-import { AI_CLIENTS, WHAT_TO_ASK, needsKey, snippetFor, type AiClientId, type DesktopRoute } from './clients';
+import {
+    AI_CLIENTS, WHAT_TO_ASK, canSignIn, needsKey, signInSnippet, signInWhere, snippetFor, type AiClientId, type DesktopRoute,
+} from './clients';
 
 export type ConnectHost = {
     /** The product's MCP endpoint, absolute. */
@@ -27,7 +29,14 @@ export type ConnectHost = {
     /** How Claude Desktop connects here; `unavailable` leaves it off the list. */
     desktop: DesktopRoute;
     /** This product's logo paths. */
-    logos: { claude: string; openai: string };
+    logos: { claude: string; openai: string; cursor: string; vscode: string };
+    /**
+     * Tools that can sign in do, instead of a key (F1178): this product has an OAuth server and its connectors are on
+     * (cloud). OSS has none, so it never sets this and every tool keeps the key.
+     */
+    signIn?: boolean;
+    /** Where a person sees and removes what they connected by signing in (cloud: Settings › Developer). */
+    connectedAppsHref?: string;
     /** Makes a key named for the tool. Null when this person can't make keys here (cloud: owners and admins). */
     makeKey: ((name: string, canBuild: boolean) => Promise<{ id: string; key: string }>) | null;
     /** Keys here only run things unless made to build too (cloud, F847): offer that choice, with its trade-off. */
@@ -56,7 +65,10 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
     );
     const [clientId, setClientId] = useState<AiClientId>('claude_code');
     const client = clients.find(c => c.id === clientId) ?? clients[0];
-    const wantsKey = needsKey(client.id, host.desktop);
+    // Sign in where this product and the tool both can; the key is one click away, and the only way in OSS.
+    const [useKey, setUseKey] = useState(false);
+    const signsIn = Boolean(host.signIn) && canSignIn(client.id) && !useKey;
+    const wantsKey = needsKey(client.id, host.desktop) && !signsIn;
 
     const [made, setMade] = useState<{ id: string; key: string; name: string } | null>(null);
     const [pasted, setPasted] = useState('');
@@ -64,7 +76,9 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
     const [canBuild, setCanBuild] = useState(false);
     const [problem, setProblem] = useState('');
     const key = made?.key ?? pasted.trim();
-    const snippet = snippetFor(client.id, { url: host.mcpUrl, key, desktop: host.desktop });
+    const snippet = signsIn
+        ? signInSnippet(client.id, host.mcpUrl)
+        : snippetFor(client.id, { url: host.mcpUrl, key, desktop: host.desktop });
 
     async function makeKey() {
         if (!host.makeKey) return;
@@ -169,8 +183,26 @@ export function ConnectAiTools({ host }: { host: ConnectHost }) {
                     </>
                 ) : snippet ? (
                     <>
-                        <p className="text-sm text-text-muted">{client.where}</p>
+                        <p className="text-sm text-text-muted">{signsIn ? signInWhere(client.id) : client.where}</p>
                         <Snippet text={snippet} />
+                        {signsIn && (
+                            <p className="text-xs text-text-faint">
+                                Signing in connects {client.label} as you: it can do what your role can here, up to
+                                building, while members, billing, keys and settings stay in this app, and what it does
+                                is recorded as yours.
+                                {host.connectedAppsHref && (
+                                    <> Remove it any time in <TextLink href={host.connectedAppsHref}>Connected apps</TextLink>.</>
+                                )}{' '}
+                                <button type="button" onClick={() => setUseKey(true)} className="font-medium text-accent-ink hover:underline">
+                                    Use a key instead
+                                </button>
+                            </p>
+                        )}
+                        {useKey && host.signIn && canSignIn(client.id) && (
+                            <button type="button" onClick={() => setUseKey(false)} className="text-xs font-medium text-accent-ink hover:underline">
+                                Sign in instead of a key
+                            </button>
+                        )}
                         {client.id === 'claude_desktop' && (
                             <p className="text-xs text-text-faint">
                                 This starts <code className="font-code">synapse mcp</code> on this computer, which

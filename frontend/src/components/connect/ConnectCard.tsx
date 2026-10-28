@@ -10,6 +10,9 @@
  *   · Claude Code and Codex: make a key, copy the one command; paste it in a terminal.
  *   · Claude (cloud, once OAuth is on): copy the address, open Claude's connectors; it signs in, no key.
  *
+ * Where the product signs in (cloud, F1178), every tool that can does: the link or command holds only the address and
+ * the tool signs in, so no key is made, and anyone who may connect sees the buttons, not only those who make keys.
+ *
  * "More options" is Settings › MCP server: every tool step by step (`ConnectAiTools`). Someone who can't make keys
  * here (cloud: not an owner or admin) is sent there for who to ask. Synced with the rest of `components/connect`.
  */
@@ -19,7 +22,10 @@ import { useState } from 'react';
 
 import { AppMark, Button, CopyButton, IconButton, TextLink } from '@/components/ui';
 
-import { CLAUDE_CONNECTORS, homeKeyName, installLink, snippetFor, unusedHomeKeys, type AiClientId } from './clients';
+import {
+    CLAUDE_CONNECTORS, canSignIn, homeKeyName, installLink, signInSnippet, signInWhere, snippetFor, unusedHomeKeys,
+    type AiClient, type AiClientId,
+} from './clients';
 import type { ConnectHost } from './ConnectAiTools';
 
 /** What happened, and the fallback when a browser refuses the clipboard or the app link after the key's round trip. */
@@ -79,6 +85,25 @@ export function ConnectCard({
         }
     }
 
+    /** A tool that signs in: its address alone, in its link or its command; no key is made (F1178). */
+    async function signIn(client: AiClientId, label: string) {
+        setProblem('');
+        const link = installLink(client, { url: host.mcpUrl });
+        if (link) {
+            window.location.assign(link);
+            setDone({ said: `${label} should open and ask to add Synapse. Say yes, then sign in when it asks.`, link: { href: link, label: `Open ${label}` } });
+            return;
+        }
+        const command = signInSnippet(client, host.mcpUrl) ?? '';
+        let copied = true;
+        try {
+            await navigator.clipboard.writeText(command);
+        } catch {
+            copied = false;
+        }
+        setDone({ said: `${copied ? 'Copied. ' : ''}${signInWhere(client)}`, text: command });
+    }
+
     async function claude() {
         setProblem('');
         // Opened first, while the click still counts as the person's: a pop-up after an await can be blocked.
@@ -95,13 +120,14 @@ export function ConnectCard({
         });
     }
 
-    const keyed: { id: AiClientId; label: string; logo?: 'claude' | 'openai' }[] = [
-        { id: 'cursor', label: 'Cursor' },
-        { id: 'vscode', label: 'VS Code' },
+    const keyed: { id: AiClientId; label: string; logo?: AiClient['logo'] }[] = [
+        { id: 'cursor', label: 'Cursor', logo: 'cursor' },
+        { id: 'vscode', label: 'VS Code', logo: 'vscode' },
         { id: 'claude_code', label: 'Claude Code', logo: 'claude' },
         { id: 'codex', label: 'Codex', logo: 'openai' },
     ];
-    const mark = (label: string, logo?: 'claude' | 'openai') => (
+    const signsIn = (client: AiClientId) => Boolean(host.signIn) && canSignIn(client);
+    const mark = (label: string, logo?: AiClient['logo']) => (
         <AppMark name={label} imgSrc={logo ? host.logos[logo] : undefined} size="sm" className="-my-1 -ml-1" />
     );
 
@@ -121,9 +147,14 @@ export function ConnectCard({
                     <Button variant="secondary" onClick={() => void claude()}>{mark('Claude', 'claude')} Add to Claude</Button>
                 )}
                 {keyed.map(c => (
-                    host.makeKey ? (
-                        <Button key={c.id} variant="secondary" loading={busy === c.id} onClick={() => void withKey(c.id, c.label)}>
-                            {mark(c.label, c.logo)} {installLink(c.id, { url: '', key: '' }) ? `Add to ${c.label}` : c.label}
+                    signsIn(c.id) || host.makeKey ? (
+                        <Button
+                            key={c.id}
+                            variant="secondary"
+                            loading={busy === c.id}
+                            onClick={() => void (signsIn(c.id) ? signIn(c.id, c.label) : withKey(c.id, c.label))}
+                        >
+                            {mark(c.label, c.logo)} {installLink(c.id, { url: host.mcpUrl }) ? `Add to ${c.label}` : c.label}
                         </Button>
                     ) : null
                 ))}
