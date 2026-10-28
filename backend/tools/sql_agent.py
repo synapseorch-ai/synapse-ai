@@ -127,9 +127,37 @@ async def _load_db_configs() -> list[dict]:
 # bash. SQLAlchemy's engine and its pool are safe to share across threads.
 
 
+#: Each backend's default port, for a URL that names none.
+_DEFAULT_PORTS = {"postgresql": 5432, "mysql": 3306, "mssql": 1433}
+
+
+def _through_egress(conn_str: str):
+    """The URL the driver dials: through the host's egress proxy when it names one (F1117).
+
+    `core.egress_tunnel.forwarder` gives a loopback address that reaches the database
+    by `CONNECT` through the proxy. Postgres dials it as `hostaddr` and keeps `host`,
+    so TLS is still checked against the database's own name. With no proxy, or a host
+    `NO_PROXY` covers, the URL is unchanged.
+    """
+    from sqlalchemy.engine import make_url
+
+    from core.egress_tunnel import forwarder
+
+    url = make_url(conn_str)
+    backend = url.get_backend_name()
+    if not url.host or backend not in _DEFAULT_PORTS:
+        return conn_str
+    local = forwarder(url.host, url.port or _DEFAULT_PORTS[backend])
+    if local is None:
+        return conn_str
+    if backend == "postgresql":
+        return url.set(port=local[1]).update_query_dict({"hostaddr": local[0]})
+    return url.set(host=local[0], port=local[1])
+
+
 def _connect(conn_str: str):
     """A new engine and its inspector. `inspect()` connects to the database."""
-    engine = create_engine(conn_str, echo=False)
+    engine = create_engine(_through_egress(conn_str), echo=False)
     return engine, inspect(engine)
 
 
