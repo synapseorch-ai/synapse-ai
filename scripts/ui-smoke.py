@@ -13747,6 +13747,441 @@ async def check_brwrunpicks(browser) -> str:
     return "Run now and a Browser agent's step pick sessions one per site and send them; a plain workflow has none"
 
 
+# ── Recordings (BRW2, F1142; DESIGN §v5.2, v5.5 as agreed 10-29 and as built by BRW1 on feat/brw1-rec) ──────────
+
+_ORDER_FIELD = {"role": "textbox", "name": "Order number", "label": "Order number", "css": "#order", "field": True}
+
+
+def _rec_steps() -> list[dict]:
+    """A recorded task as BRW1's recorder keeps it: an open, a typed value, the person's own sign-in, a click and a read."""
+    return [
+        {"id": "s1", "n": 1, "action": "open", "url": "https://portal.saltmarsh.example/orders", "target": None,
+         "value": None, "after_shot": "r-s1", "line": "Open https://portal.saltmarsh.example/orders",
+         "wait": {"for": "url", "url": "https://portal.saltmarsh.example/orders"}},
+        {"id": "s2", "n": 2, "action": "type", "target": _ORDER_FIELD, "value": {"fixed": "A-1001"}, "after_shot": "r-s2",
+         "line": "Type “A-1001” into Order number"},
+        {"id": "s3", "n": 3, "action": "type", "target": {"role": "textbox", "label": "Password", "css": "#pw"},
+         "value": {"person": "password"}, "after_shot": None, "line": "You sign in here"},
+        {"id": "s4", "n": 4, "action": "click", "target": {"role": "button", "name": "Search", "css": "button.search"},
+         "value": None, "after_shot": "r-s4", "line": "Click Search",
+         "wait": {"for": "url", "url": "https://portal.saltmarsh.example/orders/results"},
+         "sends": ["POST api.saltmarsh.example"]},
+        {"id": "s5", "n": 5, "action": "read", "target": {"role": "table", "name": "Orders", "css": "table#orders"},
+         "value": None, "after_shot": "r-s5", "output": "orders", "line": "Read Orders → orders"},
+    ]
+
+
+def _recording(rid: str, **kw) -> dict:
+    now = time.time()
+    return {"id": rid, "name": "Find an order", "sites": ["saltmarsh.example"], "inputs": [], "outputs": [],
+            "steps": _rec_steps(), "version": 1, "pending_edits": [], "changed": [],
+            "created_at": now - 3_600, "created_by": "you", "updated_at": now - 3_600, "updated_by": "you", **kw}
+
+
+def _rec_frame(recording: dict | None, url: str = "https://portal.saltmarsh.example/orders") -> str:
+    """A record browser's frame: the person drives, and `recording` says how far it has got (F1141)."""
+    frame = {"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": url, "wheel": "person"}
+    return _frame({**frame, "recording": recording} if recording is not None else frame)
+
+
+@check
+async def check_brwrecordings(browser) -> str:
+    """Browser › Recordings lists each recording, and "Record a task" makes one (BRW2, F1142; DESIGN v5-4, v5.2,
+    Naveen 10-29). A row says its name, its sites, how many steps, when it last changed and that a fix is waiting,
+    and opens its own page. "Record a task" picks the sessions it starts with and where it starts; the browser is the
+    person's alone, its strip says it is recording, how many steps and the last one, and that a password being typed
+    isn't kept; Stop keeps it and opens it."""
+    now = time.time()
+    rows = {"recordings": [
+        {"id": "rec_" + "a" * 24, "name": "Find an order", "sites": ["saltmarsh.example"], "version": 3,
+         "created_at": now - 86_400 * 4, "updated_at": now - 7_200, "steps": 5, "pending_edits": 1},
+        {"id": "rec_" + "b" * 24, "name": "Weekly stock read", "sites": ["saltmarsh.example", "carrier.example"],
+         "version": 1, "created_at": now - 86_400, "updated_at": now - 86_400, "steps": 8, "pending_edits": 0},
+    ]}
+    salt = "ss_" + "w" * 24
+    listed = {"sessions": [_site_session(salt, "saltmarsh.example")]}
+    frames = {"body": _rec_frame({"steps": 2, "last": {"id": "s2", "title": "Type “A-1001” into Order number"}})}
+    calls: list[tuple[str, dict]] = []
+
+    async def new(route):
+        calls.append(("new", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": "rec_" + "n" * 24, "browser_session_id": "bsRec"})
+
+    async def stop(route):
+        calls.append(("stop", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": "rec_" + "n" * 24, "steps": 3})
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json=rows))
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
+    await ctx.route(re.compile(r".*/api/recordings/new$"), new)
+    await ctx.route(re.compile(r".*/api/browser/bsRec/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=frames["body"]))
+    await ctx.route(re.compile(r".*/api/browser/bsRec/record/stop$"), stop)
+    await ctx.route(re.compile(r".*/api/recordings/rec_n+$"), lambda r: r.fulfill(
+        status=200, json=_recording("rec_" + "n" * 24)))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+        listing = page.get_by_role("list", name="Recordings")
+        try:
+            await listing.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("Browser › Recordings lists no recordings")
+        await asyncio.sleep(SETTLE)
+        first = re.sub(r"\s+", " ", (await listing.get_by_role("listitem").first.inner_text()).replace("’", "'"))
+        for want in ("Find an order", "saltmarsh.example", "5 steps", "Changed 2 hours ago", "A fix is waiting"):
+            if want not in first:
+                bad.append(f"a recording's row does not say {want!r}: {first[:160]!r}")
+        link = listing.get_by_role("link", name=re.compile("Find an order"))
+        if not (await link.get_attribute("href") or "").endswith(f"/browser/recordings/rec_{'a' * 24}"):
+            bad.append("a recording's row does not open its own page")
+        if NO_LOGIN_WORDS.findall(await page.locator("main").inner_text()):
+            bad.append("the Recordings tab says 'login'")
+
+        await page.get_by_role("button", name="Record a task").click()
+        ask = page.get_by_role("dialog", name="Record a task")
+        await ask.wait_for(timeout=5_000)
+        await ask.get_by_role("group", name="Sessions it starts with").get_by_role("checkbox").first.check()
+        await ask.get_by_label("Start at").fill("portal.saltmarsh.example/orders")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("Record a task opened no browser")
+        if not calls or calls[0] != ("new", {"sessions": [salt], "start_url": "portal.saltmarsh.example/orders"}):
+            bad.append(f"Record a task asked for {calls[:1]}")
+        for absent in ("Stop", "Take over", "Hand back"):
+            if await pane.get_by_role("button", name=absent, exact=True).count():
+                bad.append(f"the record browser offers {absent}")
+        await asyncio.sleep(1.0)
+        said = re.sub(r"\s+", " ", (await pane.inner_text()).replace("’", "'"))
+        for want in ("Recording", "2 steps", "Type “A-1001” into Order number"):
+            if want not in said:
+                bad.append(f"the record strip does not say {want!r}")
+    finally:
+        await ctx.close()
+
+    # While a password is typed, the strip says it isn't kept (F1141's `holding`).
+    frames["body"] = _rec_frame({"steps": 2, "holding": "password"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json=rows))
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
+    await ctx.route(re.compile(r".*/api/recordings/new$"), new)
+    await ctx.route(re.compile(r".*/api/browser/bsRec/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=frames["body"]))
+    await ctx.route(re.compile(r".*/api/browser/bsRec/record/stop$"), stop)
+    await ctx.route(re.compile(r".*/api/recordings/rec_n+$"), lambda r: r.fulfill(
+        status=200, json=_recording("rec_" + "n" * 24)))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+        await page.get_by_role("button", name="Record a task").click()
+        ask = page.get_by_role("dialog", name="Record a task")
+        await ask.get_by_label("Start at").fill("portal.saltmarsh.example")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(1.0)
+        if "password isn't kept" not in (await pane.inner_text()).replace("’", "'"):
+            bad.append("while a password is typed, the record strip does not say it isn't kept")
+        await pane.get_by_role("button", name="Stop and keep").click()
+        try:
+            await page.wait_for_url(re.compile(rf".*/browser/recordings/rec_n{{24}}$"), timeout=10_000)
+        except Exception:
+            bad.append(f"Stop and keep did not open the new recording (at {page.url})")
+        stops = [b for k, b in calls if k == "stop"]
+        if not stops or stops[-1].get("keep") is not True:
+            bad.append(f"Stop and keep sent {stops[-1:]}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Recordings lists each with its sites, steps, last change and a waiting fix; Record a task picks sessions "
+            "and a start, the strip says what it is keeping, and Stop keeps it and opens it")
+
+
+@check
+async def check_brwrecordingedit(browser) -> str:
+    """A recording's own page (BRW2, F1142; DESIGN v5-6, v5.2; Naveen 10-29: its own page). Its inputs and outputs are
+    listed above the steps; each step has its picture and its sentence (a rename shown instead); the person's own
+    sign-in reads as theirs and has no value to change. On a new recording the typed values are proposed as inputs,
+    named from their fields. Rename, Delete and Details work on a step, and each save is a PATCH from the version
+    the page has, a stale one said with Reload. Versions are listed; Delete recording asks first."""
+    import base64
+    rid = "rec_" + "e" * 24
+    state = {"doc": _recording(rid), "stale": False}
+    patches: list[dict] = []
+    deleted: list[str] = []
+
+    async def one(route):
+        method = route.request.method
+        if method == "PATCH":
+            body = json.loads(route.request.post_data or "{}")
+            patches.append(body)
+            if state["stale"]:
+                return await route.fulfill(status=409, json={
+                    "detail": "This recording changed since you opened it (it is at version 9). Reload it.", "version": 9})
+            doc = dict(state["doc"])
+            for key in ("name", "steps", "inputs", "outputs"):
+                if body.get(key) is not None:
+                    doc[key] = body[key]
+            doc["version"] = int(doc["version"]) + 1
+            state["doc"] = doc
+            return await route.fulfill(status=200, json=doc)
+        if method == "DELETE":
+            deleted.append(route.request.url)
+            return await route.fulfill(status=200, json={"deleted": True})
+        await route.fulfill(status=200, json=state["doc"])
+
+    versions = {"versions": [{"version": 3, "at": time.time() - 60, "by": "you", "steps": 4, "current": True},
+                             {"version": 2, "at": time.time() - 3_600, "by": "you", "steps": 5, "current": False},
+                             {"version": 1, "at": time.time() - 7_200, "by": "you", "steps": 5, "current": False}]}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), one)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), lambda r: r.fulfill(status=200, json=versions))
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/shots/[^/?]+$"), lambda r: r.fulfill(
+        status=200, body=base64.b64decode(BRW_JPEG), headers={"Content-Type": "image/jpeg"}))
+    await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json={"recordings": []}))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        steps = page.get_by_role("list", name="Steps")
+        try:
+            await steps.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("a recording's page lists no steps")
+        await asyncio.sleep(SETTLE)
+        if (await page.locator("main h1").first.inner_text()).strip() != "Find an order":
+            bad.append(f"the page is titled {await page.locator('main h1').first.inner_text()!r}")
+        items = steps.get_by_role("listitem")
+        if await items.count() != 5:
+            bad.append(f"the page lists {await items.count()} steps, not 5")
+        if await steps.get_by_role("img").count() != 4:
+            bad.append(f"{await steps.get_by_role('img').count()} steps have a picture, not the 4 kept")
+        signin = items.nth(2)
+        if "You sign in here" not in await signin.inner_text():
+            bad.append("the person's sign-in step does not read 'You sign in here'")
+        if await signin.get_by_role("button", name=re.compile("^(Make it an input|Keep it fixed)")).count():
+            bad.append("the person's sign-in step offers to change its value")
+        outputs = page.get_by_role("region", name="Outputs")
+        if "orders" not in await outputs.inner_text():
+            bad.append("Outputs does not list the read step's 'orders'")
+
+        # A new recording's typed values, proposed as inputs named from their fields.
+        propose = page.get_by_role("region", name="Make typed values inputs")
+        try:
+            await propose.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("a new recording does not propose its typed values as inputs")
+        if "Order number" not in await propose.inner_text():
+            bad.append("the proposal does not name the Order number field")
+        await propose.get_by_role("button", name="Make them inputs").click()
+        await asyncio.sleep(1.0)
+        sent = patches[-1] if patches else {}
+        typed = {s["id"]: s for s in sent.get("steps") or []}.get("s2", {})
+        if sent.get("base_version") != 1 or typed.get("value") != {"input": "order_number"} \
+                or sent.get("inputs") != [{"name": "order_number", "label": "Order number", "step_id": "s2"}]:
+            bad.append(f"Make them inputs sent {json.dumps(sent)[:240]}")
+        if "Order number" not in await page.get_by_role("region", name="Inputs").inner_text():
+            bad.append("Inputs does not list Order number after it was made one")
+
+        # Rename: the step's title, from the version the page now has.
+        await items.nth(3).get_by_role("button", name="Rename").click()
+        field = items.nth(3).get_by_role("textbox", name="Step name")
+        await field.fill("Search for the order")
+        await field.press("Enter")
+        await asyncio.sleep(1.0)
+        renamed = {s["id"]: s for s in (patches[-1] if patches else {}).get("steps") or []}.get("s4", {})
+        if (patches[-1] if patches else {}).get("base_version") != 2 or renamed.get("title") != "Search for the order":
+            bad.append(f"Rename sent {json.dumps(patches[-1:])[:200]}")
+        if "Search for the order" not in await items.nth(3).inner_text():
+            bad.append("a renamed step does not read as its new name")
+
+        # Details: its target, the page it led to and where it sent.
+        await items.nth(3).get_by_role("button", name="Details").click()
+        details = re.sub(r"\s+", " ", await items.nth(3).inner_text())
+        for want in ("button.search", "portal.saltmarsh.example/orders/results", "POST api.saltmarsh.example"):
+            if want not in details:
+                bad.append(f"a step's details do not say {want!r}")
+
+        # Delete a step: asked first, then saved without it.
+        await items.nth(4).get_by_role("button", name="Delete step").click()
+        confirm = page.get_by_role("dialog", name="Delete this step?")
+        await confirm.get_by_role("button", name="Delete", exact=True).click()
+        await asyncio.sleep(1.0)
+        kept_ids = [s["id"] for s in (patches[-1] if patches else {}).get("steps") or []]
+        if kept_ids != ["s1", "s2", "s3", "s4"]:
+            bad.append(f"Delete step sent steps {kept_ids}")
+
+        # A stale save: said, with Reload, and nothing pretends it was kept.
+        state["stale"] = True
+        await items.nth(0).get_by_role("button", name="Rename").click()
+        field = items.nth(0).get_by_role("textbox", name="Step name")
+        await field.fill("Open the orders page")
+        await field.press("Enter")
+        await asyncio.sleep(1.0)
+        alert = page.get_by_role("alert").filter(has_text="changed since you opened it")
+        if not await alert.count() or not await page.get_by_role("button", name="Reload").count():
+            bad.append("a stale save is not said with Reload")
+        state["stale"] = False
+
+        # Versions, then Delete recording.
+        await page.get_by_role("button", name="Versions").click()
+        listed = page.get_by_role("list", name="Versions")
+        try:
+            await listed.wait_for(timeout=5_000)
+            if await listed.get_by_role("listitem").count() != 3:
+                bad.append(f"Versions lists {await listed.get_by_role('listitem').count()}, not 3")
+        except Exception:
+            bad.append("Versions lists nothing")
+        await page.keyboard.press("Escape")
+        await page.get_by_role("button", name="Delete recording").click()
+        sure = page.get_by_role("dialog", name="Delete this recording?")
+        await sure.get_by_role("button", name="Delete", exact=True).click()
+        try:
+            await page.wait_for_url(re.compile(r".*/browser/recordings$"), timeout=10_000)
+        except Exception:
+            bad.append(f"Delete recording did not return to the list (at {page.url})")
+        if not deleted:
+            bad.append("Delete recording sent no DELETE")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a recording's page lists inputs, outputs and its steps with pictures; typed values are proposed as inputs; "
+            "rename, details and delete work from the page's version; a stale save says Reload; versions and delete")
+
+
+@check
+async def check_brwrecordingredo(browser) -> str:
+    """Re-record from a step (BRW2, F1142; BRW1 10-29): the browser is the recording's own, its steps before the one
+    picked replay, then the person records; Stop keeps the new steps as a fix waiting to be approved. If the replay
+    stops at the person's own step (a sign-in), the banner says so and Carry on goes on from the next step; if an
+    earlier step broke, it offers to re-record from that one instead."""
+    import base64
+    rid = "rec_" + "f" * 24
+    salt = "ss_" + "x" * 24
+    calls: list[tuple[str, dict]] = []
+    answers = {"new": [], "start": []}
+
+    async def new(route):
+        body = json.loads(route.request.post_data or "{}")
+        calls.append(("new", body))
+        if answers["new"]:
+            status, payload = answers["new"].pop(0)
+            return await route.fulfill(status=status, json=payload)
+        await route.fulfill(status=200, json={"recording_id": rid, "browser_session_id": "bsRedo"})
+
+    async def start(route):
+        calls.append(("start", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording": True})
+
+    async def stop(route):
+        calls.append(("stop", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": rid, "pending_edit": "ed_1"})
+
+    async def routes(ctx):
+        await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), lambda r: r.fulfill(status=200, json=_recording(rid, version=2)))
+        await ctx.route(re.compile(rf".*/api/recordings/{rid}/shots/[^/?]+$"), lambda r: r.fulfill(
+            status=200, body=base64.b64decode(BRW_JPEG), headers={"Content-Type": "image/jpeg"}))
+        await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(
+            status=200, json={"sessions": [_site_session(salt, "saltmarsh.example")]}))
+        await ctx.route(re.compile(r".*/api/recordings/new$"), new)
+        await ctx.route(re.compile(r".*/api/browser/bsRedo/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_rec_frame({"steps": 0})))
+        await ctx.route(re.compile(r".*/api/browser/bsRedo/record/start$"), start)
+        await ctx.route(re.compile(r".*/api/browser/bsRedo/record/stop$"), stop)
+
+    async def redo(page, n: int):
+        steps = page.get_by_role("list", name="Steps")
+        await steps.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await steps.get_by_role("listitem").nth(n).get_by_role("button", name="Re-record from here").click()
+        ask = page.get_by_role("dialog", name="Re-record from here")
+        await ask.wait_for(timeout=5_000)
+        await ask.get_by_role("group", name="Sessions it starts with").get_by_role("checkbox").first.check()
+        await ask.get_by_role("button", name="Open the browser").click()
+
+    bad: list[str] = []
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await routes(ctx)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        await redo(page, 3)
+        pane = page.get_by_role("region", name="Browser")
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("Re-record from here opened no browser")
+        if not calls or calls[0] != ("new", {"recording_id": rid, "from_step": "s4", "sessions": [salt]}):
+            bad.append(f"Re-record from here asked for {calls[:1]}")
+        await pane.get_by_role("button", name="Stop and keep").click()
+        await asyncio.sleep(1.0)
+        stops = [b for k, b in calls if k == "stop"]
+        if not stops or stops[-1] != {"keep": True, "from_step": "s4"}:
+            bad.append(f"Stop and keep sent {stops[-1:]}")
+        if not await _on_screen(page, "waiting for you to approve"):
+            bad.append("a re-record's steps are not said to be a fix waiting for approval")
+    finally:
+        await ctx.close()
+
+    # The replay stopped at the person's own step: the banner is theirs, then Carry on.
+    calls.clear()
+    answers["new"] = [(409, {"detail": "Replaying the steps before it stopped.", "recording_id": rid,
+                             "browser_session_id": "bsRedo",
+                             "replayed": {"handover": {"kind": "sensitive", "reason": "Sign in to saltmarsh.example",
+                                                       "session_id": "bsRedo"}, "step_id": "s3"}})]
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await routes(ctx)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        await redo(page, 3)
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await asyncio.sleep(1.0)
+        if "Sign in to saltmarsh.example" not in await pane.inner_text():
+            bad.append("a replay stopped at the person's sign-in does not say so")
+        await pane.get_by_role("button", name="Carry on").click()
+        await asyncio.sleep(1.0)
+        if [b for k, b in calls if k == "start"] != [{"carry_on": True}]:
+            bad.append(f"Carry on sent {[b for k, b in calls if k == 'start']}")
+    finally:
+        await ctx.close()
+
+    # An earlier step broke: re-record from that one instead.
+    calls.clear()
+    answers["new"] = [(409, {"detail": "Replaying the steps before it stopped.", "recording_id": rid,
+                             "browser_session_id": "bsRedo",
+                             "replayed": {"miss": {"step_id": "s2", "line": "Type “A-1001” into Order number",
+                                                   "why": "its field is not on the page"}}})]
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await routes(ctx)
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        await redo(page, 3)
+        said = page.get_by_role("alert").filter(has_text="Type “A-1001” into Order number")
+        try:
+            await said.wait_for(timeout=8_000)
+        except Exception:
+            bad.append("a replay that broke at an earlier step does not say which")
+        offer = page.get_by_role("button", name="Re-record from step 2")
+        if not await offer.count():
+            bad.append("a replay that broke does not offer to re-record from the step that broke")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("re-record opens the recording's own browser from the step, keeps its steps as a fix to approve; a replay "
+            "stopped at the person's sign-in carries on after it; one that broke offers its step instead")
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)
