@@ -12820,6 +12820,62 @@ async def check_brwpress(browser) -> str:
             "was pressed and on whose words; the disclaimer shows once")
 
 
+class _Themed:
+    """A browser whose every context opens in one theme, as the app reads it on load."""
+
+    def __init__(self, browser, theme: str):
+        self._browser, self._theme = browser, theme
+
+    def __getattr__(self, name):
+        return getattr(self._browser, name)
+
+    async def new_context(self, **kwargs):
+        ctx = await self._browser.new_context(**kwargs)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{self._theme}')}}catch(e){{}}")
+        return ctx
+
+
+@check
+async def check_brwcontrast(browser) -> str:
+    """Every strip the pane shows reads at AA in both themes (BRW2, F1073–F1077): who is driving, the person's own
+    strip, a press turn, a held payment, a login turn and the disclaimer. The strips sit on the person's pale tint,
+    where the solid tint's text colour (`person-fg`) is dark on dark (found in the first shots)."""
+    states = [
+        ("agent driving", {"wheel": "agent"}),
+        ("you driving", {"wheel": "person"}),
+        ("press", {"wheel": "person", "banner": {
+            "kind": "press", "reason": "Press 'Submit feedback' yourself: submits the form on example.com.",
+            "press": {"label": "Submit feedback", "does": "submits the form on example.com",
+                      "host": "example.com", "tier": "acts"}}}),
+        ("payment held", {"wheel": "nobody", "banner": {
+            "kind": "send", "reason": "Place order",
+            "held": {"method": "POST", "url": "https://pay.example.com/checkout", "money": True}}}),
+        ("login", {"wheel": "person", "banner": {"kind": "login_expired", "reason": "Log in to Saltmarsh again"}}),
+    ]
+    bad: list[str] = []
+    for theme in ("light", "dark"):
+        ctx, page = await _brw_page(_Themed(browser, theme), f"uismoke-brw-contrast-{theme}")
+        try:
+            await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsC",
+                                                  "owner": f"chat:uismoke-brw-contrast-{theme}"}, "c-1"))
+            pane = _pane(page)
+            await pane.wait_for(timeout=8_000)
+            await _stream_open(page, "frames:bsC")
+            for name, extra in states:
+                await _brw_push(page, "frames:bsC", _brw_moment(**extra))
+                await asyncio.sleep(0.5)
+                inside = await pane.inner_text()
+                for row in await page.evaluate(CONTRAST):
+                    if row["txt"] and row["txt"][:24] in inside:
+                        bad.append(f"{theme} {name}: {row['ratio']}:1 (needs {row['need']}) "
+                                   f"{row['fg']} on {row['bg']} — {row['txt'][:30]!r}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(dict.fromkeys(bad)))
+    return "every pane strip reads at AA in light and dark"
+
+
 @check
 async def check_brwturn(browser) -> str:
     """A browser turn shows in the conversation as the same card as the pane's strip, and is acted on there (BRW2,
