@@ -484,9 +484,11 @@ export function BuilderConversation({
                             </>
                         )}
                         pill={pill ?? (
-                            <span className={cn(composerPillClass, 'hover:bg-surface-2')}>
+                            // On a phone its mark only, its name kept for a screen reader: the header names it, and the
+                            // row's room goes to the model's whole label (F1131; Naveen 2026-10-28).
+                            <span className={cn(composerPillClass, 'hover:bg-surface-2 max-md:pr-1')} title="Synapse AI">
                                 <PillAvatar><Mark size={14} className="text-accent" aria-hidden /></PillAvatar>
-                                Synapse AI
+                                <span className="max-md:sr-only">Synapse AI</span>
                             </span>
                         )}
                         attach={(
