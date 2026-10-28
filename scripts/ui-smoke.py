@@ -12098,6 +12098,10 @@ async def main() -> int:
         except Exception as exc:
             print(f"note: could not close the first-run model step: {exc}")
     async with async_playwright() as pw:
+        # A `playwright install` deletes builds it no longer drives, 1222 among them (F1106), so a missing pinned
+        # browser is said and Playwright's own is used (F1107).
+        if not os.path.exists(CHROME):
+            print(f"note: no browser at {CHROME}; using Playwright's own ({pw.chromium.executable_path})")
         browser = await pw.chromium.launch(
             executable_path=CHROME if os.path.exists(CHROME) else None,
             args=["--disable-dev-shm-usage", "--no-sandbox", "--disable-gpu"],
