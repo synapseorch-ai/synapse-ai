@@ -430,8 +430,8 @@ async def test_a_browser_agent_saves_its_settings(client):
             "browser": {"sites": ["portal.example.com"], "action_budget": 25, "mode": "co_drive"}}
     resp = await client.post("/api/agents", json=body)
     assert resp.status_code == 200
-    assert resp.json()["browser"] == {"sites": ["portal.example.com"], "sessions": [], "action_budget": 25,
-                                      "mode": "co_drive"}
+    assert resp.json()["browser"] == {"sites": ["portal.example.com"], "sessions": [], "recordings": [],
+                                      "action_budget": 25, "mode": "co_drive"}
 
 
 # ── v2's gate (F1097, F1098, F1101) ──────────────────────────────────────────
@@ -1283,7 +1283,8 @@ async def test_the_tool_list_needs_no_browser(tmp_path, monkeypatch):
 
     tools = browser_client.BrowserTools(_NoHost())
     names = {t.name: t for t in (await tools.list_tools()).tools}
-    assert set(names) == {"browser_click", "browser_snapshot", "browser_hand_over"}, "the gate still decides"
+    assert set(names) == {"browser_click", "browser_snapshot", "browser_hand_over", "browser_run_recording"}, \
+        "the gate still decides"
     assert "confirm" in names["browser_click"].inputSchema["properties"]
 
 

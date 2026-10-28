@@ -709,6 +709,32 @@ def _inject_browser_guide(agent_data, system_template):
     return system_template + BROWSER_AGENT_GUIDE if agent_data.get("type") == "browser" else system_template
 
 
+async def _inject_recordings(agent_data, system_template):
+    """A Browser agent's picked recordings (F1145): what each does, its inputs and what it reads, so it runs one by
+    code instead of finding the way again. Which may run is still the client's check, not these words."""
+    ids = (agent_data.get("browser") or {}).get("recordings") or []
+    if agent_data.get("type") != "browser" or not ids:
+        return system_template
+    from core.browser import recordings as _recs
+    try:
+        docs = await _recs.picked(list(ids))
+    except Exception as exc:
+        _log.debug(f"Failed to load recordings: {exc}")
+        return system_template
+    if not docs:
+        return system_template
+    lines = ["\n\n### YOUR RECORDINGS ###",
+             "Tasks the person did once, which `browser_run_recording` replays by code. When one fits, run it rather "
+             "than finding the way yourself:"]
+    for doc in docs:
+        sites = ", ".join(doc.get("sites") or []) or "any site"
+        inputs = ", ".join(_recs.input_names(doc)) or "none"
+        outputs = ", ".join(o.get("name", "") for o in doc.get("outputs") or [] if o.get("name")) or "none"
+        lines.append(f"- `{_recs.slug(doc)}`: {doc.get('name') or 'unnamed'} on {sites}; inputs: {inputs}; "
+                     f"reads: {outputs}; {len(doc.get('steps') or [])} steps.")
+    return system_template + "\n".join(lines) + "\n"
+
+
 async def _inject_repo_context(agent_data, system_template):
     """Inject repo context into system prompt for code agents. Returns updated template."""
     if agent_data.get("type") != "code":
@@ -1157,6 +1183,7 @@ async def run_agent_step(
                 _log.warning(f"[react_engine] system prompt vault mention {_mention.warning()}")
     agent_system_template = await _inject_repo_context(active_agent, agent_system_template)
     agent_system_template = _inject_browser_guide(active_agent, agent_system_template)
+    agent_system_template = await _inject_recordings(active_agent, agent_system_template)
     agent_system_template = await _inject_db_context(active_agent, agent_system_template)
 
     current_settings = load_settings()

@@ -38,10 +38,13 @@ ALLOWED: dict[str, dict[str, bool]] = {
     "browser_handle_dialog": {"open_world": True},
     # Ours, not Playwright MCP's: the person takes the wheel (V2-CONTRACT "Final buttons and sends").
     "browser_hand_over": {"read_only": True, "open_world": False},
+    # Ours: run one of the agent's picked recordings by code (F1145); the engine's client runs it, never the page.
+    "browser_run_recording": {"open_world": True},
 }
 
 #: Actions after which the page may look different: each gets a screenshot.
-CHANGES_PAGE = frozenset(ALLOWED) - {"browser_snapshot", "browser_find", "browser_wait_for", "browser_hand_over"}
+CHANGES_PAGE = frozenset(ALLOWED) - {"browser_snapshot", "browser_find", "browser_wait_for", "browser_hand_over",
+                                     "browser_run_recording"}
 
 #: Methods that read. Anything else changes state somewhere.
 _READS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -196,6 +199,7 @@ def is_sensitive_field(input_type: str, autocomplete: str) -> bool:
 PRESSES = frozenset({"browser_click", "browser_type", "browser_press_key", "browser_handle_dialog"})
 #: The agent's own way to give the person the wheel (no Playwright MCP tool).
 HAND_OVER = "browser_hand_over"
+RUN_RECORDING = "browser_run_recording"
 FREE, ACTS, MONEY = "free", "acts", "money"
 
 #: Where payments are made: any press inside one of their frames is the person's.

@@ -829,7 +829,9 @@ async def test_a_step_that_lost_its_target_stops_with_the_page_and_carries_on_af
     # The agent finds its way for this run (F1144 proposes it as an edit); the replay carries on after the step.
     await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/results?q=B-8"})
     status_after = await _post(http, control, "/replay/continue", {"session_id": sid, "from_n": 4})
-    assert status_after == {"done": 4, "outputs": {"heading": "Results for B-8"}}, status_after
+    assert status_after["done"] == 4 and status_after["outputs"] == {"heading": "Results for B-8"}, status_after
+    fix = status_after["fix"]  # the agent's way through step 3, for an edit to approve (F1144)
+    assert fix["step_id"] == "s3" and [(s["action"], s["actor"]) for s in fix["steps"]] == [("open", "agent")]
     async with http.post(f"http://127.0.0.1:{control}/replay/continue", json={"session_id": sid}) as r:
         assert r.status == 409, "nothing left to carry on"
     await _post(http, control, "/close", {"session_id": sid})
@@ -933,4 +935,64 @@ async def test_an_unattended_replays_sends_stay_its_recordings_after_it_returns(
     assert done == {"done": 2, "outputs": {}}, done
     await asyncio.sleep(5)
     assert posts == [], "a late send to an address the recording never sent to stays in the browser"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── an agent's fix of a missed step (F1144) ──────────────────────────────────
+
+async def _missed(http, control, sid, url, line):
+    steps = [{"id": "x1", "n": 1, "action": "open", "url": url},
+             {"id": "x2", "n": 2, "action": "click", "target": {"css": "#renamed-since"}, "line": line}]
+    stopped = await _replay(http, control, sid, steps)
+    assert stopped["miss"]["n"] == 2, stopped
+    return stopped
+
+
+async def test_a_fix_may_redo_the_persons_press_once_and_comes_back_as_its_steps(replay_site, codrive_host):
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:f1", "mode": "co_drive"}))["session_id"]
+    await _missed(http, control, sid, f"http://localhost:{other}/msg", "Click Send")
+    page = await _tool(http, control, sid, "browser_snapshot", {})
+    first = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send message", "target": _ref(page["text"], "button", "Send message")})
+    await asyncio.sleep(1.5)
+    assert posts == ["/sent"] and not first.get("handover"), "what the person pressed when recording, redone"
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{other}/msg"})
+    again = await _tool(http, control, sid, "browser_click",
+                        {"element": "Send message", "target": _ref(page["text"], "button", "Send message")})
+    await asyncio.sleep(1.5)
+    assert posts == ["/sent"] and "Not pressed" in again["text"], "only once: a second send needs the person's words"
+    done = await _post(http, control, "/replay/continue", {"session_id": sid})
+    assert done["done"] == 2 and done["fix"]["step_id"] == "x2", done
+    click, opened = done["fix"]["steps"]
+    assert (click["action"], click["actor"], click["target"]["name"]) == ("click", "agent", "Send message")
+    assert opened["action"] == "open", "the refused press is not a step"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_fix_redoes_a_press_only_on_the_site_the_step_missed_on(replay_site, codrive_host):
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:f2", "mode": "co_drive"}))["session_id"]
+    await _missed(http, control, sid, f"http://localhost:{other}/msg", "Click Send")
+    page = await _tool(http, control, sid, "browser_navigate", {"url": f"http://other.localhost:{other}/msg"})
+    elsewhere = await _tool(http, control, sid, "browser_click",
+                            {"element": "Send message", "target": _ref(page["text"], "button", "Send message")})
+    await asyncio.sleep(1.5)
+    assert posts == [] and "Not pressed" in elsewhere["text"], "another site: the person's words, as ever"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_fix_never_pays_or_deletes_even_with_its_redo_unspent(replay_site, codrive_host):
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "chat:f3", "mode": "co_drive"}))["session_id"]
+    await _missed(http, control, sid, f"http://localhost:{other}/pay", "Click Pay now")
+    page = await _tool(http, control, sid, "browser_snapshot", {})
+    paying = await _tool(http, control, sid, "browser_click",
+                         {"element": "Pay now", "target": _ref(page["text"], "button", "Pay now")})
+    await asyncio.sleep(1.5)
+    assert paying["handover"]["kind"] == "press" and paying["handover"]["press"]["tier"] == "money", paying
+    assert "/paid" not in posts
     await _post(http, control, "/close", {"session_id": sid})

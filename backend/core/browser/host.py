@@ -35,7 +35,7 @@ from aiohttp import web
 from core import egress_proxy
 from core.browser import gate
 from core.browser import replay as replaying
-from core.browser.recording import TARGET_JS, Recorder, sensitive_kind
+from core.browser.recording import TARGET_JS, Recorder, line_of, sensitive_kind
 
 #: Playwright MCP, pinned: its tool names and output are part of the gate's contract.
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
@@ -144,6 +144,19 @@ _HAND_OVER_SCHEMA = {"name": "browser_hand_over", "description": (
     "tags": {"read_only": True, "open_world": False}}
 
 
+_RUN_RECORDING_SCHEMA = {"name": "browser_run_recording", "description": (
+    "Run one of your recordings by code: a task the person did once, replayed step by step in this browser. Name "
+    "it as your instructions list it, with its inputs. It returns what it read, or stops at a step the page no "
+    "longer matches: find the way for that step with your browser tools, then call again with carry_on."),
+    "inputSchema": {"type": "object", "properties": {
+        "recording": {"type": "string", "description": "The recording, as your instructions name it."},
+        "inputs": {"type": "object", "description": "Its inputs by name, e.g. {\"order number\": \"A-1001\"}."},
+        "carry_on": {"type": "boolean", "description": (
+            "True after it stopped: you found the way for its step (or the person did), so it goes on.")}},
+        "required": ["recording"]},
+    "tags": {"open_world": True}}
+
+
 def _with_confirm_schema(name: str, input_schema: dict | None) -> dict:
     """A press tool's schema with `confirm` beside Playwright MCP's own arguments (which never receive it)."""
     schema = dict(input_schema or {})
@@ -176,6 +189,7 @@ class Session:
         self.recorder: Recorder | None = None  # the person's task being recorded (F1141)
         self.replaying: dict | None = None     # the replay in hand: its steps, inputs and whether anyone is there
         self.replay_sends: set[str] | None = None  # unattended: the only sends it may make, as its recording did
+        self.fixing: dict | None = None        # a missed step being found again (F1144): its capture and allowance
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -411,6 +425,8 @@ class Session:
             return {"waiting": "person_driving"}
         if self.actions >= self.limits["actions"]:
             return {"refused": f"This browser session has used its {self.limits['actions']} actions."}
+        if name == gate.RUN_RECORDING:
+            return {"refused": "Recordings run through Synapse, not the page."}
         if name == gate.HAND_OVER:
             reason = str(args.get("reason") or "").strip()[:300] or "The agent asked you to take it from here."
             turn = self._turn("asked", reason)
@@ -429,7 +445,11 @@ class Session:
             self.actions += 1
             seen = len(self.log)
             self.handover = None
+            fix_targets = await self._fix_targets(name, args) if self.fixing is not None else None
+            fix_from = self._page_url()
             result = await self.mcp.call_tool(name, args)
+            if fix_targets is not None and not result.isError:
+                self._fix_capture(name, args, fix_targets, fix_from)
             text = self._inline_snapshots("\n".join(getattr(c, "text", "") for c in result.content
                                                     if getattr(c, "type", "") == "text"))
             blocked = [e["target"] for e in self.log[seen:] if e["actor"] == "guard"]
@@ -505,6 +525,10 @@ class Session:
         label = (f"Enter in {label}" if label else "Enter") if info.get("key") else (label or "this button")
         if tier == gate.ACTS and press and press.get("confirmed"):
             self._pressing = {"label": label, "because": str(press.get("because") or "")[:300]}
+            return None
+        redo = self._fix_redo(page) if tier == gate.ACTS else None
+        if redo:  # finding a missed step again: what the person pressed there, once (F1144)
+            self._pressing = {"label": label, "because": redo}
             return None
         detail = {"label": label, "does": does, "host": urlparse(page).hostname or "", "tier": tier}
         if tier == gate.MONEY or press:
@@ -652,7 +676,7 @@ class Session:
                 self.select = {"target": f"{x:g},{y:g}", **found}
                 self._push_state()
                 return {"ok": True, "select": self.select}
-        step = await self._record_input(kind, body) if self.recorder is not None else None
+        step = await self._record_input(kind, body) if self._rec() is not None else None
         task = asyncio.ensure_future(self._act(page, kind, body))
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=3)
@@ -680,6 +704,8 @@ class Session:
             return {"refused": "A send is waiting for the person."}
         self.wheel, self.idle, self.banner, self.handover = "agent", False, None, None
         plan = self.replaying if (self.replaying and self.replaying["steps"] is steps) else None
+        if plan is None:
+            self.fixing = None
         self.replaying = plan or {"steps": steps, "inputs": inputs or {}, "unattended": unattended,
                                   "recording_id": recording_id, "outputs": {}}
         outputs = self.replaying["outputs"]
@@ -758,11 +784,15 @@ class Session:
         """The money backstop held a send the last step caused: the person's turn, at that step."""
         if self.held is None and not self.handover:
             return None
+        if self.replaying is not None:
+            self.replaying["turn_at"] = step.get("n")
         return {"handover": {**(self.handover or {}), "session_id": self.id}, "at": step.get("n"),
                 "step_id": step.get("id")}
 
     def _replay_turn(self, step: dict, kind: str, reason: str, **extra) -> dict:
         turn = self._turn(kind, reason, **extra)
+        if self.replaying is not None:
+            self.replaying["turn_at"] = step.get("n")
         return {"handover": {**turn, "session_id": self.id}, "at": step.get("n"), "step_id": step.get("id")}
 
     async def _replay_miss(self, step: dict, why: str) -> dict:
@@ -770,6 +800,15 @@ class Session:
         entry = await self._record("replay", "missed", f"Stopped at: {step.get('line') or 'a step'} ({why})",
                                    step_id=step.get("id"),
                                    recording_id=(self.replaying or {}).get("recording_id", ""))
+        plan = self.replaying or {}
+        # What follows, the agent's or the person's, is that step found again: kept as its fix (F1144). A press the
+        # person made there may be redone once, on the same site, as recorded authority goes (attended, or allowed
+        # to send on its own); never a payment or a delete, which stay theirs as everywhere.
+        recorder = Recorder()
+        recorder.at(self._page_url())
+        self.fixing = {"step": step, "recorder": recorder, "site": urlparse(self._page_url()).hostname or "",
+                       "redo": 1 if step.get("action") in ("click", "press") and (
+                           not plan.get("unattended") or step.get("may_send")) else 0}
         snapshot = ""
         try:
             res = await self.mcp.call_tool("browser_snapshot", {})
@@ -778,6 +817,84 @@ class Session:
             pass
         return {"miss": {"n": step.get("n"), "step_id": step.get("id"), "line": step.get("line"), "why": why,
                          "snapshot": snapshot, "shot_ref": entry.get("shot_ref")}, "done": int(step.get("n") or 1) - 1}
+
+    # ── a missed step found again (F1144) ────────────────────────────────────
+    def _rec(self) -> Recorder | None:
+        """Where the person's input becomes steps: the recording, or a missed step's fix."""
+        return self.recorder if self.recorder is not None else (self.fixing or {}).get("recorder")
+
+    def _fix_redo(self, page_url: str) -> str | None:
+        """The fix's one redo of what the person pressed at the missed step: why it may run, or None. Spent here."""
+        fixing = self.fixing
+        if not fixing or fixing.get("redo", 0) < 1:
+            return None
+        if not gate.same_site(urlparse(page_url).hostname or "", fixing["site"]):
+            return None
+        fixing["redo"] -= 1
+        return f"the person pressed this when recording ({fixing['step'].get('line') or 'its step'})"
+
+    async def _fix_targets(self, name: str, args: dict) -> list:
+        """The elements an agent's action lands on, read before it acts (a press may take them away)."""
+        refs = ([f.get("target") for f in (args.get("fields") or [])] if name == "browser_fill_form"
+                else [args.get("target")] if name in ("browser_click", "browser_type", "browser_select_option")
+                else [])
+        out = []
+        for ref in refs:
+            target = None
+            if ref:
+                try:
+                    res = await self.mcp.call_tool("browser_evaluate", {
+                        "function": f"(el) => ({TARGET_JS})(el)", "element": "the element acted on", "target": ref})
+                    target = None if res.isError else _result_json(
+                        " ".join(getattr(c, "text", "") for c in res.content))
+                except Exception:
+                    target = None
+            out.append(target if isinstance(target, dict) else None)
+        return out
+
+    def _fix_capture(self, name: str, args: dict, targets: list, url_before: str) -> None:
+        """The agent's action as steps of the fix, worded and targeted as a person's would be."""
+        rec = self.fixing["recorder"]
+        rec.at(url_before)
+        first = len(rec.steps)
+        if name == "browser_navigate":
+            rec.opened(str(args.get("url") or ""))
+        elif name == "browser_navigate_back":
+            rec.went_back()
+        elif name == "browser_click":
+            rec.clicked(targets[0])
+        elif name == "browser_type":
+            rec.typed(str(args.get("text") or ""), targets[0])
+            if args.get("submit"):
+                rec.pressed("Enter")
+        elif name == "browser_select_option":
+            rec.chose(targets[0], str((args.get("values") or [""])[0]))
+        elif name == "browser_fill_form":
+            for field, target in zip(args.get("fields") or [], targets):
+                if field.get("type") in ("combobox", "select"):
+                    rec.chose(target, str(field.get("value") or ""))
+                else:
+                    rec.flush()
+                    rec.typed(str(field.get("value") or ""), target)
+        elif name == "browser_press_key":
+            rec.pressed(str(args.get("key") or ""))
+        for step in rec.steps[first:]:
+            step["actor"] = "agent"
+
+    def finish_fix(self) -> dict | None:
+        """The fix as an edit of the missed step: `{step_id, n, steps, shots}`; a typed value that was one of the
+        run's inputs becomes that input again, so no run's data is kept in the recording."""
+        fixing, self.fixing = self.fixing, None
+        if fixing is None:
+            return None
+        done = fixing["recorder"].result(self._page_url())
+        inputs = {str(v): k for k, v in ((self.replaying or {}).get("inputs") or {}).items() if v not in (None, "")}
+        for step in done["steps"]:
+            fixed = (step.get("value") or {}).get("fixed")
+            if fixed is not None and fixed in inputs:
+                step["value"] = {"input": inputs[fixed]}
+                step["line"] = line_of(step)
+        return {"step_id": fixing["step"].get("id"), "n": fixing["step"].get("n"), **done}
 
     # ── recording the person's task (F1141) ──────────────────────────────────
     def start_recording(self) -> dict:
@@ -806,7 +923,7 @@ class Session:
 
     async def _record_input(self, kind: str, body: dict) -> dict | None:
         """The step a person's input makes, read before it acts (where it lands is the page as they saw it)."""
-        rec = self.recorder
+        rec = self._rec()
         rec.at(self._page_url())
         if kind == "mouse" and body.get("event", "click") in ("click", "down"):
             return rec.clicked(await self._target_at(float(body.get("x", 0)), float(body.get("y", 0))))
@@ -826,7 +943,7 @@ class Session:
 
     async def _picture(self, step: dict | None) -> None:
         """The page after a step, about 1024 px wide: none on a page the person typed something of theirs on."""
-        if step is None or self.recorder is None or self.page is None:
+        if step is None or self._rec() is None or self.page is None:
             self._push_state()
             return
         jpeg = None
@@ -840,7 +957,7 @@ class Session:
                 await cdp.detach()
         except Exception:
             jpeg = None
-        self.recorder.shot(step, jpeg, self._page_url())
+        self._rec().shot(step, jpeg, self._page_url())
         self._push_state()
 
     async def _act(self, page, kind: str, body: dict) -> None:
@@ -989,10 +1106,10 @@ class Session:
         options, self.select = self.select.get("options") or [], None
         try:
             x, y = (float(v) for v in target.split(","))
-            if self.recorder is not None:
-                self.recorder.at(self._page_url())
+            if self._rec() is not None:
+                self._rec().at(self._page_url())
                 label = next((o.get("label") for o in options if o.get("value") == value), value)
-                step = self.recorder.chose(await self._target_at(x, y), str(label))
+                step = self._rec().chose(await self._target_at(x, y), str(label))
                 await self._picture(step)
             await self.page.evaluate(
                 "([x, y, v]) => { const s = document.elementFromPoint(x, y)?.closest('select'); if (!s) return;"
@@ -1171,7 +1288,7 @@ class Host:
         self._schemas = [{"name": t["name"], "description": t["description"],
                           "inputSchema": _with_confirm_schema(t["name"], t["inputSchema"]),
                           "tags": gate.ALLOWED[t["name"]]} for t in await pinned_tool_schemas()]
-        self._schemas.append(_HAND_OVER_SCHEMA)
+        self._schemas += [_HAND_OVER_SCHEMA, _RUN_RECORDING_SCHEMA]
         return self._schemas
 
     async def open_session(self, request):
@@ -1216,9 +1333,14 @@ class Host:
         plan = s.replaying
         if not plan:
             return web.json_response({"error": "Nothing is being replayed."}, status=409)
-        return web.json_response(await s.replay(plan["steps"], plan["inputs"], unattended=plan["unattended"],
-                                                recording_id=plan["recording_id"],
-                                                from_n=int(body.get("from_n") or 1)))
+        # From the step after the one found again (a fix, or the person's turn), unless told where.
+        fix = s.finish_fix()
+        after = (fix or {}).get("n") or plan.get("turn_at")
+        from_n = int(body.get("from_n") or (int(after) + 1 if after else 1))
+        plan.pop("turn_at", None)
+        done = await s.replay(plan["steps"], plan["inputs"], unattended=plan["unattended"],
+                              recording_id=plan["recording_id"], from_n=from_n)
+        return web.json_response({**done, **({"fix": fix} if fix else {})})
 
     async def idle(self, request):
         body = await request.json()
@@ -1360,7 +1482,7 @@ class Host:
                 done = await s.replay(plan["steps"], {}, unattended=False, from_n=int(plan["turn_at"]) + 1)
             else:
                 done = await s.replay(list(body["replay_first"]), {}, unattended=False)
-            s.wheel = "person"
+            s.wheel, s.fixing = "person", None  # re-recording keeps its own steps, not a fix
             if "handover" in done:  # a turn keeps its banner and its place: the person's step, then carry on
                 s.replaying["turn_at"] = done["at"]
             else:

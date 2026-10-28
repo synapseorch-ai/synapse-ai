@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import secrets
 import time
 from urllib.parse import urlparse
@@ -121,6 +122,29 @@ async def create(name: str, steps: list[dict], *, shots: dict[str, str] | None =
     async with _lock:
         await _save(doc)
     return doc
+
+
+def slug(doc: dict) -> str:
+    """How an agent names a recording (F1145): its name's words, lower-case and hyphened; its id with no name."""
+    words = re.findall(r"[a-z0-9]+", str(doc.get("name") or "").lower())
+    return "-".join(words)[:60] or doc["id"]
+
+
+def input_names(doc: dict) -> list[str]:
+    """The inputs its steps fill in, in step order."""
+    return list(dict.fromkeys((s.get("value") or {}).get("input") for s in doc.get("steps") or []
+                              if (s.get("value") or {}).get("input")))
+
+
+async def picked(ids: list[str]) -> list[dict]:
+    """The picked recordings that still exist, in pick order."""
+    out = []
+    for rid in dict.fromkeys(ids or []):
+        try:
+            out.append(await get(rid))
+        except NotFound:
+            continue
+    return out
 
 
 async def get(recording_id: str) -> dict:

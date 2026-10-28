@@ -170,6 +170,18 @@ async def _save_agent(agent: Agent) -> dict:
         before = ((await get_agent(document["id"]) or {}).get("browser") or {}) if document.get("id") else {}
         await usable_new(document["browser"]["sessions"],
                          before=[*(before.get("sessions") or []), *([before["login_ref"]] if before.get("login_ref") else [])])
+    if (document.get("browser") or {}).get("recordings"):
+        # A recording picked now must exist (F1145); one deleted since it was picked drops out of the pick.
+        from core.browser import recordings as _recs
+        from core.store.resources import get_agent
+        picks = document["browser"]["recordings"]
+        known = {d["id"] for d in await _recs.picked(picks)}
+        before = set(((await get_agent(document["id"]) or {}).get("browser") or {}).get("recordings") or []) \
+            if document.get("id") else set()
+        unknown = [r for r in picks if r not in known and r not in before]
+        if unknown:
+            raise HTTPException(status_code=422, detail=f"No such recording: {', '.join(unknown)}.")
+        document["browser"]["recordings"] = [r for r in picks if r in known]
     # A workflow agent runs its orchestration, so one with none runs nothing:
     # it was saved and failed on its first message (F264). The Deploy button
     # (`POST /api/orchestrations/{id}/deploy`) is how one is made.
