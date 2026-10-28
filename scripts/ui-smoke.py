@@ -4508,6 +4508,54 @@ async def check_builderchip(browser) -> str:
     return f"at 390 px the model pill is whole ({pill['width']} px, {pill['label']!r}) and the agent label clears the image button"
 
 
+#: The builder panel on a phone: its box against the window, where its "Things to ask" end, and whose the bottom
+#: corner is — with the panel's own computed box for a failure to say why.
+PHONE_PANEL = """() => { const panel = document.querySelector('[data-testid="assistant-panel"]');
+  if (!panel) return null;
+  const r = (el) => { if (!el) return null; const b = el.getBoundingClientRect();
+                      return {top: Math.round(b.top), bottom: Math.round(b.bottom)}; };
+  const list = panel.querySelector('ul[aria-label="Things to ask"]');
+  const corner = document.elementFromPoint(24, window.innerHeight - 20);
+  const cs = getComputedStyle(panel);
+  return {vh: window.innerHeight, panel: r(panel), list: r(list),
+          cornerInPanel: !!(corner && corner.closest('[data-testid="assistant-panel"]')),
+          corner: corner ? (corner.tagName + '.' + String(corner.className).slice(0, 60)) : null,
+          style: {position: cs.position, top: cs.top, bottom: cs.bottom, height: cs.height}}; }"""
+
+
+@check
+async def check_builderphonepanel(browser) -> str:
+    """On a phone the builder panel is the whole window but its margin, and its "Things to ask" end inside it.
+
+    A layout guard, at 844 and at 664 (Safari's height with its bars). It was written for F1163, a misread of a shot
+    (the composer's border taken for the card's edge); it passed on the code then, so F1163 was closed as no bug.
+    """
+    bad, said = [], []
+    for size in ((390, 844), (390, 664)):
+        ctx, page = await _assistant_page(browser, path="agents", width=size)
+        try:
+            await page.locator('[data-testid="assistant-open"]:visible').first.click()
+            await page.locator('[data-testid="assistant-panel"] ul[aria-label="Things to ask"]').first.wait_for(timeout=10_000)
+            await asyncio.sleep(0.8)
+            m = await page.evaluate(PHONE_PANEL)
+        finally:
+            await ctx.close()
+        at = f"{size[0]}x{size[1]}"
+        if not m or not m["panel"] or not m["list"]:
+            bad.append(f"{at}: no panel or no Things to ask ({m})")
+            continue
+        if m["panel"]["bottom"] < m["vh"] - 13:
+            bad.append(f"{at}: the panel ends at {m['panel']['bottom']} of {m['vh']} ({m['style']})")
+        if m["list"]["bottom"] > m["panel"]["bottom"]:
+            bad.append(f"{at}: Things to ask end at {m['list']['bottom']}, below the panel's {m['panel']['bottom']}")
+        if not m["cornerInPanel"]:
+            bad.append(f"{at}: the bottom corner shows the page ({m['corner']})")
+        said.append(f"{at} panel {m['panel']['top']}–{m['panel']['bottom']}, chips to {m['list']['bottom']}")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "; ".join(said)
+
+
 @check
 async def check_panelhistory(browser) -> str:
     """The panel's history icon lists Synapse AI's chats only, and a pick carries that chat on in the panel (F1062)."""
