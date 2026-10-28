@@ -12,6 +12,9 @@ Two sets are installed apart and checked apart:
     the base set only in `KNOWLEDGE_OWN` (docling-core caps typer below the base's pick; see lock-deps.sh).
 Versions are compared, not markers: the same versions under different markers agree.
 
+The repo root's uv.lock (`uv sync`, `uv run`) installs pyproject with every extra, so it is one of the Knowledge set:
+lock-deps.sh holds it to the installer's locks with generated constraints (F1173).
+
     python3 scripts/lock_agreement.py [backend dir]     # exit 1 and list each conflict
 """
 from __future__ import annotations
@@ -24,20 +27,31 @@ from pathlib import Path
 
 BASE_SET = ("requirements.lock", "requirements-messaging.lock", "requirements-telemetry.lock",
             "requirements-worker.lock", "requirements-wheel.lock")
-KNOWLEDGE_SET = ("requirements-knowledge.lock", "requirements-wheel-knowledge.lock")
+KNOWLEDGE_SET = ("requirements-knowledge.lock", "requirements-wheel-knowledge.lock", "../uv.lock")
 #: What the Knowledge set pins differently from the base set, on purpose.
 KNOWLEDGE_OWN = frozenset({"typer"})
 
 _PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==([^\s;]+)")
 
 
+def _name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def pins(path: Path) -> dict[str, frozenset[str]]:
     """Each package a lock pins, by normalised name, with every version it pins it at (one per marker)."""
     found: dict[str, set[str]] = defaultdict(set)
+    if path.name == "uv.lock":
+        import tomllib
+
+        for package in tomllib.loads(path.read_text(encoding="utf-8")).get("package", []):
+            if "registry" in package.get("source", {}):  # not the project itself, which is editable
+                found[_name(package["name"])].add(package["version"])
+        return {name: frozenset(versions) for name, versions in found.items()}
     for line in path.read_text(encoding="utf-8").splitlines():
         match = _PIN.match(line)
         if match:
-            found[re.sub(r"[-_.]+", "-", match.group(1)).lower()].add(match.group(2))
+            found[_name(match.group(1))].add(match.group(2))
     return {name: frozenset(versions) for name, versions in found.items()}
 
 

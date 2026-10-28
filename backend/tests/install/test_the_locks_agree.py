@@ -44,3 +44,17 @@ def test_knowledge_may_differ_only_in_what_it_owns(tmp_path):
     _write(tmp_path, "requirements-knowledge.lock", "typer==0.26.8\nclick==8.1.0\n")
     (found,) = lock_agreement.conflicts(tmp_path)
     assert found.startswith("click:")
+
+
+def test_the_root_uv_lock_is_held_to_the_knowledge_set(tmp_path):
+    """`uv sync` at the root installs every extra: its uv.lock must pin what the installer's locks pin (F1173)."""
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    _write(backend, "requirements.lock", "anyio==4.0.0\ntyper==0.27.1\n")
+    _write(backend, "requirements-wheel-knowledge.lock", "anyio==4.0.0\ntyper==0.26.8\n")
+    _write(tmp_path, "uv.lock", 'version = 1\n\n[[package]]\nname = "synapse-orch-ai"\nversion = "2.0.0"\n'
+                                'source = { editable = "." }\n\n[[package]]\nname = "anyio"\nversion = "4.1.0"\n'
+                                'source = { registry = "https://pypi.org/simple" }\n\n[[package]]\nname = "typer"\n'
+                                'version = "0.26.8"\nsource = { registry = "https://pypi.org/simple" }\n')
+    found = lock_agreement.conflicts(backend)
+    assert found and all(line.startswith("anyio:") for line in found), found
