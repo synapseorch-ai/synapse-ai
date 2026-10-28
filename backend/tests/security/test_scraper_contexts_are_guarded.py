@@ -174,10 +174,12 @@ async def real_scraper(monkeypatch):
 
 @real_chromium
 async def test_a_pages_request_leaves_through_the_hosts_proxy(real_scraper, monkeypatch):
-    # `site.invalid` resolves nowhere: the page can only come back if the browser asked the proxy for it.
+    # `site.invalid` resolves nowhere: the page can only come back if the browser asked the proxy for it. The proxy
+    # is handed to the scraper, not put in the environment, which Chromium on Linux reads by itself: the page reaches
+    # the proxy only if the scraper's own wiring sends it there (reading it from the environment is SEC2's tests').
     monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "site.invalid")
     async with _RecordingProxy() as proxy:
-        monkeypatch.setenv("HTTP_PROXY", proxy.url)
+        monkeypatch.setattr(web_scraper, "_egress_proxy", lambda: proxy.url)
         out = _out(await real_scraper._handle_scrape_url({"url": "http://site.invalid/page"}))
     assert out["success"] and "answered by the proxy" in out["markdown"], out
     assert "GET http://site.invalid/page HTTP/1.1" in proxy.asked
