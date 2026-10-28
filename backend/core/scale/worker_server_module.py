@@ -669,7 +669,7 @@ SHARED_TOOL_ENV_NAMES: frozenset[str] = frozenset({
     "SYNAPSE_LOG_LEVEL", "SYNAPSE_LOG_FORMAT",
 })
 #: Locale and desktop directories, and the browser the scraper drives.
-SHARED_TOOL_ENV_PREFIXES: tuple[str, ...] = ("LC_", "XDG_", "PLAYWRIGHT_", "CRAWL4_AI_")
+SHARED_TOOL_ENV_PREFIXES: tuple[str, ...] = ("LC_", "XDG_", "PLAYWRIGHT_")
 
 
 def shared_tool_environment(environ: dict[str, str] | None = None) -> dict[str, str]:

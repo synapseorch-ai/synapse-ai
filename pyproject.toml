@@ -40,8 +40,15 @@ dependencies = [
     "ollama>=0.2,<1",
     "beautifulsoup4>=4.12,<5",
     "playwright>=1.44,<2",
+    # The web scraper (tools/web_scraper.py) drives Playwright itself: stealth on each context, pages read as
+    # Markdown (F1157, in place of crawl4ai).
+    "playwright-stealth>=2.0.3,<3",
+    "html-to-markdown>=3.19,<4",
     "duckduckgo-search>=6.0,<9",
     "boto3>=1.34,<2",
+    # The in-app browser's host and its client (core/browser). Already resolved through chromadb; named because
+    # the engine imports it directly.
+    "aiohttp>=3.9,<4",
     # The engine's store. `pip install` gets SQLite and needs nothing running;
     # asyncpg is only reached when SYNAPSE_DB_URL points at Postgres.
     "sqlalchemy[asyncio]>=2.0,<3",
@@ -66,7 +73,6 @@ dependencies = [
     "olefile>=0.46,<1",
     "requests>=2.31,<3",
     "anthropic>=0.28,<1",
-    "crawl4ai>=0.4,<1",
     "psycopg[binary]>=3.0,<4",
     "psycopg-pool>=3.0,<4",
     "cocoindex>=0.3.30,<1.0",
@@ -78,7 +84,7 @@ dependencies = [
     # named it, so a pip install could not save a cron schedule (F161; its commit says F159).
     "croniter>=2.0,<7",
     # The CLI's tables, Markdown answers and chat spinner (synapse/client, D126).
-    # Already resolved through crawl4ai, cocoindex and mcp; named because the CLI
+    # Already resolved through cocoindex and mcp; named because the CLI
     # imports it directly.
     "rich>=13,<16",
 ]

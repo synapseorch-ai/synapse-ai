@@ -4,10 +4,6 @@ accelerate==1.15.0
     # via
     #   -c requirements-knowledge.lock
     #   docling-slim
-aiofiles==25.1.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 aiohappyeyeballs==2.7.1
     # via
     #   -c .knowledge-constraints.txt
@@ -17,10 +13,9 @@ aiohttp==3.14.3
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-messaging.lock
-    #   crawl4ai
+    #   synapse-orch-ai (../pyproject.toml)
     #   discord-py
     #   kubernetes
-    #   unclecode-litellm
 aiosignal==1.4.0
     # via
     #   -c .knowledge-constraints.txt
@@ -30,11 +25,6 @@ aiosqlite==0.22.1
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-    #   crawl4ai
-alphashape==1.3.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 annotated-doc==0.0.5
     # via
     #   -c .knowledge-constraints.txt
@@ -56,10 +46,8 @@ anyio==4.14.2
     #   -c requirements-knowledge.lock
     #   -c requirements-messaging.lock
     #   anthropic
-    #   crawl4ai
     #   httpx
     #   mcp
-    #   openai
     #   sse-starlette
     #   starlette
     #   watchfiles
@@ -87,7 +75,6 @@ beautifulsoup4==4.15.0
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-    #   crawl4ai
 boto3==1.43.69
     # via
     #   -c .knowledge-constraints.txt
@@ -97,10 +84,6 @@ botocore==1.43.69
     #   -c .knowledge-constraints.txt
     #   boto3
     #   s3transfer
-brotli==1.2.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 build==1.5.0
     # via
     #   -c .knowledge-constraints.txt
@@ -122,10 +105,6 @@ cffi==2.1.1
     #   -c requirements-messaging.lock
     #   synapse-orch-ai (../pyproject.toml)
     #   cryptography
-chardet==7.5.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 charset-normalizer==3.4.9
     # via
     #   -c .knowledge-constraints.txt
@@ -142,19 +121,10 @@ click==8.4.2
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   alphashape
-    #   click-log
     #   cocoindex
-    #   crawl4ai
     #   duckduckgo-search
     #   huggingface-hub
-    #   nltk
-    #   unclecode-litellm
     #   uvicorn
-click-log==0.4.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   alphashape
 cocoindex==0.3.39
     # via
     #   -c .knowledge-constraints.txt
@@ -167,10 +137,6 @@ colorama==0.4.6 ; (os_name != 'nt' and sys_platform == 'win32') or (os_name == '
     #   click
     #   tqdm
     #   typer
-crawl4ai==0.9.2
-    # via
-    #   -c .knowledge-constraints.txt
-    #   synapse-orch-ai (../pyproject.toml)
 croniter==6.2.4
     # via
     #   -c .knowledge-constraints.txt
@@ -183,11 +149,6 @@ cryptography==50.0.0
     #   google-auth
     #   pdfminer-six
     #   pyjwt
-    #   pyopenssl
-cssselect==1.5.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 defusedxml==0.7.1
     # via
     #   -c .knowledge-constraints.txt
@@ -195,7 +156,6 @@ defusedxml==0.7.1
     #   synapse-orch-ai (../pyproject.toml)
     #   docling-core
     #   docling-slim
-    #   nltk
 discord-py==2.7.1
     # via
     #   -c requirements-messaging.lock
@@ -204,7 +164,6 @@ distro==1.9.0
     # via
     #   -c .knowledge-constraints.txt
     #   anthropic
-    #   openai
 doclang==0.7.3
     # via
     #   -c requirements-knowledge.lock
@@ -241,18 +200,10 @@ et-xmlfile==2.0.0
     # via
     #   -c .knowledge-constraints.txt
     #   openpyxl
-fake-useragent==2.2.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 fastapi==0.141.1
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-fastuuid==0.14.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   unclecode-litellm
 filelock==3.32.2
     # via
     #   -c .knowledge-constraints.txt
@@ -312,7 +263,6 @@ googleapis-common-protos==1.75.1
 greenlet==3.5.5
     # via
     #   -c .knowledge-constraints.txt
-    #   patchright
     #   playwright
     #   sqlalchemy
 grpcio==1.83.0
@@ -328,19 +278,15 @@ h11==0.16.0
     #   -c requirements-messaging.lock
     #   httpcore
     #   uvicorn
-h2==4.4.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   httpx
 hf-xet==1.6.0 ; platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   huggingface-hub
-hpack==4.2.0
+html-to-markdown==3.19.0
     # via
     #   -c .knowledge-constraints.txt
-    #   h2
+    #   synapse-orch-ai (../pyproject.toml)
 httpcore==1.0.9
     # via
     #   -c .knowledge-constraints.txt
@@ -365,13 +311,10 @@ httpx==0.28.1
     #   synapse-orch-ai (../pyproject.toml)
     #   anthropic
     #   chromadb
-    #   crawl4ai
     #   huggingface-hub
     #   mcp
     #   ollama
-    #   openai
     #   python-telegram-bot
-    #   unclecode-litellm
 httpx-sse==0.4.3
     # via
     #   -c .knowledge-constraints.txt
@@ -385,14 +328,6 @@ huggingface-hub==1.27.0
     #   docling-slim
     #   tokenizers
     #   transformers
-humanize==4.16.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
-hyperframe==6.1.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   h2
 idna==3.18
     # via
     #   -c .knowledge-constraints.txt
@@ -403,34 +338,23 @@ idna==3.18
     #   httpx
     #   requests
     #   yarl
-importlib-metadata==9.0.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   unclecode-litellm
 importlib-resources==7.1.0
     # via
     #   -c .knowledge-constraints.txt
     #   chromadb
 jinja2==3.1.6
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   torch
-    #   unclecode-litellm
 jiter==0.16.0
     # via
     #   -c .knowledge-constraints.txt
     #   anthropic
-    #   openai
 jmespath==1.1.0
     # via
     #   -c .knowledge-constraints.txt
     #   boto3
     #   botocore
-joblib==1.5.3
-    # via
-    #   -c .knowledge-constraints.txt
-    #   nltk
 jsonref==1.1.0
     # via
     #   -c requirements-knowledge.lock
@@ -442,7 +366,6 @@ jsonschema==4.26.0
     #   chromadb
     #   docling-core
     #   mcp
-    #   unclecode-litellm
 jsonschema-specifications==2025.9.1
     # via
     #   -c .knowledge-constraints.txt
@@ -456,19 +379,13 @@ langcodes==3.5.1
     # via
     #   -c requirements-knowledge.lock
     #   docling-slim
-lark==1.3.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 latex2mathml==3.81.1
     # via
     #   -c requirements-knowledge.lock
     #   docling-core
 lxml==6.1.1
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   crawl4ai
     #   doclang
     #   duckduckgo-search
 markdown-it-py==4.2.0
@@ -478,7 +395,6 @@ markdown-it-py==4.2.0
     #   rich
 markupsafe==3.0.3
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   jinja2
 mcp==1.29.0
@@ -506,58 +422,42 @@ multidict==6.7.1
     #   yarl
 networkx==3.6.1
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   alphashape
     #   torch
-nltk==3.10.2
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 numpy==2.4.6 ; python_full_version < '3.12'
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   synapse-orch-ai (../pyproject.toml)
     #   accelerate
-    #   alphashape
     #   chromadb
     #   cocoindex
-    #   crawl4ai
     #   docling-ibm-models
     #   docling-slim
     #   onnxruntime
     #   opencv-python-headless
     #   pandas
-    #   rank-bm25
     #   safetensors
     #   scipy
-    #   shapely
     #   torchvision
     #   transformers
-    #   trimesh
 numpy==2.5.2 ; python_full_version >= '3.12'
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   synapse-orch-ai (../pyproject.toml)
     #   accelerate
-    #   alphashape
     #   chromadb
     #   cocoindex
-    #   crawl4ai
     #   docling-ibm-models
     #   docling-slim
     #   onnxruntime
     #   opencv-python-headless
     #   pandas
-    #   rank-bm25
     #   safetensors
     #   scipy
-    #   shapely
     #   torchvision
     #   transformers
-    #   trimesh
 oauthlib==3.3.1
     # via
     #   -c .knowledge-constraints.txt
@@ -575,10 +475,6 @@ onnxruntime==1.28.0
     # via
     #   -c .knowledge-constraints.txt
     #   chromadb
-openai==2.54.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   unclecode-litellm
 opencv-python-headless==4.14.0.94
     # via
     #   -c requirements-knowledge.lock
@@ -703,10 +599,6 @@ pandas==3.0.5
     #   -c requirements-knowledge.lock
     #   synapse-orch-ai (../pyproject.toml)
     #   docling-core
-patchright==1.61.2
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 pdfminer-six==20260107
     # via
     #   -c .knowledge-constraints.txt
@@ -720,7 +612,6 @@ pillow==12.3.0
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   synapse-orch-ai (../pyproject.toml)
-    #   crawl4ai
     #   docling-core
     #   docling-ibm-models
     #   docling-parse
@@ -736,12 +627,11 @@ playwright==1.62.0
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-    #   crawl4ai
     #   playwright-stealth
 playwright-stealth==2.0.3
     # via
     #   -c .knowledge-constraints.txt
-    #   crawl4ai
+    #   synapse-orch-ai (../pyproject.toml)
 pluggy==1.6.0
     # via
     #   -c requirements-knowledge.lock
@@ -779,7 +669,6 @@ psutil==7.2.2
     #   synapse-orch-ai (../pyproject.toml)
     #   accelerate
     #   cocoindex
-    #   crawl4ai
 psycopg==3.3.4
     # via
     #   -c .knowledge-constraints.txt
@@ -819,16 +708,13 @@ pydantic==2.13.4
     #   -c requirements-knowledge.lock
     #   anthropic
     #   chromadb
-    #   crawl4ai
     #   docling-core
     #   docling-parse
     #   docling-slim
     #   fastapi
     #   mcp
     #   ollama
-    #   openai
     #   pydantic-settings
-    #   unclecode-litellm
 pydantic-core==2.46.4
     # via
     #   -c .knowledge-constraints.txt
@@ -845,7 +731,6 @@ pydantic-settings==2.15.0
 pyee==13.0.1
     # via
     #   -c .knowledge-constraints.txt
-    #   patchright
     #   playwright
 pygments==2.20.0
     # via
@@ -861,10 +746,6 @@ pymysql==1.2.0
     # via
     #   -c .knowledge-constraints.txt
     #   synapse-orch-ai (../pyproject.toml)
-pyopenssl==26.4.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 pyparsing==3.3.2
     # via
     #   -c .knowledge-constraints.txt
@@ -899,10 +780,8 @@ python-dotenv==1.2.2
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   cocoindex
-    #   crawl4ai
     #   docling-slim
     #   pydantic-settings
-    #   unclecode-litellm
     #   uvicorn
 python-multipart==0.0.32
     # via
@@ -925,16 +804,11 @@ pyyaml==6.0.3
     #   synapse-orch-ai (../pyproject.toml)
     #   accelerate
     #   chromadb
-    #   crawl4ai
     #   docling-core
     #   huggingface-hub
     #   kubernetes
     #   transformers
     #   uvicorn
-rank-bm25==0.2.2
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 referencing==0.37.0
     # via
     #   -c .knowledge-constraints.txt
@@ -943,10 +817,7 @@ referencing==0.37.0
     #   jsonschema-specifications
 regex==2026.7.19
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   nltk
-    #   tiktoken
     #   transformers
 requests==2.34.2
     # via
@@ -955,14 +826,12 @@ requests==2.34.2
     #   -c requirements-messaging.lock
     #   -c requirements-telemetry.lock
     #   synapse-orch-ai (../pyproject.toml)
-    #   crawl4ai
     #   docling-core
     #   docling-slim
     #   google-api-core
     #   kubernetes
     #   opentelemetry-exporter-otlp-proto-http
     #   requests-oauthlib
-    #   tiktoken
 requests-oauthlib==2.0.0
     # via
     #   -c .knowledge-constraints.txt
@@ -976,7 +845,6 @@ rich==15.0.0
     #   synapse-orch-ai (../pyproject.toml)
     #   chromadb
     #   cocoindex
-    #   crawl4ai
     #   docling-slim
     #   typer
 rpds-py==2026.6.3
@@ -987,9 +855,7 @@ rpds-py==2026.6.3
     #   referencing
 rtree==1.4.1
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   alphashape
     #   docling-slim
 s3transfer==0.19.2
     # via
@@ -1003,25 +869,16 @@ safetensors==0.8.0
     #   transformers
 scipy==1.17.1 ; python_full_version < '3.12'
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   alphashape
     #   docling-slim
 scipy==1.18.0 ; python_full_version >= '3.12'
     # via
-    #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
-    #   alphashape
     #   docling-slim
 setuptools==84.0.0
     # via
     #   -c requirements-knowledge.lock
     #   torch
-shapely==2.1.2
-    # via
-    #   -c .knowledge-constraints.txt
-    #   alphashape
-    #   crawl4ai
 shellingham==1.5.4
     # via
     #   -c .knowledge-constraints.txt
@@ -1045,11 +902,6 @@ sniffio==1.3.1
     # via
     #   -c .knowledge-constraints.txt
     #   anthropic
-    #   openai
-snowballstemmer==2.2.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 soupsieve==2.9.2
     # via
     #   -c .knowledge-constraints.txt
@@ -1080,17 +932,12 @@ tenacity==9.1.4
     # via
     #   -c .knowledge-constraints.txt
     #   chromadb
-tiktoken==0.13.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   unclecode-litellm
 tokenizers==0.23.1
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-knowledge.lock
     #   chromadb
     #   transformers
-    #   unclecode-litellm
 torch==2.14.1 ; platform_python_implementation != 'PyPy' and sys_platform == 'darwin'
     # via
     #   -c requirements-knowledge.lock
@@ -1128,17 +975,11 @@ tqdm==4.70.0
     #   chromadb
     #   docling-slim
     #   huggingface-hub
-    #   nltk
-    #   openai
     #   transformers
 transformers==5.17.0
     # via
     #   -c requirements-knowledge.lock
     #   docling-ibm-models
-trimesh==5.0.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   alphashape
 typer==0.26.8
     # via
     #   -c requirements-knowledge.lock
@@ -1165,7 +1006,6 @@ typing-extensions==4.16.0
     #   grpcio
     #   huggingface-hub
     #   mcp
-    #   openai
     #   opentelemetry-api
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-exporter-otlp-proto-http
@@ -1176,7 +1016,6 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   pyee
-    #   pyopenssl
     #   referencing
     #   sqlalchemy
     #   starlette
@@ -1196,10 +1035,6 @@ tzdata==2026.3 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     #   -c requirements-knowledge.lock
     #   pandas
     #   psycopg
-unclecode-litellm==1.81.13
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 uritemplate==4.2.0
     # via
     #   -c .knowledge-constraints.txt
@@ -1243,16 +1078,8 @@ wrapt==2.5.0
     #   opentelemetry-instrumentation-httpx
     #   opentelemetry-instrumentation-redis
     #   opentelemetry-instrumentation-sqlalchemy
-xxhash==3.8.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   crawl4ai
 yarl==1.24.5
     # via
     #   -c .knowledge-constraints.txt
     #   -c requirements-messaging.lock
     #   aiohttp
-zipp==4.1.0
-    # via
-    #   -c .knowledge-constraints.txt
-    #   importlib-metadata
