@@ -40,6 +40,9 @@ import { useModelSetup } from '@/components/onboarding/ModelSetupProvider';
 import { KnowledgeCitation, Message, OrchMsgType, SystemStatus } from '@/types';
 import { KnowledgeSources, linkLabels } from '@/components/knowledge/KnowledgeSources';
 
+/** What a chat whose agent was deleted calls it; the id stays on hover where the row shows it (F1129). */
+const GONE_AGENT = 'Deleted agent';
+
 // ─── LLM Thought Collapsible ────────────────────────────────────────────────
 type ThoughtEntry =
   | { type: 'prose'; text: string }
@@ -1271,6 +1274,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
       if (id && info) {
         agentNamedRef.current = true;
         setAgentName(typeof info === 'string' ? id : info.name);
+      } else if (id && d.agents) {
+        // Not the workspace's agent name: the conversation would read as another agent's (F1129).
+        agentNamedRef.current = true;
+        setAgentName(GONE_AGENT);
       }
     }).catch(console.error);
   };
@@ -1393,6 +1400,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat }: {
         if (statusData.agents[agentId]) {
           agentNamedRef.current = true;
           setAgentName(name);
+        } else if (agentId && statusData.agents) {
+          agentNamedRef.current = true;
+          setAgentName(GONE_AGENT);
         }
         setCurrentAgentId(agentId);
 
@@ -3385,7 +3395,9 @@ export default function Home() {
   const agents = useMemo(() => pickableAgents(systemStatus), [systemStatus]);
   const nameOf = useCallback((agentId: string) => {
     const info = systemStatus?.agents?.[agentId];
-    return typeof info === 'object' && info !== null ? info.name : agentId;
+    if (typeof info === 'object' && info !== null) return info.name;
+    // Known only once the agents are read; then an agent that is not among them was deleted (F1129).
+    return systemStatus && agentId && info === undefined ? GONE_AGENT : agentId;
   }, [systemStatus]);
 
   // Read the tabs this browser kept. The page before tabs kept one conversation in two keys: it
@@ -3685,7 +3697,7 @@ function ConversationList({ which, tabs, frontKey, pins, nameOf, isAssistant, on
                 className="block w-full px-4 py-3 pr-16 text-left"
               >
                 <span className="mb-1 flex items-start justify-between gap-2">
-                  {/* The agent's name, not its id in capitals (U59); the id stays for a deleted agent, and as the tooltip. */}
+                  {/* The agent's name, not its id in capitals (U59); "Deleted agent" for a deleted one (F1129); the id as the tooltip. */}
                   <span className="flex min-w-0 items-center gap-1.5 truncate text-xs font-medium text-text-faint" title={s.agent_id || 'default'}>
                     {isAssistant(s.agent_id) && <Mark size={12} compact={false} className="shrink-0 text-accent" aria-hidden />}
                     {nameOf(s.agent_id) || s.agent_id || 'default'}
