@@ -2635,13 +2635,13 @@ _ARG_REF = re.compile(r"\{\{\s*state\.([\w.\-]+)\s*\}\}|\{state\.([\w.]+)\}")
 def _state_value(state: dict, path: str) -> Any:
     """The value at `path` in state. A step into a value held as JSON text reads the JSON: a builder tool's output
     is JSON text in state, and a set argument names a field of it."""
-    from core.templating import _walk
+    from core.templating import _walk, loads_within_depth
 
     cur: Any = state
     for part in path.split("."):
         if isinstance(cur, str):
             try:
-                cur = json.loads(cur)
+                cur = loads_within_depth(cur)
             except (ValueError, RecursionError):  # nested too deep to read names nothing either
                 raise MissingStateRef(f"state.{path}") from None
         found, cur = _walk(cur, [part])

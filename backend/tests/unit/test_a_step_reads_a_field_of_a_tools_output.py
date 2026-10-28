@@ -96,8 +96,8 @@ def test_a_model_s_prompt_reads_a_field_of_json_text_and_never_renders_it():
 
 
 def test_text_nested_too_deep_to_read_has_no_fields_and_fails_nothing():
-    """`json.loads` raises RecursionError, not ValueError, on text nested thousands deep: a step reading a field of
-    it reads nothing, as for any text that is not a JSON object (the branch review's finding 13)."""
+    """Text nested thousands deep is no JSON object: a step reading a field of it reads nothing, as for any text
+    that is not a JSON object (the branch review's finding 13; counted since F1164, below)."""
     from core.orchestration.context import _fill_task_template
 
     deep = '{"a": ' * 100_000 + "1" + "}" * 100_000
@@ -113,3 +113,38 @@ def test_a_set_argument_into_text_nested_too_deep_names_nothing():
 
     with pytest.raises(MissingStateRef):
         render_tool_arguments({"x": "{{ state.deep.a }}"}, {"deep": '{"a": ' * 100_000 + "1" + "}" * 100_000})
+
+
+def _nested(depth: int) -> str:
+    """JSON text of `depth` objects, one inside the next, the innermost `{"a": 1}`."""
+    return '{"a": ' * (depth - 1) + '{"a": 1}' + "}" * (depth - 1)
+
+
+def test_json_text_is_read_to_a_counted_depth_whatever_the_stack():
+    """Too deep is counted, not left to where `json.loads` runs out of the C stack: a 16 MB stack parses the
+    100,000 levels above that an 8 MB one cannot, and the same run read them on one machine and not on another
+    (F1164). Text at the limit is read; one level more is no object, on every step that reads a field."""
+    from core.orchestration.context import _fill_task_template
+    from core.orchestration.steps import MissingStateRef, render_tool_arguments
+    from core.templating import MAX_JSON_DEPTH
+
+    at, over = {"deep": _nested(MAX_JSON_DEPTH)}, {"deep": _nested(MAX_JSON_DEPTH + 1)}
+    assert evaluate_expression("state.deep.a", at, "fallback").value != "fallback"
+    assert render_state_refs("{state.deep.a}", at) != "{state.deep.a}"
+    assert _fill_task_template("{{ state.deep.a }}", at, {}) != "{{ state.deep.a }}"
+    assert render_tool_arguments({"x": "{{ state.deep.a }}"}, at)["x"]
+
+    assert evaluate_expression("state.deep.a", over, "fallback").value == "fallback"
+    assert render_state_refs("{state.deep.a}", over) == "{state.deep.a}"
+    assert _fill_task_template("{{ state.deep.a }}", over, {}) == "{{ state.deep.a }}"
+    with pytest.raises(MissingStateRef):
+        render_tool_arguments({"x": "{{ state.deep.a }}"}, over)
+
+
+def test_braces_inside_a_string_are_not_depth():
+    from core.templating import MAX_JSON_DEPTH
+
+    braces = "{[" * MAX_JSON_DEPTH
+    state = {"deep": json.dumps({"a": braces})}
+    assert evaluate_expression("state.deep.a", state, "fallback").value == braces
+    assert render_state_refs("{state.deep.a}", state) == braces
