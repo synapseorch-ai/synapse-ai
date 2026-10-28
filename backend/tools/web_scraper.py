@@ -432,7 +432,10 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     screenshot. A wait that never comes true is a failure that says "Wait condition failed" (`_arun_once`)."""
     await _send_headers(page, url=url)
     downloads: list = []
-    on_download = downloads.append
+
+    def on_download(download) -> None:  # a function: Playwright tags its listeners, which a bound builtin can't take
+        downloads.append(download)
+
     page.on("download", on_download)
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
