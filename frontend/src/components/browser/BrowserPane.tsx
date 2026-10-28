@@ -8,10 +8,11 @@ import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
 import { actionCount, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
-         type BrowserSessionEvent, type Wheel } from './model';
+         type BrowserSessionEvent, type FrameRecording, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
 import { SessionPicker } from './SessionPicker';
+import { stepCount } from './recordings';
 import { shortDate, type KeptSession } from './sessions';
 import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
 
@@ -32,7 +33,7 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  * page, the address bar takes an address, and Hand back carries a note.
  */
 export function BrowserPane({
-  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, owner, signedIn, picks,
+  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, record, owner, signedIn, picks,
   className, style, children,
 }: {
   host: BrowserHost;
@@ -56,6 +57,18 @@ export function BrowserPane({
    * (nothing is signed in yet), said on the card while the browser stays open to sign in.
    */
   signIn?: { site: string; onFinish: (keep: boolean) => void; busy?: boolean; refused?: string | null };
+  /**
+   * Recording a task (F1142): the person's alone, as `signIn` is. Its strip says it is recording, how many steps and
+   * the last, and that a password being typed isn't kept; Stop and keep, or Discard. A re-record's replay that stopped
+   * at the person's own step (`handover`) says what to do there, then Carry on.
+   */
+  record?: {
+    onStop: (keep: boolean) => void;
+    busy?: boolean;
+    handover?: { reason: string } | null;
+    onCarryOn?: () => void;
+    failed?: string | null;
+  };
   /** Whose browser it is (`chat:<id>`, `run:<id>`): once it closes, its lines' screenshots are the kept ones. */
   owner?: string;
   /** What it was signed in with, and what it could not be (`browser_session`, F1140). */
@@ -176,7 +189,9 @@ export function BrowserPane({
   // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A sign-in browser is the person's alone.
   const [disclaimerSeen, setDisclaimerSeen] = usePersisted<'0' | '1'>(
     'browser-disclaimer-seen', raw => (raw === '1' ? '1' : '0'), '1');
-  const disclaimer = !signIn && !closed && disclaimerSeen === '0';
+  // A browser for the person alone (signing in, recording): no agent's Stop, Take over, picks or disclaimer.
+  const alone = !!signIn || !!record;
+  const disclaimer = !alone && !closed && disclaimerSeen === '0';
 
   // The newest action stays in view as the list grows.
   const list = useRef<HTMLOListElement>(null);
@@ -211,14 +226,14 @@ export function BrowserPane({
             {url ? shortUrl(url) : 'Opening the browser…'}
           </span>
         )}
-        {picks && !signIn && (
+        {picks && !alone && (
           <Button variant="ghost" size="sm" onClick={() => setPicking(p => !p)} aria-expanded={picking}
                   title="The sessions this chat’s browser signs in with">
             <KeyRound className="size-3.5" aria-hidden />
             Sessions
           </Button>
         )}
-        {!closed && !signIn && (
+        {!closed && !alone && (
           <Button variant="ghost" size="sm" onClick={stop} loading={stopping}
                   title="Stop the agent and close its browser">
             {!stopping && <Square className="size-3.5" aria-hidden />}
@@ -228,7 +243,7 @@ export function BrowserPane({
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
       </header>
 
-      {picks && picking && !signIn && <PicksPanel picks={picks} />}
+      {picks && picking && !alone && <PicksPanel picks={picks} />}
       <SignedInLine signedIn={signedIn} kept={keptAgain} />
 
       {signIn && !closed ? (
@@ -248,6 +263,8 @@ export function BrowserPane({
           </div>
           {signIn.refused && <p role="alert" className="leading-relaxed text-danger">{signIn.refused}</p>}
         </div>
+      ) : record && !closed ? (
+        <RecordStrip record={record} recording={frame?.recording} />
       ) : banner ? (
         <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
                      onRelease={release} onAllow={allow} onTakeOver={canDrive && !driving ? takeOver : undefined}
@@ -398,6 +415,54 @@ function SignedInLine({ signedIn, kept }: {
           {shortDate(kept.expires_at)}.
         </p>
       )}
+    </div>
+  );
+}
+
+
+/** What a held field's typing is, in the strip's words: never kept, not even blanked (DESIGN v5.2). */
+const HOLDING: Record<NonNullable<FrameRecording['holding']>, string> = {
+  password: 'Typing a password: the password isn’t kept.',
+  card: 'Typing card details: they aren’t kept.',
+  code: 'Typing a code: the code isn’t kept.',
+};
+
+/** The record browser's strip (F1142): it is recording, how far, what isn't kept; or, mid-replay, the person's step. */
+function RecordStrip({ record, recording }: {
+  record: NonNullable<React.ComponentProps<typeof BrowserPane>['record']>;
+  recording?: FrameRecording;
+}) {
+  return (
+    <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
+      <div className="flex flex-wrap items-center gap-2">
+        <span aria-hidden className="size-2 shrink-0 rounded-full bg-danger motion-safe:animate-pulse" />
+        <p className="min-w-0 grow basis-80 leading-relaxed">
+          {record.handover ? (
+            <>
+              <strong className="font-semibold">{record.handover.reason}.</strong>{' '}
+              This step is yours: do it here, then carry on. The rest replays, then recording starts.
+            </>
+          ) : (
+            <>
+              <strong className="font-semibold">Recording · {stepCount(recording?.steps ?? 0)}</strong>
+              {recording?.last && <> · Last: <span>{recording.last.title}</span></>}
+              {'. '}
+              {recording?.holding ? HOLDING[recording.holding] : 'Each thing you do here is a step. Passwords, cards and codes are never kept.'}
+            </>
+          )}
+        </p>
+        <div className="ml-auto flex shrink-0 gap-2">
+          <Button variant="secondary" size="sm" disabled={record.busy} onClick={() => record.onStop(false)}>
+            {record.handover ? 'Cancel' : 'Discard'}
+          </Button>
+          {record.handover ? (
+            <Button variant="person" size="sm" loading={record.busy} onClick={record.onCarryOn}>Carry on</Button>
+          ) : (
+            <Button variant="person" size="sm" loading={record.busy} onClick={() => record.onStop(true)}>Stop and keep</Button>
+          )}
+        </div>
+      </div>
+      {record.failed && <p role="alert" className="leading-relaxed text-danger">{record.failed}</p>}
     </div>
   );
 }

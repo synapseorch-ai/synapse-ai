@@ -67,7 +67,11 @@ export type BrowserFrame = {
   dialog?: PageDialog;
   select?: PageSelect;
   file?: PageFile;
+  /** A browser recording a task (F1141): how many steps, the last, and a field whose typing isn't being kept. */
+  recording?: FrameRecording;
 };
+
+export type FrameRecording = { steps: number; last?: { id: string; title: string }; holding?: 'password' | 'card' | 'code' };
 
 /** `browser_session`: an agent opened a browser for this chat or run. */
 /** Where a session a browser started with was picked (the nearer level wins on a site; DESIGN v5.1). */
