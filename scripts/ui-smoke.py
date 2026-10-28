@@ -14317,6 +14317,8 @@ async def check_brwstep(browser) -> str:
         if not await offer.count():
             raise AssertionError("the step picker does not offer Browser")
         await offer.click()
+        # A saved step carries the server's defaults (merge_strategy, loop_count), so the type change asks first.
+        await page.get_by_role("button", name="Change type").click()
         await asyncio.sleep(0.5)
         if "No recording selected" not in await node.inner_text():
             bad.append("a Browser step with no recording does not say so on the canvas")
