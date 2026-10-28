@@ -37,7 +37,6 @@ import { DBsTab } from './settings/DBsTab';
 import { ImportExportTab } from './settings/ImportExportTab';
 import { SupportTab } from './settings/SupportTab';
 import { APIKeysTab } from './settings/APIKeysTab';
-import { WebsiteLoginsTab } from './settings/WebsiteLoginsTab';
 import { McpServerTab } from './settings/McpServerTab';
 import { ScaleTab } from './settings/ScaleTab';
 
@@ -729,7 +728,6 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                     <DBsTab />
                 )}
 
-                {activeTab === 'website_logins' && <WebsiteLoginsTab />}
 
                 {/* API KEYS TAB */}
                 {activeTab === 'mcp_server' && <McpServerTab />}

@@ -5,14 +5,14 @@ import { Globe } from 'lucide-react';
 
 import { Button } from '@/components/ui';
 
-import type { BannerKind } from './model';
+import { bannerKindOf, type BannerKind } from './model';
 
 const LEADS: Record<BannerKind, string> = {
   send: 'Your turn: check it and send it yourself',
   sensitive: 'Your turn in the browser',
   captcha: 'Your turn: a check that you’re a person',
   asked: 'Your turn in the browser',
-  login_expired: 'Your turn: log in again',
+  session_expired: 'Your turn: sign in again',
   allow_typing: 'Your turn: may it type on this site?',
   press: 'Your turn: press it yourself',
 };
@@ -33,8 +33,10 @@ export function BrowserTurnCard({ reason, kind, answered, onOpen, onDone }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
-  const lead = LEADS[kind ?? 'asked'] ?? LEADS.asked;
-  const secret = kind === 'sensitive' || kind === 'login_expired';
+  // An old component's `login_expired` reads as the session that expired it is (F1138).
+  const shown = bannerKindOf(kind) ?? 'asked';
+  const lead = LEADS[shown];
+  const secret = shown === 'sensitive' || shown === 'session_expired';
   return (
     <div data-browser-turn className="flex min-w-0 flex-col gap-2.5 rounded-xl border border-person/60 bg-person-subtle px-4 py-3.5">
       <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">

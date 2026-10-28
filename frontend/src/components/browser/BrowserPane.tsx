@@ -30,7 +30,7 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  * page, the address bar takes an address, and Hand back carries a note.
  */
 export function BrowserPane({
-  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, login, owner,
+  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, owner,
   className, style, children,
 }: {
   host: BrowserHost;
@@ -49,10 +49,11 @@ export function BrowserPane({
   /** The wheel went back to the agent: a turn waiting on the person can go on. */
   onHandedBack?: () => void;
   /**
-   * "Log in to a site" (F1079): the person alone, no agent. The strip offers keeping the login, which ends the
-   * browser either way; there is no Stop, Take over or Hand back.
+   * "Keep me signed in to a site" (F1079, F1139): the person alone, no agent. The strip is the consent card (DESIGN
+   * v5-1): it says what is kept, and Keep ends the browser with its session kept. `refused`: why a keep was refused
+   * (nothing is signed in yet), said on the card while the browser stays open to sign in.
    */
-  login?: { sites: string[]; onFinish: (keep: boolean) => void; busy?: boolean };
+  signIn?: { site: string; onFinish: (keep: boolean) => void; busy?: boolean; refused?: string | null };
   /** Whose browser it is (`chat:<id>`, `run:<id>`): once it closes, its lines' screenshots are the kept ones. */
   owner?: string;
   className?: string;
@@ -159,10 +160,10 @@ export function BrowserPane({
   const url = frame?.url || lines[lines.length - 1]?.url || '';
   const driver = wheel === 'person' ? 'You’re driving' : wheel === 'nobody' ? 'Nobody is driving' : `${agentName} is driving`;
 
-  // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A login is the person's alone.
+  // Said once to each person, in this browser, and in the terms (Naveen 2026-10-28). A sign-in browser is the person's alone.
   const [disclaimerSeen, setDisclaimerSeen] = usePersisted<'0' | '1'>(
     'browser-disclaimer-seen', raw => (raw === '1' ? '1' : '0'), '1');
-  const disclaimer = !login && !closed && disclaimerSeen === '0';
+  const disclaimer = !signIn && !closed && disclaimerSeen === '0';
 
   // The newest action stays in view as the list grows.
   const list = useRef<HTMLOListElement>(null);
@@ -197,7 +198,7 @@ export function BrowserPane({
             {url ? shortUrl(url) : 'Opening the browser…'}
           </span>
         )}
-        {!closed && !login && (
+        {!closed && !signIn && (
           <Button variant="ghost" size="sm" onClick={stop} loading={stopping}
                   title="Stop the agent and close its browser">
             {!stopping && <Square className="size-3.5" aria-hidden />}
@@ -207,15 +208,19 @@ export function BrowserPane({
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
       </header>
 
-      {login && !closed ? (
-        <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
-          <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
-          <span className="min-w-0 flex-1 leading-relaxed">
-            <strong className="font-semibold">Log in to <span translate="no">{login.sites.join(', ')}</span>.</strong>{' '}
-            Only you drive this browser, and nothing is recorded. When you&apos;re in, keep the login so runs can use it.
-          </span>
-          <Button variant="secondary" size="sm" disabled={login.busy} onClick={() => login.onFinish(false)}>Don&apos;t keep it</Button>
-          <Button variant="person" size="sm" loading={login.busy} onClick={() => login.onFinish(true)}>Keep this login</Button>
+      {signIn && !closed ? (
+        <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
+          <div className="flex flex-wrap items-center gap-2">
+            <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
+            <p className="min-w-0 flex-1 leading-relaxed">
+              <strong className="font-semibold">Keep me signed in to <span translate="no">{signIn.site}</span> for your agents.</strong>{' '}
+              Synapse keeps the site’s session, never your password. It expires in 30 days; remove it anytime.
+              Only you drive this browser, and nothing is recorded.
+            </p>
+            <Button variant="secondary" size="sm" disabled={signIn.busy} onClick={() => signIn.onFinish(false)}>Don’t keep</Button>
+            <Button variant="person" size="sm" loading={signIn.busy} onClick={() => signIn.onFinish(true)}>Keep</Button>
+          </div>
+          {signIn.refused && <p role="alert" className="leading-relaxed text-danger">{signIn.refused}</p>}
         </div>
       ) : banner ? (
         <MomentStrip banner={banner} agentName={agentName} onDone={driving ? handBack : undefined}
@@ -230,7 +235,7 @@ export function BrowserPane({
             value={note}
             onChange={e => setNote(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handBack(); }}
-            placeholder="A note for the agent (optional): I logged in, carry on"
+            placeholder="A note for the agent (optional): I signed in, carry on"
             aria-label="Note for the agent"
             className="min-w-[10rem] flex-1"
           />

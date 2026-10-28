@@ -13,7 +13,17 @@
 export type Wheel = 'agent' | 'person' | 'nobody';
 
 /** What the person is asked to handle, in the strip under the address (BRW1's v2 contract). */
-export type BannerKind = 'send' | 'sensitive' | 'captcha' | 'asked' | 'login_expired' | 'allow_typing' | 'press';
+export type BannerKind = 'send' | 'sensitive' | 'captcha' | 'asked' | 'session_expired' | 'allow_typing' | 'press';
+const BANNER_KINDS: readonly string[] = ['send', 'sensitive', 'captcha', 'asked', 'session_expired', 'allow_typing', 'press'];
+
+/**
+ * A banner's kind as the screens read it. A component a release behind still says `login_expired` (F1138 renamed it
+ * `session_expired`, with one release of grace, DESIGN §v5.5), so it is read as that wherever a kind is shown.
+ */
+export function bannerKindOf(raw: unknown): BannerKind | undefined {
+  if (raw === 'login_expired') return 'session_expired';
+  return typeof raw === 'string' && BANNER_KINDS.includes(raw) ? raw as BannerKind : undefined;
+}
 /**
  * A final button the agent stopped at (BRW1's "Final buttons and sends", Naveen 2026-10-28): one that acts for the
  * person, which the agent presses only on their own words, or one with money in it, which is always theirs.
@@ -31,6 +41,10 @@ export type BrowserBanner = {
   host?: string;
   /** For `press`: the button, what it does, and whether money is in it. */
   press?: PressAsk;
+  /** For `session_expired`: the site, its session, and whether it is the person's own to sign in again. */
+  site?: string;
+  site_session_id?: string;
+  mine?: boolean;
 };
 
 /** The page's own alert, confirm or prompt, which the screencast cannot show. */
@@ -117,10 +131,6 @@ export type BrowserHost = {
   choose?: (sessionId: string, target: string, value: string) => Promise<boolean>;
   /** A file the person picked from their own computer, for the chooser the page has open. */
   offerFile?: (sessionId: string, file: File) => Promise<boolean>;
-  /** "Log in to a site": a browser for the person alone, on these sites. Resolves its session, or a refusal. */
-  startLogin?: (sites: string[]) => Promise<{ sessionId: string } | { refused: string }>;
-  /** Ends a login browser; `keep` saves its login. Resolves the saved login's id, or null when nothing was kept. */
-  finishLogin?: (sessionId: string, keep: boolean) => Promise<string | null>;
 };
 
 /** A run's browser turn, as its waiting step's fields carry it (BRW1: no column of its own; the field's type says). */
@@ -131,7 +141,7 @@ export function browserTurnOf(fields: unknown): RunBrowserTurn | null {
   const f = fields.find((x) => x && typeof x === 'object' && (x as { type?: unknown }).type === 'browser_turn') as
     { session_id?: unknown; label?: unknown; banner_kind?: unknown } | undefined;
   if (!f || typeof f.session_id !== 'string') return null;
-  return { session_id: f.session_id, reason: String(f.label ?? ''), banner_kind: f.banner_kind as BannerKind | undefined };
+  return { session_id: f.session_id, reason: String(f.label ?? ''), banner_kind: bannerKindOf(f.banner_kind) };
 }
 
 /** The site a URL is on, for a sentence. */

@@ -1,9 +1,25 @@
 export { BrowserActionLine } from './BrowserActionLine';
 export {
-  ACTION_BUDGET, BROWSER_DEFAULTS, BrowserSetup, browserConfig, parseSites, type BrowserConfig, type LoginChoice,
+  ACTION_BUDGET, BROWSER_DEFAULTS, BrowserSetup, browserConfig, parseSites, type BrowserConfig,
 } from './BrowserSetup';
 export { BrowserPane } from './BrowserPane';
 export { BrowserTurnCard } from './BrowserTurnCard';
+export { SessionPicker } from './SessionPicker';
+export { SessionsLibrary } from './SessionsLibrary';
+export {
+  expiresIn,
+  finishSignIn,
+  lastUsed,
+  listSessions,
+  removeSession,
+  startSignIn,
+  usesWords,
+  whose,
+  type KeptSession,
+  type SessionUses,
+  type SessionsHost,
+  type SiteSession,
+} from './sessions';
 export { Filmstrip } from './Filmstrip';
 export { PANE_SHARE, PaneHandle, parseShare } from './PaneHandle';
 export { useBrowserFrames, useKeptLog, type FrameMemory, type FramesState } from './useBrowserFrames';
@@ -11,6 +27,7 @@ export {
   actionCount,
   actionOf,
   actionWords,
+  bannerKindOf,
   browserTurnOf,
   hostOf,
   isBrowserEvent,

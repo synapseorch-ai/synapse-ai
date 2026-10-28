@@ -6,19 +6,19 @@ import { CreditCard, Lock, MousePointerClick, Send, ShieldCheck } from 'lucide-r
 import { Button, Input } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
-import { hostOf, type BrowserBanner, type PageDialog, type PageFile, type PageSelect } from './model';
+import { bannerKindOf, hostOf, type BrowserBanner, type PageDialog, type PageFile, type PageSelect } from './model';
 
 /**
  * What the person is asked to handle, as an amber strip under the address with its action in it (BRW2, F1077;
  * Naveen's pick A of the co-drive prototype). A send the agent tried is held at the network and named, with
  * "It only loaded data" for sites that send to read. A turn the agent handed over (a password, a code, a check that
- * you're a person, a login that ended, or something it asked) ends with Done, which hands the wheel back. Typing on
+ * you’re a person, a session that expired, or something it asked) ends with Done, which hands the wheel back. Typing on
  * a site no one listed is allowed here, once a session. A final button the agent stopped at (`press`) is named with
  * what it does, for the person to press (its reason is that same sentence, so it is not said again); payments,
  * permanent deletes and closing an account are always theirs, and a held payment is never let through, only taken
  * over (Naveen 2026-10-28).
  */
-export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onTakeOver, failed }: {
+export function MomentStrip({ banner: raw, agentName, onDone, onRelease, onAllow, onTakeOver, failed }: {
   banner: BrowserBanner;
   agentName: string;
   /** Hands the wheel back; absent while the agent still holds it. */
@@ -30,6 +30,8 @@ export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onT
   /** Why the last move of the wheel did not happen. */
   failed?: string | null;
 }) {
+  // An old component's `login_expired` reads as the session that expired it is (F1138).
+  const banner = { ...raw, kind: bannerKindOf(raw.kind) ?? 'asked' };
   const money = banner.press?.tier === 'money' || !!banner.held?.money;
   const Icon = money ? CreditCard : banner.kind === 'send' ? Send : banner.kind === 'press' ? MousePointerClick
     : banner.kind === 'captcha' ? ShieldCheck : Lock;
@@ -63,12 +65,14 @@ export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onT
     );
   } else {
     const fallback = { sensitive: 'this field is yours', captcha: 'the site wants to check you’re a person',
-                       asked: 'the agent needs you here', login_expired: 'log in again',
+                       asked: 'the agent needs you here', session_expired: 'sign in again',
                        press: 'press the page’s button yourself' }[banner.kind];
     words = (
       <><strong className="font-semibold">Your turn:</strong> {reason || fallback}.
-        {banner.kind === 'sensitive' || banner.kind === 'login_expired'
-          ? ' The agent can’t see what you type, and nothing is recorded while you drive.' : ''}</>
+        {banner.kind === 'session_expired' && banner.mine === false
+          ? ' It isn’t your session: only its owner can sign in again.'
+          : banner.kind === 'sensitive' || banner.kind === 'session_expired'
+            ? ' The agent can’t see what you type, and nothing is recorded while you drive.' : ''}</>
     );
   }
   // A held payment is never let through: `/release` answers 409 for it.

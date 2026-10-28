@@ -128,6 +128,11 @@ export const HUB_NAV: NavHubGroup[] = [
                         id: 'skills', label: 'Skills', href: '/skills', icon: BookOpen,
                         blurb: 'Reusable instruction packages agents load on demand.',
                     },
+                    {
+                        // The browser inside Synapse (BRW2, F1139; DESIGN v5-10, Naveen 10-29: under Agents).
+                        id: 'browser', label: 'Browser', href: '/browser', icon: Globe,
+                        blurb: 'Sites your agents stay signed in to, and tasks recorded for them to repeat.',
+                    },
                 ],
             },
             {
@@ -246,11 +251,6 @@ export const SETTINGS_NAV: NavGroup[] = [
                 id: 'db_configs', label: 'DB configs', href: '/settings/db_configs', icon: Database,
                 blurb: 'Database connections your agents are allowed to query.',
                 flag: 'coding_agent_enabled',
-            },
-            {
-                // The browser inside Synapse (BRW2, F1079): sessions kept so runs start logged in.
-                id: 'website_logins', label: 'Website logins', href: '/settings/website_logins', icon: Globe,
-                blurb: 'Sites you logged in to in the browser, kept so runs start logged in.',
             },
         ],
     },

@@ -164,6 +164,18 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         media: { id: 'skills/list', alt: 'The Skills tab of Agents with a skill open: its instructions for how agents write payment notes.' },
         guide: '/guides/start/agents',
     },
+    browser: {
+        title: 'Browser',
+        summary: 'Sites your agents stay signed in to, kept as each site’s session and never your password.',
+        steps: [
+            'Click “Keep me signed in to a site”, name it, and sign in in the browser that opens; only you drive it, and nothing is recorded.',
+            'Click “Keep” when you are in. Synapse keeps the site’s session, encrypted: never your password, which agents never see or type.',
+            'A session expires in 30 days at most, or sooner when the site ends it; the row says when, and an expired one offers “Sign in again”.',
+            'Pick sessions for an agent in its Browser section, one per site. “Remove” takes a session away at once, and says first what uses it.',
+        ],
+        // The browser's own guide is written with the docs at the announcement (outline in pro drafts/brw2).
+        guide: '/guides/start/agents',
+    },
     'agents.editor': {
         title: 'Setting up an agent',
         summary: 'An agent is a model with instructions and tools. Say what it is for, pick what it may use, then try it in the chat beside its setup before you put it to work.',
@@ -451,18 +463,6 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         ],
         media: { id: 'settings/oss-databases', alt: 'Settings → DB configs: databases your agents can query.' },
         guide: '/guides/start/tools',
-    },
-    website_logins: {
-        title: 'Website logins',
-        summary: 'Sites you logged in to in the browser inside Synapse, kept so a run that needs one starts logged in.',
-        steps: [
-            'Click “Log in to a site”, name it, and log in in the browser that opens; only you drive it, and nothing is recorded.',
-            'Click “Keep this login” when you are in. Each row is a site’s session, kept encrypted: your password is never kept, and agents never see or type it.',
-            'A login lasts 30 days at most, or less when the site ends it sooner; the row says when it ends.',
-            '“Forget” removes a login at once; a run that needs the site then asks you to log in again.',
-        ],
-        // The browser's own guide is written with the docs at the announcement (outline in pro drafts/brw2).
-        guide: '/guides/start/agents',
     },
     api_keys: {
         title: 'API keys',

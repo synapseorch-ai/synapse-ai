@@ -28,6 +28,8 @@ export const MOVED_TABS: Record<string, string> = {
     // Out of Settings into the Channels hub (D209, M1a).
     messaging: '/channels',
     widgets: '/widgets',
+    // Out of Settings into Agents › Browser, as sessions (F1138/F1139; DESIGN v5-10).
+    website_logins: '/browser/sessions',
 };
 
 /**

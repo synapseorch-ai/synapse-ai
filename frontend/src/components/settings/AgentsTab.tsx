@@ -20,7 +20,8 @@ import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type 
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
 import { AgentBoards } from '@/components/boards/AgentBoards';
 import { TeamSetup, newTeamBlock } from '@/components/team';
-import { BrowserSetup, browserConfig, type LoginChoice } from '@/components/browser';
+import { BrowserSetup, browserConfig, listSessions, type SiteSession } from '@/components/browser';
+import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import { useNavFlags } from '@/components/app/NavFlags';
 import { OssBoardsHost } from '@/lib/boardsHost';
 import { knowledgeApi, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
@@ -96,8 +97,8 @@ export const AgentsTab = ({
     const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
     const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string; disabled?: boolean }[]>([]);
-    // The saved logins a Browser agent may start with (Settings → Website logins, BRW2).
-    const [websiteLogins, setWebsiteLogins] = useState<LoginChoice[]>([]);
+    // The kept sessions a Browser agent may start signed in with (Agents › Browser › Sessions, BRW2); null while read.
+    const [siteSessions, setSiteSessions] = useState<SiteSession[] | null>(null);
     const [expandedCaps, setExpandedCaps] = useState<Set<string>>(new Set());
     const [promptDescription, setPromptDescription] = useState('');
     const [isGenerating, setIsGenerating] = useState(false);
@@ -328,10 +329,9 @@ export const AgentsTab = ({
             .then(res => res.json())
             .then(data => setAgentTypes(data.types || []))
             .catch(err => console.error("Failed to fetch agent types", err));
-        fetch('/api/website-logins')
-            .then(res => (res.ok ? res.json() : { logins: [] }))
-            .then(data => setWebsiteLogins(Array.isArray(data?.logins) ? data.logins : []))
-            .catch(() => setWebsiteLogins([]));
+        listSessions(OSS_SESSIONS_HOST)
+            .then(setSiteSessions)
+            .catch(() => setSiteSessions([]));
         fetch('/api/settings')
             .then(res => res.json())
             .then(data => {
@@ -904,7 +904,8 @@ export const AgentsTab = ({
                                                 <BrowserSetup
                                                     value={draftAgent.browser}
                                                     onChange={browser => setDraftAgent({ ...draftAgent, browser })}
-                                                    logins={websiteLogins}
+                                                    sessions={siteSessions}
+                                                    libraryHref={OSS_SESSIONS_HOST.libraryHref}
                                                 />
                                             </SetupSection>
                                         )}
