@@ -136,8 +136,10 @@ def _json_object(text: str) -> dict | None:
     """`text` as the JSON object it holds, or None when it holds none."""
     if not text.lstrip().startswith("{"):
         return None
+    from core.templating import loads_within_depth
+
     try:
-        parsed = json.loads(text)
+        parsed = loads_within_depth(text)
     except (ValueError, RecursionError):  # nested too deep to read is no object either
         return None
     return parsed if isinstance(parsed, dict) else None

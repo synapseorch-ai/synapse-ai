@@ -32,6 +32,28 @@ REF = re.compile(r"\{\{\s*([A-Za-z_][\w.\-]*)\s*\}\}")
 #: The namespaces a reference may start with. Anything else is a bare name.
 NAMESPACES = ("global", "state", "args")
 
+#: How deep JSON text a step reads a field of may nest (F1164). Counted, not left to `json.loads`: where it runs out
+#: of the C stack depends on the stack's size (an 8 MB stack refuses 100,000 levels, a 16 MB one parses them).
+MAX_JSON_DEPTH = 1000
+
+#: A JSON string (so the braces in it are not depth) or one bracket.
+_JSON_DEPTH_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[\[\]{}]')
+
+
+def loads_within_depth(text: str) -> Any:
+    """`json.loads(text)`, or ValueError when the text nests deeper than `MAX_JSON_DEPTH`."""
+    if text.count("{") + text.count("[") > MAX_JSON_DEPTH:
+        depth = 0
+        for m in _JSON_DEPTH_TOKEN.finditer(text):
+            token = m.group()
+            if token in ("{", "["):
+                depth += 1
+                if depth > MAX_JSON_DEPTH:
+                    raise ValueError(f"JSON nested more than {MAX_JSON_DEPTH} deep")
+            elif token in ("}", "]"):
+                depth -= 1
+    return json.loads(text)
+
 
 def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
     """Follow `path` into dicts (and list indexes). `(found, value)`.
@@ -44,7 +66,7 @@ def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
     for part in path:
         if isinstance(cur, str) and cur.lstrip().startswith("{"):
             try:
-                parsed = json.loads(cur)
+                parsed = loads_within_depth(cur)
             except (ValueError, RecursionError):  # nested too deep to read is no object either
                 parsed = None
             if isinstance(parsed, dict):
