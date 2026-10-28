@@ -3801,6 +3801,35 @@ async def check_chatleave(browser) -> str:
     return "leaving mid-turn asks nothing and stops nothing"
 
 
+@check
+async def check_firsttabplain(browser) -> str:
+    """A browser that has kept no tabs opens Chat on a plain agent, even after Synapse AI was the last one used.
+
+    A tab coming forward makes its agent the workspace's active one, Synapse AI's too, and a new page's first tab
+    took that before the rule that it is a plain agent; so after a starter prompt (homestart) the next browser, a
+    phone, or the next check opened Chat as Synapse AI and its message went to the builder (F1108, Naveen's call
+    2026-10-28: the product, not the harness). Synapse AI comes forward by its own "new chat".
+    """
+    _tab_agents()
+    _assistant_agent()
+    api("/api/agents/active", "POST", {"agent_id": "agent_synapse_ai"})
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(CHAT_STUB)
+    page = await ctx.new_page()
+    try:
+        await page.goto(APP, wait_until="domcontentloaded")
+        await asyncio.sleep(SETTLE)
+        box = page.get_by_role("textbox", name=re.compile(r"^Message "))
+        await box.first.wait_for(timeout=15_000)
+        named = await box.first.get_attribute("aria-label") or ""
+    finally:
+        await ctx.close()
+        api("/api/agents/active", "POST", {"agent_id": TAB_ALPHA})
+    if named == f"Message {ASSISTANT_NAME}":
+        raise AssertionError("with Synapse AI last active, a new browser's first Chat tab is Synapse AI's")
+    return f"a new browser's first Chat tab is a plain agent's ({named!r}), Synapse AI having been the last used"
+
+
 # ── chat tabs (TABS1, D319) ──────────────────────────────────────────────────
 
 #: Chat's network for several tabs, over CHAT_STUB. Streams are also kept by
