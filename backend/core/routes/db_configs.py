@@ -26,7 +26,10 @@ def _read_schema(connection_string: str) -> str:
     """The database's tables and columns, as agents are shown them. Blocking."""
     from sqlalchemy import create_engine, inspect
 
-    engine = create_engine(connection_string, connect_args=_connect_args(connection_string))
+    from core.db_drivers import with_installed_driver
+
+    url = with_installed_driver(connection_string)
+    engine = create_engine(url, connect_args=_connect_args(connection_string))
     try:
         inspector = inspect(engine)
         schema_lines = []
