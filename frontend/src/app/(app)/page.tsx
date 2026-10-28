@@ -2948,8 +2948,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
     }
 
     // ── A browser turn: the page is the person's for something only they should do (BRW2, F1077) ──
-    // A workflow's step parked the same way carries it in its fields (BRW1: the field's type says).
-    const runTurn = msg.msgType === 'human_input_required' ? browserTurnOf(msg.data?.fields) : null;
+    // A workflow's step parked the same way carries it in its fields (BRW1: the field's type says). A chat's own turn
+    // (`kind: browser_turn`) carries that field too, and is still the chat's: its Done reads the follow-up turn.
+    const runTurn = msg.msgType === 'human_input_required' && msg.data?.kind !== 'browser_turn'
+      ? browserTurnOf(msg.data?.fields) : null;
     if (msg.msgType === 'human_input_required' && (msg.data?.kind === 'browser_turn' || runTurn)) {
       const sid = String(runTurn?.session_id ?? msg.data?.session_id ?? '');
       const answered = messages.slice(idx + 1).some(m => m.role === 'user' || m.data?.handedBack);
