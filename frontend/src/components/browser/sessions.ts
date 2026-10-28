@@ -22,8 +22,22 @@ export type SiteSession = {
   expires_at: number;
   expired: boolean;
   mine: boolean;
+  /**
+   * The person may pick it (F1167; v5-7): theirs, or shared with them or the workspace. Another's unshared session is
+   * listed, so the library shows it exists, but never offered. A server without it yet: theirs alone.
+   */
+  usable?: boolean;
   uses: SessionUses;
 };
+
+export function mayUse(s: Pick<SiteSession, 'usable' | 'mine'>): boolean {
+  return s.usable ?? s.mine;
+}
+
+/** "25 Oct": a session's date, as the pane and the pickers both say it. */
+export function shortDate(at: number): string {
+  return new Date(at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
+}
 
 /** What a keep returned: the row, or why nothing was kept (422: nothing is signed in yet). */
 export type KeptSession = Pick<SiteSession, 'id' | 'site' | 'expires_at'>;

@@ -3,7 +3,7 @@
 import { Checkbox } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
-import { expiresIn, whose, type SiteSession } from './sessions';
+import { expiresIn, mayUse, shortDate, whose, type SiteSession } from './sessions';
 
 /**
  * The sessions a browser starts signed in with, picked several at once but one per site (BRW2, F1138/F1140; DESIGN
@@ -37,8 +37,10 @@ export function SessionPicker({ label, sessions, value, onChange, libraryHref, l
       </fieldset>
     );
   }
+  // Only what the person may use (v5-7, F1167): another's unshared session is the library's to show, not to pick. An id
+  // already picked that isn't offered stays in `value`, and the engine loads by the job's person anyway.
   const bySite = new Map<string, SiteSession[]>();
-  for (const s of sessions ?? []) bySite.set(s.site, [...(bySite.get(s.site) ?? []), s]);
+  for (const s of (sessions ?? []).filter(mayUse)) bySite.set(s.site, [...(bySite.get(s.site) ?? []), s]);
   const picked = new Set(value);
   const toggle = (s: SiteSession, on: boolean) => {
     // One per site: the others for this site are let go.
@@ -66,7 +68,7 @@ export function SessionPicker({ label, sessions, value, onChange, libraryHref, l
                 <ul className="mt-1.5 grid gap-1.5">
                   {rows.map(s => {
                     const id = `session-pick-${s.id}`;
-                    const words = `${whose(s)} · kept ${new Date(s.created_at * 1000).toLocaleDateString()} · ${expiresIn(s)}`;
+                    const words = `${whose(s)} · kept ${shortDate(s.created_at)} · ${expiresIn(s)}`;
                     return (
                       <li key={s.id} className="flex items-center gap-2">
                         <Checkbox id={id} checked={picked.has(s.id)} onChange={on => toggle(s, on)}

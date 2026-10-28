@@ -12,7 +12,7 @@ import { actionCount, mergeActions, shortUrl, type BrowserAction, type BrowserFr
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
 import { SessionPicker } from './SessionPicker';
-import type { KeptSession } from './sessions';
+import { shortDate, type KeptSession } from './sessions';
 import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
 
 /**
@@ -235,13 +235,16 @@ export function BrowserPane({
         <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
           <div className="flex flex-wrap items-center gap-2">
             <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
-            <p className="min-w-0 flex-1 leading-relaxed">
+            {/* 20rem of words before the buttons: on a phone they go under the words rather than squeeze them. */}
+            <p className="min-w-0 grow basis-80 leading-relaxed">
               <strong className="font-semibold">Keep me signed in to <span translate="no">{signIn.site}</span> for your agents.</strong>{' '}
               Synapse keeps the site’s session, never your password. It expires in 30 days; remove it anytime.
               Only you drive this browser, and nothing is recorded.
             </p>
-            <Button variant="secondary" size="sm" disabled={signIn.busy} onClick={() => signIn.onFinish(false)}>Don’t keep</Button>
-            <Button variant="person" size="sm" loading={signIn.busy} onClick={() => signIn.onFinish(true)}>Keep</Button>
+            <div className="ml-auto flex shrink-0 gap-2">
+              <Button variant="secondary" size="sm" disabled={signIn.busy} onClick={() => signIn.onFinish(false)}>Don’t keep</Button>
+              <Button variant="person" size="sm" loading={signIn.busy} onClick={() => signIn.onFinish(true)}>Keep</Button>
+            </div>
           </div>
           {signIn.refused && <p role="alert" className="leading-relaxed text-danger">{signIn.refused}</p>}
         </div>
@@ -392,7 +395,7 @@ function SignedInLine({ signedIn, kept }: {
       {kept && (
         <p role="status">
           Signed in again: <span translate="no">{kept.site}</span>’s session is kept until{' '}
-          {new Date(kept.expires_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.
+          {shortDate(kept.expires_at)}.
         </p>
       )}
     </div>
