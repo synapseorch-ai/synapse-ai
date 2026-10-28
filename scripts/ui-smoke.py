@@ -13473,7 +13473,8 @@ async def check_brwrunpicks(browser) -> str:
             bad.append("the step's picker does not link to the Sessions library")
         await step_picker.get_by_role("group", name="carrier.example").get_by_role("checkbox").check()
         seen.clear()
-        await page.get_by_role("button", name="Save", exact=True).first.click()
+        # The editor's Save carries its "Unsaved changes" dot in its name while there is something to save.
+        await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
         await asyncio.sleep(1.5)
         saved = [json.loads(r["body"] or "{}") for r in seen if r["method"] in ("POST", "PUT") and not r["url"].endswith("/run")]
         steps = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}
