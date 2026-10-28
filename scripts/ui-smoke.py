@@ -12691,19 +12691,19 @@ async def check_brwsessions(browser) -> str:
 
 @check
 async def check_brwagent(browser) -> str:
-    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138): how it works the
-    page, the sites it may use (typed as addresses, kept as hosts), the sessions it starts with, and its actions per
-    task. These live in the agent's settings so that no page the agent reads can change them (DESIGN §3.1). The
-    sessions are picked several at once but one per site (v5-3): picking a second one for a site replaces the first,
-    and the picker links to the Sessions library. It offers only the sessions the person may use (v5-7, F1167): theirs
-    and ones shared with them, never another's unshared one, which the library still shows. A session's date reads as
-    the pane's do, never as a numeric date."""
+    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080, F1138, F1140): how it works
+    the page, the sites it may use, how it is signed in to each, and its actions per task. These live in the agent's
+    settings so that no page the agent reads can change them (DESIGN §3.1). Sessions follow the sites (Naveen 10-29):
+    one list, each site it may use with its session beside it, one per site; a session for a site it cannot open is
+    never offered, nor another's unshared one (v5-7, F1167); an expired one says Sign in again instead of being picked;
+    a site taken off takes its session with it. Dates read as the pane's do, never numerically."""
     aid = f"agent_uismoke_browser_{int(time.time())}"
     api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
     first, second, carrier = "ss_" + "d" * 24, "ss_" + "e" * 24, "ss_" + "f" * 24
     listed = {"sessions": [_site_session(first, "saltmarsh.example"),
                            _site_session(second, "saltmarsh.example", created_at=time.time() - 86_400),
                            _site_session(carrier, "carrier.example"),
+                           _site_session("ss_" + "o" * 24, "old.example", expired=True, expires_at=time.time() - 86_400),
                            _site_session("ss_" + "q" * 24, "ledger.example", mine=False, owner="u_priya", owner_name="Priya"),
                            _site_session("ss_" + "r" * 24, "books.example", mine=False, owner="u_priya", owner_name="Priya",
                                          shared_with="workspace", usable=True)]}
@@ -12713,6 +12713,15 @@ async def check_brwagent(browser) -> str:
     seen: list[dict] = []
     page.on("request", lambda r: seen.append({"url": r.url, "method": r.method, "body": r.post_data}))
     bad: list[str] = []
+
+    async def saved_browser() -> dict:
+        await page.get_by_role("button", name="Save agent", exact=True).click()
+        await asyncio.sleep(1.5)
+        posts = [json.loads(r["body"] or "{}") for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]
+        sent = dict((posts[-1] if posts else {}).get("browser") or {})
+        sent["sessions"] = sorted(sent.get("sessions") or [])
+        return sent
+
     try:
         await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
         await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
@@ -12731,38 +12740,56 @@ async def check_brwagent(browser) -> str:
         said = NO_LOGIN_WORDS.findall(hint)
         if said:
             bad.append(f"the Browser section still says {sorted(set(said))}")
-        await section.get_by_label("Sites it may use").fill("https://portal.saltmarsh.example/stock\ntracking.carrier.example")
-        picker = section.get_by_role("group", name="Sessions it starts with")
-        if await picker.get_by_role("group", name="ledger.example").count():
-            bad.append("the picker offers Priya's session for ledger.example, which isn't shared with the person")
-        if not await picker.get_by_role("group", name="books.example").get_by_role("checkbox").count():
-            bad.append("the picker does not offer Priya's session for books.example, shared with the workspace")
-        dated = " ".join(await picker.get_by_role("checkbox").evaluate_all("els => els.map(e => e.getAttribute('aria-label') || '')"))
-        if re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", dated):
-            bad.append(f"the picker dates its sessions numerically: {dated[:120]!r}")
-        salt = picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox")
-        if await salt.count() != 2:
-            bad.append(f"saltmarsh.example offers {await salt.count()} sessions, not 2")
-        else:
-            await salt.nth(0).check()
-            await picker.get_by_role("group", name="carrier.example").get_by_role("checkbox").check()
-            await salt.nth(1).check()
-            if await salt.nth(0).is_checked():
-                bad.append("a second session for saltmarsh.example was picked beside the first")
+
+        add = section.get_by_role("textbox", name="Add a site")
+        for typed in ("https://portal.saltmarsh.example/stock", "tracking.carrier.example", "old.example"):
+            await add.fill(typed)
+            await add.press("Enter")
+        sites = section.get_by_role("list", name="Sites it may use")
+        rows = [(await t.inner_text()).strip() for t in await sites.get_by_role("listitem").all()]
+        hosts = [r.split("\n")[0] for r in rows]
+        if hosts != ["portal.saltmarsh.example", "tracking.carrier.example", "old.example"]:
+            bad.append(f"the sites listed are {hosts}")
+        text = await section.inner_text()
+        for absent in ("ledger.example", "books.example"):
+            if absent in text:
+                bad.append(f"the section offers a session for {absent}, a site this agent may not open")
+
+        salt = section.get_by_role("combobox", name="Session for portal.saltmarsh.example")
+        await salt.click()
+        options = page.get_by_role("option")
+        names = [(await o.inner_text()).strip() for o in await options.all()]
+        if len(names) != 3 or names[0] != "Not signed in":
+            bad.append(f"saltmarsh.example offers {names}, not Not signed in and its two sessions")
+        if any(re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", n) for n in names):
+            bad.append(f"a session is dated numerically: {names}")
+        await options.nth(2).click()
+        carrier_pick = section.get_by_role("combobox", name="Session for tracking.carrier.example")
+        await carrier_pick.click()
+        await page.get_by_role("option").nth(1).click()
+        old = sites.get_by_role("listitem").nth(2)
+        if await old.get_by_role("combobox").count():
+            bad.append("an expired session is offered to be picked")
+        again = old.get_by_role("link", name=re.compile("Sign in again"))
+        if not await again.count() or not (await again.get_attribute("href") or "").endswith("/browser/sessions"):
+            bad.append("a site whose session expired does not offer Sign in again")
+        await section.get_by_role("button", name="Remove old.example").click()
         manage = section.get_by_role("link", name=re.compile("Manage sessions"))
         if not await manage.count() or not (await manage.get_attribute("href") or "").endswith("/browser/sessions"):
-            bad.append("the picker does not link to the Sessions library")
+            bad.append("the section does not link to the Sessions library")
         await section.get_by_label("Actions per task").fill("25")
         await asyncio.sleep(0.3)
-        await page.get_by_role("button", name="Save agent", exact=True).click()
-        await asyncio.sleep(1.5)
-        posts = [json.loads(r["body"] or "{}") for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]
-        sent = dict((posts[-1] if posts else {}).get("browser") or {})
-        sent["sessions"] = sorted(sent.get("sessions") or [])
+        sent = await saved_browser()
         want = {"mode": "co_drive", "sites": ["portal.saltmarsh.example", "tracking.carrier.example"],
                 "sessions": sorted([second, carrier]), "action_budget": 25}
         if sent != want:
             bad.append(f"Save sent browser={sent!r}, not {want!r}")
+
+        # A site taken off takes its session with it.
+        await section.get_by_role("button", name="Remove tracking.carrier.example").click()
+        sent = await saved_browser()
+        if sent.get("sites") != ["portal.saltmarsh.example"] or sent.get("sessions") != [second]:
+            bad.append(f"after carrier was taken off, Save sent browser={sent!r}")
     finally:
         await ctx.close()
         try:
@@ -12771,8 +12798,8 @@ async def check_brwagent(browser) -> str:
             pass
     if bad:
         raise AssertionError("; ".join(bad))
-    return ("the Browser section sets the mode, the sites as hosts, sessions one per site and the action budget; "
-            "Save sends them")
+    return ("the Browser section sets the mode, each site with its session beside it (only its own sites', an expired "
+            "one signs in again, a site taken off takes its session), and the action budget; Save sends them")
 
 
 @check
@@ -12960,9 +12987,13 @@ async def check_brwpress(browser) -> str:
         await _stream_open(page, "frames:bsP")
         await _brw_push(page, "frames:bsP", _brw_frame())
 
-        said = "Agents can make mistakes. You press every payment"
+        # Only what is guaranteed (Naveen 10-29): payments are always the person's; a send to another site or a page's
+        # own script is not held, so the pane no longer promises Submit or Send only on the person's words.
+        said = "Agents can make mistakes. You always press payments yourself."
         if not await pane.get_by_text(said, exact=False).count():
             bad.append("the pane does not say once that agents can make mistakes")
+        if await pane.get_by_text("only when you", exact=False).count():
+            bad.append("the disclaimer still promises Submit or Send only when asked")
         else:
             await pane.get_by_role("button", name="Got it").click()
             await asyncio.sleep(0.3)
@@ -13583,11 +13614,29 @@ async def check_brwchatpicks(browser) -> str:
         pane = _pane(page)
         await pane.wait_for(timeout=8_000)
         await _stream_open(page, "frames:bsP")
-        await _brw_push(page, "frames:bsP", _brw_frame())
-        said = re.sub(r"\s+", " ", (await pane.inner_text()).replace("’", "'"))
-        for want in ("Signed in to saltmarsh.example", "carrier.example", "expired", "ledger.example", "Priya"):
-            if want not in said:
-                bad.append(f"the pane does not say {want!r} about its sessions")
+        # The line speaks only for the page in view (Naveen 10-29): signed in on saltmarsh's page, nothing about the
+        # others there; on carrier's page, that its session expired; on a site it has no session for, nothing.
+        async def line_on(url: str) -> str:
+            await _brw_push(page, "frames:bsP", _brw_frame(url))
+            await asyncio.sleep(0.6)
+            return re.sub(r"\s+", " ", (await pane.inner_text()).replace("’", "'"))
+
+        said = await line_on("https://portal.saltmarsh.example/stock")
+        if "Signed in to saltmarsh.example" not in said:
+            bad.append("on saltmarsh's page the pane does not say it is signed in there")
+        if "carrier.example" in said or "ledger.example" in said:
+            bad.append("on saltmarsh's page the pane speaks of other sites' sessions")
+        said = await line_on("https://track.carrier.example/parcels")
+        if "Not signed in to carrier.example" not in said or "expired" not in said:
+            bad.append("on carrier's page the pane does not say its session expired")
+        if "Signed in to saltmarsh.example" in said:
+            bad.append("on carrier's page the pane still says it is signed in to saltmarsh")
+        said = await line_on("https://books.ledger.example/")
+        if "Priya" not in said:
+            bad.append("on ledger's page the pane does not say Priya's session isn't shared")
+        said = await line_on("https://example.com/")
+        if "igned in to" in said:
+            bad.append("on a site with no session the pane still speaks of sessions")
         await pane.get_by_role("button", name="Sessions", exact=True).click()
         picker = page.get_by_role("group", name="Sessions for this chat")
         try:
@@ -13655,12 +13704,15 @@ def _browser_orchestration(oid: str, agent_id: str) -> dict:
 
 @check
 async def check_brwrunpicks(browser) -> str:
-    """A workflow with a Browser agent's step picks sessions at the run's start (Run now's chevron) and on the step
-    itself, one per site (BRW2, F1140; DESIGN v5-3): Run now sends `browser_sessions`, and the step keeps its own as
-    `browser_sessions`. Both link to the Sessions library. A workflow with no browser has no such picker."""
+    """A Browser agent's step picks its own sessions, one per site, among the agent's sites only, and keeps them as
+    `browser_sessions` (BRW2, F1140; DESIGN v5-3). Run with input offers none (Naveen 10-29: sessions belong to the
+    agent and its step, set once where the step is configured), so a run sends only its input. Both link to the
+    Sessions library."""
     stamp = int(time.time())
     aid, oid, plain = f"agent_uismoke_brwrun_{stamp}", f"orch_uismoke_brwrun_{stamp}", f"orch_uismoke_brwplain_{stamp}"
-    api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser"})
+    api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser",
+                                "browser": {"mode": "read_only", "sites": ["portal.saltmarsh.example"], "sessions": [],
+                                            "action_budget": 40}})
     api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
     api("/api/orchestrations", "POST", print_orchestration(plain, "ui-smoke no browser"))
     salt, carrier = "ss_" + "n" * 24, "ss_" + "p" * 24
@@ -13691,18 +13743,16 @@ async def check_brwrunpicks(browser) -> str:
         await node.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
         await page.get_by_role("button", name="Run with input").click()
-        run_picker = page.get_by_role("group", name="Sessions for this run")
-        try:
-            await run_picker.wait_for(timeout=5_000)
-        except Exception:
-            raise AssertionError("Run now's chevron offers no sessions for a workflow with a Browser agent's step")
-        await run_picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox").check()
         field = page.get_by_role("textbox", name="Initial input for this run")
+        await field.wait_for(timeout=5_000)
+        await asyncio.sleep(0.5)
+        if await page.get_by_role("group", name="Sessions for this run").count():
+            bad.append("Run with input offers sessions for a run; they are the agent's and its step's")
         await field.fill("today")
         await field.press("Enter")
         await asyncio.sleep(1.5)
         runs = [json.loads(r["body"] or "{}") for r in seen if r["url"].endswith(f"/api/orchestrations/{oid}/run")]
-        if runs[-1:] != [{"message": "today", "browser_sessions": [salt]}]:
+        if runs[-1:] != [{"message": "today"}]:
             bad.append(f"Run now sent {runs[-1:]}")
 
         await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
@@ -13717,7 +13767,9 @@ async def check_brwrunpicks(browser) -> str:
             raise AssertionError("a Browser agent's step has no sessions of its own")
         if not (await step_picker.get_by_role("link", name=re.compile("Manage sessions")).get_attribute("href") or "").endswith("/browser/sessions"):
             bad.append("the step's picker does not link to the Sessions library")
-        await step_picker.get_by_role("group", name="carrier.example").get_by_role("checkbox").check()
+        if await step_picker.get_by_role("group", name="carrier.example").count():
+            bad.append("the step's picker offers carrier.example, a site its agent may not open")
+        await step_picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox").check()
         seen.clear()
         # The editor's Save carries its "Unsaved changes" dot in its name while there is something to save.
         await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
@@ -13727,12 +13779,12 @@ async def check_brwrunpicks(browser) -> str:
         steps = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}
         if not saved:
             bad.append(f"Save sent no workflow; it sent {[(r['method'], urllib.parse.urlsplit(r['url']).path) for r in seen]}")
-        elif (steps.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
+        elif (steps.get(f"{oid}_read") or {}).get("browser_sessions") != [salt]:
             bad.append(f"Save sent the step's sessions as {(steps.get(f'{oid}_read') or {}).get('browser_sessions')!r} "
                        f"(steps {sorted(k for k in steps if k)})")
         # And it is what the server keeps.
         stored = {s.get("id"): s for s in (api(f"/api/orchestrations/{oid}").get("steps") or [])}
-        if (stored.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
+        if (stored.get(f"{oid}_read") or {}).get("browser_sessions") != [salt]:
             bad.append(f"the server kept the step's sessions as {(stored.get(f'{oid}_read') or {}).get('browser_sessions')!r}")
     finally:
         await ctx.close()
@@ -13744,7 +13796,7 @@ async def check_brwrunpicks(browser) -> str:
             pass
     if bad:
         raise AssertionError("; ".join(bad))
-    return "Run now and a Browser agent's step pick sessions one per site and send them; a plain workflow has none"
+    return "a Browser agent's step picks its own sessions among the agent's sites and keeps them; Run with input offers none"
 
 
 # ── Recordings (BRW2, F1142; DESIGN §v5.2, v5.5 as agreed 10-29 and as built by BRW1 on feat/brw1-rec) ──────────
@@ -14008,8 +14060,13 @@ async def check_brwrecordingedit(browser) -> str:
             if want not in details:
                 bad.append(f"a step's details do not say {want!r}")
 
+        # A step shows Rename and Details; Re-record from here and Delete step are in its ⋯ (Naveen 10-29).
+        for hidden in ("Delete step", "Re-record from here"):
+            if await items.nth(4).get_by_role("button", name=hidden, exact=True).count():
+                bad.append(f"{hidden} is a button on the step, not in its ⋯")
         # Delete a step: asked first, then saved without it.
-        await items.nth(4).get_by_role("button", name="Delete step").click()
+        await items.nth(4).get_by_role("button", name="More for step 5").click()
+        await page.get_by_role("menuitem", name="Delete step").click()
         confirm = page.get_by_role("dialog", name="Delete this step?")
         await confirm.get_by_role("button", name="Delete", exact=True).click()
         await asyncio.sleep(1.0)
@@ -14100,7 +14157,8 @@ async def check_brwrecordingredo(browser) -> str:
         steps = page.get_by_role("list", name="Steps")
         await steps.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        await steps.get_by_role("listitem").nth(n).get_by_role("button", name="Re-record from here").click()
+        await steps.get_by_role("listitem").nth(n).get_by_role("button", name=f"More for step {n + 1}").click()
+        await page.get_by_role("menuitem", name="Re-record from here").click()
         ask = page.get_by_role("dialog", name="Re-record from here")
         await ask.wait_for(timeout=5_000)
         await ask.get_by_role("group", name="Sessions it starts with").get_by_role("checkbox").first.check()
