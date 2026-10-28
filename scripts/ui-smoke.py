@@ -12949,13 +12949,13 @@ async def check_brwrunpage(browser) -> str:
                  {"session_id": "bsR", "n": 3, "at": 0, "actor": "person", "action": "pressed",
                   "target": "Pay now", "url": "https://stock.example.com/orders", "shot_ref": None}]
 
-        async def kept(ctx):
+        async def kept_routes(ctx):
             await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
                             lambda r: r.fulfill(status=200, json={"entries": whole}))
             await _brw_shots(ctx)
 
         ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
-                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept)
+                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept_routes)
         try:
             strip = page.get_by_role("list", name="What the agent did in the browser")
             try:
