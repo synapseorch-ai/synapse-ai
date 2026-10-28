@@ -59,7 +59,7 @@ export function BrowserSetup({ value, onChange, logins }: {
         composite
         hint={config.mode === 'read_only'
           ? 'It reads and clicks through pages, and nothing it does can send anything: forms, orders and messages are stopped in the browser.'
-          : 'It works the page with you. You type passwords, card details and codes, and you press Submit yourself: a send it tries is held and handed to you.'}
+          : 'It works the page with you. You type passwords, card details and codes. It presses Submit or Send only when you’ve asked it to in your own words, and every payment is yours to press.'}
       >
         <Segmented
           label="How it works the page"

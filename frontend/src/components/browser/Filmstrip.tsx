@@ -36,7 +36,7 @@ export function Filmstrip({ actions, shotUrl }: {
                 {a.actor === 'agent' ? 'No picture' : 'Nothing is recorded while you drive'}
               </div>
             )}
-            <span className="line-clamp-2 text-xs text-text-muted" title={a.url || undefined}>
+            <span className="line-clamp-2 text-xs text-text-muted [overflow-wrap:anywhere]" title={a.url || undefined}>
               <span className="text-text-faint">{a.n}.</span> {words}
             </span>
           </li>
