@@ -13477,10 +13477,18 @@ async def check_brwrunpicks(browser) -> str:
         # The editor's Save carries its "Unsaved changes" dot in its name while there is something to save.
         await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
         await asyncio.sleep(1.5)
-        saved = [json.loads(r["body"] or "{}") for r in seen if r["method"] in ("POST", "PUT") and not r["url"].endswith("/run")]
+        # The save itself: the editor also posts to other /api/orchestrations… routes as it goes.
+        saved = [json.loads(r["body"] or "{}") for r in seen if urllib.parse.urlsplit(r["url"]).path == "/api/orchestrations"]
         steps = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}
-        if (steps.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
-            bad.append(f"Save sent the step's sessions as {(steps.get(f'{oid}_read') or {}).get('browser_sessions')!r}")
+        if not saved:
+            bad.append(f"Save sent no workflow; it sent {[(r['method'], urllib.parse.urlsplit(r['url']).path) for r in seen]}")
+        elif (steps.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
+            bad.append(f"Save sent the step's sessions as {(steps.get(f'{oid}_read') or {}).get('browser_sessions')!r} "
+                       f"(steps {sorted(k for k in steps if k)})")
+        # And it is what the server keeps.
+        stored = {s.get("id"): s for s in (api(f"/api/orchestrations/{oid}").get("steps") or [])}
+        if (stored.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
+            bad.append(f"the server kept the step's sessions as {(stored.get(f'{oid}_read') or {}).get('browser_sessions')!r}")
     finally:
         await ctx.close()
         for fixture in (oid, plain):
