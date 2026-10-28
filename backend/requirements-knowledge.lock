@@ -117,7 +117,9 @@ langcodes==3.5.1
 latex2mathml==3.81.1
     # via docling-core
 lxml==6.1.1
-    # via doclang
+    # via
+    #   -c .knowledge-constraints.txt
+    #   doclang
 markdown-it-py==4.2.0
     # via
     #   -c .knowledge-constraints.txt

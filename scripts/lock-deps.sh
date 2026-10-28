@@ -91,26 +91,20 @@ compile() {
 # install together.
 compile requirements.lock requirements.txt requirements-coding.txt
 
-# Optional extras, constrained by the base lock so a shared transitive dependency
-# can't resolve to a different version depending on which file you installed.
+# The extras and the worker set, each constrained by every lock before it, so a
+# shared transitive dependency is the same version in every lock an install may
+# combine. Constrained by the base lock alone, the worker and telemetry locks
+# each picked their own wrapt (2.3.0 and 2.5.0), and an install of both could
+# not resolve (F1160). scripts/lock_agreement.py, run below, checks the result.
 compile requirements-messaging.lock requirements-messaging.txt \
     -- --constraint requirements.lock
 
 compile requirements-telemetry.lock requirements-telemetry.txt \
-    -- --constraint requirements.lock
-
-# Knowledge's parsers (Docling). Two differences from the other extras: torch
-# resolves from PyTorch's CPU index (Knowledge runs no model on a GPU, and PyPI's
-# Linux torch brings gigabytes of CUDA), and typer is left out of the base
-# constraint — docling-core caps it below the base lock's pick, and chromadb, its
-# only base user, accepts either.
-grep -v '^typer==' requirements.lock > .knowledge-constraints.txt
-trap 'rm -f .knowledge-constraints.txt' EXIT
-compile requirements-knowledge.lock requirements-knowledge.txt \
-    -- --constraint .knowledge-constraints.txt --torch-backend cpu
+    -- --constraint requirements.lock --constraint requirements-messaging.lock
 
 compile requirements-worker.lock requirements.txt requirements-worker.txt \
-    -- --constraint requirements.lock
+    -- --constraint requirements.lock --constraint requirements-messaging.lock \
+    --constraint requirements-telemetry.lock
 
 # What the published package installs: pyproject.toml's dependencies, pinned.
 # The installer passes it to `uv tool install -c` (scripts/build_installer.py
@@ -118,7 +112,19 @@ compile requirements-worker.lock requirements.txt requirements-worker.txt \
 # rather than to whatever PyPI has that day. Constrained by the locks above so a
 # package both name is the same version in every install.
 compile requirements-wheel.lock ../pyproject.toml \
-    -- --constraint requirements.lock --constraint requirements-messaging.lock
+    -- --constraint requirements.lock --constraint requirements-messaging.lock \
+    --constraint requirements-telemetry.lock --constraint requirements-worker.lock
+
+# Knowledge's parsers (Docling). Two differences from the other extras: torch
+# resolves from PyTorch's CPU index (Knowledge runs no model on a GPU, and PyPI's
+# Linux torch brings gigabytes of CUDA), and typer is left out of the constraints
+# — docling-core caps it below the base lock's pick, and chromadb, its only base
+# user, accepts either. Everything else is held to the locks above.
+cat requirements.lock requirements-messaging.lock requirements-telemetry.lock \
+    requirements-worker.lock requirements-wheel.lock | grep -v '^typer==' > .knowledge-constraints.txt
+trap 'rm -f .knowledge-constraints.txt' EXIT
+compile requirements-knowledge.lock requirements-knowledge.txt \
+    -- --constraint .knowledge-constraints.txt --torch-backend cpu
 
 # The same, with the knowledge and telemetry extras: the installer's pins when an
 # install has [knowledge] (scripts/build_installer.py → constraints-knowledge.txt).
@@ -127,10 +133,12 @@ compile requirements-wheel.lock ../pyproject.toml \
 # torch from PyTorch's CPU index as that lock does.
 compile requirements-wheel-knowledge.lock ../pyproject.toml \
     -- --extra knowledge --extra telemetry \
-    --constraint .knowledge-constraints.txt --constraint requirements-messaging.lock \
-    --constraint requirements-knowledge.lock --constraint requirements-telemetry.lock \
+    --constraint .knowledge-constraints.txt --constraint requirements-knowledge.lock \
     --torch-backend cpu
 rm -f .knowledge-constraints.txt
+
+# Each lock reproducible is not enough: two that an install combines must agree.
+python3 "$REPO_ROOT/scripts/lock_agreement.py" "$BACKEND_DIR"
 
 if [ "$CHECK_MODE" -eq 1 ]; then
     echo "Locks are up to date."
