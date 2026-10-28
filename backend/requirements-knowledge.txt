@@ -21,7 +21,9 @@
 # torch is the CPU build in requirements-knowledge.lock (PyTorch's CPU index):
 # Knowledge runs no model on a GPU. Installing the lock therefore needs that index:
 #   pip install -r requirements-knowledge.lock --extra-index-url https://download.pytorch.org/whl/cpu
-#   uv pip install -r requirements-knowledge.lock --torch-backend cpu
+#   uv pip install --no-config -r requirements-knowledge.lock --torch-backend cpu
+# (--no-config: the repo's pyproject.toml [tool.uv] holds the root uv.lock to these
+# locks, and uv finds it from here; it is not for a pip install.)
 # Measured (A2, 16 §8, python:3.12-slim): the image with this extra, its models and
 # LibreOffice is 2.97 GB (models 0.67 GB); a 48-page PDF parses at 2.2 s a page on
 # 2 vCPUs, peaking at 1.8 GB in 4-page batches.
