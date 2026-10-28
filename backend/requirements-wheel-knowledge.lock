@@ -1039,7 +1039,7 @@ websockets==16.1.1
     # via
     #   -c .knowledge-constraints.txt
     #   uvicorn
-wrapt==2.5.0
+wrapt==2.5.1
     # via
     #   -c .knowledge-constraints.txt
     #   opentelemetry-instrumentation

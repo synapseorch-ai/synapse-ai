@@ -810,7 +810,7 @@ websockets==16.1.1
     #   -c requirements.lock
     #   google-genai
     #   uvicorn
-wrapt==2.5.0
+wrapt==2.5.1
     # via
     #   -c requirements-telemetry.lock
     #   opentelemetry-instrumentation
