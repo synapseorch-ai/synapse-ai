@@ -26,6 +26,7 @@ export type BuilderMessageKind =
     | 'findings'
     | 'action'
     | 'try_stronger'
+    | 'effort_offer'
     | 'open_chat';
 
 /** A failed turn's one offer (F1018): the same message again, once, on a stronger model the server picked. */
@@ -37,6 +38,30 @@ export interface TryStronger {
     label: string;
     /** The failed run the press tries again. */
     retry_of: string;
+}
+
+/**
+ * The offer before a heavy build (F1153/F1154): build it on a stronger model the server picked, or go on with the
+ * usual one. Its words are the server's; the press sends `effort_of`, never a model.
+ */
+export interface EffortOffer {
+    model: string;
+    name: string;
+    default: string;
+    default_name: string;
+    price: string;
+    why: string[];
+    /** "Use <name>": the press. */
+    use: string;
+    /** "Continue with <default>": any reply other than the press goes on, on the usual model. */
+    continue: string;
+    /** The turn that offered it, which the press names. */
+    effort_of: string;
+}
+
+/** What each of the offer's two buttons sends: the press names its turn; "Continue" is a message like any other. */
+export function effortAnswer(offer: EffortOffer, use: boolean): { text: string; effortOf?: string } {
+    return use ? { text: offer.use, effortOf: offer.effort_of } : { text: offer.continue };
 }
 
 /**
@@ -157,6 +182,8 @@ export interface BuilderMessage {
     action?: ActionSpec;
     /** A failed turn's offer (`kind: 'try_stronger'`, F1018). */
     tryStronger?: TryStronger;
+    /** The offer before a heavy build (`kind: 'effort_offer'`, F1153). */
+    effortOffer?: EffortOffer;
     /** "Open that chat" (`kind: 'open_chat'`): the person's own Synapse AI chat holding a workflow (TABS2, F1063). */
     chat?: { id: string; title: string };
 }
@@ -550,6 +577,15 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
             return append(state, {
                 role: 'assistant', content: event.label, kind: 'try_stronger', key: `try-${event.retry_of}`,
                 tryStronger: event as TryStronger,
+            });
+
+        // The offer before a heavy build (F1153): drawn under the turn's words, keyed on the turn that offered it.
+        case 'effort_offer':
+            if (typeof event.effort_of !== 'string' || typeof event.use !== 'string'
+                || typeof event.continue !== 'string') return state;
+            return append(state, {
+                role: 'assistant', content: '', kind: 'effort_offer', key: `effort-${event.effort_of}`,
+                effortOffer: event as EffortOffer,
             });
 
         case 'orchestration_error':

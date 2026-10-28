@@ -41,6 +41,8 @@ export interface SendOptions {
     /** The failed run a "Try again on a stronger model" press tries again (F1018); the server picks the model, and
      * the next message is on the usual one. */
     retryOf?: string;
+    /** The turn whose effort offer was pressed (F1153): the server builds that turn's ask on the model it picks. */
+    effortOf?: string;
 }
 
 /** What a turn takes from the app around the chat, read when it is sent. */
@@ -311,7 +313,8 @@ export class BuilderChat {
             done: false,
             error: null,
             messages: [
-                ...prev.messages.filter((m) => m.kind !== 'try_stronger'),
+                // An offer is answered by whatever comes next, its press or any message (F1018, F1153).
+                ...prev.messages.filter((m) => m.kind !== 'try_stronger' && m.kind !== 'effort_offer'),
                 ...(offered
                     ? [{ role: 'assistant' as const, content: `Trying again on ${offered.name}…`, kind: 'text' as const,
                          key: `retry-${retryOf}` }]
@@ -364,6 +367,7 @@ export class BuilderChat {
                           // A schedule the person names no timezone for runs on their own clock (F948).
                           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
                           ...(retryOf ? { retry_of: retryOf } : {}),
+                          ...(options.effortOf && !retryOf ? { effort_of: options.effortOf } : {}),
                       }),
                   });
 

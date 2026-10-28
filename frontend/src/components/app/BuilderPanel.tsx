@@ -48,7 +48,7 @@ import {
 } from '@/components/app/ImageAttachments';
 import { SUGGESTED_LABEL } from '@/components/tabs';
 import { Button, Combobox, Hint, Mark, Markdown } from '@/components/ui';
-import { isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
+import { effortAnswer, isPlanReview, shownInTrail, type BuilderMessage } from '@/lib/builderEvents';
 import { cn, focusRing } from '@/lib/cn';
 import { modelOptions, withUnreachable } from '@/lib/models';
 
@@ -348,6 +348,27 @@ export function BuilderConversation({
                                     >
                                         {message.tryStronger.label}
                                     </Button>
+                                </AgentTurn>
+                            );
+                        }
+                        if (message.kind === 'effort_offer' && message.effortOffer) {
+                            // The offer before a heavy build (F1153): the press builds the ask on the server's pick;
+                            // "Continue" (or any message) builds it on the usual model, never asked again.
+                            const offer = message.effortOffer;
+                            const answer = (use: boolean) => {
+                                const { text, effortOf } = effortAnswer(offer, use);
+                                void send(text, [], effortOf ? { effortOf } : {});
+                            };
+                            return (
+                                <AgentTurn key={message.key} density={density} size={AVATAR} avatar={<Mark size={AVATAR} compact={false} className="text-accent" aria-hidden />}>
+                                    <div className="flex flex-wrap gap-2">
+                                        <Button type="button" size="sm" disabled={streaming} onClick={() => answer(true)}>
+                                            {offer.use}
+                                        </Button>
+                                        <Button type="button" variant="secondary" size="sm" disabled={streaming} onClick={() => answer(false)}>
+                                            {offer.continue}
+                                        </Button>
+                                    </div>
                                 </AgentTurn>
                             );
                         }
