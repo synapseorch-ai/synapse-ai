@@ -4443,6 +4443,38 @@ async def check_deletedagent(browser) -> str:
     return "a deleted agent's chat says \"Deleted agent\" in History (its id on hover) and in the open conversation"
 
 
+#: The builder's model pill at its widest: whether its label is cut, and how wide it is held.
+MODEL_PILL = """() => { const b = document.querySelector('[data-testid="assistant-panel"] [aria-label="Model for this build"]');
+  const s = b && b.querySelector('span');
+  return b && s ? {label: s.textContent.trim(), cut: s.scrollWidth > s.clientWidth + 1,
+                   width: Math.round(b.getBoundingClientRect().width), title: b.getAttribute('title')} : null; }"""
+
+
+@check
+async def check_builderchip(browser) -> str:
+    """On a phone the builder's model pill uses the room it has, and says its whole label on hover.
+
+    It was held at 200 px, so a phone read "Default (Claude Haik…" with space beside it (F1131's follow-up; Naveen
+    2026-10-28: free width). Only a cut under that old cap fails: a label longer than the whole row is still cut, and
+    then the pill's title says it.
+    """
+    ctx, page = await _assistant_page(browser, path="agents", width=(390, 844))
+    try:
+        await page.locator('[data-testid="assistant-open"]:visible').first.click()
+        await page.locator('[data-testid="assistant-panel"] [aria-label="Model for this build"]').first.wait_for(timeout=10_000)
+        await asyncio.sleep(0.6)
+        pill = await page.evaluate(MODEL_PILL)
+    finally:
+        await ctx.close()
+    if not pill:
+        raise AssertionError("no model pill in the builder panel at 390 px")
+    if pill["cut"] and pill["width"] <= 200:
+        raise AssertionError(f"the model pill is cut at {pill['width']} px: {pill['label']!r}")
+    if pill["title"] != pill["label"]:
+        raise AssertionError(f"the pill's title is {pill['title']!r}, not its label {pill['label']!r}")
+    return f"at 390 px the model pill is {pill['width']} px, {'cut, its title whole' if pill['cut'] else 'whole'}: {pill['label']!r}"
+
+
 @check
 async def check_panelhistory(browser) -> str:
     """The panel's history icon lists Synapse AI's chats only, and a pick carries that chat on in the panel (F1062)."""
