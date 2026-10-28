@@ -114,7 +114,7 @@ export function BrowserPane({
     else setWheelFailed('The wheel could not be taken. Try again.');
   };
   // The session the person signed in again with, kept by the hand-back (F1140).
-  const [kept, setKept] = useState<KeptSession | null>(null);
+  const [keptAgain, setKeptAgain] = useState<KeptSession | null>(null);
   const [picking, setPicking] = useState(false);
   const handBack = async () => {
     setWheelFailed(null);
@@ -126,7 +126,7 @@ export function BrowserPane({
       return;
     }
     if (ok) {
-      if (typeof ok === 'object') setKept(ok.kept);
+      if (typeof ok === 'object') setKeptAgain(ok.kept);
       setMoved({ wheel: 'agent', on: frame });
       setNote('');
       onHandedBack?.();
@@ -229,7 +229,7 @@ export function BrowserPane({
       </header>
 
       {picks && picking && !signIn && <PicksPanel picks={picks} />}
-      <SignedInLine signedIn={signedIn} kept={kept} />
+      <SignedInLine signedIn={signedIn} kept={keptAgain} />
 
       {signIn && !closed ? (
         <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
