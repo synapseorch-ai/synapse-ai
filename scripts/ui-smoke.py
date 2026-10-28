@@ -4406,6 +4406,43 @@ async def check_tabsassistanthistory(browser) -> str:
     return "History lists Synapse AI's chat; opening it shows its turns and the next message continues it"
 
 
+GONE_AGENT = "agent_uismoke_gone"
+
+
+@check
+async def check_deletedagent(browser) -> str:
+    """A deleted agent's chat says "Deleted agent", its id on hover: in History, and in the conversation opened from it.
+
+    Deleting an agent keeps its chats. History printed the raw id (`agent_01a1…`, U59's fallback), and the open
+    conversation fell back to the workspace's agent name, so it read as another agent's (F1129; Naveen 2026-10-28:
+    everywhere).
+    """
+    history = [{"session_id": "uismoke-gone-old", "agent_id": GONE_AGENT, "first_user_message": "a gone agent's chat",
+                "last_response": "ok", "last_updated": "2026-10-27T09:00:00.000000Z", "turn_count": 1}]
+    ctx, page = await _assistant_page(browser, history=history)
+    try:
+        await page.get_by_role("button", name="History").first.click()
+        row = page.get_by_role("button", name=re.compile("a gone agent's chat")).first
+        await row.wait_for(timeout=8_000)
+        line = page.locator(f'span[title="{GONE_AGENT}"]').first
+        said = (await line.inner_text()).strip() if await line.count() else ""
+        await row.click()
+        box = page.get_by_role("textbox", name=re.compile(r"^Message "))
+        await box.first.wait_for(timeout=8_000)
+        await asyncio.sleep(1.0)                  # the status read names the tab's agent
+        composer = await box.first.get_attribute("aria-label") or ""
+    finally:
+        await ctx.close()
+    bad = []
+    if said != "Deleted agent":
+        bad.append(f"History's line reads {said!r}, not \"Deleted agent\" with the id on hover")
+    if composer != "Message Deleted agent":
+        bad.append(f"the conversation opened from it says {composer!r}")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a deleted agent's chat says \"Deleted agent\" in History (its id on hover) and in the open conversation"
+
+
 @check
 async def check_panelhistory(browser) -> str:
     """The panel's history icon lists Synapse AI's chats only, and a pick carries that chat on in the panel (F1062)."""
