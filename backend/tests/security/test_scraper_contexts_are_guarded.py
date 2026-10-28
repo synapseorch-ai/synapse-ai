@@ -130,6 +130,18 @@ async def test_two_callers_never_share_a_context(browser):
     assert all(("**/*", web_scraper._guard_route) in c.routes for c in (a, b))
 
 
+async def test_a_context_presents_itself_as_crawl4ai_did(browser):
+    """The client hint matches the user agent's Chrome, and Chromium runs without its automation flag: what crawl4ai
+    sent, kept by Naveen's call (10-28), without which DuckDuckGo's results page answered 403."""
+    import re
+
+    await web_scraper._handle_scrape_url({"url": "https://93.184.216.34/"})
+    (context,) = browser.contexts
+    chrome = re.search(r"Chrome/(\d+)", web_scraper.USER_AGENT).group(1)
+    assert f'"Google Chrome";v="{chrome}"' in context.options["extra_http_headers"]["sec-ch-ua"]
+    assert "--disable-blink-features=AutomationControlled" in web_scraper.browser_config().extra_args
+
+
 async def test_no_service_worker_runs_where_the_route_cannot_see_it(browser):
     await web_scraper._handle_scrape_url({"url": "https://93.184.216.34/"})
     assert browser.contexts[0].options["service_workers"] == "block"

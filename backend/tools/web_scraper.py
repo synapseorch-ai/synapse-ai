@@ -157,6 +157,10 @@ async def _preflight(url: str) -> str | None:
 #: What a page is read as. Chrome on Windows, as before the move off crawl4ai.
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/120.0.0.0 Safari/537.36")
+#: What crawl4ai sent and launched with, kept as they were (Naveen, 10-28): the client hint that matches the user agent,
+#: and Chromium without its automation flag. Without them DuckDuckGo's results page, research's search, answered 403.
+SEC_CH_UA = '"Chromium";v="120", "Not_A Brand";v="8", "Google Chrome";v="120"'
+AS_CRAWL4AI_LAUNCHED = ("--disable-blink-features=AutomationControlled",)
 VIEWPORT = {"width": 1080, "height": 600}
 #: How long a page has to answer, and how long a loaded page is given to settle (its scripts' first requests).
 PAGE_TIMEOUT_MS = 60_000
@@ -189,7 +193,7 @@ class ProxyConfig:
 class BrowserConfig:
     proxy_config: ProxyConfig | None = None
     user_agent: str = USER_AGENT
-    extra_args: tuple[str, ...] = tuple(egress_proxy.CHROMIUM_ARGS)
+    extra_args: tuple[str, ...] = tuple(egress_proxy.CHROMIUM_ARGS) + AS_CRAWL4AI_LAUNCHED
 
 
 @dataclass(frozen=True)
@@ -359,7 +363,8 @@ class _Browser:
     async def _new_context(self, config: RunConfig):
         proxy = config.proxy_config or self.config.proxy_config
         context = await self._browser.new_context(
-            user_agent=self.config.user_agent, viewport=VIEWPORT, accept_downloads=True,
+            user_agent=self.config.user_agent, extra_http_headers={"sec-ch-ua": SEC_CH_UA}, viewport=VIEWPORT,
+            accept_downloads=True,
             # A service worker's requests reach neither route below; the proxy still holds them, and none is needed
             # to read a page.
             service_workers="block",
