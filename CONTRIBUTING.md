@@ -19,7 +19,13 @@ cd backend
 python3.11 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 python3.11 main.py
+```
 
+With uv, `uv sync` at the repo root installs exactly the installer's versions (uv.lock). For one of the backend locks,
+pass `--no-config`, as in `uv pip install --no-config -r backend/requirements.lock`: pyproject.toml's `[tool.uv]` is
+uv.lock's, and without the flag uv applies it to the backend lock too.
+
+```bash
 # Frontend (separate terminal)
 cd frontend
 npm install
