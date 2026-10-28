@@ -13279,6 +13279,84 @@ async def check_brwsessionslayout(browser) -> str:
     return "the intro clears the tabs; at 390 px a session's site reads whole and the consent card's buttons sit under its words"
 
 
+def _answered(path: str, method: str, body: dict, timeout: int = 15) -> tuple[int, dict]:
+    """A real route's status and body, a refusal included (`api` raises on one)."""
+    try:
+        return 200, api(path, method, body, timeout=timeout)
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode() or "{}")
+        except ValueError:
+            return e.code, {}
+
+
+@check
+async def check_brwsessionsreal(browser) -> str:
+    """Against the real server, with the scratch's two seeded sessions (F1167; v5-7, Naveen 10-29: shown, not usable):
+    the library lists both and says only the person's own is usable; the agent's picker offers theirs and not Priya's;
+    and every save that takes sessions (an agent, a chat's picks, a step, a run's start) refuses Priya's unshared one
+    with a flat 422 {detail, site, ids}. Nothing here is stubbed. Needs SMOKE_SEEDED: the ids the scratch's
+    `oss-scratch.sh seed-sessions` kept in its own store."""
+    seeded_at = os.environ.get("SMOKE_SEEDED")
+    if not seeded_at or not os.path.exists(seeded_at):
+        raise Skipped("needs SMOKE_SEEDED (the scratch's seeded sessions, from oss-scratch.sh seed-sessions)")
+    seeded = json.load(open(seeded_at))
+    mine, priya = seeded["mine"], seeded["priya"]
+    bad: list[str] = []
+    rows = {r["id"]: r for r in api("/api/site-sessions").get("sessions") or []}
+    if mine not in rows or priya not in rows:
+        raise AssertionError(f"the library does not list both seeded sessions: {sorted(rows)}")
+    if rows[mine].get("usable") is not True:
+        bad.append(f"the person's own session is usable={rows[mine].get('usable')!r}")
+    if rows[priya].get("usable") is not False:
+        bad.append(f"Priya's unshared session is usable={rows[priya].get('usable')!r}")
+
+    def refused(what: str, status: int, body: dict) -> None:
+        if status != 422 or body.get("site") != "ledger.example" or body.get("ids") != [priya] \
+                or not isinstance(body.get("detail"), str):
+            bad.append(f"{what} with Priya's session answered {status} {json.dumps(body)[:160]}, not a flat 422 for ledger.example")
+
+    stamp = int(time.time())
+    aid, oid = f"agent_uismoke_brwreal_{stamp}", f"orch_uismoke_brwreal_{stamp}"
+    agent = {**_agent(aid, f"Browser real {stamp % 1_000_000}"), "type": "browser",
+             "browser": {"mode": "read_only", "sites": [], "sessions": [mine], "action_budget": 40}}
+    api("/api/agents", "POST", agent)
+    api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+        await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        picker = page.locator("section[data-tour='setup-browser']").get_by_role("group", name="Sessions it starts with")
+        await picker.wait_for(timeout=10_000)
+        if not await picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox").is_checked():
+            bad.append("the agent's own saved session is not shown picked")
+        if await picker.get_by_role("group", name="ledger.example").count():
+            bad.append("the agent's picker offers Priya's unshared session")
+
+        refused("an agent's save", *_answered("/api/agents", "POST", {**agent, "browser": {**agent["browser"], "sessions": [mine, priya]}}))
+        refused("a chat's picks", *_answered("/api/chat/uismoke-real-picks/browser-sessions", "PUT", {"ids": [priya]}))
+        wf = _browser_orchestration(oid, aid)
+        wf["steps"][0]["browser_sessions"] = [priya]
+        refused("a step's save", *_answered("/api/orchestrations", "POST", wf))
+        status, body = _answered(f"/api/orchestrations/{oid}/run", "POST", {"message": "today", "browser_sessions": [priya]}, timeout=10)
+        refused("a run's start", status, body)
+        kept = (api(f"/api/agents/{aid}").get("browser") or {}).get("sessions")
+        if kept != [mine]:
+            bad.append(f"a refused save still changed the agent's sessions to {kept}")
+    finally:
+        await ctx.close()
+        drop_fixture(oid)
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the real library says only the person's own session is usable; its picker offers only that; an agent, a chat, a step and a run's start each refuse Priya's with a flat 422"
+
+
 @check
 async def check_brwsessionsite(browser) -> str:
     """"Keep me signed in to a site" opens a browser for the person alone, and the consent card there keeps the
