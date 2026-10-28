@@ -4931,18 +4931,6 @@ def notify_orchestration(oid: str) -> dict:
     }
 
 
-def run_to_end(oid: str, timeout: int = 60) -> None:
-    """Run an orchestration and read its event stream until the server closes it."""
-    req = urllib.request.Request(
-        f"{API}/api/orchestrations/{oid}/run",
-        method="POST",
-        data=json.dumps({"message": "go"}).encode(),
-        headers={"Content-Type": "application/json", "X-Synapse-Internal": TOKEN},
-    )
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        r.read()
-
-
 #: The app-wide toast host (NotificationProvider).
 TOASTS = "div.fixed.bottom-20.right-6 > div"
 
@@ -5782,7 +5770,9 @@ async def check_cancelquestion(browser) -> str:
 
 
 def run_to_end(oid: str) -> str:
-    """Run a model-free orchestration through the API and return its run id.
+    """Run a model-free orchestration through the API and return its run id. The one run_to_end: an earlier
+    `-> None` copy that sent "go" was replaced by this one at import, so every caller already ran this (F1181);
+    each caller's flow is Print-only and reads no message.
 
     The run route answers with its event stream, which `api` cannot parse; this
     reads it to the end, which for a Print-only flow is the finished run.
