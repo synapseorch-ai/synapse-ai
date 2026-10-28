@@ -14240,6 +14240,103 @@ async def check_brwrecordingredo(browser) -> str:
             "stopped at the person's sign-in carries on after it; one that broke offers its step instead")
 
 
+# ── An answer is the person's once taken (F1176; as F1078) ─────────────────────────────────────────────────────
+
+#: The chat's approve route, refusing while `window.__refuseApprove` is set (the question answered in another tab),
+#: else resuming the turn on a stream the check feeds.
+APPROVE_REFUSE_STUB = r"""
+const _arFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  if (/\/api\/chat\/[^/?]+\/approve$/.test(url)) {
+    window.__calls = window.__calls || [];
+    window.__calls.push({url: url, method: 'POST', body: (init && init.body) || ''});
+    if (window.__refuseApprove) {
+      return Promise.resolve(new Response(JSON.stringify({detail: 'That question was answered in another tab.'}),
+                                          {status: 409, headers: {'Content-Type': 'application/json'}}));
+    }
+    const body = new ReadableStream({start(c) {
+      window.__streams.approve = {push: (frame) => c.enqueue(new TextEncoder().encode(frame)),
+                                  close: () => { try { c.close(); } catch (e) {} }};
+    }});
+    return Promise.resolve(new Response(body, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  }
+  return _arFetch(input, init);
+};
+"""
+
+
+@check
+async def check_answertaken(browser) -> str:
+    """An answer is the person's once it has been taken (F1176; as F1078). A chat's tool approval says "You allowed
+    the call." only once the approve call is taken: refused (answered in another tab), the card stays answerable and
+    says why. Synapse AI's answer to a run's question is drawn as the person's only once the run takes it: a card
+    number the box holds back leaves no bubble with the number in it, and the question stays open."""
+    bad: list[str] = []
+    history = {"turns": [], "pending_approval": None,
+               "running": {"turn_id": "t1", "message": "Hold the Portside invoice", "started_at": 0, "cursor": "t1-0"}}
+    ctx, page = await _chat_page(browser, "uismoke-answer-taken", history, extra_init=APPROVE_REFUSE_STUB)
+    try:
+        await _stream_open(page, "events")
+        await _push(page, "events", [HOLD, {"type": "done"}])
+        allow = page.get_by_role("button", name="Allow once")
+        await allow.wait_for(timeout=10_000)
+        await page.evaluate("() => { window.__refuseApprove = true; }")
+        await allow.click()
+        await asyncio.sleep(1.0)
+        if await page.get_by_text("You allowed the call.").count():
+            bad.append("a refused approval still says 'You allowed the call.'")
+        if not await allow.count() or await allow.is_disabled():
+            bad.append("a refused approval's card is no longer answerable")
+        await page.evaluate("() => { window.__refuseApprove = false; }")
+        await allow.click()
+        await _stream_open(page, "approve")
+        await _push(page, "approve", [{"type": "response", "content": "Held."}, {"type": "done"}])
+        if not await _on_screen(page, "You allowed the call."):
+            bad.append("a taken approval does not say 'You allowed the call.'")
+    finally:
+        await ctx.close()
+
+    ctx, page = await _builder_back(browser, _parked("Which warehouse should it use?", "step_ask"))
+    try:
+        await _build_with_ai(page)
+        panel = page.locator('[data-testid="assistant-panel"]')
+        composer = page.get_by_role("textbox", name="Message Synapse AI")
+        await composer.wait_for(timeout=10_000)
+        await composer.fill("4111 1111 1111 1111")
+        await composer.press("Enter")
+        for _ in range(20):
+            if await _resumes(page):
+                break
+            await asyncio.sleep(0.25)
+        await page.evaluate("""() => {
+            window.__follow.push({type: 'builder_notice', reason: 'card_number', final: false,
+                                  message: "Card details go in the browser; you'll be asked there."});
+            window.__follow.close(); }""")
+        await asyncio.sleep(1.0)
+        said = (await panel.inner_text()).replace("’", "'")
+        if "4111" in said:
+            bad.append("a card number the box held back is still on screen as the person's answer")
+        if "Card details go in the browser" not in said:
+            bad.append("the refusal is not said")
+        await composer.fill("Portside")
+        await composer.press("Enter")
+        for _ in range(20):
+            if len(await _resumes(page)) >= 2:
+                break
+            await asyncio.sleep(0.25)
+        await page.evaluate("() => { window.__follow.push({type: 'status', message: 'Carrying on'}); }")
+        await asyncio.sleep(1.0)
+        if "Portside" not in await panel.inner_text():
+            bad.append("an answer the run took is not drawn as the person's")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a refused approval stays answerable and says nothing was allowed; a held-back card number leaves no "
+            "bubble; taken answers are drawn")
+
+
 async def main() -> int:
     global APP, API
     ap = argparse.ArgumentParser(description=__doc__)

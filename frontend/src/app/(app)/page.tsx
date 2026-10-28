@@ -525,13 +525,22 @@ function ToolApprovalCard({
   msg, onDecide, disabled, movedPast,
 }: {
   msg: Message;
-  onDecide: (approve: boolean, reason: string) => void;
+  /** Resolves whether the answer was taken (F1176): only then does the card read as answered. */
+  onDecide: (approve: boolean, reason: string) => Promise<boolean>;
   disabled: boolean;
   /** A message was sent after it: the call was refused, not asked any more (F247). */
   movedPast: boolean;
 }) {
   const [reason, setReason] = useState('');
   const [answered, setAnswered] = useState(false);
+  const [sending, setSending] = useState(false);
+  // Answered once the server has taken it (F1176, as F1078): refused, the card stays the person's to answer.
+  const decide = async (approve: boolean, why: string) => {
+    setSending(true);
+    const taken = await onDecide(approve, why).catch(() => false);
+    setSending(false);
+    if (taken) setAnswered(true);
+  };
   const args = msg.data?.tool_args as Record<string, unknown> | undefined;
   // Why it was not run, as the server kept it; a card moved past on this page
   // has not been read back yet, and a new message is the only way to move on.
@@ -574,8 +583,8 @@ function ToolApprovalCard({
                 type="button"
                 variant="person"
                 size="sm"
-                disabled={disabled}
-                onClick={() => { setAnswered(true); onDecide(true, ''); }}
+                disabled={disabled || sending}
+                onClick={() => void decide(true, '')}
               >
                 Allow once
               </Button>
@@ -583,8 +592,8 @@ function ToolApprovalCard({
                 type="button"
                 variant="secondary"
                 size="sm"
-                disabled={disabled}
-                onClick={() => { setAnswered(true); onDecide(false, reason); }}
+                disabled={disabled || sending}
+                onClick={() => void decide(false, reason)}
               >
                 Refuse
               </Button>
@@ -1968,14 +1977,11 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
    * turn-boundary snapshot — so this streams into the transcript exactly as
    * the first half did, rather than starting a new exchange.
    */
-  const handleToolApproval = async (approve: boolean, reason: string, approvalId?: string, questionId?: string) => {
-    if (isLoading) return;
+  const handleToolApproval = async (approve: boolean, reason: string, approvalId?: string, questionId?: string,
+                                    onTaken?: () => void): Promise<boolean> => {
+    if (isLoading) return false;
     // The question the card belongs to — what the turn will be saved under.
     const question = [...messages].reverse().find(m => m.role === 'user')?.content ?? '';
-    setMessages(prev => [...prev, {
-      role: 'assistant', msgType: 'note',
-      content: approve ? 'You allowed the call.' : `You refused the call${reason ? `: ${reason}` : '.'}`,
-    }]);
     setIsLoading(true);
     setDraftAnswer('');
     setTurnOutcome(null);
@@ -1986,6 +1992,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
     liveCallsRef.current = [];
     sourcesRef.current = null;
     notesRef.current = [];
+    let taken = false;
     const controller = new AbortController();
     sseAbortRef.current = controller;
     try {
@@ -1998,7 +2005,19 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
                                question_id: questionId }),
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+      // The answer is the person's once taken (F1176, as F1078): refused (answered in another tab), nothing was
+      // allowed or refused here, the card stays answerable, and the server's words say why.
+      if (!response.ok) {
+        const why = await refusedAnswerMessage(response);
+        setMessages(prev => [...prev, { role: 'assistant', msgType: 'note', content: why }]);
+        return false;
+      }
+      taken = true;
+      onTaken?.();
+      setMessages(prev => [...prev, {
+        role: 'assistant', msgType: 'note',
+        content: approve ? 'You allowed the call.' : `You refused the call${reason ? `: ${reason}` : '.'}`,
+      }]);
       if (!(await consumeTurnStream(response, controller, newStepState()))) {
         await recoverTurn(sessionId, question);
       }
@@ -2020,6 +2039,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       setIsThinking(false);
       setThinkingPreview(null);
     }
+    return taken;
   };
 
   /**
@@ -2030,9 +2050,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
    */
   const answerMember = async (answer: MemberAnswer): Promise<'answered' | 'sent' | 'failed'> => {
     if (!isLoading) {
-      resumeTeamOnScreen(answer);
-      await handleToolApproval(answer.approve, answer.reason, answer.approval_id, answer.question_id);
-      return 'answered';
+      // The member's lane reads as answered once the answer is taken (F1176), before the resumed turn streams.
+      const taken = await handleToolApproval(answer.approve, answer.reason, answer.approval_id, answer.question_id,
+                                             () => resumeTeamOnScreen(answer));
+      return taken ? 'answered' : 'failed';
     }
     try {
       const response = await fetch(`/api/chat/${encodeURIComponent(sessionId)}/approve`, {
@@ -2941,9 +2962,9 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
         <ToolApprovalCard
           key={idx}
           msg={msg}
-          onDecide={(approve, reason) => (msg.data?.question_id
-            ? void answerMember({ approve, reason, approval_id: msg.data?.approval_id,
-                                  question_id: msg.data.question_id })
+          onDecide={async (approve, reason) => (msg.data?.question_id
+            ? (await answerMember({ approve, reason, approval_id: msg.data?.approval_id,
+                                    question_id: msg.data.question_id })) !== 'failed'
             : handleToolApproval(approve, reason, msg.data?.approval_id))}
           disabled={isLoading}
           movedPast={messages.slice(idx + 1).some(m => m.role === 'user')}
