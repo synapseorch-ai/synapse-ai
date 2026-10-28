@@ -63,7 +63,15 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
     }
   }, [host, id]);
 
-  useEffect(() => { load(); }, [load]);
+  // Set only when it answers, never after the page has gone (react-hooks' set-state-in-effect); Reload is `load`.
+  useEffect(() => {
+    let live = true;
+    getRecording(host, id).then(
+      found => { if (live) setDoc(found); },
+      e => { if (live) { setReadFailed(`The recording could not be read (${e instanceof Error ? e.message : String(e)}).`); setDoc(null); } },
+    );
+    return () => { live = false; };
+  }, [host, id]);
 
   const save = async (change: Change): Promise<boolean> => {
     if (!doc) return false;

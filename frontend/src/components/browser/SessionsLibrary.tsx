@@ -50,7 +50,17 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
     }
   }, [host]);
 
-  useEffect(() => { if (!host.locked) load(); }, [load, host.locked]);
+  // The first read sets state only when it answers, and not at all once the page has gone (react-hooks'
+  // set-state-in-effect); later reads are the handlers' own `load`.
+  useEffect(() => {
+    if (host.locked) return;
+    let live = true;
+    listSessions(host).then(
+      rows => { if (live) { setSessions(rows); setFailed(null); } },
+      e => { if (live) { setFailed(`The sessions could not be read (${e instanceof Error ? e.message : String(e)}).`); setSessions([]); } },
+    );
+    return () => { live = false; };
+  }, [host]);
 
   const open = async (site: string): Promise<string | null> => {
     const opened = await startSignIn(host, site);

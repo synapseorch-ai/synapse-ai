@@ -6,7 +6,7 @@
  * starts with and where it starts; the browser is the person's alone, and Stop keeps it and opens it. Synced to cloud:
  * the routes are the host's, and a plan without recordings says where they come with (`locked`).
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Film } from 'lucide-react';
 
 import { Button, EmptyState, ErrorNote, Field, Input, Modal } from '@/components/ui';
@@ -29,17 +29,16 @@ export function RecordingsLibrary({ host, sessionsHost, browserHost, onOpen }: {
   const [rows, setRows] = useState<RecordingSummary[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      setRows(await listRecordings(host));
-      setFailed(null);
-    } catch (e) {
-      setFailed(`The recordings could not be read (${e instanceof Error ? e.message : String(e)}).`);
-      setRows(prev => prev ?? []);
-    }
+  // Set only when it answers, never after the list has gone (react-hooks' set-state-in-effect).
+  useEffect(() => {
+    if (host.locked) return;
+    let live = true;
+    listRecordings(host).then(
+      found => { if (live) { setRows(found); setFailed(null); } },
+      e => { if (live) { setFailed(`The recordings could not be read (${e instanceof Error ? e.message : String(e)}).`); setRows([]); } },
+    );
+    return () => { live = false; };
   }, [host]);
-
-  useEffect(() => { if (!host.locked) load(); }, [load, host.locked]);
 
   if (host.locked) {
     return (
