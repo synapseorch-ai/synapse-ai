@@ -628,10 +628,13 @@ function AgentPicker({
       <RPopover.Trigger
         type="button"
         aria-label={`Agents: ${activeName}`}
-        className={cn(composerPillClass, 'data-[state=open]:bg-row-hover')}
+        // On a phone its tile and chevron: the name is under the tab's title, and the row goes to the model's whole
+        // label (F1171). The name stays the trigger's own, and on hover.
+        className={cn(composerPillClass, 'data-[state=open]:bg-row-hover max-md:pr-1.5')}
+        title={activeName}
       >
         <PillAvatar><Bot className="h-3 w-3" /></PillAvatar>
-        <span className="min-w-0 truncate" title={activeName}>{activeName}</span>
+        <span className="min-w-0 truncate max-md:sr-only" title={activeName}>{activeName}</span>
         <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-faint" aria-hidden />
       </RPopover.Trigger>
       <RPopover.Portal>

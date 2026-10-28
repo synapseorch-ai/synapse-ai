@@ -49,6 +49,7 @@ export function Combobox<T extends string = string>({
   size = "md",
   trigger = "field",
   leading,
+  iconOnPhone = false,
   "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
 }: {
@@ -71,6 +72,11 @@ export function Combobox<T extends string = string>({
   trigger?: "field" | "icon" | "pill";
   /** Drawn before the choice in a `pill` trigger: the agent's tile, say. */
   leading?: React.ReactNode;
+  /**
+   * A `pill` that is its `leading` tile and chevron below `md`, its choice kept for a screen reader and on hover:
+   * Chat's agent picker, whose row a phone gives to the model's whole label (F1171).
+   */
+  iconOnPhone?: boolean;
   "aria-label"?: string;
   "aria-describedby"?: string;
 }) {
@@ -110,13 +116,16 @@ export function Combobox<T extends string = string>({
           trigger === "pill" && cn(
             "h-7 w-auto min-w-0 max-w-full shrink justify-start gap-1.5 rounded-full border-transparent bg-surface-2 py-0 text-xs font-medium",
             leading ? "pl-1 pr-2" : "px-2.5",
+            iconOnPhone && "max-md:pr-1.5",
             "hover:border-transparent hover:bg-row-hover",
           ),
           className,
         )}
       >
         {trigger === "pill" && leading}
-        <span className={trigger === "icon" ? "sr-only" : "truncate"}>{selected?.label ?? placeholder}</span>
+        <span className={trigger === "icon" ? "sr-only" : cn("truncate", trigger === "pill" && iconOnPhone && "max-md:sr-only")}>
+          {selected?.label ?? placeholder}
+        </span>
         <ChevronDown
           className="size-4 shrink-0 text-text-faint transition-transform group-data-[state=open]:rotate-180"
           aria-hidden
