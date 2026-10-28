@@ -62,7 +62,11 @@ class Skipped(Exception):
 
 
 def check(fn):
-    CHECKS[fn.__name__.removeprefix("check_")] = fn
+    name = fn.__name__.removeprefix("check_")
+    # A second check of one name replaced the first unseen: two `firstrun`s left F182's unrun from 10-21 (F1180).
+    if name in CHECKS:
+        raise RuntimeError(f"two ui-smoke checks are named {name!r}")
+    CHECKS[name] = fn
     return fn
 
 
@@ -5150,8 +5154,9 @@ GREETING = """() => {
 
 
 @check
-async def check_firstrun(browser) -> str:
-    """A page no model can answer says so, and where to fix it (F182).
+async def check_chatnotready(browser) -> str:
+    """A page no model can answer says so, and where to fix it (F182). Named `firstrun` until F1180, when ONB2's
+    first-run model step took that name and this check stopped running.
 
     A fresh install's default model is Ollama's; with nothing listening the
     page said "Ready" and answered the first message with httpx's own text —
