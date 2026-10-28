@@ -82,6 +82,21 @@
   ],
   "guide": "/boards/tasks"
  },
+ "browser": {
+  "title": "Browser",
+  "summary": "Sites your agents stay signed in to, kept as each site’s session and never your password.",
+  "steps": [
+   "Click “Keep me signed in to a site”, name it, and sign in in the browser that opens; only you drive it, and nothing is recorded.",
+   "Click “Keep” when you are in. Synapse keeps the site’s session, encrypted: never your password, which agents never see or type.",
+   "A session expires in 30 days at most, or sooner when the site ends it; the row says when, and an expired one offers “Sign in again”.",
+   "Pick sessions for an agent in its Browser section, one per site. “Remove” takes a session away at once, and says first what uses it."
+  ],
+  "guide": "/guides/start/agents",
+  "where": {
+   "label": "Browser",
+   "href": "/browser"
+  }
+ },
  "chat": {
   "title": "Chat",
   "summary": "Talk to your agents and watch them work: their thinking, the tools they call and what they return. Each conversation is a tab, so several can be open and working at once, and every one is kept for you to pick up again.",
@@ -566,21 +581,6 @@
   "where": {
    "label": "Vault",
    "href": "/vault"
-  }
- },
- "website_logins": {
-  "title": "Website logins",
-  "summary": "Sites you logged in to in the browser inside Synapse, kept so a run that needs one starts logged in.",
-  "steps": [
-   "Click “Log in to a site”, name it, and log in in the browser that opens; only you drive it, and nothing is recorded.",
-   "Click “Keep this login” when you are in. Each row is a site’s session, kept encrypted: your password is never kept, and agents never see or type it.",
-   "A login lasts 30 days at most, or less when the site ends it sooner; the row says when it ends.",
-   "“Forget” removes a login at once; a run that needs the site then asks you to log in again."
-  ],
-  "guide": "/guides/start/agents",
-  "where": {
-   "label": "Website logins",
-   "href": "/settings/website_logins"
   }
  },
  "widgets": {
