@@ -75,7 +75,8 @@ def test_an_octet_stream_checksum_is_read_as_its_hex(octet_server):
     shell = _powershell()
     if not shell:
         pytest.skip("no PowerShell here; CI's setup-scripts job has pwsh")
-    tmp = "$env:TEMP" if shell[0] == "powershell.exe" else "[System.IO.Path]::GetTempPath()"
+    # A method call as a command's argument needs its own parentheses, or pwsh can't parse the line (F1162).
+    tmp = "$env:TEMP" if shell[0] == "powershell.exe" else "([System.IO.Path]::GetTempPath())"
     script = (f"{_function()}\n"
               f"Get-PublishedSha256 -Uri '{octet_server}' -Path (Join-Path {tmp} 'f833-check.sha256')")
     out = subprocess.run([*shell, script], capture_output=True, text=True, timeout=60)
