@@ -37,7 +37,7 @@ from core.tool_router import SEP, ToolRouter
 from core.tools_registry import ALL_NATIVE_TOOLS
 
 # Generous enough for the heavy importers (code_search pulls cocoindex,
-# web_scraper pulls crawl4ai) on a cold CI runner, short enough that a hung
+# web_scraper pulls Playwright) on a cold CI runner, short enough that a hung
 # server fails the job instead of stalling it.
 _BOOT_TIMEOUT = timedelta(seconds=90)
 

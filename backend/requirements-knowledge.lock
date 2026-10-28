@@ -101,9 +101,7 @@ idna==3.18
     #   httpx
     #   requests
 jinja2==3.1.6
-    # via
-    #   -c .knowledge-constraints.txt
-    #   torch
+    # via torch
 jsonref==1.1.0
     # via docling-core
 jsonschema==4.26.0
@@ -127,9 +125,7 @@ markdown-it-py==4.2.0
     #   -c .knowledge-constraints.txt
     #   rich
 markupsafe==3.0.3
-    # via
-    #   -c .knowledge-constraints.txt
-    #   jinja2
+    # via jinja2
 mdurl==0.1.2
     # via
     #   -c .knowledge-constraints.txt
@@ -137,9 +133,7 @@ mdurl==0.1.2
 mpmath==1.3.0
     # via sympy
 networkx==3.6.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   torch
+    # via torch
 numpy==2.4.6 ; python_full_version < '3.12'
     # via
     #   -c .knowledge-constraints.txt
@@ -243,9 +237,7 @@ referencing==0.37.0
     #   jsonschema
     #   jsonschema-specifications
 regex==2026.7.19
-    # via
-    #   -c .knowledge-constraints.txt
-    #   transformers
+    # via transformers
 requests==2.34.2
     # via
     #   -c .knowledge-constraints.txt
@@ -262,22 +254,16 @@ rpds-py==2026.6.3
     #   jsonschema
     #   referencing
 rtree==1.4.1
-    # via
-    #   -c .knowledge-constraints.txt
-    #   docling-slim
+    # via docling-slim
 safetensors==0.8.0
     # via
     #   accelerate
     #   docling-ibm-models
     #   transformers
 scipy==1.17.1 ; python_full_version < '3.12'
-    # via
-    #   -c .knowledge-constraints.txt
-    #   docling-slim
+    # via docling-slim
 scipy==1.18.0 ; python_full_version >= '3.12'
-    # via
-    #   -c .knowledge-constraints.txt
-    #   docling-slim
+    # via docling-slim
 setuptools==84.0.0
     # via torch
 shellingham==1.5.4

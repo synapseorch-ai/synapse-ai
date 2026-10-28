@@ -1,28 +1,30 @@
 import asyncio
 import base64
+import dataclasses
+import enum
 import hashlib
 import json
-import logging
 import os
+import re
 import sys
 import time
 import uuid
 import weakref
+from collections import OrderedDict
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from contextlib import contextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 
 @contextmanager
 def _stderr_stdout():
-    """Redirect stdout→stderr for the duration of a crawl4ai call.
+    """Redirect stdout→stderr for the duration of a page read.
 
-    crawl4ai's progress reporter writes directly to sys.stdout, which corrupts
-    the MCP stdio JSON-RPC stream.  The MCP framework writes its JSON-RPC
-    responses only after the tool handler returns, so temporarily swapping
-    sys.stdout here is safe.
+    Nothing the browser runs may write to sys.stdout: it is the MCP stdio JSON-RPC stream. The MCP framework writes
+    its JSON-RPC responses only after the tool handler returns, so temporarily swapping sys.stdout here is safe.
     """
     _real = sys.stdout
     sys.stdout = sys.stderr
@@ -35,12 +37,9 @@ import mcp.types as types
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
-# Suppress crawl4ai's stdout progress messages — they corrupt the MCP stdio stream
-logging.getLogger("crawl4ai").setLevel(logging.ERROR)
-logging.getLogger("crawl4ai.async_webcrawler").setLevel(logging.ERROR)
-
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode, ProxyConfig
-from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
+from html_to_markdown import ConversionOptions, convert as _html_markdown
+from playwright.async_api import Error as PlaywrightError, async_playwright
+from playwright_stealth import Stealth
 
 from core import egress_proxy, tool_scope
 from core.file_roots import within
@@ -149,10 +148,86 @@ async def _preflight(url: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Crawler singleton — started lazily on first use
+# The browser — started lazily on first use
 # ---------------------------------------------------------------------------
+#
+# Playwright used directly (F1157): one headless Chromium per process, a context per caller (`_in_scope`), each
+# context with stealth, the egress guard on its route and the egress proxy as its network.
 
-_crawler: AsyncWebCrawler | None = None
+#: What a page is read as. Chrome on Windows, as before the move off crawl4ai.
+USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+              "Chrome/120.0.0.0 Safari/537.36")
+#: What crawl4ai sent and launched with, kept as they were (Naveen, 10-28): the client hint that matches the user agent,
+#: and Chromium without its automation flag. Without them DuckDuckGo's results page, research's search, answered 403.
+SEC_CH_UA = '"Chromium";v="120", "Not_A Brand";v="8", "Google Chrome";v="120"'
+AS_CRAWL4AI_LAUNCHED = ("--disable-blink-features=AutomationControlled",)
+VIEWPORT = {"width": 1080, "height": 600}
+#: How long a page has to answer, and how long a loaded page is given to settle (its scripts' first requests).
+PAGE_TIMEOUT_MS = 60_000
+SETTLE_MS = 1_000
+#: A named session, or a caller's context with none open, ends after this long unused.
+IDLE_SECONDS = 30 * 60
+#: A plain read's cache (F1110: only a read with no headers and no script is kept).
+CACHE_ENTRIES = 64
+CACHE_SECONDS = 10 * 60
+#: A PDF the address downloads: read when it is no larger than this, and no longer than this many pages.
+MAX_PDF_BYTES = 25_000_000
+MAX_PDF_PAGES = 300
+
+
+class CacheMode(enum.Enum):
+    ENABLED = "enabled"
+    BYPASS = "bypass"
+
+
+@dataclass(frozen=True)
+class ProxyConfig:
+    """The proxy a context's pages go through. `username` is the caller's label: the proxy asks for no credentials,
+    so it goes nowhere."""
+    server: str
+    username: str = ""
+    password: str = ""
+
+
+@dataclass(frozen=True)
+class BrowserConfig:
+    proxy_config: ProxyConfig | None = None
+    user_agent: str = USER_AGENT
+    extra_args: tuple[str, ...] = tuple(egress_proxy.CHROMIUM_ARGS) + AS_CRAWL4AI_LAUNCHED
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """One page read: what to wait for, run and keep."""
+    cache_mode: CacheMode = CacheMode.BYPASS
+    excluded_tags: tuple[str, ...] = ("script", "style")
+    remove_overlay_elements: bool = False
+    screenshot: bool = False
+    scan_full_page: bool = False
+    delay_before_return_html: float = 0
+    wait_for: str | None = None
+    wait_for_timeout: int | None = None
+    js_code: str | list[str] | None = None
+    extraction_strategy: Any = None
+    session_id: str | None = None
+    proxy_config: ProxyConfig | None = None
+
+    def clone(self, **updates) -> "RunConfig":
+        return dataclasses.replace(self, **updates)
+
+
+@dataclass
+class CrawlResult:
+    success: bool
+    markdown: str = ""
+    links: dict = field(default_factory=dict)
+    media: dict = field(default_factory=dict)
+    error_message: str | None = None
+    extracted_content: str | None = None
+    screenshot: str | None = None
+
+
+_crawler: "_Browser | None" = None
 _crawler_lock = asyncio.Lock()
 #: The proxy the browser was started with (the host's, else Synapse's own). Every call's context names it again,
 #: with the caller's label (`_in_scope`).
@@ -177,22 +252,155 @@ def browser_config(local_proxy: str | None = None) -> BrowserConfig:
     browser's whole network goes through one or the other, so what the route guard does not see (a page's
     WebSockets, its service workers) is refused there."""
     proxy = _egress_proxy() or local_proxy
-    return BrowserConfig(
-        headless=True,
-        browser_type="chromium",
-        enable_stealth=True,
-        verbose=False,
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        ),
-        extra_args=list(egress_proxy.CHROMIUM_ARGS),
-        **({"proxy_config": {"server": proxy}} if proxy else {}),
-    )
+    return BrowserConfig(proxy_config=ProxyConfig(server=proxy) if proxy else None)
 
 
-async def get_crawler() -> AsyncWebCrawler:
+@dataclass
+class _Context:
+    context: Any
+    #: A session's page, by session id, and when each was last used.
+    pages: dict = field(default_factory=dict)
+    used: dict = field(default_factory=dict)
+    last: float = field(default_factory=time.monotonic)
+
+
+class _Browser:
+    """One headless Chromium, and a context per caller label: two labels never share a cookie jar.
+
+    The label is the part of a run's session id before its first ':' (`_in_scope`). A session's page stays open in
+    its label's context until `kill_session` or `IDLE_SECONDS` unused; a label of one call (`call-…`) closes its
+    context with its last page."""
+
+    def __init__(self, config: BrowserConfig):
+        self.config = config
+        self._pw = None
+        self._browser = None
+        self._contexts: dict[str, _Context] = {}
+        self._lock = asyncio.Lock()
+        self._cache: OrderedDict = OrderedDict()
+
+    @property
+    def crawler_strategy(self) -> "_Browser":
+        """Where `_end_session` finds `kill_session` (the name it had under crawl4ai, kept for its callers)."""
+        return self
+
+    async def start(self) -> None:
+        self._pw = await async_playwright().start()
+        try:
+            proxy = self.config.proxy_config
+            # The browser's own proxy as well as each context's: Chromium on Windows takes a context's proxy only
+            # when the browser was started with one, and nothing then leaves without it.
+            self._browser = await self._pw.chromium.launch(
+                headless=True, args=list(self.config.extra_args),
+                **({"proxy": {"server": proxy.server}} if proxy else {}))
+        except BaseException:
+            await self._pw.stop()
+            raise
+
+    async def close(self) -> None:
+        try:
+            if self._browser is not None:
+                await self._browser.close()
+        finally:
+            self._contexts.clear()
+            if self._pw is not None:
+                await self._pw.stop()
+
+    async def kill_session(self, session_id: str) -> None:
+        async with self._lock:
+            for label, ctx in list(self._contexts.items()):
+                page = ctx.pages.pop(session_id, None)
+                if page is None:
+                    continue
+                ctx.used.pop(session_id, None)
+                await _quietly(page.close())
+                if not ctx.pages and label.startswith("call-"):
+                    del self._contexts[label]
+                    await _quietly(ctx.context.close())
+
+    async def arun(self, url: str, config: RunConfig) -> CrawlResult:
+        key = (url, config.excluded_tags)
+        if config.cache_mode is CacheMode.ENABLED and (hit := self._cached(key)) is not None:
+            return hit
+        try:
+            page = await self._page(config)
+        except PlaywrightError as exc:
+            return CrawlResult(success=False, error_message=str(exc))
+        try:
+            result = await _read_page(page, url, config)
+        except PlaywrightError as exc:
+            result = CrawlResult(success=False, error_message=str(exc))
+        if result.success and config.cache_mode is CacheMode.ENABLED:
+            self._cache[key] = (time.monotonic(), dataclasses.replace(result))
+            while len(self._cache) > CACHE_ENTRIES:
+                self._cache.popitem(last=False)
+        return result
+
+    def _cached(self, key) -> CrawlResult | None:
+        found = self._cache.get(key)
+        if found is None or time.monotonic() - found[0] > CACHE_SECONDS:
+            self._cache.pop(key, None)
+            return None
+        return dataclasses.replace(found[1])
+
+    async def _page(self, config: RunConfig):
+        """The run's page: its session's, in its label's context, or a new one there."""
+        session_id = config.session_id or f"call-{uuid.uuid4().hex}:{uuid.uuid4().hex}"
+        label = session_id.split(":", 1)[0]
+        async with self._lock:
+            await self._reap()
+            ctx = self._contexts.get(label)
+            if ctx is None:
+                ctx = _Context(context=await self._new_context(config))
+                self._contexts[label] = ctx
+            page = ctx.pages.get(session_id)
+            if page is None or page.is_closed():
+                page = await ctx.context.new_page()
+                ctx.pages[session_id] = page
+            ctx.used[session_id] = ctx.last = time.monotonic()
+        return page
+
+    async def _new_context(self, config: RunConfig):
+        proxy = config.proxy_config or self.config.proxy_config
+        context = await self._browser.new_context(
+            user_agent=self.config.user_agent, extra_http_headers={"sec-ch-ua": SEC_CH_UA}, viewport=VIEWPORT,
+            accept_downloads=True,
+            # A service worker's requests reach neither route below; the proxy still holds them, and none is needed
+            # to read a page.
+            service_workers="block",
+            **({"proxy": {"server": proxy.server, "username": proxy.username, "password": proxy.password}}
+               if proxy else {}))
+        try:
+            await Stealth().apply_stealth_async(context)
+            await _attach_egress_guard(None, context=context)
+        except BaseException:
+            await _quietly(context.close())
+            raise
+        return context
+
+    async def _reap(self) -> None:
+        """Close what has gone unused past `IDLE_SECONDS`: a session's page, then a context with none left."""
+        now = time.monotonic()
+        for label, ctx in list(self._contexts.items()):
+            for session_id, used in list(ctx.used.items()):
+                if now - used > IDLE_SECONDS:
+                    ctx.used.pop(session_id, None)
+                    page = ctx.pages.pop(session_id, None)
+                    if page is not None:
+                        await _quietly(page.close())
+            if not ctx.pages and now - ctx.last > IDLE_SECONDS:
+                del self._contexts[label]
+                await _quietly(ctx.context.close())
+
+
+async def _quietly(closing) -> None:
+    try:
+        await closing
+    except Exception:  # noqa: BLE001 — the page or context is gone already; nothing to close
+        pass
+
+
+async def get_crawler() -> _Browser:
     global _crawler
     async with _crawler_lock:
         if _crawler is None:
@@ -200,19 +408,15 @@ async def get_crawler() -> AsyncWebCrawler:
             local = None if _egress_proxy() else (await egress_proxy.shared()).url
             config = browser_config(local)
             _browser_proxy = _egress_proxy() or local
-            _crawler = AsyncWebCrawler(config=config)
-            _crawler.crawler_strategy.set_hook(
-                "on_page_context_created", _attach_egress_guard
-            )
-            _crawler.crawler_strategy.set_hook("before_goto", _send_headers)
-            await _crawler.start()
+            crawler = _Browser(config)
+            await crawler.start()
+            _crawler = crawler
     return _crawler
 
 
 async def close_crawler() -> None:
-    """Close the browser, if one was started, with crawl4ai's `close()` — 0.9 has no `stop()`, and calling it killed
-    every shutdown with the browser still up (F1016). Never raises: it runs as the server stops, and a browser that
-    will not close must not be the process's last word. The next call starts a new one."""
+    """Close the browser, if one was started. Never raises: it runs as the server stops, and a browser that will not
+    close must not be the process's last word (F1016). The next call starts a new one."""
     global _crawler
     async with _crawler_lock:
         crawler, _crawler = _crawler, None
@@ -222,6 +426,326 @@ async def close_crawler() -> None:
         await crawler.close()
     except Exception as exc:  # noqa: BLE001 — see docstring
         print(f"web_scraper: the browser did not close cleanly: {exc}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Reading a page
+# ---------------------------------------------------------------------------
+
+async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
+    """Load `url` in `page` and read it, in crawl4ai 0.9's order: load, scan, wait, delay, script, overlays, content,
+    screenshot. A wait that never comes true is a failure that says "Wait condition failed" (`_arun_once`)."""
+    await _send_headers(page, url=url)
+    downloads: list = []
+
+    def on_download(download) -> None:  # a function: Playwright tags its listeners, which a bound builtin can't take
+        downloads.append(download)
+
+    page.on("download", on_download)
+    try:
+        response = await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+    except PlaywrightError:
+        if not downloads:
+            await asyncio.sleep(0.5)  # the download event can follow the aborted navigation
+        if downloads:
+            return await _read_download(downloads[0], url)
+        raise
+    finally:
+        page.remove_listener("download", on_download)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=SETTLE_MS)
+    except PlaywrightError:
+        pass  # a page that keeps talking is read as it is
+    if config.scan_full_page:
+        await _scroll_through(page)
+    if config.wait_for:
+        try:
+            await _wait(page, config.wait_for, config.wait_for_timeout or PAGE_TIMEOUT_MS)
+        except PlaywrightError as exc:
+            return CrawlResult(success=False, error_message=f"Wait condition failed: {exc}")
+    if config.delay_before_return_html:
+        await asyncio.sleep(config.delay_before_return_html)
+    if config.js_code:
+        for script in [config.js_code] if isinstance(config.js_code, str) else config.js_code:
+            await _run_script(page, script)
+    if config.remove_overlay_elements:
+        await _quietly(page.evaluate(_REMOVE_OVERLAYS))
+    html = await page.content()
+    if (blocked := _refusal(response, html)) is not None:
+        return CrawlResult(success=False, error_message=blocked)
+    found = await page.evaluate(_LINKS_AND_IMAGES, ", ".join(config.excluded_tags))
+    result = CrawlResult(success=True, markdown=_markdown(html, page.url, config.excluded_tags),
+                         links=_links(found["links"], page.url), media={"images": found["images"]})
+    if config.extraction_strategy is not None:
+        result.extracted_content = json.dumps(config.extraction_strategy.extract(html), ensure_ascii=False)
+    if config.screenshot:
+        shot = await page.screenshot(full_page=config.scan_full_page, type="png")
+        result.screenshot = base64.b64encode(shot).decode("ascii")
+    return result
+
+
+#: Markers only a bot-check page carries, whatever its size.
+_CHALLENGE_MARKERS = (
+    ("captcha-delivery.com", "DataDome captcha"),
+    ("/cdn-cgi/challenge-platform/", "Cloudflare challenge"),
+    ("__cf_chl_f_tk=", "Cloudflare challenge"),
+    ("window._pxAppId", "PerimeterX block"),
+    ("captcha.px-cdn.net", "PerimeterX captcha"),
+    ("_Incapsula_Resource", "Imperva block"),
+    ("Pardon Our Interruption", "Akamai challenge"),
+)
+
+
+def _refusal(response, html: str) -> str | None:
+    """Why the page is a refusal rather than the page asked for, or None. The egress proxy's own refusal says so;
+    a 403, 429 or 503, or a bot check, is a failure as crawl4ai reported it, never a page of content: a reader
+    handed a block page as the site's words is misled."""
+    if response is not None and response.headers.get("x-synapse-egress") == "refused":
+        return "URL blocked: the egress proxy refused this address"
+    for marker, name in _CHALLENGE_MARKERS:
+        if marker in html:
+            return f"Blocked by anti-bot protection: {name}"
+    if response is not None and response.status in (403, 429, 503):
+        return f"Blocked by anti-bot protection: HTTP {response.status}"
+    return None
+
+
+def _runs_a_script(wait_for: str | None) -> bool:
+    """Whether `_wait` runs `wait_for` in the page (`js:`, or a function) rather than waiting for an element."""
+    return bool(wait_for) and wait_for.strip().startswith(("js:", "()", "function"))
+
+
+async def _wait(page, wait_for: str, timeout: int) -> None:
+    """`js:` (or a function) waits for it to be true; `css:` (or anything else) for the element to show — never run as
+    a script."""
+    wait_for = wait_for.strip()
+    if _runs_a_script(wait_for):
+        await page.wait_for_function(wait_for.removeprefix("js:").strip(), timeout=timeout)
+    else:
+        await page.wait_for_selector(wait_for.removeprefix("css:").strip(), timeout=timeout)
+
+
+async def _run_script(page, script: str) -> None:
+    """`script` as the body of an async function, so a top-level `await` works; its own error is the page's, and a
+    navigation it starts is waited for."""
+    try:
+        await page.evaluate(f"(async () => {{ try {{ return await (async () => {{\n{script}\n}})(); }} "
+                            f"catch (err) {{ return String(err); }} }})()")
+    except PlaywrightError as exc:
+        if "Execution context was destroyed" not in str(exc):
+            raise
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=5_000)
+        await page.wait_for_load_state("networkidle", timeout=1_000)
+    except PlaywrightError:
+        pass
+
+
+async def _scroll_through(page, step_delay: float = 0.2, max_steps: int = 50) -> None:
+    """Scroll to the bottom a screen at a time, so what loads on scroll is there, then back to the top."""
+    for _ in range(max_steps):
+        at_bottom = await page.evaluate(
+            "() => { window.scrollBy(0, window.innerHeight);"
+            " return window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2; }")
+        await asyncio.sleep(step_delay)
+        if at_bottom:
+            break
+    await page.evaluate("() => window.scrollTo(0, 0)")
+
+
+_REMOVE_OVERLAYS = """() => {
+  const words = /cookie|consent|gdpr|modal|popup|overlay|newsletter|subscribe|banner|paywall/i;
+  for (const el of Array.from(document.querySelectorAll('body *'))) {
+    const style = getComputedStyle(el);
+    if (style.position !== 'fixed' && style.position !== 'sticky') continue;
+    const box = el.getBoundingClientRect();
+    const big = box.width * box.height > 0.3 * innerWidth * innerHeight;
+    const z = parseInt(style.zIndex, 10) || 0;
+    if (big || z >= 100 || words.test(`${el.id} ${el.className}`)) el.remove();
+  }
+  for (const el of [document.documentElement, document.body]) {
+    if (el) { el.style.overflow = 'auto'; el.style.position = 'static'; }
+  }
+}"""
+
+_LINKS_AND_IMAGES = """(excluded) => {
+  const out = (el) => !excluded || !el.closest(excluded);
+  const links = Array.from(document.querySelectorAll('a[href]')).filter(out).map(a => ({
+    href: a.href, text: (a.innerText || a.textContent || '').trim().replace(/\\s+/g, ' '),
+    title: (a.getAttribute('title') || '').trim()}));
+  const images = Array.from(document.images).filter(out).filter(img => img.src && !img.src.startsWith('data:'))
+    .map(img => {
+      let desc = '', el = img.parentElement;
+      while (el && !desc) { desc = (el.innerText || '').trim().slice(0, 200); el = el.parentElement; }
+      const width = img.naturalWidth || img.width, height = img.naturalHeight || img.height;
+      const score = (img.alt ? 1 : 0) + (width > 150 ? 1 : 0) + (height > 150 ? 1 : 0)
+        + (/\\.(jpe?g|png|webp)(\\?|$)/i.test(img.src) ? 1 : 0) + (desc ? 1 : 0);
+      return {src: img.currentSrc || img.src, alt: img.alt || '', desc, score, type: 'image'};
+    });
+  return {links, images};
+}"""
+
+#: Query parameters that only say where a click came from: a link without them is the same page.
+_TRACKING = re.compile(r"^(utm_\w+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|ref_src)$", re.IGNORECASE)
+_SECOND_LEVEL = frozenset({"co", "com", "org", "net", "gov", "ac", "edu"})
+
+
+def _base_domain(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+    parts = host.split(".")
+    if len(parts) > 2 and parts[-2] in _SECOND_LEVEL and len(parts[-1]) == 2:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
+def _normal_url(href: str) -> str | None:
+    """`href` with no fragment and no tracking parameters, its query in order; None for what is not a web page."""
+    parsed = urlparse(href)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+    query = urlencode(sorted((k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                             if not _TRACKING.match(k)))
+    return urlunparse(parsed._replace(query=query, fragment=""))
+
+
+def _links(found: list[dict], page_url: str) -> dict:
+    """The page's links, each once, as internal (the page's own site, subdomains included) or external."""
+    base = _base_domain(page_url)
+    seen: set[str] = set()
+    out: dict = {"internal": [], "external": []}
+    for link in found:
+        href = _normal_url(link.get("href", ""))
+        if href is None or href in seen:
+            continue
+        seen.add(href)
+        domain = _base_domain(href)
+        out["internal" if domain == base else "external"].append(
+            {"href": href, "text": link.get("text", ""), "title": link.get("title", ""), "base_domain": domain})
+    return out
+
+
+#: An empty link to a place in the page (a heading's own anchor): kept as `[](url#place)`, which research's
+#: `_section` matches a heading by, and which the converter would otherwise drop with the link's empty text.
+_EMPTY_ANCHOR = re.compile(r"""<a\b[^>]*?\bhref\s*=\s*["'](#[^"'<>\s]+)["'][^>]*>\s*</a>""", re.IGNORECASE)
+
+
+def _markdown(html: str, url: str, excluded_tags: tuple[str, ...]) -> str:
+    base = url.split("#", 1)[0]
+    html = _EMPTY_ANCHOR.sub(lambda m: f"[]({base}{m.group(1)})", html)
+    result = _html_markdown(html, ConversionOptions(
+        base_url=url, exclude_selectors=list(excluded_tags), extract_metadata=False,
+        # What a reader can get to (an inactive tab, a closed section) is read; text hidden from every reader is
+        # not, which is where a prompt hides in a page.
+        hidden_content="reachable"))
+    return (result.content or "").strip()
+
+
+async def _read_download(download, url: str) -> CrawlResult:
+    """The file an address downloads: a PDF is read as Knowledge reads one; anything else is not a page."""
+    try:
+        path = await asyncio.wait_for(download.path(), timeout=PAGE_TIMEOUT_MS / 1000)
+    except (asyncio.TimeoutError, PlaywrightError) as exc:
+        await _quietly(download.cancel())
+        return CrawlResult(success=False, error_message=f"The download did not finish: {exc}")
+    size = os.path.getsize(path)
+    if size > MAX_PDF_BYTES:
+        return CrawlResult(success=False, error_message=(
+            f"The file is {size // 1_000_000} MB; a PDF is read up to {MAX_PDF_BYTES // 1_000_000} MB."))
+    data = Path(path).read_bytes()
+    if not data.startswith(b"%PDF"):
+        return CrawlResult(success=False, error_message=(
+            f"The address is a file to download ({download.suggested_filename}), not a page; "
+            "a PDF is the only file read here."))
+    try:
+        markdown = await asyncio.to_thread(_pdf_markdown, data, url)
+    except Exception as exc:  # noqa: BLE001 — an unreadable PDF is this call's failure, not the server's
+        return CrawlResult(success=False, error_message=f"The PDF could not be read: {exc}")
+    return CrawlResult(success=True, markdown=markdown, links={"internal": [], "external": []},
+                       media={"images": []})
+
+
+def _pdf_markdown(data: bytes, url: str) -> str:
+    from core.knowledge.parse import parse_bytes
+
+    name = Path(urlparse(url).path).name or "page"
+    # Knowledge picks its reader by the name's extension: an address like arxiv.org/pdf/1706.03762 has none it knows.
+    doc = parse_bytes(data, path=name if name.lower().endswith(".pdf") else f"{name}.pdf", source="web",
+                      sha256=hashlib.sha256(data).hexdigest(), mime="application/pdf", url=url,
+                      max_pages=MAX_PDF_PAGES)
+    return "\n\n".join(("#" * min(b.level or 1, 6) + " " + b.text) if b.kind == "heading" else b.text
+                       for b in doc.blocks if b.text.strip())
+
+
+class CssExtraction:
+    """Repeating records from a page by CSS selectors: `baseSelector` finds each, `fields` (and `baseFields`, read off
+    the record's own element) say what to take from it. The schema and output of crawl4ai's
+    JsonCssExtractionStrategy, which the tool's callers already write.
+
+    A field's `type` is `text`, `attribute` (its `attribute`), `html`, `regex` (its `pattern`, `group`) or a list of
+    those in turn; `nested` (a record from the first match), `list` or `nested_list` (a record per match). A field
+    with no match gets its `default`, else is left out; `transform` is lowercase, uppercase or strip. `computed`
+    fields are not run: they were code."""
+
+    def __init__(self, schema: dict):
+        self.schema = schema
+
+    def extract(self, html: str) -> list[dict]:
+        from bs4 import BeautifulSoup
+
+        records = []
+        for element in BeautifulSoup(html, "html.parser").select(self.schema["baseSelector"]):
+            record = self._record(element, self.schema.get("baseFields", []), single=True)
+            record.update(self._record(element, self.schema.get("fields", [])))
+            if record:
+                records.append(record)
+        return records
+
+    def _record(self, element, fields: list[dict], single: bool = False) -> dict:
+        record = {}
+        for f in fields:
+            if f.get("type") == "computed":
+                continue
+            try:
+                value = self._single(element, f) if single else self._field(element, f)
+            except Exception:  # noqa: BLE001 — a field that cannot be read is its default, as before
+                value = f.get("default")
+            if value is not None:
+                record[f["name"]] = value
+        return record
+
+    def _field(self, element, f: dict):
+        kind = f.get("type")
+        if kind in ("nested", "list", "nested_list"):
+            matches = element.select(f["selector"])
+            if kind == "nested":
+                return self._record(matches[0], f["fields"]) if matches else {}
+            return [self._record(el, f["fields"], single=kind == "list") for el in matches]
+        return self._single(element, f)
+
+    def _single(self, element, f: dict):
+        if "selector" in f:
+            found = element.select(f["selector"])
+            if not found:
+                return f.get("default")
+            element = found[0]
+        value = element
+        for step in f["type"] if isinstance(f["type"], list) else [f["type"]]:
+            if step == "text":
+                value = value.get_text(strip=True)
+            elif step == "attribute":
+                value = value.get(f["attribute"])
+                value = " ".join(value) if isinstance(value, list) else value
+            elif step == "html":
+                value = str(value)
+            elif step == "regex" and f.get("pattern"):
+                text = value if isinstance(value, str) else value.get_text(strip=True)
+                match = re.search(f["pattern"], text)
+                value = match.group(f.get("group", 1)) if match else None
+            if value is None:
+                break
+        if isinstance(value, str) and f.get("transform") in ("lowercase", "uppercase", "strip"):
+            value = {"lowercase": value.lower, "uppercase": value.upper, "strip": value.strip}[f["transform"]]()
+        return value if value is not None else f.get("default")
 
 
 # ---------------------------------------------------------------------------
@@ -266,15 +790,14 @@ def _score_links(links: list[dict]) -> list[dict]:
 # Whose browser state a call uses (F1067)
 # ---------------------------------------------------------------------------
 #
-# One browser serves every caller of this process (on a worker, every tenant of its task), and crawl4ai keeps one
-# context, one cookie jar, for every call with the same settings; a named session lived in it under a name any
-# caller could use. The engine says now who a call is for (`core.tool_scope`, MCP `_meta`), and each tenant + chat
-# or run gets a context of its own: its label is the proxy user name, which is part of the settings crawl4ai keys
-# contexts by, so two labels never share one. The proxy asks for no credentials, so the name goes nowhere.
+# One browser serves every caller of this process (on a worker, every tenant of its task). The engine says who a
+# call is for (`core.tool_scope`, MCP `_meta`), and each tenant + chat or run gets a context of its own, one cookie
+# jar (`_Browser`): its label leads the run's session id and is the proxy user name. The proxy asks for no
+# credentials, so the name goes nowhere.
 #
-# A call with no named session is a session of its own, ended when the call is: nothing it set stays in the
-# browser. A named session is the caller's, under its label, until crawl4ai's idle limit; a caller that does not say
-# who it is gets a label for the one call, and its sessions end with it.
+# A call with no named session is a session of its own, its page closed when the call ends. A named session is the
+# caller's, under its label, until `IDLE_SECONDS` unused; a caller that does not say who it is gets a label for the
+# one call, and its sessions and context end with it.
 
 @dataclass
 class _Scope:
@@ -293,7 +816,7 @@ def _scope_for(meta) -> _Scope:
     return _Scope(label=hashlib.sha256("\0".join(found).encode()).hexdigest()[:16])
 
 
-def _in_scope(config: CrawlerRunConfig) -> tuple[CrawlerRunConfig, bool]:
+def _in_scope(config: RunConfig) -> tuple[RunConfig, bool]:
     """`config` in the caller's own context, and whether its session ends after this one run."""
     scope = _scope.get()
     direct = scope is None  # a handler called outside a request: this run is all there is
@@ -321,11 +844,11 @@ _routed_pages: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 
 
 async def _send_headers(page, context=None, url=None, **kwargs):
-    """crawl4ai's `before_goto`: the run's `headers` on its page, for requests to the run's own site only (F1123).
+    """Before each navigation: the run's `headers` on its page, for requests to the run's own site only (F1123).
 
-    crawl4ai 0.9's `CrawlerRunConfig` takes no headers, so they are added here, at the page's own route, which
-    passes every request on to the context's (`_guard_route`: the egress guard still sees each one). A script or
-    image from another host does not get them: an `Authorization` meant for one site is not every host's."""
+    They are added at the page's own route, which passes every request on to the context's (`_guard_route`: the
+    egress guard still sees each one). A script or image from another host does not get them: an `Authorization`
+    meant for one site is not every host's."""
     wanted = _page_headers.get()
     if page not in _routed_pages:
         async def route(r):
@@ -350,12 +873,12 @@ async def _end_session(crawler, session_id: str) -> None:
 WAIT_FOR_TIMEOUT_MS = 10_000
 
 
-async def _arun(crawler, url: str, config: CrawlerRunConfig, headers: dict | None = None):
+async def _arun(crawler, url: str, config: RunConfig, headers: dict | None = None):
     """`crawler.arun`, and when its `wait_for` never appeared, the page as it was rather than a failure (F569).
 
-    gpt-4.1-mini waits for `title`, `head` or a selector that is not there, unprompted; crawl4ai then failed the
-    call after its whole page timeout, and a 1-credit turn billed 4-5. One more fetch without the wait, which says
-    so in `wait_missed`. Any other failure is left as it is.
+    gpt-4.1-mini waits for `title`, `head` or a selector that is not there, unprompted; the call then failed after
+    the whole page timeout, and a 1-credit turn billed 4-5. One more fetch without the wait, which says so in
+    `wait_missed`. Any other failure is left as it is.
 
     Run in the caller's own browser context (`_in_scope`), and a run with no named session ends its own. `headers`
     go to the page's own site (`_send_headers`)."""
@@ -369,22 +892,23 @@ async def _arun(crawler, url: str, config: CrawlerRunConfig, headers: dict | Non
             await _end_session(crawler, config.session_id)
 
 
-async def _arun_once(crawler, url: str, config: CrawlerRunConfig):
+async def _arun_once(crawler, url: str, config: RunConfig):
     result = await crawler.arun(url=url, config=config)
     wait = getattr(config, "wait_for", None)
     if wait and not result.success and "Wait condition failed" in (result.error_message or ""):
         result = await crawler.arun(url=url, config=config.clone(wait_for=None, wait_for_timeout=None)
                                     if hasattr(config, "clone") else _build_run_config())
-        # The result's own dict, so a pydantic CrawlResult carries it too.
+        # The result's own dict, so any result object carries it too.
         result.__dict__["wait_missed"] = (f"'{wait}' did not appear within {WAIT_FOR_TIMEOUT_MS // 1000} s; "
                                           "this is the page as it was")
     return result
 
 
-def _cache_mode(cache: bool, headers: dict | None, js_code) -> CacheMode:
+def _cache_mode(cache: bool, headers: dict | None, js_code, wait_for: str | None = None) -> CacheMode:
     """A page read with someone's headers, or after someone's script, is theirs: the cache, keyed by URL alone and
-    shared by every caller, is for a plain read only (F1110)."""
-    return CacheMode.ENABLED if cache and not headers and js_code is None else CacheMode.BYPASS
+    shared by every caller, is for a plain read only (F1110). A `wait_for` that runs a script is a script too."""
+    plain = not headers and js_code is None and not _runs_a_script(wait_for)
+    return CacheMode.ENABLED if cache and plain else CacheMode.BYPASS
 
 
 def _build_run_config(
@@ -397,15 +921,13 @@ def _build_run_config(
     scan_full_page: bool = False,
     delay_before_return_html: float = 0,
     remove_overlay_elements: bool = False,
-    word_count_threshold: int = 5,
     excluded_tags: list | None = None,
     extraction_strategy=None,
     session_id: str | None = None,
-) -> CrawlerRunConfig:
+) -> RunConfig:
     kwargs: dict = dict(
-        cache_mode=_cache_mode(cache, headers, js_code),
-        word_count_threshold=word_count_threshold,
-        excluded_tags=excluded_tags or ["script", "style"],
+        cache_mode=_cache_mode(cache, headers, js_code, wait_for),
+        excluded_tags=tuple(excluded_tags or ["script", "style"]),
         remove_overlay_elements=remove_overlay_elements,
         screenshot=screenshot,
         scan_full_page=scan_full_page,
@@ -413,7 +935,7 @@ def _build_run_config(
     )
     if wait_for:
         kwargs["wait_for"] = wait_for
-        # Not crawl4ai's 60 s page timeout: a wait for something that never appears held every call that long (F569).
+        # Not the 60 s page timeout: a wait for something that never appears held every call that long (F569).
         kwargs["wait_for_timeout"] = WAIT_FOR_TIMEOUT_MS
     if js_code is not None:
         kwargs["js_code"] = js_code
@@ -421,7 +943,7 @@ def _build_run_config(
         kwargs["extraction_strategy"] = extraction_strategy
     if session_id:
         kwargs["session_id"] = session_id
-    return CrawlerRunConfig(**kwargs)
+    return RunConfig(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -830,7 +1352,7 @@ async def _handle_scrape_structured(args: dict) -> list[types.TextContent]:
     if (blocked := await _preflight(url)) is not None:
         return _err(blocked)
 
-    strategy = JsonCssExtractionStrategy(schema, verbose=False)
+    strategy = CssExtraction(schema)
     crawler = await get_crawler()
     run_config = _build_run_config(
         wait_for=args.get("wait_for"),
@@ -1052,7 +1574,7 @@ async def _handle_search_page(args: dict) -> list[types.TextContent]:
     if extract_schema:
         if not extract_schema.get("baseSelector") or not extract_schema.get("fields"):
             return _err("extract_schema must include baseSelector and fields")
-        extraction_strategy = JsonCssExtractionStrategy(extract_schema, verbose=False)
+        extraction_strategy = CssExtraction(extract_schema)
 
     crawler = await get_crawler()
     run_config = _build_run_config(

@@ -106,7 +106,7 @@ backend/
   tools/                           Built-in tool implementations (run as stdio MCP servers)
     sandbox.py                     Docker-sandboxed Python code execution + shared file vault
     sql_agent.py                   SQL query executor (PostgreSQL, MySQL, SQLite)
-    web_scraper.py                 Crawl4ai-powered web scraper with stealth mode
+    web_scraper.py                 Playwright web scraper with stealth mode
     code_search.py                 Semantic code search via vector embeddings
     pdf_parser.py                  PDF text and table extraction
     xlsx_parser.py                 Excel file parsing

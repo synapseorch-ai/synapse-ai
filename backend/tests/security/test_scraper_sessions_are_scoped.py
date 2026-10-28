@@ -177,7 +177,7 @@ async def test_a_meta_from_a_caller_with_no_tenant_or_owner_is_no_scope(recorder
     ({}, False),
 ])
 async def test_the_cache_is_used_only_by_a_plain_read(recorder, args, cached):
-    from crawl4ai import CacheMode
+    CacheMode = web_scraper.CacheMode
 
     await web_scraper._handle_scrape_url({"url": PUBLIC, **args})
     assert (recorder.configs[0].cache_mode == CacheMode.ENABLED) is cached
@@ -187,10 +187,20 @@ async def test_the_cache_is_used_only_by_a_plain_read(recorder, args, cached):
     (None, None, True), ({"Authorization": "Bearer x"}, None, False), (None, "1", False), ({}, None, True),
 ])
 def test_headers_or_a_script_keep_a_read_out_of_the_cache(headers, js_code, cached):
-    from crawl4ai import CacheMode
+    CacheMode = web_scraper.CacheMode
 
     assert (web_scraper._cache_mode(True, headers, js_code) == CacheMode.ENABLED) is cached
     assert web_scraper._cache_mode(False, headers, js_code) == CacheMode.BYPASS
+
+
+@pytest.mark.parametrize("wait_for,cached", [
+    (".results", True), ("css:.results", True),
+    ("js:document.title.length > 0", False), ("() => true", False), ("function () { return true }", False),
+])
+async def test_a_wait_that_runs_a_script_keeps_a_read_out_of_the_cache_too(recorder, wait_for, cached):
+    """A script is a script wherever it is written: a `wait_for` that runs one is the caller's as much as `js_code`."""
+    await web_scraper._handle_scrape_url({"url": PUBLIC, "cache": True, "wait_for": wait_for})
+    assert (recorder.configs[0].cache_mode == web_scraper.CacheMode.ENABLED) is cached
 
 
 # ── Honest tags ──────────────────────────────────────────────────────────────────────────────────────────────────
