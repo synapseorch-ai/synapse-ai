@@ -107,6 +107,12 @@ export async function cancelRun(runId: string): Promise<void> {
 }
 
 /** One Synapse AI chat: its state, its one stream, and what it can be asked to do. */
+/** The box held back what an answer typed (a card number, a password): `builder_notice`'s card or password refusal. */
+function heldBack(event: RunEvent): boolean {
+    const e = event as { type?: string; reason?: unknown };
+    return e?.type === 'builder_notice' && /^(card|password)/.test(String(e.reason ?? ''));
+}
+
 export class BuilderChat {
     readonly id: string;
     private view: ChatView;
@@ -195,7 +201,8 @@ export class BuilderChat {
      * sit at or before `following.cursor`. It also shrinks an event past 32 KB,
      * so a shrunk completion or question is re-read from the run itself.
      */
-    private async consume(response: Response, following?: { runId: string; cursor: number }): Promise<'paused' | 'ended'> {
+    private async consume(response: Response, following?: { runId: string; cursor: number },
+                          first?: (event: RunEvent) => void): Promise<'paused' | 'ended'> {
         const reader = response.body?.getReader();
         if (!reader) return 'ended';
         const decoder = new TextDecoder();
@@ -229,6 +236,7 @@ export class BuilderChat {
                 if (following && parsed.truncated) parsed = await fromTheRun(following.runId, parsed);
                 seq += 1;
                 const n = seq;
+                if (n === 1) first?.(parsed);
                 this.update((prev) => applyBuilderEvent(prev, parsed, n));
                 if (parsed?.type === 'resource_saved') this.announce(parsed as SavedResource);
                 if (following && parsed?.type === 'human_input_required') {
@@ -307,6 +315,12 @@ export class BuilderChat {
         // An offer is for the turn it follows: any new message takes it down. A press says what it tries instead of
         // the message again, which is already on screen (F1018).
         const offered = retryOf ? state.messages.find((m) => m.tryStronger?.retry_of === retryOf)?.tryStronger : null;
+        const mine = (n: number): BuilderMessage => ({
+            role: 'user',
+            content: text || `(${images.length} ${images.length === 1 ? 'image' : 'images'})`,
+            kind: 'text',
+            key: `user-${n}`,
+        });
         this.update((prev) => ({
             ...prev,
             pending: null,
@@ -323,14 +337,11 @@ export class BuilderChat {
                     ? [{ role: 'assistant' as const, content: SET_ASIDE_NOTE, kind: 'text' as const,
                          key: `aside-${prev.messages.length}` }]
                     : []),
-                ...(retryOf ? [] : [{
-                    role: 'user' as const,
-                    content: text || `(${images.length} ${images.length === 1 ? 'image' : 'images'})`,
-                    kind: 'text' as const,
-                    key: `user-${prev.messages.length}`,
-                }]),
+                // An answer is held until the run takes it (F1176, as F1078); anything else is drawn at once.
+                ...(retryOf || pending ? [] : [mine(prev.messages.length)]),
             ],
         }));
+        const answerAt = this.view.state.messages.length;
         this.set({ streaming: true });
 
         const controller = new AbortController();
@@ -372,7 +383,13 @@ export class BuilderChat {
                   });
 
             if (!response.ok) throw new Error(`The builder could not be reached (${response.status}).`);
-            await this.consume(response);
+            // The answer is the person's once the run has taken it: its first event says so, unless that event is the
+            // box holding back a card number or a password, when nothing of what was typed is drawn.
+            await this.consume(response, undefined, pending && !retryOf ? (event) => {
+                if (heldBack(event)) return;
+                this.update((prev) => ({ ...prev, messages: [
+                    ...prev.messages.slice(0, answerAt), mine(answerAt), ...prev.messages.slice(answerAt)] }));
+            } : undefined);
             // A refused answer leaves its question open (BWA1): the run is
             // still parked on it, so the next message answers it again.
             if (pending) this.update((prev) => (refusedAnswer(prev) && !prev.pending ? { ...prev, pending } : prev));
