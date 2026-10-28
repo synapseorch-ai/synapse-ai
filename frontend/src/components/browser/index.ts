@@ -6,6 +6,7 @@ export { BrowserPane } from './BrowserPane';
 export { BrowserTurnCard } from './BrowserTurnCard';
 export { SessionPicker } from './SessionPicker';
 export { SessionsLibrary } from './SessionsLibrary';
+export { useChatPicks } from './useChatPicks';
 export {
   expiresIn,
   finishSignIn,
@@ -41,6 +42,9 @@ export {
   type BrowserHost,
   type BrowserInput,
   type BrowserSessionEvent,
+  type HandedBack,
+  type SessionLevel,
+  type SkippedSession,
   type PageDialog,
   type PageFile,
   type PageSelect,

@@ -35,10 +35,11 @@ import {
 
 import { cn } from '@/lib/utils';
 import { OSS_BROWSER_HOST } from '@/lib/browserHost';
+import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import {
   BrowserActionLine, BrowserPane, BrowserTurnCard, PANE_SHARE, PaneHandle, actionOf, browserTurnOf, isBrowserEvent,
-  parseShare,
-  type BrowserAction, type BrowserEvent, type FrameMemory,
+  parseShare, useChatPicks,
+  type BrowserAction, type BrowserEvent, type BrowserSessionEvent, type FrameMemory,
 } from '@/components/browser';
 import { readWithStallTimeout } from '@/lib/sse';
 import { formatRelativeTime } from '@/lib/relativeTime';
@@ -3491,12 +3492,17 @@ type TabBrowser = {
   shown: boolean;
   /** The browser is closed: its last page stays, dimmed. */
   closed: boolean;
+  /** What it started signed in with, and what it could not be (F1140). */
+  signedIn?: Pick<BrowserSessionEvent, 'sessions' | 'skipped'>;
 };
 
 /** A browser event folded into the tab's browser. A turn read again replays its events, which change nothing. */
 function foldBrowser(had: TabBrowser | undefined, event: BrowserEvent, agentName: string): TabBrowser | undefined {
   const fresh = (sessionId: string): TabBrowser => ({ sessionId, agentName, actions: [], shown: true, closed: false });
-  if (event.type === 'browser_session') return had?.sessionId === event.session_id ? had : fresh(event.session_id);
+  if (event.type === 'browser_session') {
+    return had?.sessionId === event.session_id ? had
+      : { ...fresh(event.session_id), signedIn: { sessions: event.sessions, skipped: event.skipped } };
+  }
   const action = actionOf(event);
   const base = had?.sessionId === action.session_id ? had : fresh(action.session_id);
   if (base.actions.some(a => a.n === action.n)) return had;
@@ -3643,6 +3649,8 @@ export default function Home() {
     });
   }, []);
   const frontBrowser = frontId ? browsers[frontId] : undefined;
+  // The chat's own sessions, picked from its pane (F1140): read once the pane shows.
+  const chatPicks = useChatPicks(OSS_SESSIONS_HOST, front?.sessionId, !!frontBrowser?.shown);
   // What the front conversation does when the person hands its browser back in the pane: its waiting turn goes on.
   const resumers = useRef<Record<string, () => void>>({});
   const showBrowser = useCallback((tabId: string, sessionId: string, agentName: string) => {
@@ -3672,6 +3680,8 @@ export default function Home() {
         onClosed={() => changeBrowser({ closed: true })}
         onHandedBack={() => resumers.current[frontId]?.()}
         owner={front ? `chat:${front.sessionId}` : undefined}
+        signedIn={frontBrowser.signedIn}
+        picks={front ? chatPicks : undefined}
         {...props}
       />
     );

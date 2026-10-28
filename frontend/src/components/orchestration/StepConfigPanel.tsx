@@ -26,7 +26,7 @@ import type { Orchestration, StepConfig, StepType } from '@/types/orchestration'
 import { KNOWLEDGE_STEP_TYPES, STEP_TYPE_META } from '@/types/orchestration';
 import { collectStateKeys, hasTypeSpecificConfig, isLinearStep } from './graph';
 import { validateOrchestration } from './validate';
-import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, type StepSectionProps, type WorkflowOption } from './panel/shared';
+import { KeyChips, StepTargetSelect, intOrUndefined, type KnowledgeBaseOption, type StepSectionProps, type StepSessions, type WorkflowOption } from './panel/shared';
 import { STEP_SECTIONS } from './panel/steps';
 import { useAvailableTools } from './panel/use-available-tools';
 import { StepIcon } from '../run/StepIcon';
@@ -105,6 +105,8 @@ interface StepConfigPanelProps {
     tasksPriced?: boolean;
     /** The workspace's workflows, for a Workflow step's picker (E3). Without them the id is typed. */
     workflows?: WorkflowOption[];
+    /** The Sessions library, for a Browser agent's step (F1140). Without it the step picks no sessions. */
+    browserSessions?: StepSessions;
 }
 
 // The engine asks the runner for the internet (`Network.INTERNET` in the
@@ -127,7 +129,7 @@ export function StepConfigPanel({
     step, agents, allStepIds, onUpdate, onDelete, onClose, isEntry, onSetEntry,
     availableModels, modelHints, orchestration, showVaultHints = true, canRunCode = true,
     codeRunnerNote = SELF_HOSTED_RUNNER_NOTE, semanticCacheNote = SELF_HOSTED_SEMANTIC_NOTE, readOnly = false,
-    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead, tasksPriced = false, workflows,
+    knowledgeEnabled = false, knowledgeBases, frame = 'docked', lead, tasksPriced = false, workflows, browserSessions,
 }: StepConfigPanelProps) {
     const update = (patch: Partial<StepConfig>) => {
         if (!readOnly) onUpdate({ ...step, ...patch });
@@ -194,7 +196,7 @@ export function StepConfigPanel({
         step, update, otherSteps, agents,
         availableModels: availableModels || [], modelHints,
         availableTools, stateKeys, showVaultHints, codeRunnerNote, orchestration, readOnly, knowledgeBases,
-        tasksPriced, workflows,
+        tasksPriced, workflows, browserSessions,
     };
     const TypeSection = STEP_SECTIONS[step.type];
     const isLinear = isLinearStep(step);

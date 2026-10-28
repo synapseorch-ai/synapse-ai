@@ -28,7 +28,10 @@ export const OSS_BROWSER_HOST: BrowserHost = {
       const body = await res.json().catch(() => ({}));
       throw new Error(typeof body.detail === 'string' ? body.detail : 'That note was not taken.');
     }
-    return !!res?.ok;
+    if (!res?.ok) return false;
+    // A session that expired, signed in again in this browser, is kept under the same entry (BRW1, F1138).
+    const body = await res.json().catch(() => ({}));
+    return body?.kept && typeof body.kept.id === 'string' ? { kept: body.kept } : true;
   },
   input: (sessionId, input) => post(`/api/browser/${enc(sessionId)}/input`, input),
   release: (sessionId, allowAddress) => post(`/api/browser/${enc(sessionId)}/release`, { allow_address: allowAddress }),

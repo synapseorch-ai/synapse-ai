@@ -1,16 +1,18 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Globe, Info, Square, X } from 'lucide-react';
+import { Globe, Info, KeyRound, Square, X } from 'lucide-react';
 
 import { Button, IconButton, Input, Spinner, usePersisted } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
 import { actionCount, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
-         type Wheel } from './model';
+         type BrowserSessionEvent, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
+import { SessionPicker } from './SessionPicker';
+import type { KeptSession } from './sessions';
 import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
 
 /**
@@ -30,7 +32,7 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  * page, the address bar takes an address, and Hand back carries a note.
  */
 export function BrowserPane({
-  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, owner,
+  host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, owner, signedIn, picks,
   className, style, children,
 }: {
   host: BrowserHost;
@@ -56,6 +58,13 @@ export function BrowserPane({
   signIn?: { site: string; onFinish: (keep: boolean) => void; busy?: boolean; refused?: string | null };
   /** Whose browser it is (`chat:<id>`, `run:<id>`): once it closes, its lines' screenshots are the kept ones. */
   owner?: string;
+  /** What it was signed in with, and what it could not be (`browser_session`, F1140). */
+  signedIn?: Pick<BrowserSessionEvent, 'sessions' | 'skipped'>;
+  /**
+   * The chat's own sessions, picked from the pane (F1140): they apply when the browser next opens. `failed`: why the
+   * last pick was not taken (the server's 422 for two on one site).
+   */
+  picks?: Omit<React.ComponentProps<typeof SessionPicker>, 'label'> & { label?: string; failed?: string | null };
   className?: string;
   style?: React.CSSProperties;
   /** The pane's own edge, such as its resize handle. */
@@ -104,6 +113,9 @@ export function BrowserPane({
     if (ok) setMoved({ wheel: 'person', on: frame });
     else setWheelFailed('The wheel could not be taken. Try again.');
   };
+  // The session the person signed in again with, kept by the hand-back (F1140).
+  const [kept, setKept] = useState<KeptSession | null>(null);
+  const [picking, setPicking] = useState(false);
   const handBack = async () => {
     setWheelFailed(null);
     let refused: string | null = null;
@@ -114,6 +126,7 @@ export function BrowserPane({
       return;
     }
     if (ok) {
+      if (typeof ok === 'object') setKept(ok.kept);
       setMoved({ wheel: 'agent', on: frame });
       setNote('');
       onHandedBack?.();
@@ -198,6 +211,13 @@ export function BrowserPane({
             {url ? shortUrl(url) : 'Opening the browser…'}
           </span>
         )}
+        {picks && !signIn && (
+          <Button variant="ghost" size="sm" onClick={() => setPicking(p => !p)} aria-expanded={picking}
+                  title="The sessions this chat’s browser signs in with">
+            <KeyRound className="size-3.5" aria-hidden />
+            Sessions
+          </Button>
+        )}
         {!closed && !signIn && (
           <Button variant="ghost" size="sm" onClick={stop} loading={stopping}
                   title="Stop the agent and close its browser">
@@ -207,6 +227,9 @@ export function BrowserPane({
         )}
         {onHide && <IconButton icon={X} label="Close the browser pane" size="sm" onClick={onHide} />}
       </header>
+
+      {picks && picking && !signIn && <PicksPanel picks={picks} />}
+      <SignedInLine signedIn={signedIn} kept={kept} />
 
       {signIn && !closed ? (
         <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
@@ -330,5 +353,48 @@ export function BrowserPane({
         </ol>
       )}
     </section>
+  );
+}
+
+/** The chat's own sessions, under the pane's header (F1140). */
+function PicksPanel({ picks }: { picks: NonNullable<React.ComponentProps<typeof BrowserPane>['picks']> }) {
+  const { failed, label, ...pick } = picks;
+  return (
+    <div className="shrink-0 border-b border-border bg-surface px-3 py-3">
+      <SessionPicker {...pick} label={label ?? 'Sessions for this chat'}
+                     hint="One per site. Applies when the browser next opens." />
+      {failed && <p role="alert" className="mt-2 text-xs text-danger">{failed}</p>}
+    </div>
+  );
+}
+
+/**
+ * Which sessions the browser started signed in with, and why one wasn't loaded (F1140; DESIGN v5.1): expired, or
+ * someone else's that isn't shared. After the person signs in again on an expired session's turn, until when the fresh
+ * one is kept.
+ */
+function SignedInLine({ signedIn, kept }: {
+  signedIn?: Pick<BrowserSessionEvent, 'sessions' | 'skipped'>;
+  kept: KeptSession | null;
+}) {
+  const sites = [...new Set((signedIn?.sessions ?? []).map(s => s.site))];
+  const skipped = signedIn?.skipped ?? [];
+  if (!sites.length && !skipped.length && !kept) return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-0.5 border-b border-border px-3 py-1.5 text-xs text-text-muted">
+      {sites.length > 0 && <p>Signed in to <span translate="no">{sites.join(', ')}</span>.</p>}
+      {skipped.map(s => (
+        <p key={s.site}>
+          Not signed in to <span translate="no">{s.site}</span>:{' '}
+          {s.reason === 'expired' ? 'its session expired.' : `${s.owner_name}’s session isn’t shared with you.`}
+        </p>
+      ))}
+      {kept && (
+        <p role="status">
+          Signed in again: <span translate="no">{kept.site}</span>’s session is kept until{' '}
+          {new Date(kept.expires_at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}.
+        </p>
+      )}
+    </div>
   );
 }

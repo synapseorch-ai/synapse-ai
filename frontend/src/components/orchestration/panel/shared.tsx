@@ -13,6 +13,7 @@ import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Combobox, Input } from '@/components/ui';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
+import type { SiteSession } from '@/components/browser';
 
 /** Props every per-type section receives. */
 /** A workflow as a Workflow step's picker shows it (E3). */
@@ -55,7 +56,12 @@ export interface StepSectionProps {
     tasksPriced?: boolean;
     /** The workspace's workflows (a Workflow step's picker); unset, the id is typed. */
     workflows?: WorkflowOption[];
+    /** The Sessions library, for a Browser agent's step to pick its own (F1140); unset, the step offers none. */
+    browserSessions?: StepSessions;
 }
+
+/** The kept sessions a step may pick from, and where they are managed (the product's `SessionsHost`). */
+export type StepSessions = { sessions: SiteSession[] | null; libraryHref: string; locked?: { upgradeHref: string } };
 
 /** Neutral explainer block — replaces the per-type rainbow of tinted boxes. */
 export function Note({ children }: { children: React.ReactNode }) {

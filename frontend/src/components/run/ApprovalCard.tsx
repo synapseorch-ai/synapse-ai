@@ -121,7 +121,7 @@ export function ApprovalCard({
                         else window.location.assign(href);
                     }}
                     onDone={host.canAnswer && host.browser?.handBack ? async () => {
-                        const ok = await host.browser!.handBack!(turn.session_id);
+                        const ok = !!await host.browser!.handBack!(turn.session_id);
                         if (ok) onDone('You handed the browser back. The run goes on.');
                         return ok;
                     } : undefined}

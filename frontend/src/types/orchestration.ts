@@ -38,6 +38,8 @@ export interface StepConfig {
     // AGENT / EVALUATOR
     agent_id?: string;
     prompt_template?: string;
+    /** A Browser agent's step: the sessions it starts signed in with, one per site; nearest wins (F1140, DESIGN v5.3). */
+    browser_sessions?: string[];
 
     // EVALUATOR — outgoing routes as tools for the agent to call
     route_map?: Record<string, string | null>;

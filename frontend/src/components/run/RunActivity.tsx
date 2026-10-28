@@ -251,6 +251,7 @@ function RunBrowser({ runId, live, state }: { runId: string; live: boolean; stat
                     agentName="The agent"
                     actions={actions}
                     owner={`run:${runId}`}
+                    signedIn={state.browser.signedIn}
                     className="h-[30rem] overflow-hidden rounded-lg border border-border"
                 />
             </section>

@@ -45,7 +45,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { BrowserActionLine } from "@/components/browser/BrowserActionLine";
-import { actionOf, type BrowserAction } from "@/components/browser/model";
+import { actionOf, type BrowserAction, type BrowserSessionEvent } from "@/components/browser/model";
 import { RetrievalTrace } from "@/components/RetrievalTrace";
 import { Spinner } from "@/components/ui";
 import { DEGRADED, getQueryTrace, type SearchTrace } from "@/lib/knowledge";
@@ -140,7 +140,8 @@ export type RunLogState = {
    */
   team: TeamState;
   /** The browser a step's agent opened (BRW2): its session, for the pane that shows it live. */
-  browser?: { sessionId: string } | null;
+  /** The run's browser, and what it started signed in with (F1140). */
+  browser?: { sessionId: string; signedIn?: Pick<BrowserSessionEvent, "sessions" | "skipped"> } | null;
 };
 
 export function emptyRunLog(): RunLogState {
@@ -418,7 +419,11 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
     // The browser inside Synapse (BRW1): a session opened, then one line per agent action.
     case "browser_session":
       if (typeof data.session_id !== "string") return state;
-      return { ...state, browser: { sessionId: data.session_id }, entries: append(entries, line("info", "Opened a browser")) };
+      return {
+        ...state,
+        browser: { sessionId: data.session_id, signedIn: { sessions: data.sessions, skipped: data.skipped } },
+        entries: append(entries, line("info", "Opened a browser")),
+      };
     case "browser_action":
       if (typeof data.session_id !== "string") return state;
       return add({ kind: "browser", ...actionOf(data) });

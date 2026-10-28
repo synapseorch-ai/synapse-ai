@@ -45,7 +45,7 @@ export function TopBar({
     /** Errors that stop a run: Run now looks disabled and says how many. */
     blocked: number;
     /** The run's input, behind Run now's chevron. Run now sends it as it stands, empty or not. */
-    runInput?: { value: string; onChange: (value: string) => void; note?: string; estimate?: React.ReactNode };
+    runInput?: { value: string; onChange: (value: string) => void; note?: string; estimate?: React.ReactNode; sessions?: React.ReactNode };
     /** Last run: show each step's time from the last run on the steps (M3a-2). */
     lastRun?: { shown: boolean; onShow: (shown: boolean) => void; loading?: boolean };
     menu: WorkbenchMenuItem[];
@@ -294,7 +294,7 @@ function RunNow({ onRun, blocked, phone, runInput }: {
     onRun: () => void;
     blocked: number;
     phone: boolean;
-    runInput?: { value: string; onChange: (value: string) => void; note?: string; estimate?: React.ReactNode };
+    runInput?: { value: string; onChange: (value: string) => void; note?: string; estimate?: React.ReactNode; sessions?: React.ReactNode };
 }) {
     const [open, setOpen] = useState(false);
     const text = runInput?.value.trim() ?? '';
@@ -371,6 +371,7 @@ function RunNow({ onRun, blocked, phone, runInput }: {
                                 <p className="mt-2 text-xs leading-relaxed text-text-muted">{runInput.note}</p>
                             )}
                             {runInput.estimate && <div className="mt-2">{runInput.estimate}</div>}
+                            {runInput.sessions && <div className="mt-2.5">{runInput.sessions}</div>}
                             <div className="mt-2.5 flex items-center justify-between gap-3">
                                 <span className="text-xs text-text-faint">
                                     <kbd className="rounded border border-border px-1 font-mono text-2xs">Enter</kbd> to run,{' '}

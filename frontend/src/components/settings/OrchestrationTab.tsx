@@ -26,6 +26,8 @@ import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
 import { RunCapFields } from '../orchestration/RunCapFields';
 import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
+import { SessionPicker, listSessions, type SiteSession } from '@/components/browser';
+import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
     DescriptionField, GuardrailsFields, McpOfferField, SchedulesList, SettingsSection, WorkflowSettingsPanel,
@@ -377,6 +379,10 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         endingRef.current = false;
     }, []);
     const [runInput, setRunInput] = useState('');
+    // The sessions a Browser agent's steps start signed in with for the next run (F1140), and the library they come
+    // from: read only for a workflow that has such a step.
+    const [runSessions, setRunSessions] = useState<string[]>([]);
+    const [siteSessions, setSiteSessions] = useState<SiteSession[] | null>(null);
     // The run log, the plan and what the model is doing right now: the run
     // screens' `RunLogState`, folded by their `applyRunEvent` (M3a-2).
     const [runLog, setRunLog] = useState<RunLogState>(emptyRunLog);
@@ -1216,6 +1222,13 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         }
     };
 
+    // A step on a Browser agent: the run and that step pick sessions (F1140). Read the library once one is there.
+    const usesBrowser = !!draft?.steps.some(s => s.type === 'agent' && agents.find(a => a.id === s.agent_id)?.type === 'browser');
+    useEffect(() => {
+        if (!usesBrowser || siteSessions !== null) return;
+        listSessions(OSS_SESSIONS_HOST).then(setSiteSessions).catch(() => setSiteSessions([]));
+    }, [usesBrowser, siteSessions]);
+
     // --- Run orchestration ---
     const startRun = () => {
         if (!draft) return;
@@ -1246,7 +1259,8 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
         lastEventIdRef.current = 0;  // fresh run, fresh journal
         setRunDrawer('run');
 
-        streamSSE(`/api/orchestrations/${draft.id}/run`, { message: runInput });
+        streamSSE(`/api/orchestrations/${draft.id}/run`,
+                  usesBrowser && runSessions.length ? { message: runInput, browser_sessions: runSessions } : { message: runInput });
     };
 
     // `fromJournal` marks events arriving from the replay/tail stream. A
@@ -2045,6 +2059,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     knowledgeEnabled={knowledgeEnabled}
                                     knowledgeBases={knowledgeBases}
                                     workflows={workflowOptions}
+                                    browserSessions={usesBrowser ? { sessions: siteSessions, libraryHref: OSS_SESSIONS_HOST.libraryHref } : undefined}
                                     semanticCacheNote={semanticCacheNote}
                                     lead={step.id === waitingStep ? approval(true) : undefined}
                                 />
@@ -2124,6 +2139,16 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     value: runInput,
                                     onChange: setRunInput,
                                     estimate: <EstimateLine estimate={estimate} busy={estimating} error={estimateError} compact cap={draft} capUnits={OSS_CAP_UNITS} />,
+                                    sessions: usesBrowser ? (
+                                        <SessionPicker
+                                            label="Sessions for this run"
+                                            sessions={siteSessions}
+                                            value={runSessions}
+                                            onChange={setRunSessions}
+                                            libraryHref={OSS_SESSIONS_HOST.libraryHref}
+                                            hint="One per site. A step's own session for a site is used over these."
+                                        />
+                                    ) : undefined,
                                 },
                                 runKey,
                                 trail,

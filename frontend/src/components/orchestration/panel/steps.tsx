@@ -10,6 +10,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
+import { SessionPicker } from '@/components/browser';
 import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
 import type { IngestSettings, RetrieveSettings, StepConfig, StepType } from '@/types/orchestration';
@@ -329,6 +330,18 @@ function AgentSection(props: StepSectionProps) {
             </Field>
             <OpenPicked agent={agents.find((a: KindAgent) => a.id === step.agent_id)} />
             <AgentKindNote step={step} agents={agents} tasksPriced={props.tasksPriced} />
+            {props.browserSessions && agents.find((a: KindAgent) => a.id === step.agent_id)?.type === 'browser' && (
+                // A Browser agent's step starts signed in with these too; on a site, the step's wins (F1140).
+                <SessionPicker
+                    label="Sessions for this step"
+                    sessions={props.browserSessions.sessions}
+                    value={step.browser_sessions ?? []}
+                    onChange={(ids) => update({ browser_sessions: ids.length ? ids : undefined })}
+                    libraryHref={props.browserSessions.libraryHref}
+                    locked={props.browserSessions.locked}
+                    hint="One per site. On a site, this step's session is used over the run's and the agent's."
+                />
+            )}
             <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
                 <MarkdownEditor
                     key={step.id}

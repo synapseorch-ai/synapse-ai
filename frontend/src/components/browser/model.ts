@@ -9,6 +9,8 @@
  * straight from the session's MicroVM. Synced to cloud with the folder.
  */
 
+import type { KeptSession } from './sessions';
+
 /** Who holds the wheel: the agent, the person, or nobody (DESIGN §2.4). */
 export type Wheel = 'agent' | 'person' | 'nobody';
 
@@ -68,7 +70,22 @@ export type BrowserFrame = {
 };
 
 /** `browser_session`: an agent opened a browser for this chat or run. */
-export type BrowserSessionEvent = { type: 'browser_session'; session_id: string; owner: string };
+/** Where a session a browser started with was picked (the nearer level wins on a site; DESIGN v5.1). */
+export type SessionLevel = 'agent' | 'chat' | 'run' | 'step';
+/** A session a browser could not start with: it expired, or it is someone else's and not shared (v5-7). */
+export type SkippedSession = { site: string; reason: 'expired' | 'not_shared'; owner_name: string };
+
+/**
+ * `browser_session`: an agent opened a browser for this chat or run, signed in with `sessions` (F1140; absent from a
+ * component before it).
+ */
+export type BrowserSessionEvent = {
+  type: 'browser_session';
+  session_id: string;
+  owner: string;
+  sessions?: { id: string; site: string; level: SessionLevel }[];
+  skipped?: SkippedSession[];
+};
 
 /** `browser_action`: one thing the agent did in the page. Typed values never appear in `target`. */
 export type BrowserAction = {
@@ -100,6 +117,9 @@ export type BrowserInput =
  * How a product reaches a session's frames, screenshots and Stop, and, where the person may drive, the wheel and
  * the page's input. A host without the wheel's calls gives a pane the person only watches (BRW1's v1).
  */
+/** A hand-back: done or not, or done with the session the person signed in again with kept. */
+export type HandedBack = boolean | { kept: KeptSession };
+
 export type BrowserHost = {
   framesUrl: (sessionId: string) => string;
   shotUrl: (sessionId: string, ref: string) => string;
@@ -117,8 +137,10 @@ export type BrowserHost = {
   /**
    * The wheel goes back to the agent, with what the person wants it to know. Resolves false when it could not; a
    * note refused (a card number in it, BRW1) rejects with an Error whose message is the refusal, to show as it is.
+   * When the person signed in again on a turn for a session that expired, the fresh session is kept under the same
+   * entry, and it resolves what was kept (BRW1, F1138).
    */
-  handBack?: (sessionId: string, note?: string) => Promise<boolean>;
+  handBack?: (sessionId: string, note?: string) => Promise<HandedBack>;
   /** One input to the page; refused (false) unless the person holds the wheel. */
   input?: (sessionId: string, input: BrowserInput) => Promise<boolean>;
   /** "It only loaded data": the held request carries on, and with `allowAddress` that address is not held again. */
