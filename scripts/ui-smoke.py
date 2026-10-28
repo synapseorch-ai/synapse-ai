@@ -12470,11 +12470,14 @@ async def check_brwlog(browser) -> str:
 
 
 def _site_session(sid: str, site: str, **kw) -> dict:
-    """A row of `GET /api/site-sessions` as frozen in BRW1's DESIGN §v5.5 (agreed 2026-10-29)."""
+    """A row of `GET /api/site-sessions` as frozen in BRW1's DESIGN §v5.5 (agreed 2026-10-29), with F1167's `usable`
+    (mine, or shared with the person or the workspace): another's unshared session is listed but not usable."""
     now = time.time()
-    return {"id": sid, "site": site, "owner": "you", "owner_name": "You", "shared_with": [],
-            "created_at": now - 3 * 86_400, "last_used_at": now - 3_600, "expires_at": now + 12 * 86_400 + 600,
-            "expired": False, "mine": True, "uses": {"agents": 0, "chats": 0, "workflows": 0}, **kw}
+    row = {"id": sid, "site": site, "owner": "you", "owner_name": "You", "shared_with": [],
+           "created_at": now - 3 * 86_400, "last_used_at": now - 3_600, "expires_at": now + 12 * 86_400 + 600,
+           "expired": False, "mine": True, "uses": {"agents": 0, "chats": 0, "workflows": 0}, **kw}
+    row.setdefault("usable", row["mine"])
+    return row
 
 
 #: What the Browser page must no longer say (v5-1, Naveen 10-28: "we save your logins" breeds distrust).
@@ -12594,13 +12597,18 @@ async def check_brwagent(browser) -> str:
     page, the sites it may use (typed as addresses, kept as hosts), the sessions it starts with, and its actions per
     task. These live in the agent's settings so that no page the agent reads can change them (DESIGN §3.1). The
     sessions are picked several at once but one per site (v5-3): picking a second one for a site replaces the first,
-    and the picker links to the Sessions library."""
+    and the picker links to the Sessions library. It offers only the sessions the person may use (v5-7, F1167): theirs
+    and ones shared with them, never another's unshared one, which the library still shows. A session's date reads as
+    the pane's do, never as a numeric date."""
     aid = f"agent_uismoke_browser_{int(time.time())}"
     api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
     first, second, carrier = "ss_" + "d" * 24, "ss_" + "e" * 24, "ss_" + "f" * 24
     listed = {"sessions": [_site_session(first, "saltmarsh.example"),
                            _site_session(second, "saltmarsh.example", created_at=time.time() - 86_400),
-                           _site_session(carrier, "carrier.example")]}
+                           _site_session(carrier, "carrier.example"),
+                           _site_session("ss_" + "q" * 24, "ledger.example", mine=False, owner="u_priya", owner_name="Priya"),
+                           _site_session("ss_" + "r" * 24, "books.example", mine=False, owner="u_priya", owner_name="Priya",
+                                         shared_with="workspace", usable=True)]}
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
     page = await ctx.new_page()
@@ -12627,6 +12635,13 @@ async def check_brwagent(browser) -> str:
             bad.append(f"the Browser section still says {sorted(set(said))}")
         await section.get_by_label("Sites it may use").fill("https://portal.saltmarsh.example/stock\ntracking.carrier.example")
         picker = section.get_by_role("group", name="Sessions it starts with")
+        if await picker.get_by_role("group", name="ledger.example").count():
+            bad.append("the picker offers Priya's session for ledger.example, which isn't shared with the person")
+        if not await picker.get_by_role("group", name="books.example").get_by_role("checkbox").count():
+            bad.append("the picker does not offer Priya's session for books.example, shared with the workspace")
+        dated = " ".join(await picker.get_by_role("checkbox").evaluate_all("els => els.map(e => e.getAttribute('aria-label') || '')"))
+        if re.search(r"\d{1,2}/\d{1,2}/\d{2,4}", dated):
+            bad.append(f"the picker dates its sessions numerically: {dated[:120]!r}")
         salt = picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox")
         if await salt.count() != 2:
             bad.append(f"saltmarsh.example offers {await salt.count()} sessions, not 2")
@@ -13212,6 +13227,56 @@ async def check_brwrunturn(browser) -> str:
     if bad:
         raise AssertionError("; ".join(bad))
     return "a run's browser turn is a card whose Done hands the browser back"
+
+
+@check
+async def check_brwsessionslayout(browser) -> str:
+    """The Sessions library sits clear of its tabs, and on a phone nothing is squeezed (BRW2, F1139; found in the
+    deploy #4 shots): the intro starts a gap below the Sessions/Recordings tabs; at 390 px a row's site reads whole,
+    its buttons going under it; and the consent card's Don't keep / Keep sit under its words, not beside them, which
+    squeezed the words into a narrow column and the page under them."""
+    state = {"sessions": [
+        _site_session("ss_" + "v" * 24, "tracking.carrier.example", expired=True, expires_at=time.time() - 86_400)]}
+    bad: list[str] = []
+    for width in (WIDE, PHONE):
+        ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
+        await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=state))
+        await ctx.route(re.compile(r".*/api/site-sessions/new$"), lambda r: r.fulfill(status=200, json={"browser_session_id": "bsLay"}))
+        await ctx.route(re.compile(r".*/api/browser/bsLay/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://tracking.carrier.example/", "person")))
+        page = await ctx.new_page()
+        try:
+            await page.goto(f"{APP}/browser/sessions", wait_until="domcontentloaded")
+            rows = page.get_by_role("list", name="Sessions")
+            await rows.wait_for(timeout=30_000)
+            await asyncio.sleep(SETTLE)
+            gap = await page.evaluate("""() => {
+                const nav = document.querySelector('nav[aria-label="Browser"]');
+                const intro = [...document.querySelectorAll('main p')].find(p => p.textContent.startsWith('A session keeps'));
+                return nav && intro ? Math.round(intro.getBoundingClientRect().top - nav.getBoundingClientRect().bottom) : null; }""")
+            if gap is None or gap < 12:
+                bad.append(f"at {width[0]} px the intro sits {gap} px under the Browser tabs, not 12 or more")
+            if width == PHONE:
+                cut = await rows.evaluate("""ul => [...ul.querySelectorAll('li [translate="no"]')]
+                    .filter(e => e.scrollWidth > e.clientWidth + 1).map(e => e.textContent)""")
+                if cut:
+                    bad.append(f"at 390 px a session's site is cut short: {cut}")
+                await page.get_by_role("button", name="Sign in again to tracking.carrier.example").click()
+                card = page.get_by_role("region", name="Browser").get_by_role("status").filter(has_text="Keep me signed in to")
+                await card.wait_for(timeout=8_000)
+                await asyncio.sleep(0.6)
+                beside = await card.evaluate("""s => {
+                    const words = s.querySelector('p'); const keep = [...s.querySelectorAll('button')].find(b => b.textContent.trim() === 'Keep');
+                    if (!words || !keep) return 'no words or no Keep';
+                    const w = words.getBoundingClientRect(), k = keep.getBoundingClientRect();
+                    return k.top < w.bottom - 1 ? `Keep at ${Math.round(k.top)} beside words ending at ${Math.round(w.bottom)}, ${Math.round(w.width)} px wide` : null; }""")
+                if beside:
+                    bad.append(f"at 390 px the consent card's buttons sit beside its words ({beside})")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the intro clears the tabs; at 390 px a session's site reads whole and the consent card's buttons sit under its words"
 
 
 @check
