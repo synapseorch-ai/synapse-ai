@@ -636,7 +636,9 @@ def _markdown(html: str, url: str, excluded_tags: tuple[str, ...]) -> str:
         base_url=url, exclude_selectors=list(excluded_tags), extract_metadata=False,
         # What a reader can get to (an inactive tab, a closed section) is read; text hidden from every reader is
         # not, which is where a prompt hides in a page.
-        hidden_content="reachable"))
+        hidden_content="reachable",
+        # An inline `data:` image is its alt text, as crawl4ai left it: its payload is no one's to read.
+        inline_data_media="alt_text_only"))
     return (result.content or "").strip()
 
 
