@@ -12505,6 +12505,13 @@ async def check_brwagent(browser) -> str:
         if not await section.count():
             raise AssertionError("a Browser agent has no Browser section")
         await section.get_by_role("radio", name="Works with you").click()
+        # The rule as Naveen set it on 10-28: it presses Submit or Send only on the person's own words, and every
+        # payment is the person's; nothing is "held and handed" but a payment.
+        hint = await section.inner_text()
+        if "only when you" not in hint or "every payment" not in hint:
+            bad.append("the Works with you hint does not say it presses only on your words, and every payment is yours")
+        if "held and handed to you" in hint:
+            bad.append("the Works with you hint still says a send is held and handed to you")
         await section.get_by_label("Sites it may use").fill("https://portal.saltmarsh.example/stock\ntracking.carrier.example")
         await section.get_by_role("combobox", name="Saved login").click()
         await page.get_by_role("option", name="portal.saltmarsh.example").click()
