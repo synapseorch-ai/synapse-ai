@@ -157,7 +157,9 @@ def _through_egress(conn_str: str):
 
 def _connect(conn_str: str):
     """A new engine and its inspector. `inspect()` connects to the database."""
-    engine = create_engine(_through_egress(conn_str), echo=False)
+    from core.db_drivers import with_installed_driver
+
+    engine = create_engine(_through_egress(with_installed_driver(conn_str)), echo=False)
     return engine, inspect(engine)
 
 
