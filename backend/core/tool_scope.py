@@ -89,6 +89,10 @@ async def _database_for(arguments: dict) -> dict | None:
         config = next((c for c in await collections.load("db_configs") if c.get("id") == db_id), None)
         if not config or not config.get("connection_string"):
             return None
+        # The connection's own setting as well as the global one (F1119): a connection saved as
+        # read-only stays read-only. A config with no such field (a single-user install's) has
+        # only the global setting, as before.
+        allow_write = allow_write and bool(config.get("allow_write", True))
         return {"id": db_id, "connection_string": config["connection_string"], "allow_write": allow_write}
     fallback = settings.get("sql_connection_string", "")
     if not fallback:

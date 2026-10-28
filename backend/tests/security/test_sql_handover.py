@@ -90,6 +90,39 @@ class TestTheWorkerHandsOverOneConnection:
             assert "await call_kwargs_for(" in text, path
 
 
+class TestAConnectionsOwnWriteSettingHolds:
+    """F1119: a connection saved as read-only stays read-only whatever the global setting says."""
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("global_on", "connection", "expected"),
+        [
+            (True, False, False),   # global on, the connection read-only: refused
+            (True, True, True),     # global on, the connection allows: allowed
+            (False, True, False),   # global off: refused either way
+            (False, False, False),
+            (True, None, True),     # no per-connection field (a single-user install): the global decides
+        ],
+    )
+    async def test_the_handed_write_setting_is_both(self, tenant_configs, monkeypatch, global_on, connection, expected):
+        from core.store import collections
+
+        config = dict(CONFIGS[0])
+        if connection is not None:
+            config["allow_write"] = connection
+
+        async def load(name):
+            return [config] if name == "db_configs" else []
+
+        monkeypatch.setattr(collections, "load", load)
+        monkeypatch.setattr(tool_scope, "_load_settings", lambda: {"allow_db_write": global_on})
+
+        with tenant_scope("org-a"):
+            kwargs = await tool_scope.call_kwargs_for("sql", "run-1", {"db_id": "db_1"})
+
+        assert kwargs["meta"][tool_scope.DB_KEY]["allow_write"] is expected
+
+
 class TestTheSqlServerUsesWhatItIsHanded:
     @pytest.fixture
     def sql_agent(self, monkeypatch):
