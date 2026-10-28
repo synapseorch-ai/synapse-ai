@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { listSessions, type SessionsHost, type SiteSession } from './sessions';
+import { listSessions, refusal, type SessionsHost, type SiteSession } from './sessions';
 
 /**
  * One chat's own sessions (F1140; DESIGN v5.3): the library's rows, the chat's picks (`GET …/browser-sessions`), and
@@ -38,7 +38,7 @@ export function useChatPicks(host: SessionsHost, chatId: string | null | undefin
     if (res?.ok) return;
     const body = await res?.json().catch(() => ({}));
     setValue(before);
-    setFailed(typeof body?.detail === 'string' ? body.detail : 'That pick was not saved. Try again.');
+    setFailed(refusal(body, 'That pick was not saved. Try again.'));
   }, [host, chatId, value]);
 
   return { sessions, value, onChange, failed, libraryHref: host.libraryHref, locked: host.locked };

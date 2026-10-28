@@ -13222,8 +13222,9 @@ async def check_brwsessionsite(browser) -> str:
         calls.append(("finish", route.request.post_data or ""))
         if refused["left"]:
             refused["left"] -= 1
-            return await route.fulfill(status=422, json={
-                "detail": "Nothing is signed in to saltmarsh.example yet. Sign in, then keep it.", "site": "saltmarsh.example"})
+            # As BRW1's route answers it: FastAPI nests the frozen {detail, site} under its own `detail`.
+            return await route.fulfill(status=422, json={"detail": {
+                "detail": "Nothing is signed in to saltmarsh.example yet. Sign in, then keep it.", "site": "saltmarsh.example"}})
         row = _site_session("ss_" + "h" * 24, "saltmarsh.example", last_used_at=None, expires_at=time.time() + 30 * 86_400)
         state["sessions"] = [row, expired]
         await route.fulfill(status=200, json={k: row[k] for k in ("id", "site", "expires_at")})

@@ -87,8 +87,15 @@ export async function finishSignIn(host: SessionsHost, browserSessionId: string,
   return { kept: keep && typeof body?.id === 'string' ? body as KeptSession : null };
 }
 
-function refusal(body: { detail?: unknown } | null | undefined, fallback: string): string {
-  return typeof body?.detail === 'string' ? body.detail : fallback;
+/**
+ * A refusal's words. The frozen shape is `{detail, site}`; FastAPI nests a dict detail as `{detail: {detail, site}}`,
+ * so either is read, and anything else is the fallback.
+ */
+export function refusal(body: { detail?: unknown } | null | undefined, fallback: string): string {
+  const d = body?.detail;
+  if (typeof d === 'string') return d;
+  if (d && typeof d === 'object' && typeof (d as { detail?: unknown }).detail === 'string') return (d as { detail: string }).detail;
+  return fallback;
 }
 
 const DAY_S = 86_400;
