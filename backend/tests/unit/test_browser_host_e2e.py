@@ -904,6 +904,19 @@ async def test_re_recording_from_a_step_replays_the_steps_before_it_and_records_
     status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": broken})
     assert status == 409 and body["replayed"]["miss"]["n"] == 2
     assert (await _state(http, control, sid))["recording"] is None, "nothing records after a replay that stopped"
+    # The person's own step stops the replay (a sign-in); they do it, and the re-record carries on after it.
+    signin = [{**first[0]}, {"id": "s2p", "n": 2, "action": "type", "target": {"css": "#pw"},
+                             "value": {"person": "password"}, "line": "You sign in here"},
+              {**first[1], "n": 3}]
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": signin})
+    assert status == 409 and body["replayed"]["handover"]["kind"] == "sensitive" and body["replayed"]["at"] == 2
+    state = await _state(http, control, sid)
+    assert state["wheel"] == "person" and state["banner"]["kind"] == "sensitive", "their turn, said on the pane"
+    status, body = await _view(http, viewer, sid, "/record/start", {"carry_on": True})
+    assert status == 200 and body == {"recording": True}, body
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert done["steps"] == [], "the replayed steps, before and after their turn, are not recorded"
+    assert (await _view(http, viewer, sid, "/record/start", {"carry_on": True}))[0] == 409, "nothing to carry on"
     await _post(http, control, "/close", {"session_id": sid})
 
 

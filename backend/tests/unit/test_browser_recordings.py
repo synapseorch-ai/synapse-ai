@@ -87,8 +87,8 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     opened, viewer_calls, closed = [], [], []
 
     class _Tools:
-        async def open_record_session(self, rid, *, sessions, start_url=""):
-            opened.append((rid, sessions, start_url))
+        async def open_record_session(self, rid, *, sessions, start_url="", replay_first=None):
+            opened.append((rid, sessions, start_url, replay_first))
             return "bs_rec"
 
         async def owner_of(self, sid):
@@ -117,6 +117,29 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     assert viewer_calls[-1] == ("/record/start", {"replay_first": got["steps"][:2]})
     gone = await client.post("/api/browser/bs_rec/record/start", json={**again, "from_step": "nope"})
     assert gone.status_code == 422
+    # "Re-record from here" in the editor, with no browser open: the browser is that recording's from the start,
+    # so Stop keeps a pending fix of it, not a new recording (BRW2's question, F1143).
+    rid = new["recording_id"]
+    opened_again = (await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "s3"})).json()
+    assert opened_again == {"recording_id": rid, "browser_session_id": "bs_rec"}
+    assert opened[-1] == (rid, [], "", got["steps"][:2]), "its steps before s3 replay first"
+    fix = (await client.post("/api/browser/bs_rec/record/stop", json={"keep": True, "from_step": "s3"})).json()
+    assert fix["recording_id"] == rid and fix["pending_edit"], fix
+    assert (await client.get(f"/api/recordings/{rid}")).json()["version"] == 1, "nothing changes until approved"
+    assert (await client.post("/api/recordings/new", json={"from_step": "s3"})).status_code == 422
+    assert (await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "nope"})).status_code == 422
+
+    async def stops(self, rid, *, sessions, start_url="", replay_first=None):
+        raise browser_client.ReplayStopped("bs_rec", {"handover": {"kind": "sensitive"}, "at": 2})
+    monkeypatch.setattr(_Tools, "open_record_session", stops)
+    stopped = await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "s3"})
+    assert stopped.status_code == 409 and stopped.json()["browser_session_id"] == "bs_rec"
+    assert stopped.json()["replayed"]["at"] == 2, "the browser stays open at the person's own step"
+
+    async def busy(self, rid, *, sessions, start_url="", replay_first=None):
+        raise browser_client.RecordingOpen(rid)
+    monkeypatch.setattr(_Tools, "open_record_session", busy)
+    assert (await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "s3"})).status_code == 409
     shot = await client.get(f"/api/recordings/{new['recording_id']}/shots/r1-s1")
     assert shot.status_code == 200 and shot.content == b"\xff\xd8picture"
     stale = await client.patch(f"/api/recordings/{new['recording_id']}", json={"base_version": 9, "name": "x"})

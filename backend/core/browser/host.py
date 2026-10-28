@@ -1347,14 +1347,24 @@ class Host:
 
     async def record_start(self, request):
         s, body = await self._viewer_body(request)
-        if body.get("replay_first"):  # re-recording from a step: the steps before it run first, the person watching
+        if body.get("replay_first") or body.get("carry_on"):
+            # Re-recording from a step: the steps before it run first, the person watching; after the person's own
+            # step stopped them (a sign-in), `carry_on` goes on from the step after it.
             if s.held is not None or s.recorder is not None:
                 return web.json_response({"error": "Not now: this browser is busy."}, status=409)
+            plan = s.replaying
+            if body.get("carry_on") and not (plan and plan.get("turn_at")):
+                return web.json_response({"error": "Nothing to carry on."}, status=409)
             s.wheel = "nobody"
-            done = await s.replay(list(body["replay_first"]), {}, unattended=False)
-            s.replaying, s.wheel = None, "person"
-            if "handover" not in done:  # a turn keeps its banner: the person's step before the one re-recorded
-                s.banner = None
+            if body.get("carry_on"):
+                done = await s.replay(plan["steps"], {}, unattended=False, from_n=int(plan["turn_at"]) + 1)
+            else:
+                done = await s.replay(list(body["replay_first"]), {}, unattended=False)
+            s.wheel = "person"
+            if "handover" in done:  # a turn keeps its banner and its place: the person's step, then carry on
+                s.replaying["turn_at"] = done["at"]
+            else:
+                s.replaying, s.banner = None, None
             s._push_state()
             if "outputs" not in done:
                 return web.json_response({"replayed": done}, status=409)
