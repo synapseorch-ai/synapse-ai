@@ -89,6 +89,16 @@ async def _save(doc: dict) -> None:
     await put_item(COLLECTION, doc["id"], doc)
 
 
+async def _update(recording_id: str, mutate) -> dict:
+    """A change in one transaction, the recording locked while it is checked and written (exact across processes)."""
+    from core.store.collections import update_item
+    async with _lock:
+        doc = await update_item(COLLECTION, recording_id, mutate) if recording_id.startswith("rec_") else None
+    if doc is None:
+        raise NotFound(recording_id)
+    return doc
+
+
 def _keep_shots(recording_id: str, shots: dict[str, str] | None) -> None:
     from core.browser import kept
     for ref, b64 in (shots or {}).items():
@@ -126,8 +136,7 @@ async def patch(recording_id: str, *, base_version: int, by: str, name: str | No
                 steps: list[dict] | None = None, inputs: list[dict] | None = None,
                 outputs: list[dict] | None = None) -> dict:
     """A person's change from the editor: refused (`Stale`) unless made from the recording's current version."""
-    async with _lock:
-        doc = await _load(recording_id)
+    def change(doc: dict) -> dict:
         if int(base_version) != int(doc["version"]):
             raise Stale(doc["version"])
         _push_history(doc)
@@ -141,8 +150,8 @@ async def patch(recording_id: str, *, base_version: int, by: str, name: str | No
         if outputs is not None:
             doc["outputs"] = [o for o in outputs if isinstance(o, dict)]
         _bump(doc, by)
-        await _save(doc)
         return doc
+    return await _update(recording_id, change)
 
 
 def _push_history(doc: dict) -> None:
@@ -175,23 +184,24 @@ async def versions(recording_id: str) -> list[dict]:
 
 
 async def add_edit(recording_id: str, *, step_id: str, steps: list[dict], by: str, run_id: str | None = None,
-                   shots: dict[str, str] | None = None) -> str:
-    """A proposed change to one step (an agent's fix, F1144, or a re-record from a step): kept pending until a person
-    approves or discards it; the recording itself is unchanged till then."""
+                   shots: dict[str, str] | None = None, rest: bool = False) -> str:
+    """A proposed change to one step (an agent's fix, F1144, or with `rest` a re-record from a step that replaces it
+    and every step after): kept pending until a person approves or discards it; the recording is unchanged till then."""
     edit_id = f"ed_{secrets.token_hex(6)}"
     await asyncio.to_thread(_keep_shots, recording_id, shots)
-    async with _lock:
-        doc = await _load(recording_id)
+
+    def add(doc: dict) -> dict:
         doc["pending_edits"] = [*(doc.get("pending_edits") or []), {
-            "edit_id": edit_id, "step_id": step_id, "steps": _lined(steps), "by": by, "run_id": run_id, "at": _now()}]
-        await _save(doc)
+            "edit_id": edit_id, "step_id": step_id, "steps": _lined(steps), "by": by, "run_id": run_id, "at": _now(),
+            **({"rest": True} if rest else {})}]
+        return doc
+    await _update(recording_id, add)
     return edit_id
 
 
 async def approve_edit(recording_id: str, edit_id: str, *, by: str) -> dict:
     """The pending edit replaces its step (from it to the end, for a re-record): a new version."""
-    async with _lock:
-        doc = await _load(recording_id)
+    def approve(doc: dict) -> dict:
         edit = next((e for e in doc.get("pending_edits") or [] if e.get("edit_id") == edit_id), None)
         if edit is None:
             raise NotFound(edit_id)
@@ -200,25 +210,24 @@ async def approve_edit(recording_id: str, edit_id: str, *, by: str) -> dict:
         if at is None:
             raise NotFound(edit["step_id"])
         _push_history(doc)
-        tail = steps[at + 1:] if not edit.get("rest") else []
+        tail = [] if edit.get("rest") else steps[at + 1:]
         doc["steps"] = _lined([*steps[:at], *edit["steps"], *tail])
         doc["sites"] = _sites(doc["steps"])
         doc["pending_edits"] = [e for e in doc["pending_edits"] if e.get("edit_id") != edit_id]
         doc["changed"] = [c for c in doc.get("changed") or [] if c != edit["step_id"]]
         _bump(doc, by)
-        await _save(doc)
         return doc
+    return await _update(recording_id, approve)
 
 
 async def discard_edit(recording_id: str, edit_id: str) -> dict:
-    async with _lock:
-        doc = await _load(recording_id)
-        before = len(doc.get("pending_edits") or [])
-        doc["pending_edits"] = [e for e in doc.get("pending_edits") or [] if e.get("edit_id") != edit_id]
-        if len(doc["pending_edits"]) == before:
+    def discard(doc: dict) -> dict:
+        kept_edits = [e for e in doc.get("pending_edits") or [] if e.get("edit_id") != edit_id]
+        if len(kept_edits) == len(doc.get("pending_edits") or []):
             raise NotFound(edit_id)
-        await _save(doc)
+        doc["pending_edits"] = kept_edits
         return doc
+    return await _update(recording_id, discard)
 
 
 async def from_stop(result: dict, *, by: str, recording_id: str | None = None, from_step: str | None = None,
@@ -226,14 +235,8 @@ async def from_stop(result: dict, *, by: str, recording_id: str | None = None, f
     """What `record/stop` kept: a new recording, or (re-recording from a step) a pending edit of an existing one.
     `{recording_id, steps}` or `{recording_id, pending_edit}`."""
     steps, shots = result.get("steps") or [], result.get("shots") or {}
-    if recording_id and from_step:
-        edit_id = await add_edit(recording_id, step_id=from_step, steps=steps, by=by, shots=shots)
-        async with _lock:  # a re-record replaces its step and every step after it
-            doc = await _load(recording_id)
-            for e in doc["pending_edits"]:
-                if e["edit_id"] == edit_id:
-                    e["rest"] = True
-            await _save(doc)
+    if recording_id and from_step:  # a re-record replaces its step and every step after it
+        edit_id = await add_edit(recording_id, step_id=from_step, steps=steps, by=by, shots=shots, rest=True)
         return {"recording_id": recording_id, "pending_edit": edit_id}
     doc = await create(name or "", steps, shots=shots, by=by, recording_id=recording_id)
     return {"recording_id": doc["id"], "steps": len(doc["steps"])}

@@ -119,3 +119,33 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     assert [v["version"] for v in (await client.get(f"/api/recordings/{new['recording_id']}/versions")).json()["versions"]] == [2, 1]
     assert (await client.delete(f"/api/recordings/{new['recording_id']}")).json() == {"deleted": True}
     assert (await client.get(f"/api/recordings/{new['recording_id']}")).status_code == 404
+
+
+async def test_two_saves_from_one_version_cannot_both_pass():
+    """F1142 follow-up (BRW3): a change is checked and written in one transaction, the recording locked, so of two saves
+    made from version 1 at once exactly one passes. (Here SQLite and the in-process lock; cloud proves FOR UPDATE on
+    Postgres across processes.)"""
+    import asyncio
+    doc = await recordings.create("T", _steps(), by="you")
+    results = await asyncio.gather(recordings.patch(doc["id"], base_version=1, by="a", name="from a"),
+                                   recordings.patch(doc["id"], base_version=1, by="b", name="from b"),
+                                   return_exceptions=True)
+    assert sorted(type(r).__name__ for r in results) == ["Stale", "dict"]
+    assert (await recordings.get(doc["id"]))["version"] == 2
+
+
+async def test_a_change_that_refuses_leaves_the_item_as_it_was():
+    from core.store import collections
+    await collections.put_item("t_items", "k", {"n": 1})
+
+    def refuse(old):
+        old["n"] = 99
+        raise ValueError("no")
+
+    with pytest.raises(ValueError):
+        await collections.update_item("t_items", "k", refuse)
+    assert await collections.get_item("t_items", "k") == {"n": 1}
+    assert await collections.update_item("t_items", "k", lambda old: {**old, "n": 2}) == {"n": 2}
+    assert await collections.update_item("t_items", "none", lambda old: old) is None
+    await collections.put_item("t_items", "other", {"n": 5})
+    assert await collections.delete_item("t_items", "k") is True and await collections.get_item("t_items", "other") == {"n": 5}
