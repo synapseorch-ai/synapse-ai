@@ -13330,7 +13330,8 @@ async def check_brwsessionsreal(browser) -> str:
         await asyncio.sleep(SETTLE)
         picker = page.locator("section[data-tour='setup-browser']").get_by_role("group", name="Sessions it starts with")
         await picker.wait_for(timeout=10_000)
-        if not await picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox").is_checked():
+        # By its id: a scratch seeded twice keeps two of the person's sessions for the site.
+        if not await picker.locator(f"#session-pick-{mine}").is_checked():
             bad.append("the agent's own saved session is not shown picked")
         if await picker.get_by_role("group", name="ledger.example").count():
             bad.append("the agent's picker offers Priya's unshared session")
