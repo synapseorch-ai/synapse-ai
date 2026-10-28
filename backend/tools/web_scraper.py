@@ -438,7 +438,7 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
 
     page.on("download", on_download)
     try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
+        response = await page.goto(url, wait_until="domcontentloaded", timeout=PAGE_TIMEOUT_MS)
     except PlaywrightError:
         if not downloads:
             await asyncio.sleep(0.5)  # the download event can follow the aborted navigation
@@ -466,6 +466,8 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
     if config.remove_overlay_elements:
         await _quietly(page.evaluate(_REMOVE_OVERLAYS))
     html = await page.content()
+    if (blocked := _refusal(response, html)) is not None:
+        return CrawlResult(success=False, error_message=blocked)
     found = await page.evaluate(_LINKS_AND_IMAGES, ", ".join(config.excluded_tags))
     result = CrawlResult(success=True, markdown=_markdown(html, page.url, config.excluded_tags),
                          links=_links(found["links"], page.url), media={"images": found["images"]})
@@ -475,6 +477,32 @@ async def _read_page(page, url: str, config: RunConfig) -> CrawlResult:
         shot = await page.screenshot(full_page=config.scan_full_page, type="png")
         result.screenshot = base64.b64encode(shot).decode("ascii")
     return result
+
+
+#: Markers only a bot-check page carries, whatever its size.
+_CHALLENGE_MARKERS = (
+    ("captcha-delivery.com", "DataDome captcha"),
+    ("/cdn-cgi/challenge-platform/", "Cloudflare challenge"),
+    ("__cf_chl_f_tk=", "Cloudflare challenge"),
+    ("window._pxAppId", "PerimeterX block"),
+    ("captcha.px-cdn.net", "PerimeterX captcha"),
+    ("_Incapsula_Resource", "Imperva block"),
+    ("Pardon Our Interruption", "Akamai challenge"),
+)
+
+
+def _refusal(response, html: str) -> str | None:
+    """Why the page is a refusal rather than the page asked for, or None. The egress proxy's own refusal says so;
+    a 403, 429 or 503, or a bot check, is a failure as crawl4ai reported it, never a page of content: a reader
+    handed a block page as the site's words is misled."""
+    if response is not None and response.headers.get("x-synapse-egress") == "refused":
+        return "URL blocked: the egress proxy refused this address"
+    for marker, name in _CHALLENGE_MARKERS:
+        if marker in html:
+            return f"Blocked by anti-bot protection: {name}"
+    if response is not None and response.status in (403, 429, 503):
+        return f"Blocked by anti-bot protection: HTTP {response.status}"
+    return None
 
 
 async def _wait(page, wait_for: str, timeout: int) -> None:
@@ -630,7 +658,9 @@ async def _read_download(download, url: str) -> CrawlResult:
 def _pdf_markdown(data: bytes, url: str) -> str:
     from core.knowledge.parse import parse_bytes
 
-    doc = parse_bytes(data, path=Path(urlparse(url).path).name or "page.pdf", source="web",
+    name = Path(urlparse(url).path).name or "page"
+    # Knowledge picks its reader by the name's extension: an address like arxiv.org/pdf/1706.03762 has none it knows.
+    doc = parse_bytes(data, path=name if name.lower().endswith(".pdf") else f"{name}.pdf", source="web",
                       sha256=hashlib.sha256(data).hexdigest(), mime="application/pdf", url=url,
                       max_pages=MAX_PDF_PAGES)
     return "\n\n".join(("#" * min(b.level or 1, 6) + " " + b.text) if b.kind == "heading" else b.text

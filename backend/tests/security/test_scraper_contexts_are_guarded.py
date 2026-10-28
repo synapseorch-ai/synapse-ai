@@ -242,6 +242,15 @@ async def test_a_pdf_is_read(real_scraper, monkeypatch):
 
 
 @real_chromium
+async def test_a_pdf_at_an_address_with_no_pdf_in_its_name_is_read(real_scraper, monkeypatch):
+    # arxiv.org/pdf/1706.03762: Knowledge's reader is picked by the name's extension, and this one has none it knows.
+    monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "localhost")
+    async with _FileSite(_pdf("Quarterly revenue grew"), "application/pdf") as site:
+        out = _out(await real_scraper._handle_scrape_url({"url": f"{site.url}/pdf/1706.03762"}))
+    assert out["success"] and "Quarterly revenue grew" in out["markdown"], out
+
+
+@real_chromium
 async def test_a_pdf_over_the_limit_is_not_read(real_scraper, monkeypatch):
     monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "localhost")
     monkeypatch.setattr(web_scraper, "MAX_PDF_BYTES", 100)
