@@ -510,13 +510,17 @@ def _refusal(response, html: str) -> str | None:
     return None
 
 
+def _runs_a_script(wait_for: str | None) -> bool:
+    """Whether `_wait` runs `wait_for` in the page (`js:`, or a function) rather than waiting for an element."""
+    return bool(wait_for) and wait_for.strip().startswith(("js:", "()", "function"))
+
+
 async def _wait(page, wait_for: str, timeout: int) -> None:
-    """`js:` (or a function) waits for it to be true; `css:` (or anything else) for the element to show."""
+    """`js:` (or a function) waits for it to be true; `css:` (or anything else) for the element to show — never run as
+    a script."""
     wait_for = wait_for.strip()
-    if wait_for.startswith("js:"):
-        await page.wait_for_function(wait_for[3:].strip(), timeout=timeout)
-    elif wait_for.startswith(("()", "function")):
-        await page.wait_for_function(wait_for, timeout=timeout)
+    if _runs_a_script(wait_for):
+        await page.wait_for_function(wait_for.removeprefix("js:").strip(), timeout=timeout)
     else:
         await page.wait_for_selector(wait_for.removeprefix("css:").strip(), timeout=timeout)
 
@@ -900,10 +904,11 @@ async def _arun_once(crawler, url: str, config: RunConfig):
     return result
 
 
-def _cache_mode(cache: bool, headers: dict | None, js_code) -> CacheMode:
+def _cache_mode(cache: bool, headers: dict | None, js_code, wait_for: str | None = None) -> CacheMode:
     """A page read with someone's headers, or after someone's script, is theirs: the cache, keyed by URL alone and
-    shared by every caller, is for a plain read only (F1110)."""
-    return CacheMode.ENABLED if cache and not headers and js_code is None else CacheMode.BYPASS
+    shared by every caller, is for a plain read only (F1110). A `wait_for` that runs a script is a script too."""
+    plain = not headers and js_code is None and not _runs_a_script(wait_for)
+    return CacheMode.ENABLED if cache and plain else CacheMode.BYPASS
 
 
 def _build_run_config(
@@ -921,7 +926,7 @@ def _build_run_config(
     session_id: str | None = None,
 ) -> RunConfig:
     kwargs: dict = dict(
-        cache_mode=_cache_mode(cache, headers, js_code),
+        cache_mode=_cache_mode(cache, headers, js_code, wait_for),
         excluded_tags=tuple(excluded_tags or ["script", "style"]),
         remove_overlay_elements=remove_overlay_elements,
         screenshot=screenshot,
