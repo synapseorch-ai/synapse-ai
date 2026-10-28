@@ -100,6 +100,8 @@ export function Combobox<T extends string = string>({
         disabled={disabled}
         aria-label={ariaLabel}
         aria-describedby={ariaDescribedBy}
+        // A pill truncates its label: the whole of it on hover (F1131).
+        title={trigger === "pill" ? (selected?.label ?? placeholder) : undefined}
         className={cn(
           controlStyles({ size }),
           "group inline-flex items-center justify-between gap-2 text-left",

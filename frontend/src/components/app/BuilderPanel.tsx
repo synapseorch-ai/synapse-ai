@@ -515,7 +515,8 @@ export function BuilderConversation({
                                     searchPlaceholder="Search models…"
                                     size="sm"
                                     trigger="pill"
-                                    className="max-w-[200px]"
+                                    // On a phone the row's own width, not 200 px: "Default (Claude Haik…" (F1131).
+                                    className="max-w-[200px] max-md:max-w-full"
                                     options={modelChoices}
                                 />
                             </>
