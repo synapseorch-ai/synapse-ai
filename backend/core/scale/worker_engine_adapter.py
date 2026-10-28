@@ -228,6 +228,7 @@ class WorkerEngineAdapter:
 
         # Sync final run state from the in-memory engine state back to Postgres
         await self._sync_final_state(final_status)
+        await self._end_events(initial_state)
         await self._publisher.publish_done()
         return final_status
 
@@ -288,8 +289,26 @@ class WorkerEngineAdapter:
 
         _log.debug(f"[adapter.resume] ✅ done, calling _sync_final_state(status={final_status})")
         await self._sync_final_state(final_status)
+        await self._end_events(run.shared_state)
         await self._publisher.publish_done()
         return final_status
+
+    async def _end_events(self, state: dict | None) -> None:
+        """A builder run that failed ends with its plain line and F1018's offer before the stream's end, as the
+        self-hosted route's does (F1153). Other runs: nothing, after one read of the host's builder ids."""
+        from types import SimpleNamespace
+
+        from core import try_stronger
+        from core.native_builder.identity import is_builder_run
+
+        if not await is_builder_run(SimpleNamespace(orchestration_id=getattr(self._orch, "id", ""))):
+            return
+        try:
+            for event in await try_stronger.end_events(
+                    self._run_id, retried=bool((state or {}).get(try_stronger.RETRIED_KEY))):
+                await self._relay(event)
+        except Exception:  # noqa: BLE001 — what a failed build ends with never fails the run's ending
+            _log.warning("[adapter] the end of builder run %s was not said", self._run_id, exc_info=True)
 
     @_cancel_guarded
     async def resume_failed(

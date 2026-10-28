@@ -551,6 +551,15 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
         // builder's reply. A refused message ends the turn; a refused answer
         // leaves its question open, so the person answers it again.
         case 'builder_notice': {
+            // A build that failed, said plainly (F1153): it replaces the bare "Something went wrong." the run's
+            // error drew just before, so the failure is said once (the review's 9).
+            if (event.reason === 'build_failed' && typeof event.message === 'string') {
+                const asked = state.messages.map((m) => m.role).lastIndexOf('user');
+                return append(
+                    { ...state, messages: state.messages.filter((m, i) => i <= asked || !m.key.startsWith('error-')) },
+                    { role: 'assistant', content: event.message, kind: 'text', key: `failed-${seq}` },
+                );
+            }
             const final = event.final === true;
             // `kept` is the person's message as it was kept (a key masked, a
             // refused message not kept at all). It replaces what they typed, so

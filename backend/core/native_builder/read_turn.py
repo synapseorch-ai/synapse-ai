@@ -115,8 +115,12 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
     # 0. A reply to the effort offer that is not its press (F1153, Naveen 10-28): the build goes on, on the usual
     # model, never asked again. A go-ahead (or the card's "Continue with …") is the ask itself; anything else is the
     # ask with what was typed after it.
+    # The press itself (the review's 7): its message is the ask and its context the offer's; it goes to the build
+    # route through the role door, never classified again, so it cannot become an answer on the stronger model.
+    if pressed:
+        return Turn(route="effort_build", then="build")
     offered = previous.get("effort") if isinstance(previous.get("effort"), dict) else {}
-    if not pressed and offered.get("next") == "offer" and offered.get("ask"):
+    if offered.get("next") == "offer" and offered.get("ask"):
         ask = str(offered["ask"])
         going_on = yes or said in _GO_ON or said in _ACK or said.startswith("continue") or said in _JUST
         return Turn(route="effort_continue", then="classify", message=ask if going_on else f"{ask}\n\n{message}")
@@ -254,10 +258,10 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
             change = card.data if card is not None and card.status in ("open", "claimed") else None
         except Exception as exc:  # noqa: BLE001 — no board yet: the turn is read from its message alone
             _log.warning("turn %s: previous turn %s not read: %s", run_id, previous_id, exc)
-    from core.native_builder.effort import ACCEPTED_KEY, DECLINED_KEY
+    from core.native_builder.effort import DECLINED_KEY, PRESSED_KEY
 
     turn = decide(message, previous=previous, facts=facts, change=change,
-                  prior_findings=state.get("prior_findings"), pressed=bool(state.get(ACCEPTED_KEY)))
+                  prior_findings=state.get("prior_findings"), pressed=bool(state.get(PRESSED_KEY)))
     if turn.route == "effort_continue" and run is not None:
         # The ask goes on, on the usual model; the build records the answer, and is not asked again (F1153).
         run.shared_state["user_message"] = turn.message

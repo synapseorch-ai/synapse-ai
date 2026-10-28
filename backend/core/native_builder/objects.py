@@ -308,14 +308,14 @@ class Turn(BaseModel):
     """
 
     route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify",
-                   "effort_continue"]
+                   "effort_continue", "effort_build"]
     #: What a pick chose: an act's call (code puts its card up) or a change's chosen id (the change route takes it).
     picked: str | dict[str, Any] | None = None
     card: str | None = None
     target: dict[str, Any] | None = None
     say: str | None = None
     #: Where the turn goes next (F978): code said it all, back to the change route with a pick, or on to classify.
-    then: Literal["said", "change", "classify"] = "classify"
+    then: Literal["said", "change", "classify", "build"] = "classify"
     #: The message classify reads: the person's, or the request a yes took from the queue (`next_request`).
     message: str | None = None
 

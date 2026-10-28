@@ -26,6 +26,9 @@ KIND = "try_stronger"
 CAPPED = frozenset({"run_cap", "spend_limit"})
 #: A builder run's state: the run it tries again, and the model it was tried on.
 RETRIED_KEY, RETRIED_ON_KEY = "retried_from", "retried_on"
+#: On the failed run: its retry was pressed (claimed once, under the chat's lock).
+PRESSED = "retry_pressed"
+_LOCKS: dict[str, Any] = {}
 
 #: What a refused press says.
 NOT_THIS_TURN = "That turn can't be tried again: send your message again."
@@ -202,6 +205,8 @@ async def _why_not(run, session_id: str | None = None) -> str | None:
         return NOT_THIS_TURN  # it changed something: a re-run would do it again
     if run.shared_state.get(RETRIED_KEY):
         return TRIED  # a turn tried again is not offered again: once, never a chain up the menu
+    if run.shared_state.get(PRESSED):
+        return TRIED  # its retry was pressed already (another tab, a double press: the review's 6)
     if run.shared_state.get("effort_accepted"):
         return TRIED  # built on the stronger model the effort offer gave (F1153): said, never offered again
     from core.models_orchestration import Orchestration
@@ -232,24 +237,60 @@ async def _retried_before(run) -> bool:
 
 
 async def panel_retry(retry_of: str, session_id: str) -> dict | str:
-    """The model a press re-runs the panel's failed turn on, with what to record, or why not: the run is this chat's,
-    it failed in a model step on the run's model, changed nothing, was not stopped by a cap, and was not tried again
-    before; and something stronger can be paid for now."""
+    """The model a press re-runs the panel's failed turn on, with what to record and the turn's own message, or why
+    not: the run is this chat's, it failed in a model step on the run's model, changed nothing, was not stopped by a
+    cap, and was not tried again before; something stronger can be paid for now. Claimed once under the chat's lock
+    (the review's 6); the message is the failed turn's, never the words last on screen (the review's 2)."""
+    import asyncio
+
     from core.orchestration.state import SharedState
 
-    try:
-        run = (await SharedState.restore(retry_of)).run
-    except FileNotFoundError:
-        return NOT_THIS_TURN
-    if (why := await _why_not(run, session_id)) is not None:
-        return why
-    if await _retried_before(run):
-        return TRIED
-    failed = await _failed_step(run)
-    if failed is None:
-        return NOT_THIS_TURN
-    step, current = failed
-    made = await offer(current, has_tools=step.type.value == "agent", retry_of=retry_of)
-    if made is None:
-        return NOTHING_STRONGER
-    return {"model": made["model"], RETRIED_KEY: retry_of, RETRIED_ON_KEY: made["model"]}
+    async with _LOCKS.setdefault(session_id, asyncio.Lock()):
+        try:
+            restored = await SharedState.restore(retry_of)
+        except FileNotFoundError:
+            return NOT_THIS_TURN
+        run = restored.run
+        if (why := await _why_not(run, session_id)) is not None:
+            return why
+        if await _retried_before(run):
+            return TRIED
+        failed = await _failed_step(run)
+        if failed is None:
+            return NOT_THIS_TURN
+        step, current = failed
+        made = await offer(current, has_tools=step.type.value == "agent", retry_of=retry_of)
+        if made is None:
+            return NOTHING_STRONGER
+        run.shared_state[PRESSED] = True
+        await restored.checkpoint()
+    return {"model": made["model"], RETRIED_KEY: retry_of, RETRIED_ON_KEY: made["model"],
+            "message": str(run.shared_state.get("user_message") or "")}
+
+
+# ── a builder run's end, for every host ───────────────────────────────────────────────────────────────────────────
+
+#: Where a failed builder run keeps its offer, for a host whose press is checked away from the engine (cloud's API).
+OFFER_KEY = "try_stronger_offer"
+
+
+async def end_events(run_id: str, *, retried: bool) -> list[dict]:
+    """What a builder run that failed ends with, before its stream's end (F1153, F1018): the failure said plainly,
+    then the one offer, unless the run was itself a retry. The offer is also kept on the run (`OFFER_KEY`), so a
+    host that checks the press elsewhere reads what was offered. The self-hosted route and the fleet's adapter both
+    call this, so a panel reads the same on either."""
+    from core.native_builder.effort import failure_notice
+    from core.orchestration.state import SharedState
+
+    out = []
+    if (said := await failure_notice(run_id)) is not None:
+        out.append(said)
+    if not retried and (offered := await panel_offer(run_id)) is not None:
+        out.append(offered)
+        try:
+            restored = await SharedState.restore(run_id)
+            restored.run.shared_state[OFFER_KEY] = offered
+            await restored.checkpoint()
+        except FileNotFoundError:
+            pass
+    return out

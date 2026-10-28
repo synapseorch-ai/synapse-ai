@@ -121,6 +121,22 @@ def _format_history(history: list[dict]) -> str:
     return "\n".join(f"{m.get('role', 'user')}: {_as_kept(str(m.get('content', '')))}" for m in history)
 
 
+async def _newest(session_id: str) -> tuple[str, str | None, dict]:
+    """This conversation's newest turn, before this message's own run exists: its run id, status and state."""
+    from sqlalchemy import select
+
+    from core.store import session
+    from core.store.models import OrchestrationRunDB
+    from core.tenancy import get_tenant
+
+    async with session() as s:
+        row = (await s.execute(
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.status, OrchestrationRunDB.shared_state)
+            .where(OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.session_id == session_id)
+            .order_by(OrchestrationRunDB.created_at.desc()).limit(1))).first()
+    return (row[0], row[1], row[2] or {}) if row else ("", None, {})
+
+
 async def _newest_state(session_id: str) -> dict:
     """The shared state of this conversation's newest turn, before this message's own run exists."""
     from sqlalchemy import select
@@ -295,9 +311,18 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # Pasted Agents SDK code (an Agent Builder export, SW1): the guide to what
     # it becomes and the code itself, credentials taken out before the run,
     # its checkpoints or any model sees the message. Both empty otherwise.
+    # What the turn before hands on (F1153, the review's 1 and 4): an open effort offer's context and images, or the
+    # stronger model a set-aside build was pressed onto. A press or a retry names its own model.
+    from core.native_builder import effort
+
+    previous_id, previous_status, previous = await _newest(session_id)
+    following = await effort.next_turn(previous_id, previous_status, previous)
+    if following["model"] and not (retried or pressed):
+        request = request.model_copy(update={"model": following["model"]})
+    if following["images"] and not engine.images:
+        engine.images = list(following["images"])
     export = export_state(request.message)
     message = export["user_message"]
-    previous = await _newest_state(session_id)
     # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
     # which plans from them instead of researching again.
     found = previous_findings(previous)
@@ -341,8 +366,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # The change route's door (SAI2-P2): approver and up reach it, and each op's role is checked there.
         "may_act": True,
         "asker_role": "owner",
-        **({k: v for k, v in retried.items() if k != "model"} if retried else {}),
-        **({k: v for k, v in pressed.items() if k not in ("model", "message")} if pressed else {}),
+        **following["state"],
+        **({k: v for k, v in retried.items() if k not in ("model", "message")} if retried else {}),
+        **((pressed or {}).get("state") or {}),
     }
 
     return run_id, engine.run(
@@ -794,7 +820,10 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
         retried = await try_stronger.panel_retry(request.retry_of, _session_id(request.client_session_id, panel=True))
         if isinstance(retried, str):
             return _one({"type": "orchestration_error", "error": retried})
-        request = request.model_copy(update={"model": retried["model"]})
+        # The failed turn's own message, never the last words on screen ("Continue with …" after a declined offer: the
+        # review's 2).
+        request = request.model_copy(update={"model": retried["model"],
+                                             "message": retried.get("message") or request.message})
     pressed = None
     if request.effort_of and not request.retry_of:
         # The effort offer's press (F1153): checked as that chat's latest turn, the ask is the build's message, and
@@ -804,7 +833,8 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
         pressed = await effort.effort_press(request.effort_of, _session_id(request.client_session_id, panel=True))
         if isinstance(pressed, str):
             return _one({"type": "orchestration_error", "error": pressed})
-        request = request.model_copy(update={"model": pressed["model"], "message": pressed["message"]})
+        request = request.model_copy(update={"model": pressed["model"], "message": pressed["message"],
+                                             "images": request.images or pressed["images"]})
     prepared = await prepare_builder_run(
         request, http_request.app.state.server_module, panel=True, retried=retried, pressed=pressed)
     if prepared is None:
@@ -832,11 +862,13 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
         response, removed = door.check_answer(request.response, question=await _pending_question(request.run_id))
     except door.Refused as exc:
         return _one(door.notice(exc.reason, door.NOT_KEPT, final=False))
+    # A build that fails after its answer (making its tools, saving) ends as any turn does: said plainly, then
+    # F1018's offer (the review's 5).
     _task, queue = spawn_engine_run(
-        OrchestrationEngine.resume(
+        try_stronger_after(OrchestrationEngine.resume(
             request.run_id, response,
             http_request.app.state.server_module, request.images,
-        ),
+        ), request.run_id, retried=False),
         request.run_id,
     )
     masked = door.notice("masked", door.kept_answer(response), final=False) if removed else None
@@ -863,16 +895,11 @@ async def try_stronger_after(agen, run_id: str, *, retried: bool):
     state. A turn tried again is not offered again."""
     async for event in agen:
         yield event
-    from core.native_builder.effort import failure_notice
+    from core import try_stronger
 
     # A build that failed is said plainly first, on whichever model it ran (F1153); then F1018's one offer.
-    if (said := await failure_notice(run_id)) is not None:
-        yield said
-    if not retried:
-        from core import try_stronger
-
-        if (offered := await try_stronger.panel_offer(run_id)) is not None:
-            yield offered
+    for event in await try_stronger.end_events(run_id, retried=retried):
+        yield event
 
 
 async def _after(first: dict | None, events):

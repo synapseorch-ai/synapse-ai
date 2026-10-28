@@ -12,6 +12,7 @@
         "effort": {"type": "dict", "default": {}, "description": "A build's effort check: the entry it goes to, or the offer of a stronger model that ends the turn, with the ask, the model and why (effort_check, F1153)"},
         "effort_accepted": {"type": "str", "default": "", "description": "The turn whose effort offer this build was pressed from: it runs on the stronger model (F1153)"},
         "effort_declined": {"type": "str", "default": "", "description": "The turn whose effort offer this build went on past, on the usual model: not asked again (F1153)"},
+        "effort_pressed": {"type": "bool", "default": false, "description": "This turn is the effort offer's press: it goes to the build route unclassified (F1153)"},
         "answer_pack": {"type": "dict", "default": {}, "description": "What the answer needs to know, built in code from request.needs: the workspace, who asks, the help, what their role may ask for (answer_pack, SAI2-P4)"},
         "workspace_name": {"type": "str", "default": "", "description": "The workspace's name, written by the host; empty when it has none"},
         "asker_name": {"type": "str", "default": "", "description": "The asking person's name, written by the host; empty when it has none"},
@@ -138,7 +139,8 @@
             "switch_cases": {
                 "said": "step_turn_said",
                 "change": "step_may_change",
-                "classify": "step_classify"
+                "classify": "step_classify",
+                "build": "step_may_change"
             },
             "switch_default_step_id": "step_classify",
             "max_iterations": 3,

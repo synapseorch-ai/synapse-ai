@@ -214,10 +214,14 @@ async def _failed_run(run_id="builder_run_failed", *, status="failed", step="ste
 
 async def test_a_failed_panel_turn_is_tried_again_on_the_stronger_model():
     await _failed_run()
-    made = await try_stronger.panel_retry("builder_run_failed", SESSION)
-    assert made == {"model": "synapse.claude-sonnet", "retried_from": "builder_run_failed",
-                    "retried_on": "synapse.claude-sonnet"}
     assert (await try_stronger.panel_offer("builder_run_failed"))["model"] == "synapse.claude-sonnet"
+    made = await try_stronger.panel_retry("builder_run_failed", SESSION)
+    # With the failed turn's own message (F1153's review, 2): the run has none here, so empty.
+    assert made == {"model": "synapse.claude-sonnet", "retried_from": "builder_run_failed",
+                    "retried_on": "synapse.claude-sonnet", "message": ""}
+    # Pressed once: its offer is gone, and a second press is refused (the review's 6).
+    assert await try_stronger.panel_offer("builder_run_failed") is None
+    assert await try_stronger.panel_retry("builder_run_failed", SESSION) == try_stronger.TRIED
 
 
 @pytest.mark.parametrize("why, kwargs", [
