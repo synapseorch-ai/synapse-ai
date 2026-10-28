@@ -5,7 +5,7 @@ export {
 export { BrowserPane } from './BrowserPane';
 export { BrowserTurnCard } from './BrowserTurnCard';
 export { RecordingEditor, type EditorFrame } from './RecordingEditor';
-export { RecordingsLibrary } from './RecordingsLibrary';
+export { RecordTask, RecordingsLibrary } from './RecordingsLibrary';
 export {
   changeRecording,
   deleteRecording,
@@ -61,6 +61,7 @@ export {
   type BrowserInput,
   type BrowserSessionEvent,
   type HandedBack,
+  type ResumedTurn,
   type SessionLevel,
   type SkippedSession,
   type PageDialog,

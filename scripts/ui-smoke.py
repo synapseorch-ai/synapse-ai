@@ -155,6 +155,18 @@ def drop_fixture(oid: str) -> None:
         pass
 
 
+def drop_fixtures(oids=(), agent_ids=()) -> None:
+    """A check's workflows and agents, removed: after it, and when its setup fails partway, so a broken run leaves
+    nothing behind for the next run to find."""
+    for oid in oids:
+        drop_fixture(oid)
+    for aid in agent_ids:
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+
+
 #: Roles a person types into or picks from — the controls a field's label names.
 FIELD_ROLES = {"textbox", "combobox", "spinbutton", "searchbox"}
 
@@ -12743,11 +12755,14 @@ async def check_brwagent(browser) -> str:
         if not await section.count():
             raise AssertionError("a Browser agent has no Browser section")
         await section.get_by_role("radio", name="Works with you").click()
-        # The rule as Naveen set it on 10-28: it presses Submit or Send only on the person's own words, and every
-        # payment is the person's; nothing is "held and handed" but a payment.
-        hint = await section.inner_text()
-        if "only when you" not in hint or "every payment" not in hint:
-            bad.append("the Works with you hint does not say it presses only on your words, and every payment is yours")
+        # Only what the code holds (Naveen 10-29): the person's own fields and payments, and a form waits for their OK
+        # unless they asked for it; no promise about every send (a page's own script is not held).
+        hint = (await section.inner_text()).replace("’", "'")
+        if "Passwords, card details, codes and payments are always yours" not in hint \
+                or "A form it submits waits for your OK unless you asked for it" not in hint:
+            bad.append("the Works with you hint is not Naveen's 10-29 words")
+        if "only when you've asked" in hint:
+            bad.append("the Works with you hint still promises Submit or Send only when asked")
         if "held and handed to you" in hint:
             bad.append("the Works with you hint still says a send is held and handed to you")
         said = NO_LOGIN_WORDS.findall(hint)
@@ -13462,8 +13477,12 @@ async def check_brwsessionsreal(browser) -> str:
     aid, oid = f"agent_uismoke_brwreal_{stamp}", f"orch_uismoke_brwreal_{stamp}"
     agent = {**_agent(aid, f"Browser real {stamp % 1_000_000}"), "type": "browser",
              "browser": {"mode": "read_only", "sites": [], "sessions": [mine], "action_budget": 40}}
-    api("/api/agents", "POST", agent)
-    api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+    try:
+        api("/api/agents", "POST", agent)
+        api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+    except Exception:
+        drop_fixtures([oid], [aid])
+        raise
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
@@ -13723,11 +13742,15 @@ async def check_brwrunpicks(browser) -> str:
     Sessions library."""
     stamp = int(time.time())
     aid, oid, plain = f"agent_uismoke_brwrun_{stamp}", f"orch_uismoke_brwrun_{stamp}", f"orch_uismoke_brwplain_{stamp}"
-    api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser",
-                                "browser": {"mode": "read_only", "sites": ["portal.saltmarsh.example"], "sessions": [],
-                                            "action_budget": 40}})
-    api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
-    api("/api/orchestrations", "POST", print_orchestration(plain, "ui-smoke no browser"))
+    try:
+        api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser",
+                                    "browser": {"mode": "read_only", "sites": ["portal.saltmarsh.example"],
+                                                "sessions": [], "action_budget": 40}})
+        api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+        api("/api/orchestrations", "POST", print_orchestration(plain, "ui-smoke no browser"))
+    except Exception:
+        drop_fixtures([oid, plain], [aid])
+        raise
     salt, carrier = "ss_" + "n" * 24, "ss_" + "p" * 24
     listed = {"sessions": [_site_session(salt, "saltmarsh.example"), _site_session(carrier, "carrier.example")]}
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
@@ -14007,7 +14030,10 @@ async def check_brwrecordingedit(browser) -> str:
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), one)
     await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), lambda r: r.fulfill(status=200, json=versions))
+    # Cloud shows a step's picture only to its maker and Builders (Naveen via BRW3, 10-29): one answered 403 here.
     await ctx.route(re.compile(rf".*/api/recordings/{rid}/shots/[^/?]+$"), lambda r: r.fulfill(
+        status=403, json={"detail": "Pictures are for the recording's maker and Builders."})
+        if r.request.url.endswith("/r-s5") else r.fulfill(
         status=200, body=base64.b64decode(BRW_JPEG), headers={"Content-Type": "image/jpeg"}))
     await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json={"recordings": []}))
     page = await ctx.new_page()
@@ -14025,8 +14051,11 @@ async def check_brwrecordingedit(browser) -> str:
         items = steps.get_by_role("listitem")
         if await items.count() != 5:
             bad.append(f"the page lists {await items.count()} steps, not 5")
-        if await steps.get_by_role("img").count() != 4:
-            bad.append(f"{await steps.get_by_role('img').count()} steps have a picture, not the 4 kept")
+        await asyncio.sleep(1.0)
+        if await steps.get_by_role("img").count() != 3:
+            bad.append(f"{await steps.get_by_role('img').count()} steps show a picture, not the 3 this person may see")
+        if "Read Orders" not in await items.nth(4).inner_text():
+            bad.append("a step whose picture is refused does not still read as its line")
         signin = items.nth(2)
         if "You sign in here" not in await signin.inner_text():
             bad.append("the person's sign-in step does not read 'You sign in here'")
@@ -14348,6 +14377,153 @@ async def check_answertaken(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("a refused approval stays answerable and says nothing was allowed; a held-back card number leaves no "
             "bubble; taken answers are drawn")
+
+
+def _brwstep_fixture(oid: str, fixer: str, fixer_name: str, plain_agent: str, stamp: int) -> None:
+    """brwstep's agents and workflow: a Browser agent, a plain one, and a step saved as a plain agent step."""
+    api("/api/agents", "POST", {**_agent(fixer, fixer_name), "type": "browser"})
+    api("/api/agents", "POST", _agent(plain_agent, f"Writer {stamp % 1_000_000}"))
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "ui-smoke browser step", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_find",
+        # Saved as a plain agent step and turned into Browser in the panel: the save refuses a Browser step with
+        # no recording, which is what the canvas must then say.
+        "steps": [{"id": f"{oid}_find", "name": "Find the order", "type": "agent",
+                   "next_step_id": f"{oid}_end", "output_key": "order", "position_x": 80, "position_y": 160},
+                  {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None,
+                   "position_x": 500, "position_y": 160}]})
+
+
+@check
+async def check_brwstep(browser) -> str:
+    """The Browser workflow step (BRW2, F1146; Naveen 10-29: a separate step, every run unattended, a recording made
+    from a step is its workflow's). Browser is in the step picker. Its panel picks a recording, and the recording's
+    inputs become fields filled from the run; each click or press step has "May send on its own", off by default;
+    "If a page changed" pauses for the person, or lets a Browser agent (only those are offered) find the way. Save
+    sends recording_id, recording_inputs, may_send_steps, on_miss and agent_id. "Record a new one" opens the person's
+    record browser with the step's sessions and keeps it as this workflow's."""
+    import base64
+    stamp = int(time.time())
+    rid, new_rid = "rec_" + "k" * 24, "rec_" + "m" * 24
+    fixer, plain_agent = f"agent_uismoke_brwfix_{stamp}", f"agent_uismoke_brwplainag_{stamp}"
+    oid = f"orch_uismoke_brwstep_{stamp}"
+    fixer_name = f"Order fixer {stamp % 1_000_000}"
+
+    try:
+        _brwstep_fixture(oid, fixer, fixer_name, plain_agent, stamp)
+    except Exception:
+        drop_fixtures([oid], [fixer, plain_agent])
+        raise
+    doc = _recording(rid, inputs=[{"name": "order_number", "label": "Order number", "step_id": "s2"}],
+                     steps=[{**s, "value": {"input": "order_number"}, "line": "Type {order_number} into Order number"}
+                            if s["id"] == "s2" else s for s in _rec_steps()])
+    rows = {"recordings": [{"id": rid, "name": "Find an order", "sites": ["saltmarsh.example"], "version": 2,
+                            "created_at": time.time() - 86_400, "updated_at": time.time() - 3_600, "steps": 5,
+                            "pending_edits": 0}]}
+    calls: list[tuple[str, dict]] = []
+
+    async def new(route):
+        calls.append(("new", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": "rec_" + "t" * 24, "browser_session_id": "bsStep"})
+
+    async def stop(route):
+        calls.append(("stop", json.loads(route.request.post_data or "{}")))
+        await route.fulfill(status=200, json={"recording_id": new_rid, "steps": 3})
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json=rows))
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), lambda r: r.fulfill(status=200, json=doc))
+    await ctx.route(re.compile(rf".*/api/recordings/{new_rid}$"), lambda r: r.fulfill(status=200, json=_recording(new_rid, name="Recorded here")))
+    await ctx.route(re.compile(r".*/api/recordings/new$"), new)
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []}))
+    await ctx.route(re.compile(r".*/api/browser/bsStep/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=_rec_frame({"steps": 1})))
+    await ctx.route(re.compile(r".*/api/browser/bsStep/record/stop$"), stop)
+    page = await ctx.new_page()
+    seen: list[dict] = []
+    page.on("request", lambda r: seen.append({"url": r.url, "body": r.post_data})
+            if r.method == "POST" and urllib.parse.urlsplit(r.url).path == "/api/orchestrations" else None)
+    panel = page.locator('aside[aria-label="Step configuration"]')
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        node = page.locator(f'.react-flow__node[data-id="{oid}_find"]')
+        await node.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await node.focus()
+        await page.keyboard.press("Enter")
+        await panel.wait_for(timeout=10_000)
+        await panel.get_by_role("combobox", name="Step type").click()
+        offer = page.get_by_role("option", name="Browser", exact=True)
+        if not await offer.count():
+            raise AssertionError("the step picker does not offer Browser")
+        await offer.click()
+        # A saved step carries the server's defaults (merge_strategy, loop_count), so the type change asks first.
+        await page.get_by_role("button", name="Change type").click()
+        await asyncio.sleep(0.5)
+        if "No recording selected" not in await node.inner_text():
+            bad.append("a Browser step with no recording does not say so on the canvas")
+
+        await panel.get_by_role("combobox", name="Recording").click()
+        await page.get_by_role("option", name="Find an order").click()
+        field = panel.get_by_role("textbox", name="Order number")
+        try:
+            await field.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("the recording's input is not a field to fill from the run")
+        await field.fill("{state.order}")
+        sends = panel.get_by_role("group", name="Sends")
+        toggles = sends.get_by_role("checkbox")
+        names = [await t.get_attribute("aria-label") for t in await toggles.all()]
+        if names != ["May send on its own: Click Search"]:
+            bad.append(f"the sends offered are {names}, not the one click")
+        elif await toggles.first.is_checked():
+            bad.append("a send is allowed on its own by default")
+        await toggles.first.check()
+
+        changed = panel.get_by_role("radiogroup", name="If a page changed")
+        if not await changed.get_by_role("radio", name="Pause for you").is_checked():
+            bad.append("a changed page does not pause for the person by default")
+        await changed.get_by_role("radio", name="Let a Browser agent find the way").click()
+        await panel.get_by_role("combobox", name="Agent that finds the way").click()
+        offered = [(await o.inner_text()).strip() for o in await page.get_by_role("option").all()]
+        if any("Writer" in o for o in offered) or not any("Order fixer" in o for o in offered):
+            bad.append(f"the agents offered to find the way are {offered}, not only Browser agents")
+        await page.get_by_role("option", name=fixer_name, exact=True).click()
+
+        seen.clear()
+        await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
+        await asyncio.sleep(1.5)
+        saved = [json.loads(r["body"] or "{}") for r in seen]
+        step = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}.get(f"{oid}_find", {})
+        want = {"recording_id": rid, "recording_inputs": {"order_number": "{state.order}"},
+                "may_send_steps": ["s4"], "on_miss": "agent", "agent_id": fixer}
+        got = {k: step.get(k) for k in want}
+        if got != want:
+            bad.append(f"Save sent {got}, not {want}")
+
+        # Record a new one: the person's record browser, kept as this workflow's.
+        await panel.get_by_role("button", name="Record a new one").click()
+        ask = page.get_by_role("dialog", name="Record a task")
+        await ask.get_by_label("Start at").fill("portal.saltmarsh.example/orders")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        await pane.wait_for(timeout=8_000)
+        await pane.get_by_role("button", name="Stop and keep").click()
+        await asyncio.sleep(1.0)
+        stops = [b for k, b in calls if k == "stop"]
+        if not stops or stops[-1].get("workflow_id") != oid or stops[-1].get("keep") is not True:
+            bad.append(f"Record a new one stopped with {stops[-1:]}, not as this workflow's")
+        if not await panel.get_by_role("combobox", name="Recording").filter(has_text="Recorded here").count():
+            bad.append("the new recording is not the step's")
+    finally:
+        await ctx.close()
+        drop_fixtures([oid], [fixer, plain_agent])
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Browser is a step: it picks a recording and fills its inputs from the run, a click may send on its own only "
+            "when switched on, a changed page pauses or lets a Browser agent find the way, and Record a new one keeps it "
+            "as the workflow's")
 
 
 async def main() -> int:

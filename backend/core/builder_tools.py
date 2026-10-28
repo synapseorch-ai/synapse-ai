@@ -1019,7 +1019,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "name": {"type": "string", "description": "Human-readable step name"},
                     "type": {
                         "type": "string",
-                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow"],
+                        "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow", "browser"],
                         "description": "Step type",
                     },
                     "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps)"},
@@ -1175,7 +1175,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "name": {"type": "string", "description": "Step name"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow"],
+                                    "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow", "browser"],
                                 },
                                 "agent_id": {"type": "string"},
                                 "prompt_template": {"type": "string"},

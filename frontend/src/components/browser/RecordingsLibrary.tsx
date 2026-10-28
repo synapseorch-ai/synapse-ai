@@ -99,17 +99,23 @@ function changed(at: number | null): string {
 
 /**
  * "Record a task": the sessions it starts with and where it starts, then a browser for the person alone. Stop and
- * keep makes the recording and opens it; Discard drops it.
+ * keep makes the recording; Discard drops it. From a workflow's Browser step (F1146) it starts with the step's
+ * sessions, and a kept one is that workflow's, deleted with it unless something else uses it.
  */
-function RecordTask({ host, sessionsHost, browserHost, onKept }: {
+export function RecordTask({ host, sessionsHost, browserHost, onKept, label = 'Record a task', initialSessions,
+                             workflowId }: {
   host: RecordingsHost;
   sessionsHost: SessionsHost;
   browserHost: BrowserHost;
   onKept: (id: string) => void;
+  label?: string;
+  initialSessions?: string[];
+  /** The workflow the recording becomes part of; a workflow never saved has none, and its recording is the library's. */
+  workflowId?: string;
 }) {
   const [asking, setAsking] = useState(false);
   const [sessions, setSessions] = useState<SiteSession[] | null>(null);
-  const [picked, setPicked] = useState<string[]>([]);
+  const [picked, setPicked] = useState<string[]>(initialSessions ?? []);
   const [start, setStart] = useState('');
   const [opening, setOpening] = useState(false);
   const [refused, setRefused] = useState<string | null>(null);
@@ -138,7 +144,7 @@ function RecordTask({ host, sessionsHost, browserHost, onKept }: {
   const stop = async (keep: boolean) => {
     if (!open) return;
     setStopping(true);
-    const done = await stopRecording(host, open.browserSessionId, { keep });
+    const done = await stopRecording(host, open.browserSessionId, { keep, ...(keep && workflowId ? { workflow_id: workflowId } : {}) });
     setStopping(false);
     if ('refused' in done) { setStopFailed(done.refused); return; }
     setOpen(null);
@@ -147,7 +153,7 @@ function RecordTask({ host, sessionsHost, browserHost, onKept }: {
 
   return (
     <>
-      <Button size="sm" onClick={() => { setAsking(true); setRefused(null); }}>Record a task</Button>
+      <Button size="sm" onClick={() => { setAsking(true); setRefused(null); }}>{label}</Button>
       <Modal
         open={asking}
         onClose={() => setAsking(false)}

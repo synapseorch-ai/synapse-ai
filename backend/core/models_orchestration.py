@@ -2,7 +2,7 @@
 Pydantic models for the multi-agent orchestration system.
 Defines orchestrations (workflow graphs), steps (nodes), and run state.
 """
-from typing import Any
+from typing import Any, Literal
 from enum import Enum
 from pydantic import BaseModel, PrivateAttr, field_validator, model_validator
 
@@ -30,6 +30,8 @@ class StepType(str, Enum):
     INGEST = "ingest"
     # E3 (F770, SAI2-P1): run another workflow by its id, as a nested run of this step.
     WORKFLOW = "workflow"
+    # BRW1 F1146: replay a recording by code in the run's browser.
+    BROWSER = "browser"
 
 
 class StepConfig(BaseModel):
@@ -202,6 +204,20 @@ class StepConfig(BaseModel):
     #: Kept sessions this step's Browser agent starts with (F1140), nearest of the levels: the step's win over the
     #: run's, the chat's and the agent's on a site. Ids from the Sessions library; None = none picked here.
     browser_sessions: list[str] | None = None
+    #: Recordings this step's Browser agent may run (F1145), beside its own picks; the Browser step's fixer gets its
+    #: recording this way.
+    browser_recordings: list[str] | None = None
+
+    # BROWSER (F1146; DESIGN §v5.4): a recording replayed by code, no model unless a page changed.
+    recording_id: str | None = None
+    #: Its inputs by name, each a template over the run's state ("{state.order}").
+    recording_inputs: dict[str, str] = {}
+    #: Its steps (ids) that may send on their own: a workflow run is never watched, so any other recorded send
+    #: is the person's turn (Naveen 2026-10-29).
+    may_send_steps: list[str] = []
+    #: A step the page no longer matches: "agent" (the step's `agent_id`, a Browser agent, finds the way and its
+    #: path is kept as an edit to approve) or "pause" (the person's turn; what they do is kept the same way).
+    on_miss: Literal["agent", "pause"] = "pause"
 
     # Response cache (skipped for AGENT steps — state-dependent behaviour)
     cache_responses_enabled: bool = False

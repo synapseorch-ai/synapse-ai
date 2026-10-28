@@ -854,8 +854,8 @@ async def test_replay_keeps_sends_the_persons_where_they_must_be(replay_site, co
     send[1]["may_send"] = True
     elsewhere = await _replay(http, control, sid, send, unattended=True)
     await asyncio.sleep(1.5)  # longer than the per-host pace a send may wait out
-    assert elsewhere.get("outputs") == {} and posts == [], ("allowed to send, but not to an address the recording "
-                                                            f"never sent to: {elsewhere}")
+    assert elsewhere.get("handover", {}).get("kind") == "send" and elsewhere["at"] == 2 and posts == [], (
+        f"allowed to send, but not to an address the recording never sent to: kept back, the person's turn {elsewhere}")
     send[1]["sends"] = ["POST localhost"]
     recorded = await _replay(http, control, sid, send, unattended=True)
     await asyncio.sleep(0.5)

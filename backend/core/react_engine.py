@@ -3734,6 +3734,9 @@ async def run_agent_step(
                             active_agent.get("browser") or {},
                             chat_id=session_id if (not _workflow_step and _visitor is None) else None,
                             run=(browser_picks or {}).get("run"), step=(browser_picks or {}).get("step"))
+                        if (browser_picks or {}).get("recordings"):  # the step's own, beside the agent's (F1146)
+                            _browser_settings["recordings"] = list(dict.fromkeys(
+                                [*(_browser_settings.get("recordings") or []), *browser_picks["recordings"]]))
                     _settings_token = (_browser_client.settings.set(_browser_settings or {})
                                        if _browser_owner else None)
                     _words_token = _browser_client.own_words.set(_persons_words) if _browser_owner else None

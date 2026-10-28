@@ -464,6 +464,45 @@ class BrowserTools:
             await self.hosts.park(key)
         return handover
 
+    async def park_turn(self, key: str, handover: dict, **where) -> None:
+        """Park a turn that no agent call ended on (a Browser step's, F1146), as `take_handover` parks one."""
+        self._handovers[key] = handover
+        await self.take_handover(key, **where)
+
+    # ── the Browser step's replay (F1146) ────────────────────────────────────
+    async def replay_for_step(self, key: str, doc: dict, steps: list[dict], inputs: dict, *,
+                              carry_on: bool = False) -> dict:
+        """A Browser step's recording, replayed in the run's browser (opened with `settings`): never watched, so
+        only the steps allowed to send on their own send (Naveen 2026-10-29). Its answer, with `session_id`."""
+        host, sid = await self._session_for(key)
+        if carry_on:
+            status, body = await _replay_polled(host, sid, "/replay/continue", {"session_id": sid})
+        else:
+            status, body = await _replay_polled(host, sid, "/replay", {
+                "session_id": sid, "steps": steps, "inputs": inputs, "recording_id": doc["id"], "unattended": True})
+        if status >= 400:
+            body = {"refused": body.get("error") or "The recording could not run."}
+        return {**body, "session_id": sid}
+
+    async def latest_replay(self, key: str) -> dict | None:
+        """The run's browser's last replay, as it ended (after an agent carried it on in its own calls)."""
+        record = await self.store.get_owner(key)
+        host = await self.hosts.host_for(key, opening=False) if record and record.get("sid") else None
+        if host is None:
+            return None
+        status, body = await host.call("GET", "/replay/status", params={"session_id": record["sid"]}, timeout=30)
+        return {**body, "session_id": record["sid"]} if status == 200 and not body.get("running") else None
+
+    async def hand_to_person(self, key: str, reason: str) -> dict:
+        """The person's turn in the run's browser, a missed step to find (on_miss "pause"): what they do is kept as
+        that step's fix when the replay carries on."""
+        host, sid = await self._session_for(key)
+        status, body = await host.call("POST", "/tool", json={"session_id": sid, "name": gate.HAND_OVER,
+                                                              "args": {"reason": reason}, "press": None})
+        if status != 200 or not body.get("handover"):
+            raise RuntimeError(body.get("refused") or body.get("error") or "the person could not be given the browser")
+        return body["handover"]
+
     async def take_parked(self, key: str | None) -> dict | None:
         """The parked turn the person just answered, once."""
         record = await self.store.get_owner(key) if key else None

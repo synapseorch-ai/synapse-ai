@@ -26,7 +26,9 @@ import { EstimateLine, useRunEstimate } from '../orchestration/estimate';
 import { RunCapFields } from '../orchestration/RunCapFields';
 import { loadRunEstimate } from '@/lib/estimate';
 import { StepConfigPanel } from '../orchestration/StepConfigPanel';
-import { listSessions, type SiteSession } from '@/components/browser';
+import { getRecording, listRecordings, listSessions, RecordTask, type RecordingSummary, type SiteSession } from '@/components/browser';
+import { OSS_BROWSER_HOST } from '@/lib/browserHost';
+import { OSS_RECORDINGS_HOST } from '@/lib/recordingsHost';
 import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import { StateSchemaEditor } from '../orchestration/StateSchemaEditor';
 import {
@@ -1222,11 +1224,33 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
     };
 
     // A step on a Browser agent: the run and that step pick sessions (F1140). Read the library once one is there.
-    const usesBrowser = !!draft?.steps.some(s => s.type === 'agent' && agents.find(a => a.id === s.agent_id)?.type === 'browser');
+    // A Browser agent's step, or a Browser step (F1146): both pick sessions; a Browser step picks a recording too.
+    const browserSteps = !!draft?.steps.some(s => s.type === 'browser');
+    const usesBrowser = browserSteps || !!draft?.steps.some(s => s.type === 'agent' && agents.find(a => a.id === s.agent_id)?.type === 'browser');
     useEffect(() => {
         if (!usesBrowser || siteSessions !== null) return;
         listSessions(OSS_SESSIONS_HOST).then(setSiteSessions).catch(() => setSiteSessions([]));
     }, [usesBrowser, siteSessions]);
+    const [recordingList, setRecordingList] = useState<RecordingSummary[] | null>(null);
+    useEffect(() => {
+        if (!browserSteps || recordingList !== null) return;
+        let live = true;
+        listRecordings(OSS_RECORDINGS_HOST).then(rows => { if (live) setRecordingList(rows); }, () => { if (live) setRecordingList([]); });
+        return () => { live = false; };
+    }, [browserSteps, recordingList]);
+    // A recording made from a Browser step is this workflow's once it is saved (BRW1); before that it is the library's.
+    const savedId = draft && orchestrations.some(o => o.id === draft.id) ? draft.id : undefined;
+    const browserRecordings = useMemo(() => ({
+        list: recordingList,
+        get: (id: string) => getRecording(OSS_RECORDINGS_HOST, id),
+        libraryHref: OSS_RECORDINGS_HOST.libraryHref,
+        recordingHref: OSS_RECORDINGS_HOST.recordingHref,
+        record: ({ sessions, onKept }: { sessions: string[]; onKept: (id: string) => void }) => (
+            <RecordTask host={OSS_RECORDINGS_HOST} sessionsHost={OSS_SESSIONS_HOST} browserHost={OSS_BROWSER_HOST}
+                        label="Record a new one" initialSessions={sessions} workflowId={savedId}
+                        onKept={(id) => { setRecordingList(null); onKept(id); }} />
+        ),
+    }), [recordingList, savedId]);
 
     // --- Run orchestration ---
     const startRun = () => {
@@ -2059,6 +2083,7 @@ export function OrchestrationTab({ initialRunId, initialOrchId, newRequest, open
                                     knowledgeBases={knowledgeBases}
                                     workflows={workflowOptions}
                                     browserSessions={usesBrowser ? { sessions: siteSessions, libraryHref: OSS_SESSIONS_HOST.libraryHref } : undefined}
+                                    browserRecordings={browserSteps ? browserRecordings : undefined}
                                     semanticCacheNote={semanticCacheNote}
                                     lead={step.id === waitingStep ? approval(true) : undefined}
                                 />

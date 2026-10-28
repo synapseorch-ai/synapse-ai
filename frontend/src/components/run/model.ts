@@ -225,6 +225,8 @@ const ROLE: Record<StepType, StepRole> = {
     transform: 'logic', extract_json: 'logic', print: 'logic', end: 'logic', ingest: 'logic',
     // A Workflow step calls no model itself: its child's steps show their own roles (E3).
     workflow: 'logic',
+    // A Browser step replays a recording by code (F1146); only a changed page may call a Browser agent.
+    browser: 'logic',
 };
 
 export function roleOf(type: string | undefined | null): StepRole {

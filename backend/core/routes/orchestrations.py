@@ -490,6 +490,16 @@ async def _refuse_step_picks(orch: dict, existing: dict | None) -> None:
         if step.get("browser_sessions"):
             await one_per_site(step["browser_sessions"])
             await usable_new(step["browser_sessions"], before=had.get(step.get("id")))
+    # A Browser step's recording, and recordings picked for a step's agent, exist (F1146).
+    from core.browser import recordings as _recordings
+    named = {r for s in orch.get("steps") or [] for r in [s.get("recording_id") if s.get("type") == "browser" else None,
+                                                          *(s.get("browser_recordings") or [])] if r}
+    if named:
+        before = {r for s in (existing or {}).get("steps") or []
+                  for r in [s.get("recording_id"), *(s.get("browser_recordings") or [])] if r}
+        gone = named - before - {d["id"] for d in await _recordings.picked(sorted(named))}
+        if gone:
+            raise HTTPException(status_code=422, detail=f"No such recording: {', '.join(sorted(gone))}.")
 
 
 async def _refuse_to_save(orch: dict, extra_agents: dict | None = None) -> None:
@@ -530,6 +540,8 @@ async def delete_orchestration(orch_id: str):
     if runners:
         raise HTTPException(status_code=409, detail=refusal(orch.get("name") or orch_id, runners))
     await _delete(orch_id)
+    from core.browser import recordings as _recordings
+    await _recordings.delete_owned(orch_id)  # the recordings made from its Browser steps (F1146)
     return {"status": "success"}
 
 

@@ -1,6 +1,6 @@
 import type { Node, Edge } from '@xyflow/react';
 
-export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end' | 'retrieve' | 'ingest' | 'workflow';
+export type StepType = 'agent' | 'llm' | 'tool' | 'evaluator' | 'parallel' | 'merge' | 'loop' | 'human' | 'transform' | 'extract_json' | 'if_else' | 'switch' | 'print' | 'end' | 'retrieve' | 'ingest' | 'workflow' | 'browser';
 
 /** Knowledge's two steps (R1). Offered only while Knowledge is on: a shell that does not say so hides them. */
 export const KNOWLEDGE_STEP_TYPES: readonly StepType[] = ['retrieve', 'ingest'];
@@ -40,6 +40,18 @@ export interface StepConfig {
     prompt_template?: string;
     /** A Browser agent's step: the sessions it starts signed in with, one per site; nearest wins (F1140, DESIGN v5.3). */
     browser_sessions?: string[];
+    /** A Browser agent step's recordings, beside its agent's own picks (F1146). */
+    browser_recordings?: string[] | null;
+
+    // BROWSER (F1146; BRW1's engine) — a recording replayed by code in the run's browser. `agent_id` is the Browser
+    // agent that finds the way when a page has changed (`on_miss: 'agent'`); `browser_sessions` and `output_key` as above.
+    recording_id?: string | null;
+    /** Each of the recording's inputs, filled from the run: input name → a template such as "{state.order}". */
+    recording_inputs?: Record<string, string>;
+    /** The recording's click/press steps whose send may go on its own; none by default. */
+    may_send_steps?: string[];
+    /** A changed page: pause for the person (the default), or let a Browser agent find the way. */
+    on_miss?: 'agent' | 'pause';
 
     // EVALUATOR — outgoing routes as tools for the agent to call
     route_map?: Record<string, string | null>;
@@ -278,4 +290,5 @@ export const STEP_TYPE_META: Record<StepType, {
     retrieve:     { label: 'Retrieve',     color: '#0ea5e9', icon: 'BookOpenText',  category: 'Data',  blurb: 'Search knowledge bases' },
     ingest:       { label: 'Ingest',       color: '#d946ef', icon: 'FileInput',     category: 'Data',  blurb: 'Add records to a knowledge base' },
     workflow:     { label: 'Workflow',     color: '#0d9488', icon: 'Workflow',      category: 'Core',  blurb: 'Run another workflow, then carry on' },
+    browser:      { label: 'Browser',      color: '#0284c7', icon: 'Globe',         category: 'Core',  blurb: 'Repeat a recorded task in a browser' },
 };

@@ -190,6 +190,7 @@ class RecordStop(BaseModel):
     name: str = ""
     recording_id: str | None = None
     from_step: str | None = None
+    workflow_id: str | None = None  # recorded from this workflow's Browser step: it goes with the workflow
 
 
 @router.post("/api/browser/{session_id}/record/stop")
@@ -206,7 +207,8 @@ async def record_stop(session_id: str, body: RecordStop):
     out: dict = {}
     if body.keep:
         out = await recordings.from_stop(result, by=_person(), recording_id=ident if kind == "record" else
-                                         body.recording_id, from_step=body.from_step, name=body.name)
+                                         body.recording_id, from_step=body.from_step, name=body.name,
+                                         owner_workflow=body.workflow_id)
     if kind == "record":
         await browser_client.tools.close_owner(owner)
     return out

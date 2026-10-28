@@ -9,8 +9,8 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
-import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
-import { SessionPicker, onSite } from '@/components/browser';
+import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Segmented, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
+import { SessionPicker, onSite, stepWords, type Recording } from '@/components/browser';
 import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
 import type { IngestSettings, RetrieveSettings, StepConfig, StepType } from '@/types/orchestration';
@@ -1521,6 +1521,138 @@ function EndSection() {
     return <p className="text-xs text-text-faint">This step ends the workflow. No configuration needed.</p>;
 }
 
+/**
+ * A Browser step (F1146; Naveen 10-29: its own step, every run unattended): a recording replayed by code in the run's
+ * browser. Its inputs are filled from the run; a click or press may send on its own only when switched on; a page that
+ * changed pauses the run for the person, or lets a Browser agent find the way, the fix waiting for approval.
+ */
+function BrowserStepSection({ step, update, agents, browserRecordings, browserSessions }: StepSectionProps) {
+    const id = step.recording_id ?? '';
+    // The recording picked, read for its inputs and steps; set when the read answers.
+    const [doc, setDoc] = useState<Recording | null>(null);
+    useEffect(() => {
+        if (!id || !browserRecordings) return;
+        let live = true;
+        browserRecordings.get(id).then((d) => { if (live) setDoc(d); }, () => { if (live) setDoc(null); });
+        return () => { live = false; };
+    }, [id, browserRecordings]);
+    const shown = doc && doc.id === id ? doc : null;
+    const list = browserRecordings?.list ?? [];
+    const options = [
+        ...list.map((r) => ({ value: r.id, label: r.name })),
+        ...(shown && !list.some((r) => r.id === shown.id) ? [{ value: shown.id, label: shown.name }] : []),
+    ];
+    const inputs = [...new Set((shown?.steps ?? []).flatMap((s) => (s.value && 'input' in s.value ? [s.value.input] : [])))];
+    const labelOf = (name: string) => shown?.inputs.find((i) => i.name === name)?.label || name;
+    const sends = (shown?.steps ?? []).filter((s) => s.action === 'click' || s.action === 'press');
+    const allowed = step.may_send_steps ?? [];
+    const fixers = (agents as KindAgent[]).filter((a) => a.type === 'browser');
+    const onMiss = step.on_miss ?? 'pause';
+    return (
+        <div className="space-y-4">
+            <Note>
+                <strong>Repeat a recorded task</strong>{' '}— its steps are done by code in the run&apos;s own browser, with
+                nobody watching. A step that&apos;s yours to do, a send it may not make, or a page that changed pauses the
+                run for you, unless a Browser agent may find the way.
+            </Note>
+            <Field label="Recording" composite>
+                <div className="grid gap-2">
+                    <Select
+                        aria-label="Recording"
+                        value={id || undefined}
+                        onChange={(next) => update({ recording_id: next, recording_inputs: {}, may_send_steps: [] })}
+                        options={options}
+                        placeholder={browserRecordings?.list === null ? 'Loading…' : 'Pick a recording'}
+                    />
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                        {id && browserRecordings && <TextLink href={browserRecordings.recordingHref(id)}>Open it</TextLink>}
+                        {browserRecordings?.record?.({
+                            sessions: step.browser_sessions ?? [],
+                            onKept: (kept) => update({ recording_id: kept, recording_inputs: {}, may_send_steps: [] }),
+                        })}
+                        {!list.length && browserRecordings?.list && (
+                            <span className="text-text-muted">No recordings yet. Record one here, or under <TextLink href={browserRecordings.libraryHref}>Recordings</TextLink>.</span>
+                        )}
+                    </div>
+                </div>
+            </Field>
+            {inputs.length > 0 && (
+                <fieldset className="grid gap-2">
+                    <legend className="text-sm font-medium text-text">Inputs</legend>
+                    {inputs.map((name) => (
+                        <Field key={name} label={labelOf(name)} hint={`What it types for {${name}}, from the run: {state.key} or text.`}>
+                            <Input
+                                value={step.recording_inputs?.[name] ?? ''}
+                                onChange={(e) => update({ recording_inputs: { ...(step.recording_inputs ?? {}), [name]: e.target.value } })}
+                                placeholder="{state.order}"
+                                spellCheck={false}
+                            />
+                        </Field>
+                    ))}
+                </fieldset>
+            )}
+            {sends.length > 0 && (
+                <fieldset className="grid gap-1.5">
+                    <legend className="text-sm font-medium text-text">Sends</legend>
+                    <p className="text-xs text-text-muted">A click or press that sends something waits for you, unless you let it go on its own.</p>
+                    {sends.map((s) => (
+                        <div key={s.id} className="flex items-center gap-2 text-sm text-text">
+                            <Checkbox
+                                id={`may-send-${s.id}`}
+                                label={`May send on its own: ${stepWords(s)}`}
+                                checked={allowed.includes(s.id)}
+                                onChange={(on) => update({ may_send_steps: on ? [...allowed.filter((x) => x !== s.id), s.id] : allowed.filter((x) => x !== s.id) })}
+                            />
+                            <label htmlFor={`may-send-${s.id}`}>{stepWords(s)} <span className="text-text-muted">· may send on its own</span></label>
+                        </div>
+                    ))}
+                </fieldset>
+            )}
+            <Field label="If a page changed" composite>
+                <div className="grid gap-2">
+                    <Segmented
+                        label="If a page changed"
+                        value={onMiss}
+                        onChange={(next) => update({ on_miss: next })}
+                        options={[
+                            { value: 'pause', label: 'Pause for you' },
+                            { value: 'agent', label: 'Let a Browser agent find the way' },
+                        ]}
+                    />
+                    {onMiss === 'agent' && (
+                        <Select
+                            aria-label="Agent that finds the way"
+                            value={step.agent_id || undefined}
+                            onChange={(next) => update({ agent_id: next })}
+                            options={fixers.map((a) => ({ value: a.id ?? '', label: a.name ?? a.id ?? '' }))}
+                            placeholder={fixers.length ? 'Pick a Browser agent' : 'No Browser agents yet'}
+                        />
+                    )}
+                    <p className="text-xs text-text-muted">
+                        {onMiss === 'agent'
+                            ? 'It finds the way for this run; the fix waits in Recordings for you to approve.'
+                            : 'The run waits for you to do that step in its browser.'}
+                    </p>
+                </div>
+            </Field>
+            {browserSessions && (
+                <SessionPicker
+                    label="Sessions for this step"
+                    sessions={browserSessions.sessions}
+                    value={step.browser_sessions ?? []}
+                    onChange={(ids) => update({ browser_sessions: ids.length ? ids : undefined })}
+                    libraryHref={browserSessions.libraryHref}
+                    locked={browserSessions.locked}
+                    hint="One per site. The run's browser starts signed in with these."
+                />
+            )}
+            {shown && shown.outputs.length > 0 && (
+                <Note>It reads {shown.outputs.map((o) => o.name).join(', ')}, kept under this step&apos;s output.</Note>
+            )}
+        </div>
+    );
+}
+
 export const STEP_SECTIONS: Record<StepType, React.FC<StepSectionProps>> = {
     agent: AgentSection,
     llm: LlmSection,
@@ -1539,6 +1671,7 @@ export const STEP_SECTIONS: Record<StepType, React.FC<StepSectionProps>> = {
     retrieve: RetrieveSection,
     ingest: IngestSection,
     workflow: WorkflowSection,
+    browser: BrowserStepSection,
 };
 
 /** The sessions a Browser agent's step may pick: its agent's sites' only, or every one when it lists none. */

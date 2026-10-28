@@ -82,6 +82,24 @@ def agent_ids(orch: dict) -> set[str]:
             if isinstance(s, dict) and isinstance(s.get("agent_id"), str) and s["agent_id"]}
 
 
+def browser_step_problems(orch: dict, agents: dict) -> list[str]:
+    """A Browser step (F1146) names its recording, and one whose agent finds a changed page's way names a Browser
+    agent: the run would otherwise stop at that step every time."""
+    found = []
+    for step in orch.get("steps") or []:
+        if not isinstance(step, dict) or step.get("type") != "browser":
+            continue
+        sid = step.get("id") or "?"
+        if not step.get("recording_id"):
+            found.append(f"Browser step '{sid}' needs a recording.")
+        if step.get("on_miss") == "agent":
+            agent = agents.get(step.get("agent_id")) if step.get("agent_id") else None
+            if not agent or agent.get("type") != "browser":
+                found.append(f"Browser step '{sid}' has an agent find the way when a page changed: pick a Browser "
+                             "agent for it, or have it pause for you.")
+    return found
+
+
 def refusal(orch: dict, agents: dict) -> str | None:
     """Why `orch` may not be saved, in one paragraph; `None` when it may."""
     unsafe = expression_problems(orch.get("steps") or [], unsafe_only=True)
@@ -94,6 +112,7 @@ def refusal(orch: dict, agents: dict) -> str | None:
             + " " + vocabulary_sentence()  # what it may use, from the tables that decide it (F957)
         )
     parts += self_calls(orch, agents)
+    parts += browser_step_problems(orch, agents)
     if not parts:
         return None
     return "Refusing to save: " + " ".join(parts)

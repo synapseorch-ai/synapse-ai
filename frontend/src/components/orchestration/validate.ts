@@ -25,7 +25,7 @@ const error = (message: string): StepIssue => ({ severity: 'error', message });
 const warning = (message: string): StepIssue => ({ severity: 'warning', message });
 
 /** Steps that exist to produce a value, so losing it is worth saying. */
-const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human', 'retrieve', 'workflow']);
+const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform', 'extract_json', 'human', 'retrieve', 'workflow', 'browser']);
 
 /**
  * `agents` is the list the caller already holds for the picker. When it is
@@ -34,7 +34,7 @@ const RESULT_STEP_TYPES = new Set(['agent', 'llm', 'tool', 'merge', 'transform',
  * agent sorted first, which is worse than any error. When it is omitted (a
  * caller with no agent list), that check is skipped rather than guessed at.
  */
-export function validateOrchestration(orch: Orchestration, agents?: { id: string }[]): ValidationResult {
+export function validateOrchestration(orch: Orchestration, agents?: { id: string; type?: string }[]): ValidationResult {
     // A check that throws on a shape it did not expect says so and lets the editor stand (F1054): the canvas, the
     // step card and Save each run these, and an uncaught throw here took the whole page down (HOT2, D323).
     try {
@@ -45,7 +45,7 @@ export function validateOrchestration(orch: Orchestration, agents?: { id: string
     }
 }
 
-function checkOrchestration(orch: Orchestration, agents?: { id: string }[]): ValidationResult {
+function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: string }[]): ValidationResult {
     const byStep: Record<string, StepIssue[]> = {};
     const global: StepIssue[] = [];
     const ids = new Set(orch.steps.map((s) => s.id));
@@ -136,6 +136,13 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string }[]): Val
                 break;
             case 'tool':
                 if (!s.forced_tool) add(s.id, error('No tool selected'));
+                break;
+            case 'browser':
+                // As BRW1's save refuses (F1146): a recording to replay, and a Browser agent when one finds the way.
+                if (!s.recording_id) add(s.id, error('No recording selected'));
+                if (s.on_miss === 'agent' && agents && agents.find((a) => a.id === s.agent_id)?.type !== 'browser') {
+                    add(s.id, error('Pick a Browser agent to find the way, or have it pause for you'));
+                }
                 break;
             case 'workflow':
                 if (!s.workflow_id) add(s.id, error('No workflow selected'));
