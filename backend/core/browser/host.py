@@ -170,6 +170,7 @@ class Session:
         self.last_frame: dict | None = None
         self.dialog = None          # a page's alert/confirm/prompt, while the person drives
         self.agent_dialog = ""      # the message of the dialog the agent faces (Playwright MCP handles it)
+        self.idle = False           # the agent's turn ended: "nobody" until its next call, not a held send
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -391,6 +392,9 @@ class Session:
         refused = gate.refusal(name)
         if refused:
             return {"refused": refused}
+        if self.wheel == "nobody" and self.idle:  # the agent's next turn takes its idle browser back
+            self.wheel, self.idle = "agent", False
+            self._push_state()
         if self.wheel != "agent":
             return {"waiting": "person_driving"}
         if self.actions >= self.limits["actions"]:
@@ -560,11 +564,19 @@ class Session:
             return False
 
     # ── the person's turn ────────────────────────────────────────────────────
+    def go_idle(self) -> dict:
+        """The agent's turn or step ended (BRW2's live check): nobody drives until its next call or the person takes
+        over. Only from the agent's wheel; a person's turn and a held send are left as they are."""
+        if self.wheel == "agent":
+            self.wheel, self.idle = "nobody", True
+            self._push_state()
+        return {"wheel": self.wheel}
+
     def take(self) -> dict:
         if self.held:
             self.held["decision"] = "take"
             self.held["event"].set()
-        self.wheel = "person"
+        self.wheel, self.idle = "person", False
         self.banner = None
         self.took_at = time.monotonic()
         self._note("person", "took over", "")
@@ -989,6 +1001,10 @@ class Host:
         self.sessions[sid] = s
         return web.json_response({"session_id": sid})
 
+    async def idle(self, request):
+        body = await request.json()
+        return web.json_response(self._session(body.get("session_id", "")).go_idle())
+
     async def call_tool(self, request):
         body = await request.json()
         s = self._session(body.get("session_id", ""))
@@ -1131,6 +1147,7 @@ def control_app(host: Host) -> web.Application:
     app.router.add_post("/close", host.close_session)
     app.router.add_get("/state", host.get_state)
     app.router.add_get("/login-state", host.get_login_state)
+    app.router.add_post("/idle", host.idle)
     return app
 
 

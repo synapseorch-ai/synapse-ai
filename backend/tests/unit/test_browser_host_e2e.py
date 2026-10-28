@@ -672,3 +672,18 @@ async def test_a_prelaunched_browser_is_adopted_with_its_sessions_mode(site):
     finally:
         proc.terminate()
         await proc.wait()
+
+
+
+async def test_an_idle_browser_is_the_agents_again_on_its_next_call(site, host):
+    port, _hits = site
+    http, control, _viewer = host
+    sid = (await _post(http, control, "/session", {"owner": "chat:idle", "mode": "read_only"}))["session_id"]
+    await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                         "args": {"url": f"http://localhost:{port}/"}})
+    assert (await _post(http, control, "/idle", {"session_id": sid})) == {"wheel": "nobody"}
+    snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+    assert "Fixture" in snap["text"], "the agent's next call takes its idle browser back"
+    async with http.get(f"http://127.0.0.1:{control}/state", params={"session_id": sid}) as resp:
+        assert (await resp.json())["wheel"] == "agent"
+    await _post(http, control, "/close", {"session_id": sid})

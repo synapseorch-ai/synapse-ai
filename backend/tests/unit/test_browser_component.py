@@ -370,6 +370,7 @@ async def test_an_agents_browser_call_runs_under_its_chat_and_tells_the_pane(fak
     assert "browser_session" in kinds and "browser_action" in kinds
     assert kinds.index("browser_session") < kinds.index("browser_action")
     assert browser_client.owner.get() is None, "the owner does not outlive the call"
+    assert host.calls[-1] == ("POST", "/idle", {"session_id": "s1"}), "the turn ends with nobody at the wheel"
 
 
 async def test_the_chat_stream_carries_the_pane_events(client, monkeypatch):
@@ -1261,3 +1262,17 @@ def test_a_browser_agent_holds_the_browsers_tools_however_it_was_made():
     assert made[0] == "scrape_url" and set(gate.ALLOWED) <= set(made) and "browser_hand_over" in made
     assert _type_tools({"type": "browser", "tools": ["all"]}) == ["all"]
     assert _type_tools({"type": "conversational", "tools": ["scrape_url"]}) == ["scrape_url"]
+
+
+
+def test_an_ended_turn_leaves_nobody_at_the_wheel_but_never_takes_a_persons(tmp_path):
+    """BRW2's live check (10-28): after the agent's turn the pane still said it was driving."""
+    s = host.Session("s1", "chat:x", gate.CO_DRIVE, {}, tmp_path)
+    assert s.go_idle() == {"wheel": "nobody"} and s.idle
+    person = host.Session("s2", "chat:y", gate.CO_DRIVE, {}, tmp_path, wheel="person")
+    assert person.go_idle() == {"wheel": "person"} and not person.idle
+    held = host.Session("s3", "chat:z", gate.CO_DRIVE, {}, tmp_path)
+    held.wheel = "nobody"  # a send held for the person
+    assert held.go_idle() == {"wheel": "nobody"} and not held.idle, "a held send is not an idle browser"
+    s.take()
+    assert s.wheel == "person" and not s.idle

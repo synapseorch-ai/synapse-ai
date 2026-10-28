@@ -436,6 +436,17 @@ class BrowserTools:
             return 404, {"error": "That browser is closed."}
         return await host.viewer(path, params={"session_id": session_id}, json=body or {})
 
+    async def idle(self, key: str) -> None:
+        """The agent's turn or step ended: its browser shows nobody driving until the agent's next call. Best
+        effort; a person's turn is left as it is."""
+        try:
+            record = await self.store.get_owner(key)
+            host = await self.hosts.host_for(key, opening=False) if record and record.get("sid") else None
+            if host is not None:
+                await host.call("POST", "/idle", json={"session_id": record["sid"]}, timeout=15)
+        except Exception:
+            pass
+
     def take_events(self, key: str | None) -> list[dict]:
         return self._events.pop(key, []) if key else []
 

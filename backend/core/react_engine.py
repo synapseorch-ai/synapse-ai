@@ -1688,6 +1688,7 @@ async def run_agent_step(
     current_context_text = (_helpers.automated_opening(automated, user_message) if automated
                             else f"User Request: {user_message}\n")
     final_response = ""
+    _browser_used: str | None = None  # the browser this turn or step drove, set idle when it ends
     _ran_out = False  # the loop spent every turn, rather than breaking out
     # Why the answer is the loop's words and not the model's (the repeat guard,
     # running out of turns): named on `final` so a workflow step can fail with
@@ -3696,6 +3697,7 @@ async def run_agent_step(
                     # component reads whose call this is from the owner.
                     _browser_owner = (_browser_client.owner_for(session_id, run_id)
                                       if agent_name == _browser_client.SERVER_NAME else None)
+                    _browser_used = _browser_owner or _browser_used
                     _owner_token = _browser_client.owner.set(_browser_owner) if _browser_owner else None
                     _settings_token = (_browser_client.settings.set(active_agent.get("browser") or {})
                                        if _browser_owner else None)
@@ -3981,6 +3983,10 @@ async def run_agent_step(
         yield _kn_citations
     for _note in _turn_notes:
         yield {"type": "step_warning", "message": _note}
+    if _browser_used is not None:  # done: nobody drives its browser until the agent's next call (a person's turn stays)
+        _browser_session = getattr(server_module, "agent_sessions", {}).get(_browser_client.SERVER_NAME)
+        if hasattr(_browser_session, "idle"):
+            await _browser_session.idle(_browser_used)
     final_event = {"type": "final", "response": final_response, "intent": last_intent, "data": last_data,
                    "tool_name": tool_name}
     if not (not is_orchestrator and persist_turn and not _workflow_step and save_turn):
