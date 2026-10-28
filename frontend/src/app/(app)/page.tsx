@@ -3400,7 +3400,12 @@ export default function Home() {
       let oldAgent: string | null = null;
       try {
         oldSession = localStorage.getItem('synapseSessionId');
-        oldAgent = localStorage.getItem('synapseAgentId') || status?.active_agent_id || null;
+        // The workspace's last agent seeds a new page only when it is a plain one: a Synapse AI tab coming forward
+        // makes it the active agent too, and the next browser opened Chat as Synapse AI (F1108).
+        const active = status?.active_agent_id;
+        const info = active ? status?.agents?.[active] : null;
+        const assistant = typeof info === 'object' && info !== null && info.type === 'builder';
+        oldAgent = localStorage.getItem('synapseAgentId') || (assistant ? null : active) || null;
         localStorage.removeItem('synapseSessionId');
         localStorage.removeItem('synapseAgentId');
       } catch { /* storage blocked: nothing was kept */ }
