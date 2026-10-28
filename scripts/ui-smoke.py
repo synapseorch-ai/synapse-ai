@@ -5294,6 +5294,11 @@ async def check_builderreload(browser) -> str:
     approval stayed paused on no screen, for ever. Both shapes are checked: a
     plan waiting (redrawn, and the next message answers it), and a build still
     working (followed from its journal until it asks).
+
+    Since the plan became a card (09f8f7f7, M2c) and F759, a waiting plan is answered by a yes or through its card's
+    Change something, and other words start a new request: so its Send is "Send", not "Send your answer". That the
+    reload brought back a waiting *plan* is read from the composer's plan line and the card's Change something, and
+    the typed yes must still resume that run (F1177).
     """
     # ── a plan waiting for approval ─────────────────────────────────────────
     parked = {
@@ -5316,9 +5321,17 @@ async def check_builderreload(browser) -> str:
         for shown in ("a weekly digest of the tickets", "Here is the proposed plan: one step that summarises."):
             if shown not in text:
                 raise AssertionError(f"after a reload the panel does not show {shown!r}")
-        await page.locator('[data-testid="assistant-panel"] textarea').fill("approve")
-        # With a question open, Send is named for what it does.
-        send = page.get_by_role("button", name="Send your answer", exact=True)
+        panel = page.locator('[data-testid="assistant-panel"]')
+        box = panel.locator("textarea")
+        # It came back as a plan waiting: the composer says how one is answered, and the card offers a change.
+        hint = await box.get_attribute("placeholder") or ""
+        if "Change something" not in hint:
+            raise AssertionError(f"after a reload the composer does not read as a plan waiting ({hint!r})")
+        if not await panel.get_by_role("button", name="Change something", exact=True).count():
+            raise AssertionError("after a reload the plan's card has no Change something")
+        await box.fill("approve")
+        # A plan's yes goes by the plain Send (F759: other words would set the plan aside).
+        send = panel.get_by_role("button", name="Send", exact=True)
         for _ in range(20):
             if not await send.is_disabled():
                 break
