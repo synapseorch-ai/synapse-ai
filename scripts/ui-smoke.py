@@ -13342,7 +13342,10 @@ async def check_brwsessionsreal(browser) -> str:
         refused("a step's save", *_answered("/api/orchestrations", "POST", wf))
         status, body = _answered(f"/api/orchestrations/{oid}/run", "POST", {"message": "today", "browser_sessions": [priya]}, timeout=10)
         refused("a run's start", status, body)
-        kept = (api(f"/api/agents/{aid}").get("browser") or {}).get("sessions")
+        # There is no GET of one agent: the list is read.
+        listed = api("/api/agents")
+        saved = next((a for a in (listed if isinstance(listed, list) else listed.get("agents") or []) if a.get("id") == aid), {})
+        kept = (saved.get("browser") or {}).get("sessions")
         if kept != [mine]:
             bad.append(f"a refused save still changed the agent's sessions to {kept}")
     finally:
