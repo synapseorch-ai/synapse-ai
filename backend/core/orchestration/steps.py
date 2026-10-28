@@ -353,7 +353,8 @@ class AgentStepExecutor:
                 own_words=[re.sub(r"\{\{.*?\}\}", "\n", step.prompt_template or "", flags=re.S)],
                 # Kept sessions picked for this step and for the run (F1140); the agent's own join them in the engine.
                 browser_picks={"step": list(step.browser_sessions or []),
-                               "run": list(run.shared_state.get("_browser_sessions") or [])},
+                               "run": list(run.shared_state.get("_browser_sessions") or []),
+                               "recordings": list(step.browser_recordings or [])},
                 # Opt-in per step, and off the engine rather than out of shared
                 # state — see `StepConfig.pass_images`. `run_agent_step` applies
                 # them on its first turn only, so a step that crash-resumes
@@ -3360,6 +3361,152 @@ class EndStepExecutor:
         yield {"type": "orchestration_end", "orch_step_id": step.id}
 
 
+class BrowserStepExecutor:
+    """A recording replayed by code in the run's browser (BRW1, F1146; DESIGN §v5.4): its inputs filled from the
+    run's state, what it reads to `output_key`, no model on the way. A workflow run is never watched, so a recorded
+    send goes only where the step allows it, and anything else is the person's turn (Naveen 2026-10-29). A step the
+    page no longer matches: the step's Browser agent finds the way (`on_miss: "agent"`), or the person does; either
+    way their path is kept as an edit of the recording to approve, never applied.
+
+    It parks as an agent step does on the person's turn (F1099): `pending_browser_turn`, answered by handing the
+    browser back; `progress["browser"]` says where it was, and the resume carries the replay on from there."""
+
+    async def execute(
+        self, step: StepConfig, run: OrchestrationRun, engine: "OrchestrationEngine"
+    ) -> AsyncGenerator[dict, None]:
+        from core.browser import client as browser_client
+        from core.browser import picks
+        from core.browser import recordings as recs
+
+        from .context import _fill_task_template
+
+        try:
+            doc = await recs.get(step.recording_id or "")
+        except recs.NotFound:
+            raise RuntimeError(f"Browser step '{step.name}': its recording is gone; pick another.") from None
+        progress = dict(run.step_progress.get(step.id) or {})
+        where = dict(progress.get("browser") or {})
+        allowed = set(step.may_send_steps or [])
+        steps = [{**s, "may_send": s.get("id") in allowed} for s in doc["steps"]]
+        variables = getattr(engine, "global_variables", None) or {}
+        inputs = {name: _fill_task_template(str(tpl or ""), run.shared_state, variables)
+                  for name, tpl in (step.recording_inputs or {}).items()}
+        missing = [n for n in recs.input_names(doc) if not str(inputs.get(n) or "").strip()]
+        if missing and not where:
+            raise RuntimeError(f"Browser step '{step.name}': '{doc['name']}' needs its inputs: {', '.join(missing)}.")
+        key = browser_client.owner_for(None, run.run_id)
+        chosen = await picks.settings_for({"mode": "co_drive", "action_budget": 200},
+                                          run=list(run.shared_state.get("_browser_sessions") or []),
+                                          step=list(step.browser_sessions or []))
+        tokens = (browser_client.owner.set(key), browser_client.settings.set(chosen))
+        tools = browser_client.tools
+        try:
+            phase = where.get("phase")
+            if phase == "agent":  # the fixing agent paused for the person: it carries on first
+                async for event in self._fix(step, run, engine, doc, progress):
+                    yield event
+                    if event.get("type") == "human_input_required":
+                        return
+                answer = await tools.latest_replay(key) or {"refused": "The browser closed."}
+                phase = "agent_done"
+            elif phase:
+                answer = await tools.replay_for_step(key, doc, steps, inputs, carry_on=True)
+            else:
+                yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Browser] {doc['name']}"}
+                answer = await tools.replay_for_step(key, doc, steps, inputs)
+            while True:
+                fix = answer.get("fix")
+                if fix and fix.get("steps"):
+                    by = "agent" if phase in ("agent", "agent_done") else (browser_client.for_user.get() or "person")
+                    try:
+                        await recs.add_edit(doc["id"], step_id=fix["step_id"], steps=fix["steps"], by=by,
+                                            run_id=run.run_id, shots=fix.get("shots") or None)
+                        yield {"type": "step_warning", "orch_step_id": step.id, "message": (
+                            f"'{doc['name']}' changed at step {fix['n']}: the way found is waiting for approval "
+                            "in Recordings.")}
+                    except recs.NotFound:
+                        pass
+                if answer.get("refused"):
+                    raise RuntimeError(f"Browser step '{step.name}': {answer['refused']}")
+                if answer.get("handover"):
+                    async for event in self._park(step, run, progress, answer["handover"], "turn"):
+                        yield event
+                    return
+                if answer.get("miss"):
+                    miss = answer["miss"]
+                    if step.on_miss == "agent" and step.agent_id and phase not in ("agent", "agent_done"):
+                        progress["browser"] = {"phase": "agent"}
+                        run.step_progress[step.id] = progress
+                        progress["browser_miss"] = miss
+                        async for event in self._fix(step, run, engine, doc, progress):
+                            yield event
+                            if event.get("type") == "human_input_required":
+                                return
+                        answer = await tools.latest_replay(key) or {"refused": "The browser closed."}
+                        phase = "agent_done"
+                        continue
+                    turn = await tools.hand_to_person(key, (
+                        f"'{doc['name']}' can't find step {miss.get('n')}, \"{miss.get('line')}\": "
+                        f"{miss.get('why')}. Do that step yourself, then hand the browser back."))
+                    async for event in self._park(step, run, progress, turn, "miss"):
+                        yield event
+                    return
+                break
+        finally:
+            browser_client.owner.reset(tokens[0])
+            browser_client.settings.reset(tokens[1])
+        progress.pop("browser", None)
+        progress.pop("browser_miss", None)
+        run.step_progress[step.id] = progress
+        outputs = answer.get("outputs") or {}
+        if step.output_key:
+            run.shared_state[step.output_key] = outputs
+        yield {"type": "final", "orch_step_id": step.id, "step_name": step.name,
+               "response": json.dumps(outputs, ensure_ascii=False) if outputs else f"Ran '{doc['name']}'."}
+
+    async def _park(self, step, run, progress: dict, handover: dict, phase: str):
+        """The person's turn, as an agent step parks on one (F1099): answered by handing the browser back."""
+        from core.browser import client as browser_client
+        from core.orchestration.state import SharedState
+        key = browser_client.owner_for(None, run.run_id)
+        await browser_client.tools.park_turn(key, handover)
+        progress["browser"] = {"phase": phase}
+        progress["pending_browser_turn"] = {"session_id": handover.get("session_id"),
+                                            "banner_kind": handover.get("kind"), "reason": handover.get("reason")}
+        run.step_progress[step.id] = progress
+        try:
+            await SharedState(run).checkpoint(columns=("step_progress",))
+        except Exception as ckpt_err:
+            _log.warning(f"browser-step checkpoint failed: {ckpt_err}")
+        reason = handover.get("reason", "")
+        yield {"type": "human_input_required", "kind": "browser_turn", "prompt": reason,
+               "session_id": handover.get("session_id"), "banner_kind": handover.get("kind"),
+               "fields": [{"name": "browser_turn", "type": "browser_turn", "label": reason,
+                           "session_id": handover.get("session_id"), "banner_kind": handover.get("kind")}],
+               "orch_step_id": step.id, "step_name": step.name, "run_id": run.run_id}
+
+    async def _fix(self, step, run, engine, doc: dict, progress: dict):
+        """The step's Browser agent finds the missed step's way, in the same browser, with only this recording to
+        carry on (F1144): an Agent step in all but name, its transcript and turns kept under this step."""
+        from core.browser import recordings as recs
+        miss = progress.get("browser_miss") or {}
+        task = (f"Synapse was replaying the recording `{recs.slug(doc)}` ({doc['name']}) in your browser, and it "
+                f"stopped at step {miss.get('n')}, \"{miss.get('line')}\": {miss.get('why')}. The page is open "
+                "where it stopped. Find the way for that step with your browser tools, doing only what that step "
+                "did, on the same site. Then call browser_run_recording with recording "
+                f"\"{recs.slug(doc)}\" and carry_on: true, and finish with one line on what you did. If you can't "
+                "find it, call browser_hand_over.")
+        fixer = step.model_copy(update={"type": StepType.AGENT, "prompt_template": task, "output_key": None,
+                                        "browser_recordings": [doc["id"]], "input_keys": []})
+        async for event in AgentStepExecutor().execute(fixer, run, engine):
+            if event.get("type") == "human_input_required":
+                fresh = dict(run.step_progress.get(step.id) or {})
+                fresh["browser"] = {"phase": "agent"}
+                fresh.setdefault("browser_miss", miss)
+                run.step_progress[step.id] = fresh
+            yield event
+
+
 # Registry of all step executors
 STEP_EXECUTORS = {
     StepType.AGENT: AgentStepExecutor(),
@@ -3379,4 +3526,5 @@ STEP_EXECUTORS = {
     StepType.RETRIEVE: RetrieveStepExecutor(),
     StepType.INGEST: IngestStepExecutor(),
     StepType.WORKFLOW: WorkflowStepExecutor(),
+    StepType.BROWSER: BrowserStepExecutor(),
 }

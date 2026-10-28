@@ -189,6 +189,7 @@ class Session:
         self.recorder: Recorder | None = None  # the person's task being recorded (F1141)
         self.replaying: dict | None = None     # the replay in hand: its steps, inputs and whether anyone is there
         self.replay_sends: set[str] | None = None  # unattended: the only sends it may make, as its recording did
+        self.replay_blocked: tuple | None = None   # a send the list kept back during a replay, and at which step
         self.fixing: dict | None = None        # a missed step being found again (F1144): its capture and allowance
         # A replay run as a task, started and then polled (a long request may not survive a proxy, an idle cutoff
         # or a restart, BRW3): one at a time; its answer is kept until the next starts.
@@ -315,7 +316,8 @@ class Session:
     # ── the network gate ─────────────────────────────────────────────────────
     async def _route(self, route) -> None:
         req = route.request
-        agent, only = self.wheel == "agent", self.replay_sends  # as the request starts, before any wait
+        # As the request starts, before any wait: the replay's send list, and whether a replay is running.
+        agent, only, replaying = self.wheel == "agent", self.replay_sends, self.replaying is not None
         try:
             nav = req.is_navigation_request()
             top = nav and _is_main_frame(req)
@@ -325,6 +327,8 @@ class Session:
                     and req.method.upper() not in ("GET", "HEAD", "OPTIONS")
                     and f"{req.method.upper()} {urlparse(req.url).hostname or ''}" not in only):
                 reason = "an unattended replay sends only where its recording did"
+                if replaying:  # the step that caused it becomes the person's turn (Naveen 2026-10-29)
+                    self.replay_blocked = (f"{req.method.upper()} {urlparse(req.url).hostname or ''}", self.replay_at)
             if reason is None and nav:
                 reason = await self._pace(urlparse(req.url).hostname or "")
             hold = (reason is None and agent and self.mode == gate.CO_DRIVE
@@ -711,6 +715,7 @@ class Session:
         if self.held is not None:
             return {"refused": "A send is waiting for the person."}
         self.wheel, self.idle, self.banner, self.handover = "agent", False, None, None
+        self.replay_blocked = None
         plan = self.replaying if (self.replaying and self.replaying["steps"] is steps) else None
         if plan is None:
             self.fixing = None
@@ -790,7 +795,17 @@ class Session:
             pass
 
     def _replay_held(self, step: dict) -> dict | None:
-        """The money backstop held a send the last step caused: the person's turn, at that step."""
+        """The money backstop held a send the last step caused, or the send list kept one back: the person's turn,
+        at that step."""
+        blocked, self.replay_blocked = self.replay_blocked, None
+        if blocked and self.held is None and not self.handover:
+            said, at = blocked
+            out = self._replay_turn(step, "send", f"The recording never sent a {said}, so Synapse kept it back. "
+                                                  "If it is right, do that step yourself, then hand the browser back.")
+            if at:  # the step that sent it, which may be the one before this check
+                self.replaying["turn_at"] = at
+                out["at"] = at
+            return out
         if self.held is None and not self.handover:
             return None
         if self.replaying is not None:

@@ -110,14 +110,16 @@ def _keep_shots(recording_id: str, shots: dict[str, str] | None) -> None:
 
 
 async def create(name: str, steps: list[dict], *, shots: dict[str, str] | None = None, by: str,
-                 recording_id: str | None = None) -> dict:
-    """A new recording from a stopped one's steps and pictures (base64, as the component hands them over)."""
+                 recording_id: str | None = None, owner_workflow: str | None = None) -> dict:
+    """A new recording from a stopped one's steps and pictures (base64, as the component hands them over).
+    `owner_workflow`: recorded from that workflow's Browser step, so it goes with the workflow (F1146)."""
     rid = recording_id if recording_id and recording_id.startswith("rec_") else new_id()
     steps = _lined([s for s in steps or [] if isinstance(s, dict)])
     now = _now()
     doc = {"id": rid, "name": (name or "").strip()[:120] or "A recorded task", "sites": _sites(steps),
            "inputs": [], "outputs": [], "steps": steps, "version": 1, "history": [], "pending_edits": [],
-           "changed": [], "created_at": now, "created_by": by, "updated_at": now, "updated_by": by}
+           "changed": [], "created_at": now, "created_by": by, "updated_at": now, "updated_by": by,
+           "owner_workflow": owner_workflow or None}
     await asyncio.to_thread(_keep_shots, rid, shots)
     async with _lock:
         await _save(doc)
@@ -255,12 +257,40 @@ async def discard_edit(recording_id: str, edit_id: str) -> dict:
 
 
 async def from_stop(result: dict, *, by: str, recording_id: str | None = None, from_step: str | None = None,
-                    name: str | None = None) -> dict:
+                    name: str | None = None, owner_workflow: str | None = None) -> dict:
     """What `record/stop` kept: a new recording, or (re-recording from a step) a pending edit of an existing one.
     `{recording_id, steps}` or `{recording_id, pending_edit}`."""
     steps, shots = result.get("steps") or [], result.get("shots") or {}
     if recording_id and from_step:  # a re-record replaces its step and every step after it
         edit_id = await add_edit(recording_id, step_id=from_step, steps=steps, by=by, shots=shots, rest=True)
         return {"recording_id": recording_id, "pending_edit": edit_id}
-    doc = await create(name or "", steps, shots=shots, by=by, recording_id=recording_id)
+    doc = await create(name or "", steps, shots=shots, by=by, recording_id=recording_id,
+                       owner_workflow=owner_workflow)
     return {"recording_id": doc["id"], "steps": len(doc["steps"])}
+
+
+async def delete_owned(workflow_id: str) -> dict:
+    """A workflow deleted (Naveen 2026-10-29): the recordings made from its Browser steps go with it, pictures and
+    all, unless another workflow's step or an agent uses one, which then stays as a library recording. Recordings
+    it only used, made elsewhere, are never touched. `{deleted: [...], kept: [...]}`."""
+    from core.store.collections import load
+    from core.store.resources import load_agents, load_orchestrations
+    owned = [d for d in await load(COLLECTION) if d.get("owner_workflow") == workflow_id]
+    if not owned:
+        return {"deleted": [], "kept": []}
+    used: set[str] = set()
+    for flow in await load_orchestrations():
+        if (flow or {}).get("id") == workflow_id:
+            continue
+        used.update(s.get("recording_id") for s in (flow or {}).get("steps") or [] if s.get("recording_id"))
+        used.update(r for s in (flow or {}).get("steps") or [] for r in s.get("browser_recordings") or [])
+    for agent in await load_agents():
+        used.update(((agent or {}).get("browser") or {}).get("recordings") or [])
+    deleted, kept = [], []
+    for doc in owned:
+        if doc["id"] in used:
+            await _update(doc["id"], lambda d: {**d, "owner_workflow": None})
+            kept.append(doc["id"])
+        elif await delete(doc["id"]):
+            deleted.append(doc["id"])
+    return {"deleted": deleted, "kept": kept}
