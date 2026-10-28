@@ -470,10 +470,26 @@ async def create_or_update_orchestration(orch: OrchestrationIn, request: Request
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
         data = orch.model_dump()
         await _refuse_to_save(data)
+        from core.browser.picks import PickRefused
+        try:
+            await _refuse_step_picks(data, existing)
+        except PickRefused as refused:
+            return JSONResponse(status_code=422, content=refused.body())
         data["updated_at"] = now
         data["created_at"] = (existing or {}).get("created_at", now)
         await save_orchestration(data)
     return data
+
+
+async def _refuse_step_picks(orch: dict, existing: dict | None) -> None:
+    """A step's kept sessions (F1140, F1167): one per site, and an id new to the step only if it is the person's own
+    or shared with them. Ids the step already had stay."""
+    from core.browser.picks import one_per_site, usable_new
+    had = {s.get("id"): s.get("browser_sessions") or [] for s in (existing or {}).get("steps") or []}
+    for step in orch.get("steps") or []:
+        if step.get("browser_sessions"):
+            await one_per_site(step["browser_sessions"])
+            await usable_new(step["browser_sessions"], before=had.get(step.get("id")))
 
 
 async def _refuse_to_save(orch: dict, extra_agents: dict | None = None) -> None:
@@ -536,10 +552,11 @@ async def run_orchestration(orch_id: str, request: Request):
     # Kept sessions picked for this run (F1140): its Browser steps start with them, one per site.
     picked = body.get("browser_sessions") or []
     if picked:
-        from core.browser.picks import RUN_KEY, OnePerSite, one_per_site
+        from core.browser.picks import RUN_KEY, PickRefused, one_per_site, usable_new
         try:
             picked = await one_per_site(picked)
-        except OnePerSite as refused:
+            await usable_new(picked)
+        except PickRefused as refused:
             return JSONResponse(status_code=422, content=refused.body())
     run_id = new_run_id(orch_id)
 

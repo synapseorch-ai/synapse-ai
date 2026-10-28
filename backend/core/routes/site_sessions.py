@@ -22,8 +22,7 @@ router = APIRouter()
 
 def person() -> str:
     """Who keeps a session here: the install's one sign-in, or "you" without one."""
-    from core.config import load_settings
-    return load_settings().get("login_username") or "you"
+    return site_sessions.install_person()
 
 
 def _site_of(text: str) -> str:
@@ -41,8 +40,10 @@ async def list_site_sessions():
     from core.browser.picks import uses_of
     rows = await site_sessions.list_sessions()
     me, uses = person(), await uses_of([r["id"] for r in rows])
+    # Every session is listed (the library shows each exists); `usable` says whether the person may pick it: theirs,
+    # or shared with them (F1167). Here sharing is none, so usable is mine.
     return {"sessions": [{**r, "owner_name": r["owner"], "shared_with": [], "mine": r["owner"] == me,
-                          "uses": uses[r["id"]]} for r in rows]}
+                          "usable": r["owner"] == me, "uses": uses[r["id"]]} for r in rows]}
 
 
 class NewSession(BaseModel):
@@ -83,10 +84,10 @@ async def get_chat_picks(chat_id: str):
 @router.put("/api/chat/{chat_id}/browser-sessions")
 async def put_chat_picks(chat_id: str, body: Picks):
     """The chat's sessions, applied when its browser next opens. Two for one site: 422 `{detail, site, ids}`."""
-    from core.browser.picks import OnePerSite, set_chat_picks
+    from core.browser.picks import PickRefused, set_chat_picks
     try:
         return {"ids": await set_chat_picks(chat_id, body.ids)}
-    except OnePerSite as refused:
+    except PickRefused as refused:
         return JSONResponse(status_code=422, content=refused.body())
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None

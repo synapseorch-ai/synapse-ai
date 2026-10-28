@@ -21,15 +21,48 @@ RUN_KEY = "_browser_sessions"
 _CHAT_ID = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 
 
-class OnePerSite(ValueError):
-    """Two picked sessions are for one site."""
+class PickRefused(ValueError):
+    """A pick that cannot stand: answered as a flat 422 `{detail, site, ids}` wherever sessions are picked."""
 
-    def __init__(self, site: str, ids: list[str]):
-        super().__init__(f"Pick one session for {site}.")
+    def __init__(self, detail: str, site: str, ids: list[str]):
+        super().__init__(detail)
         self.site, self.ids = site, ids
 
     def body(self) -> dict:
         return {"detail": str(self), "site": self.site, "ids": self.ids}
+
+
+class OnePerSite(PickRefused):
+    """Two picked sessions are for one site."""
+
+    def __init__(self, site: str, ids: list[str]):
+        super().__init__(f"Pick one session for {site}.", site, ids)
+
+
+class NotUsable(PickRefused):
+    """Someone else's session, not shared with the person picking it (F1167): shown in the library, never picked."""
+
+    def __init__(self, site: str, ids: list[str], owner: str):
+        super().__init__(f"That session for {site} is {owner or 'someone else'}'s and isn't shared with you.", site, ids)
+
+
+def _usable(row: dict, who: str) -> bool:
+    shared = row.get("shared_with") or []
+    return row.get("owner") == who or shared == "workspace" or (isinstance(shared, list) and who in shared)
+
+
+async def usable_new(ids: list[str], *, before: list[str] | None = None, for_user: str | None = None) -> None:
+    """Refuse, with `NotUsable`, an id new to this save (not in `before`) that isn't the person's or shared with them.
+    Ids already saved stay: what loads is decided by the job's person at the browser's start (`state_for`)."""
+    from core.site_sessions import install_person
+    store, who, kept = _store(), for_user or install_person(), set(before or [])
+    for sid in dict.fromkeys(i for i in ids or [] if i not in kept):
+        try:
+            row = await store.get(sid) if hasattr(store, "get") else None
+        except Exception:
+            row = None
+        if row and not _usable(row, who):
+            raise NotUsable(row.get("site") or "", [sid], row.get("owner_name") or row.get("owner") or "")
 
 
 def _store():
@@ -82,6 +115,7 @@ async def set_chat_picks(chat_id: str, ids: list[str]) -> list[str]:
     if key is None:
         raise ValueError("That is not a chat.")
     ids = await one_per_site(ids)
+    await usable_new(ids, before=await chat_picks(chat_id))
     from core.storage import get_blob_store
     store = get_blob_store()
     if ids:

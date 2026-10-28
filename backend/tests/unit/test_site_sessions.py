@@ -307,3 +307,34 @@ def test_a_session_kept_before_the_rename_edited_on_disk_opens_nothing(_isolated
     stored = {**record, "nonce": base64.b64encode(nonce).decode(), "sealed": base64.b64encode(sealed).decode()}
     (wl._dir() / f"{ref}.json").write_text(json.dumps({**stored, field: value}))
     assert run(wl.state_for(ref)) is None
+
+
+def test_someone_elses_unshared_session_is_shown_never_picked_and_never_loaded(monkeypatch):
+    """F1167 (BRW2's shots): the pickers offered Priya's unshared session. Every session is listed, `usable` only for
+    the person's own; picking someone else's is refused (flat 422), and at the browser's start nothing of theirs loads."""
+    from core.browser import client as browser_client
+    from core.routes import site_sessions as routes
+
+    async def none():
+        return []
+
+    monkeypatch.setattr("core.store.resources.load_agents", none)
+    monkeypatch.setattr("core.store.resources.load_orchestrations", none)
+    monkeypatch.setattr(browser_client, "_login_store", None)
+    mine = run(wl.keep(None, state=_state(-1), site="a.example", owner="you"))
+    hers = run(wl.keep(None, state=_state(-1), site="b.example", owner="priya"))
+    app = FastAPI()
+    app.include_router(routes.router)
+    client = TestClient(app)
+    rows = {r["id"]: r for r in client.get("/api/site-sessions").json()["sessions"]}
+    assert rows[mine]["usable"] is True and rows[hers]["usable"] is False and rows[hers]["mine"] is False
+    refused = client.put("/api/chat/c1/browser-sessions", json={"ids": [mine, hers]})
+    assert refused.status_code == 422 and refused.json() == {
+        "detail": "That session for b.example is priya's and isn't shared with you.", "site": "b.example",
+        "ids": [hers]}
+    assert client.put("/api/chat/c1/browser-sessions", json={"ids": [mine]}).json() == {"ids": [mine]}
+    assert run(wl.state_for(hers)) is None, "this install's person never opens someone else's"
+    state, expired, loaded, skipped = run(browser_client._sessions_state([mine, hers]))
+    assert [l["id"] for l in loaded] == [mine] and expired is None
+    assert skipped == [{"site": "b.example", "reason": "not_shared", "owner_name": "priya"}]
+    assert len(state["cookies"]) == 1

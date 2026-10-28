@@ -34,6 +34,7 @@ from aiohttp import web
 
 from core import egress_proxy
 from core.browser import gate
+from core.browser.recording import TARGET_JS, Recorder
 
 #: Playwright MCP, pinned: its tool names and output are part of the gate's contract.
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
@@ -171,6 +172,7 @@ class Session:
         self.dialog = None          # a page's alert/confirm/prompt, while the person drives
         self.agent_dialog = ""      # the message of the dialog the agent faces (Playwright MCP handles it)
         self.idle = False           # the agent's turn ended: "nobody" until its next call, not a held send
+        self.recorder: Recorder | None = None  # the person's task being recorded (F1141)
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -640,6 +642,7 @@ class Session:
                 self.select = {"target": f"{x:g},{y:g}", **found}
                 self._push_state()
                 return {"ok": True, "select": self.select}
+        step = await self._record_input(kind, body) if self.recorder is not None else None
         task = asyncio.ensure_future(self._act(page, kind, body))
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=3)
@@ -648,7 +651,72 @@ class Session:
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:200]}
         self.last_used = time.monotonic()
+        if step is not None:
+            await self._picture(step)
         return {"ok": True}
+
+    # ── recording the person's task (F1141) ──────────────────────────────────
+    def start_recording(self) -> dict:
+        if self.recorder is None:
+            self.recorder = Recorder()
+        self._push_state()
+        return {"recording": True}
+
+    def stop_recording(self) -> dict | None:
+        recorder, self.recorder = self.recorder, None
+        self._push_state()
+        return recorder.result() if recorder is not None else None
+
+    async def _target_at(self, x: float, y: float) -> dict | None:
+        try:
+            return await self.page.evaluate(
+                f"([x, y]) => ({TARGET_JS})(document.elementFromPoint(x, y))", [x, y])
+        except Exception:
+            return None
+
+    async def _target_focused(self) -> dict | None:
+        try:
+            return await self.page.evaluate(f"() => ({TARGET_JS})(document.activeElement)")
+        except Exception:
+            return None
+
+    async def _record_input(self, kind: str, body: dict) -> dict | None:
+        """The step a person's input makes, read before it acts (where it lands is the page as they saw it)."""
+        rec = self.recorder
+        if kind == "mouse" and body.get("event", "click") in ("click", "down"):
+            return rec.clicked(await self._target_at(float(body.get("x", 0)), float(body.get("y", 0))))
+        if kind == "text":
+            step = rec.typed(str(body.get("text") or ""), await self._target_focused())
+            if step is not None and "person" in (step.get("value") or {}):
+                rec.keep_quiet(self._page_url())
+            self._push_state()
+            return None  # typing is pictured with the step that ends it
+        if kind == "key":
+            return rec.pressed(str(body.get("key") or ""))
+        if kind == "nav" and body.get("url"):
+            return rec.opened(str(body["url"]))
+        if kind == "nav" and body.get("action") == "back":
+            return rec.went_back()
+        return None
+
+    async def _picture(self, step: dict | None) -> None:
+        """The page after a step, about 1024 px wide: none on a page the person typed something of theirs on."""
+        if step is None or self.recorder is None or self.page is None:
+            self._push_state()
+            return
+        jpeg = None
+        try:
+            cdp = await self.ctx.new_cdp_session(self.page)
+            try:
+                shot = await cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": 55, "clip": {
+                    "x": 0, "y": 0, "width": _VIEWPORT["width"], "height": _VIEWPORT["height"], "scale": 0.8}})
+                jpeg = base64.b64decode(shot["data"])
+            finally:
+                await cdp.detach()
+        except Exception:
+            jpeg = None
+        self.recorder.shot(step, jpeg, self._page_url())
+        self._push_state()
 
     async def _act(self, page, kind: str, body: dict) -> None:
         mods = [m for m in (body.get("modifiers") or []) if m in ("Shift", "Control", "Alt", "Meta")]
@@ -694,6 +762,7 @@ class Session:
 
     def state(self) -> dict:
         return {"wheel": self.wheel, "url": self._page_url(), "banner": self.banner, **self.popups(),
+                "recording": self.recorder.frame() if self.recorder is not None else None,
                 "held": ({"method": self.held["method"], "url": self.held["url"], "money": bool(self.held.get("money"))}
                          if self.held else None)}
 
@@ -701,7 +770,8 @@ class Session:
         """Viewers see the wheel and the banner change at once, on the last frame."""
         if self.last_frame and self.viewers:
             meta = {k: v for k, v in self.last_frame.items() if k not in ("dialog", "select", "file")}
-            meta = {**meta, "wheel": self.wheel, "banner": self.banner, "url": self._page_url(), **self.popups()}
+            meta = {**meta, "wheel": self.wheel, "banner": self.banner, "url": self._page_url(), **self.popups(),
+                    "recording": self.recorder.frame() if self.recorder is not None else None}
             for q in list(self.viewers):
                 _offer(q, meta)
 
@@ -791,9 +861,13 @@ class Session:
         """The person's pick from a dropdown the pane drew: set on the element at that point."""
         if not self.select or self.select.get("target") != target:
             return None
-        self.select = None
+        options, self.select = self.select.get("options") or [], None
         try:
             x, y = (float(v) for v in target.split(","))
+            if self.recorder is not None:
+                label = next((o.get("label") for o in options if o.get("value") == value), value)
+                step = self.recorder.chose(await self._target_at(x, y), str(label))
+                await self._picture(step)
             await self.page.evaluate(
                 "([x, y, v]) => { const s = document.elementFromPoint(x, y)?.closest('select'); if (!s) return;"
                 " s.value = v; s.dispatchEvent(new Event('input', {bubbles: true}));"
@@ -1128,6 +1202,18 @@ class Host:
         done = await s.give_file(str(body.get("name") or "file"), data)
         return web.json_response(done) if done else web.json_response({"error": "No file picker is open."}, status=409)
 
+    async def record_start(self, request):
+        s, body = await self._viewer_body(request)
+        if body.get("replay_first"):
+            return web.json_response({"error": "Re-recording from a step comes with replay (F1143)."}, status=501)
+        return web.json_response(s.start_recording())
+
+    async def record_stop(self, request):
+        s, _body = await self._viewer_body(request)
+        done = s.stop_recording()
+        return web.json_response(done) if done is not None else web.json_response(
+            {"error": "Nothing is being recorded."}, status=409)
+
     async def reap(self) -> None:
         while True:
             await asyncio.sleep(30)
@@ -1164,6 +1250,8 @@ def viewer_app(host: Host) -> web.Application:
     app.router.add_post("/dialog", host.dialog)
     app.router.add_post("/select", host.select)
     app.router.add_post("/file", host.file)
+    app.router.add_post("/record/start", host.record_start)
+    app.router.add_post("/record/stop", host.record_stop)
     return app
 
 
