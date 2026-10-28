@@ -687,3 +687,61 @@ async def test_an_idle_browser_is_the_agents_again_on_its_next_call(site, host):
     async with http.get(f"http://127.0.0.1:{control}/state", params={"session_id": sid}) as resp:
         assert (await resp.json())["wheel"] == "agent"
     await _post(http, control, "/close", {"session_id": sid})
+
+
+@pytest.fixture
+async def record_site():
+    async def index(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0'>"
+            "<form method='get' action='/results'>"
+            "<label for='order' style='position:absolute;left:10px;top:10px'>Order number</label>"
+            "<input id='order' name='q' style='position:absolute;left:150px;top:10px;width:200px;height:30px'>"
+            "<label for='pw' style='position:absolute;left:10px;top:60px'>Password</label>"
+            "<input id='pw' type='password' style='position:absolute;left:150px;top:60px;width:200px;height:30px'>"
+            "<button id='go' style='position:absolute;left:150px;top:110px;width:100px;height:30px'>Search</button>"
+            "</form></body></html>"))
+
+    async def results(request):
+        return web.Response(content_type="text/html", text=f"<h1>Results for {request.query.get('q', '')}</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", index)
+    app.router.add_get("/results", results)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1]
+    await runner.cleanup()
+
+
+async def test_a_task_the_person_does_is_recorded_and_their_password_is_not(record_site, codrive_host):
+    """F1141: open, type, a password (never kept, nor pictured), Search; the steps come back with their pictures."""
+    port = record_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "record:r1", "mode": "co_drive",
+                                                   "person_only": True}))["session_id"]
+    status, body = await _view(http, viewer, sid, "/record/start", {})
+    assert status == 200 and body == {"recording": True}
+    await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+    await asyncio.sleep(0.5)
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 250, "y": 25})
+    await _view(http, viewer, sid, "/input", {"type": "text", "text": "A-1001"})
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 250, "y": 75})
+    await _view(http, viewer, sid, "/input", {"type": "text", "text": "hunter2-secret"})
+    assert (await _state(http, control, sid))["recording"]["holding"] == "password"
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 200, "y": 125})
+    await asyncio.sleep(0.5)
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert status == 200
+    steps = done["steps"]
+    assert [s["action"] for s in steps] == ["open", "type", "type", "click"], steps
+    assert steps[1]["value"] == {"fixed": "A-1001"} and steps[1]["target"]["label"] == "Order number"
+    assert steps[2]["value"] == {"person": "password"} and steps[2]["line"] == "You sign in here"
+    assert steps[3]["line"] == "Click Search" and steps[3]["target"]["css"] == "#go"
+    assert "hunter2" not in json.dumps(done), "the password is in no step and no picture's name"
+    assert steps[3]["after_shot"] in done["shots"], "the results page, after leaving the login page, is pictured"
+    assert not steps[1]["after_shot"] and not steps[2]["after_shot"]
+    assert (await _view(http, viewer, sid, "/record/stop", {}))[0] == 409
+    await _post(http, control, "/close", {"session_id": sid})
