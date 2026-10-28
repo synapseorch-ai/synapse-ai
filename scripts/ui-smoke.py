@@ -4508,6 +4508,56 @@ async def check_builderchip(browser) -> str:
     return f"at 390 px the model pill is whole ({pill['width']} px, {pill['label']!r}) and the agent label clears the image button"
 
 
+#: Chat's composer row on a phone: the agent picker (its name shown or not, its accessible name, where it ends), the
+#: image button's left edge, and the builder's model pill when the tab is Synapse AI's.
+CHAT_PICKER = """() => { const main = document.querySelector('main');
+  const picker = main && main.querySelector('[aria-label^="Agents: "]');
+  const name = picker && picker.querySelector('span[title]');
+  const attach = main && main.querySelector('[aria-label="Attach images"]');
+  const model = main && main.querySelector('[aria-label="Model for this build"]');
+  const s = model && model.querySelector('span');
+  return picker ? {label: picker.getAttribute('aria-label'), nameShown: !!name && name.getBoundingClientRect().width > 2,
+                   right: Math.round(picker.getBoundingClientRect().right),
+                   attachLeft: attach ? Math.round(attach.getBoundingClientRect().left) : null,
+                   model: s ? {label: s.textContent.trim(), cut: s.scrollWidth > s.clientWidth + 1} : null} : null; }"""
+
+
+@check
+async def check_chatpicker(browser) -> str:
+    """On a phone Chat's agent picker is its icon and arrow, so a Synapse AI tab's model pill shows its whole label.
+
+    The picker's name took the row a Synapse AI chat shares with the model pill, which read "Default (gpt-oss-…" at
+    390 px (F1171; Naveen 2026-10-29: icon + ▾ on a phone, the name under the tab's title already). The name stays
+    the picker's accessible name and in the list it opens; a plain agent's tab shows the picker the same way.
+    """
+    bad, said = [], []
+    for scene, path in (("Synapse AI's tab", "?assistant=new"), ("an agent's tab", "")):
+        ctx, page = await _assistant_page(browser, path=path, width=(390, 844))
+        try:
+            await page.locator('main [aria-label^="Agents: "]').first.wait_for(timeout=15_000)
+            if path:
+                await page.locator('main [aria-label="Model for this build"]').first.wait_for(timeout=15_000)
+            await asyncio.sleep(0.8)
+            m = await page.evaluate(CHAT_PICKER)
+        finally:
+            await ctx.close()
+        if not m:
+            bad.append(f"{scene}: no agent picker at 390 px")
+            continue
+        if m["nameShown"]:
+            bad.append(f"{scene}: the picker shows its name ({m['label']!r}) on a phone")
+        if m["label"] in (None, "Agents: "):
+            bad.append(f"{scene}: the picker has no accessible name ({m['label']!r})")
+        if m["attachLeft"] is not None and m["right"] > m["attachLeft"]:
+            bad.append(f"{scene}: the picker ends at {m['right']}, past the image button at {m['attachLeft']}")
+        if path and (not m["model"] or m["model"]["cut"]):
+            bad.append(f"{scene}: the model pill is cut: {m['model']}")
+        said.append(f"{scene}: {m['label']!r}" + (f", model {m['model']['label']!r} whole" if path and m["model"] else ""))
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "at 390 px the agent picker is its icon and arrow — " + "; ".join(said)
+
+
 #: The builder panel on a phone: its box against the window, where its "Things to ask" end, and whose the bottom
 #: corner is — with the panel's own computed box for a failure to say why.
 PHONE_PANEL = """() => { const panel = document.querySelector('[data-testid="assistant-panel"]');
