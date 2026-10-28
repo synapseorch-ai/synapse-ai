@@ -343,9 +343,11 @@ async def _call(name: str, arguments: dict, *, handed: dict | None) -> list[type
                 else:
                     allow_db_write = load_settings().get("allow_db_write", False)
                 if not allow_db_write:
+                    refusal = (handed or {}).get("write_refusal")
                     return [types.TextContent(
                         type="text",
                         text=(
+                            f"BLOCKED: This query modifies the database. {refusal}" if refusal else
                             "BLOCKED: This query modifies the database and DB write access is currently disabled. "
                             "A user with admin access must enable 'Allow agents to modify database' in General Settings."
                         )

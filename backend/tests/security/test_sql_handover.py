@@ -195,3 +195,50 @@ def test_the_sql_server_is_spawned_with_the_allowlist(monkeypatch):
     allowed = SHARED_TOOL_ENV_NAMES | {"SYNAPSE_TENANT_ID", "SYNAPSE_SQL_HANDOVER"}
     stray = {k for k in env if k not in allowed and not k.startswith(SHARED_TOOL_ENV_PREFIXES)}
     assert not stray, sorted(stray)
+
+
+class TestARefusedWriteSaysWhatTheHostSays:
+    """F1156: a host that offers no write toggle says so, instead of pointing at one."""
+
+    CLOUD = "Writing to databases isn't available on Synapse Cloud yet; this connection is read-only here."
+
+    @pytest.mark.anyio
+    async def test_the_host_setting_travels_with_the_handover(self, tenant_configs, monkeypatch):
+        monkeypatch.setattr(
+            tool_scope, "_load_settings",
+            lambda: {"allow_db_write": False, "sql_write_refusal": self.CLOUD},
+        )
+        with tenant_scope("org-a"):
+            kwargs = await tool_scope.call_kwargs_for("sql", "run-1", {"db_id": "db_1"})
+
+        assert kwargs["meta"][tool_scope.DB_KEY]["write_refusal"] == self.CLOUD
+
+    @pytest.fixture
+    def sql_agent(self, monkeypatch):
+        from tools import sql_agent
+
+        monkeypatch.setattr(sql_agent, "_connect", lambda conn_str: (object(), object()))
+        monkeypatch.setenv("SYNAPSE_SQL_HANDOVER", "required")
+        sql_agent._engines.clear()
+        yield sql_agent
+        sql_agent._engines.clear()
+
+    @pytest.mark.anyio
+    async def test_a_refused_write_says_the_hosts_words(self, sql_agent):
+        handed = {"id": "db_1", "connection_string": CONFIGS[0]["connection_string"],
+                  "allow_write": False, "write_refusal": self.CLOUD}
+
+        out = (await sql_agent._call("run_sql_query", {"db_id": "db_1", "query": "DELETE FROM t"},
+                                     handed=handed))[0].text
+
+        assert self.CLOUD in out
+        assert "General Settings" not in out
+
+    @pytest.mark.anyio
+    async def test_without_one_the_toggle_is_named_as_before(self, sql_agent):
+        handed = {"id": "db_1", "connection_string": CONFIGS[0]["connection_string"], "allow_write": False}
+
+        out = (await sql_agent._call("run_sql_query", {"db_id": "db_1", "query": "DELETE FROM t"},
+                                     handed=handed))[0].text
+
+        assert "Allow agents to modify database" in out

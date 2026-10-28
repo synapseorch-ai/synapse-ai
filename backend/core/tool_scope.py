@@ -93,11 +93,18 @@ async def _database_for(arguments: dict) -> dict | None:
         # read-only stays read-only. A config with no such field (a single-user install's) has
         # only the global setting, as before.
         allow_write = allow_write and bool(config.get("allow_write", True))
-        return {"id": db_id, "connection_string": config["connection_string"], "allow_write": allow_write}
-    fallback = settings.get("sql_connection_string", "")
-    if not fallback:
-        return None
-    return {"id": None, "connection_string": fallback, "allow_write": allow_write}
+        database = {"id": db_id, "connection_string": config["connection_string"], "allow_write": allow_write}
+    else:
+        fallback = settings.get("sql_connection_string", "")
+        if not fallback:
+            return None
+        database = {"id": None, "connection_string": fallback, "allow_write": allow_write}
+    # What a refused write says, when the host has its own words (F1156): a host with no write
+    # toggle should not point at one.
+    refusal = settings.get("sql_write_refusal")
+    if isinstance(refusal, str) and refusal.strip():
+        database["write_refusal"] = refusal.strip()
+    return database
 
 
 def handed_database(meta) -> dict | None:
