@@ -101,7 +101,6 @@ _PROJECT_ROOT = BACKEND_ROOT.parent
 # process later served. llm_providers._ollama_base_url() reads the setting it is
 # given and falls back to the OLLAMA_BASE_URL env var as a deployment default.
 
-from core.browser_automation import gated
 from core.tools_registry import ALL_NATIVE_TOOLS
 TOOLS_LIST = dict(ALL_NATIVE_TOOLS)
 
@@ -657,8 +656,6 @@ async def lifespan(app: FastAPI):
                     ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
                 )
                 await session.initialize()
-                # The Browser Automation server offers only what its gate allows (`core.browser_automation`).
-                session = gated(mcp_name, session)
 
                 agent_sessions[mcp_name] = session
 

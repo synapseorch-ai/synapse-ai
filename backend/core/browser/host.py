@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 
 from aiohttp import web
 
+from core import egress_proxy
 from core.browser import gate
 
 #: Playwright MCP, pinned: its tool names and output are part of the gate's contract.
@@ -39,10 +40,18 @@ PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
 DEFAULT_LIMITS = {"actions": 40, "loads_per_min": 30, "idle_s": 600}
 _HOST_GAP_S = 1.0          # at most one page load a second per host
 _VIEWPORT = {"width": 1280, "height": 800}
-#: Chromium's switches. WebRTC may reach any address a page names over UDP, which no route sees: only proxied UDP is
-#: allowed, and there is no proxy for it (F1122). QUIC is off for the same reason, and WebTransport rides it.
-_CHROMIUM_ARGS = ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1",
-                  "--force-webrtc-ip-handling-policy=disable_non_proxied_udp", "--disable-quic"]
+#: Chromium's switches: the debugging port Playwright MCP connects to, and the egress proxy's own (WebRTC only on
+#: the proxied path, QUIC off; F1122).
+_CHROMIUM_ARGS = ["--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", *egress_proxy.CHROMIUM_ARGS]
+
+
+def _browser_proxy_env() -> str | None:
+    """The host's own proxy, when the environment names one (cloud's I1, F580): it is then the browser's outer layer.
+    `NO_PROXY` is not read: it names the platform's hosts, never a page. As the scraper does (`tools/web_scraper`)."""
+    import urllib.request
+
+    found = urllib.request.getproxies_environment()
+    return found.get("https") or found.get("http") or None
 #: A worker's own WebSocket passes no socket route, so a read-only browser, which opens no socket, starts no worker
 #: (F1122, SEC2's review). Run in every frame before its scripts; the page cannot define them again. A popup is a new
 #: target that Playwright MCP, a second client of this Chromium, may let run before this script reaches it, so the
@@ -106,10 +115,13 @@ class Session:
     # ── lifecycle ────────────────────────────────────────────────────────────
     async def start(self, pw) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
-        # No service workers: a worker's own fetches would not pass the route below.
+        # No service workers: a worker's own fetches would not pass the route below. Every connection the browser
+        # makes goes through the egress proxy (SEC2, F1065/F1109), the outer layer under the route and socket
+        # guards: it dials the address the guard checked, so a name that changes its answer reaches nothing new.
+        proxy = _browser_proxy_env() or (await egress_proxy.shared()).url
         self.ctx = await pw.chromium.launch_persistent_context(
             str(self.dir / "profile"), headless=True, viewport=_VIEWPORT, args=_CHROMIUM_ARGS,
-            env=_clean_env(), service_workers="block",
+            env=_clean_env(), service_workers="block", proxy={"server": proxy},
         )
         await self.ctx.route("**/*", self._route)
         await self.ctx.route_web_socket(lambda _url: True, self._route_socket)

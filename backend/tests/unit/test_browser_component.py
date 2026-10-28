@@ -94,6 +94,7 @@ def test_chromium_takes_no_unguarded_path():
     assert "--disable-quic" in host._CHROMIUM_ARGS
     source = inspect.getsource(host.Session.start)
     assert 'service_workers="block"' in source and "route_web_socket" in source and "_NO_WORKERS" in source
+    assert "egress_proxy.shared()" in source and 'proxy={"server": proxy}' in source  # SEC2's outer layer
 
 
 # ── the engine's client ──────────────────────────────────────────────────────
