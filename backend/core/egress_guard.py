@@ -149,13 +149,34 @@ async def check_host(host: str) -> None:
         raise BlockedEgress("that URL has no host")
     if host in allowed_hosts():
         return
+    _check_addresses(host, await _addresses(host))
 
+
+async def checked_addresses(host: str) -> list[str]:
+    """The addresses behind `host`, every one of them public, or raise `BlockedEgress`.
+
+    For a caller that opens the connection itself (`core.egress_proxy`): it dials
+    one of these and never the name again, so the address it checked is the
+    address it reaches. A host in `EGRESS_ALLOW_HOSTS` is resolved, not checked.
+    """
+    host = host.strip().lower().strip("[]")
+    if not host:
+        raise BlockedEgress("that URL has no host")
+    addresses = await _addresses(host)
+    if host not in allowed_hosts():
+        _check_addresses(host, addresses)
+    return addresses
+
+
+async def _addresses(host: str) -> list[str]:
     try:
         ipaddress.ip_address(host)
-        addresses = [host]
+        return [host]
     except ValueError:
-        addresses = await resolve(host)
+        return await resolve(host)
 
+
+def _check_addresses(host: str, addresses: list[str]) -> None:
     for address in addresses:
         reason = reject_address(address)
         if reason is not None:
