@@ -74,7 +74,7 @@ export function MomentStrip({ banner, agentName, onDone, onRelease, onAllow, onT
   // A held payment is never let through: `/release` answers 409 for it.
   const release = banner.kind === 'send' && banner.held && !money ? onRelease : undefined;
   return (
-    <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-person-fg">
+    <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
       <div className="flex items-start gap-2.5">
         <Icon className="mt-0.5 size-4 shrink-0 text-person-ink" aria-hidden />
         <p className="min-w-0 flex-1 leading-relaxed">{words}</p>

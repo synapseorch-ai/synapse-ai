@@ -208,7 +208,7 @@ export function BrowserPane({
       </header>
 
       {login && !closed ? (
-        <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-person-fg">
+        <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
           <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
           <span className="min-w-0 flex-1 leading-relaxed">
             <strong className="font-semibold">Log in to <span translate="no">{login.sites.join(', ')}</span>.</strong>{' '}
@@ -224,7 +224,7 @@ export function BrowserPane({
       ) : driving ? (
         <div role="status" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-person bg-person-subtle px-3 py-2 text-xs">
           <span aria-hidden className="size-2 shrink-0 rounded-full bg-person" />
-          <span className="whitespace-nowrap font-medium text-person-fg">{driver}</span>
+          <span className="whitespace-nowrap font-medium text-text">{driver}</span>
           <Input
             size="sm"
             value={note}
