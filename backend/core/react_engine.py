@@ -1094,6 +1094,7 @@ async def run_agent_step(
     model_roles: dict | None = None,      # the run's {role: model} (BWA1's MODEL_ROLES_KEY): a helper model naming a role
     inbox=None,                           # core.helpers.Inbox: a root chat turn's, read between model calls (SUB1a)
     own_words: list[str] | None = None,   # the person's own text beyond the message (a workflow step's own template)
+    browser_picks: dict | None = None,    # kept sessions picked for the step and the run: {"step": [...], "run": [...]}
     background: bool = False,             # its helpers may work in the background (the app's chat only, S4)
     automated: dict | None = None,        # a follow-up nobody typed: the helper result it answers (SUB1a)
     board_scope=None,                     # core.boards.BoardScope (or its dict): the workflow step or schedule it runs in (BOARD1a)
@@ -1689,6 +1690,7 @@ async def run_agent_step(
                             else f"User Request: {user_message}\n")
     final_response = ""
     _browser_used: str | None = None  # the browser this turn or step drove, set idle when it ends
+    _browser_settings: dict | None = None  # the agent's browser settings with every level's picks (F1140)
     _ran_out = False  # the loop spent every turn, rather than breaking out
     # Why the answer is the loop's words and not the model's (the repeat guard,
     # running out of turns): named on `final` so a workflow step can fail with
@@ -3699,7 +3701,13 @@ async def run_agent_step(
                                       if agent_name == _browser_client.SERVER_NAME else None)
                     _browser_used = _browser_owner or _browser_used
                     _owner_token = _browser_client.owner.set(_browser_owner) if _browser_owner else None
-                    _settings_token = (_browser_client.settings.set(active_agent.get("browser") or {})
+                    if _browser_owner and _browser_settings is None:
+                        from core.browser import picks as _browser_picks
+                        _browser_settings = await _browser_picks.settings_for(
+                            active_agent.get("browser") or {},
+                            chat_id=session_id if (not _workflow_step and _visitor is None) else None,
+                            run=(browser_picks or {}).get("run"), step=(browser_picks or {}).get("step"))
+                    _settings_token = (_browser_client.settings.set(_browser_settings or {})
                                        if _browser_owner else None)
                     _words_token = _browser_client.own_words.set(_persons_words) if _browser_owner else None
                     try:

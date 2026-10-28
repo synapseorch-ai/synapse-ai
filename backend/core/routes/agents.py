@@ -156,6 +156,13 @@ async def _save_agent(agent: Agent) -> dict:
 
     document = agent.dict()
     await _check_type(document)
+    if (document.get("browser") or {}).get("sessions"):
+        # One kept session per site (F1140): the editor shows one choice per site; this is the backstop.
+        from core.browser.picks import OnePerSite, one_per_site
+        try:
+            await one_per_site(document["browser"]["sessions"])
+        except OnePerSite as refused:
+            raise HTTPException(status_code=422, detail=str(refused)) from None
     # A workflow agent runs its orchestration, so one with none runs nothing:
     # it was saved and failed on its first message (F264). The Deploy button
     # (`POST /api/orchestrations/{id}/deploy`) is how one is made.

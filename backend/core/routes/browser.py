@@ -14,7 +14,7 @@ import json
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.browser import client as browser_client
 
@@ -234,7 +234,7 @@ async def finish_session(session_id: str, body: FinishSession):
         raise HTTPException(status_code=409, detail="This browser is not for keeping a session.")
     site, row = done
     if body.keep and row is None:
-        raise HTTPException(status_code=422, detail={"detail": f"Nothing on {site} is signed in yet.", "site": site})
+        return JSONResponse(status_code=422, content={"detail": f"Nothing on {site} is signed in yet.", "site": site})
     return row or {}
 
 

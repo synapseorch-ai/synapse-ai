@@ -199,6 +199,9 @@ class StepConfig(BaseModel):
     max_turns: int = 15
     timeout_seconds: int = int(ORCH_STEP_TIMEOUT)
     allowed_tools: list[str] | None = None  # Override agent's tools (narrows only)
+    #: Kept sessions this step's Browser agent starts with (F1140), nearest of the levels: the step's win over the
+    #: run's, the chat's and the agent's on a site. Ids from the Sessions library; None = none picked here.
+    browser_sessions: list[str] | None = None
 
     # Response cache (skipped for AGENT steps — state-dependent behaviour)
     cache_responses_enabled: bool = False

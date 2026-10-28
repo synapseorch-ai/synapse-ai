@@ -270,7 +270,11 @@ def test_the_library_lists_keeps_and_removes_sessions(monkeypatch):
             opened.append(sites)
             return "bs1"
 
+    async def orchs():
+        return []
+
     monkeypatch.setattr("core.store.resources.load_agents", agents)
+    monkeypatch.setattr("core.store.resources.load_orchestrations", orchs)
     monkeypatch.setattr(browser_client, "tools", _Tools())
     app = FastAPI()
     app.include_router(routes.router)

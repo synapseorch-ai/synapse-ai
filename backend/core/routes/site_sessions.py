@@ -11,6 +11,7 @@ from __future__ import annotations
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from core import site_sessions
@@ -35,22 +36,11 @@ def _site_of(text: str) -> str:
     return registrable_domain(host)
 
 
-async def _uses(rows: list[dict]) -> dict[str, dict]:
-    """Where each session is picked, for Remove's warning: agents here; chats and workflows come with F1140."""
-    from core.store.resources import load_agents
-    counts = {r["id"]: {"agents": 0, "chats": 0, "workflows": 0} for r in rows}
-    for agent in await load_agents():
-        browser = agent.get("browser") or {}
-        for sid in {*(browser.get("sessions") or []), *([browser["login_ref"]] if browser.get("login_ref") else [])}:
-            if sid in counts:
-                counts[sid]["agents"] += 1
-    return counts
-
-
 @router.get("/api/site-sessions")
 async def list_site_sessions():
+    from core.browser.picks import uses_of
     rows = await site_sessions.list_sessions()
-    me, uses = person(), await _uses(rows)
+    me, uses = person(), await uses_of([r["id"] for r in rows])
     return {"sessions": [{**r, "owner_name": r["owner"], "shared_with": [], "mine": r["owner"] == me,
                           "uses": uses[r["id"]]} for r in rows]}
 
@@ -76,6 +66,30 @@ async def remove_site_session(session_id: str):
     if not await site_sessions.forget(session_id):
         raise HTTPException(status_code=404, detail="That session is gone already.")
     return {"removed": True}
+
+
+# ── a chat's picks (F1140) ─────────────────────────────────────────────────
+
+class Picks(BaseModel):
+    ids: list[str] = []
+
+
+@router.get("/api/chat/{chat_id}/browser-sessions")
+async def get_chat_picks(chat_id: str):
+    from core.browser.picks import chat_picks
+    return {"ids": await chat_picks(chat_id)}
+
+
+@router.put("/api/chat/{chat_id}/browser-sessions")
+async def put_chat_picks(chat_id: str, body: Picks):
+    """The chat's sessions, applied when its browser next opens. Two for one site: 422 `{detail, site, ids}`."""
+    from core.browser.picks import OnePerSite, set_chat_picks
+    try:
+        return {"ids": await set_chat_picks(chat_id, body.ids)}
+    except OnePerSite as refused:
+        return JSONResponse(status_code=422, content=refused.body())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
 
 
 # ── for one release: BRW2's Website logins screen (F1079) ───────────────────

@@ -767,7 +767,8 @@ async def test_finishing_keeps_the_session_or_says_nothing_was_signed_in(client,
 
     fake.host.call = call
     nothing = await client.post(f"/api/browser/{sid}/finish-session", json={"keep": True})
-    assert nothing.status_code == 422 and nothing.json()["detail"]["site"] == "example.com"
+    assert nothing.status_code == 422 and nothing.json() == {"detail": "Nothing on example.com is signed in yet.",
+                                                             "site": "example.com"}
     assert await fake.owner_of(sid) is not None, "the browser stays open for another try"
     state["login_state"] = {"cookies": [{"name": "sid", "value": "new", "domain": "portal.example.com"}], "origins": []}
     kept = await client.post(f"/api/browser/{sid}/finish-session", json={"keep": True})
@@ -1202,8 +1203,9 @@ async def test_kept_sign_ins_can_live_elsewhere(monkeypatch):
             return "ss_kept"
 
     monkeypatch.setattr(browser_client, "_login_store", _Logins())
-    state, expired = await browser_client._sessions_state(["ss_1", "ss_gone"])
+    state, expired, loaded, skipped = await browser_client._sessions_state(["ss_1", "ss_gone"])
     assert state["cookies"][0]["name"] == "a" and expired is None, "a store with no get() says nothing expired"
+    assert loaded == [{"id": "ss_1", "site": "", "level": "agent"}] and skipped == []
 
 
 def test_kept_screenshots_and_logs_can_live_elsewhere():
@@ -1318,3 +1320,147 @@ def test_an_ended_turn_leaves_nobody_at_the_wheel_but_never_takes_a_persons(tmp_
     assert held.go_idle() == {"wheel": "nobody"} and not held.idle, "a held send is not an idle browser"
     s.take()
     assert s.wheel == "person" and not s.idle
+
+
+
+# ── picking sessions at four levels (F1140) ──────────────────────────────────
+
+async def test_a_browser_starts_with_every_levels_picks_one_per_site_the_nearer_winning(logins_store):
+    from core.browser import picks
+    from core.storage import get_blob_store
+    get_blob_store().put("browser_picks/chats/c9.json", json.dumps(["ss_live"]))
+    try:
+        got = await picks.settings_for({"sessions": ["ss_vendor", "ss_gone"], "mode": "co_drive"}, chat_id="c9",
+                                       run=["ss_gone"], step=[])
+    finally:
+        get_blob_store().delete("browser_picks/chats/c9.json")
+    # ss_gone (run) and ss_live (chat) are both example.com: the run's is nearer; the agent's vendor.io joins.
+    assert got["sessions"] == ["ss_gone", "ss_vendor"] and got["levels"] == {"ss_gone": "run", "ss_vendor": "agent"}
+    assert got["mode"] == "co_drive" and "login_ref" not in got
+
+
+async def test_two_sessions_for_one_site_are_refused_where_they_are_picked(logins_store):
+    from core.browser import picks
+    with pytest.raises(picks.OnePerSite) as refused:
+        await picks.one_per_site(["ss_live", "ss_vendor", "ss_gone"])
+    assert refused.value.body() == {"detail": "Pick one session for example.com.", "site": "example.com",
+                                    "ids": ["ss_live", "ss_gone"]}
+    assert await picks.one_per_site(["ss_live", "ss_live", "ss_vendor"]) == ["ss_live", "ss_vendor"]
+
+
+async def test_a_chats_picks_are_kept_and_refused_flat(client, logins_store):
+    assert (await client.get("/api/chat/c7/browser-sessions")).json() == {"ids": []}
+    ok = await client.put("/api/chat/c7/browser-sessions", json={"ids": ["ss_live", "ss_vendor"]})
+    assert ok.json() == {"ids": ["ss_live", "ss_vendor"]}
+    assert (await client.get("/api/chat/c7/browser-sessions")).json() == {"ids": ["ss_live", "ss_vendor"]}
+    bad = await client.put("/api/chat/c7/browser-sessions", json={"ids": ["ss_live", "ss_gone"]})
+    assert bad.status_code == 422 and bad.json() == {"detail": "Pick one session for example.com.",
+                                                     "site": "example.com", "ids": ["ss_live", "ss_gone"]}
+    assert (await client.get("/api/chat/c7/browser-sessions")).json()["ids"] == ["ss_live", "ss_vendor"]
+    assert (await client.put("/api/chat/c7/browser-sessions", json={"ids": []})).json() == {"ids": []}
+    assert (await client.put("/api/chat/..%2Fx/browser-sessions", json={"ids": []})).status_code in (404, 422)
+
+
+async def test_a_run_started_with_picks_keeps_them_and_two_for_one_site_are_refused(client, logins_store, monkeypatch):
+    from core.routes import orchestrations
+    from core.models_orchestration import StepConfig
+    started = []
+
+    async def resolve(orch_id):
+        return {"id": orch_id, "name": "W", "entry_step_id": "s1",
+                "steps": [{"id": "s1", "name": "S", "type": "agent", "agent_id": "a1",
+                           "browser_sessions": ["ss_vendor"]}]}
+
+    def spawn(gen, run_id):  # nothing runs: the run's start is what's checked
+        started.append(gen)
+        import asyncio as _asyncio
+        q = _asyncio.Queue()
+        q.put_nowait(orchestrations.SENTINEL)
+        return None, q
+
+    monkeypatch.setattr("core.scale.context.resolve_orchestration", resolve)
+    monkeypatch.setattr(orchestrations, "spawn_engine_run", spawn)
+    bad = await client.post("/api/orchestrations/w1/run", json={"message": "go", "browser_sessions": ["ss_live", "ss_gone"]})
+    assert bad.status_code == 422 and bad.json()["site"] == "example.com" and not started
+    seen = {}
+    from core.orchestration import engine as engine_mod
+
+    def run(self, initial_input, run_id, session_id=None, initial_state=None):
+        seen["state"] = initial_state  # as the route calls it; the run itself is the engine's
+
+        async def nothing():
+            if False:
+                yield {}
+        return nothing()
+
+    monkeypatch.setattr(engine_mod.OrchestrationEngine, "run", run)
+    await client.post("/api/orchestrations/w1/run", json={"message": "go", "browser_sessions": ["ss_live"]})
+    assert seen["state"] == {"_browser_sessions": ["ss_live"]}
+    step = StepConfig.model_validate({"id": "s", "name": "S", "type": "agent", "browser_sessions": ["ss_live"]})
+    assert step.model_dump()["browser_sessions"] == ["ss_live"], "a step keeps its picks on save"
+
+
+async def test_an_agent_with_two_sessions_for_one_site_is_refused(client, logins_store):
+    body = {"id": "b3", "name": "B", "description": "d", "type": "browser", "tools": [], "system_prompt": "x",
+            "browser": {"sessions": ["ss_live", "ss_gone"]}}
+    resp = await client.post("/api/agents", json=body)
+    assert resp.status_code == 422 and resp.json()["detail"] == "Pick one session for example.com."
+
+
+async def test_the_pane_hears_who_is_signed_in_and_why_one_was_not(logins_store):
+    tools = browser_client.BrowserTools(_FakeHost())
+    token = browser_client.settings.set({"sessions": ["ss_live", "ss_gone", "ss_hers"],
+                                         "levels": {"ss_live": "chat", "ss_gone": "agent", "ss_hers": "run"}})
+    who = browser_client.for_user.set("you")
+    try:
+        await _call(tools, "chat:p9")
+    finally:
+        browser_client.for_user.reset(who)
+        browser_client.settings.reset(token)
+    [opened] = [e for e in tools.take_events("chat:p9") if e["type"] == "browser_session"]
+    assert opened["sessions"] == [{"id": "ss_live", "site": "example.com", "level": "chat"}]
+    assert opened["skipped"] == [{"site": "example.com", "reason": "expired", "owner_name": "you"},
+                                 {"site": "hers.io", "reason": "not_shared", "owner_name": "priya"}]
+
+
+async def test_a_session_says_where_it_is_picked(monkeypatch):
+    from core.browser import picks
+    from core.storage import get_blob_store
+
+    async def agents():
+        return [{"id": "a", "browser": {"sessions": ["ss_x"]}}, {"id": "b", "browser": {"login_ref": "ss_x"}}]
+
+    async def orchs():
+        return [{"id": "w", "steps": [{"id": "s", "browser_sessions": ["ss_x"]}, {"id": "t"}]}]
+
+    monkeypatch.setattr("core.store.resources.load_agents", agents)
+    monkeypatch.setattr("core.store.resources.load_orchestrations", orchs)
+    get_blob_store().put("browser_picks/chats/u1.json", json.dumps(["ss_x"]))
+    try:
+        assert await picks.uses("ss_x") == {"agents": 2, "chats": 1, "workflows": 1}
+        assert await picks.uses("ss_none") == {"agents": 0, "chats": 0, "workflows": 0}
+    finally:
+        get_blob_store().delete("browser_picks/chats/u1.json")
+
+
+async def test_a_steps_pick_beats_the_runs_on_one_site(logins_store):
+    from core.browser import picks
+    got = await picks.settings_for({"sessions": []}, run=["ss_live"], step=["ss_gone"])
+    assert got["sessions"] == ["ss_gone"] and got["levels"] == {"ss_gone": "step"}
+
+
+async def test_a_chats_picks_are_its_tenants_alone():
+    from core.browser import picks
+    from core.tenancy import disable_multi_tenancy, enable_multi_tenancy, tenant_scope
+    enable_multi_tenancy()
+    try:
+        with tenant_scope("acme"):
+            from core.storage import get_blob_store
+            get_blob_store().put("browser_picks/chats/same-id.json", json.dumps(["ss_acme"]))
+            assert await picks.chat_picks("same-id") == ["ss_acme"]
+        with tenant_scope("globex"):
+            assert await picks.chat_picks("same-id") == [], "another tenant's chat of the same id picks nothing"
+        with tenant_scope("acme"):
+            get_blob_store().delete("browser_picks/chats/same-id.json")
+    finally:
+        disable_multi_tenancy()

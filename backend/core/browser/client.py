@@ -423,7 +423,7 @@ class BrowserTools:
             await self.store.pop_owner(key)  # its browser is gone
         chosen = settings.get() or {}
         picked = list(chosen.get("sessions") or ([chosen["login_ref"]] if chosen.get("login_ref") else []))
-        state, expired = await _sessions_state(picked)
+        state, expired, loaded, skipped = await _sessions_state(picked, chosen.get("levels") or {})
         opening = {"owner": key, "mode": chosen.get("mode") or gate.READ_ONLY, "sites": chosen.get("sites") or [],
                    "limits": {"actions": int(chosen.get("action_budget") or 40)}}
         if state:
@@ -439,7 +439,8 @@ class BrowserTools:
         await self.store.set_owner(key, {
             "sid": sid, "parked": None, "sessions": None,
             "expired": expired})
-        self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
+        self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key,
+                                                 "sessions": loaded, "skipped": skipped})
         return host, sid
 
     async def owner_of(self, session_id: str) -> str | None:
@@ -547,28 +548,37 @@ def _expired_words(site: str) -> str:
     return f"The kept session for {site} has expired: sign in again, then hand the browser back."
 
 
-async def _sessions_state(picked: list[str]) -> tuple[dict | None, dict | None]:
-    """The picked sessions' state, merged into one (each cookie scoped to its own site already), and the first one
-    that expired and is the person's (`{site_session_id, site}`), for a "sign in again" turn. One that isn't theirs is
-    left out (F1140 says so on the pane)."""
-    store, who = _logins(), for_user.get()
-    cookies, origins, expired = [], [], None
+async def _sessions_state(picked: list[str], levels: dict | None = None):
+    """`(state, expired, loaded, skipped)` for the picked sessions: their state merged into one (each cookie already
+    scoped to its own site); the first that expired and is the person's (`{site_session_id, site}`), for a "sign in
+    again" turn; `[{id, site, level}]` of those loaded; `[{site, reason: expired|not_shared, owner_name}]` of those
+    left out, so the pane can say who's signed in and why one wasn't (F1140)."""
+    store, who, levels = _logins(), for_user.get(), levels or {}
+    cookies, origins, expired, loaded, skipped = [], [], None, [], []
     for sid in picked:
         try:
             state = await store.state_for(sid, for_user=who)
         except Exception:
             state = None
-        if state:
-            cookies += [c for c in state.get("cookies") or [] if isinstance(c, dict)]
-            origins += [o for o in state.get("origins") or [] if isinstance(o, dict)]
-            continue
         try:
             row = await store.get(sid) if hasattr(store, "get") else None
         except Exception:
             row = None
-        if expired is None and row and row.get("expired") and (who is None or row.get("owner") == who):
-            expired = {"site_session_id": sid, "site": row.get("site") or ""}
-    return ({"cookies": cookies, "origins": origins} if cookies or origins else None), expired
+        site = (row or {}).get("site") or ""
+        if state:
+            cookies += [c for c in state.get("cookies") or [] if isinstance(c, dict)]
+            origins += [o for o in state.get("origins") or [] if isinstance(o, dict)]
+            loaded.append({"id": sid, "site": site, "level": levels.get(sid, "agent")})
+            continue
+        if not row:
+            continue  # removed since it was picked
+        mine = who is None or row.get("owner") == who
+        if row.get("expired") and mine and expired is None:
+            expired = {"site_session_id": sid, "site": site}
+        skipped.append({"site": site, "reason": "expired" if row.get("expired") else "not_shared",
+                        "owner_name": row.get("owner_name") or row.get("owner") or ""})
+    state = {"cookies": cookies, "origins": origins} if cookies or origins else None
+    return state, expired, loaded, skipped
 
 
 def _for_site(state: dict | None, site: str) -> dict | None:

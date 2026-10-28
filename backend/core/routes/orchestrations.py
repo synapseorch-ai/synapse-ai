@@ -533,6 +533,14 @@ async def run_orchestration(orch_id: str, request: Request):
 
     body = await request.json()
     user_input = body.get("message", "")
+    # Kept sessions picked for this run (F1140): its Browser steps start with them, one per site.
+    picked = body.get("browser_sessions") or []
+    if picked:
+        from core.browser.picks import RUN_KEY, OnePerSite, one_per_site
+        try:
+            picked = await one_per_site(picked)
+        except OnePerSite as refused:
+            return JSONResponse(status_code=422, content=refused.body())
     run_id = new_run_id(orch_id)
 
     orch = Orchestration.model_validate(orch_data)
@@ -543,7 +551,8 @@ async def run_orchestration(orch_id: str, request: Request):
 
     # Engine runs in its own task, independently of the SSE consumer, and is
     # registered for cancellation.
-    _task, queue = spawn_engine_run(engine.run(user_input, run_id), run_id)
+    initial_state = {RUN_KEY: picked} if picked else None
+    _task, queue = spawn_engine_run(engine.run(user_input, run_id, initial_state=initial_state), run_id)
 
     async def event_stream():
         # Heartbeats keep the stream warm during long LLM/compaction steps so a
