@@ -9984,8 +9984,12 @@ def _m2b_summary(run: dict) -> dict:
                                                  "score_regression": False}
 
 
-async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, theme: str | None = None):
-    """A page over the stubbed runs. Returns (ctx, page, the /api/orchestrations requests it made)."""
+async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, theme: str | None = None,
+                    before=None):
+    """A page over the stubbed runs. Returns (ctx, page, the /api/orchestrations requests it made).
+
+    `before(ctx)` adds a check's own routes before the page loads: a route added after would miss what the page
+    fetches as it mounts."""
     runs = runs if runs is not None else _M2B_RUNS
     ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
     if theme:
@@ -10003,6 +10007,8 @@ async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, th
         await ctx.route(f"**/api/orchestrations/runs/{rid}/children", _answer([]))
         await ctx.route(f"**/api/orchestrations/runs/{rid}/events/stream*",
                         _answer(_M2B_STREAM, content_type="text/event-stream"))
+    if before is not None:
+        await before(ctx)
     page = await ctx.new_page()
     page.on("request", lambda r: seen.append(r.method + " " + urllib.parse.urlsplit(r.url).path)
             if "/api/orchestrations" in r.url else None)
@@ -12399,8 +12405,7 @@ async def check_brwlog(browser) -> str:
         _frame(_BRW_ACTION, "3"),
         _frame({"type": "stream_complete"})])
     try:
-        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs=runs)
-        await _brw_shots(ctx)
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs=runs, before=_brw_shots)
         try:
             line = page.locator("main [data-browser-action]").filter(has_text="Search button")
             await asyncio.sleep(0.6)
@@ -12936,8 +12941,6 @@ async def check_brwrunpage(browser) -> str:
 
         # Ended: the filmstrip, from the kept screenshots.
         _M2B_STREAM = events + _frame({"type": "stream_complete"})
-        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
-                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]})
         # The whole log kept with the run (BRW1, F1125): the agent's lines and the person's own press, which the
         # journal never carried.
         whole = [{**_BRW_ACTION, "session_id": "bsR"},
@@ -12945,9 +12948,14 @@ async def check_brwrunpage(browser) -> str:
                   "target": "https://stock.example.com/orders", "shot_ref": "2"},
                  {"session_id": "bsR", "n": 3, "at": 0, "actor": "person", "action": "pressed",
                   "target": "Pay now", "url": "https://stock.example.com/orders", "shot_ref": None}]
-        await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
-                        lambda r: r.fulfill(status=200, json={"entries": whole}))
-        await _brw_shots(ctx)
+
+        async def kept(ctx):
+            await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
+                            lambda r: r.fulfill(status=200, json={"entries": whole}))
+            await _brw_shots(ctx)
+
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
+                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept)
         try:
             strip = page.get_by_role("list", name="What the agent did in the browser")
             try:
