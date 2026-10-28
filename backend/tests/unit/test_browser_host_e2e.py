@@ -996,3 +996,35 @@ async def test_a_fix_never_pays_or_deletes_even_with_its_redo_unspent(replay_sit
     assert paying["handover"]["kind"] == "press" and paying["handover"]["press"]["tier"] == "money", paying
     assert "/paid" not in posts
     await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_replay_started_without_waiting_runs_once_and_is_polled_to_its_answer(replay_site, codrive_host):
+    """BRW3: started, then polled at the control port, so no request has to stay open for a whole replay; one at a
+    time, so a start sent twice never replays twice."""
+    port, _other, _posts = replay_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:p1", "mode": "co_drive"}))["session_id"]
+    body = {"session_id": sid, "steps": _search_steps(port), "inputs": {"order": "P-1"}, "unattended": False,
+            "wait": False, "replay_id": "rp_mine"}
+    async with http.post(f"http://127.0.0.1:{control}/replay", json=body) as r:
+        assert r.status == 202 and (await r.json()) == {"replay_id": "rp_mine"}
+    async with http.post(f"http://127.0.0.1:{control}/replay", json={**body, "replay_id": "rp_again"}) as r:
+        assert r.status == 409 and (await r.json())["replay_id"] == "rp_mine", "one replay at a time"
+    async with http.get(f"http://127.0.0.1:{control}/replay/status",
+                        params={"session_id": sid, "replay_id": "rp_mine"}) as r:
+        first = await r.json()
+    assert first.get("running") is True or first.get("done") == 4, first
+    for _ in range(60):
+        async with http.get(f"http://127.0.0.1:{control}/replay/status",
+                            params={"session_id": sid, "replay_id": "rp_mine"}) as r:
+            now = await r.json()
+        if not now.get("running"):
+            break
+        await asyncio.sleep(0.5)
+    assert now == {"replay_id": "rp_mine", "done": 4, "outputs": {"heading": "Results for P-1"}}, now
+    async with http.get(f"http://127.0.0.1:{control}/replay/status",
+                        params={"session_id": sid, "replay_id": "rp_again"}) as r:
+        assert r.status == 404, "the second start never ran"
+    async with http.get(f"http://127.0.0.1:{viewer}/replay/status", params={"session_id": sid}) as r:
+        assert r.status in (401, 403, 404, 405), "the status is the control port's, never the viewer's"
+    await _post(http, control, "/close", {"session_id": sid})

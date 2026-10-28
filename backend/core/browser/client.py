@@ -215,6 +215,42 @@ class MemorySessionStore:
         return self._by_sid.get(sid)
 
 
+#: How long a replay may take, and how often the client asks how it is going.
+REPLAY_S, REPLAY_POLL_S = 600, 1.0
+
+
+async def _replay_polled(host, sid: str, path: str, body: dict) -> tuple[int, dict]:
+    """A replay started (`wait: false`) and then polled until it ends (BRW3: a long request may not survive the
+    MicroVM endpoint, an idle cutoff or a restart). Its id is ours, sent with the start, which is sent once: if the
+    answer is lost, that id is polled (404 a few times means it never arrived); a 409 is another replay running."""
+    replay_id = f"rp_{secrets.token_hex(8)}"
+    try:
+        status, started = await host.call("POST", path, json={**body, "wait": False, "replay_id": replay_id},
+                                          timeout=30)
+        if status == 409 and started.get("replay_id") and started["replay_id"] != replay_id:
+            return 409, {"error": "Another recording is still running in this browser; wait for it to finish."}
+        if 400 <= status < 500 and status != 409:
+            return status, started
+    except Exception:
+        pass  # lost on the way back, or never arrived: its status says which
+    loop = asyncio.get_running_loop()
+    deadline, misses = loop.time() + REPLAY_S, 0
+    while loop.time() < deadline:
+        try:
+            status, now = await host.call("GET", "/replay/status", timeout=30,
+                                          params={"session_id": sid, "replay_id": replay_id})
+        except Exception:
+            status, now = 599, {}
+        if status == 200 and not now.get("running"):
+            return 200, now
+        if status == 404:
+            misses += 1
+            if misses >= 5:  # nothing started: the start never arrived
+                return 503, {"error": "The browser did not start the recording; try again."}
+        await asyncio.sleep(REPLAY_POLL_S)
+    return 504, {"error": f"The recording was still running after {REPLAY_S // 60} minutes."}
+
+
 class RecordingOpen(RuntimeError):
     """A recording already has its browser open (someone is recording or re-recording it)."""
 
@@ -343,14 +379,14 @@ class BrowserTools:
                 return _result(f"'{name}' needs its inputs: {', '.join(missing)}.", error=True)
         try:
             host, sid = await self._session_for(key)
-            if args.get("carry_on"):
-                status, body = await host.call("POST", "/replay/continue", json={"session_id": sid}, timeout=600)
-            else:
-                status, body = await host.call("POST", "/replay", timeout=600, json={
-                    "session_id": sid, "steps": doc["steps"], "inputs": inputs, "recording_id": doc["id"],
-                    "unattended": key.startswith("run:")})
         except Exception as exc:
             return _result(f"Synapse's browser is not available: {exc}", error=True)
+        if args.get("carry_on"):
+            status, body = await _replay_polled(host, sid, "/replay/continue", {"session_id": sid})
+        else:
+            status, body = await _replay_polled(host, sid, "/replay", {
+                "session_id": sid, "steps": doc["steps"], "inputs": inputs, "recording_id": doc["id"],
+                "unattended": key.startswith("run:")})
         if status >= 400 or body.get("refused") or body.get("error"):
             return _result(body.get("refused") or body.get("error") or "The recording could not run.", error=True)
         said: list[str] = []

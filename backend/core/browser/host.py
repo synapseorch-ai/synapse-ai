@@ -190,6 +190,12 @@ class Session:
         self.replaying: dict | None = None     # the replay in hand: its steps, inputs and whether anyone is there
         self.replay_sends: set[str] | None = None  # unattended: the only sends it may make, as its recording did
         self.fixing: dict | None = None        # a missed step being found again (F1144): its capture and allowance
+        # A replay run as a task, started and then polled (a long request may not survive a proxy, an idle cutoff
+        # or a restart, BRW3): one at a time; its answer is kept until the next starts.
+        self.replay_task: asyncio.Task | None = None
+        self.replay_id: str | None = None
+        self.replay_answer: dict | None = None
+        self.replay_at: int | None = None
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -290,6 +296,8 @@ class Session:
         raise RuntimeError("Chromium did not open its debugging port")
 
     async def close(self) -> None:
+        if self.replay_task is not None and not self.replay_task.done():
+            self.replay_task.cancel()
         await self._stop_screencast()
         try:
             await self._stack.aclose()
@@ -713,6 +721,7 @@ class Session:
         # agent's own next call, which has its own rules, or the next replay.
         self.replay_sends = ({x for st in steps for x in (st.get("sends") or [])} if unattended else None)
         for step in [st for st in steps if int(st.get("n") or 0) >= from_n]:
+            self.replay_at = int(step.get("n") or 0)
             stopped = self._replay_held(step) or await self._replay_step(step, unattended)
             if stopped is not None:
                 return stopped
@@ -1323,24 +1332,65 @@ class Host:
     async def replay(self, request):
         body = await request.json()
         s = self._session(body.get("session_id", ""))
-        return web.json_response(await s.replay(list(body.get("steps") or []), dict(body.get("inputs") or {}),
-                                                unattended=bool(body.get("unattended")),
-                                                recording_id=str(body.get("recording_id") or "")))
+        return await self._replaying(s, body, s.replay(
+            list(body.get("steps") or []), dict(body.get("inputs") or {}), unattended=bool(body.get("unattended")),
+            recording_id=str(body.get("recording_id") or "")))
 
     async def replay_continue(self, request):
         body = await request.json()
         s = self._session(body.get("session_id", ""))
+        if s.replay_task is not None and not s.replay_task.done():
+            return web.json_response({"error": "A replay is running.", "replay_id": s.replay_id}, status=409)
         plan = s.replaying
         if not plan:
             return web.json_response({"error": "Nothing is being replayed."}, status=409)
-        # From the step after the one found again (a fix, or the person's turn), unless told where.
-        fix = s.finish_fix()
-        after = (fix or {}).get("n") or plan.get("turn_at")
-        from_n = int(body.get("from_n") or (int(after) + 1 if after else 1))
-        plan.pop("turn_at", None)
-        done = await s.replay(plan["steps"], plan["inputs"], unattended=plan["unattended"],
-                              recording_id=plan["recording_id"], from_n=from_n)
-        return web.json_response({**done, **({"fix": fix} if fix else {})})
+
+        async def carry_on() -> dict:
+            # From the step after the one found again (a fix, or the person's turn), unless told where.
+            fix = s.finish_fix()
+            after = (fix or {}).get("n") or plan.get("turn_at")
+            from_n = int(body.get("from_n") or (int(after) + 1 if after else 1))
+            plan.pop("turn_at", None)
+            done = await s.replay(plan["steps"], plan["inputs"], unattended=plan["unattended"],
+                                  recording_id=plan["recording_id"], from_n=from_n)
+            return {**done, **({"fix": fix} if fix else {})}
+        return await self._replaying(s, body, carry_on())
+
+    async def _replaying(self, s: Session, body: dict, run) -> web.Response:
+        """Answer a replay when it ends, or (`wait: false`) start it as the session's one replay task: 202
+        `{replay_id}` (the caller's own id when it sends one), polled at /replay/status. A start while one runs is 409
+        with the running one's id, so a start sent again never runs it twice."""
+        if s.replay_task is not None and not s.replay_task.done():
+            run.close()
+            return web.json_response({"error": "A replay is running.", "replay_id": s.replay_id}, status=409)
+        if body.get("wait", True) is not False:
+            return web.json_response(await run)
+        given = str(body.get("replay_id") or "")
+        s.replay_id = given[:40] if given.startswith("rp_") else f"rp_{uuid.uuid4().hex[:12]}"
+        s.replay_answer, s.replay_at = None, None
+
+        async def task() -> None:
+            try:
+                s.replay_answer = await run
+            except asyncio.CancelledError:
+                s.replay_answer = {"refused": "The browser closed during the replay."}
+                raise
+            except Exception as exc:
+                said = str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__
+                s.replay_answer = {"refused": f"The replay failed: {said}"}
+        s.replay_task = asyncio.ensure_future(task())
+        return web.json_response({"replay_id": s.replay_id}, status=202)
+
+    async def replay_status(self, request):
+        """A started replay: `{replay_id, running, at}` while it runs, then its answer with `replay_id`. Without a
+        `replay_id`, the session's latest (a start whose 202 was lost is found this way)."""
+        s = self._session(request.query.get("session_id", ""))
+        want = request.query.get("replay_id") or s.replay_id
+        if not want or want != s.replay_id:
+            return web.json_response({"error": "No such replay."}, status=404)
+        if s.replay_task is not None and not s.replay_task.done():
+            return web.json_response({"replay_id": s.replay_id, "running": True, "at": s.replay_at})
+        return web.json_response({"replay_id": s.replay_id, **(s.replay_answer or {"refused": "The replay ended."})})
 
     async def idle(self, request):
         body = await request.json()
@@ -1522,6 +1572,7 @@ def control_app(host: Host) -> web.Application:
     app.router.add_post("/idle", host.idle)
     app.router.add_post("/replay", host.replay)
     app.router.add_post("/replay/continue", host.replay_continue)
+    app.router.add_get("/replay/status", host.replay_status)
     return app
 
 
