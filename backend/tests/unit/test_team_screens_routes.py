@@ -204,9 +204,17 @@ class TestAPausedTeamKeepsItsTimes:
             return tool_call("danger")
 
         async def ana_answers_ben(_kw):
-            await _asyncio.sleep(1.8)
-            t = next(iter(team_mod._LIVE.values()))
-            ben = next(m for m in t.waiting() if m.name == "Ben")
+            # Wait for Ben's question itself, not a guess at when it comes: a slept 1.8 s raced Ben's ask on a
+            # loaded runner (F1175). Then the person takes 0.8 s, the wait that must not count as Ben's work.
+            ben = None
+            for _ in range(500):
+                t = next(iter(team_mod._LIVE.values()), None)
+                ben = next((m for m in t.waiting() if m.name == "Ben"), None) if t is not None else None
+                if ben is not None:
+                    break
+                await _asyncio.sleep(0.02)
+            assert ben is not None, "Ben never asked"
+            await _asyncio.sleep(0.8)
             assert t.answer(ben.question_id, approve=True)
             await _asyncio.sleep(0.3)
             return "A fine"
