@@ -13,7 +13,7 @@ import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { Combobox, Input } from '@/components/ui';
 import type { Orchestration, StepConfig } from '@/types/orchestration';
-import type { SiteSession } from '@/components/browser';
+import type { Recording, RecordingSummary, SiteSession } from '@/components/browser';
 
 /** Props every per-type section receives. */
 /** A workflow as a Workflow step's picker shows it (E3). */
@@ -58,7 +58,21 @@ export interface StepSectionProps {
     workflows?: WorkflowOption[];
     /** The Sessions library, for a Browser agent's step to pick its own (F1140); unset, the step offers none. */
     browserSessions?: StepSessions;
+    /** The Recordings library, for a Browser step (F1146); unset, its recording's id is all it shows. */
+    browserRecordings?: StepRecordings;
 }
+
+/**
+ * A Browser step's recordings (F1146), the product's: the library's list, one recording read for its inputs and steps,
+ * where they are, and "Record a new one" (the product's record browser; the recording is the workflow's).
+ */
+export type StepRecordings = {
+    list: RecordingSummary[] | null;
+    get: (id: string) => Promise<Recording | null>;
+    libraryHref: string;
+    recordingHref: (id: string) => string;
+    record?: (start: { sessions: string[]; onKept: (id: string) => void }) => React.ReactNode;
+};
 
 /** The kept sessions a step may pick from, and where they are managed (the product's `SessionsHost`). */
 export type StepSessions = { sessions: SiteSession[] | null; libraryHref: string; locked?: { upgradeHref: string } };

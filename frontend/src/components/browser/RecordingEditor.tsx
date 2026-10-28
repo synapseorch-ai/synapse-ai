@@ -271,6 +271,7 @@ function StepRow({ host, recordingId, step, busy, onRename, onInput, onFixed, on
   const [fixing, setFixing] = useState(false);
   const [fixed, setFixed] = useState('');
   const [details, setDetails] = useState(false);
+  const [pictureGone, setPictureGone] = useState(false);
   const value = step.value ?? null;
   const person = value && 'person' in value ? value.person : null;
   const typed = step.action === 'type' && !person;
@@ -283,8 +284,10 @@ function StepRow({ host, recordingId, step, busy, onRename, onInput, onFixed, on
 
   return (
     <li className="flex flex-wrap gap-3 px-4 py-3">
-      {step.after_shot ? (
+      {step.after_shot && !pictureGone ? (
+        // A picture this person may not see (cloud: its maker's and Builders', 403) leaves the step's line alone.
         <img src={host.shotUrl(recordingId, step.after_shot)} alt={`After step ${step.n}`} loading="lazy"
+             onError={() => setPictureGone(true)}
              className="h-20 w-32 shrink-0 rounded border border-border bg-surface-2 object-cover object-top" />
       ) : (
         <div aria-hidden className="h-20 w-32 shrink-0 rounded border border-dashed border-border bg-surface-2" />

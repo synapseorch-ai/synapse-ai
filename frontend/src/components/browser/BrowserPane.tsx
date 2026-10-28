@@ -8,7 +8,7 @@ import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
 import { actionCount, hostOf, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
-         type BrowserSessionEvent, type FrameRecording, type Wheel } from './model';
+         type BrowserSessionEvent, type FrameRecording, type HandedBack, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
 import { SessionPicker } from './SessionPicker';
@@ -50,7 +50,7 @@ export function BrowserPane({
   /** Close the pane, leaving the browser as it is. */
   onHide?: () => void;
   /** The wheel went back to the agent: a turn waiting on the person can go on. */
-  onHandedBack?: () => void;
+  onHandedBack?: (result?: HandedBack) => void;
   /**
    * "Keep me signed in to a site" (F1079, F1139): the person alone, no agent. The strip is the consent card (DESIGN
    * v5-1): it says what is kept, and Keep ends the browser with its session kept. `refused`: why a keep was refused
@@ -139,10 +139,11 @@ export function BrowserPane({
       return;
     }
     if (ok) {
-      if (typeof ok === 'object') setKeptAgain(ok.kept);
+      if (typeof ok === 'object' && ok.kept) setKeptAgain(ok.kept);
       setMoved({ wheel: 'agent', on: frame });
       setNote('');
-      onHandedBack?.();
+      // What came of it goes to the page: cloud follows the turn the server resumed (`resumed`).
+      onHandedBack?.(ok);
     } else setWheelFailed('The wheel could not be handed back. Try again.');
   };
 

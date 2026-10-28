@@ -3,7 +3,7 @@
  * grey for logic (D211). The icons are the canvas's (`STEP_TYPE_META.icon`).
  */
 import {
-    ArrowLeftRight, BookOpenText, Bot, Braces, Code, FileInput, FileText, GitBranch, GitFork, GitMerge,
+    ArrowLeftRight, BookOpenText, Bot, Braces, Code, FileInput, FileText, GitBranch, GitFork, GitMerge, Globe,
     RefreshCw, Scale, Square, User, Users, Workflow, Wrench, Zap,
 } from 'lucide-react';
 
@@ -14,7 +14,7 @@ import { roleOf, type StepRole } from './model';
 
 const ICONS: Record<string, React.FC<{ className?: string }>> = {
     Bot, Zap, Wrench, Scale, GitBranch, GitMerge, RefreshCw, User, Code, Braces, GitFork, ArrowLeftRight,
-    FileText, Square, BookOpenText, FileInput, Workflow,
+    FileText, Square, BookOpenText, FileInput, Workflow, Globe,
 };
 
 const GROUND: Record<StepRole, string> = {

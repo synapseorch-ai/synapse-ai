@@ -161,7 +161,8 @@ export async function carryOn(host: RecordingsHost, browserSessionId: string): P
 }
 
 /** Stop recording: kept (a new recording, or a re-record's fix waiting to be approved) or dropped. */
-export async function stopRecording(host: RecordingsHost, browserSessionId: string, body: { keep: boolean; from_step?: string; name?: string }):
+export async function stopRecording(host: RecordingsHost, browserSessionId: string,
+                                    body: { keep: boolean; from_step?: string; name?: string; workflow_id?: string }):
     Promise<{ recordingId: string; pendingEdit?: string } | { dropped: true } | { refused: string }> {
   const res = await fetch(host.recordStopUrl(browserSessionId), {
     method: 'POST',

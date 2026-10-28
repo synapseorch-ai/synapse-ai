@@ -53,6 +53,9 @@ function summaryFor(step: StepConfig, agentName?: string, workflowName?: string)
     const clip = (s: string, n = 40) => (s.length > n ? s.slice(0, n) + '…' : s);
     switch (step.type) {
         case 'agent': return agentName ?? 'No agent selected';
+        case 'browser':
+            // A recording replayed by code (F1146); the panel names it.
+            return step.recording_id ? 'Replays a recording' : 'No recording selected';
         case 'workflow':
             if (!step.workflow_id) return 'No workflow selected';
             return workflowName ? `Run workflow: ${workflowName}` : 'Runs another workflow';

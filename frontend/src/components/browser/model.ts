@@ -122,7 +122,16 @@ export type BrowserInput =
  * the page's input. A host without the wheel's calls gives a pane the person only watches (BRW1's v1).
  */
 /** A hand-back: done or not, or done with the session the person signed in again with kept. */
-export type HandedBack = boolean | { kept: KeptSession };
+/**
+ * What a hand-back answered: done, or what came of it. `kept`: a session signed in again, kept (F1140). `resumed`: the
+ * turn the server started on its own when the person handed back (cloud, BRW3): a chat's next turn to follow, as a
+ * sent one is, or the run that carries on. OSS resumes its own way and sends neither.
+ */
+export type HandedBack = boolean | { kept?: KeptSession; resumed?: ResumedTurn };
+
+export type ResumedTurn =
+  | { kind: 'chat'; session_id: string; stream_url: string; cursor: string; turn?: string }
+  | { kind: 'run'; run_id: string };
 
 export type BrowserHost = {
   framesUrl: (sessionId: string) => string;

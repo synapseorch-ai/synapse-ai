@@ -86,7 +86,8 @@ export function BrowserSetup({ value, onChange, sessions, libraryHref, locked }:
         composite
         hint={config.mode === 'read_only'
           ? 'It reads and clicks through pages, and nothing it does can send anything: forms, orders and messages are stopped in the browser.'
-          : 'It works the page with you. You type passwords, card details and codes. It presses Submit or Send only when you’ve asked it to in your own words, and every payment is yours to press.'}
+          // Only what the code holds (Naveen 10-29): no promise about every send, since a page's own script is not held.
+          : 'It works the page with you. Passwords, card details, codes and payments are always yours. A form it submits waits for your OK unless you asked for it.'}
       >
         <Segmented
           label="How it works the page"
