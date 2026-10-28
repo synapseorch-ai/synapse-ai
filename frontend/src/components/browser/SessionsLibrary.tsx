@@ -140,12 +140,14 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
             return (
               <li key={s.id} className="flex flex-wrap items-center gap-3 px-4 py-3 hover:bg-row-hover">
                 <Globe className="size-4 shrink-0 text-text-faint" aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-text" translate="no">{s.site}</div>
+                {/* Its own 14rem before the buttons: on a phone they go under it, and the site reads whole. */}
+                <div className="min-w-0 grow basis-56">
+                  <div className="text-sm font-medium text-text [overflow-wrap:anywhere]" translate="no">{s.site}</div>
                   <div className="mt-0.5 text-xs text-text-faint">
                     {[whose(s), lastUsed(s.last_used_at), expiresIn(s), used].filter(Boolean).join(' · ')}
                   </div>
                 </div>
+                <div className="ml-auto flex shrink-0 items-center gap-1">
                 {s.expired && s.mine && (
                   <Button variant="secondary" size="sm" className="shrink-0" onClick={() => signInAgain(s)}
                           aria-label={`Sign in again to ${s.site}`}>
@@ -164,6 +166,7 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
                     Remove
                   </Button>
                 )}
+                </div>
               </li>
             );
           })}
