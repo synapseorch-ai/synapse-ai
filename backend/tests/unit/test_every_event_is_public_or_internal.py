@@ -28,6 +28,8 @@ NOT_EVENTS = frozenset({
     # Agent, tool and vault kinds; a native-builder step; voice relay frames; ASGI messages; a header name.
     "builder", "conversational", "orchestrator", "mcp_native", "file", "folder", "end",
     "http.response.start", "http.response.body", "SHARED_KEY",
+    # A human field's type: the person's turn in the browser, carried on `human_input_required` (BRW1, F1099).
+    "browser_turn",
 })
 
 
