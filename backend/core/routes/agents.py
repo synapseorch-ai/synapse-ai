@@ -8,6 +8,7 @@ import datetime
 import zoneinfo
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from pydantic import BaseModel
 from core.models import AGENT_NAME_MAX, Agent, AgentActiveRequest, GeneratePromptRequest
@@ -126,7 +127,11 @@ async def create_agent(agent: Agent, request: Request = None):  # type: ignore[a
             current = (await row_stamps("agents", [agent.id])).get(agent.id)
             from core.store.resources import get_agent
             refuse_if_stale(seen, current, exists=await get_agent(agent.id) is not None, noun="agent")
-        saved = await _save_agent(agent)
+        from core.browser.picks import PickRefused
+        try:
+            saved = await _save_agent(agent)
+        except PickRefused as refused:
+            return JSONResponse(status_code=422, content=refused.body())
     return {**saved, "updated_at": (await row_stamps("agents", [agent.id])).get(agent.id),
             "unknown_tools": await _unknown_tools(saved.get("tools") or [])}
 
@@ -157,12 +162,14 @@ async def _save_agent(agent: Agent) -> dict:
     document = agent.dict()
     await _check_type(document)
     if (document.get("browser") or {}).get("sessions"):
-        # One kept session per site (F1140): the editor shows one choice per site; this is the backstop.
-        from core.browser.picks import OnePerSite, one_per_site
-        try:
-            await one_per_site(document["browser"]["sessions"])
-        except OnePerSite as refused:
-            raise HTTPException(status_code=422, detail=str(refused)) from None
+        # One kept session per site (F1140), and only the person's own or shared with them (F1167): the editor
+        # offers just those; this is the backstop. A refusal (`PickRefused`) is answered flat by the route.
+        from core.browser.picks import one_per_site, usable_new
+        from core.store.resources import get_agent
+        await one_per_site(document["browser"]["sessions"])
+        before = ((await get_agent(document["id"]) or {}).get("browser") or {}) if document.get("id") else {}
+        await usable_new(document["browser"]["sessions"],
+                         before=[*(before.get("sessions") or []), *([before["login_ref"]] if before.get("login_ref") else [])])
     # A workflow agent runs its orchestration, so one with none runs nothing:
     # it was saved and failed on its first message (F264). The Deploy button
     # (`POST /api/orchestrations/{id}/deploy`) is how one is made.

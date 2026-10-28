@@ -1464,3 +1464,28 @@ async def test_a_chats_picks_are_its_tenants_alone():
             get_blob_store().delete("browser_picks/chats/same-id.json")
     finally:
         disable_multi_tenancy()
+
+
+async def test_an_unshared_session_new_to_a_save_is_refused_and_one_already_saved_stays(client, logins_store,
+                                                                                      monkeypatch):
+    """F1167 at each save that takes session ids: an agent, a workflow step and a run's start."""
+    from core.store.resources import save_agent
+    body = {"id": "b9", "name": "B", "description": "d", "type": "browser", "tools": [], "system_prompt": "x",
+            "browser": {"sessions": ["ss_live", "ss_hers"]}}
+    refused = await client.post("/api/agents", json=body)
+    assert refused.status_code == 422 and refused.json()["site"] == "hers.io" and refused.json()["ids"] == ["ss_hers"]
+    await save_agent({**body, "browser": {"sessions": ["ss_hers"]}})  # saved before the rule
+    kept = await client.post("/api/agents", json={**body, "browser": {"sessions": ["ss_hers", "ss_live"]}})
+    assert kept.status_code == 200, "an id already on the agent stays; loading goes by the job's person"
+
+    flow = {"id": "w9", "name": "W", "entry_step_id": "s1",
+            "steps": [{"id": "s1", "name": "S", "type": "agent", "agent_id": "b9", "browser_sessions": ["ss_hers"]}]}
+    step = await client.post("/api/orchestrations", json=flow)
+    assert step.status_code == 422 and step.json()["ids"] == ["ss_hers"]
+
+    async def resolve(orch_id):
+        return {"id": orch_id, "name": "W", "entry_step_id": "s1", "steps": [{"id": "s1", "name": "S", "type": "agent"}]}
+
+    monkeypatch.setattr("core.scale.context.resolve_orchestration", resolve)
+    run = await client.post("/api/orchestrations/w9/run", json={"message": "go", "browser_sessions": ["ss_hers"]})
+    assert run.status_code == 422 and run.json()["site"] == "hers.io"

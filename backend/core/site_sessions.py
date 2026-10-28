@@ -59,6 +59,12 @@ _FIELDS = ("id", "owner", "site", "created_at", "expires_at")
 _FIELDS_BEFORE = ("id", "owner", "sites", "created_at", "expires_at")
 
 
+def install_person() -> str:
+    """Who uses this install: its one sign-in, or "you" without one. Whose a session is, here."""
+    from core.config import load_settings
+    return load_settings().get("login_username") or "you"
+
+
 def key_path() -> Path:
     """Where this install's key is kept when the environment does not give one."""
     from core.paths import var_root
@@ -197,8 +203,8 @@ def _state_for(session_id: str, for_user: str | None) -> dict | None:
     record = _read(path)
     if not record or record.get("id") != session_id:
         return None
-    if for_user is not None and record.get("owner") != for_user:
-        return None
+    if record.get("owner") != (for_user if for_user is not None else install_person()):
+        return None  # another person's (F1167): shown in the library, never opened for anyone else
     if float(record.get("expires_at", 0)) <= time.time():
         _expire(path, record)
         return None
@@ -261,7 +267,7 @@ async def keep(session_id: str | None, *, state: dict, site: str, owner: str) ->
 
 
 async def state_for(session_id: str, *, for_user: str | None = None) -> dict | None:
-    """The session, decrypted, for `for_user` (its owner; None = this install's one person); None once expired,
+    """The session, decrypted, for `for_user` (its owner; None = this install's person); None once expired,
     removed, unreadable, never kept or not theirs. Marks it used."""
     return await asyncio.to_thread(_state_for, session_id, for_user)
 
