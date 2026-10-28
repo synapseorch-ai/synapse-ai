@@ -82,6 +82,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+        with:
+          # The uv lock-deps.sh requires (UV_VERSION there): another writes markers differently (F1170).
+          version: "0.11.8"
       - name: Locks match requirements*.txt
         run: ./scripts/lock-deps.sh --check
 
