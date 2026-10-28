@@ -3209,10 +3209,11 @@ async def check_ctrls(browser) -> str:
 async def check_runnernote(browser) -> str:
     """The Transform panel says what the sandbox really allows.
 
-    It said "no network". The engine asks the runner for the internet, and a
-    Transform in the shipped Docker sandbox opened a socket to 1.1.1.1:53 when
-    measured (F70). A person deciding whether code may call out reads this
-    sentence, so it must be the true one.
+    Since F968 a Transform runs with `--network none` and the way out is a tool
+    step (test_a_transform_has_no_way_out_but_a_tool.py). The note says so, and
+    no longer the internet access F70 measured before it. A person deciding
+    whether code may call out reads this sentence, so it must be the true one
+    (F1137).
     """
     oid = f"orch_uismoke_note_{int(time.time())}"
     orch = laid_out_orchestration(oid, 1)
@@ -3226,9 +3227,10 @@ async def check_runnernote(browser) -> str:
     finally:
         await ctx.close()
         drop_fixture(oid)
-    if re.search(r"no network", note, re.I) or not re.search(r"internet", note, re.I):
-        raise AssertionError(f"the Transform note says {note[:140]!r} — the sandbox has internet access")
-    return "the Transform note says the sandbox reaches the internet"
+    if not re.search(r"no network", note, re.I) or not re.search(r"tool step", note, re.I) \
+            or re.search(r"internet", note, re.I):
+        raise AssertionError(f"the Transform note says {note[:140]!r} — the sandbox has no network; a tool step reaches out")
+    return "the Transform note says the sandbox has no network and a tool step reaches out"
 
 
 @check
