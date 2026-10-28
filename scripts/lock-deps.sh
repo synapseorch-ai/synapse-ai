@@ -81,7 +81,9 @@ compile() {
     fi
 
     echo "==> $output"
-    uv pip compile --universal --quiet \
+    # --no-config: pyproject.toml's [tool.uv] holds uv.lock to these locks (F1173), and must
+    # never feed back into them.
+    uv pip compile --no-config --universal --quiet \
         --python-version "$MIN_PYTHON" \
         "${inputs[@]}" \
         "${extra[@]}" \
@@ -149,7 +151,24 @@ compile requirements-wheel-knowledge.lock ../pyproject.toml \
     --torch-backend cpu
 rm -f .knowledge-constraints.txt
 
-# Each lock reproducible is not enough: two that an install combines must agree.
+# The repo root's uv.lock, which `uv sync` and `uv run` install from: pyproject.toml's,
+# held to the installer's pins (F1172, F1173). `uv lock` reads no lock file, so
+# scripts/uv_constraints.py writes them into pyproject.toml's [tool.uv]
+# constraint-dependencies first; existing pins are kept as they are.
+echo "==> uv.lock"
+if [ "$CHECK_MODE" -eq 1 ]; then
+    python3 "$REPO_ROOT/scripts/uv_constraints.py" --check
+    (cd "$REPO_ROOT" && uv lock --check --quiet) || {
+        echo "error: uv.lock is stale — run ./scripts/lock-deps.sh and commit the result." >&2
+        exit 1
+    }
+else
+    python3 "$REPO_ROOT/scripts/uv_constraints.py"
+    (cd "$REPO_ROOT" && uv lock --quiet)
+fi
+
+# Each lock reproducible is not enough: two that an install combines must agree,
+# and uv.lock must pin what the installer pins.
 python3 "$REPO_ROOT/scripts/lock_agreement.py" "$BACKEND_DIR"
 
 if [ "$CHECK_MODE" -eq 1 ]; then
