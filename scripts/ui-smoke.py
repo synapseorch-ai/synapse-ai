@@ -12203,7 +12203,7 @@ window.fetch = function (input, init) {
 async def _brw_shots(ctx) -> None:
     import base64
     jpeg = base64.b64decode(BRW_JPEG)
-    await ctx.route(re.compile(r".*/api/browser/[^/]+/shot/[^/?]+$"),
+    await ctx.route(re.compile(r".*/api/browser/(?:[^/]+/shot/[^/?]+|kept/(?:chat|run)/[^/]+/\d+)$"),
                     lambda r: r.fulfill(status=200, body=jpeg, headers={"Content-Type": "image/jpeg"}))
 
 
@@ -12402,13 +12402,16 @@ async def check_brwlog(browser) -> str:
         ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs=runs)
         await _brw_shots(ctx)
         try:
-            for opener in ("Activity", "Show the log", "Log"):
-                b = page.get_by_role("button", name=re.compile(rf"^{opener}"))
-                if await b.count():
-                    await b.first.click()
-                    break
-            await asyncio.sleep(0.6)
             line = page.locator("main [data-browser-action]").filter(has_text="Search button")
+            await asyncio.sleep(0.6)
+            # The log may start folded; an open one is left open (a click would fold it).
+            if not await line.count():
+                for opener in ("Activity", "Show the log", "Log"):
+                    b = page.get_by_role("button", name=re.compile(rf"^{opener}"))
+                    if await b.count():
+                        await b.first.click()
+                        break
+                await asyncio.sleep(0.6)
             if not await line.count():
                 bad.append("the run log has no line for the browser action")
             elif not await line.locator("img[src*='/api/browser/bsL/shot/1']").count():
@@ -12553,7 +12556,7 @@ async def check_brwwheel(browser) -> str:
         if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsW/wheel/take') && c.method === 'POST')"):
             bad.append("Take over did not take the wheel")
         await _brw_push(page, "frames:bsW", _brw_frame(wheel="person"))
-        if not await pane.get_by_text("You're driving").count():
+        if not await pane.get_by_text(re.compile("You[’']re driving")).count():
             bad.append("the pane does not say the person is driving")
 
         box = await screen.locator("img").bounding_box()
@@ -12822,9 +12825,13 @@ async def check_brwturn(browser) -> str:
     try:
         await _brw_push(page, "post", "".join(_frame(e, f"t-{i + 1}") for i, e in enumerate([
             {"type": "browser_session", "session_id": "bsT", "owner": "chat:uismoke-brw-turn"},
+            # As the engine yields it (react_engine: prompt, session_id, banner_kind and the run-shaped field), then
+            # the chat route's done: the turn ends at the park.
             {"type": "human_input_required", "kind": "browser_turn", "session_id": "bsT",
-             "reason": "Log in to Saltmarsh's partner portal.", "banner_kind": "login_expired",
-             "prompt": "Log in to Saltmarsh's partner portal."}])))
+             "banner_kind": "login_expired", "prompt": "Log in to Saltmarsh's partner portal.",
+             "fields": [{"name": "browser_turn", "type": "browser_turn", "label": "Log in to Saltmarsh's partner portal.",
+                         "session_id": "bsT", "banner_kind": "login_expired"}]},
+            {"type": "done"}])))
         card = page.locator("main [data-browser-turn]")
         try:
             await card.wait_for(timeout=8_000)
@@ -12845,6 +12852,8 @@ async def check_brwturn(browser) -> str:
             bad.append("the turn was not read on after the hand-back")
         if not await _on_screen(page, "You handed the browser back"):
             bad.append("the conversation does not say the browser was handed back")
+        if await _on_screen(page, "The run goes on"):
+            bad.append("a chat's browser turn was handed back as a run's")
     finally:
         await ctx.close()
     if bad:
@@ -12938,6 +12947,7 @@ async def check_brwrunpage(browser) -> str:
                   "target": "Pay now", "url": "https://stock.example.com/orders", "shot_ref": None}]
         await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
                         lambda r: r.fulfill(status=200, json={"entries": whole}))
+        await _brw_shots(ctx)
         try:
             strip = page.get_by_role("list", name="What the agent did in the browser")
             try:
