@@ -368,7 +368,7 @@ export function Dashboard({ docsMcp = false }: { docsMcp?: boolean }) {
 
                 {/* F1030: a new workspace (while Getting started shows), once the docs' MCP answers, until put away. */}
                 {docsMcp && showStart && learnHidden !== '1' && (
-                    <LearnCard logos={{ claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg' }} onDismiss={() => setLearnHidden('1')} />
+                    <LearnCard logos={{ claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg', cursor: '/cursor-icon.svg', vscode: '/vscode-icon.svg' }} onDismiss={() => setLearnHidden('1')} />
                 )}
 
                 {moreHidden !== '1' && (

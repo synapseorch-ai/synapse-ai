@@ -29,7 +29,7 @@ export function useOssConnectHost(): ConnectHost | null {
     return useMemo<ConnectHost | null>(() => (origin ? {
         mcpUrl: `${origin}/api/v1/mcp`,
         desktop: 'stdio',
-        logos: { claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg' },
+        logos: { claude: '/claude-ai-icon.svg', openai: '/chatgpt-icon.svg', cursor: '/cursor-icon.svg', vscode: '/vscode-icon.svg' },
         // A key here can do all a person here can; there is no run-only kind to choose.
         makeKey: async (name: string) => {
             const res = await fetch('/api/settings/api-keys', {
