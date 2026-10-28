@@ -155,6 +155,18 @@ def drop_fixture(oid: str) -> None:
         pass
 
 
+def drop_fixtures(oids=(), agent_ids=()) -> None:
+    """A check's workflows and agents, removed: after it, and when its setup fails partway, so a broken run leaves
+    nothing behind for the next run to find."""
+    for oid in oids:
+        drop_fixture(oid)
+    for aid in agent_ids:
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+
+
 #: Roles a person types into or picks from — the controls a field's label names.
 FIELD_ROLES = {"textbox", "combobox", "spinbutton", "searchbox"}
 
@@ -13452,8 +13464,12 @@ async def check_brwsessionsreal(browser) -> str:
     aid, oid = f"agent_uismoke_brwreal_{stamp}", f"orch_uismoke_brwreal_{stamp}"
     agent = {**_agent(aid, f"Browser real {stamp % 1_000_000}"), "type": "browser",
              "browser": {"mode": "read_only", "sites": [], "sessions": [mine], "action_budget": 40}}
-    api("/api/agents", "POST", agent)
-    api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+    try:
+        api("/api/agents", "POST", agent)
+        api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+    except Exception:
+        drop_fixtures([oid], [aid])
+        raise
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
     page = await ctx.new_page()
     try:
@@ -13713,11 +13729,15 @@ async def check_brwrunpicks(browser) -> str:
     Sessions library."""
     stamp = int(time.time())
     aid, oid, plain = f"agent_uismoke_brwrun_{stamp}", f"orch_uismoke_brwrun_{stamp}", f"orch_uismoke_brwplain_{stamp}"
-    api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser",
-                                "browser": {"mode": "read_only", "sites": ["portal.saltmarsh.example"], "sessions": [],
-                                            "action_budget": 40}})
-    api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
-    api("/api/orchestrations", "POST", print_orchestration(plain, "ui-smoke no browser"))
+    try:
+        api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser",
+                                    "browser": {"mode": "read_only", "sites": ["portal.saltmarsh.example"],
+                                                "sessions": [], "action_budget": 40}})
+        api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+        api("/api/orchestrations", "POST", print_orchestration(plain, "ui-smoke no browser"))
+    except Exception:
+        drop_fixtures([oid, plain], [aid])
+        raise
     salt, carrier = "ss_" + "n" * 24, "ss_" + "p" * 24
     listed = {"sessions": [_site_session(salt, "saltmarsh.example"), _site_session(carrier, "carrier.example")]}
     ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
@@ -14249,6 +14269,21 @@ async def check_brwrecordingredo(browser) -> str:
             "stopped at the person's sign-in carries on after it; one that broke offers its step instead")
 
 
+def _brwstep_fixture(oid: str, fixer: str, fixer_name: str, plain_agent: str, stamp: int) -> None:
+    """brwstep's agents and workflow: a Browser agent, a plain one, and a step saved as a plain agent step."""
+    api("/api/agents", "POST", {**_agent(fixer, fixer_name), "type": "browser"})
+    api("/api/agents", "POST", _agent(plain_agent, f"Writer {stamp % 1_000_000}"))
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": "ui-smoke browser step", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_find",
+        # Saved as a plain agent step and turned into Browser in the panel: the save refuses a Browser step with
+        # no recording, which is what the canvas must then say.
+        "steps": [{"id": f"{oid}_find", "name": "Find the order", "type": "agent",
+                   "next_step_id": f"{oid}_end", "output_key": "order", "position_x": 80, "position_y": 160},
+                  {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None,
+                   "position_x": 500, "position_y": 160}]})
+
+
 @check
 async def check_brwstep(browser) -> str:
     """The Browser workflow step (BRW2, F1146; Naveen 10-29: a separate step, every run unattended, a recording made
@@ -14262,17 +14297,13 @@ async def check_brwstep(browser) -> str:
     rid, new_rid = "rec_" + "k" * 24, "rec_" + "m" * 24
     fixer, plain_agent = f"agent_uismoke_brwfix_{stamp}", f"agent_uismoke_brwplainag_{stamp}"
     oid = f"orch_uismoke_brwstep_{stamp}"
-    api("/api/agents", "POST", {**_agent(fixer, f"Order fixer {stamp % 1_000_000}"), "type": "browser"})
-    api("/api/agents", "POST", _agent(plain_agent, f"Writer {stamp % 1_000_000}"))
-    api("/api/orchestrations", "POST", {
-        "id": oid, "name": "ui-smoke browser step", "description": "Temporary fixture created by scripts/ui-smoke.py.",
-        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_find",
-        # Saved as a plain agent step and turned into Browser in the panel: the save refuses a Browser step with
-        # no recording, which is what the canvas must then say.
-        "steps": [{"id": f"{oid}_find", "name": "Find the order", "type": "agent",
-                   "next_step_id": f"{oid}_end", "output_key": "order", "position_x": 80, "position_y": 160},
-                  {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None,
-                   "position_x": 500, "position_y": 160}]})
+    fixer_name = f"Order fixer {stamp % 1_000_000}"
+
+    try:
+        _brwstep_fixture(oid, fixer, fixer_name, plain_agent, stamp)
+    except Exception:
+        drop_fixtures([oid], [fixer, plain_agent])
+        raise
     doc = _recording(rid, inputs=[{"name": "order_number", "label": "Order number", "step_id": "s2"}],
                      steps=[{**s, "value": {"input": "order_number"}, "line": "Type {order_number} into Order number"}
                             if s["id"] == "s2" else s for s in _rec_steps()])
@@ -14348,7 +14379,7 @@ async def check_brwstep(browser) -> str:
         offered = [(await o.inner_text()).strip() for o in await page.get_by_role("option").all()]
         if any("Writer" in o for o in offered) or not any("Order fixer" in o for o in offered):
             bad.append(f"the agents offered to find the way are {offered}, not only Browser agents")
-        await page.get_by_role("option", name=re.compile("Order fixer")).click()
+        await page.get_by_role("option", name=fixer_name, exact=True).click()
 
         seen.clear()
         await page.get_by_role("button", name=re.compile(r"^Save(?: Unsaved changes)?$")).first.click()
@@ -14377,12 +14408,7 @@ async def check_brwstep(browser) -> str:
             bad.append("the new recording is not the step's")
     finally:
         await ctx.close()
-        drop_fixture(oid)
-        for aid in (fixer, plain_agent):
-            try:
-                api(f"/api/agents/{aid}", "DELETE")
-            except Exception:
-                pass
+        drop_fixtures([oid], [fixer, plain_agent])
     if bad:
         raise AssertionError("; ".join(bad))
     return ("Browser is a step: it picks a recording and fills its inputs from the run, a click may send on its own only "
