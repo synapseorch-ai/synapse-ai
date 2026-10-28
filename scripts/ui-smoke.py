@@ -10001,8 +10001,12 @@ def _m2b_summary(run: dict) -> dict:
                                                  "score_regression": False}
 
 
-async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, theme: str | None = None):
-    """A page over the stubbed runs. Returns (ctx, page, the /api/orchestrations requests it made)."""
+async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, theme: str | None = None,
+                    before=None):
+    """A page over the stubbed runs. Returns (ctx, page, the /api/orchestrations requests it made).
+
+    `before(ctx)` adds a check's own routes before the page loads: a route added after would miss what the page
+    fetches as it mounts."""
     runs = runs if runs is not None else _M2B_RUNS
     ctx = await browser.new_context(viewport={"width": width[0], "height": width[1]})
     if theme:
@@ -10020,6 +10024,8 @@ async def _m2b_page(browser, path: str, width=WIDE, runs: dict | None = None, th
         await ctx.route(f"**/api/orchestrations/runs/{rid}/children", _answer([]))
         await ctx.route(f"**/api/orchestrations/runs/{rid}/events/stream*",
                         _answer(_M2B_STREAM, content_type="text/event-stream"))
+    if before is not None:
+        await before(ctx)
     page = await ctx.new_page()
     page.on("request", lambda r: seen.append(r.method + " " + urllib.parse.urlsplit(r.url).path)
             if "/api/orchestrations" in r.url else None)
@@ -12157,6 +12163,1000 @@ async def check_firstrun(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("opens once on a model that cannot answer, CLI states and a saved key shown, outside click kept, "
             "two models saved, Escape remembered, Home and Chat reopen it")
+
+
+# ── the browser inside Synapse: the pane (BRW2, D330) ───────────────────────
+
+#: A 16×10 JPEG: a frame of the screencast, and the screenshot after an action.
+BRW_JPEG = (
+    "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDABsSFBcUERsXFhceHBsgKEIrKCUlKFE6PTBCYFVlZF9VXVtqeJmBanGQc1tdhbWGkJ6jq62rZ4C8ybq"
+    "mx5moq6T/2wBDARweHigjKE4rK06kbl1upKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKSkpKT/wAARCAAKABAD"
+    "ASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKB"
+    "kaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZ"
+    "mqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQF"
+    "BgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5"
+    "OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX"
+    "2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCtRRRXUcJ//9k=")
+
+#: The component's routes, driven from the test: `/frames` is a stream this
+#: script feeds frame by frame, `/stop` is recorded and answered. The pane reads
+#: frames with fetch, so this stands in front of CHAT_STUB's fetch.
+BROWSER_STUB = r"""
+window.__browserCalls = [];
+const _chatFetch = window.fetch;
+window.fetch = function (input, init) {
+  const url = String((input && input.url) || input || '');
+  const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  const m = /\/api\/browser\/([^/?]+)\/([a-z/-]+)/.exec(url);
+  if (!m) return _chatFetch(input, init);
+  const body = init && typeof init.body === 'string' ? JSON.parse(init.body) : null;
+  window.__browserCalls.push({url: url, method: method, body: body});
+  if (m[2] === 'stop') {
+    return Promise.resolve(new Response('{"stopped": true, "closed": true}', {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  // A note carrying a card number is refused at the hand-back, as the engine refuses it (BRW1, F1100).
+  if (m[2] === 'wheel/hand-back' && body && /\d{13,19}/.test(String(body.note || '').replace(/[\s-]/g, ''))) {
+    return Promise.resolve(new Response(JSON.stringify({detail: "Card details go in the browser; you'll be asked there."}), {
+      status: 422, headers: {'Content-Type': 'application/json'}}));
+  }
+  // A closed browser's whole log, kept with its chat or run (BRW1, F1125): what a check put in __keptLog, or none.
+  if (/^(chat|run)\/[^/]+\/log$/.test(m[2]) && m[1] === 'kept') {
+    return Promise.resolve(new Response(JSON.stringify({entries: window.__keptLog || []}), {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  if (m[2] !== 'frames') {
+    return Promise.resolve(new Response('{"ok": true}', {status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
+  const name = 'frames:' + m[1];
+  const stream = new ReadableStream({start(c) {
+    window.__streams[name] = {
+      push: (frame) => c.enqueue(new TextEncoder().encode(frame)),
+      close: () => { try { c.close(); } catch (e) {} },
+      fail: () => { try { c.error(new TypeError('network error')); } catch (e) {} },
+    };
+  }});
+  const signal = init && init.signal;
+  if (signal) signal.addEventListener('abort', () => window.__browserCalls.push({url: url, method: 'ABORT'}));
+  return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+};
+"""
+
+
+async def _brw_shots(ctx) -> None:
+    import base64
+    jpeg = base64.b64decode(BRW_JPEG)
+    await ctx.route(re.compile(r".*/api/browser/(?:[^/]+/shot/[^/?]+|kept/(?:chat|run)/[^/]+/\d+)$"),
+                    lambda r: r.fulfill(status=200, body=jpeg, headers={"Content-Type": "image/jpeg"}))
+
+
+async def _brw_page(browser, session_id: str, width=WIDE):
+    """A chat page with the browser's routes stubbed; its first turn is sent and its stream open."""
+    _tab_agents()
+    ctx, page = await _tabs_page(browser, session_id, width=width)
+    await _brw_shots(ctx)
+    await page.add_script_tag(content=BROWSER_STUB)
+    # A stub that does not parse installs nothing, and every check after it fails far from the cause.
+    if not await page.evaluate("() => Array.isArray(window.__browserCalls)"):
+        raise AssertionError("the browser stub did not load (a syntax error in BROWSER_STUB?)")
+    await _send(page, "check the stock page")
+    await _stream_open(page, "post")
+    return ctx, page
+
+
+def _brw_frame(url: str = "https://stock.example.com/items", wheel: str = "agent") -> str:
+    return _frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": url, "wheel": wheel})
+
+
+async def _brw_push(page, stream: str, frames: str) -> None:
+    await page.evaluate(f"() => window.__streams[{json.dumps(stream)}].push({json.dumps(frames)})")
+
+
+def _pane(page):
+    return page.get_by_role("region", name="Browser")
+
+
+async def _brw_calls(page, kind: str) -> list[dict]:
+    return [c for c in await page.evaluate("() => window.__browserCalls") if f"/{kind}" in c["url"]]
+
+
+@check
+async def check_brwpane(browser) -> str:
+    """The agent's browser opens beside the chat, live, and the person can stop it (BRW2, F1073).
+
+    Before the pane, a browser_session event reached the chat and was dropped: the agent read the page and the
+    person saw nothing. Now the pane opens on that event, about 60% of the row (Naveen, 2026-10-27), shows each
+    frame and the page's address, closes without ending the session, comes back, follows its own tab, stops the
+    agent with Stop, and keeps the last page dimmed once the browser closes.
+    """
+    ctx, page = await _brw_page(browser, "uismoke-brw-a")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsA",
+                                              "owner": "chat:uismoke-brw-a"}, "b-1"))
+        pane = _pane(page)
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("browser_session opened no pane beside the chat")
+        await _stream_open(page, "frames:bsA")
+        await _brw_push(page, "frames:bsA", _brw_frame())
+        shown = pane.locator("img[src^='data:image/jpeg']")
+        if not await _wait(page, "() => !!document.querySelector(\"[aria-label='Browser'] img[src^='data:image/jpeg']\")"):
+            bad.append("a frame never painted")
+        if not await _on_screen(page, "stock.example.com"):
+            bad.append("the page's address is not shown")
+        if not await pane.get_by_text(re.compile(r"is driving")).count():
+            bad.append("the pane does not say who is driving")
+        share = await page.evaluate("""() => {
+            const p = document.querySelector("[aria-label='Browser']").getBoundingClientRect();
+            const row = document.querySelector("[aria-label='Browser']").parentElement.getBoundingClientRect();
+            return p.width / row.width; }""")
+        if not 0.5 <= share <= 0.7:
+            bad.append(f"the pane takes {share:.0%} of the row, not about 60%")
+
+        # Closing the pane keeps the browser: nothing is stopped, the frames stop being read, and it comes back.
+        await pane.get_by_role("button", name="Close the browser pane").click()
+        await asyncio.sleep(0.4)
+        if await pane.count():
+            bad.append("Close left the pane open")
+        if await _brw_calls(page, "stop"):
+            bad.append("closing the pane stopped the browser")
+        if not [c for c in await _brw_calls(page, "frames") if c["method"] == "ABORT"]:
+            bad.append("a closed pane kept reading frames")
+        await page.get_by_role("button", name="Show the browser").click()
+        await pane.wait_for(timeout=5_000)
+        await _stream_open(page, "frames:bsA")
+
+        # The pane belongs to its tab.
+        await _new_tab(page, "UI smoke Tab Beta")
+        await asyncio.sleep(0.5)
+        if await pane.count():
+            bad.append("the pane followed the person into another tab")
+        await _strip(page).get_by_role("tab", name=re.compile("check the stock page")).click()
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            bad.append("the pane did not come back with its tab")
+
+        await pane.get_by_role("button", name="Stop").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.includes('/api/browser/bsA/stop') && c.method === 'POST')"):
+            bad.append("Stop did not stop the browser")
+
+        await _brw_push(page, "frames:bsA", _brw_frame() + _frame({"closed": True}))
+        if not await _on_screen(page, "Browser closed"):
+            bad.append("the pane does not say the browser closed")
+        elif not await shown.count():
+            bad.append("the last page went away when the browser closed")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "opens on browser_session at ~60%, paints frames, closes and returns, follows its tab, Stop, last page kept"
+
+
+@check
+async def check_brwpanephone(browser) -> str:
+    """On a phone the browser is a view the person switches to, never a squeezed split (BRW2, F1073).
+
+    A 60% split of a 400 px screen leaves neither chat nor page readable. On a phone the chat stays in front;
+    a Browser button shows the page full width, and Chat goes back, with nothing scrolling sideways.
+    """
+    ctx, page = await _brw_page(browser, "uismoke-brw-phone", width=PHONE)
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsP",
+                                              "owner": "chat:uismoke-brw-phone"}, "p-1"))
+        show = page.get_by_role("button", name="Browser", exact=True)
+        try:
+            await show.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("no Browser button on a phone after the browser opened")
+        if await _pane(page).is_visible():
+            bad.append("the pane took the phone's screen by itself")
+        await show.click()
+        await _pane(page).wait_for(timeout=5_000)
+        await _stream_open(page, "frames:bsP")
+        await _brw_push(page, "frames:bsP", _brw_frame())
+        width = await page.evaluate("() => document.querySelector(\"[aria-label='Browser']\").getBoundingClientRect().width")
+        if width < PHONE[0] * 0.9:
+            bad.append(f"the browser is {width:.0f} px wide on a {PHONE[0]} px phone")
+        if await page.evaluate("() => document.documentElement.scrollWidth > window.innerWidth"):
+            bad.append("the page scrolls sideways")
+        await page.get_by_role("button", name="Chat", exact=True).click()
+        await asyncio.sleep(0.4)
+        if await _pane(page).is_visible():
+            bad.append("Chat did not go back to the conversation")
+        if not await page.locator("main textarea").last.is_visible():
+            bad.append("the composer is not back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the chat stays in front; Browser shows the page full width; Chat goes back; nothing scrolls sideways"
+
+
+_BRW_ACTION = {"type": "browser_action", "session_id": "bsL", "n": 1, "at": 0, "actor": "agent",
+               "action": "browser_click", "target": "Search button", "url": "https://stock.example.com/",
+               "shot_ref": "1"}
+
+
+@check
+async def check_brwlog(browser) -> str:
+    """Each agent action in the browser is a line with its screenshot, in the chat turn and on the run's page
+    (BRW2, F1074).
+
+    The component writes a line and a screenshot per action; without a reader for browser_action, the chat's
+    Tools used and the run log never showed what the agent did in the page.
+    """
+    bad: list[str] = []
+    ctx, page = await _brw_page(browser, "uismoke-brw-log")
+    try:
+        frames = "".join(_frame(e, f"l-{i + 1}") for i, e in enumerate([
+            {"type": "browser_session", "session_id": "bsL", "owner": "chat:uismoke-brw-log"},
+            {"type": "tool_execution", "tool_name": "browser_click", "args": {"element": "Search button"}},
+            _BRW_ACTION,
+            {"type": "tool_result", "tool_name": "browser_click", "preview": "clicked"},
+            {"type": "response", "content": "Twelve in stock."}, {"type": "done"}]))
+        await _brw_push(page, "post", frames)
+        if not await _on_screen(page, "Twelve in stock."):
+            raise AssertionError("the turn never answered")
+        chip = page.get_by_role("button", name=re.compile(r"Tools used"))
+        if await chip.count():
+            await chip.last.click()
+        line = page.locator("main [data-browser-action]").filter(has_text="Search button")
+        if not await line.count():
+            bad.append("the chat turn has no line for the browser action")
+        elif not await line.locator("img[src*='/api/browser/bsL/shot/1']").count():
+            bad.append("the chat's browser line has no screenshot")
+    finally:
+        await ctx.close()
+
+    run = dict(_M2B_RUNS["run_smoke_m2b_done"])
+    runs = {"run_smoke_m2b_done": run}
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    _M2B_STREAM = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsL", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame(_BRW_ACTION, "3"),
+        _frame({"type": "stream_complete"})])
+    try:
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs=runs, before=_brw_shots)
+        try:
+            line = page.locator("main [data-browser-action]").filter(has_text="Search button")
+            await asyncio.sleep(0.6)
+            # The log may start folded; an open one is left open (a click would fold it).
+            if not await line.count():
+                for opener in ("Activity", "Show the log", "Log"):
+                    b = page.get_by_role("button", name=re.compile(rf"^{opener}"))
+                    if await b.count():
+                        await b.first.click()
+                        break
+                await asyncio.sleep(0.6)
+            if not await line.count():
+                bad.append("the run log has no line for the browser action")
+            elif not await line.locator("img[src*='/api/browser/bsL/shot/1']").count():
+                bad.append("the run log's browser line has no screenshot")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a browser action is a line with its screenshot in the chat turn and in the run log"
+
+
+
+@check
+async def check_brwlogins(browser) -> str:
+    """Settings → Website logins lists the sites kept for runs, says when each ends, and forgets one only once asked
+    (BRW2, F1079). The session itself never reaches the page."""
+    now = time.time()
+    state = {"logins": [{"id": "wl_" + "a" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
+                         "created_at": now - 86_400, "expires_at": now + 12 * 86_400 + 600}]}
+    deleted: list[str] = []
+
+    async def logins(route):
+        if route.request.method == "DELETE":
+            deleted.append(route.request.url)
+            state["logins"] = []
+            return await route.fulfill(status=200, json={"forgotten": True})
+        return await route.fulfill(status=200, json=state)
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/website-logins(/[^/?]+)?$"), logins)
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        if (await page.locator("main h1").first.inner_text()).strip() != "Website logins":
+            bad.append("the page is not Website logins")
+        rows = page.get_by_role("list", name="Saved logins").get_by_role("listitem")
+        if await rows.count() != 1:
+            bad.append(f"{await rows.count()} rows, not 1")
+        else:
+            text = await rows.first.inner_text()
+            if "portal.saltmarsh.example" not in text or "Ends in 12 days" not in text:
+                bad.append(f"the row reads {text!r}")
+        await page.get_by_role("button", name=re.compile("Forget the login")).click()
+        dialog = page.get_by_role("dialog")
+        await dialog.wait_for(timeout=5_000)
+        if deleted:
+            bad.append("Forget deleted before it was confirmed")
+        await dialog.get_by_role("button", name="Forget").click()
+        await asyncio.sleep(0.8)
+        if not any(u.endswith("/api/website-logins/wl_" + "a" * 24) for u in deleted):
+            bad.append(f"Forget sent {deleted}")
+        if not await _on_screen(page, "No saved logins."):
+            bad.append("the forgotten login is still listed")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "lists the kept site with when it ends; Forget asks, then deletes; the list empties"
+
+
+@check
+async def check_brwagent(browser) -> str:
+    """A Browser agent's own section sets what bounds it, and Save sends it (BRW2, F1080): how it works the page,
+    the sites it may use (typed as addresses, kept as hosts), the saved login it starts with, and its actions per task.
+    These live in the agent's settings so that no page the agent reads can change them (DESIGN §3.1)."""
+    aid = f"agent_uismoke_browser_{int(time.time())}"
+    api("/api/agents", "POST", {**_agent(aid, f"Browser {aid[-6:]}"), "type": "browser"})
+    login = {"id": "wl_" + "b" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
+             "created_at": time.time(), "expires_at": time.time() + 9 * 86_400}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/website-logins$"), lambda r: r.fulfill(status=200, json={"logins": [login]}))
+    page = await ctx.new_page()
+    seen: list[dict] = []
+    page.on("request", lambda r: seen.append({"url": r.url, "method": r.method, "body": r.post_data}))
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
+        await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        section = page.locator("section[data-tour='setup-browser']")
+        if not await section.count():
+            raise AssertionError("a Browser agent has no Browser section")
+        await section.get_by_role("radio", name="Works with you").click()
+        # The rule as Naveen set it on 10-28: it presses Submit or Send only on the person's own words, and every
+        # payment is the person's; nothing is "held and handed" but a payment.
+        hint = await section.inner_text()
+        if "only when you" not in hint or "every payment" not in hint:
+            bad.append("the Works with you hint does not say it presses only on your words, and every payment is yours")
+        if "held and handed to you" in hint:
+            bad.append("the Works with you hint still says a send is held and handed to you")
+        await section.get_by_label("Sites it may use").fill("https://portal.saltmarsh.example/stock\ntracking.carrier.example")
+        await section.get_by_role("combobox", name="Saved login").click()
+        await page.get_by_role("option", name="portal.saltmarsh.example").click()
+        await section.get_by_label("Actions per task").fill("25")
+        await asyncio.sleep(0.3)
+        await page.get_by_role("button", name="Save agent", exact=True).click()
+        await asyncio.sleep(1.5)
+        posts = [json.loads(r["body"] or "{}") for r in seen if r["method"] == "POST" and r["url"].endswith("/api/agents")]
+        sent = (posts[-1] if posts else {}).get("browser")
+        want = {"mode": "co_drive", "sites": ["portal.saltmarsh.example", "tracking.carrier.example"],
+                "login_ref": login["id"], "action_budget": 25}
+        if sent != want:
+            bad.append(f"Save sent browser={sent!r}, not {want!r}")
+    finally:
+        await ctx.close()
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the Browser section sets the mode, the sites as hosts, the saved login and the action budget; Save sends them"
+
+
+@check
+async def check_brwwheel(browser) -> str:
+    """The person takes the wheel, drives the page, and hands it back with a note (BRW2, F1076; DESIGN §2.4).
+
+    Taking over is an explicit button: a click on the page while the agent drives offers it instead of acting, because
+    "any input takes over" races the agent's next action. While the person drives, clicks land where they were made on
+    the page, typing goes in as text and keys, the address bar takes an address, and Hand back carries a note.
+    """
+    ctx, page = await _brw_page(browser, "uismoke-brw-wheel")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsW",
+                                              "owner": "chat:uismoke-brw-wheel"}, "w-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsW")
+        await _brw_push(page, "frames:bsW", _brw_frame())
+        screen = pane.get_by_role("application", name=re.compile("The page"))
+        await screen.wait_for(timeout=5_000)
+
+        await screen.click()
+        await asyncio.sleep(0.4)
+        if await _brw_calls(page, "input"):
+            bad.append("a click while the agent drove went to the page")
+        nudge = page.get_by_role("dialog", name=re.compile("driving"))
+        if not await nudge.count():
+            bad.append("a click while the agent drove did not offer Take over")
+        else:
+            await nudge.get_by_role("button", name="Take over").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsW/wheel/take') && c.method === 'POST')"):
+            bad.append("Take over did not take the wheel")
+        await _brw_push(page, "frames:bsW", _brw_frame(wheel="person"))
+        if not await pane.get_by_text(re.compile("You[’']re driving")).count():
+            bad.append("the pane does not say the person is driving")
+
+        box = await screen.locator("img").bounding_box()
+        await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
+        await page.keyboard.type("abc")
+        await page.keyboard.press("Enter")
+        await asyncio.sleep(0.8)
+        sent = [c["body"] for c in await _brw_calls(page, "input")]
+        clicks = [b for b in sent if b and b.get("type") == "mouse" and b.get("event") == "click"]
+        if not clicks or abs(clicks[0]["x"] - 640) > 16 or abs(clicks[0]["y"] - 200) > 16:
+            bad.append(f"the click reached the page as {clicks[:1]}, not near (640, 200)")
+        typed = "".join(b["text"] for b in sent if b and b.get("type") == "text")
+        if typed != "abc":
+            bad.append(f"typing reached the page as {typed!r}")
+        if not any(b and b.get("type") == "key" and b.get("key") == "Enter" for b in sent):
+            bad.append("Enter did not reach the page")
+
+        address = pane.get_by_role("textbox", name="Address")
+        await address.fill("https://stock.example.com/orders")
+        await address.press("Enter")
+        await asyncio.sleep(0.4)
+        navs = [c["body"] for c in await _brw_calls(page, "input") if c["body"] and c["body"].get("type") == "nav"]
+        if not any(n.get("url") == "https://stock.example.com/orders" for n in navs):
+            bad.append(f"the address bar sent {navs}")
+
+        # A card number in the note is refused, and the pane says the refusal's own words.
+        note = pane.get_by_role("textbox", name="Note for the agent")
+        await note.fill("card is 4111 1111 1111 1111")
+        await pane.get_by_role("button", name="Hand back").click()
+        if not await _wait(page, "() => document.body.innerText.includes('Card details go in the browser')"):
+            bad.append("a refused note is not said")
+        if not await pane.get_by_role("button", name="Hand back").count():
+            bad.append("a refused hand-back gave the wheel back anyway")
+        await note.fill("I logged in, carry on")
+        await pane.get_by_role("button", name="Hand back").click()
+        await asyncio.sleep(0.4)
+        backs = [c["body"] for c in await _brw_calls(page, "wheel/hand-back")]
+        if backs[-1:] != [{"note": "I logged in, carry on"}]:
+            bad.append(f"Hand back sent {backs}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a click while the agent drives offers Take over; the person's clicks, text, keys and address reach the "
+            "page; Hand back carries the note")
+
+
+def _brw_moment(wheel: str = "agent", **extra) -> str:
+    """A frame carrying one of the moments the screencast cannot draw by itself: a banner, a dialog, a select."""
+    return _frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": "https://stock.example.com/orders/new",
+                   "wheel": wheel, **extra})
+
+
+@check
+async def check_brwbanner(browser) -> str:
+    """The moments the person must handle show in the strip under the address, each with its own action (BRW2,
+    F1077; Naveen's pick A): a send the agent tried is held and named, with "It only loaded data" to let it carry on;
+    a turn the agent handed over (here a login that ended) ends with Done; typing on an unlisted site is allowed once;
+    and the page's own dialog and dropdown, which the screencast cannot show, are answered in cards of ours."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-banner")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsB",
+                                              "owner": "chat:uismoke-brw-banner"}, "b-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsB")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", banner={
+            "kind": "send", "reason": "Submit order", "held": {"method": "POST", "url": "https://stock.example.com/orders"}}))
+        if not await _on_screen(page, "Nothing has gone"):
+            bad.append("a held send is not said")
+        if not await pane.get_by_text("stock.example.com", exact=False).count():
+            bad.append("the held send does not name its site")
+        await pane.get_by_role("button", name=re.compile("only loaded data")).click()
+        await asyncio.sleep(0.4)
+        if [c["body"] for c in await _brw_calls(page, "release")] != [{"allow_address": True}]:
+            bad.append(f"'only loaded data' sent {[c['body'] for c in await _brw_calls(page, 'release')]}")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", banner={
+            "kind": "login_expired", "reason": "Log in to Saltmarsh again"}))
+        if not await _on_screen(page, "Log in to Saltmarsh again"):
+            bad.append("a turn's reason is not shown")
+        await pane.get_by_role("button", name="Done", exact=True).click()
+        await asyncio.sleep(0.4)
+        if not await _brw_calls(page, "wheel/hand-back"):
+            bad.append("Done did not hand the wheel back")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("agent", banner={
+            "kind": "allow_typing", "reason": "To search for HP-2041", "host": "tracking.carrier.example"}))
+        allow = pane.get_by_role("button", name=re.compile("Allow typing on tracking.carrier.example"))
+        try:
+            await allow.wait_for(timeout=5_000)
+            await allow.click()
+            await asyncio.sleep(0.4)
+        except Exception:
+            bad.append("typing on an unlisted site is not asked")
+        if [c["body"] for c in await _brw_calls(page, "allow-site")] != [{"host": "tracking.carrier.example"}]:
+            bad.append(f"allow sent {[c['body'] for c in await _brw_calls(page, 'allow-site')]}")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", dialog={
+            "type": "confirm", "message": "Leave this page? Your changes may not be saved."}))
+        card = pane.get_by_role("dialog", name=re.compile("The page asks"))
+        try:
+            await card.wait_for(timeout=5_000)
+            await card.get_by_role("button", name="OK").click()
+            await asyncio.sleep(0.4)
+        except Exception:
+            bad.append("the page's dialog has no card")
+        if [c["body"] for c in await _brw_calls(page, "dialog")] != [{"accept": True}]:
+            bad.append(f"the dialog's answer sent {[c['body'] for c in await _brw_calls(page, 'dialog')]}")
+
+        await _brw_push(page, "frames:bsB", _brw_moment("person", select={
+            "target": "Deliver to", "selected": "dock-1",
+            "options": [{"value": "dock-1", "label": "Dock 1"}, {"value": "dock-2", "label": "Dock 2, Portside"}]}))
+        try:
+            await pane.get_by_role("option", name="Dock 2, Portside").click(timeout=5_000)
+            await asyncio.sleep(0.4)
+        except Exception:
+            bad.append("the page's dropdown has no picker")
+        if [c["body"] for c in await _brw_calls(page, "select")] != [{"target": "Deliver to", "value": "dock-2"}]:
+            bad.append(f"the pick sent {[c['body'] for c in await _brw_calls(page, 'select')]}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a held send is named with 'only loaded data'; a turn ends with Done; typing on a site is allowed once; "
+            "the page's dialog and dropdown are answered in our cards")
+
+
+@check
+async def check_brwpress(browser) -> str:
+    """A final button is the person's to press, and the pane says so (BRW2, F1077; Naveen 2026-10-28, BRW1's
+    "Final buttons and sends"): a `press` turn names the button and what it does, and ends with Done once the
+    person drives; money is always theirs, so a held payment offers no "it only loaded data", only Take over; the
+    log says what was pressed and on whose words, and what the person sent; and the pane says once, to each person,
+    that agents can make mistakes and who presses what."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-press")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsP",
+                                              "owner": "chat:uismoke-brw-press"}, "p-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsP")
+        await _brw_push(page, "frames:bsP", _brw_frame())
+
+        said = "Agents can make mistakes. You press every payment"
+        if not await pane.get_by_text(said, exact=False).count():
+            bad.append("the pane does not say once that agents can make mistakes")
+        else:
+            await pane.get_by_role("button", name="Got it").click()
+            await asyncio.sleep(0.3)
+            if await pane.get_by_text(said, exact=False).count():
+                bad.append("Got it left the disclaimer up")
+
+        await _brw_push(page, "frames:bsP", _brw_moment("person", banner={
+            "kind": "press", "reason": "Press 'Submit feedback' yourself: submits the form on example.com.",
+            "press": {"label": "Submit feedback", "does": "submits the form on example.com",
+                      "host": "example.com", "tier": "acts"}}))
+        if not await _on_screen(page, "Press ‘Submit feedback’ yourself"):
+            bad.append("a press turn does not name its button")
+        # BRW1's reason is the same sentence: the strip says it once.
+        told = await pane.evaluate("el => (el.innerText.match(/Press .Submit feedback. yourself/g) || []).length")
+        if told != 1:
+            bad.append(f"the press strip says its button {told} times")
+        if not await _on_screen(page, "submits the form on example.com"):
+            bad.append("a press turn does not say what the button does")
+        if await pane.get_by_role("button", name=re.compile("only loaded data")).count():
+            bad.append("a press turn offers 'only loaded data'")
+        await pane.get_by_role("button", name="Done", exact=True).click()
+        await asyncio.sleep(0.4)
+        if not await _brw_calls(page, "wheel/hand-back"):
+            bad.append("Done on a press turn did not hand the wheel back")
+
+        # A press turn hands the person the wheel (BRW1, F1124), money or not. Tier money covers permanent deletes
+        # and closing an account too.
+        await _brw_push(page, "frames:bsP", _brw_moment("person", banner={
+            "kind": "press", "reason": "Press 'Pay now' yourself: pays £42.00 on shop.example.com.",
+            "press": {"label": "Pay now", "does": "pays £42.00 on shop.example.com",
+                      "host": "shop.example.com", "tier": "money"}}))
+        if not await _on_screen(page, "Press ‘Pay now’ yourself"):
+            bad.append("a payment turn does not name its button")
+        if not await _on_screen(page, "Payments, permanent deletes and closing an account are always yours"):
+            bad.append("a money turn does not say payments, permanent deletes and closing an account are the person's")
+        if not await pane.get_by_role("button", name="Done", exact=True).count():
+            bad.append("a payment turn, with the wheel the person's, has no Done")
+
+        await _brw_push(page, "frames:bsP", _brw_moment("nobody", banner={
+            "kind": "send", "reason": "Place order",
+            "held": {"method": "POST", "url": "https://pay.example.com/checkout", "money": True}}))
+        if not await _on_screen(page, "Nothing has gone"):
+            bad.append("a held payment is not said")
+        if await pane.get_by_role("button", name=re.compile("only loaded data")).count():
+            bad.append("a held payment offers 'only loaded data' (release answers 409)")
+        take = pane.get_by_role("button", name="Take over")
+        if not await take.count():
+            bad.append("a held payment has no Take over")
+        else:
+            await take.first.click()
+            await asyncio.sleep(0.4)
+            if not await _brw_calls(page, "wheel/take"):
+                bad.append("Take over on a held payment did not take the wheel")
+
+        # The agent's press comes on its browser_action; the person's own lines, which no agent call carries, on
+        # the frames stream (BRW1, V2-CONTRACT "Where they arrive").
+        pressed = {"session_id": "bsP", "n": 10, "at": 0, "url": "https://example.com/", "shot_ref": None,
+                   "actor": "agent", "action": "pressed", "target": "Submit feedback",
+                   "because": "send the feedback form when it's filled in"}
+        theirs = [{"session_id": "bsP", "n": 11, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "pressed", "target": "Pay now"},
+                  {"session_id": "bsP", "n": 12, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "sent", "target": "POST shop.example.com"},
+                  {"session_id": "bsP", "n": 14, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "took over", "target": ""},
+                  {"session_id": "bsP", "n": 15, "at": 0, "url": "https://shop.example.com/", "shot_ref": None,
+                   "actor": "person", "action": "handed back", "target": "after 12 s"},
+                  {"session_id": "bsP", "n": 16, "at": 0, "url": "https://pay.example.com/", "shot_ref": None,
+                   "actor": "guard", "action": "held", "target": "POST pay.example.com"}]
+        await _brw_push(page, "post", _frame({"type": "browser_action", **pressed}, "p-2"))
+        await _brw_push(page, "frames:bsP", "".join(_frame({"log": e}) for e in theirs))
+        listed = pane.get_by_role("list", name="What the agent did")
+        for words in ("Pressed ‘Submit feedback’, as you asked: “send the feedback form when it's filled in”",
+                      "You pressed ‘Pay now’", "You sent POST to shop.example.com", "You took over",
+                      "You handed the browser back after 12 s", "Held for you: POST pay.example.com"):
+            if not await listed.get_by_text(words, exact=False).count():
+                bad.append(f"the log does not read “{words}”")
+
+        # Closed: the whole log is the one kept with the chat, the record of who pressed what.
+        guard = {"session_id": "bsP", "n": 13, "at": 0, "url": "https://example.com/", "shot_ref": None,
+                 "actor": "guard", "action": "blocked", "target": "a WebSocket to 10.0.0.4"}
+        await page.evaluate(f"() => {{ window.__keptLog = {json.dumps([pressed, *theirs, guard])}; }}")
+        await _brw_push(page, "frames:bsP", _frame({"closed": True}))
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/kept/chat/uismoke-brw-press/log'))"):
+            bad.append("a closed browser did not read the log kept with its chat")
+        elif not await listed.get_by_text("Kept from leaving the browser: a WebSocket to 10.0.0.4").count():
+            bad.append("a closed browser's list is not the kept log")
+        elif not await listed.get_by_text("You pressed ‘Pay now’", exact=False).count():
+            bad.append("the kept log lost the person's own press")
+
+        # Once per person: it is remembered in this browser, and the next browser does not say it again.
+        if not await page.evaluate("() => localStorage.getItem('browser-disclaimer-seen')"):
+            bad.append("reading the disclaimer is not remembered")
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsP2",
+                                              "owner": "chat:uismoke-brw-press"}, "p-9"))
+        await _stream_open(page, "frames:bsP2")
+        await _brw_push(page, "frames:bsP2", _brw_frame())
+        await asyncio.sleep(0.4)
+        if await pane.get_by_text("Agents can make mistakes", exact=False).count():
+            bad.append("the disclaimer showed again to a person who had read it")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a press turn names its button and ends with Done; a payment offers only Take over; the log says what "
+            "was pressed and on whose words; the disclaimer shows once")
+
+
+class _Themed:
+    """A browser whose every context opens in one theme, as the app reads it on load."""
+
+    def __init__(self, browser, theme: str):
+        self._browser, self._theme = browser, theme
+
+    def __getattr__(self, name):
+        return getattr(self._browser, name)
+
+    async def new_context(self, **kwargs):
+        ctx = await self._browser.new_context(**kwargs)
+        await ctx.add_init_script(f"try{{localStorage.setItem('synapseTheme','{self._theme}')}}catch(e){{}}")
+        return ctx
+
+
+@check
+async def check_brwcontrast(browser) -> str:
+    """Every strip the pane shows reads at AA in both themes (BRW2, F1073–F1077): who is driving, the person's own
+    strip, a press turn, a held payment, a login turn and the disclaimer. The strips sit on the person's pale tint,
+    where the solid tint's text colour (`person-fg`) is dark on dark (found in the first shots)."""
+    states = [
+        ("agent driving", {"wheel": "agent"}),
+        ("you driving", {"wheel": "person"}),
+        ("press", {"wheel": "person", "banner": {
+            "kind": "press", "reason": "Press 'Submit feedback' yourself: submits the form on example.com.",
+            "press": {"label": "Submit feedback", "does": "submits the form on example.com",
+                      "host": "example.com", "tier": "acts"}}}),
+        ("payment held", {"wheel": "nobody", "banner": {
+            "kind": "send", "reason": "Place order",
+            "held": {"method": "POST", "url": "https://pay.example.com/checkout", "money": True}}}),
+        ("login", {"wheel": "person", "banner": {"kind": "login_expired", "reason": "Log in to Saltmarsh again"}}),
+    ]
+    bad: list[str] = []
+    for theme in ("light", "dark"):
+        ctx, page = await _brw_page(_Themed(browser, theme), f"uismoke-brw-contrast-{theme}")
+        try:
+            await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsC",
+                                                  "owner": f"chat:uismoke-brw-contrast-{theme}"}, "c-1"))
+            pane = _pane(page)
+            await pane.wait_for(timeout=8_000)
+            await _stream_open(page, "frames:bsC")
+            for name, extra in states:
+                await _brw_push(page, "frames:bsC", _brw_moment(**extra))
+                await asyncio.sleep(0.5)
+                inside = await pane.inner_text()
+                for row in await page.evaluate(CONTRAST):
+                    if row["txt"] and row["txt"][:24] in inside:
+                        bad.append(f"{theme} {name}: {row['ratio']}:1 (needs {row['need']}) "
+                                   f"{row['fg']} on {row['bg']} — {row['txt'][:30]!r}")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(dict.fromkeys(bad)))
+    return "every pane strip reads at AA in light and dark"
+
+
+@check
+async def check_brwturn(browser) -> str:
+    """A browser turn shows in the conversation as the same card as the pane's strip, and is acted on there (BRW2,
+    F1077; Naveen: act where you read): it opens the browser, Done hands the wheel back, and the turn is read on
+    from where it paused. It is never answered by typing: a message under it is a new message."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-turn")
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", "".join(_frame(e, f"t-{i + 1}") for i, e in enumerate([
+            {"type": "browser_session", "session_id": "bsT", "owner": "chat:uismoke-brw-turn"},
+            # As the engine yields it (react_engine: prompt, session_id, banner_kind and the run-shaped field), then
+            # the chat route's done: the turn ends at the park.
+            {"type": "human_input_required", "kind": "browser_turn", "session_id": "bsT",
+             "banner_kind": "login_expired", "prompt": "Log in to Saltmarsh's partner portal.",
+             "fields": [{"name": "browser_turn", "type": "browser_turn", "label": "Log in to Saltmarsh's partner portal.",
+                         "session_id": "bsT", "banner_kind": "login_expired"}]},
+            {"type": "done"}])))
+        card = page.locator("main [data-browser-turn]")
+        try:
+            await card.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("a browser turn has no card in the conversation")
+        if "Log in to Saltmarsh" not in await card.inner_text():
+            bad.append("the card does not say what the turn is for")
+        await page.get_by_role("button", name="Close the browser pane").click()
+        await card.get_by_role("button", name="Open the browser").click()
+        try:
+            await _pane(page).wait_for(timeout=5_000)
+        except Exception:
+            bad.append("Open the browser did not show the pane")
+        await card.get_by_role("button", name="Done").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsT/wheel/hand-back'))"):
+            bad.append("the card's Done did not hand the wheel back")
+        if not await _wait(page, "() => window.__calls.some(c => /\\/api\\/chat\\/[^/]+\\/events/.test(c.url))"):
+            bad.append("the turn was not read on after the hand-back")
+        if not await _on_screen(page, "You handed the browser back"):
+            bad.append("the conversation does not say the browser was handed back")
+        if await _on_screen(page, "The run goes on"):
+            bad.append("a chat's browser turn was handed back as a run's")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the browser turn's card opens the browser; Done hands back and the turn is read on"
+
+
+@check
+async def check_brwbox(browser) -> str:
+    """An answer the run refuses never stays in the conversation (BRW2, F1078). The box keeps card numbers from the
+    model: the engine refuses one with "Card details go in the browser; you'll be asked there." The chat drew the
+    typed answer as the person's message before it was accepted, so the refused card number stayed on screen, and the
+    question read as answered. Now the refusal is said, the number is gone, and the question can be answered again."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-box")
+    refusal = "Card details go in the browser; you'll be asked there."
+    posts: list[str] = []
+
+    async def refuse(route):
+        posts.append(route.request.post_data or "")
+        await route.fulfill(status=422, json={"detail": refusal})
+
+    await ctx.route(re.compile(r".*/api/orchestrations/runs/run_uismoke_box/human-input$"), refuse)
+    bad: list[str] = []
+    card = "4111 1111 1111 1111"
+    try:
+        await _brw_push(page, "post", _frame({
+            "type": "human_input_required", "run_id": "run_uismoke_box", "orch_step_id": "ask",
+            "prompt": "What should the order note say?",
+            "fields": [{"name": "note", "type": "text", "label": "Order note"}]}, "x-1"))
+        if not await _on_screen(page, "What should the order note say?"):
+            raise AssertionError("the question never showed")
+        field = page.get_by_label("Order note")
+        await field.fill(card)
+        await field.press("Enter")
+        if not await _wait(page, "() => document.body.innerText.includes(\"Card details go in the browser\")"):
+            bad.append("the refusal is not said")
+        if not posts:
+            bad.append("the answer was never sent")
+        text = await page.evaluate("() => document.body.innerText")
+        if card in text:
+            bad.append("the refused card number is still on screen")
+        if not await page.get_by_label("Order note").count():
+            bad.append("the question can no longer be answered")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a refused answer is said, leaves no trace of what was typed, and the question stays open"
+
+
+@check
+async def check_brwrunpage(browser) -> str:
+    """A run's page shows the browser its agent works in (BRW2, F1075): live while the run runs, then, once it has
+    ended, a filmstrip of what was done in it, from the log and screenshots kept with the run (the person's own
+    presses included: the record of who pressed what)."""
+    global _M2B_STREAM
+    kept = _M2B_STREAM
+    events = "".join([
+        _frame({"type": "orchestration_start", "run_id": "run_smoke_m2b_done"}, "1"),
+        _frame({"type": "browser_session", "session_id": "bsR", "owner": "run:run_smoke_m2b_done"}, "2"),
+        _frame({**_BRW_ACTION, "session_id": "bsR"}, "3"),
+        _frame({**_BRW_ACTION, "session_id": "bsR", "n": 2, "action": "browser_navigate",
+                "target": "https://stock.example.com/orders", "shot_ref": "2"}, "4")])
+    bad: list[str] = []
+    try:
+        # Live: the stream stays open, as a running run's does.
+        _M2B_STREAM = events
+        live = {**_M2B_RUNS["run_smoke_m2b_done"], "status": "running", "ended_at": None}
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done", runs={"run_smoke_m2b_done": live})
+        await ctx.route(re.compile(r".*/api/browser/bsR/frames$"), lambda r: r.fulfill(
+            status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame()))
+        try:
+            region = page.get_by_role("region", name="Live browser")
+            try:
+                await region.wait_for(timeout=8_000)
+            except Exception:
+                bad.append("a running run with a browser shows no live browser")
+        finally:
+            await ctx.close()
+
+        # Ended: the filmstrip, from the kept screenshots.
+        _M2B_STREAM = events + _frame({"type": "stream_complete"})
+        # The whole log kept with the run (BRW1, F1125): the agent's lines and the person's own press, which the
+        # journal never carried.
+        whole = [{**_BRW_ACTION, "session_id": "bsR"},
+                 {**_BRW_ACTION, "session_id": "bsR", "n": 2, "action": "browser_navigate",
+                  "target": "https://stock.example.com/orders", "shot_ref": "2"},
+                 {"session_id": "bsR", "n": 3, "at": 0, "actor": "person", "action": "pressed",
+                  "target": "Pay now", "url": "https://stock.example.com/orders", "shot_ref": None}]
+
+        async def kept_routes(ctx):
+            await ctx.route(re.compile(r".*/api/browser/kept/run/run_smoke_m2b_done/log$"),
+                            lambda r: r.fulfill(status=200, json={"entries": whole}))
+            await _brw_shots(ctx)
+
+        ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_done",
+                                       runs={"run_smoke_m2b_done": _M2B_RUNS["run_smoke_m2b_done"]}, before=kept_routes)
+        try:
+            strip = page.get_by_role("list", name="What the agent did in the browser")
+            try:
+                await strip.wait_for(timeout=8_000)
+                srcs = await strip.locator("img").evaluate_all("els => els.map(e => e.getAttribute('src'))")
+                if srcs != ["/api/browser/kept/run/run_smoke_m2b_done/1", "/api/browser/kept/run/run_smoke_m2b_done/2"]:
+                    bad.append(f"the filmstrip shows {srcs}")
+            except Exception:
+                bad.append("an ended run with a browser shows no filmstrip")
+            if not await _wait(page, "() => document.body.innerText.includes('You pressed ‘Pay now’')"):
+                bad.append("the filmstrip is not the log kept with the run (the person's own press is missing)")
+            if await page.get_by_role("region", name="Live browser").count():
+                bad.append("an ended run still shows the live browser")
+        finally:
+            await ctx.close()
+    finally:
+        _M2B_STREAM = kept
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a running run shows its live browser; an ended one the filmstrip of the log and screenshots kept with it"
+
+
+@check
+async def check_brwrunturn(browser) -> str:
+    """A run parked on a browser turn is answered by handing the browser back, not by a form (BRW2, F1077). The run
+    carries the turn in its waiting step's fields (BRW1: a field of type `browser_turn`), and every place a run waits
+    on a person draws it through one card: the run page here, Needs you and Waiting on you through the same card."""
+    reason = "Log in to Saltmarsh's partner portal."
+    run = {**_M2B_RUNS["run_smoke_m2b_wait"], "human_prompt": reason,
+           "human_fields": [{"name": "browser_turn", "type": "browser_turn", "label": reason,
+                             "session_id": "bsU", "banner_kind": "login_expired"}]}
+    handed: list[str] = []
+
+    async def hand_back(route):
+        handed.append(route.request.url)
+        await route.fulfill(status=200, json={"wheel": "agent", "resumed": {"kind": "run", "run_id": run["run_id"]}})
+
+    bad: list[str] = []
+    ctx, page, _ = await _m2b_page(browser, "/runs/run_smoke_m2b_wait", runs={"run_smoke_m2b_wait": run})
+    await ctx.route(re.compile(r".*/api/browser/bsU/wheel/hand-back$"), hand_back)
+    try:
+        card = page.locator("main [data-browser-turn]")
+        try:
+            await card.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("a run parked on a browser turn shows no browser turn card")
+        if reason not in await card.inner_text():
+            bad.append("the card does not say what the turn is for")
+        if await page.get_by_role("textbox").filter(has=page.locator("[name=browser_turn]")).count():
+            bad.append("the turn is drawn as a form field")
+        await card.get_by_role("button", name="Done").click()
+        await asyncio.sleep(0.8)
+        if not handed:
+            bad.append("Done did not hand the browser back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a run's browser turn is a card whose Done hands the browser back"
+
+
+@check
+async def check_brwloginsite(browser) -> str:
+    """"Log in to a site" opens a browser for the person alone, and keeping the login there saves it (BRW2, F1079).
+    No agent drives it: there is no Stop or Take over, only Keep this login and Don't keep it, and Keep is what makes
+    the row in Website logins."""
+    state = {"logins": []}
+    calls: list[tuple[str, str]] = []
+
+    async def logins(route):
+        await route.fulfill(status=200, json=state)
+
+    async def start(route):
+        calls.append(("start", route.request.post_data or ""))
+        await route.fulfill(status=200, json={"session_id": "bsLog"})
+
+    async def finish(route):
+        calls.append(("finish", route.request.post_data or ""))
+        state["logins"] = [{"id": "wl_" + "c" * 24, "owner": "you", "sites": ["portal.saltmarsh.example"],
+                            "created_at": time.time(), "expires_at": time.time() + 30 * 86_400}]
+        await route.fulfill(status=200, json={"login_ref": "wl_" + "c" * 24})
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/website-logins$"), logins)
+    await ctx.route(re.compile(r".*/api/browser/login-sessions$"), start)
+    await ctx.route(re.compile(r".*/api/browser/bsLog/finish-login$"), finish)
+    await ctx.route(re.compile(r".*/api/browser/bsLog/frames$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=_brw_frame("https://portal.saltmarsh.example/sign-in", "person")))
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/settings/website_logins", wait_until="domcontentloaded")
+        await page.locator("main h1").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Log in to a site").click()
+        ask = page.get_by_role("dialog", name="Log in to a site")
+        await ask.get_by_label("Site").fill("https://portal.saltmarsh.example/sign-in")
+        await ask.get_by_role("button", name="Open the browser").click()
+        pane = page.get_by_role("region", name="Browser")
+        try:
+            await pane.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("no browser opened")
+        if not calls or json.loads(calls[0][1]) != {"sites": ["portal.saltmarsh.example"]}:
+            bad.append(f"the browser was opened with {calls[:1]}")
+        for absent in ("Stop", "Take over", "Hand back"):
+            if await pane.get_by_role("button", name=absent, exact=True).count():
+                bad.append(f"a browser with no agent offers {absent}")
+        await pane.get_by_role("button", name="Keep this login").click()
+        await asyncio.sleep(1.0)
+        if ("finish", json.dumps({"keep": True}).replace(" ", "")) not in [(k, b.replace(" ", "")) for k, b in calls]:
+            bad.append(f"Keep this login sent {calls}")
+        if await pane.count():
+            bad.append("the browser stayed open after the login was kept")
+        if not await _on_screen(page, "portal.saltmarsh.example"):
+            bad.append("the kept login is not listed")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Log in to a site opens a browser for the person alone; Keep this login saves it and lists it"
 
 
 async def main() -> int:

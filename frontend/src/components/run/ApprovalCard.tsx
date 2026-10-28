@@ -35,6 +35,8 @@ import { Check, ChevronRight, X } from 'lucide-react';
 
 import { Badge, Button, ErrorNote, Field, Markdown, Textarea } from '@/components/ui';
 
+import { BrowserTurnCard } from '../browser/BrowserTurnCard';
+import { browserTurnOf } from '../browser/model';
 import { HumanFieldsForm } from '../orchestration/HumanFieldsForm';
 import { humanAnswer, humanFieldLabel, initialHumanValues, type HumanValues } from '../orchestration/humanFields';
 import { useRunHost } from './host';
@@ -96,6 +98,36 @@ export function ApprovalCard({
         } finally {
             setSending(null);
         }
+    }
+
+    // A browser turn (BRW2, F1077): the page is the person's, and the answer is handing it back, not a form.
+    const turn = browserTurnOf(fields);
+    if (turn) {
+        const href = `${openHref ?? host.links.run(run.id)}#live-browser`;
+        return (
+            <section aria-label="Waiting for a person" className="grid grid-cols-[minmax(0,1fr)] gap-3">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5 text-[12.5px] text-text-muted">
+                    <Badge tone="person">Waiting for a person</Badge>
+                    {showWorkflow && <span className="font-medium text-text">{run.workflowName ?? 'Deleted workflow'}</span>}
+                    {showStep && stepName && <span title={run.currentStepId ?? undefined}>Step {stepName}</span>}
+                    {asking?.started_at && <span>· waiting <Took start={asking.started_at} end={null} /></span>}
+                </div>
+                <BrowserTurnCard
+                    reason={turn.reason || run.humanPrompt || ''}
+                    kind={turn.banner_kind}
+                    onOpen={() => {
+                        const here = document.getElementById('live-browser');
+                        if (here) here.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        else window.location.assign(href);
+                    }}
+                    onDone={host.canAnswer && host.browser?.handBack ? async () => {
+                        const ok = await host.browser!.handBack!(turn.session_id);
+                        if (ok) onDone('You handed the browser back. The run goes on.');
+                        return ok;
+                    } : undefined}
+                />
+            </section>
+        );
     }
 
     const locked = busy || sending !== null;

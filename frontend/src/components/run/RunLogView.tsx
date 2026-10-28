@@ -44,10 +44,13 @@ import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { BrowserActionLine } from "@/components/browser/BrowserActionLine";
+import { actionOf, type BrowserAction } from "@/components/browser/model";
 import { RetrievalTrace } from "@/components/RetrievalTrace";
 import { Spinner } from "@/components/ui";
 import { DEGRADED, getQueryTrace, type SearchTrace } from "@/lib/knowledge";
 
+import { useRunHost } from "./host";
 import type { Task } from "./model";
 import { emptyTeam, foldTeam, isTeamEvent, type TeamState } from "@/components/team/team";
 
@@ -70,8 +73,11 @@ export type RetrievalEntry = {
   cost_usd: number;
   degraded: string[];
 };
+// One agent action in the browser inside Synapse (BRW2, F1074): its words and the screenshot after it.
+export type BrowserEntry = { kind: "browser" } & BrowserAction;
 export type LogEntry =
   | string
+  | BrowserEntry
   | ToolCallEntry
   | ToolResultEntry
   | StepResultEntry
@@ -133,6 +139,8 @@ export type RunLogState = {
    * folded as chat folds them. Empty until a step runs a team (TEAM1e feeds it).
    */
   team: TeamState;
+  /** The browser a step's agent opened (BRW2): its session, for the pane that shows it live. */
+  browser?: { sessionId: string } | null;
 };
 
 export function emptyRunLog(): RunLogState {
@@ -407,6 +415,13 @@ export function applyRunEvent(state: RunLogState, data: any): RunLogState {
           line(data.status === "completed" ? "ok" : "error", `Done — status: ${data.status}`),
         ),
       };
+    // The browser inside Synapse (BRW1): a session opened, then one line per agent action.
+    case "browser_session":
+      if (typeof data.session_id !== "string") return state;
+      return { ...state, browser: { sessionId: data.session_id }, entries: append(entries, line("info", "Opened a browser")) };
+    case "browser_action":
+      if (typeof data.session_id !== "string") return state;
+      return add({ kind: "browser", ...actionOf(data) });
     case "orchestration_error":
       state = { ...state, liveActivity: null };
       return { ...state, entries: append(entries, line("error", `Error: ${data.error}`)) };
@@ -490,6 +505,16 @@ function RetrievalRow({ entry }: { entry: RetrievalEntry }) {
   );
 }
 
+/** A browser action (BRW2): the line, with its screenshot where the product can show it. */
+function BrowserRow({ entry }: { entry: BrowserEntry }) {
+  const host = useRunHost().browser;
+  return (
+    <div className="pl-2 text-accent-ink">
+      <BrowserActionLine action={entry} shot={host && entry.shot_ref ? host.shotUrl(entry.session_id, entry.shot_ref) : null} />
+    </div>
+  );
+}
+
 /** A Retrieve row's degraded search, in words as its opened trace says them (F372): the
  *  row printed the codes. Each is a sentence; a code the map does not know is shown as is. */
 export function degradedWords(codes: readonly string[]): string {
@@ -533,6 +558,7 @@ export function LogLine({ entry, onOpen }: { entry: LogEntry; onOpen: (e: StepRe
       );
     }
     if (entry.kind === "retrieval") return <RetrievalRow entry={entry} />;
+    if (entry.kind === "browser") return <BrowserRow entry={entry} />;
     if (entry.kind === "tool_result") {
       return (
         <div className="flex items-start gap-1.5 pl-4 text-[10px] text-text-faint">

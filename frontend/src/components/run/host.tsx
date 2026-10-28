@@ -23,6 +23,7 @@
  */
 import { createContext, useContext, type ReactNode } from 'react';
 
+import type { BrowserHost } from '../browser/model';
 import type { HumanValues } from '../orchestration/humanFields';
 import type { NestedRun } from './model';
 
@@ -81,6 +82,8 @@ export type RunHost = {
     canControl: boolean;
     /** A Team step's lines: answered under `canAnswer`, stopped and written to under `canControl` (TEAM1e). */
     team?: RunTeamActions;
+    /** The browser a step's agent worked in (BRW2): its screenshots, while it is open. Absent: lines without them. */
+    browser?: BrowserHost;
 };
 
 const nothing = async () => { throw new Error('This page has no run host.'); };

@@ -54,6 +54,9 @@ dependencies = [
     # Knowledge's vector leg (core/knowledge/index_sql.py). Already resolved through
     # pandas and chromadb; named because the engine imports it directly.
     "numpy>=1.26,<3",
+    # Website logins' encryption (core/website_logins.py) and webhook signatures (core/messaging/verify.py). Already
+    # resolved through google-auth and pyjwt; named because the engine imports it directly.
+    "cryptography>=42,<51",
     "openpyxl>=3.1,<4",
     # Knowledge's parsers (A2, D162); see backend/requirements.txt.
     "pypdfium2>=4.30,<6",

@@ -160,6 +160,7 @@ cryptography==50.0.0
     # via
     #   -c requirements-messaging.lock
     #   -c requirements.lock
+    #   synapse-orch-ai (../pyproject.toml)
     #   google-auth
     #   pdfminer-six
     #   pyjwt

@@ -247,6 +247,11 @@ export const SETTINGS_NAV: NavGroup[] = [
                 blurb: 'Database connections your agents are allowed to query.',
                 flag: 'coding_agent_enabled',
             },
+            {
+                // The browser inside Synapse (BRW2, F1079): sessions kept so runs start logged in.
+                id: 'website_logins', label: 'Website logins', href: '/settings/website_logins', icon: Globe,
+                blurb: 'Sites you logged in to in the browser, kept so runs start logged in.',
+            },
         ],
     },
     {

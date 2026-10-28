@@ -75,6 +75,7 @@ from core.routes.api_v2 import router as api_v2_router
 from core.routes.scale import router as scale_router
 from core.routes.notifications import router as notifications_router
 from core.routes.browser import router as browser_router
+from core.routes.website_logins import router as website_logins_router
 from core.profiling import TimingMiddleware
 from core.internal_auth import InternalTokenMiddleware
 
@@ -1150,6 +1151,7 @@ app.include_router(api_v2_router, prefix="/api/v2")
 app.include_router(scale_router, prefix="/api")
 app.include_router(notifications_router)
 app.include_router(browser_router)  # the person's view of a browser session (BRW1, D328)
+app.include_router(website_logins_router)  # Settings → Website logins (BRW2, D330)
 
 if __name__ == "__main__":
     import uvicorn
