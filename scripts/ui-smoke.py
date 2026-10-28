@@ -14267,7 +14267,9 @@ async def check_brwstep(browser) -> str:
     api("/api/orchestrations", "POST", {
         "id": oid, "name": "ui-smoke browser step", "description": "Temporary fixture created by scripts/ui-smoke.py.",
         "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_find",
-        "steps": [{"id": f"{oid}_find", "name": "Find the order", "type": "browser", "recording_id": None,
+        # Saved as a plain agent step and turned into Browser in the panel: the save refuses a Browser step with
+        # no recording, which is what the canvas must then say.
+        "steps": [{"id": f"{oid}_find", "name": "Find the order", "type": "agent",
                    "next_step_id": f"{oid}_end", "output_key": "order", "position_x": 80, "position_y": 160},
                   {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None,
                    "position_x": 500, "position_y": 160}]})
@@ -14307,15 +14309,17 @@ async def check_brwstep(browser) -> str:
         node = page.locator(f'.react-flow__node[data-id="{oid}_find"]')
         await node.wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        if "No recording selected" not in await node.inner_text():
-            bad.append("a Browser step with no recording does not say so on the canvas")
         await node.focus()
         await page.keyboard.press("Enter")
         await panel.wait_for(timeout=10_000)
         await panel.get_by_role("combobox", name="Step type").click()
-        if not await page.get_by_role("option", name="Browser", exact=True).count():
-            bad.append("the step picker does not offer Browser")
-        await page.keyboard.press("Escape")
+        offer = page.get_by_role("option", name="Browser", exact=True)
+        if not await offer.count():
+            raise AssertionError("the step picker does not offer Browser")
+        await offer.click()
+        await asyncio.sleep(0.5)
+        if "No recording selected" not in await node.inner_text():
+            bad.append("a Browser step with no recording does not say so on the canvas")
 
         await panel.get_by_role("combobox", name="Recording").click()
         await page.get_by_role("option", name="Find an order").click()
