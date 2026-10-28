@@ -61,7 +61,8 @@ def test_research_after_findings_goes_to_the_build_through_the_role_door(state, 
     assert steps["step_classify_route"]["switch_cases"][routed.route] == goes_to
     # The build it reaches is the create path: the role door, then the plan room.
     assert routed.route in ("step_plan_room", "step_research")
-    assert steps["step_change_route"]["switch_cases"]["create"] == "step_plan_room"
+    assert steps["step_change_route"]["switch_cases"]["create"] == "step_effort"  # its effort check first (F1153)
+    assert steps["step_effort_route"]["switch_cases"]["step_plan_room"] == "step_plan_room"
     for who in ({"may_change": False, "may_act": False}, {"may_change": False, "may_act": True}):
         below = override(Request(kind="research"), message="go ahead", state={**state, **who}, inventory={},
                          connectable=set())

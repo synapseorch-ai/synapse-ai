@@ -60,7 +60,12 @@ def test_the_routes_that_change_things_go_through_the_gate(engine):
 @pytest.mark.parametrize("label", list(BEFORE))
 async def test_a_person_who_may_goes_where_the_route_went_before(engine, label):
     assert await _next(engine, "step_may_change", {"intent": label, "may_change": True}) == "step_change_route"
-    assert await _next(engine, "step_change_route", {"intent": label, "may_change": True}) == BEFORE[label]
+    went = await _next(engine, "step_change_route", {"intent": label, "may_change": True})
+    if label != "manage":
+        # A build passes its effort check first (F1153), which goes on to the same entry when it offers nothing.
+        assert went == "step_effort"
+        went = await _next(engine, "step_effort_route", {"effort": {"next": BEFORE[label]}})
+    assert went == BEFORE[label]
 
 
 @pytest.mark.parametrize("label", list(BEFORE))
@@ -109,4 +114,8 @@ async def test_a_hand_over_goes_back_through_the_door_as_its_own_route(engine, o
     assert await _next(engine, "step_may_change", approver) == "step_not_yours"
     builder = {"intent": intent, "may_change": True, "may_act": True}
     assert await _next(engine, "step_may_change", builder) == "step_change_route"
-    assert await _next(engine, "step_change_route", builder) == then
+    went = await _next(engine, "step_change_route", builder)
+    if intent in ("create", "update"):
+        assert went == "step_effort"  # a build's effort check first (F1153), then the same entry
+        went = await _next(engine, "step_effort_route", {"effort": {"next": then}})
+    assert went == then

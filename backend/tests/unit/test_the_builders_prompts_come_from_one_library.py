@@ -53,8 +53,9 @@ from core.native_builder import prompt_lint, seed
 #: the research route's Researcher holds only the web, the look-up and its report (its catalogue and Registry steps in
 #: code), and the by-hand steps are a passage of the build's researcher's own (`research_by_hand`, its prompt
 #: unchanged), 1d2a272d…; with F1121's question on what still can't be built (`step_plan_same`, and the `same` and
-#: `no_tool` cases that reach it), 90b30a42….
-BUNDLE_SHA256 = "90b30a42c8a0785c50293e8ee1c600c53c40d07b2ef16ae245e3ac587baa64f4"
+#: `no_tool` cases that reach it), 90b30a42…; with F1153's effort check after the role door (`step_effort`, its route
+#: and `step_effort_offered`, with its three state keys), bdb52fc8….
+BUNDLE_SHA256 = "bdb52fc834514efdcbe285e5d417b11dc629ddd74e1663377b4a57901b34db19"
 
 
 def _sha(definitions) -> str:

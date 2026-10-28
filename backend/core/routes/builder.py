@@ -75,6 +75,9 @@ class BuilderChatRequest(BaseModel):
     #: "Try again on a stronger model" (F1018): the failed run this turn is pressed from. The server checks it and
     #: picks the model (`try_stronger.panel_retry`); `model` is then the server's, never the caller's.
     retry_of: str | None = None
+    #: "Use <stronger model>" on the effort offer before a build (F1153): the turn that offered it. The server checks
+    #: it and picks the model (`effort.effort_press`); the build runs on it, for that build only.
+    effort_of: str | None = None
 
     _check_images = checked_images()
 
@@ -259,13 +262,14 @@ def _quick_roles() -> dict[str, str]:
 
 
 async def prepare_builder_run(request: BuilderChatRequest, server_module, *, panel: bool = False,
-                              retried: dict | None = None):
+                              retried: dict | None = None, pressed: dict | None = None):
     """Everything up to the first step: the run's id and the engine's generator.
 
     Separate from the streaming so the caller can decide *where* the run is
     spawned, and that turns out to matter — see `builder_chat`. `panel` is the
     builder panel's own door, whose conversations it can reopen (F214).
     `retried` is a pressed "Try again on a stronger model" (F1018): the run it tries again and the model, recorded.
+    `pressed` is a pressed effort offer (F1153): the turn it was pressed from, recorded.
     """
     from core.store.resources import get_orchestration
 
@@ -338,6 +342,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         "may_act": True,
         "asker_role": "owner",
         **({k: v for k, v in retried.items() if k != "model"} if retried else {}),
+        **({k: v for k, v in pressed.items() if k not in ("model", "message")} if pressed else {}),
     }
 
     return run_id, engine.run(
@@ -790,8 +795,18 @@ async def builder_chat(request: BuilderChatRequest, http_request: Request):
         if isinstance(retried, str):
             return _one({"type": "orchestration_error", "error": retried})
         request = request.model_copy(update={"model": retried["model"]})
+    pressed = None
+    if request.effort_of and not request.retry_of:
+        # The effort offer's press (F1153): checked as that chat's latest turn, the ask is the build's message, and
+        # the model is the server's own pick now.
+        from core.native_builder import effort
+
+        pressed = await effort.effort_press(request.effort_of, _session_id(request.client_session_id, panel=True))
+        if isinstance(pressed, str):
+            return _one({"type": "orchestration_error", "error": pressed})
+        request = request.model_copy(update={"model": pressed["model"], "message": pressed["message"]})
     prepared = await prepare_builder_run(
-        request, http_request.app.state.server_module, panel=True, retried=retried)
+        request, http_request.app.state.server_module, panel=True, retried=retried, pressed=pressed)
     if prepared is None:
         return _one(dict(MISSING_BUILDER))
     run_id, agen = prepared
@@ -848,6 +863,11 @@ async def try_stronger_after(agen, run_id: str, *, retried: bool):
     state. A turn tried again is not offered again."""
     async for event in agen:
         yield event
+    from core.native_builder.effort import failure_notice
+
+    # A build that failed is said plainly first, on whichever model it ran (F1153); then F1018's one offer.
+    if (said := await failure_notice(run_id)) is not None:
+        yield said
     if not retried:
         from core import try_stronger
 

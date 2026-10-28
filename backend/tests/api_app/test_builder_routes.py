@@ -252,8 +252,9 @@ class TestSeeHowImBuilt:
         # 69 with the research route code first (SAI2-P5): the look-up, its route, the Researcher on what is left, the
         # card in code and the reply in code's words, from the Researcher and its quick card step;
         # 72 with the build's look-up code first (P3c's splice): the look-up, its route, and code's finals reported;
-        # 73 with the question that says what still can't be built instead of the same plan again (F1121).
-        assert legend["step_count"] == 73
+        # 73 with the question that says what still can't be built instead of the same plan again (F1121);
+        # 76 with the effort check before a build: the check, its route, and the offer said (F1153).
+        assert legend["step_count"] == 76
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])

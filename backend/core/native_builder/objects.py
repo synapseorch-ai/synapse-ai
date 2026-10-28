@@ -230,6 +230,14 @@ class Request(_Written):
     needs: Literal[NEEDS] | None = Field(  # type: ignore[valid-type]
         None, description="What an answer needs: none (talk, ideas, thanks), workspace (what exists or happened "
                           "here), help (how the product or its API works)")
+    #: How much a build asks of a model (F1153): a label only; code decides whether to offer a stronger one.
+    effort: Literal["light", "heavy"] | None = Field(
+        None, description="For a build only: heavy when it asks for many distinct steps, agents working together, "
+                          "or a workflow inside another; else light")
+    why: list[Literal["many_steps", "team", "nested"]] = Field(
+        default_factory=list, description="For a heavy build, which: many_steps (more than about 6 distinct actions, "
+                                          "or branches and loops together), team (agents working together, a team "
+                                          "or a board), nested (a workflow inside a workflow)")
 
 
 #: The route entries code hands a request to: a contract with the routes' owners (EDIT-LEDGER.md).
@@ -299,7 +307,8 @@ class Turn(BaseModel):
     review waits sets the run aside there, so a new turn never finds one waiting.
     """
 
-    route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify"]
+    route: Literal["pick", "card_label", "plan_answer", "pressed", "yes_without_review", "next_request", "classify",
+                   "effort_continue"]
     #: What a pick chose: an act's call (code puts its card up) or a change's chosen id (the change route takes it).
     picked: str | dict[str, Any] | None = None
     card: str | None = None

@@ -627,6 +627,9 @@ class TestAFullPlanAndAStoppedBuild:
         if target == "step_may_change":
             gate = steps["step_may_change"]
             target = steps[gate["if_true_step_id"]]["switch_cases"][label]
+        if target == "step_effort":
+            # A build's effort check (F1153) goes on to the entry it names when it offers nothing.
+            target = steps["step_effort_route"]["switch_cases"][entry]
         return target
 
     def test_a_create_is_checked_against_the_plan_before_anything_is_paid_for(self):

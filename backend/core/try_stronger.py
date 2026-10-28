@@ -202,6 +202,8 @@ async def _why_not(run, session_id: str | None = None) -> str | None:
         return NOT_THIS_TURN  # it changed something: a re-run would do it again
     if run.shared_state.get(RETRIED_KEY):
         return TRIED  # a turn tried again is not offered again: once, never a chain up the menu
+    if run.shared_state.get("effort_accepted"):
+        return TRIED  # built on the stronger model the effort offer gave (F1153): said, never offered again
     from core.models_orchestration import Orchestration
     from core.orchestration.engine import definition_of
 

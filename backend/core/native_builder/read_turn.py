@@ -28,6 +28,9 @@ _ACK = frozenset({"done", "ok done", "pressed", "pressed it", "i pressed it", "i
 #: A yes to a queued second request, beyond the review's own yes words.
 _GO_ON = frozenset({"sure", "yes please", "please do", "do that", "yes do that", "go on", "next", "ok do that",
                     "yes go ahead", "go ahead please", "please"})
+#: Go on as it is, said to the effort offer (F1153).
+_JUST = frozenset({"just do it", "just build it", "do it", "build it", "no thanks", "no", "nope", "keep going",
+                   "carry on", "proceed", "no just do it", "use the default"})
 
 
 def _plain(text: str) -> str:
@@ -102,11 +105,21 @@ def card_above(turns: list[tuple[dict, dict]]) -> dict:
 
 
 def decide(message: str, *, previous: dict, facts: dict, change: dict | None = None,
-           prior_findings: Any = None) -> Turn:
+           prior_findings: Any = None, pressed: bool = False) -> Turn:
     """What code makes of `message`, given the previous turn's state (`previous`), its card's facts (`facts`, F977),
-    its change card's data (`change`) and the findings it ended on (F766)."""
+    its change card's data (`change`) and the findings it ended on (F766). `pressed`: this turn is the effort offer's
+    press (F1153), whose message is already the ask."""
     said = _plain(message)
     yes = is_yes(message)
+
+    # 0. A reply to the effort offer that is not its press (F1153, Naveen 10-28): the build goes on, on the usual
+    # model, never asked again. A go-ahead (or the card's "Continue with …") is the ask itself; anything else is the
+    # ask with what was typed after it.
+    offered = previous.get("effort") if isinstance(previous.get("effort"), dict) else {}
+    if not pressed and offered.get("next") == "offer" and offered.get("ask"):
+        ask = str(offered["ask"])
+        going_on = yes or said in _GO_ON or said in _ACK or said.startswith("continue") or said in _JUST
+        return Turn(route="effort_continue", then="classify", message=ask if going_on else f"{ask}\n\n{message}")
 
     # 1. A yes to the second request the last turn queued.
     also = str(facts.get("also") or "").strip()
@@ -241,8 +254,14 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
             change = card.data if card is not None and card.status in ("open", "claimed") else None
         except Exception as exc:  # noqa: BLE001 — no board yet: the turn is read from its message alone
             _log.warning("turn %s: previous turn %s not read: %s", run_id, previous_id, exc)
+    from core.native_builder.effort import ACCEPTED_KEY, DECLINED_KEY
+
     turn = decide(message, previous=previous, facts=facts, change=change,
-                  prior_findings=state.get("prior_findings"))
+                  prior_findings=state.get("prior_findings"), pressed=bool(state.get(ACCEPTED_KEY)))
+    if turn.route == "effort_continue" and run is not None:
+        # The ask goes on, on the usual model; the build records the answer, and is not asked again (F1153).
+        run.shared_state["user_message"] = turn.message
+        run.shared_state[DECLINED_KEY] = previous_id
 
     if turn.route == "pick" and turn.then == "said" and isinstance(turn.picked, dict) and not turn.say:
         from core.builder_actions import prepare_action
