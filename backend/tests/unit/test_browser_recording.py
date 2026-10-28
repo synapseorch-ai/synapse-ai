@@ -50,8 +50,9 @@ def test_a_password_a_card_or_a_code_is_never_kept():
     rec.typed(" 1111 1111 1111", ORDER)
     values = [s["value"] for s in rec.steps]
     assert values == [{"person": "password"}, {"person": "card"}, {"person": "card"}]
-    assert "hunter2" not in json.dumps(rec.result()) and "4111" not in json.dumps(rec.result())
-    assert rec.frame()["holding"] == "card"
+    assert rec.frame()["holding"] == "card"  # while the person is still in that field
+    out = json.dumps(rec.result())
+    assert "hunter2" not in out and "4111" not in out
 
 
 def test_no_picture_is_kept_of_a_page_something_of_the_persons_was_typed_on():
