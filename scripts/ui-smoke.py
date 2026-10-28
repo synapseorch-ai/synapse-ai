@@ -9222,11 +9222,19 @@ async def check_firsttour(browser) -> str:
 
 
 async def _open_help(page, how: str = "click"):
-    """Press the page's "?" and wait for its panel. Returns (button, dialog)."""
+    """Press the page's "?" once it is hydrated, and wait for its panel. Returns (button, dialog).
+
+    The server draws the "?" before React holds it, and a press then does nothing; the button's `data-ready` says
+    it would open. One press after it, so a "?" that doesn't open still fails here.
+    """
     button = page.get_by_role("button", name=HELP_BUTTON, exact=True)
     await button.first.wait_for(timeout=30_000)
     if await button.count() != 1:
         raise AssertionError(f"{page.url}: {await button.count()} help buttons, not one")
+    try:
+        await page.locator(f'button[aria-label="{HELP_BUTTON}"][data-ready]').wait_for(timeout=30_000)
+    except Exception:
+        raise AssertionError(f"{page.url}: the \"?\" never hydrated (no data-ready)") from None
     if how == "keyboard":
         await button.focus()
         await page.keyboard.press("Enter")
