@@ -128,10 +128,9 @@ export interface CanvasWorkbenchProps {
         onStop: () => void;
         /**
          * The run's input, behind Run now's chevron; `note`, a line under it (what the text becomes);
-         * `estimate`, what the run will cost (CE1: `EstimateLine` from `./estimate`); `sessions`, the sessions a
-         * Browser agent's steps start signed in with for this run (F1140: a `SessionPicker`).
+         * `estimate`, what the run will cost (CE1: `EstimateLine` from `./estimate`).
          */
-        input?: { value: string; onChange: (value: string) => void; note?: string; estimate?: React.ReactNode; sessions?: React.ReactNode };
+        input?: { value: string; onChange: (value: string) => void; note?: string; estimate?: React.ReactNode };
         /** Which run is on the canvas: a new value starts its signals afresh (a new run, a reopened one). */
         runKey?: string | number;
         /**

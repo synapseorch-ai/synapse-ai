@@ -7,13 +7,13 @@ import { Button, IconButton, Input, Spinner, usePersisted } from '@/components/u
 import { cn } from '@/lib/cn';
 
 import { BrowserActionLine } from './BrowserActionLine';
-import { actionCount, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
+import { actionCount, hostOf, mergeActions, shortUrl, type BrowserAction, type BrowserFrame, type BrowserHost, type BrowserInput,
          type BrowserSessionEvent, type FrameRecording, type Wheel } from './model';
 import { DialogAsk, FileAsk, MomentStrip, SelectAsk } from './PageMoments';
 import { PageScreen } from './PageScreen';
 import { SessionPicker } from './SessionPicker';
 import { stepCount } from './recordings';
-import { shortDate, type KeptSession } from './sessions';
+import { onSite, shortDate, type KeptSession } from './sessions';
 import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFrames';
 
 /**
@@ -244,7 +244,7 @@ export function BrowserPane({
       </header>
 
       {picks && picking && !alone && <PicksPanel picks={picks} />}
-      <SignedInLine signedIn={signedIn} kept={keptAgain} />
+      <SignedInLine signedIn={signedIn} kept={keptAgain} host={url ? hostOf(url) : ''} />
 
       {signIn && !closed ? (
         <div role="status" className="flex shrink-0 flex-col gap-2 border-b border-person bg-person-subtle px-3 py-2.5 text-xs text-text">
@@ -356,8 +356,8 @@ export function BrowserPane({
         <div role="note" className="flex shrink-0 items-start gap-2 border-t border-border bg-surface px-3 py-2 text-xs text-text-muted">
           <Info className="mt-0.5 size-3.5 shrink-0 text-text-faint" aria-hidden />
           <p className="min-w-0 flex-1 leading-relaxed">
-            Agents can make mistakes. You press every payment, and an agent presses Submit or Send only when
-            you&apos;ve asked it to.
+            {/* Only what is guaranteed (Naveen 10-29): a send to another site, or a page's own script, is not held. */}
+            Agents can make mistakes. You always press payments yourself.
           </p>
           <Button variant="ghost" size="sm" onClick={() => setDisclaimerSeen('1')}>Got it</Button>
         </div>
@@ -393,12 +393,14 @@ function PicksPanel({ picks }: { picks: NonNullable<React.ComponentProps<typeof 
  * someone else's that isn't shared. After the person signs in again on an expired session's turn, until when the fresh
  * one is kept.
  */
-function SignedInLine({ signedIn, kept }: {
+function SignedInLine({ signedIn, kept, host }: {
   signedIn?: Pick<BrowserSessionEvent, 'sessions' | 'skipped'>;
   kept: KeptSession | null;
+  /** The page in view: the line speaks only for its site (Naveen 10-29). */
+  host: string;
 }) {
-  const sites = [...new Set((signedIn?.sessions ?? []).map(s => s.site))];
-  const skipped = signedIn?.skipped ?? [];
+  const sites = [...new Set((signedIn?.sessions ?? []).map(s => s.site))].filter(site => onSite(host, site));
+  const skipped = (signedIn?.skipped ?? []).filter(s => onSite(host, s.site));
   if (!sites.length && !skipped.length && !kept) return null;
   return (
     <div className="flex shrink-0 flex-col gap-0.5 border-b border-border px-3 py-1.5 text-xs text-text-muted">

@@ -8,8 +8,9 @@
  * Synced to cloud: routes are the host's, and the page's frame is the product's (`frame`).
  */
 import { useCallback, useEffect, useState } from 'react';
+import { MoreHorizontal, RotateCcw, Trash2 } from 'lucide-react';
 
-import { Button, ConfirmDialog, ErrorNote, Input, Modal } from '@/components/ui';
+import { Button, buttonStyles, ConfirmDialog, ErrorNote, Input, Menu, MenuItem, Modal } from '@/components/ui';
 
 import { BrowserPane } from './BrowserPane';
 import type { BrowserHost } from './model';
@@ -316,8 +317,19 @@ function StepRow({ host, recordingId, step, busy, onRename, onInput, onFixed, on
           {typed && value && 'fixed' in value && <Button variant="ghost" size="sm" disabled={busy} onClick={onInput}>Make it an input</Button>}
           {typed && value && 'input' in value && <Button variant="ghost" size="sm" disabled={busy} onClick={() => { setFixed(''); setFixing(true); }}>Keep it fixed</Button>}
           <Button variant="ghost" size="sm" aria-expanded={details} onClick={() => setDetails(d => !d)}>Details</Button>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={onRedo}>Re-record from here</Button>
-          <Button variant="ghost" size="sm" disabled={busy} className="text-text-muted hover:text-danger" onClick={onDelete}>Delete step</Button>
+          {/* The rest of a step's actions, a click away (Naveen 10-29): one line per step on a phone. */}
+          <Menu
+            align="end"
+            trigger={
+              <button type="button" aria-label={`More for step ${step.n}`} title="More" disabled={busy}
+                      className={buttonStyles({ variant: 'ghost', size: 'sm', iconOnly: true })}>
+                <MoreHorizontal className="size-4" aria-hidden />
+              </button>
+            }
+          >
+            <MenuItem icon={RotateCcw} onSelect={onRedo}>Re-record from here</MenuItem>
+            <MenuItem icon={Trash2} tone="danger" onSelect={onDelete}>Delete step</MenuItem>
+          </Menu>
         </div>
         {details && (
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs text-text-muted">

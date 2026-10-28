@@ -10,7 +10,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
 import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
-import { SessionPicker } from '@/components/browser';
+import { SessionPicker, onSite } from '@/components/browser';
 import { vaultMentions } from '@/components/VaultMention';
 import { humanizeToolName } from '@/lib/toolNames';
 import type { IngestSettings, RetrieveSettings, StepConfig, StepType } from '@/types/orchestration';
@@ -331,15 +331,17 @@ function AgentSection(props: StepSectionProps) {
             <OpenPicked agent={agents.find((a: KindAgent) => a.id === step.agent_id)} />
             <AgentKindNote step={step} agents={agents} tasksPriced={props.tasksPriced} />
             {props.browserSessions && agents.find((a: KindAgent) => a.id === step.agent_id)?.type === 'browser' && (
-                // A Browser agent's step starts signed in with these too; on a site, the step's wins (F1140).
+                // A Browser agent's step starts signed in with these too; on a site, the step's wins (F1140). Only its
+                // agent's sites are offered, as on the agent (Naveen 10-29); an agent with none may read any site.
                 <SessionPicker
                     label="Sessions for this step"
-                    sessions={props.browserSessions.sessions}
+                    sessions={forAgentSites(props.browserSessions.sessions,
+                                            agents.find((a: KindAgent) => a.id === step.agent_id)?.browser?.sites)}
                     value={step.browser_sessions ?? []}
                     onChange={(ids) => update({ browser_sessions: ids.length ? ids : undefined })}
                     libraryHref={props.browserSessions.libraryHref}
                     locked={props.browserSessions.locked}
-                    hint="One per site. On a site, this step's session is used over the run's and the agent's."
+                    hint="One per site, among its agent's sites. On a site, this step's session is used over the agent's."
                 />
             )}
             <Field label="Prompt template" composite hint={<PromptHint showVaultHints={showVaultHints} />}>
@@ -1538,3 +1540,9 @@ export const STEP_SECTIONS: Record<StepType, React.FC<StepSectionProps>> = {
     ingest: IngestSection,
     workflow: WorkflowSection,
 };
+
+/** The sessions a Browser agent's step may pick: its agent's sites' only, or every one when it lists none. */
+function forAgentSites<T extends { site: string }>(sessions: T[] | null, sites: string[] | null | undefined): T[] | null {
+    if (!sessions || !sites?.length) return sessions;
+    return sessions.filter(s => sites.some(host => onSite(host, s.site)));
+}

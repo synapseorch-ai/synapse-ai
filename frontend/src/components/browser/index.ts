@@ -28,6 +28,7 @@ export {
   lastUsed,
   listSessions,
   mayUse,
+  onSite,
   removeSession,
   shortDate,
   startSignIn,

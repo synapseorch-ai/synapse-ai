@@ -34,6 +34,16 @@ export function mayUse(s: Pick<SiteSession, 'usable' | 'mine'>): boolean {
   return s.usable ?? s.mine;
 }
 
+/**
+ * A host is on a session's site: the site itself or one of its subdomains (`site` is the server's registrable domain;
+ * a listed `*.example.com` counts as example.com).
+ */
+export function onSite(host: string, site: string): boolean {
+  const h = host.toLowerCase().replace(/^\*\./, '');
+  const s = site.toLowerCase();
+  return !!h && !!s && (h === s || h.endsWith(`.${s}`));
+}
+
 /** "25 Oct": a session's date, as the pane and the pickers both say it. */
 export function shortDate(at: number): string {
   return new Date(at * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
