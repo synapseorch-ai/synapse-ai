@@ -12186,7 +12186,7 @@ window.fetch = function (input, init) {
     return Promise.resolve(new Response('{"ok": true}', {status: 200, headers: {'Content-Type': 'application/json'}}));
   }
   const name = 'frames:' + m[1];
-  const body = new ReadableStream({start(c) {
+  const stream = new ReadableStream({start(c) {
     window.__streams[name] = {
       push: (frame) => c.enqueue(new TextEncoder().encode(frame)),
       close: () => { try { c.close(); } catch (e) {} },
@@ -12195,7 +12195,7 @@ window.fetch = function (input, init) {
   }});
   const signal = init && init.signal;
   if (signal) signal.addEventListener('abort', () => window.__browserCalls.push({url: url, method: 'ABORT'}));
-  return Promise.resolve(new Response(body, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
+  return Promise.resolve(new Response(stream, {status: 200, headers: {'Content-Type': 'text/event-stream'}}));
 };
 """
 
@@ -12213,6 +12213,9 @@ async def _brw_page(browser, session_id: str, width=WIDE):
     ctx, page = await _tabs_page(browser, session_id, width=width)
     await _brw_shots(ctx)
     await page.add_script_tag(content=BROWSER_STUB)
+    # A stub that does not parse installs nothing, and every check after it fails far from the cause.
+    if not await page.evaluate("() => Array.isArray(window.__browserCalls)"):
+        raise AssertionError("the browser stub did not load (a syntax error in BROWSER_STUB?)")
     await _send(page, "check the stock page")
     await _stream_open(page, "post")
     return ctx, page
