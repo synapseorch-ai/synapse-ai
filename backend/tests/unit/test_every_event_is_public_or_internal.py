@@ -30,6 +30,9 @@ NOT_EVENTS = frozenset({
     "http.response.start", "http.response.body", "SHARED_KEY",
     # A human field's type: the person's turn in the browser, carried on `human_input_required` (BRW1, F1099).
     "browser_turn",
+    # The engine's input to the browser component's viewer `/input` (mouse, key, text, scroll, nav): an HTTP body to
+    # the component, never yielded to a client (BRW1, F1142's "Record a task" opens at its start address).
+    "nav",
 })
 
 
