@@ -103,3 +103,47 @@ def read_log(kind: str, ident: str) -> list[dict] | None:
         return json.loads(get_blob_store().get(f"{prefix}log.json") or "[]")
     except ValueError:
         return []
+
+
+# ── a recording's pictures (F1142): kept until the recording goes, never by age ──
+
+_REC_ID = re.compile(r"^rec_[0-9a-f]{16,32}$")
+_REF = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def _rec_key(recording_id: str, ref: str | None = None) -> str | None:
+    if not _REC_ID.match(recording_id or "") or (ref is not None and not _REF.match(ref or "")):
+        return None
+    return f"recordings/{recording_id}/" + (f"{ref}.jpg" if ref is not None else "")
+
+
+def keep_recording_shot(recording_id: str, ref: str, jpeg: bytes) -> None:
+    if _store is not None and hasattr(_store, "keep_recording_shot"):
+        return _store.keep_recording_shot(recording_id, ref, jpeg)
+    key = _rec_key(recording_id, ref)
+    if key is None:
+        return
+    from core.storage import get_blob_store
+    get_blob_store().put_bytes(key, jpeg, content_type="image/jpeg")
+
+
+def read_recording_shot(recording_id: str, ref: str) -> bytes | None:
+    if _store is not None and hasattr(_store, "read_recording_shot"):
+        return _store.read_recording_shot(recording_id, ref)
+    key = _rec_key(recording_id, ref)
+    if key is None:
+        return None
+    from core.storage import get_blob_store
+    return get_blob_store().get_bytes(key)
+
+
+def forget_recording(recording_id: str) -> None:
+    if _store is not None and hasattr(_store, "forget_recording"):
+        return _store.forget_recording(recording_id)
+    prefix = _rec_key(recording_id)
+    if prefix is None:
+        return
+    from core.storage import get_blob_store
+    store = get_blob_store()
+    for key in store.list(prefix):
+        store.delete(key)

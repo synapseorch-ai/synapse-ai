@@ -162,6 +162,56 @@ async def save(name: str, items: list[dict], key_field: str = "id") -> None:
         await s.execute(stmt)
 
 
+async def get_item(name: str, key: str) -> dict | None:
+    """One item of `name` by its key, as stored; None when there is none."""
+    from core.store import session
+    from core.store.models import CollectionDB
+
+    async with session() as s:
+        row = (
+            await s.execute(
+                select(CollectionDB).where(
+                    CollectionDB.tenant_id == get_tenant(),
+                    CollectionDB.collection == name,
+                    CollectionDB.key == key,
+                )
+            )
+        ).scalar_one_or_none()
+    return row.value if row is not None else None
+
+
+async def put_item(name: str, key: str, item: dict) -> None:
+    """Write one item of `name` and nothing else (`save` replaces the whole list): for collections whose items
+    two people may change at once, each on its own (the browser's recordings, F1142)."""
+    from core.store import session, upsert
+    from core.store.models import CollectionDB
+
+    async with session() as s:
+        await upsert(
+            s,
+            CollectionDB,
+            values={"tenant_id": get_tenant(), "collection": name, "key": key, "value": item},
+            index_elements=["tenant_id", "collection", "key"],
+            update=["value"],
+        )
+
+
+async def delete_item(name: str, key: str) -> bool:
+    """Remove one item of `name`. False when there was none."""
+    from core.store import session
+    from core.store.models import CollectionDB
+
+    async with session() as s:
+        result = await s.execute(
+            delete(CollectionDB).where(
+                CollectionDB.tenant_id == get_tenant(),
+                CollectionDB.collection == name,
+                CollectionDB.key == key,
+            )
+        )
+    return bool(result.rowcount)
+
+
 async def load_one(name: str, default: dict | None = None, *, resolve: bool = True) -> dict:
     """A singleton document, or `default` when nothing is stored.
 

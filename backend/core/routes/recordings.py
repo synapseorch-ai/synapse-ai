@@ -1,0 +1,169 @@
+"""Recordings (BRW1, D328, F1142; DESIGN §v5.2): record a task once, keep it, change it, and its versions and pending
+fixes. The logic is `core.browser.recordings`; this is OSS's door to it (cloud's API calls the same functions).
+Anyone who can build may change a recording (v5-12); here that is the install's person.
+"""
+from __future__ import annotations
+
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
+
+from core.browser import client as browser_client
+from core.browser import recordings
+
+router = APIRouter()
+
+
+def _person() -> str:
+    from core.site_sessions import install_person
+    return install_person()
+
+
+class NewRecording(BaseModel):
+    sessions: list[str] = []
+    start_url: str = ""
+    name: str = ""
+
+
+@router.post("/api/recordings/new")
+async def new_recording(body: NewRecording):
+    """"Record a task": a browser of the person's alone, signed in with the picked sessions, recording."""
+    from core.browser.picks import PickRefused, one_per_site, usable_new
+    try:
+        sessions = await one_per_site(body.sessions)
+        await usable_new(sessions)
+    except PickRefused as refused:
+        return JSONResponse(status_code=422, content=refused.body())
+    start = (body.start_url or "").strip()
+    if start and urlparse(start if "://" in start else f"https://{start}").scheme not in ("http", "https"):
+        raise HTTPException(status_code=422, detail="Start from a web address.")
+    if start and "://" not in start:
+        start = f"https://{start}"
+    rid = recordings.new_id()
+    sid = await browser_client.tools.open_record_session(rid, sessions=sessions, start_url=start)
+    return {"recording_id": rid, "browser_session_id": sid}
+
+
+@router.get("/api/recordings")
+async def list_recordings():
+    return {"recordings": await recordings.list_recordings()}
+
+
+@router.get("/api/recordings/{recording_id}")
+async def get_recording(recording_id: str):
+    try:
+        doc = await recordings.get(recording_id)
+    except recordings.NotFound:
+        raise HTTPException(status_code=404, detail="That recording is gone.") from None
+    return {k: v for k, v in doc.items() if k != "history"}
+
+
+class RecordingChange(BaseModel):
+    base_version: int
+    name: str | None = None
+    steps: list[dict] | None = None
+    inputs: list[dict] | None = None
+    outputs: list[dict] | None = None
+
+
+@router.patch("/api/recordings/{recording_id}")
+async def change_recording(recording_id: str, body: RecordingChange):
+    try:
+        doc = await recordings.patch(recording_id, base_version=body.base_version, by=_person(), name=body.name,
+                                     steps=body.steps, inputs=body.inputs, outputs=body.outputs)
+    except recordings.Stale as stale:
+        return JSONResponse(status_code=409, content={"detail": str(stale), "version": stale.version})
+    except recordings.NotFound:
+        raise HTTPException(status_code=404, detail="That recording is gone.") from None
+    return {k: v for k, v in doc.items() if k != "history"}
+
+
+@router.delete("/api/recordings/{recording_id}")
+async def delete_recording(recording_id: str):
+    if not await recordings.delete(recording_id):
+        raise HTTPException(status_code=404, detail="That recording is gone already.")
+    return {"deleted": True}
+
+
+@router.get("/api/recordings/{recording_id}/shots/{ref}")
+async def recording_shot(recording_id: str, ref: str):
+    import asyncio
+    from core.browser import kept
+    data = await asyncio.to_thread(kept.read_recording_shot, recording_id, ref)
+    if data is None:
+        raise HTTPException(status_code=404, detail="That picture is gone.")
+    return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/api/recordings/{recording_id}/versions")
+async def recording_versions(recording_id: str):
+    try:
+        return {"versions": await recordings.versions(recording_id)}
+    except recordings.NotFound:
+        raise HTTPException(status_code=404, detail="That recording is gone.") from None
+
+
+@router.post("/api/recordings/{recording_id}/edits/{edit_id}/approve")
+async def approve_edit(recording_id: str, edit_id: str):
+    try:
+        doc = await recordings.approve_edit(recording_id, edit_id, by=_person())
+    except recordings.NotFound:
+        raise HTTPException(status_code=404, detail="That fix is gone.") from None
+    return {k: v for k, v in doc.items() if k != "history"}
+
+
+@router.post("/api/recordings/{recording_id}/edits/{edit_id}/discard")
+async def discard_edit(recording_id: str, edit_id: str):
+    try:
+        doc = await recordings.discard_edit(recording_id, edit_id)
+    except recordings.NotFound:
+        raise HTTPException(status_code=404, detail="That fix is gone.") from None
+    return {k: v for k, v in doc.items() if k != "history"}
+
+
+# ── recording in an open browser ─────────────────────────────────────────────
+
+class RecordStart(BaseModel):
+    recording_id: str | None = None
+    from_step: str | None = None
+
+
+@router.post("/api/browser/{session_id}/record/start")
+async def record_start(session_id: str, body: RecordStart):
+    if body.from_step:
+        raise HTTPException(status_code=501, detail="Re-recording from a step comes with replay.")
+    if await browser_client.tools.owner_of(session_id) is None:
+        raise HTTPException(status_code=404, detail="That browser is closed.")
+    status, answer = await browser_client.tools.viewer(session_id, "/record/start", {})
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")
+    return answer
+
+
+class RecordStop(BaseModel):
+    keep: bool = True
+    name: str = ""
+    recording_id: str | None = None
+    from_step: str | None = None
+
+
+@router.post("/api/browser/{session_id}/record/stop")
+async def record_stop(session_id: str, body: RecordStop):
+    """Stop recording: kept as a recording (or, re-recording a step, as a pending fix of one), or dropped. A
+    "Record a task" browser closes with it."""
+    owner = await browser_client.tools.owner_of(session_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="That browser is closed.")
+    status, result = await browser_client.tools.viewer(session_id, "/record/stop", {})
+    if status >= 400:
+        raise HTTPException(status_code=status, detail=result.get("error") or "Refused.")
+    kind, _, ident = owner.partition(":")
+    out: dict = {}
+    if body.keep:
+        out = await recordings.from_stop(result, by=_person(), recording_id=ident if kind == "record" else
+                                         body.recording_id, from_step=body.from_step, name=body.name)
+    if kind == "record":
+        await browser_client.tools.close_owner(owner)
+    return out

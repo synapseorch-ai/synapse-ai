@@ -395,6 +395,27 @@ class BrowserTools:
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
         return sid
 
+    async def open_record_session(self, recording_id: str, *, sessions: list[str], start_url: str = "") -> str:
+        """"Record a task" (F1142): a browser that is the person's alone, signed in with the picked sessions, recording
+        from the start; `start_url`, when given, is its first step."""
+        key = f"record:{recording_id}"
+        state, _expired, loaded, skipped = await _sessions_state(list(sessions or []), {s: "record" for s in sessions or []})
+        opening = {"owner": key, "mode": gate.CO_DRIVE, "person_only": True, "limits": {"actions": 1}}
+        if state:
+            opening["login_state"] = state
+        host = await self.hosts.host_for(key, opening=True)
+        status, body = await host.call("POST", "/session", json=opening)
+        if status != 200 or not body.get("session_id"):
+            raise RuntimeError(body.get("error") or "the browser did not open")
+        sid = body["session_id"]
+        await self.store.set_owner(key, {"sid": sid, "parked": None, "expired": None, "sessions": None})
+        self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key,
+                                                 "sessions": loaded, "skipped": skipped})
+        await host.viewer("/record/start", params={"session_id": sid}, json={})
+        if start_url:
+            await host.viewer("/input", params={"session_id": sid}, json={"type": "nav", "url": start_url})
+        return sid
+
     async def finish_session(self, session_id: str, *, keep: bool, owner: str) -> tuple[str, dict | None] | None:
         """End a "Keep me signed in" browser: `(site, row)`, the row None when nothing on the site was signed in (the
         browser then stays open, so the person can try again); None when this is no such browser."""
