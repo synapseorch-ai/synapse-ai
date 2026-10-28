@@ -27,9 +27,21 @@ BACKEND_DIR="$REPO_ROOT/backend"
 # The oldest interpreter we support. --universal resolves for this and upward.
 MIN_PYTHON="3.11"
 
+# The uv that makes and checks the locks. Another version writes the same pins
+# with differently ordered markers, so --check would call an unchanged lock
+# stale (F1170: CI's uv 0.13.6 against 0.11.8). CI's setup-uv pins this too
+# (backend/tests/install/test_the_locks_are_made_by_one_uv.py keeps them equal).
+UV_VERSION="0.11.8"
+
 if ! command -v uv >/dev/null 2>&1; then
     echo "error: uv is required to regenerate the locks." >&2
-    echo "  install: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+    echo "  install: curl -LsSf https://astral.sh/uv/$UV_VERSION/install.sh | sh" >&2
+    exit 1
+fi
+HAVE_UV="$(uv --version | awk '{print $2}')"
+if [ "$HAVE_UV" != "$UV_VERSION" ]; then
+    echo "error: the locks are made with uv $UV_VERSION; this is uv $HAVE_UV, which writes markers differently." >&2
+    echo "  switch: uv self update $UV_VERSION   (or: curl -LsSf https://astral.sh/uv/$UV_VERSION/install.sh | sh)" >&2
     exit 1
 fi
 
