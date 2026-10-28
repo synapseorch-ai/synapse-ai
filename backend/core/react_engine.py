@@ -3777,7 +3777,7 @@ async def run_agent_step(
                     # here; the person's answer brings it back (a chat's next message, a run's resume).
                     if _browser_owner and hasattr(session, "take_handover"):
                         _chat_turn = _chat_turns.current_turn.get()
-                        _person_turn = session.take_handover(
+                        _person_turn = await session.take_handover(
                             _browser_owner, agent_key=getattr(_chat_turn, "agent_key", None))
                         if _person_turn:
                             if progress_events:

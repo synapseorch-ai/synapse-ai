@@ -128,8 +128,18 @@ class _FakeHost:
         self.gone: set[str] = set()
         self.proc = object()
 
+    running = True
+
     async def ensure(self):
         pass
+
+    async def get_bytes(self, path, *, params=None, timeout=30):
+        status, _ = await self.call("GET", path, params=params)
+        return status, b"\xff\xd8jpeg"
+
+    async def viewer(self, path, *, params=None, json=None, timeout=60):
+        self.calls.append(("VIEW", path, json))
+        return 200, {"ok": True}
 
     async def call(self, method, path, *, json=None, params=None, timeout=120):
         self.calls.append((method, path, json))
@@ -149,6 +159,11 @@ class _FakeHost:
         return 404, {}
 
 
+async def _parked_on(tools, owner, sid, parked):
+    """An owner whose browser `sid` is open, parked on `parked` (a turn the person answers), as the engine leaves it."""
+    await tools.store.set_owner(owner, {"sid": sid, "parked": parked, "expired": None, "sessions": None})
+
+
 async def _call(tools, owner, name="browser_snapshot", args=None):
     token = browser_client.owner.set(owner)
     try:
@@ -165,7 +180,7 @@ async def test_each_chat_and_run_gets_its_own_browser():
     again = await _call(tools, "chat:one")
     assert host.opened == 2
     assert "s1" in a.content[0].text and "s2" in b.content[0].text and "s1" in again.content[0].text
-    assert tools.owner_of("s1") == "chat:one" and tools.owner_of("s2") == "run:r1"
+    assert await tools.owner_of("s1") == "chat:one" and await tools.owner_of("s2") == "run:r1"
 
 
 async def test_the_pane_hears_the_browser_open_then_each_action_once():
@@ -208,7 +223,7 @@ async def test_closing_an_owner_closes_its_browser():
     await _call(tools, "chat:one")
     await tools.close_owner("chat:one")
     assert ("POST", "/close", {"session_id": "s1"}) in host.calls
-    assert tools.owner_of("s1") is None
+    assert await tools.owner_of("s1") is None
 
 
 async def test_the_tools_carry_the_components_tags():
@@ -280,7 +295,10 @@ async def test_stop_ends_the_chat_turn_and_closes_its_browser(client, monkeypatc
         closed.append(owner)
 
     monkeypatch.setattr(chat_turns, "stop", fake_stop)
-    monkeypatch.setattr(browser_client.tools, "owner_of", lambda sid: "chat:abc" if sid == "s9" else None)
+    async def owner_of(sid):
+        return "chat:abc" if sid == "s9" else None
+
+    monkeypatch.setattr(browser_client.tools, "owner_of", owner_of)
     monkeypatch.setattr(browser_client.tools, "close_owner", fake_close)
     resp = await client.post("/api/browser/s9/stop")
     assert resp.status_code == 200 and resp.json() == {"stopped": True, "closed": True}
@@ -464,8 +482,9 @@ async def test_a_handover_is_kept_for_the_engine_and_told_to_the_agent():
     tools = browser_client.BrowserTools(host)
     result = await _call(tools, "chat:h", "browser_type", {"target": "e3", "text": "x"})
     assert "It is the person's turn in the browser: This field is yours." in result.content[0].text
-    assert tools.take_handover("chat:h") == {"kind": "sensitive", "reason": "This field is yours.", "session_id": "s1"}
-    assert tools.take_handover("chat:h") is None
+    assert await tools.take_handover("chat:h") == {"kind": "sensitive", "reason": "This field is yours.",
+                                                   "session_id": "s1"}
+    assert await tools.take_handover("chat:h") is None
 
 
 # ── the person's turn parks the chat or the run (F1099) ──────────────────────
@@ -518,7 +537,7 @@ async def test_the_persons_turn_ends_the_agents_turn_with_a_park(fake_llm):
                                   "label": "The agent tried to send this to shop.example.com.",
                                   "session_id": "s1", "banner_kind": "send"}]
     assert len(fake_llm.calls) == 1, "the agent stopped at the person's turn"
-    assert tools.take_parked("chat:s_turn")["kind"] == "send"
+    assert (await tools.take_parked("chat:s_turn"))["kind"] == "send"
 
 
 async def test_a_chat_parked_on_the_persons_turn_stores_no_approval(client, monkeypatch):
@@ -542,8 +561,7 @@ async def test_handing_back_a_parked_chat_sends_the_persons_word_as_its_next_mes
     started = []
     monkeypatch.setattr(chat, "_start", lambda request, **kw: started.append(request))
     fake = browser_client.BrowserTools(_FakeHost())
-    fake._owners["s9"] = "chat:conv1"
-    fake._parked["chat:conv1"] = {"kind": "send", "agent_key": "agent_buyer"}
+    await _parked_on(fake, "chat:conv1", "s9", {"kind": "send", "agent_key": "agent_buyer"})
 
     async def viewer(sid, path, body=None):
         return 200, {"wheel": "agent"}
@@ -568,8 +586,7 @@ async def test_releasing_a_parked_runs_send_resumes_the_run(client, monkeypatch)
 
     monkeypatch.setattr(answers, "answer_paused_run", fake_answer)
     fake = browser_client.BrowserTools(_FakeHost())
-    fake._owners["s8"] = "run:run42"
-    fake._parked["run:run42"] = {"kind": "send"}
+    await _parked_on(fake, "run:run42", "s8", {"kind": "send"})
 
     async def viewer(sid, path, body=None):
         return 200, {"released": True}
@@ -647,16 +664,15 @@ async def test_an_expired_login_is_the_persons_turn_before_anything_else(logins_
     assert opening["turn"]["kind"] == "login_expired" and "login_state" not in opening
     assert result.isError and "log in again" in result.content[0].text
     assert not [c for c in tools.host.calls if c[1] == "/tool"], "nothing is done on an expired login"
-    turn = tools.take_handover("run:r2")
+    turn = await tools.take_handover("run:r2")
     assert turn["kind"] == "login_expired" and turn["login_ref"] == "wl_gone"
 
 
 async def test_handing_back_after_logging_in_again_keeps_it_under_the_same_ref(client, monkeypatch):
     from core.orchestration import answers
     fake = browser_client.BrowserTools(_FakeHost())
-    fake._owners["s5"] = "run:run5"
-    fake._parked["run:run5"] = {"kind": "login_expired", "login_ref": "wl_gone", "sites": ["portal.example.com"],
-                                "session_id": "s5"}
+    await _parked_on(fake, "run:run5", "s5", {"kind": "login_expired", "login_ref": "wl_gone",
+                                              "sites": ["portal.example.com"], "session_id": "s5"})
     kept = []
 
     async def keep_login(sid, *, login_ref, sites, owner):
@@ -685,7 +701,7 @@ async def test_log_in_to_a_site_opens_a_browser_that_is_the_persons_alone(client
     sid = resp.json()["session_id"]
     opening = [c[2] for c in fake.host.calls if c[1] == "/session"][0]
     assert opening["person_only"] is True and opening["owner"].startswith("login:")
-    assert fake._logins[sid] == ["portal.example.com"]
+    assert (await fake.store.get_owner(await fake.owner_of(sid)))["sessions"] == ["portal.example.com"]
     bad = await client.post("/api/browser/login-sessions", json={"sites": ["localhost"]})
     assert bad.status_code == 422
 
@@ -693,7 +709,7 @@ async def test_log_in_to_a_site_opens_a_browser_that_is_the_persons_alone(client
 async def test_finishing_a_login_keeps_it_or_not_and_only_for_a_login_session(client, monkeypatch, logins_store):
     fake = browser_client.BrowserTools(_FakeHost())
     monkeypatch.setattr(browser_client, "tools", fake)
-    fake._owners["chat_sid"] = "chat:c"
+    await _parked_on(fake, "chat:c", "chat_sid", None)
     assert (await client.post("/api/browser/chat_sid/finish-login", json={"keep": True})).status_code == 409
 
     sid = (await client.post("/api/browser/login-sessions", json={"sites": ["portal.example.com"]})).json()["session_id"]
@@ -708,7 +724,7 @@ async def test_finishing_a_login_keeps_it_or_not_and_only_for_a_login_session(cl
     resp = await client.post(f"/api/browser/{sid}/finish-login", json={"keep": True})
     assert resp.json() == {"login_ref": "wl_new"}
     assert logins_store[-1][2:] == (["portal.example.com"], "you")
-    assert fake.owner_of(sid) is None, "the login session is closed"
+    assert await fake.owner_of(sid) is None, "the login session is closed"
 
 
 # ── a card number never reaches a Browser agent through the box (F1100) ──────
@@ -753,7 +769,7 @@ async def test_a_runs_answer_to_a_browser_agents_step_holds_no_card():
 
 async def test_a_hand_back_note_with_a_card_number_is_refused(client, monkeypatch):
     fake = browser_client.BrowserTools(_FakeHost())
-    fake._owners["s3"] = "chat:c3"
+    await _parked_on(fake, "chat:c3", "s3", None)
     monkeypatch.setattr(browser_client, "tools", fake)
     resp = await client.post("/api/browser/s3/wheel/hand-back", json={"note": "card 4111 1111 1111 1111"})
     assert resp.status_code == 422 and resp.json()["detail"] == gate.CARD_WORDS
@@ -1025,3 +1041,207 @@ def test_a_viewer_skips_frames_but_never_a_log_line():
     host._offer(q, {"closed": True})
     got = [q.get_nowait() for _ in range(q.qsize())]
     assert got == [{"log": {"n": 1}}, {"jpeg_b64": "3"}, {"closed": True}]
+
+
+# ── the seams cloud fills (F1135, F1136; BRW3's SEAMS-FOR-BRW1.md) ───────────
+
+class _Hosts:
+    """A provider with a host per owner, as cloud's MicroVMs are."""
+
+    def __init__(self):
+        self.by_owner: dict[str, _FakeHost] = {}
+        self.calls: list[tuple] = []
+
+    async def host_for(self, owner_key, *, opening):
+        self.calls.append(("host_for", owner_key, opening))
+        if owner_key not in self.by_owner and opening:
+            self.by_owner[owner_key] = _FakeHost()
+        return self.by_owner.get(owner_key)
+
+    async def close(self, owner_key):
+        self.calls.append(("close", owner_key))
+        self.by_owner.pop(owner_key, None)
+
+    async def park(self, owner_key):
+        self.calls.append(("park", owner_key))
+
+    async def resume(self, owner_key):
+        self.calls.append(("resume", owner_key))
+
+
+async def test_each_owners_browser_comes_from_the_host_provider():
+    hosts = _Hosts()
+    tools = browser_client.BrowserTools(_FakeHost(), hosts=hosts)
+    await _call(tools, "chat:a")
+    await _call(tools, "run:r")
+    await _call(tools, "chat:a")
+    assert set(hosts.by_owner) == {"chat:a", "run:r"} and hosts.by_owner["chat:a"].opened == 1
+    assert not tools.host.calls, "nothing reaches the local process when a provider is set"
+    assert await tools.viewer("nobody", "/wheel/take") == (404, {"error": "That browser is closed."})
+    await tools.close_owner("chat:a")
+    assert ("close", "chat:a") in hosts.calls and "chat:a" not in hosts.by_owner
+
+
+async def test_a_parked_turn_lives_in_the_store_so_another_worker_answers_it():
+    hosts, store = _Hosts(), browser_client.MemorySessionStore()
+    first = browser_client.BrowserTools(_FakeHost(), hosts=hosts, store=store)
+    first._handovers["chat:p"] = {"kind": "send", "reason": "r", "session_id": "s1"}
+    await first.store.set_owner("chat:p", {"sid": "s1", "parked": None, "expired": None, "sessions": None})
+    assert (await first.take_handover("chat:p", agent_key="a1"))["kind"] == "send"
+    assert ("park", "chat:p") in hosts.calls
+    second = browser_client.BrowserTools(_FakeHost(), hosts=hosts, store=store)  # the follow-up lands elsewhere
+    assert await second.owner_of("s1") == "chat:p"
+    assert await second.take_parked("chat:p") == {"kind": "send", "reason": "r", "session_id": "s1", "agent_key": "a1"}
+    assert ("resume", "chat:p") in hosts.calls and await second.take_parked("chat:p") is None
+
+
+async def test_the_store_holds_a_browser_only_once_it_opened():
+    class _Recording(browser_client.MemorySessionStore):
+        def __init__(self):
+            super().__init__()
+            self.writes = []
+
+        async def set_owner(self, owner_key, record):
+            self.writes.append((owner_key, record.get("sid")))
+            await super().set_owner(owner_key, record)
+
+    class _Refusing(_FakeHost):
+        async def call(self, method, path, *, json=None, params=None, timeout=120):
+            if path == "/session":
+                return 503, {"error": "the browser did not start: no Chromium"}
+            return await super().call(method, path, json=json, params=params, timeout=timeout)
+
+    store = _Recording()
+    tools = browser_client.BrowserTools(_Refusing(), store=store)
+    result = await _call(tools, "run:x")
+    assert result.isError and "no Chromium" in result.content[0].text and store.writes == []
+    ok = browser_client.BrowserTools(_FakeHost(), store=store)
+    await _call(ok, "run:x")
+    assert store.writes == [("run:x", "s1")]
+
+
+async def test_the_action_gate_is_asked_before_every_action_but_a_hand_over():
+    host = _FakeHost()
+    tools = browser_client.BrowserTools(host)
+    asked = []
+
+    async def gate_fn(owner_key, name):
+        asked.append((owner_key, name))
+        return "Your workspace is out of credits." if name == "browser_click" else None
+
+    tools.action_gate = gate_fn
+    refused = await _call(tools, "run:g", "browser_click", {"target": "e1"})
+    assert refused.isError and refused.content[0].text == "Your workspace is out of credits."
+    assert not [c for c in host.calls if c[1] == "/tool"], "a refused action reaches no browser"
+    await _call(tools, "run:g", "browser_hand_over", {"reason": "Pick a slot."})
+    await _call(tools, "run:g", "browser_snapshot")
+    assert asked == [("run:g", "browser_click"), ("run:g", "browser_snapshot")]
+
+    async def broken(owner_key, name):
+        raise RuntimeError("wallet unreachable")
+
+    tools.action_gate = broken
+    assert "could not check" in (await _call(tools, "run:g", "browser_snapshot")).content[0].text
+
+
+async def test_kept_sign_ins_can_live_elsewhere(monkeypatch):
+    class _Logins:
+        async def state_for(self, ref):
+            return {"cookies": [{"name": "a", "value": "b"}], "origins": []} if ref == "ss_1" else None
+
+        async def keep(self, ref, *, state, sites, owner):
+            return "ss_kept"
+
+    monkeypatch.setattr(browser_client, "_login_store", _Logins())
+    assert (await browser_client._login_state("ss_1"))["cookies"][0]["name"] == "a"
+    assert await browser_client._login_state("ss_gone") is None
+
+
+def test_kept_screenshots_and_logs_can_live_elsewhere():
+    from core.browser import kept
+
+    class _Kept:
+        def __init__(self):
+            self.calls = []
+
+        def __getattr__(self, name):
+            return lambda *a: self.calls.append((name, a)) or (b"x" if name == "read" else None)
+
+    other = _Kept()
+    kept.set_store(other)
+    try:
+        kept.keep("run:r", "1", b"\xff\xd8")
+        assert kept.read("run", "r", "1") == b"x"
+        kept.keep_lines("run:r", [{"session_id": "s", "n": 1}])
+        kept.forget("run", "r")
+        assert [c[0] for c in other.calls] == ["keep", "read", "keep_lines", "forget"]
+    finally:
+        kept.set_store(None)
+
+
+def test_a_short_lived_token_is_made_from_the_vms_secret():
+    import hashlib
+    import hmac as _hmac
+
+    secret, now = b"s" * 32, 1_800_000_000.0
+
+    def token(exp, key=secret):
+        return f"{exp}.{_hmac.new(key, str(exp).encode(), hashlib.sha256).hexdigest()}"
+
+    assert host._token_valid(secret, token(int(now) + 600), now)
+    assert not host._token_valid(secret, token(int(now) - 1), now), "expired"
+    assert not host._token_valid(secret, token(int(now) + host.TOKEN_MAX_S + 60), now), "too far ahead"
+    assert not host._token_valid(secret, token(int(now) + 600, b"o" * 32), now), "an old generation's secret"
+    assert not host._token_valid(secret, "123", now) and not host._token_valid(secret, "abc.def", now)
+
+
+def test_the_secret_is_set_once_and_until_then_nothing_is_let_in(tmp_path):
+    class _Req:
+        def __init__(self, given):
+            self.headers = {"X-Browser-Token": given} if given else {}
+
+    vm = host.Host(None, tmp_path)
+    assert not vm._authorised(_Req("anything")) and not vm._authorised(_Req(""))
+    with pytest.raises(ValueError):
+        vm.set_secret("short")
+    vm.set_secret("v" * 32)
+    with pytest.raises(RuntimeError):
+        vm.set_secret("w" * 32)
+    import time as _time
+    exp = int(_time.time()) + 60
+    import hashlib
+    import hmac as _hmac
+    good = f"{exp}.{_hmac.new(b'v' * 32, str(exp).encode(), hashlib.sha256).hexdigest()}"
+    assert vm._authorised(_Req(good)) and not vm._authorised(_Req("v" * 32))
+    oss = host.Host("t" * 32, tmp_path)
+    assert oss._authorised(_Req("t" * 32)) and not oss._authorised(_Req(good))
+
+
+async def test_the_tool_list_needs_no_browser(tmp_path, monkeypatch):
+    listed = [{"name": "browser_click", "description": "Click", "inputSchema": {
+                  "type": "object", "properties": {"target": {"type": "string"}}}},
+              {"name": "browser_snapshot", "description": "Snapshot", "inputSchema": {"type": "object"}},
+              {"name": "browser_evaluate", "description": "Run code", "inputSchema": {"type": "object"}}]
+    path = tmp_path / "tool_schemas.json"
+    path.write_text(json.dumps(listed))
+    monkeypatch.setattr(browser_client, "_SCHEMAS", path)
+
+    class _NoHost(_FakeHost):
+        async def call(self, *a, **k):
+            raise AssertionError("listing tools started a browser")
+
+    tools = browser_client.BrowserTools(_NoHost())
+    names = {t.name: t for t in (await tools.list_tools()).tools}
+    assert set(names) == {"browser_click", "browser_snapshot", "browser_hand_over"}, "the gate still decides"
+    assert "confirm" in names["browser_click"].inputSchema["properties"]
+
+
+def test_the_committed_tool_schemas_are_the_pinned_playwright_mcps():
+    """Drift (F1135): the file the engine lists from is what @playwright/mcp at the pinned version lists today."""
+    import shutil as _shutil
+    import asyncio as _asyncio
+    if _shutil.which("npx") is None:
+        pytest.skip("needs npx to list the pinned Playwright MCP's tools")
+    committed = json.loads(browser_client._SCHEMAS.read_text(encoding="utf-8"))
+    assert committed == json.loads(json.dumps(_asyncio.run(host.pinned_tool_schemas()))), \
+        "regenerate: python -m core.browser.host --write-tool-schemas core/browser/tool_schemas.json"

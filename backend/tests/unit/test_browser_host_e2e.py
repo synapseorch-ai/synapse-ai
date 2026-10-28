@@ -638,3 +638,37 @@ async def test_a_press_that_acts_for_the_person_runs_only_on_their_words(press_s
     assert over["handover"]["kind"] == "asked" and over["handover"]["reason"] == "Pick the delivery slot you want."
     assert (await _state(http, control, sid))["wheel"] == "person"
     await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_prelaunched_browser_is_adopted_with_its_sessions_mode(site):
+    """F1135: `--prelaunch` starts a browser before any session; the first session adopts it, and a read-only one
+    still gets the read-only rules (no worker, so no socket), which are applied on adoption."""
+    port, hits = site
+    token = secrets.token_urlsafe(32)
+    env = {**os.environ, "SYNAPSE_BROWSER_TOKEN": token, "EGRESS_ALLOW_HOSTS": "localhost", "PYTHONPATH": str(BACKEND)}
+    proc = await asyncio.create_subprocess_exec(sys.executable, "-m", "core.browser.host", "--prelaunch",
+                                                cwd=str(BACKEND), env=env, stdout=asyncio.subprocess.PIPE,
+                                                stderr=asyncio.subprocess.DEVNULL)
+    try:
+        line = (await asyncio.wait_for(proc.stdout.readline(), 90)).decode().split()
+        assert line[0] == "BROWSER_HOST_READY"
+        async with aiohttp.ClientSession(headers={"X-Browser-Token": token}) as http:
+            control = int(line[1])
+            async def warm():
+                async with http.get(f"http://127.0.0.1:{control}/health") as resp:
+                    return (await resp.json())["warm"]
+
+            assert await warm(), "a browser is up before any session asks"
+            sid = (await _post(http, control, "/session", {"owner": "chat:warm", "mode": "read_only"}))["session_id"]
+            assert not await warm(), "the first session adopted it"
+            await _post(http, control, "/tool", {"session_id": sid, "name": "browser_navigate",
+                                                 "args": {"url": f"http://localhost:{port}/workers"}})
+            await _post(http, control, "/tool", {"session_id": sid, "name": "browser_wait_for", "args": {"text": "made-"}})
+            snap = await _post(http, control, "/tool", {"session_id": sid, "name": "browser_snapshot", "args": {}})
+            assert "made-0" in snap["text"], snap["text"]
+            await asyncio.sleep(1)
+            assert hits["ws"] == 0
+            await _post(http, control, "/close", {"session_id": sid})
+    finally:
+        proc.terminate()
+        await proc.wait()

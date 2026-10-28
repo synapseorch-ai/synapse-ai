@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import os
@@ -141,12 +142,16 @@ _HAND_OVER_SCHEMA = {"name": "browser_hand_over", "description": (
     "tags": {"read_only": True, "open_world": False}}
 
 
-def _with_confirm(tool) -> dict:
+def _with_confirm_schema(name: str, input_schema: dict | None) -> dict:
     """A press tool's schema with `confirm` beside Playwright MCP's own arguments (which never receive it)."""
-    schema = dict(tool.inputSchema or {})
-    if tool.name in gate.PRESSES:
+    schema = dict(input_schema or {})
+    if name in gate.PRESSES:
         schema["properties"] = {**(schema.get("properties") or {}), "confirm": _CONFIRM}
     return schema
+
+
+def _with_confirm(tool) -> dict:
+    return _with_confirm_schema(tool.name, tool.inputSchema)
 
 
 class Session:
@@ -186,20 +191,38 @@ class Session:
         self._lock = asyncio.Lock()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
-    async def start(self, pw) -> None:
+    async def start(self, pw, *, chromium_sandbox: bool | None = None) -> None:
+        await self.launch(pw, chromium_sandbox=chromium_sandbox)
+        await self.apply_mode()
+
+    def adopt(self, sid: str, owner: str, mode: str, limits: dict, sites: list[str] | None, wheel: str) -> None:
+        """A prelaunched browser becomes this session (F1135): its Chromium and Playwright MCP are already up, and
+        nothing has loaded in it yet."""
+        self.id, self.owner = sid, owner
+        self.mode = mode if mode in gate.MODES else gate.READ_ONLY
+        self.limits = {**DEFAULT_LIMITS, **(limits or {})}
+        self.sites, self.wheel = list(sites or []), wheel
+        self.last_used = time.monotonic()
+
+    async def apply_mode(self) -> None:
+        """What the session's mode adds to its browser, before any page of the session's loads."""
+        if self.mode != gate.CO_DRIVE:
+            await self.ctx.add_init_script(_NO_WORKERS)
+
+    async def launch(self, pw, *, chromium_sandbox: bool | None = None) -> None:
+        """Chromium behind the guards, and Playwright MCP connected to it; the mode's own parts come after."""
         self.dir.mkdir(parents=True, exist_ok=True)
         # No service workers: a worker's own fetches would not pass the route below. Every connection the browser
         # makes goes through the egress proxy (SEC2, F1065/F1109), the outer layer under the route and socket
         # guards: it dials the address the guard checked, so a name that changes its answer reaches nothing new.
         proxy = _browser_proxy_env() or (await egress_proxy.shared()).url
+        sandbox = {} if chromium_sandbox is None else {"chromium_sandbox": chromium_sandbox}
         self.ctx = await pw.chromium.launch_persistent_context(
             str(self.dir / "profile"), headless=True, viewport=_VIEWPORT, args=_CHROMIUM_ARGS,
-            env=_clean_env(), service_workers="block", proxy={"server": proxy},
+            env=_clean_env(), service_workers="block", proxy={"server": proxy}, **sandbox,
         )
         await self.ctx.route("**/*", self._route)
         await self.ctx.route_web_socket(lambda _url: True, self._route_socket)
-        if self.mode != gate.CO_DRIVE:
-            await self.ctx.add_init_script(_NO_WORKERS)
         self.ctx.on("page", self._on_page)
         self.page = self.ctx.pages[0] if self.ctx.pages else await self.ctx.new_page()
         self._watch(self.page)
@@ -862,16 +885,52 @@ def _offer(q: asyncio.Queue, item: dict) -> None:
     q.put_nowait(item)
 
 
+#: The longest a short-lived token may run ahead of now (F1135, BRW3 §8).
+TOKEN_MAX_S = 15 * 60
+
+
 class Host:
-    def __init__(self, token: str, root: Path):
-        self.token = token
+    """The component's two ports and its sessions. Either a fixed token (OSS: the backend that started it) or,
+    once `set_secret` is called, short-lived tokens made from a per-VM secret (cloud, BRW3 §8):
+    `<exp>.<hex HMAC-SHA256(secret, "<exp>")>`, accepted while `now < exp <= now + 15 min`. Until one of the two
+    is set, every request is refused."""
+
+    def __init__(self, token: str | None, root: Path, *, chromium_sandbox: bool | None = None):
+        self.token = token or ""
+        self.secret: bytes | None = None
         self.root = root
+        self.chromium_sandbox = chromium_sandbox
         self.sessions: dict[str, Session] = {}
+        self.warm: Session | None = None   # a prelaunched browser, adopted by the next session
         self.pw = None
+
+    def set_secret(self, secret: bytes | str) -> None:
+        """Once only: the per-VM secret, from the VM's run payload. A second call is refused."""
+        if self.secret is not None:
+            raise RuntimeError("the browser's secret is already set")
+        value = secret.encode() if isinstance(secret, str) else bytes(secret)
+        if len(value) < 16:
+            raise ValueError("the browser's secret is too short")
+        self.secret = value
 
     def _authorised(self, request: web.Request) -> bool:
         given = request.headers.get(_TOKEN_HEADER, "")
-        return bool(given) and hmac.compare_digest(given, self.token)
+        if not given:
+            return False
+        if self.secret is not None:
+            return _token_valid(self.secret, given, time.time())
+        return bool(self.token) and hmac.compare_digest(given, self.token)
+
+    async def prelaunch(self) -> None:
+        """Start Playwright, the egress proxy and one browser ahead of any session (cloud's snapshot holds it warm);
+        the next `POST /session` adopts it instead of launching."""
+        if self.pw is None:
+            from playwright.async_api import async_playwright
+            self.pw = await async_playwright().start()
+        if self.warm is None:
+            warm = Session(f"warm-{uuid.uuid4().hex[:8]}", "", gate.READ_ONLY, {}, self.root)
+            await warm.launch(self.pw, chromium_sandbox=self.chromium_sandbox)
+            self.warm = warm
 
     @web.middleware
     async def auth(self, request: web.Request, handler):
@@ -887,7 +946,7 @@ class Host:
 
     # control
     async def health(self, _request):
-        return web.json_response({"ok": True, "sessions": len(self.sessions)})
+        return web.json_response({"ok": True, "sessions": len(self.sessions), "warm": self.warm is not None})
 
     async def tools(self, _request):
         return web.json_response({"tools": await self._tool_schemas()})
@@ -895,28 +954,28 @@ class Host:
     async def _tool_schemas(self) -> list[dict]:
         if getattr(self, "_schemas", None) is not None:
             return self._schemas
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-        params = StdioServerParameters(
-            command=shutil.which("npx") or "npx",
-            args=["-y", PLAYWRIGHT_MCP, "--cdp-endpoint", "http://127.0.0.1:9", "--no-webmcp"],
-            env=_clean_env())
-        async with stdio_client(params) as (read, write), ClientSession(read, write) as mcp:
-            await mcp.initialize()
-            listed = (await mcp.list_tools()).tools
-        self._schemas = [{"name": t.name, "description": t.description or "", "inputSchema": _with_confirm(t),
-                          "tags": gate.ALLOWED[t.name]} for t in listed if t.name in gate.ALLOWED]
+        self._schemas = [{"name": t["name"], "description": t["description"],
+                          "inputSchema": _with_confirm_schema(t["name"], t["inputSchema"]),
+                          "tags": gate.ALLOWED[t["name"]]} for t in await pinned_tool_schemas()]
         self._schemas.append(_HAND_OVER_SCHEMA)
         return self._schemas
 
     async def open_session(self, request):
         body = await request.json()
         sid = uuid.uuid4().hex
-        s = Session(sid, str(body.get("owner", "")), body.get("mode", gate.READ_ONLY), body.get("limits") or {},
-                    self.root, sites=body.get("sites") or [],
-                    wheel="person" if body.get("person_only") else "agent")
+        owner, mode, limits = str(body.get("owner", "")), body.get("mode", gate.READ_ONLY), body.get("limits") or {}
+        sites, wheel = body.get("sites") or [], "person" if body.get("person_only") else "agent"
+        warm, self.warm = self.warm, None
+        if warm is not None:
+            s = warm
+            s.adopt(sid, owner, mode, limits, sites, wheel)
+        else:
+            s = Session(sid, owner, mode, limits, self.root, sites=sites, wheel=wheel)
         try:
-            await s.start(self.pw)
+            if warm is not None:
+                await s.apply_mode()
+            else:
+                await s.start(self.pw, chromium_sandbox=self.chromium_sandbox)
             if isinstance(body.get("login_state"), dict):
                 await s.load_login(body["login_state"])
         except Exception as exc:
@@ -1087,39 +1146,101 @@ def viewer_app(host: Host) -> web.Application:
     return app
 
 
-async def serve(control_port: int, viewer_port: int) -> None:
-    token = os.environ.get("SYNAPSE_BROWSER_TOKEN", "")
-    if len(token) < 24:
-        raise SystemExit("SYNAPSE_BROWSER_TOKEN is missing or too short")
+async def pinned_tool_schemas() -> list[dict]:
+    """The gate's tools as the pinned Playwright MCP lists them, raw: what `core/browser/tool_schemas.json` holds
+    (F1135), so the engine lists tools with no Node and no browser. Needs npx."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    params = StdioServerParameters(
+        command=shutil.which("npx") or "npx",
+        args=["-y", PLAYWRIGHT_MCP, "--cdp-endpoint", "http://127.0.0.1:9", "--no-webmcp"],
+        env=_clean_env())
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as mcp:
+        await mcp.initialize()
+        listed = (await mcp.list_tools()).tools
+    return sorted(({"name": t.name, "description": t.description or "", "inputSchema": t.inputSchema}
+                   for t in listed if t.name in gate.ALLOWED), key=lambda t: t["name"])
+
+
+def write_tool_schemas(path: Path) -> None:
+    path.write_text(json.dumps(asyncio.run(pinned_tool_schemas()), indent=1, sort_keys=True) + "\n", "utf-8")
+
+
+def _token_valid(secret: bytes, given: str, now: float) -> bool:
+    """A short-lived token made from `secret`: unexpired, at most `TOKEN_MAX_S` ahead, and its HMAC matching."""
+    exp_text, _, mac = given.partition(".")
+    if not exp_text.isdigit() or not mac:
+        return False
+    exp = int(exp_text)
+    if not now < exp <= now + TOKEN_MAX_S:
+        return False
+    want = hmac.new(secret, exp_text.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(mac, want)
+
+
+async def start_host(*, bind: str = "127.0.0.1", control_port: int = 0, viewer_port: int = 0,
+                     token: str | None = None, chromium_sandbox: bool | None = None,
+                     prelaunch: bool = False) -> tuple[Host, list, list[int]]:
+    """The component's ports, listening; `(host, runners, [control, viewer])`. Cloud's wrapper runs it in its own
+    event loop and calls `host.set_secret` from the VM's run hook (F1135, BRW3 §4)."""
     from playwright.async_api import async_playwright
     root = Path(tempfile.mkdtemp(prefix="synapse-browser-"))
-    host = Host(token, root)
+    host = Host(token, root, chromium_sandbox=chromium_sandbox)
     host.pw = await async_playwright().start()
-    runners = []
-    ports = []
+    if prelaunch:
+        await host.prelaunch()
+    runners, ports = [], []
     for app, port in ((control_app(host), control_port), (viewer_app(host), viewer_port)):
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", port)
+        site = web.TCPSite(runner, bind, port)
         await site.start()
         runners.append(runner)
         ports.append(site._server.sockets[0].getsockname()[1])
+    return host, runners, ports
+
+
+async def stop_host(host: Host) -> None:
+    for s in list(host.sessions.values()):
+        await s.close()
+    if host.warm is not None:
+        await host.warm.close()
+    if host.pw is not None:
+        await host.pw.stop()
+    shutil.rmtree(host.root, ignore_errors=True)
+
+
+async def serve(control_port: int, viewer_port: int, *, bind: str = "127.0.0.1",
+                chromium_sandbox: bool | None = None, prelaunch: bool = False) -> None:
+    token = os.environ.get("SYNAPSE_BROWSER_TOKEN", "")
+    if len(token) < 24:
+        raise SystemExit("SYNAPSE_BROWSER_TOKEN is missing or too short")
+    host, _runners, ports = await start_host(bind=bind, control_port=control_port, viewer_port=viewer_port,
+                                             token=token, chromium_sandbox=chromium_sandbox, prelaunch=prelaunch)
     print(f"BROWSER_HOST_READY {ports[0]} {ports[1]}", flush=True)
     try:
         await host.reap()
     finally:
-        for s in list(host.sessions.values()):
-            await s.close()
-        await host.pw.stop()
-        shutil.rmtree(root, ignore_errors=True)
+        await stop_host(host)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Synapse's browser component")
     parser.add_argument("--control-port", type=int, default=0)
     parser.add_argument("--viewer-port", type=int, default=0)
+    parser.add_argument("--bind", default="127.0.0.1", help="the address both ports listen on (a VM's own: 0.0.0.0)")
+    parser.add_argument("--chromium-sandbox", choices=("on", "off"), default=None,
+                        help="Chromium's own sandbox; left out, Playwright's default")
+    parser.add_argument("--prelaunch", action="store_true", help="start one browser before any session asks")
+    parser.add_argument("--write-tool-schemas", metavar="PATH", default=None,
+                        help="write the pinned Playwright MCP's tool schemas there and exit (F1135)")
     args = parser.parse_args()
-    asyncio.run(serve(args.control_port, args.viewer_port))
+    if args.write_tool_schemas:
+        write_tool_schemas(Path(args.write_tool_schemas))
+        return
+    sandbox = None if args.chromium_sandbox is None else args.chromium_sandbox == "on"
+    asyncio.run(serve(args.control_port, args.viewer_port, bind=args.bind, chromium_sandbox=sandbox,
+                      prelaunch=args.prelaunch))
 
 
 if __name__ == "__main__":

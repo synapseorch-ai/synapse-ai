@@ -17,6 +17,17 @@ _SAFE = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
 _KINDS = {"run": "runs", "chat": "chats"}
 
 
+_store = None
+
+
+def set_store(store) -> None:
+    """Where kept screenshots and logs go instead (F1135, BRW3): an object with `keep`, `read`, `forget`,
+    `keep_lines` and `read_log`, taking the arguments these functions take. Cloud's writes S3 under the org with the
+    run-log retention tag. None restores the blob store below."""
+    global _store
+    _store = store
+
+
 def _prefix(kind: str, ident: str) -> str | None:
     if kind not in _KINDS or not _SAFE.match(ident or "") or ".." in ident:
         return None
@@ -24,6 +35,8 @@ def _prefix(kind: str, ident: str) -> str | None:
 
 
 def keep(owner: str, n: int | str, jpeg: bytes) -> None:
+    if _store is not None:
+        return _store.keep(owner, n, jpeg)
     kind, _, ident = (owner or "").partition(":")
     prefix = _prefix(kind, ident)
     if prefix is None or not str(n).isdigit():
@@ -33,6 +46,8 @@ def keep(owner: str, n: int | str, jpeg: bytes) -> None:
 
 
 def read(kind: str, ident: str, n: str) -> bytes | None:
+    if _store is not None:
+        return _store.read(kind, ident, n)
     prefix = _prefix(kind, ident)
     if prefix is None or not str(n).isdigit():
         return None
@@ -41,6 +56,8 @@ def read(kind: str, ident: str, n: str) -> bytes | None:
 
 
 def forget(kind: str, ident: str) -> None:
+    if _store is not None:
+        return _store.forget(kind, ident)
     prefix = _prefix(kind, ident)
     if prefix is None:
         return
@@ -55,6 +72,8 @@ _log_lock = threading.Lock()
 
 def keep_lines(owner: str, entries: list[dict]) -> None:
     """Add log lines to the run's or chat's record, each once."""
+    if _store is not None:
+        return _store.keep_lines(owner, entries)
     kind, _, ident = (owner or "").partition(":")
     prefix = _prefix(kind, ident)
     lines = [e for e in entries or [] if isinstance(e, dict) and e.get("session_id") and e.get("n")]
@@ -74,6 +93,8 @@ def keep_lines(owner: str, entries: list[dict]) -> None:
 
 
 def read_log(kind: str, ident: str) -> list[dict] | None:
+    if _store is not None:
+        return _store.read_log(kind, ident)
     prefix = _prefix(kind, ident)
     if prefix is None:
         return None

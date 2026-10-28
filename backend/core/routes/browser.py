@@ -21,8 +21,8 @@ from core.browser import client as browser_client
 router = APIRouter()
 
 
-def _owner(session_id: str) -> str:
-    owner = browser_client.tools.owner_of(session_id)
+async def _owner(session_id: str) -> str:
+    owner = await browser_client.tools.owner_of(session_id)
     if owner is None:
         raise HTTPException(status_code=404, detail="That browser is closed.")
     return owner
@@ -30,7 +30,7 @@ def _owner(session_id: str) -> str:
 
 @router.get("/api/browser/{session_id}/frames")
 async def frames(session_id: str, request: Request):
-    owner = _owner(session_id)
+    owner = await _owner(session_id)
     host = browser_client.tools.host
 
     async def relay():
@@ -69,7 +69,7 @@ async def _keep_log_lines(owner: str, pending: bytes) -> bytes:
 @router.get("/api/browser/{session_id}/shot/{ref}")
 async def shot(session_id: str, ref: str):
     """The screenshot taken after one agent action, while its browser is open."""
-    _owner(session_id)
+    await _owner(session_id)
     host = browser_client.tools.host
     async with aiohttp.ClientSession(headers=host._headers(), timeout=aiohttp.ClientTimeout(total=30)) as http:
         async with http.get(f"http://127.0.0.1:{host.control}/shot",
@@ -86,7 +86,7 @@ _VIEWER_ACTIONS = {"input": "/input", "release": "/release", "allow-site": "/all
 
 
 async def _relay(session_id: str, action: str, request: Request):
-    owner = _owner(session_id)
+    owner = await _owner(session_id)
     try:
         body = await request.json()
     except Exception:
@@ -111,7 +111,7 @@ async def _resume(owner: str, said: str, note: str, request: Request) -> dict | 
     """A chat or run parked on the person's turn carries on (F1099): a run resumes its step; a chat
     gets the person's word as its next message. A turn that was never parked (Take over mid-turn)
     needs nothing: the agent's call is waiting for the wheel."""
-    parked = browser_client.tools.take_parked(owner)
+    parked = await browser_client.tools.take_parked(owner)
     if not parked:
         return None
     if parked.get("kind") == "login_expired" and parked.get("login_ref"):
@@ -166,7 +166,7 @@ async def choose(session_id: str, request: Request):
 @router.post("/api/browser/{session_id}/file")
 async def give_file(session_id: str, file: UploadFile):
     """The person's own file, for the page's file picker while they drive (V2-CONTRACT.md)."""
-    _owner(session_id)
+    await _owner(session_id)
     data = await file.read(25 * 1024 * 1024 + 1)
     if len(data) > 25 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="Files go up to 25 MB.")
@@ -237,7 +237,7 @@ class FinishLogin(BaseModel):
 
 @router.post("/api/browser/{session_id}/finish-login")
 async def finish_login(session_id: str, body: FinishLogin):
-    owner = _owner(session_id)
+    owner = await _owner(session_id)
     if not owner.startswith("login:"):
         raise HTTPException(status_code=409, detail="This browser is not a login session.")
     ref = await browser_client.tools.finish_login(session_id, keep=body.keep, owner=_person())
@@ -246,7 +246,7 @@ async def finish_login(session_id: str, body: FinishLogin):
 
 @router.post("/api/browser/{session_id}/stop")
 async def stop(session_id: str):
-    owner = _owner(session_id)
+    owner = await _owner(session_id)
     kind, _, ident = owner.partition(":")
     stopped = False
     if kind == "chat":

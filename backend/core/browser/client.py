@@ -67,9 +67,13 @@ class _Host:
 
     def __init__(self) -> None:
         self.proc: asyncio.subprocess.Process | None = None
-        self.control = self.viewer = 0
+        self.control = self.viewer_port = 0
         self.token = ""
         self._lock = asyncio.Lock()
+
+    @property
+    def running(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
 
     def _env(self) -> dict[str, str]:
         keep = ("PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME",
@@ -88,7 +92,7 @@ class _Host:
 
     async def ensure(self) -> None:
         async with self._lock:
-            if self.proc is not None and self.proc.returncode is None:
+            if self.running:
                 return
             self.token = secrets.token_urlsafe(32)
             self.proc = await asyncio.create_subprocess_exec(
@@ -104,28 +108,42 @@ class _Host:
                 self.proc.kill()
                 self.proc = None
                 raise RuntimeError("Synapse's browser did not start. Is Chromium installed (playwright install chromium)?")
-            self.control, self.viewer = int(parts[1]), int(parts[2])
+            self.control, self.viewer_port = int(parts[1]), int(parts[2])
 
     def _headers(self) -> dict[str, str]:
         return {"X-Browser-Token": self.token}
 
-    async def call(self, method: str, path: str, *, json: dict | None = None, params: dict | None = None,
-                   timeout: float = 120) -> tuple[int, dict]:
+    async def _request(self, method: str, url: str, *, json: dict | None, params: dict | None, timeout: float,
+                       raw: bool = False):
         await self.ensure()
         async with aiohttp.ClientSession(headers=self._headers(), timeout=aiohttp.ClientTimeout(total=timeout)) as http:
-            async with http.request(method, f"http://127.0.0.1:{self.control}{path}", json=json,
-                                    params=params) as resp:
+            async with http.request(method, url, json=json, params=params) as resp:
+                if raw:
+                    return resp.status, await resp.read()
                 try:
                     body = await resp.json(content_type=None)
                 except Exception:
                     body = {}
                 return resp.status, body
 
+    async def call(self, method: str, path: str, *, json: dict | None = None, params: dict | None = None,
+                   timeout: float = 120) -> tuple[int, dict]:
+        return await self._request(method, f"http://127.0.0.1:{self.control}{path}", json=json, params=params,
+                                   timeout=timeout)
+
+    async def get_bytes(self, path: str, *, params: dict | None = None, timeout: float = 30) -> tuple[int, bytes]:
+        return await self._request("GET", f"http://127.0.0.1:{self.control}{path}", json=None, params=params,
+                                   timeout=timeout, raw=True)
+
+    async def viewer(self, path: str, *, params: dict | None = None, json: dict | None = None,
+                     timeout: float = 60) -> tuple[int, dict]:
+        return await self._request("POST", self.viewer_url(path), json=json or {}, params=params, timeout=timeout)
+
     def viewer_url(self, path: str) -> str:
-        return f"http://127.0.0.1:{self.viewer}{path}"
+        return f"http://127.0.0.1:{self.viewer_port}{path}"
 
     async def stop(self) -> None:
-        if self.proc is not None and self.proc.returncode is None:
+        if self.running:
             self.proc.terminate()
             try:
                 await asyncio.wait_for(self.proc.wait(), timeout=10)
@@ -134,29 +152,91 @@ class _Host:
         self.proc = None
 
 
+class LocalHosts:
+    """Where each owner's browser is (F1135): here, every owner's is in the one local component process. Cloud
+    gives each its own MicroVM (BRW3), through `set_host_provider`. A host has `call`, `get_bytes` and `viewer`."""
+
+    def __init__(self, host: _Host) -> None:
+        self.host = host
+
+    async def host_for(self, owner_key: str, *, opening: bool):
+        """The owner's host; with nothing open and `opening` false, None (nothing is started for a lookup)."""
+        if opening or self.host.running:
+            await self.host.ensure()
+            return self.host
+        return None
+
+    async def ping(self) -> None:
+        await self.host.ensure()
+
+    async def close(self, owner_key: str) -> None:
+        pass
+
+    async def park(self, owner_key: str) -> None:
+        """A turn waits for the person; cloud suspends the browser's VM here."""
+
+    async def resume(self, owner_key: str) -> None:
+        """The person answered; cloud resumes the VM here."""
+
+
+class MemorySessionStore:
+    """Which browser an owner has, and what it waits on (F1136): one record per owner, `{sid, parked, expired,
+    sessions}`. In this process's memory here; cloud keeps it on the browser's own row, because a chat's next turn
+    or a run's resume may land on another worker (BRW3)."""
+
+    def __init__(self) -> None:
+        self._by_owner: dict[str, dict] = {}
+        self._by_sid: dict[str, str] = {}
+
+    async def get_owner(self, owner_key: str) -> dict | None:
+        record = self._by_owner.get(owner_key)
+        return dict(record) if record else None
+
+    async def set_owner(self, owner_key: str, record: dict) -> None:
+        old = self._by_owner.get(owner_key)
+        if old and old.get("sid") and old.get("sid") != record.get("sid"):
+            self._by_sid.pop(old["sid"], None)
+        self._by_owner[owner_key] = dict(record)
+        if record.get("sid"):
+            self._by_sid[record["sid"]] = owner_key
+
+    async def pop_owner(self, owner_key: str) -> dict | None:
+        record = self._by_owner.pop(owner_key, None)
+        if record and record.get("sid"):
+            self._by_sid.pop(record["sid"], None)
+        return record
+
+    async def owner_of(self, sid: str) -> str | None:
+        return self._by_sid.get(sid)
+
+
 class BrowserTools:
     """The "Browser Automation" session the engine calls, one browser per owner."""
 
-    def __init__(self, host: _Host | None = None) -> None:
-        self.host = host or _Host()
-        self._sessions: dict[str, str] = {}          # owner -> session id
-        self._owners: dict[str, str] = {}            # session id -> owner
+    def __init__(self, host: _Host | None = None, *, hosts=None, store=None) -> None:
+        self.host = host or _Host()               # this process's component (the app's own frames and shot routes)
+        self.hosts = hosts or LocalHosts(self.host)
+        self.store = store or MemorySessionStore()
+        self.action_gate = None                   # async (owner, tool name) -> a refusal, or None (F1135)
         self._events: dict[str, list[dict]] = {}
-        self._handovers: dict[str, dict] = {}       # owner -> the person's turn the agent must stop for
-        self._parked: dict[str, dict] = {}          # owner -> the turn the chat or run is parked on
-        self._expired: dict[str, dict] = {}         # owner -> the saved login that needs the person again
-        self._logins: dict[str, list[str]] = {}     # a "Log in to a site" session -> its sites
+        self._handovers: dict[str, dict] = {}       # owner -> the person's turn this call ended on
         self._tools: list[types.Tool] | None = None
 
     # ── what the engine's MCP paths call ─────────────────────────────────────
     async def send_ping(self) -> None:
-        await self.host.ensure()
+        ping = getattr(self.hosts, "ping", None)
+        if ping is not None:
+            await ping()
 
     async def list_tools(self) -> types.ListToolsResult:
         if self._tools is None:
-            status, body = await self.host.call("GET", "/tools")
-            if status != 200:
-                raise RuntimeError("the browser's tools could not be listed")
+            listed = _committed_tool_schemas()
+            if listed is None:  # no committed list (a development tree): the component lists them
+                host = await self.hosts.host_for("tools", opening=True)
+                status, body = await host.call("GET", "/tools")
+                if status != 200:
+                    raise RuntimeError("the browser's tools could not be listed: " + _npx_hint())
+                listed = body.get("tools", [])
             self._tools = [
                 types.Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"],
                            annotations=types.ToolAnnotations(
@@ -164,7 +244,7 @@ class BrowserTools:
                                destructiveHint=False,
                                idempotentHint=t["tags"].get("idempotent", False),
                                openWorldHint=t["tags"].get("open_world", True)))
-                for t in body.get("tools", [])]
+                for t in listed]
         return types.ListToolsResult(tools=self._tools)
 
     async def call_tool(self, name: str, arguments: dict | None = None, read_timeout_seconds=None,
@@ -173,32 +253,41 @@ class BrowserTools:
         refused = gate.refusal(name)
         if refused:
             return _result(refused, error=True)
+        if self.action_gate is not None and name != gate.HAND_OVER:  # a hand-over is never refused for money
+            try:
+                refused = await self.action_gate(key, name)
+            except Exception as exc:
+                refused = f"Synapse could not check this browser action: {exc}"
+            if refused:
+                return _result(refused, error=True)
         arguments = dict(arguments or {})
         quote = arguments.pop("confirm", None)
         press = None
         if name in gate.PRESSES and isinstance(quote, str) and quote.strip():
             press = {"because": quote.strip()[:300], "confirmed": gate.quote_found(quote, await _own_words())}
         try:
-            sid = await self._session_for(key)
-            if key in self._expired:  # the saved login ran out: the person logs in again first
+            host, sid = await self._session_for(key)
+            record = await self.store.get_owner(key) or {}
+            if record.get("expired"):  # the kept session ran out: the person signs in again first
                 self._handovers[key] = {"kind": "login_expired", "reason": _EXPIRED, "session_id": sid,
-                                        **self._expired.pop(key)}
-                return _result("The saved login has expired. It is the person's turn in the browser to log in "
+                                        **record["expired"]}
+                await self.store.set_owner(key, {**record, "expired": None})
+                return _result("The kept session has expired. It is the person's turn in the browser to sign in "
                                "again; stop here, and you will continue when they hand it back.", error=True)
-            status, body = await self.host.call("POST", "/tool", json={
+            status, body = await host.call("POST", "/tool", json={
                 "session_id": sid, "name": name, "args": arguments, "press": press})
             if status == 404:  # the session was closed (idle) or the component restarted
-                self._forget(key)
-                sid = await self._session_for(key)
-                status, body = await self.host.call("POST", "/tool", json={
+                await self.store.pop_owner(key)
+                host, sid = await self._session_for(key)
+                status, body = await host.call("POST", "/tool", json={
                     "session_id": sid, "name": name, "args": arguments, "press": press})
         except Exception as exc:
             return _result(f"Synapse's browser is not available: {exc}", error=True)
         if body.get("waiting"):
-            if not await self._wait_for_wheel(sid):
+            if not await self._wait_for_wheel(host, sid):
                 return _result("The person is still driving the browser. Stop here and say so; carry on when "
                                "they hand it back.", error=True)
-            status, body = await self.host.call("POST", "/tool", json={
+            status, body = await host.call("POST", "/tool", json={
                 "session_id": sid, "name": name, "args": arguments, "press": press})
         if body.get("refused"):
             return _result(body["refused"], error=True)
@@ -206,7 +295,7 @@ class BrowserTools:
             return _result("The person is driving the browser; wait for them to hand it back.", error=True)
         if body.get("log"):
             self._events.setdefault(key, []).append({"type": "browser_action", "session_id": sid, **body["log"]})
-            await self._keep_shot(key, sid, body["log"])
+            await self._keep_shot(host, key, sid, body["log"])
         await self.keep_lines(key, [*([body["log"]] if body.get("log") else []), *(body.get("notes") or [])])
         text = _scrub(body.get("text", ""))
         if body.get("handover"):
@@ -215,20 +304,15 @@ class BrowserTools:
                      + " Stop here; you will continue when they hand it back.")
         return _result(text, error=bool(body.get("is_error")))
 
-    async def _keep_shot(self, key: str, sid: str, entry: dict) -> None:
+    async def _keep_shot(self, host, key: str, sid: str, entry: dict) -> None:
         """The filmstrip's copy (F1103): best effort, never in the agent's way."""
         ref = entry.get("shot_ref")
         if not ref or not key.startswith(("run:", "chat:")):
             return
         try:
-            await self.host.ensure()
-            async with aiohttp.ClientSession(headers=self.host._headers(),
-                                             timeout=aiohttp.ClientTimeout(total=15)) as http:
-                async with http.get(f"http://127.0.0.1:{self.host.control}/shot",
-                                    params={"session_id": sid, "ref": ref}) as resp:
-                    if resp.status != 200:
-                        return
-                    jpeg = await resp.read()
+            status, jpeg = await host.get_bytes("/shot", params={"session_id": sid, "ref": ref}, timeout=15)
+            if status != 200:
+                return
             from core.browser import kept
             await asyncio.to_thread(kept.keep, key, ref, jpeg)
         except Exception:
@@ -244,11 +328,11 @@ class BrowserTools:
         except Exception:
             pass
 
-    async def _wait_for_wheel(self, sid: str) -> bool:
+    async def _wait_for_wheel(self, host, sid: str) -> bool:
         """While the person drives, the agent's call waits for the wheel to come back."""
         deadline = asyncio.get_running_loop().time() + WAIT_FOR_PERSON_S
         while asyncio.get_running_loop().time() < deadline:
-            status, state = await self.host.call("GET", "/state", params={"session_id": sid}, timeout=30)
+            status, state = await host.call("GET", "/state", params={"session_id": sid}, timeout=30)
             if status != 200:
                 return False
             if state.get("wheel") == "agent":
@@ -256,55 +340,70 @@ class BrowserTools:
             await asyncio.sleep(1)
         return False
 
-    def take_handover(self, key: str | None, **where) -> dict | None:
+    async def take_handover(self, key: str | None, **where) -> dict | None:
         """The person's turn this call ended on, now parked: the engine stops the agent here."""
         handover = self._handovers.pop(key, None) if key else None
         if handover:
-            self._parked[key] = {**handover, **where}
+            record = await self.store.get_owner(key)
+            if record is not None:
+                await self.store.set_owner(key, {**record, "parked": {**handover, **where}})
+            await self.hosts.park(key)
         return handover
 
-    def take_parked(self, key: str | None) -> dict | None:
+    async def take_parked(self, key: str | None) -> dict | None:
         """The parked turn the person just answered, once."""
-        return self._parked.pop(key, None) if key else None
+        record = await self.store.get_owner(key) if key else None
+        parked = (record or {}).get("parked")
+        if parked:
+            await self.store.set_owner(key, {**record, "parked": None})
+            await self.hosts.resume(key)
+        return parked
 
     async def keep_login(self, session_id: str, *, login_ref: str | None, sites: list[str], owner: str) -> str | None:
-        """Keep the session's current login (the person just logged in), under `login_ref` or a new one."""
-        status, body = await self.host.call("GET", "/login-state", params={"session_id": session_id})
+        """Keep the session's current sign-in (the person just signed in), under `login_ref` or a new one."""
+        key = await self.store.owner_of(session_id)
+        host = await self.hosts.host_for(key, opening=False) if key else None
+        if host is None:
+            return None
+        status, body = await host.call("GET", "/login-state", params={"session_id": session_id})
         state = body.get("login_state") if status == 200 else None
         if not state or not (state.get("cookies") or state.get("origins")):
             return None
-        from core import website_logins
-        return await website_logins.keep(login_ref, state=state, sites=sites, owner=owner)
+        return await _logins().keep(login_ref, state=state, sites=sites, owner=owner)
 
     async def open_login_session(self, sites: list[str]) -> str:
         """"Log in to a site": the person's alone, no agent, the wheel theirs from the start."""
         key = f"login:{secrets.token_hex(8)}"
-        status, body = await self.host.call("POST", "/session", json={
+        host = await self.hosts.host_for(key, opening=True)
+        status, body = await host.call("POST", "/session", json={
             "owner": key, "mode": gate.CO_DRIVE, "person_only": True, "limits": {"actions": 1}})
         if status != 200 or not body.get("session_id"):
             raise RuntimeError(body.get("error") or "the browser did not open")
         sid = body["session_id"]
-        self._sessions[key] = sid
-        self._owners[sid] = key
-        self._logins[sid] = list(sites)
+        await self.store.set_owner(key, {"sid": sid, "parked": None, "expired": None, "sessions": list(sites)})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
         return sid
 
     async def finish_login(self, session_id: str, *, keep: bool, owner: str) -> str | None:
-        """End a "Log in to a site" session, keeping its login when the person asked to."""
-        sites = self._logins.pop(session_id, None)
-        key = self._owners.get(session_id)
-        if sites is None or not key:
+        """End a "Log in to a site" session, keeping its sign-in when the person asked to."""
+        key = await self.store.owner_of(session_id)
+        record = await self.store.get_owner(key) if key else None
+        if not record or record.get("sessions") is None:
             return None
-        ref = await self.keep_login(session_id, login_ref=None, sites=sites, owner=owner) if keep else None
+        ref = await self.keep_login(session_id, login_ref=None, sites=record["sessions"], owner=owner) if keep else None
         await self.close_owner(key)
         return ref
 
     # ── sessions ─────────────────────────────────────────────────────────────
-    async def _session_for(self, key: str) -> str:
-        sid = self._sessions.get(key)
-        if sid:
-            return sid
+    async def _session_for(self, key: str):
+        """The owner's host and browser session, opening one on first use. Its record is written only once the
+        component has said yes, so a store never holds a session that isn't there."""
+        record = await self.store.get_owner(key)
+        if record and record.get("sid"):
+            host = await self.hosts.host_for(key, opening=False)
+            if host is not None:
+                return host, record["sid"]
+            await self.store.pop_owner(key)  # its browser is gone
         chosen = settings.get() or {}
         login_ref = chosen.get("login_ref")
         state = await _login_state(login_ref) if login_ref else None
@@ -315,68 +414,113 @@ class BrowserTools:
             opening["login_state"] = state
         if expired:
             opening["turn"] = {"kind": "login_expired", "reason": _EXPIRED}
-        status, body = await self.host.call("POST", "/session", json=opening)
+        host = await self.hosts.host_for(key, opening=True)
+        status, body = await host.call("POST", "/session", json=opening)
         if status != 200 or not body.get("session_id"):
             raise RuntimeError(body.get("error") or "the browser did not open")
         sid = body["session_id"]
-        self._sessions[key] = sid
-        self._owners[sid] = key
-        if expired:
-            self._expired[key] = {"login_ref": login_ref, "sites": chosen.get("sites") or []}
+        await self.store.set_owner(key, {
+            "sid": sid, "parked": None, "sessions": None,
+            "expired": {"login_ref": login_ref, "sites": chosen.get("sites") or []} if expired else None})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
-        return sid
+        return host, sid
 
-    def _forget(self, key: str) -> None:
-        sid = self._sessions.pop(key, None)
-        if sid:
-            self._owners.pop(sid, None)
-
-    def owner_of(self, session_id: str) -> str | None:
-        return self._owners.get(session_id)
+    async def owner_of(self, session_id: str) -> str | None:
+        return await self.store.owner_of(session_id)
 
     async def viewer(self, session_id: str, path: str, body: dict | None = None) -> tuple[int, dict]:
         """The person's action on their view: the wheel, input, release, allow a site."""
-        await self.host.ensure()
-        async with aiohttp.ClientSession(headers=self.host._headers(),
-                                         timeout=aiohttp.ClientTimeout(total=60)) as http:
-            async with http.post(self.host.viewer_url(path), params={"session_id": session_id},
-                                 json=body or {}) as resp:
-                try:
-                    return resp.status, await resp.json(content_type=None)
-                except Exception:
-                    return resp.status, {}
+        key = await self.store.owner_of(session_id)
+        host = await self.hosts.host_for(key, opening=False) if key else None
+        if host is None:
+            return 404, {"error": "That browser is closed."}
+        return await host.viewer(path, params={"session_id": session_id}, json=body or {})
 
     def take_events(self, key: str | None) -> list[dict]:
         return self._events.pop(key, []) if key else []
 
     async def close_owner(self, key: str) -> None:
-        sid = self._sessions.get(key)
-        self._forget(key)
+        record = await self.store.pop_owner(key)
         self._events.pop(key, None)
-        if sid and self.host.proc is not None:
+        sid = (record or {}).get("sid")
+        host = await self.hosts.host_for(key, opening=False) if sid else None
+        if host is not None:
             try:  # the whole log is kept before the browser goes: lines nobody's call carried are in it too
-                status, body = await self.host.call("GET", "/log", params={"session_id": sid}, timeout=30)
+                status, body = await host.call("GET", "/log", params={"session_id": sid}, timeout=30)
                 if status == 200:
                     await self.keep_lines(key, body.get("entries") or [])
             except Exception:
                 pass
             try:
-                await self.host.call("POST", "/close", json={"session_id": sid}, timeout=30)
+                await host.call("POST", "/close", json={"session_id": sid}, timeout=30)
             except Exception:
                 pass
+        await self.hosts.close(key)
+
+
+# ── the seams cloud fills (F1135, F1136; BRW3) ───────────────────────────────
+
+def set_host_provider(provider) -> None:
+    """Where each owner's browser runs: `host_for(owner, *, opening)`, `close`, `park`, `resume` (optional `ping`)."""
+    tools.hosts = provider
+
+
+def set_session_store(store) -> None:
+    """Which browser each owner has: async `get_owner`, `set_owner`, `pop_owner`, `owner_of`."""
+    tools.store = store
+
+
+def set_action_gate(gate_fn) -> None:
+    """Asked before every agent action but a hand-over: async (owner, tool name) -> a refusal for the agent, or
+    None. Cloud checks the wallet's floor and the run's cap here (DESIGN §4.2)."""
+    tools.action_gate = gate_fn
+
+
+_login_store = None
+
+
+def set_login_store(store) -> None:
+    """Where kept sign-ins live: async `state_for(ref)` and `keep(ref, *, state, sites, owner)`."""
+    global _login_store
+    _login_store = store
+
+
+def _logins():
+    if _login_store is not None:
+        return _login_store
+    from core import website_logins
+    return website_logins
+
+
+_SCHEMAS = Path(__file__).with_name("tool_schemas.json")
+
+
+def _committed_tool_schemas() -> list[dict] | None:
+    """The gate's tools as pinned Playwright MCP lists them, committed beside this module (F1135): listing needs no
+    Node and no browser. `confirm` and `browser_hand_over` are the component's own, added on top."""
+    import json
+    try:
+        listed = json.loads(_SCHEMAS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    from core.browser.host import _HAND_OVER_SCHEMA, _with_confirm_schema
+    return [{"name": t["name"], "description": t["description"], "inputSchema": _with_confirm_schema(t["name"],
+             t["inputSchema"]), "tags": gate.ALLOWED[t["name"]]} for t in listed if t["name"] in gate.ALLOWED] \
+        + [_HAND_OVER_SCHEMA]
+
+
+def _npx_hint() -> str:
+    import shutil
+    return "npx is not on this backend's PATH (Node is needed)" if shutil.which("npx") is None else "see the log"
 
 
 _EXPIRED = "The saved login has expired: log in again, then hand the browser back."
 
 
 async def _login_state(login_ref: str) -> dict | None:
-    """The saved login's session, decrypted, or None once expired, forgotten or never kept."""
+    """The kept sign-in, decrypted, or None once expired, forgotten or never kept."""
     try:
-        from core import website_logins
-    except ImportError:
-        return None
-    try:
-        return await website_logins.state_for(login_ref)
+        return await _logins().state_for(login_ref)
     except Exception:
         return None
 
