@@ -12200,6 +12200,11 @@ window.fetch = function (input, init) {
     return Promise.resolve(new Response(JSON.stringify({detail: "Card details go in the browser; you'll be asked there."}), {
       status: 422, headers: {'Content-Type': 'application/json'}}));
   }
+  // A session that expired, signed in again in the agent's browser: the hand-back says what was kept (BRW1, F1138).
+  if (m[2] === 'wheel/hand-back' && window.__handBackKept) {
+    return Promise.resolve(new Response(JSON.stringify({ok: true, kept: window.__handBackKept}), {
+      status: 200, headers: {'Content-Type': 'application/json'}}));
+  }
   // A closed browser's whole log, kept with its chat or run (BRW1, F1125): what a check put in __keptLog, or none.
   if (/^(chat|run)\/[^/]+\/log$/.test(m[2]) && m[1] === 'kept') {
     return Promise.resolve(new Response(JSON.stringify({entries: window.__keptLog || []}), {
@@ -13287,6 +13292,188 @@ async def check_brwsessionsite(browser) -> str:
         raise AssertionError("; ".join(bad))
     return ("Keep me signed in opens a browser for the person alone; the consent card says what is kept; a refused "
             "keep is said and the browser stays; Keep lists it; Sign in again opens the browser for its site")
+
+@check
+async def check_brwchatpicks(browser) -> str:
+    """The chat's browser says which sessions it is signed in with, and why one wasn't loaded, and the person picks
+    the chat's own sessions from the pane, one per site (BRW2, F1140; DESIGN v5-3, v5.1). The picks are the chat's
+    (`PUT …/chat/{id}/browser-sessions`) and apply when the browser next opens, which the picker says."""
+    salt, carrier = "ss_" + "j" * 24, "ss_" + "k" * 24
+    listed = {"sessions": [_site_session(salt, "saltmarsh.example"), _site_session(carrier, "carrier.example")]}
+    puts: list[dict] = []
+
+    async def picks(route):
+        if route.request.method == "PUT":
+            puts.append(json.loads(route.request.post_data or "{}"))
+            return await route.fulfill(status=200, json=puts[-1])
+        await route.fulfill(status=200, json={"ids": [salt]})
+
+    ctx, page = await _brw_page(browser, "uismoke-brw-picks")
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
+    await ctx.route(re.compile(r".*/api/chat/uismoke-brw-picks/browser-sessions$"), picks)
+    bad: list[str] = []
+    try:
+        await _brw_push(page, "post", _frame({
+            "type": "browser_session", "session_id": "bsP", "owner": "chat:uismoke-brw-picks",
+            "sessions": [{"id": salt, "site": "saltmarsh.example", "level": "agent"}],
+            "skipped": [{"site": "carrier.example", "reason": "expired", "owner_name": "You"},
+                        {"site": "ledger.example", "reason": "not_shared", "owner_name": "Priya"}]}, "p-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsP")
+        await _brw_push(page, "frames:bsP", _brw_frame())
+        said = re.sub(r"\s+", " ", (await pane.inner_text()).replace("’", "'"))
+        for want in ("Signed in to saltmarsh.example", "carrier.example", "expired", "ledger.example", "Priya"):
+            if want not in said:
+                bad.append(f"the pane does not say {want!r} about its sessions")
+        await pane.get_by_role("button", name="Sessions", exact=True).click()
+        picker = page.get_by_role("group", name="Sessions for this chat")
+        try:
+            await picker.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("the pane's Sessions opens no picker")
+        if not await picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox").is_checked():
+            bad.append("the chat's own pick is not shown as picked")
+        if not await _on_screen(page, "Applies when the browser next opens"):
+            bad.append("the picker does not say when picks apply")
+        await picker.get_by_role("group", name="carrier.example").get_by_role("checkbox").check()
+        await asyncio.sleep(0.8)
+        if not puts or sorted(puts[-1].get("ids") or []) != sorted([salt, carrier]):
+            bad.append(f"picking sent {puts}")
+        if not (await picker.get_by_role("link", name=re.compile("Manage sessions")).get_attribute("href") or "").endswith("/browser/sessions"):
+            bad.append("the chat's picker does not link to the Sessions library")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "the pane says what it's signed in with and why not; the chat's picks are sent and apply next time"
+
+
+@check
+async def check_brwsessionkept(browser) -> str:
+    """When an agent's session for a site expired and the person signs in again in that browser, Done keeps the
+    fresh session under the same entry, and the pane says until when (BRW2, F1140; BRW1's hand-back `kept`)."""
+    ctx, page = await _brw_page(browser, "uismoke-brw-kept")
+    bad: list[str] = []
+    try:
+        await page.evaluate("(k) => { window.__handBackKept = k; }",
+                            {"id": "ss_" + "m" * 24, "site": "saltmarsh.example", "expires_at": time.time() + 30 * 86_400})
+        await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsK",
+                                              "owner": "chat:uismoke-brw-kept"}, "k-1"))
+        pane = _pane(page)
+        await pane.wait_for(timeout=8_000)
+        await _stream_open(page, "frames:bsK")
+        await _brw_push(page, "frames:bsK", _brw_moment("person", banner={
+            "kind": "session_expired", "reason": "Sign in to Saltmarsh again", "site": "saltmarsh.example",
+            "site_session_id": "ss_" + "m" * 24, "mine": True}))
+        await pane.get_by_role("button", name="Done", exact=True).click()
+        if not await _on_screen(page, "session is kept until"):
+            bad.append("Done after signing in again does not say the session was kept, or until when")
+        if "saltmarsh.example" not in await pane.inner_text():
+            bad.append("the kept note does not name the site")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "signing in again in the agent's browser keeps the session, and the pane says until when"
+
+
+def _browser_orchestration(oid: str, agent_id: str) -> dict:
+    """One agent step on a Browser agent, then End: what a run's and a step's session pickers are for."""
+    return {
+        "id": oid, "name": "ui-smoke browser sessions", "description": "Temporary fixture created by scripts/ui-smoke.py.",
+        "trigger": "manual", "state_schema": {}, "entry_step_id": f"{oid}_read",
+        "steps": [
+            {"id": f"{oid}_read", "name": "Read the portal", "type": "agent", "agent_id": agent_id,
+             "prompt_template": "Read today's stock.", "next_step_id": f"{oid}_end", "output_key": "stock"},
+            {"id": f"{oid}_end", "name": "End", "type": "end", "next_step_id": None},
+        ],
+    }
+
+
+@check
+async def check_brwrunpicks(browser) -> str:
+    """A workflow with a Browser agent's step picks sessions at the run's start (Run now's chevron) and on the step
+    itself, one per site (BRW2, F1140; DESIGN v5-3): Run now sends `browser_sessions`, and the step keeps its own as
+    `browser_sessions`. Both link to the Sessions library. A workflow with no browser has no such picker."""
+    stamp = int(time.time())
+    aid, oid, plain = f"agent_uismoke_brwrun_{stamp}", f"orch_uismoke_brwrun_{stamp}", f"orch_uismoke_brwplain_{stamp}"
+    api("/api/agents", "POST", {**_agent(aid, f"Browser {stamp % 1_000_000}"), "type": "browser"})
+    api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
+    api("/api/orchestrations", "POST", print_orchestration(plain, "ui-smoke no browser"))
+    salt, carrier = "ss_" + "n" * 24, "ss_" + "p" * 24
+    listed = {"sessions": [_site_session(salt, "saltmarsh.example"), _site_session(carrier, "carrier.example")]}
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json=listed))
+    # The run itself is not under test (it would start a real browser): its request is read and answered empty.
+    await ctx.route(re.compile(rf".*/api/orchestrations/{oid}/run$"), lambda r: r.fulfill(
+        status=200, headers={"Content-Type": "text/event-stream"}, body=""))
+    page = await ctx.new_page()
+    seen: list[dict] = []
+    page.on("request", lambda r: seen.append({"url": r.url, "method": r.method, "body": r.post_data})
+            if r.method in ("POST", "PUT") and "/api/orchestrations" in r.url else None)
+    panel = page.locator('aside[aria-label="Step configuration"]')
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/workflows?id={plain}", wait_until="domcontentloaded")
+        await page.locator(".react-flow__node").first.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Run with input").click()
+        await page.get_by_role("textbox", name="Initial input for this run").wait_for(timeout=5_000)
+        if await page.get_by_role("group", name="Sessions for this run").count():
+            bad.append("a workflow with no browser offers sessions for its run")
+        await page.keyboard.press("Escape")
+
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        node = page.locator(f'.react-flow__node[data-id="{oid}_read"]')
+        await node.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await page.get_by_role("button", name="Run with input").click()
+        run_picker = page.get_by_role("group", name="Sessions for this run")
+        try:
+            await run_picker.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("Run now's chevron offers no sessions for a workflow with a Browser agent's step")
+        await run_picker.get_by_role("group", name="saltmarsh.example").get_by_role("checkbox").check()
+        field = page.get_by_role("textbox", name="Initial input for this run")
+        await field.fill("today")
+        await field.press("Enter")
+        await asyncio.sleep(1.5)
+        runs = [json.loads(r["body"] or "{}") for r in seen if r["url"].endswith(f"/api/orchestrations/{oid}/run")]
+        if runs[-1:] != [{"message": "today", "browser_sessions": [salt]}]:
+            bad.append(f"Run now sent {runs[-1:]}")
+
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        await node.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await node.focus()
+        await page.keyboard.press("Enter")
+        step_picker = panel.get_by_role("group", name="Sessions for this step")
+        try:
+            await step_picker.wait_for(timeout=5_000)
+        except Exception:
+            raise AssertionError("a Browser agent's step has no sessions of its own")
+        if not (await step_picker.get_by_role("link", name=re.compile("Manage sessions")).get_attribute("href") or "").endswith("/browser/sessions"):
+            bad.append("the step's picker does not link to the Sessions library")
+        await step_picker.get_by_role("group", name="carrier.example").get_by_role("checkbox").check()
+        seen.clear()
+        await page.get_by_role("button", name="Save", exact=True).first.click()
+        await asyncio.sleep(1.5)
+        saved = [json.loads(r["body"] or "{}") for r in seen if r["method"] in ("POST", "PUT") and not r["url"].endswith("/run")]
+        steps = {s.get("id"): s for s in ((saved[-1] if saved else {}).get("steps") or [])}
+        if (steps.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
+            bad.append(f"Save sent the step's sessions as {(steps.get(f'{oid}_read') or {}).get('browser_sessions')!r}")
+    finally:
+        await ctx.close()
+        for fixture in (oid, plain):
+            drop_fixture(fixture)
+        try:
+            api(f"/api/agents/{aid}", "DELETE")
+        except Exception:
+            pass
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "Run now and a Browser agent's step pick sessions one per site and send them; a plain workflow has none"
 
 
 async def main() -> int:
