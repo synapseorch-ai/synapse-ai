@@ -193,14 +193,14 @@ def test_headers_or_a_script_keep_a_read_out_of_the_cache(headers, js_code, cach
     assert web_scraper._cache_mode(False, headers, js_code) == CacheMode.BYPASS
 
 
-@pytest.mark.parametrize("wait_for,cached", [
-    (".results", True), ("css:.results", True),
-    ("js:document.title.length > 0", False), ("() => true", False), ("function () { return true }", False),
+@pytest.mark.parametrize("wait_for", [
+    ".results", "css:.results", "js:document.title.length > 0", "() => true", "function () { return true }",
 ])
-async def test_a_wait_that_runs_a_script_keeps_a_read_out_of_the_cache_too(recorder, wait_for, cached):
-    """A script is a script wherever it is written: a `wait_for` that runs one is the caller's as much as `js_code`."""
+async def test_a_read_that_waits_stays_out_of_the_cache_too(recorder, wait_for):
+    """A wait may run a script, and which forms do is the wait's business: a read that waits is never a plain read,
+    so no form, today's or a later one, reaches the cache every caller shares."""
     await web_scraper._handle_scrape_url({"url": PUBLIC, "cache": True, "wait_for": wait_for})
-    assert (recorder.configs[0].cache_mode == web_scraper.CacheMode.ENABLED) is cached
+    assert recorder.configs[0].cache_mode == web_scraper.CacheMode.BYPASS
 
 
 # ── Honest tags ──────────────────────────────────────────────────────────────────────────────────────────────────

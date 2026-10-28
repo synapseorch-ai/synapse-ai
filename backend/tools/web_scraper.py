@@ -906,8 +906,9 @@ async def _arun_once(crawler, url: str, config: RunConfig):
 
 def _cache_mode(cache: bool, headers: dict | None, js_code, wait_for: str | None = None) -> CacheMode:
     """A page read with someone's headers, or after someone's script, is theirs: the cache, keyed by URL alone and
-    shared by every caller, is for a plain read only (F1110). A `wait_for` that runs a script is a script too."""
-    plain = not headers and js_code is None and not _runs_a_script(wait_for)
+    shared by every caller, is for a plain read only (F1110). A read that waits is not one either: what a wait may
+    run is decided by its form, and a form added later must not need this rule to learn it."""
+    plain = not headers and js_code is None and not wait_for
     return CacheMode.ENABLED if cache and plain else CacheMode.BYPASS
 
 
