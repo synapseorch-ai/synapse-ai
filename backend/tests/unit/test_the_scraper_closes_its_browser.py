@@ -1,26 +1,24 @@
-"""The scraper's browser is closed when its server stops, with the method crawl4ai has (F1016).
+"""The scraper's browser is closed when its server stops, with the method its browser has (F1016).
 
 DEP2 saw it in rc4.1's roll (2026-10-24): every worker's web_scraper subprocess died on shutdown with
 `AttributeError: 'AsyncWebCrawler' object has no attribute 'stop'` — crawl4ai 0.9's is `close()` — so the headless
 browser was left to the process's death rather than closed. The shutdown closes it now, never raises (a failure
-there must not be the process's last word), and every method the scraper calls on a crawler is one crawl4ai has.
+there must not be the process's last word), and every method the scraper calls on its browser is one its browser
+class (`_Browser`, Playwright driven directly since F1157) has.
 """
 import contextlib
-import inspect
 import re
 from pathlib import Path
 
 import pytest
-from crawl4ai import AsyncWebCrawler
 
 from tools import web_scraper
 
 
 class _Crawler:
-    """crawl4ai 0.9's lifecycle and nothing more: `start()` and `close()`, no `stop()`."""
+    """The browser's lifecycle and nothing more: `start()` and `close()`, no `stop()`."""
 
     def __init__(self, config=None, fail_close=False):
-        self.crawler_strategy = type("S", (), {"set_hook": lambda *a, **k: None})()
         self.started = self.closed = 0
         self.fail_close = fail_close
 
@@ -50,7 +48,7 @@ def server(monkeypatch):
 
 
 async def test_a_shutdown_closes_the_browser_it_started(server, monkeypatch):
-    monkeypatch.setattr(web_scraper, "AsyncWebCrawler", _Crawler)
+    monkeypatch.setattr(web_scraper, "_Browser", _Crawler)
     crawler = await web_scraper.get_crawler()
     await web_scraper.main()
     assert crawler.started == 1 and crawler.closed == 1
@@ -68,18 +66,18 @@ async def test_a_browser_that_will_not_close_does_not_crash_the_shutdown(server,
 
 
 async def test_after_a_close_the_next_call_starts_a_new_browser(server, monkeypatch):
-    monkeypatch.setattr(web_scraper, "AsyncWebCrawler", _Crawler)
+    monkeypatch.setattr(web_scraper, "_Browser", _Crawler)
     first = await web_scraper.get_crawler()
     await web_scraper.close_crawler()
     second = await web_scraper.get_crawler()
     assert second is not first and second.started == 1
 
 
-def test_every_crawler_method_the_scraper_calls_is_one_crawl4ai_has():
-    """The class: a method crawl4ai renamed or never had (`stop`) fails here, not in a worker's shutdown."""
+def test_every_crawler_method_the_scraper_calls_is_one_its_browser_has():
+    """The class: a method the browser renamed or never had (`stop`) fails here, not in a worker's shutdown."""
     source = Path(web_scraper.__file__).read_text()
     called = set(re.findall(r"\b_?crawler\.([a-z_]+)", source))
-    own = set(re.findall(r"self\.([a-z_]+)\s*=", inspect.getsource(AsyncWebCrawler.__init__)))
     assert called, "the scan found the scraper's crawler calls"
-    missing = sorted(name for name in called if not hasattr(AsyncWebCrawler, name) and name not in own)
-    assert not missing, f"web_scraper calls crawler methods crawl4ai does not have: {missing}"
+    missing = sorted(name for name in called if not hasattr(web_scraper._Browser, name))
+    assert not missing, f"web_scraper calls browser methods _Browser does not have: {missing}"
+    assert hasattr(web_scraper._Browser, "kill_session"), "what `_end_session` calls through `crawler_strategy`"
