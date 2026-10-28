@@ -49,8 +49,16 @@ CHROME = os.environ.get(
 WIDE = (1600, 900)
 PHONE = (400, 850)
 SETTLE = 2.0
+#: Where the scratch keeps its store, for what only the installer may write there (Synapse AI, F1069): its
+#: SYNAPSE_HOME, and its SYNAPSE_DB_URL where it names one (a scratch started as BF8's recipe does).
+SMOKE_STORE = {name: os.environ[f"SMOKE_{name}"] for name in ("SYNAPSE_HOME", "SYNAPSE_DB_URL")
+               if os.environ.get(f"SMOKE_{name}")}
 
 CHECKS: dict[str, "object"] = {}
+
+
+class Skipped(Exception):
+    """A check that cannot run on this machine or scratch, and says why instead of failing."""
 
 
 def check(fn):
@@ -4292,12 +4300,21 @@ ASSISTANT_NAME = "Synapse AI"
 
 
 def _assistant_agent() -> None:
-    """Synapse AI, the agent a new install starts with (the installer makes it; a scratch store has none)."""
-    try:
-        api("/api/agents/agent_synapse_ai")
-    except urllib.error.HTTPError:
-        api("/api/agents", "POST", {**_agent("agent_synapse_ai", ASSISTANT_NAME), "type": "builder",
-                                    "system_prompt": ""})
+    """Synapse AI, the agent a new install starts with. A scratch store has none, and the API never makes a builder
+    (F1069): the scratch gets it as an install does, through the installer's own `synapse setup --apply`."""
+    # The app's list never shows it (`GET /api/agents` leaves out the product's own assistant), so the store is asked:
+    # the installer's seed makes it unless it is there, and says which.
+    if not SMOKE_STORE:
+        raise Skipped("needs SMOKE_SYNAPSE_HOME or SMOKE_SYNAPSE_DB_URL (the scratch's store) to give it Synapse AI "
+                      "as the installer does")
+    import subprocess
+    done = subprocess.run([sys.executable, "-m", "synapse", "setup", "--apply", "-"],
+                          input=json.dumps({"default_agent": True}), text=True, capture_output=True, check=True,
+                          cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          env={**os.environ, **SMOKE_STORE})
+    said = json.loads(done.stdout.strip().splitlines()[-1]).get("default_agent")
+    if said not in ("created", "exists"):
+        raise AssertionError(f"the installer's seed did not make Synapse AI: {done.stdout.strip()[-300:]}")
 
 
 async def _assistant_page(browser, path: str = "", chats: dict | None = None, chat_list: list | None = None,
@@ -12183,6 +12200,8 @@ async def main() -> int:
             try:
                 note = await fn(ToursSeen(browser))
                 print(f"ok {name}: {note} ({time.time() - started:.1f}s)")
+            except Skipped as why:
+                print(f"ok {name}: skipped — {why} ({time.time() - started:.1f}s)")
             except Exception as exc:                      # a broken check fails alone
                 failed += 1
                 print(f"FAIL {name}: {exc}")
