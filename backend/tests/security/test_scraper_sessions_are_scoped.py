@@ -72,9 +72,12 @@ def test_the_agent_loop_and_a_tool_step_send_it():
 
     loop = inspect.getsource(react_engine)
     assert "session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout,\n" in loop
-    assert "**call_kwargs(agent_name, run_id or session_id))" in loop
+    # Through `call_kwargs_for` since F1118: it returns `call_kwargs`'s own answer for every
+    # server but the SQL tool's (tests/security/test_sql_handover.py).
+    assert "_call_kwargs = await call_kwargs_for(agent_name, run_id or session_id, tool_args)" in loop
+    assert "**_call_kwargs)" in loop
     step = inspect.getsource(steps)
-    assert "**call_kwargs(agent_name, run_id)," in step
+    assert "**(await call_kwargs_for(agent_name, run_id, tool_args))," in step
 
 
 # ── The scraper keys what it keeps by it ─────────────────────────────────────────────────────────────────────────

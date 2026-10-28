@@ -167,15 +167,17 @@ def test_a_worker_reaches_the_vault_without_a_directory():
     asserting is that the server is present and carries no directory argument
     anybody could widen.
     """
+    from core.scale.worker_server_module import InProcessServer
+
     servers = _worker_servers()
 
     vault = servers.get("vault")
-    assert vault is not None, "the vault server is not spawned in a worker"
-    assert str(_vault_root()) not in " ".join(vault.args), (
-        "the vault server was handed a directory; it addresses the blob store by key"
-    )
-    assert vault.env.get("SYNAPSE_TENANT_ID") is not None, (
-        "the vault server must be told which tenant it serves"
+    assert vault is not None, "the vault server is not served in a worker"
+    # Served in the worker's own process since F1118: no command, no arguments, so
+    # no directory anybody could widen. Its tenant is the caller's scope, proved by
+    # tests/security/test_vault_in_process.py.
+    assert isinstance(vault, InProcessServer), (
+        "the vault server is spawned as a process again; it is served in-process by key"
     )
 
 
@@ -188,5 +190,9 @@ def test_a_worker_spawns_no_npx():
     is the assertion that keeps it empty: a server added back here is a fleet
     that silently loses a tool and gains a stall.
     """
+    from core.scale.worker_server_module import InProcessServer
+
     for name, params in _worker_servers().items():
+        if isinstance(params, InProcessServer):
+            continue  # spawns nothing at all
         assert "npx" not in params.command, f"{name} spawns npx: {params.command}"

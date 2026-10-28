@@ -22,7 +22,8 @@ from core.tools_registry import ALL_NATIVE_TOOLS, TENANT_SCOPED_TOOLS, WORKER_NA
 
 #: Importing any of these means the module resolves tenant-scoped state itself.
 #: `core.config` is here for `load_settings()`, which is per-tenant since D30.
-_TENANT_STATE_MODULES = ("core.vault", "core.storage", "core.store", "core.config")
+#: `core.vault_tools` holds the vault tools' handlers, which read the blob store (F1118).
+_TENANT_STATE_MODULES = ("core.vault", "core.storage", "core.store", "core.config", "core.vault_tools")
 
 
 def _imported_modules(path: str) -> set[str]:
@@ -129,10 +130,16 @@ def test_a_tenant_scoped_server_is_spawned_knowing_its_tenant():
     )
     from core.tenancy import get_tenant
 
+    from core.scale.worker_server_module import InProcessServer
+
     per_tenant = _get_native_mcp_servers(_TOOLS_DIR, _BACKEND_ROOT, scope="tenant")
 
     for name in sorted(WORKER_NATIVE_TOOLS & TENANT_SCOPED_TOOLS):
         params = per_tenant[name]
+        if isinstance(params, InProcessServer):
+            # Served in this process, built in the tenant's own scope: its tenant is the
+            # caller's, proved by tests/security/test_vault_in_process.py (F1118).
+            continue
         assert params.env is not None, f"{name} was spawned with no environment at all"
         assert params.env.get("SYNAPSE_TENANT_ID") == get_tenant(), (
             f"{name} was not told which tenant it serves"

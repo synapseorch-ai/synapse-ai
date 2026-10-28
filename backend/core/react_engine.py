@@ -16,7 +16,7 @@ from core.config import load_settings, HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core.browser import client as _browser_client
 from core import chat_turns as _chat_turns
 from core.telemetry import spans as _spans
-from core.tool_scope import call_kwargs
+from core.tool_scope import call_kwargs_for
 from core.vault import maybe_vault, MentionReader
 from core.compaction import maybe_compact
 from core.session import (
@@ -3690,9 +3690,11 @@ async def run_agent_step(
                                        if _browser_owner else None)
                     _words_token = _browser_client.own_words.set(_persons_words) if _browser_owner else None
                     try:
+                        # Before the clock: the SQL tool's connection is resolved here (F1118).
+                        _call_kwargs = await call_kwargs_for(agent_name, run_id or session_id, tool_args)
                         with _anyio.fail_after(_timeout.total_seconds() + 5):
                             result = await session.call_tool(actual_tool_name, tool_args, read_timeout_seconds=_timeout,
-                                                             **call_kwargs(agent_name, run_id or session_id))
+                                                             **_call_kwargs)
                             raw_output = result.content[0].text
                     finally:
                         if _owner_token is not None:

@@ -163,7 +163,9 @@ async def test_search_reads_the_store_concurrently(vault, monkeypatch):
 
         in_flight = 0
         peak = 0
-        real_get = vault_fs._get_text
+        from core import vault_tools
+
+        real_get = vault_tools._get_text
 
         def _slow_get(key: str):
             nonlocal in_flight, peak
@@ -175,7 +177,7 @@ async def test_search_reads_the_store_concurrently(vault, monkeypatch):
             finally:
                 in_flight -= 1
 
-        monkeypatch.setattr(vault_fs, "_get_text", _slow_get)
+        monkeypatch.setattr(vault_tools, "_get_text", _slow_get)  # the handlers live there (F1118)
         found = await _call("search_files", {"query": "needle"})
 
     assert found["files_with_matches"] == 32

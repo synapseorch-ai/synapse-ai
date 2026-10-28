@@ -13,8 +13,14 @@ from core.config import load_settings
 # Initialize MCP Server
 app = Server("sql-mcp-server")
 
-# Per-db_id engine cache: db_id -> (engine, inspector)
+# Engine cache: db_id (or a handed connection's id and hash) -> (engine, inspector)
 _engines: dict[str, tuple] = {}
+
+
+def _handover_required() -> bool:
+    """On a multi-tenant worker this server is handed its connection with each call and never opens
+    the store (F1118): `core/scale/worker_server_module.py` spawns it with this set."""
+    return os.getenv("SYNAPSE_SQL_HANDOVER", "").strip() == "required"
 
 # Keywords that can modify something. Checked anywhere in the statement, not
 # only at the front — see _is_write_query.
@@ -170,9 +176,28 @@ def _run_query(engine, query: str, is_write: bool) -> str:
         return json.dumps(rows, default=str, indent=2) + suffix
 
 
-async def get_db_engine(db_id: str | None = None):
-    """Return (engine, inspector) for the given db_id, or fall back to global setting."""
+async def get_db_engine(db_id: str | None = None, *, handed: dict | None = None):
+    """Return (engine, inspector) for the given db_id, or fall back to global setting.
+
+    `handed` is the connection the caller sent with the call (`core.tool_scope.handed_database`).
+    When it is there it is the only one used; when a handover is required and it is not, nothing is
+    opened.
+    """
     global _engines
+
+    if handed is not None:
+        import hashlib
+
+        digest = hashlib.sha256(handed["connection_string"].encode()).hexdigest()[:16]
+        cache_key = f"handed:{handed.get('id') or '__global__'}:{digest}"
+        if cache_key not in _engines:
+            _engines[cache_key] = await asyncio.to_thread(_connect, handed["connection_string"])
+        return _engines[cache_key]
+
+    if _handover_required():
+        if db_id:
+            raise ValueError(f"No database config found for db_id='{db_id}'.")
+        raise ValueError("No db_id provided and no global SQL connection string found in settings.")
 
     if db_id:
         if db_id in _engines:
@@ -261,16 +286,28 @@ async def list_tools() -> list[types.Tool]:
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    from core.tool_scope import handed_database
+
+    try:
+        meta = app.request_context.meta
+    except LookupError:
+        meta = None
+    return await _call(name, arguments, handed=handed_database(meta))
+
+
+async def _call(name: str, arguments: dict, *, handed: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
     # The tenant, the store and this tenant's settings are established by
     # `bootstrap()`, which now runs alongside the handshake rather than ahead
     # of it. A handler is the first thing that actually needs any of them.
-    from core.tool_server import ready
+    # Not when the connection is handed over: then there is no store to open.
+    if not _handover_required():
+        from core.tool_server import ready
 
-    await ready()
+        await ready()
 
     try:
         db_id = arguments.get("db_id") or None
-        engine, inspector = await get_db_engine(db_id)
+        engine, inspector = await (get_db_engine(db_id, handed=handed) if handed is not None else get_db_engine(db_id))
 
         if name == "list_tables":
             tables = await asyncio.to_thread(inspector.get_table_names)
@@ -301,8 +338,10 @@ async def call_tool(name: str, arguments: dict) -> list[types.TextContent | type
                 )]
 
             if _is_write_query(query):
-                settings = load_settings()
-                allow_db_write = settings.get("allow_db_write", False)
+                if handed is not None:
+                    allow_db_write = bool(handed.get("allow_write", False))
+                else:
+                    allow_db_write = load_settings().get("allow_db_write", False)
                 if not allow_db_write:
                     return [types.TextContent(
                         type="text",

@@ -82,7 +82,15 @@ def test_a_deployment_can_add_a_name(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.usefixtures("worker_environment")
-def test_a_tenant_scoped_server_still_inherits() -> None:
-    """Narrowing these is its own change: they open the store, so they keep its URL."""
+def test_no_tenant_scoped_server_on_a_worker_holds_the_store_url_unless_it_opens_the_store() -> None:
+    """The SQL tool's server is handed its connection and the vault runs in-process (F1118):
+    neither is given the store URL. A tenant-scoped server that still opens the store keeps it."""
+    from core.scale.worker_server_module import InProcessServer
+
     for name, params in _get_native_mcp_servers(_TOOLS_DIR, _BACKEND_ROOT, scope="tenant").items():
-        assert params.env.get("SYNAPSE_DB_URL") == WITHHELD["SYNAPSE_DB_URL"], name
+        if isinstance(params, InProcessServer):
+            continue
+        if name == "sql":
+            assert not set(WITHHELD) & set(params.env), sorted(set(WITHHELD) & set(params.env))
+        else:
+            assert params.env.get("SYNAPSE_DB_URL") == WITHHELD["SYNAPSE_DB_URL"], name

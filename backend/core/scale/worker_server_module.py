@@ -193,13 +193,25 @@ class WorkerServerModule:
                 instance.mcp_disabled.append(server_name)
                 continue
 
-            async def connect(stack, params=params):
-                read, write = await stack.enter_async_context(stdio_client(params))
-                session = await stack.enter_async_context(
-                    ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
-                )
-                await session.initialize()
-                return session
+            if isinstance(params, InProcessServer):
+                # In this process, over memory streams (F1118). The owner task copies the
+                # caller's context, so the server's handlers run in this tenant's scope.
+                async def connect(stack, build=params.build):
+                    from mcp.shared.memory import create_connected_server_and_client_session
+
+                    return await stack.enter_async_context(
+                        create_connected_server_and_client_session(
+                            build(), read_timeout_seconds=_SESSION_READ_TIMEOUT
+                        )
+                    )
+            else:
+                async def connect(stack, params=params):
+                    read, write = await stack.enter_async_context(stdio_client(params))
+                    session = await stack.enter_async_context(
+                        ClientSession(read, write, read_timeout_seconds=_SESSION_READ_TIMEOUT)
+                    )
+                    await session.initialize()
+                    return session
 
             handle = await _start_server(server_name, connect)
             if handle.error is not None:
@@ -624,6 +636,19 @@ class WorkerServerModule:
                 pass
 
 
+class InProcessServer:
+    """A native tool server this process serves itself, over in-memory streams (F1118).
+
+    `build` returns a fresh `mcp.server.Server`. One is built per session, in the
+    tenant's scope, and closed with that tenant's module.
+    """
+
+    __slots__ = ("build",)
+
+    def __init__(self, build):
+        self.build = build
+
+
 #: What a tool server shared by every tenant is given of this process's
 #: environment, by name (F1112). These are the names Python, the HTTP client, the
 #: browser and the shared tools themselves read. Anything else this process holds
@@ -697,10 +722,10 @@ def _get_native_mcp_servers(
         env["PYTHONPATH"] = f"{backend_root_str}{os.pathsep}{existing_pp}" if existing_pp else backend_root_str
         return env
 
-    # **Shared servers get an allowlist** (`SHARED_TOOL_ENV_NAMES`, F1112).
-    # Tenant-scoped servers still inherit this process's environment: they open
-    # the store and, under an embedder, resolve stored credentials, and what that
-    # takes is the embedder's to name. Narrowing them is its own change.
+    # **Shared servers get an allowlist** (`SHARED_TOOL_ENV_NAMES`, F1112), and so
+    # does the SQL tool's, which is handed its connection (F1118). The vault runs
+    # in this process. A tenant-scoped server that still opens the store itself
+    # inherits this process's environment.
     shared_env = _with_backend_root(shared_tool_environment())
     tool_env = _with_backend_root(os.environ.copy())
 
@@ -757,7 +782,21 @@ def _get_native_mcp_servers(
         if binder:
             tenant_env["SYNAPSE_SESSION_BINDER"] = binder
         for name in sorted(WORKER_NATIVE_TOOLS & TENANT_SCOPED_TOOLS):
-            _python_tool(name, tenant_env)
+            if name == "vault":
+                # Reads the blob store by key, which applies the tenant itself: served
+                # in this process, one server per tenant module (F1118).
+                from core.vault_tools import build_server
+
+                servers[name] = InProcessServer(build_server)
+            elif name == "sql":
+                # Handed each call's connection by the caller (`core/tool_scope.py`), so it
+                # opens no store and gets the shared allowlist (F1118).
+                sql_env = _with_backend_root(shared_tool_environment())
+                sql_env["SYNAPSE_TENANT_ID"] = tenant_env["SYNAPSE_TENANT_ID"]
+                sql_env["SYNAPSE_SQL_HANDOVER"] = "required"
+                _python_tool(name, sql_env)
+            else:
+                _python_tool(name, tenant_env)
 
         # **The Node Filesystem server used to be spawned here. It is gone, and
         # `vault` above replaces it.**

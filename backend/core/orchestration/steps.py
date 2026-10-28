@@ -17,7 +17,7 @@ from core import expressions as _expressions
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
-from core.tool_scope import call_kwargs
+from core.tool_scope import call_kwargs_for
 from .pauses import count_task, end_step, note_left_open, progress_key as _progress_key, take_tasks
 from .step_usage import exact_window, step_scope
 from .run_error import reason_of, set_run_error
@@ -1226,7 +1226,7 @@ class ToolStepExecutor:
                     result = await session.call_tool(
                         actual_tool_name, tool_args,
                         read_timeout_seconds=timedelta(seconds=mcp_call_timeout(actual_tool_name, tool_args)),
-                        **call_kwargs(agent_name, run_id),
+                        **(await call_kwargs_for(agent_name, run_id, tool_args)),
                     )
                 finally:
                     if token is not None:
