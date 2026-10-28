@@ -929,7 +929,9 @@ class Host:
             self.pw = await async_playwright().start()
         if self.warm is None:
             warm = Session(f"warm-{uuid.uuid4().hex[:8]}", "", gate.READ_ONLY, {}, self.root)
-            await warm.launch(self.pw, chromium_sandbox=self.chromium_sandbox)
+            # In a task of its own that ends here, as a request's does: Playwright MCP's connection is opened in it,
+            # and a task still running (the server's own) could never let another close it.
+            await asyncio.ensure_future(warm.launch(self.pw, chromium_sandbox=self.chromium_sandbox))
             self.warm = warm
 
     @web.middleware

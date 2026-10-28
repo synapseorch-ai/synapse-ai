@@ -112,7 +112,7 @@ def test_chromium_takes_no_unguarded_path():
 
     assert "--force-webrtc-ip-handling-policy=disable_non_proxied_udp" in host._CHROMIUM_ARGS
     assert "--disable-quic" in host._CHROMIUM_ARGS
-    source = inspect.getsource(host.Session.start)
+    source = inspect.getsource(host.Session.launch) + inspect.getsource(host.Session.apply_mode)
     assert 'service_workers="block"' in source and "route_web_socket" in source and "_NO_WORKERS" in source
     assert "egress_proxy.shared()" in source and 'proxy={"server": proxy}' in source  # SEC2's outer layer
 
@@ -226,11 +226,17 @@ async def test_closing_an_owner_closes_its_browser():
     assert await tools.owner_of("s1") is None
 
 
-async def test_the_tools_carry_the_components_tags():
+async def test_the_tools_carry_the_components_tags(tmp_path, monkeypatch):
+    # With no committed list (a development tree), the component lists them; either way the tags are the gate's.
+    monkeypatch.setattr(browser_client, "_SCHEMAS", tmp_path / "none.json")
     tools = browser_client.BrowserTools(_FakeHost())
     listed = (await tools.list_tools()).tools
     assert listed[0].name == "browser_snapshot"
     assert listed[0].annotations.readOnlyHint is True and listed[0].annotations.destructiveHint is False
+    monkeypatch.undo()
+    committed = {t.name: t for t in (await browser_client.BrowserTools(_FakeHost()).list_tools()).tools}
+    assert committed["browser_snapshot"].annotations.readOnlyHint is True
+    assert not committed["browser_click"].annotations.readOnlyHint
 
 
 def test_the_owner_names_the_run_before_the_chat():

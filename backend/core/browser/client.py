@@ -268,11 +268,11 @@ class BrowserTools:
         try:
             host, sid = await self._session_for(key)
             record = await self.store.get_owner(key) or {}
-            if record.get("expired"):  # the kept session ran out: the person signs in again first
+            if record.get("expired"):  # the saved login ran out: the person logs in again first
                 self._handovers[key] = {"kind": "login_expired", "reason": _EXPIRED, "session_id": sid,
                                         **record["expired"]}
                 await self.store.set_owner(key, {**record, "expired": None})
-                return _result("The kept session has expired. It is the person's turn in the browser to sign in "
+                return _result("The saved login has expired. It is the person's turn in the browser to log in "
                                "again; stop here, and you will continue when they hand it back.", error=True)
             status, body = await host.call("POST", "/tool", json={
                 "session_id": sid, "name": name, "args": arguments, "press": press})
