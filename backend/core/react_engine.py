@@ -694,6 +694,17 @@ BROWSER_AGENT_GUIDE = (
 )
 
 
+def _type_tools(agent_data: dict) -> list:
+    """The agent's tools with what its type brings: a Browser agent holds the browser's tools however it was made
+    (DESIGN #3). Only the editor added them, so one made through the API had none, and none had
+    `browser_hand_over` (BRW2's live check, 10-28)."""
+    tools = list(agent_data.get("tools", ["all"]))
+    if agent_data.get("type") == "browser" and "all" not in tools:
+        from core.browser.gate import ALLOWED
+        tools += [name for name in ALLOWED if name not in tools]
+    return tools
+
+
 def _inject_browser_guide(agent_data, system_template):
     return system_template + BROWSER_AGENT_GUIDE if agent_data.get("type") == "browser" else system_template
 
@@ -1205,7 +1216,7 @@ async def run_agent_step(
             budget=ALL_TOOLS_TOKEN_BUDGET, left_out=_tools_left_out,
         )
         _log.debug(f"RUN_AGENT: aggregate_all_tools done, tool_count={len(all_tools)}")
-    allowed_tools = narrow_allowed_tools(allowed_tools_override, active_agent.get("tools", ["all"]))
+    allowed_tools = narrow_allowed_tools(allowed_tools_override, _type_tools(active_agent))
     agent_type = active_agent.get("type", "conversational")
 
     # ── TEAM: a delegate whose members work as a team (TEAM1a, D283) ──

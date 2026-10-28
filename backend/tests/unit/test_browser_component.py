@@ -1251,3 +1251,13 @@ def test_the_committed_tool_schemas_are_the_pinned_playwright_mcps():
     committed = json.loads(browser_client._SCHEMAS.read_text(encoding="utf-8"))
     assert committed == json.loads(json.dumps(_asyncio.run(host.pinned_tool_schemas()))), \
         "regenerate: python -m core.browser.host --write-tool-schemas core/browser/tool_schemas.json"
+
+
+
+def test_a_browser_agent_holds_the_browsers_tools_however_it_was_made():
+    """BRW2's live check (10-28): an API-made Browser agent had no tools, and none had browser_hand_over."""
+    from core.react_engine import _type_tools
+    made = _type_tools({"type": "browser", "tools": ["scrape_url"]})
+    assert made[0] == "scrape_url" and set(gate.ALLOWED) <= set(made) and "browser_hand_over" in made
+    assert _type_tools({"type": "browser", "tools": ["all"]}) == ["all"]
+    assert _type_tools({"type": "conversational", "tools": ["scrape_url"]}) == ["scrape_url"]
