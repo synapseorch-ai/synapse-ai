@@ -13469,6 +13469,10 @@ async def check_brwrunpicks(browser) -> str:
         elif (steps.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
             bad.append(f"Save sent the step's sessions as {(steps.get(f'{oid}_read') or {}).get('browser_sessions')!r} "
                        f"(steps {sorted(k for k in steps if k)})")
+        # And it is what the server keeps.
+        stored = {s.get("id"): s for s in (api(f"/api/orchestrations/{oid}").get("steps") or [])}
+        if (stored.get(f"{oid}_read") or {}).get("browser_sessions") != [carrier]:
+            bad.append(f"the server kept the step's sessions as {(stored.get(f'{oid}_read') or {}).get('browser_sessions')!r}")
     finally:
         await ctx.close()
         for fixture in (oid, plain):
