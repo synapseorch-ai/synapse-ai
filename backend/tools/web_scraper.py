@@ -164,7 +164,7 @@ AS_CRAWL4AI_LAUNCHED = ("--disable-blink-features=AutomationControlled",)
 VIEWPORT = {"width": 1080, "height": 600}
 #: How long a page has to answer, and how long a loaded page is given to settle (its scripts' first requests).
 PAGE_TIMEOUT_MS = 60_000
-SETTLE_MS = 2_000
+SETTLE_MS = 1_000
 #: A named session, or a caller's context with none open, ends after this long unused.
 IDLE_SECONDS = 30 * 60
 #: A plain read's cache (F1110: only a read with no headers and no script is kept).
