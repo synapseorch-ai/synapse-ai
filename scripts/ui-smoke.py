@@ -4443,20 +4443,28 @@ async def check_deletedagent(browser) -> str:
     return "a deleted agent's chat says \"Deleted agent\" in History (its id on hover) and in the open conversation"
 
 
-#: The builder's model pill at its widest: whether its label is cut, and how wide it is held.
-MODEL_PILL = """() => { const b = document.querySelector('[data-testid="assistant-panel"] [aria-label="Model for this build"]');
+#: The builder's composer row at its narrowest: the model pill (cut or whole, its width and title), and the agent
+#: label before it, whose content must end before the image button starts.
+MODEL_PILL = """() => { const panel = document.querySelector('[data-testid="assistant-panel"]');
+  const b = panel && panel.querySelector('[aria-label="Model for this build"]');
   const s = b && b.querySelector('span');
+  const attach = panel && panel.querySelector('[aria-label="Attach images"]');
+  const agent = attach && attach.previousElementSibling && attach.previousElementSibling.firstElementChild;
+  const right = (el) => el ? Math.round(el.getBoundingClientRect().right) : null;
   return b && s ? {label: s.textContent.trim(), cut: s.scrollWidth > s.clientWidth + 1,
-                   width: Math.round(b.getBoundingClientRect().width), title: b.getAttribute('title')} : null; }"""
+                   width: Math.round(b.getBoundingClientRect().width), title: b.getAttribute('title'),
+                   agentRight: right(agent), attachLeft: attach ? Math.round(attach.getBoundingClientRect().left) : null,
+                   agentName: agent ? (agent.getAttribute('aria-label') || agent.textContent.trim()) : null} : null; }"""
 
 
 @check
 async def check_builderchip(browser) -> str:
-    """On a phone the builder's model pill uses the room it has, and says its whole label on hover.
+    """On a phone the builder's model pill shows its whole label, and the row's "Synapse AI" overlaps nothing.
 
-    It was held at 200 px, so a phone read "Default (Claude Haik…" with space beside it (F1131's follow-up; Naveen
-    2026-10-28: free width). Only a cut under that old cap fails: a label longer than the whole row is still cut, and
-    then the pill's title says it.
+    It was held at 200 px, then by the row: a phone read "Default (Claude Haik…" and, with the cap gone, still
+    "Default (workspa…" at 155 px beside the panel's "Synapse AI" label, which ran over the image button (F1131's
+    follow-up; Naveen 2026-10-28: free width, then the label as its mark only on a phone — the header names it). Its
+    name stays for a screen reader, and the pill's title is its whole label.
     """
     ctx, page = await _assistant_page(browser, path="agents", width=(390, 844))
     try:
@@ -4468,11 +4476,18 @@ async def check_builderchip(browser) -> str:
         await ctx.close()
     if not pill:
         raise AssertionError("no model pill in the builder panel at 390 px")
-    if pill["cut"] and pill["width"] <= 200:
-        raise AssertionError(f"the model pill is cut at {pill['width']} px: {pill['label']!r}")
+    bad = []
+    if pill["cut"]:
+        bad.append(f"the model pill is cut at {pill['width']} px: {pill['label']!r}")
     if pill["title"] != pill["label"]:
-        raise AssertionError(f"the pill's title is {pill['title']!r}, not its label {pill['label']!r}")
-    return f"at 390 px the model pill is {pill['width']} px, {'cut, its title whole' if pill['cut'] else 'whole'}: {pill['label']!r}"
+        bad.append(f"the pill's title is {pill['title']!r}, not its label {pill['label']!r}")
+    if pill["agentRight"] is None or pill["attachLeft"] is None or pill["agentRight"] > pill["attachLeft"]:
+        bad.append(f"the agent label ends at {pill['agentRight']}, past the image button at {pill['attachLeft']}")
+    if pill["agentName"] != ASSISTANT_NAME:
+        bad.append(f"the agent label is named {pill['agentName']!r}, not {ASSISTANT_NAME!r}")
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return f"at 390 px the model pill is whole ({pill['width']} px, {pill['label']!r}) and the agent label clears the image button"
 
 
 @check
