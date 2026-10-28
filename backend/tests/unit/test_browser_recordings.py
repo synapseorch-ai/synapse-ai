@@ -95,7 +95,7 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
             return f"record:{opened[-1][0]}" if sid == "bs_rec" else None
 
         async def viewer(self, sid, path, body=None):
-            viewer_calls.append(path)
+            viewer_calls.append((path, body))
             return 200, {"steps": _steps(), "shots": {"r1-s1": JPEG}} if path == "/record/stop" else {"recording": True}
 
         async def close_owner(self, owner):
@@ -105,11 +105,18 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     new = (await client.post("/api/recordings/new", json={"sessions": [], "start_url": "portal.saltmarsh.example"})).json()
     assert new["browser_session_id"] == "bs_rec" and new["recording_id"].startswith("rec_")
     assert opened[-1][2] == "https://portal.saltmarsh.example"
-    assert (await client.post("/api/browser/bs_rec/record/start", json={"from_step": "s2"})).status_code == 501
+    assert (await client.post("/api/browser/bs_rec/record/start", json={"from_step": "s2"})).status_code == 422, \
+        "a re-record names its recording"
     stopped = (await client.post("/api/browser/bs_rec/record/stop", json={"keep": True, "name": "Find"})).json()
     assert stopped == {"recording_id": new["recording_id"], "steps": 3} and closed == [f"record:{new['recording_id']}"]
     got = (await client.get(f"/api/recordings/{new['recording_id']}")).json()
     assert got["name"] == "Find" and "history" not in got
+    # Re-recording from a step (F1143): the steps before it replay first, in the browser, then the person records.
+    again = {"recording_id": new["recording_id"], "from_step": "s3"}
+    assert (await client.post("/api/browser/bs_rec/record/start", json=again)).json() == {"recording": True}
+    assert viewer_calls[-1] == ("/record/start", {"replay_first": got["steps"][:2]})
+    gone = await client.post("/api/browser/bs_rec/record/start", json={**again, "from_step": "nope"})
+    assert gone.status_code == 422
     shot = await client.get(f"/api/recordings/{new['recording_id']}/shots/r1-s1")
     assert shot.status_code == 200 and shot.content == b"\xff\xd8picture"
     stale = await client.patch(f"/api/recordings/{new['recording_id']}", json={"base_version": 9, "name": "x"})

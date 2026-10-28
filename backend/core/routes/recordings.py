@@ -132,11 +132,26 @@ class RecordStart(BaseModel):
 
 @router.post("/api/browser/{session_id}/record/start")
 async def record_start(session_id: str, body: RecordStart):
-    if body.from_step:
-        raise HTTPException(status_code=501, detail="Re-recording from a step comes with replay.")
+    """Record in this browser. With `from_step`, a re-record: the recording's steps before it replay first, then the
+    person carries on from there; Stop with the same `recording_id` and `from_step` keeps it as a pending fix."""
     if await browser_client.tools.owner_of(session_id) is None:
         raise HTTPException(status_code=404, detail="That browser is closed.")
-    status, answer = await browser_client.tools.viewer(session_id, "/record/start", {})
+    payload: dict = {}
+    if body.from_step:
+        if not body.recording_id:
+            raise HTTPException(status_code=422, detail="Re-recording from a step needs its recording.")
+        try:
+            doc = await recordings.get(body.recording_id)
+        except recordings.NotFound:
+            raise HTTPException(status_code=404, detail="That recording is gone.") from None
+        ids = [s.get("id") for s in doc["steps"]]
+        if body.from_step not in ids:
+            raise HTTPException(status_code=422, detail="That step is not in this recording.")
+        payload["replay_first"] = doc["steps"][:ids.index(body.from_step)]
+    status, answer = await browser_client.tools.viewer(session_id, "/record/start", payload)
+    if status == 409 and answer.get("replayed"):  # the steps before it stopped: say where, for the person
+        return JSONResponse(status_code=409, content={"detail": "Replaying the steps before it stopped.",
+                                                      "replayed": answer["replayed"]})
     if status >= 400:
         raise HTTPException(status_code=status, detail=answer.get("error") or "Refused.")
     return answer

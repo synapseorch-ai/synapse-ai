@@ -34,7 +34,8 @@ from aiohttp import web
 
 from core import egress_proxy
 from core.browser import gate
-from core.browser.recording import TARGET_JS, Recorder
+from core.browser import replay as replaying
+from core.browser.recording import TARGET_JS, Recorder, sensitive_kind
 
 #: Playwright MCP, pinned: its tool names and output are part of the gate's contract.
 PLAYWRIGHT_MCP = "@playwright/mcp@0.0.83"
@@ -173,6 +174,8 @@ class Session:
         self.agent_dialog = ""      # the message of the dialog the agent faces (Playwright MCP handles it)
         self.idle = False           # the agent's turn ended: "nobody" until its next call, not a held send
         self.recorder: Recorder | None = None  # the person's task being recorded (F1141)
+        self.replaying: dict | None = None     # the replay in hand: its steps, inputs and whether anyone is there
+        self.replay_sends: set[str] | None = None  # unattended: the only sends it may make, as its recording did
         self._pressing: dict | None = None  # a press the person's own words allowed, logged once it runs
         self.select: dict | None = None  # a dropdown the person clicked: the pane draws its options
         self.chooser = None         # a page's file picker, while the person drives
@@ -290,12 +293,16 @@ class Session:
     # ── the network gate ─────────────────────────────────────────────────────
     async def _route(self, route) -> None:
         req = route.request
-        agent = self.wheel == "agent"
+        agent, only = self.wheel == "agent", self.replay_sends  # as the request starts, before any wait
         try:
             nav = req.is_navigation_request()
             top = nav and _is_main_frame(req)
             reason = await gate.verdict(req.url, req.method, self.mode,
                                         sites=self.sites if (agent and top) else None)
+            if (reason is None and agent and only is not None
+                    and req.method.upper() not in ("GET", "HEAD", "OPTIONS")
+                    and f"{req.method.upper()} {urlparse(req.url).hostname or ''}" not in only):
+                reason = "an unattended replay sends only where its recording did"
             if reason is None and nav:
                 reason = await self._pace(urlparse(req.url).hostname or "")
             hold = (reason is None and agent and self.mode == gate.CO_DRIVE
@@ -303,6 +310,8 @@ class Session:
             if reason is None and self.wheel == "person" and req.method.upper() not in ("GET", "HEAD", "OPTIONS"):
                 # The record of who sent what (F1125): the method and the host, never the body or its fields.
                 self._note("person", "sent", f"{req.method.upper()} {urlparse(req.url).hostname or ''}")
+                if self.recorder is not None:
+                    self.recorder.sent(req.method, urlparse(req.url).hostname or "")
         except Exception:
             reason, hold = "the browser's guard failed", False
         if hold:
@@ -390,6 +399,7 @@ class Session:
         """`press` is the engine's word on a quote the agent gave (`confirm`): `{because, confirmed}`, checked
         against the person's own text where that text is, never here."""
         self.last_used = time.monotonic()
+        self.replay_sends = None  # a replay's send list was its own; the agent's presses go by the click stop
         args = {k: v for k, v in (args or {}).items() if k != "confirm"}
         refused = gate.refusal(name)
         if refused:
@@ -655,6 +665,120 @@ class Session:
             await self._picture(step)
         return {"ok": True}
 
+    # ── replaying a recording by code (F1143) ────────────────────────────────
+    async def replay(self, steps: list[dict], inputs: dict, *, unattended: bool, recording_id: str = "",
+                     from_n: int = 1) -> dict:
+        """Run `steps` from step `from_n` (DESIGN §v5.3): `{done, outputs}`, or stopped at a step with `miss` (no
+        target, or not the page it expects: for a fix) or `handover` (the person's step, or a press that is theirs).
+        Refused while the person drives. It drives as the agent does, so the network gate and the money backstop
+        hold as for any agent press."""
+        if self.wheel == "person":
+            return {"refused": "The person is driving this browser."}
+        if self.recorder is not None:
+            return {"refused": "This browser is recording."}
+        if self.held is not None:
+            return {"refused": "A send is waiting for the person."}
+        self.wheel, self.idle, self.banner, self.handover = "agent", False, None, None
+        plan = self.replaying if (self.replaying and self.replaying["steps"] is steps) else None
+        self.replaying = plan or {"steps": steps, "inputs": inputs or {}, "unattended": unattended,
+                                  "recording_id": recording_id, "outputs": {}}
+        outputs = self.replaying["outputs"]
+        # Unattended, the only sends are its recording's: kept past the replay's end (a page may send late) until the
+        # agent's own next call, which has its own rules, or the next replay.
+        self.replay_sends = ({x for st in steps for x in (st.get("sends") or [])} if unattended else None)
+        for step in [st for st in steps if int(st.get("n") or 0) >= from_n]:
+            stopped = self._replay_held(step) or await self._replay_step(step, unattended)
+            if stopped is not None:
+                return stopped
+        self.replaying, self.handover = None, None
+        return {"done": len(steps), "outputs": outputs}
+
+    async def _replay_step(self, step: dict, unattended: bool) -> dict | None:
+        page, action, line = self.page, step.get("action"), step.get("line") or ""
+        try:
+            if action == "open":
+                await page.goto(str(step.get("url") or ""), wait_until="domcontentloaded")
+            elif action == "back":
+                await page.go_back(wait_until="domcontentloaded")
+            elif "person" in (step.get("value") or {}):
+                return self._replay_turn(step, "sensitive", f"Your turn: {line}.")
+            else:
+                loc, _rung = await replaying.find(page, step.get("target"))
+                if loc is None:
+                    return await self._replay_miss(step, "its target is not on the page")
+                if action in ("click", "press"):
+                    info = json.loads(await loc.first.evaluate(f"(el) => ({_PRESS_INFO_JS})(el, {str(action == 'press').lower()})") or "{}")
+                    info["key"] = action == "press"
+                    tier, does = gate.classify_press(info, self._page_url())
+                    why = replaying.press_rule(step, tier, unattended=unattended)
+                    if why:
+                        label = (info.get("label") or "").strip()[:120] or line
+                        return self._replay_turn(step, "press", f"Press '{label}' yourself: {why}.",
+                                                 press={"label": label, "does": does, "tier": tier,
+                                                        "host": urlparse(self._page_url()).hostname or ""})
+                    await (loc.first.click(no_wait_after=True) if action == "click"
+                           else loc.first.press("Enter", no_wait_after=True))
+                    await self._settle(page, "networkidle")  # what the press sent goes (or not) within its step
+                elif action in ("type", "choose"):
+                    value = replaying.fill_value(step, self.replaying["inputs"])
+                    if value is None:
+                        return await self._replay_miss(step, f"no value for {(step.get('value') or {}).get('input')}")
+                    now = await loc.first.evaluate(f"(el) => ({TARGET_JS})(el)")
+                    if sensitive_kind(now) or gate.looks_like_card(value):  # the page changed, or a card in an input
+                        return self._replay_turn(step, "sensitive",
+                                                 "This field is yours: a password, a card or a one-time code.")
+                    await (loc.first.fill(value) if action == "type" else loc.first.select_option(label=value))
+                    await self._settle(page)
+                elif action == "read":
+                    self.replaying["outputs"][str(step.get("output") or f"step_{step.get('n')}")] = \
+                        await replaying.read(loc)
+            want = (step.get("wait") or {}).get("url")
+            if want:
+                try:
+                    await page.wait_for_url(lambda u: replaying.page_of(u) == want, timeout=replaying.WAIT_MS)
+                except Exception:
+                    return await self._replay_miss(step, f"it didn't reach {want}")
+        except Exception as exc:
+            return await self._replay_miss(step, str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__)
+        held = self._replay_held(step)
+        if held:
+            return held
+        await self._record("replay", action or "", line, recording_id=self.replaying.get("recording_id", ""),
+                           step_id=step.get("id"))
+        return None
+
+    @staticmethod
+    async def _settle(page, state: str = "domcontentloaded") -> None:
+        try:
+            await page.wait_for_load_state(state, timeout=replaying.SETTLE_MS)
+        except Exception:
+            pass
+
+    def _replay_held(self, step: dict) -> dict | None:
+        """The money backstop held a send the last step caused: the person's turn, at that step."""
+        if self.held is None and not self.handover:
+            return None
+        return {"handover": {**(self.handover or {}), "session_id": self.id}, "at": step.get("n"),
+                "step_id": step.get("id")}
+
+    def _replay_turn(self, step: dict, kind: str, reason: str, **extra) -> dict:
+        turn = self._turn(kind, reason, **extra)
+        return {"handover": {**turn, "session_id": self.id}, "at": step.get("n"), "step_id": step.get("id")}
+
+    async def _replay_miss(self, step: dict, why: str) -> dict:
+        """A step that can't find its way: replay stops, with the page as it is, for the agent's fix or the person."""
+        entry = await self._record("replay", "missed", f"Stopped at: {step.get('line') or 'a step'} ({why})",
+                                   step_id=step.get("id"),
+                                   recording_id=(self.replaying or {}).get("recording_id", ""))
+        snapshot = ""
+        try:
+            res = await self.mcp.call_tool("browser_snapshot", {})
+            snapshot = self._inline_snapshots("\n".join(getattr(c, "text", "") for c in res.content))[:20000]
+        except Exception:
+            pass
+        return {"miss": {"n": step.get("n"), "step_id": step.get("id"), "line": step.get("line"), "why": why,
+                         "snapshot": snapshot, "shot_ref": entry.get("shot_ref")}, "done": int(step.get("n") or 1) - 1}
+
     # ── recording the person's task (F1141) ──────────────────────────────────
     def start_recording(self) -> dict:
         if self.recorder is None:
@@ -665,7 +789,7 @@ class Session:
     def stop_recording(self) -> dict | None:
         recorder, self.recorder = self.recorder, None
         self._push_state()
-        return recorder.result() if recorder is not None else None
+        return recorder.result(self._page_url()) if recorder is not None else None
 
     async def _target_at(self, x: float, y: float) -> dict | None:
         try:
@@ -683,6 +807,7 @@ class Session:
     async def _record_input(self, kind: str, body: dict) -> dict | None:
         """The step a person's input makes, read before it acts (where it lands is the page as they saw it)."""
         rec = self.recorder
+        rec.at(self._page_url())
         if kind == "mouse" and body.get("event", "click") in ("click", "down"):
             return rec.clicked(await self._target_at(float(body.get("x", 0)), float(body.get("y", 0))))
         if kind == "text":
@@ -865,6 +990,7 @@ class Session:
         try:
             x, y = (float(v) for v in target.split(","))
             if self.recorder is not None:
+                self.recorder.at(self._page_url())
                 label = next((o.get("label") for o in options if o.get("value") == value), value)
                 step = self.recorder.chose(await self._target_at(x, y), str(label))
                 await self._picture(step)
@@ -1077,6 +1203,23 @@ class Host:
         self.sessions[sid] = s
         return web.json_response({"session_id": sid})
 
+    async def replay(self, request):
+        body = await request.json()
+        s = self._session(body.get("session_id", ""))
+        return web.json_response(await s.replay(list(body.get("steps") or []), dict(body.get("inputs") or {}),
+                                                unattended=bool(body.get("unattended")),
+                                                recording_id=str(body.get("recording_id") or "")))
+
+    async def replay_continue(self, request):
+        body = await request.json()
+        s = self._session(body.get("session_id", ""))
+        plan = s.replaying
+        if not plan:
+            return web.json_response({"error": "Nothing is being replayed."}, status=409)
+        return web.json_response(await s.replay(plan["steps"], plan["inputs"], unattended=plan["unattended"],
+                                                recording_id=plan["recording_id"],
+                                                from_n=int(body.get("from_n") or 1)))
+
     async def idle(self, request):
         body = await request.json()
         return web.json_response(self._session(body.get("session_id", "")).go_idle())
@@ -1204,8 +1347,17 @@ class Host:
 
     async def record_start(self, request):
         s, body = await self._viewer_body(request)
-        if body.get("replay_first"):
-            return web.json_response({"error": "Re-recording from a step comes with replay (F1143)."}, status=501)
+        if body.get("replay_first"):  # re-recording from a step: the steps before it run first, the person watching
+            if s.held is not None or s.recorder is not None:
+                return web.json_response({"error": "Not now: this browser is busy."}, status=409)
+            s.wheel = "nobody"
+            done = await s.replay(list(body["replay_first"]), {}, unattended=False)
+            s.replaying, s.wheel = None, "person"
+            if "handover" not in done:  # a turn keeps its banner: the person's step before the one re-recorded
+                s.banner = None
+            s._push_state()
+            if "outputs" not in done:
+                return web.json_response({"replayed": done}, status=409)
         return web.json_response(s.start_recording())
 
     async def record_stop(self, request):
@@ -1236,6 +1388,8 @@ def control_app(host: Host) -> web.Application:
     app.router.add_get("/state", host.get_state)
     app.router.add_get("/login-state", host.get_login_state)
     app.router.add_post("/idle", host.idle)
+    app.router.add_post("/replay", host.replay)
+    app.router.add_post("/replay/continue", host.replay_continue)
     return app
 
 
