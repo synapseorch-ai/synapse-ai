@@ -152,6 +152,19 @@ rm -f .knowledge-constraints.txt
 # Each lock reproducible is not enough: two that an install combines must agree.
 python3 "$REPO_ROOT/scripts/lock_agreement.py" "$BACKEND_DIR"
 
+# The repo root's uv.lock, which `uv sync` and `uv run` install from: pyproject.toml's,
+# kept with the others (F1172; it had gone unlocked since before the knowledge and
+# telemetry extras, and still held crawl4ai). Existing pins are kept as they are.
+echo "==> uv.lock"
+if [ "$CHECK_MODE" -eq 1 ]; then
+    (cd "$REPO_ROOT" && uv lock --check --quiet) || {
+        echo "error: uv.lock is stale — run ./scripts/lock-deps.sh and commit the result." >&2
+        exit 1
+    }
+else
+    (cd "$REPO_ROOT" && uv lock --quiet)
+fi
+
 if [ "$CHECK_MODE" -eq 1 ]; then
     echo "Locks are up to date."
 else
