@@ -740,8 +740,197 @@ async def test_a_task_the_person_does_is_recorded_and_their_password_is_not(reco
     assert steps[1]["value"] == {"fixed": "A-1001"} and steps[1]["target"]["label"] == "Order number"
     assert steps[2]["value"] == {"person": "password"} and steps[2]["line"] == "You sign in here"
     assert steps[3]["line"] == "Click Search" and steps[3]["target"]["css"] == "#go"
+    assert steps[3]["wait"] == {"for": "url", "url": f"http://localhost:{port}/results"}, "where Search led (F1143)"
     assert "hunter2" not in json.dumps(done), "the password is in no step and no picture's name"
     assert steps[3]["after_shot"] in done["shots"], "the results page, after leaving the login page, is pictured"
     assert not steps[1]["after_shot"] and not steps[2]["after_shot"]
     assert (await _view(http, viewer, sid, "/record/stop", {}))[0] == 409
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+# ── replaying a recording by code (F1143) ────────────────────────────────────
+
+@pytest.fixture
+async def replay_site(record_site):
+    """record_site's search, plus a message form that posts and a checkout; the posts that arrive are counted."""
+    posts: list[str] = []
+
+    async def msg(_):
+        return web.Response(content_type="text/html", text=(
+            "<form method='post' action='/sent'><textarea name='m'>hi</textarea>"
+            "<button id='send'>Send message</button></form>"))
+
+    async def pay(_):
+        return web.Response(content_type="text/html", text=(
+            "<form method='post' action='/paid'><button id='pay'>Pay now</button></form>"))
+
+    async def posted(request):
+        posts.append(request.path)
+        return web.Response(content_type="text/html", text="<h1>Done</h1>")
+
+    async def late(_):  # a page that sends a while after its button, when the replay has long returned
+        return web.Response(content_type="text/html", text=(
+            "<button id='later' onclick=\"setTimeout(() => fetch('/late-sent', {method: 'POST', body: 'x'}), 3500)\">"
+            "Send later</button>"))
+
+    app = web.Application()
+    app.router.add_get("/msg", msg)
+    app.router.add_get("/late", late)
+    app.router.add_post("/late-sent", posted)
+    app.router.add_get("/pay", pay)
+    app.router.add_post("/sent", posted)
+    app.router.add_post("/paid", posted)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield record_site, tcp._server.sockets[0].getsockname()[1], posts
+    await runner.cleanup()
+
+
+def _search_steps(port: int) -> list[dict]:
+    return [
+        {"id": "s1", "n": 1, "action": "open", "url": f"http://localhost:{port}/", "line": "Open the portal"},
+        {"id": "s2", "n": 2, "action": "type", "target": {"label": "Order number", "css": "#order"},
+         "value": {"input": "order"}, "line": "Type {order} into Order number"},
+        {"id": "s3", "n": 3, "action": "click", "target": {"role": "button", "name": "Search", "css": "#go"},
+         "wait": {"for": "url", "url": f"http://localhost:{port}/results"}, "line": "Click Search"},
+        {"id": "s4", "n": 4, "action": "read", "target": {"css": "h1"}, "output": "heading", "line": "Read the heading"},
+    ]
+
+
+async def _replay(http, control, sid, steps, inputs=None, unattended=False):
+    return await _post(http, control, "/replay", {"session_id": sid, "steps": steps, "inputs": inputs or {},
+                                                  "unattended": unattended})
+
+
+async def test_a_recording_replays_by_code_with_its_inputs_and_returns_what_it_read(replay_site, codrive_host):
+    port, _other, _posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    done = await _replay(http, control, sid, _search_steps(port), {"order": "B-7"})
+    assert done == {"done": 4, "outputs": {"heading": "Results for B-7"}}, done
+    missing = await _replay(http, control, sid, _search_steps(port), {})
+    assert missing["miss"]["n"] == 2 and "order" in missing["miss"]["why"], "a missing input stops its step"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_a_step_that_lost_its_target_stops_with_the_page_and_carries_on_after_a_fix(replay_site, codrive_host):
+    port, _other, _posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    steps = _search_steps(port)
+    steps[2] = {**steps[2], "target": {"css": "#search-button-renamed"}}  # the site changed
+    stopped = await _replay(http, control, sid, steps, {"order": "B-8"})
+    miss = stopped["miss"]
+    assert miss["n"] == 3 and miss["step_id"] == "s3" and miss["line"] == "Click Search"
+    assert "Order number" in miss["snapshot"], "the page as it is, for the agent's fix"
+    assert miss["shot_ref"] and stopped["done"] == 2
+    # The agent finds its way for this run (F1144 proposes it as an edit); the replay carries on after the step.
+    await _tool(http, control, sid, "browser_navigate", {"url": f"http://localhost:{port}/results?q=B-8"})
+    status_after = await _post(http, control, "/replay/continue", {"session_id": sid, "from_n": 4})
+    assert status_after == {"done": 4, "outputs": {"heading": "Results for B-8"}}, status_after
+    async with http.post(f"http://127.0.0.1:{control}/replay/continue", json={"session_id": sid}) as r:
+        assert r.status == 409, "nothing left to carry on"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_replay_keeps_sends_the_persons_where_they_must_be(replay_site, codrive_host):
+    """Decision #11 and F1124 in replay: a recorded send runs with someone there; alone only if its step may and only
+    to where the recording sent; a payment and the person's own step always hand over."""
+    port, other, posts = replay_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    send = [{"id": "m1", "n": 1, "action": "open", "url": f"http://localhost:{other}/msg"},
+            {"id": "m2", "n": 2, "action": "click", "target": {"role": "button", "name": "Send message", "css": "#send"},
+             "line": "Click Send message"}]
+
+    alone = await _replay(http, control, sid, send, unattended=True)
+    assert alone["handover"]["kind"] == "press" and alone["at"] == 2 and posts == [], alone
+    assert (await _replay(http, control, sid, send))["refused"], "the wheel is the person's until they hand it back"
+    await _view(http, viewer, sid, "/wheel/hand-back", {})
+    send[1]["may_send"] = True
+    elsewhere = await _replay(http, control, sid, send, unattended=True)
+    await asyncio.sleep(1.5)  # longer than the per-host pace a send may wait out
+    assert elsewhere.get("outputs") == {} and posts == [], ("allowed to send, but not to an address the recording "
+                                                            f"never sent to: {elsewhere}")
+    send[1]["sends"] = ["POST localhost"]
+    recorded = await _replay(http, control, sid, send, unattended=True)
+    await asyncio.sleep(0.5)
+    assert posts == ["/sent"], f"to where the recording sent, it sends: {recorded}"
+    with_someone = await _replay(http, control, sid, [send[0], {**send[1], "may_send": False, "sends": []}])
+    await asyncio.sleep(0.5)
+    assert with_someone.get("outputs") == {} and posts == ["/sent", "/sent"], \
+        f"the person pressed it when recording: {with_someone}"
+
+    pay = [{"id": "p1", "n": 1, "action": "open", "url": f"http://localhost:{other}/pay"},
+           {"id": "p2", "n": 2, "action": "click", "target": {"role": "button", "name": "Pay now", "css": "#pay"},
+            "may_send": True, "sends": ["POST localhost"], "line": "Click Pay now"}]
+    paying = await _replay(http, control, sid, pay)
+    await asyncio.sleep(1.5)
+    assert paying["handover"]["kind"] == "press" and paying["handover"]["press"]["tier"] == "money", paying
+    assert "/paid" not in posts
+    sid2 = (await _post(http, control, "/session", {"owner": "agent:a2", "mode": "co_drive"}))["session_id"]
+    signin = [{"id": "q1", "n": 1, "action": "open", "url": f"http://localhost:{port}/"},
+              {"id": "q2", "n": 2, "action": "type", "target": {"css": "#pw"}, "value": {"person": "password"},
+               "line": "You sign in here"}]
+    turn = await _replay(http, control, sid2, signin)
+    assert turn["handover"]["kind"] == "sensitive" and turn["at"] == 2
+    await _view(http, viewer, sid2, "/wheel/hand-back", {})
+    typed_into_password = await _replay(http, control, sid2, [
+        signin[0], {"id": "q3", "n": 2, "action": "type", "target": {"css": "#pw"}, "value": {"fixed": "x"}}])
+    assert typed_into_password["handover"]["kind"] == "sensitive", "a field that became the person's hands over"
+    for s in (sid, sid2):
+        await _post(http, control, "/close", {"session_id": s})
+
+
+async def test_re_recording_from_a_step_replays_the_steps_before_it_and_records_only_what_follows(
+        replay_site, codrive_host):
+    port, _other, _posts = replay_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "record:r2", "mode": "co_drive",
+                                                   "person_only": True}))["session_id"]
+    first = _search_steps(port)[:2]
+    first[1] = {**first[1], "value": {"fixed": "A-1001"}}
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": first})
+    assert status == 200 and body == {"recording": True}, body
+    assert (await _state(http, control, sid))["wheel"] == "person", "the person carries on from there"
+    await _view(http, viewer, sid, "/input", {"type": "mouse", "event": "click", "x": 200, "y": 125})
+    await asyncio.sleep(0.5)
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert [s["line"] for s in done["steps"]] == ["Click Search"], "the replayed steps are not recorded again"
+    assert done["steps"][0]["wait"]["url"] == f"http://localhost:{port}/results"
+    broken = [{**first[0]}, {**first[1], "target": {"css": "#gone"}}]
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": broken})
+    assert status == 409 and body["replayed"]["miss"]["n"] == 2
+    assert (await _state(http, control, sid))["recording"] is None, "nothing records after a replay that stopped"
+    # The person's own step stops the replay (a sign-in); they do it, and the re-record carries on after it.
+    signin = [{**first[0]}, {"id": "s2p", "n": 2, "action": "type", "target": {"css": "#pw"},
+                             "value": {"person": "password"}, "line": "You sign in here"},
+              {**first[1], "n": 3}]
+    status, body = await _view(http, viewer, sid, "/record/start", {"replay_first": signin})
+    assert status == 409 and body["replayed"]["handover"]["kind"] == "sensitive" and body["replayed"]["at"] == 2
+    state = await _state(http, control, sid)
+    assert state["wheel"] == "person" and state["banner"]["kind"] == "sensitive", "their turn, said on the pane"
+    status, body = await _view(http, viewer, sid, "/record/start", {"carry_on": True})
+    assert status == 200 and body == {"recording": True}, body
+    status, done = await _view(http, viewer, sid, "/record/stop", {})
+    assert done["steps"] == [], "the replayed steps, before and after their turn, are not recorded"
+    assert (await _view(http, viewer, sid, "/record/start", {"carry_on": True}))[0] == 409, "nothing to carry on"
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+async def test_an_unattended_replays_sends_stay_its_recordings_after_it_returns(replay_site, codrive_host):
+    """A page may send long after the press that caused it: the replay has returned by then, and the send is still
+    held to where the recording sent until the agent's own next call."""
+    _port, other, posts = replay_site
+    http, control, _viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "agent:a1", "mode": "co_drive"}))["session_id"]
+    steps = [{"id": "l1", "n": 1, "action": "open", "url": f"http://localhost:{other}/late"},
+             {"id": "l2", "n": 2, "action": "click", "target": {"role": "button", "name": "Send later", "css": "#later"},
+              "may_send": True, "sends": ["POST elsewhere.example"], "line": "Click Send later"}]
+    done = await _replay(http, control, sid, steps, unattended=True)
+    assert done == {"done": 2, "outputs": {}}, done
+    await asyncio.sleep(5)
+    assert posts == [], "a late send to an address the recording never sent to stays in the browser"
     await _post(http, control, "/close", {"session_id": sid})

@@ -1489,3 +1489,29 @@ async def test_an_unshared_session_new_to_a_save_is_refused_and_one_already_save
     monkeypatch.setattr("core.scale.context.resolve_orchestration", resolve)
     run = await client.post("/api/orchestrations/w9/run", json={"message": "go", "browser_sessions": ["ss_hers"]})
     assert run.status_code == 422 and run.json()["site"] == "hers.io"
+
+
+async def test_one_recording_has_one_browser_and_a_re_record_replays_before_it_records():
+    """F1143: "re-record from here" opens the recording's own browser, its steps before the step replaying first; a
+    second browser on the same recording is refused, and a replay that stops leaves the browser open to say why."""
+    fake = _FakeHost()
+    tools = browser_client.BrowserTools(fake)
+    before = [{"id": "s1", "n": 1, "action": "open", "url": "https://portal.example.com/"}]
+    sid = await tools.open_record_session("rec_1", sessions=[], replay_first=before)
+    assert ("VIEW", "/record/start", {"replay_first": before}) in fake.calls
+    assert await tools.owner_of(sid) == "record:rec_1"
+    with pytest.raises(browser_client.RecordingOpen):
+        await tools.open_record_session("rec_1", sessions=[])
+    assert fake.opened == 1, "no second browser opened on the same recording"
+
+    class _Stops(_FakeHost):
+        async def viewer(self, path, *, params=None, json=None, timeout=60):
+            self.calls.append(("VIEW", path, json))
+            if path == "/record/start" and (json or {}).get("replay_first"):
+                return 409, {"replayed": {"handover": {"kind": "sensitive"}, "at": 1}}
+            return 200, {"ok": True}
+
+    tools = browser_client.BrowserTools(_Stops())
+    with pytest.raises(browser_client.ReplayStopped) as stopped:
+        await tools.open_record_session("rec_2", sessions=[], replay_first=before)
+    assert stopped.value.replayed["at"] == 1 and await tools.owner_of(stopped.value.session_id) == "record:rec_2"

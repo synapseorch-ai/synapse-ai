@@ -196,6 +196,34 @@ async def put_item(name: str, key: str, item: dict) -> None:
         )
 
 
+async def update_item(name: str, key: str, mutate: Callable[[dict], dict]) -> dict | None:
+    """Read one item of `name` and write what `mutate(old)` returns, in one transaction, the row locked for update
+    (Postgres); `mutate` raising leaves it as it was. So a check made in `mutate` (a version, F1142) is exact across
+    processes: two writers can't both pass it. None when there is no such item (`mutate` is not called)."""
+    import copy
+
+    from core.store import session
+    from core.store.models import CollectionDB
+
+    async with session() as s:
+        row = (
+            await s.execute(
+                select(CollectionDB)
+                .where(
+                    CollectionDB.tenant_id == get_tenant(),
+                    CollectionDB.collection == name,
+                    CollectionDB.key == key,
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        new = mutate(copy.deepcopy(row.value))
+        row.value = new
+    return new
+
+
 async def delete_item(name: str, key: str) -> bool:
     """Remove one item of `name`. False when there was none."""
     from core.store import session

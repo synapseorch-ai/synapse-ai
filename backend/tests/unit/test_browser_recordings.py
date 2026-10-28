@@ -87,15 +87,15 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     opened, viewer_calls, closed = [], [], []
 
     class _Tools:
-        async def open_record_session(self, rid, *, sessions, start_url=""):
-            opened.append((rid, sessions, start_url))
+        async def open_record_session(self, rid, *, sessions, start_url="", replay_first=None):
+            opened.append((rid, sessions, start_url, replay_first))
             return "bs_rec"
 
         async def owner_of(self, sid):
             return f"record:{opened[-1][0]}" if sid == "bs_rec" else None
 
         async def viewer(self, sid, path, body=None):
-            viewer_calls.append(path)
+            viewer_calls.append((path, body))
             return 200, {"steps": _steps(), "shots": {"r1-s1": JPEG}} if path == "/record/stop" else {"recording": True}
 
         async def close_owner(self, owner):
@@ -105,11 +105,41 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     new = (await client.post("/api/recordings/new", json={"sessions": [], "start_url": "portal.saltmarsh.example"})).json()
     assert new["browser_session_id"] == "bs_rec" and new["recording_id"].startswith("rec_")
     assert opened[-1][2] == "https://portal.saltmarsh.example"
-    assert (await client.post("/api/browser/bs_rec/record/start", json={"from_step": "s2"})).status_code == 501
+    assert (await client.post("/api/browser/bs_rec/record/start", json={"from_step": "s2"})).status_code == 422, \
+        "a re-record names its recording"
     stopped = (await client.post("/api/browser/bs_rec/record/stop", json={"keep": True, "name": "Find"})).json()
     assert stopped == {"recording_id": new["recording_id"], "steps": 3} and closed == [f"record:{new['recording_id']}"]
     got = (await client.get(f"/api/recordings/{new['recording_id']}")).json()
     assert got["name"] == "Find" and "history" not in got
+    # Re-recording from a step (F1143): the steps before it replay first, in the browser, then the person records.
+    again = {"recording_id": new["recording_id"], "from_step": "s3"}
+    assert (await client.post("/api/browser/bs_rec/record/start", json=again)).json() == {"recording": True}
+    assert viewer_calls[-1] == ("/record/start", {"replay_first": got["steps"][:2]})
+    gone = await client.post("/api/browser/bs_rec/record/start", json={**again, "from_step": "nope"})
+    assert gone.status_code == 422
+    # "Re-record from here" in the editor, with no browser open: the browser is that recording's from the start,
+    # so Stop keeps a pending fix of it, not a new recording (BRW2's question, F1143).
+    rid = new["recording_id"]
+    opened_again = (await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "s3"})).json()
+    assert opened_again == {"recording_id": rid, "browser_session_id": "bs_rec"}
+    assert opened[-1] == (rid, [], "", got["steps"][:2]), "its steps before s3 replay first"
+    fix = (await client.post("/api/browser/bs_rec/record/stop", json={"keep": True, "from_step": "s3"})).json()
+    assert fix["recording_id"] == rid and fix["pending_edit"], fix
+    assert (await client.get(f"/api/recordings/{rid}")).json()["version"] == 1, "nothing changes until approved"
+    assert (await client.post("/api/recordings/new", json={"from_step": "s3"})).status_code == 422
+    assert (await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "nope"})).status_code == 422
+
+    async def stops(self, rid, *, sessions, start_url="", replay_first=None):
+        raise browser_client.ReplayStopped("bs_rec", {"handover": {"kind": "sensitive"}, "at": 2})
+    monkeypatch.setattr(_Tools, "open_record_session", stops)
+    stopped = await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "s3"})
+    assert stopped.status_code == 409 and stopped.json()["browser_session_id"] == "bs_rec"
+    assert stopped.json()["replayed"]["at"] == 2, "the browser stays open at the person's own step"
+
+    async def busy(self, rid, *, sessions, start_url="", replay_first=None):
+        raise browser_client.RecordingOpen(rid)
+    monkeypatch.setattr(_Tools, "open_record_session", busy)
+    assert (await client.post("/api/recordings/new", json={"recording_id": rid, "from_step": "s3"})).status_code == 409
     shot = await client.get(f"/api/recordings/{new['recording_id']}/shots/r1-s1")
     assert shot.status_code == 200 and shot.content == b"\xff\xd8picture"
     stale = await client.patch(f"/api/recordings/{new['recording_id']}", json={"base_version": 9, "name": "x"})
@@ -119,3 +149,33 @@ async def test_recording_a_task_from_start_to_kept(client, monkeypatch):
     assert [v["version"] for v in (await client.get(f"/api/recordings/{new['recording_id']}/versions")).json()["versions"]] == [2, 1]
     assert (await client.delete(f"/api/recordings/{new['recording_id']}")).json() == {"deleted": True}
     assert (await client.get(f"/api/recordings/{new['recording_id']}")).status_code == 404
+
+
+async def test_two_saves_from_one_version_cannot_both_pass():
+    """F1142 follow-up (BRW3): a change is checked and written in one transaction, the recording locked, so of two saves
+    made from version 1 at once exactly one passes. (Here SQLite and the in-process lock; cloud proves FOR UPDATE on
+    Postgres across processes.)"""
+    import asyncio
+    doc = await recordings.create("T", _steps(), by="you")
+    results = await asyncio.gather(recordings.patch(doc["id"], base_version=1, by="a", name="from a"),
+                                   recordings.patch(doc["id"], base_version=1, by="b", name="from b"),
+                                   return_exceptions=True)
+    assert sorted(type(r).__name__ for r in results) == ["Stale", "dict"]
+    assert (await recordings.get(doc["id"]))["version"] == 2
+
+
+async def test_a_change_that_refuses_leaves_the_item_as_it_was():
+    from core.store import collections
+    await collections.put_item("t_items", "k", {"n": 1})
+
+    def refuse(old):
+        old["n"] = 99
+        raise ValueError("no")
+
+    with pytest.raises(ValueError):
+        await collections.update_item("t_items", "k", refuse)
+    assert await collections.get_item("t_items", "k") == {"n": 1}
+    assert await collections.update_item("t_items", "k", lambda old: {**old, "n": 2}) == {"n": 2}
+    assert await collections.update_item("t_items", "none", lambda old: old) is None
+    await collections.put_item("t_items", "other", {"n": 5})
+    assert await collections.delete_item("t_items", "k") is True and await collections.get_item("t_items", "other") == {"n": 5}

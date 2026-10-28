@@ -214,6 +214,19 @@ class MemorySessionStore:
         return self._by_sid.get(sid)
 
 
+class RecordingOpen(RuntimeError):
+    """A recording already has its browser open (someone is recording or re-recording it)."""
+
+
+class ReplayStopped(RuntimeError):
+    """Re-recording from a step: the steps before it stopped (a miss, or the person's own step). The browser is open
+    at `session_id`; `replayed` says where and why."""
+
+    def __init__(self, session_id: str, replayed: dict):
+        super().__init__("the steps before it stopped")
+        self.session_id, self.replayed = session_id, replayed
+
+
 class BrowserTools:
     """The "Browser Automation" session the engine calls, one browser per owner."""
 
@@ -395,10 +408,15 @@ class BrowserTools:
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key})
         return sid
 
-    async def open_record_session(self, recording_id: str, *, sessions: list[str], start_url: str = "") -> str:
+    async def open_record_session(self, recording_id: str, *, sessions: list[str], start_url: str = "",
+                                  replay_first: list[dict] | None = None) -> str:
         """"Record a task" (F1142): a browser that is the person's alone, signed in with the picked sessions, recording
-        from the start; `start_url`, when given, is its first step."""
+        from the start; `start_url`, when given, is its first step. Re-recording an existing recording from a step
+        (F1143), `replay_first` is the steps before it: they replay, then recording starts; `ReplayStopped` (the
+        browser stays open) when they can't all run."""
         key = f"record:{recording_id}"
+        if await self.store.get_owner(key) is not None:
+            raise RecordingOpen(recording_id)
         state, _expired, loaded, skipped = await _sessions_state(list(sessions or []), {s: "record" for s in sessions or []})
         opening = {"owner": key, "mode": gate.CO_DRIVE, "person_only": True, "limits": {"actions": 1}}
         if state:
@@ -411,7 +429,10 @@ class BrowserTools:
         await self.store.set_owner(key, {"sid": sid, "parked": None, "expired": None, "sessions": None})
         self._events.setdefault(key, []).append({"type": "browser_session", "session_id": sid, "owner": key,
                                                  "sessions": loaded, "skipped": skipped})
-        await host.viewer("/record/start", params={"session_id": sid}, json={})
+        status, started = await host.viewer("/record/start", params={"session_id": sid},
+                                            json={"replay_first": replay_first} if replay_first else {})
+        if status == 409 and started.get("replayed"):
+            raise ReplayStopped(sid, started["replayed"])
         if start_url:
             await host.viewer("/input", params={"session_id": sid}, json={"type": "nav", "url": start_url})
         return sid
