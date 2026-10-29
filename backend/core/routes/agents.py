@@ -161,6 +161,14 @@ async def _save_agent(agent: Agent) -> dict:
 
     document = agent.dict()
     await _check_type(document)
+    if document.get("knowledge"):
+        # The bases it answers from, held to the builder's check (F1223): only one added now is asked about, so an
+        # agent whose base was deleted or turned off since saves as it is.
+        from core import agent_knowledge
+        from core.store.resources import get_agent
+        had = await get_agent(document["id"]) if document.get("id") else None
+        if (wrong := await agent_knowledge.refusal(document["knowledge"], (had or {}).get("knowledge"))) is not None:
+            raise HTTPException(status_code=422, detail=wrong)
     if (document.get("browser") or {}).get("sessions") or (document.get("browser") or {}).get("recordings"):
         # One kept session per site (F1140), and only the person's own or shared with them (F1167): the editor
         # offers just those; this is the backstop. A refusal (`PickRefused`) is answered flat by the route. A

@@ -151,3 +151,17 @@ async def resolve_sessions(values: list[Any], *, caller: Any = None) -> list[str
                               site, [r["id"] for r in pick])
         out.append(pick[0]["id"])
     return list(dict.fromkeys(out))
+
+
+async def sessions_missing(sites: list[Any], *, caller: Any = None) -> list[str]:
+    """The sites in `sites` with no kept session to start signed in with (F1223): neither the person's own nor one
+    shared with them, by `resolve_sessions`' own rule. A build is still saved without them; signing in is a person's,
+    in Sessions."""
+    missing: list[str] = []
+    for site in sites or []:
+        try:
+            await resolve_sessions([site], caller=caller)
+        except PickRefused as refused:
+            if not refused.ids:  # none at all; more than one is a pick, not a missing session
+                missing.append(str(site).strip())
+    return list(dict.fromkeys(missing))

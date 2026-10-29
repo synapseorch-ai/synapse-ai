@@ -265,12 +265,22 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
                    "(F1203)."),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
+        # What a new agent's switches may name (F1223): connected MCP servers, and the sites with a kept session.
+        "servers": sorted(_servers(server_module)),
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
         "person_timezone": state.get("person_timezone") or "UTC",
         "may_make_agents": state.get("can_create_agents") is not False,
         # What this product does and does not, so a `cannot` names the nearest thing that works (SAI2's review, nit).
         "capabilities": (await product_capabilities({}, server_module, []))["capabilities"],
     }
+    try:
+        from core import site_sessions
+        from core.builder_tools import _acting_caller
+
+        if sites := sorted({r["site"] for r in await site_sessions.listed(_acting_caller()) if r.get("usable")}):
+            pack["signed_in_sites"] = sites
+    except Exception as exc:  # noqa: BLE001 — no kept sessions read is a pack without them
+        _log.warning("the build's kept sessions were not read: %s", exc)
     # A bare "build it" after findings: their goal is the request (F1064); the person's words stay theirs. Always
     # present, empty when there is none, so the planner's template never shows an unfilled reference.
     pack["request"] = go_ahead_request(state) or ""
@@ -429,6 +439,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state) + asked
+    errors += await _agent_switches(plan, ws, server_module)
     if plan.schedule:
         # A schedule runs on its person's clock (F948, Naveen 10-23): the timezone they named, else their own (the
         # browser's, sent with the turn); with neither, UTC.
@@ -457,6 +468,50 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                     features=needed)
 
 
+async def _agent_switches(plan: O.Plan, ws: Workspace, server_module: Any) -> list[str]:
+    """Each new agent's switches as the agent editor sets them, held to what its save will check (F1223): its
+    knowledge bases by name (resolved to ids here, for the save), its MCP servers (given every tool each has now), its
+    Browser settings (the sites with no kept session said, never refused). What the planner can fix, as errors."""
+    from core import builder_guard
+    from core.browser import save_checks
+    from core.builder_tools import _acting_caller
+
+    errors: list[str] = []
+    by_name = {kb.name.lower(): kb for kb in (ws.kbs or {}).values()}
+    servers = _servers(server_module)
+    plan.knowledge_ids = {}
+    for a in plan.agents:
+        kept: list[str] = []
+        for name in a.knowledge if ws.kbs is not None else []:
+            kb = by_name.get(name.strip().lower()) or ws.kbs.get(name.strip())
+            if kb is None:
+                errors.append(f"agent {a.name}: knowledge: there is no knowledge base '{name}' here; name one from "
+                              "knowledge_bases")
+            elif kb.status != "active":
+                errors.append(f"agent {a.name}: knowledge: '{kb.name}' is turned off; name an active one")
+            else:
+                kept.append(kb.name)
+                plan.knowledge_ids[kb.name] = kb.id
+        if ws.kbs is not None:
+            a.knowledge = list(dict.fromkeys(kept))
+        for server in a.servers:
+            tools = servers.get(server.strip().lower())
+            if not tools:
+                errors.append(f"agent {a.name}: servers: '{server}' is no MCP server connected here"
+                              + (f"; connected: {', '.join(sorted(servers))}" if servers else ""))
+                continue
+            named = await builder_guard.canonical_names([f"{server.strip().lower()}__{t}" for t in tools],
+                                                        server_module)
+            a.tools = list(dict.fromkeys([*a.tools, *named]))
+        if a.browser is not None and a.type != "browser":
+            errors.append(f"agent {a.name}: browser: only a browser agent has browser settings; make it type browser "
+                          "or leave them out")
+        elif a.browser is not None:
+            a.browser.sessions_missing = await save_checks.sessions_missing(a.browser.sessions,
+                                                                            caller=_acting_caller())
+    return errors
+
+
 def features_needed(plan: O.Plan, ws: Workspace) -> list[str]:
     """The features this plan needs that are off here: Boards for an agent's board tools, Knowledge for a Retrieve or
     Ingest step (F1203). The planner plans what the request needs; turning a feature on is the person's."""
@@ -467,7 +522,8 @@ def features_needed(plan: O.Plan, ws: Workspace) -> list[str]:
     # A board the plan names counts too (F1214): it is the workflow's own, and Boards must be on for it.
     if not ws.boards_on and (any(t in TOOL_NAMES for t in O.tool_names(plan)) or plan.boards):
         out.append("boards")
-    if ws.kbs is None and any(s.type in ("retrieve", "ingest") for s in steps):
+    if ws.kbs is None and (any(s.type in ("retrieve", "ingest") for s in steps)
+                           or any(a.knowledge for a in plan.agents)):
         out.append("knowledge")
     return out
 
