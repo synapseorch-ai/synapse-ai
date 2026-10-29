@@ -87,7 +87,9 @@ from core.native_builder import prompt_lint, seed
 #: classifier's one call requires `continues` and whose prompt names the plan and asks plainly; the classify step's
 #: context and the classifier's kinds move into the library (`classify_context`, `classify_kinds`) unchanged,
 #: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
-BUNDLE_SHA256 = "258533db5086b4996e0acef41480aa0271ff3c5c89fb6d3446c3e8dc53f25233"
+#: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
+#: same through the converter before), ac29e4a5….
+BUNDLE_SHA256 = "ac29e4a5deeefecb3e5f7da8dc16a25e4c8a92c98f60734d5bf57cd080e6b4f0"
 
 
 def _sha(definitions) -> str:

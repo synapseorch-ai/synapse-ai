@@ -271,7 +271,7 @@
             "name": "What Was Asked, at a Waiting Plan",
             "type": "agent",
             "agent_id": "agent_native_builder_classifier_at_plan",
-            "prompt_template": "{{PROMPT:classify_context}}\n\nA plan is waiting at its review: “{state.turn.plan_waiting}”. Does this message change or add to the waiting plan (true), or ask for something else (false)? Say it as `continues`.\n\nCall `classify_at_plan` once.",
+            "prompt_template": "{{PROMPT:classify_context}}\n\nA plan is waiting at its review: “{{ state.turn.plan_waiting }}”. Does this message change or add to the waiting plan (true), or ask for something else (false)? Say it as `continues`.\n\nCall `classify_at_plan` once.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
