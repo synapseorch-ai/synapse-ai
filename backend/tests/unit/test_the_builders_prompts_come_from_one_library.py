@@ -60,8 +60,9 @@ from core.native_builder import prompt_lint, seed
 #: finishing on its passing test, 4ddde80f…; with F1193's palette (fix-forward 13), 05eecc81….
 #: F1219's turn limits
 #: (Naveen's table with HOT3: 60 turns in 1200 s for the steps that read and plan, 40 in 600 s for the rest, the quick
-#: classify step at 2; no prompt changes), 2fcbfc0f… alone; with F1193 and F1198 (fix-forward 13), ff332d9b….
-BUNDLE_SHA256 = "ff332d9b853c548e1235c90592d31d40ef948cb7303256e46b6fb9be21b13111"
+#: classify step at 2; no prompt changes), 2fcbfc0f… alone; with F1193 and F1198 (fix-forward 13), ff332d9b…; with
+#: F1229's `built` target (the classify step's words and the state key that carries the last build), bcf13e4a….
+BUNDLE_SHA256 = "bcf13e4a572d9c6f327614ec0a8584ca2a3db5fec9009ce43758b36bba743996"
 
 
 def _sha(definitions) -> str:

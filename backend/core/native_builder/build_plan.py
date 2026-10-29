@@ -21,6 +21,7 @@ first fails at its save; `step_save` (build_save.py) compiles it again with the 
 from __future__ import annotations
 
 import json
+import unicodedata
 import re
 from urllib.parse import urlsplit
 from dataclasses import dataclass, field
@@ -653,7 +654,30 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     if plan.agents and state.get("can_create_agents") is False:
         errors.append("agents: this conversation uses existing agents only; give each step one of theirs by id")
     errors += _api_names(plan, state)
+    errors += _a_second_of_a_name(plan, ws, state)
     return errors
+
+
+def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
+    """A new workflow named like one already here is never saved beside it (F1229, CAP3's stage 1): brief 4's "run it"
+    and brief 7's follow-up each saved a second, same-named workflow. Sent back to the planner: an update of that one,
+    or, when the person may want two, one question (counted with the request's, F1226) and a name of its own."""
+    from core.native_builder.target import LAST_BUILT_KEY
+
+    if plan.kind != "create":
+        return []
+    def key(name: Any) -> str:
+        return "".join(c for c in unicodedata.normalize("NFKC", str(name or "")).casefold() if c.isalnum())
+    want = key(plan.title)
+    same = next(((i, w) for i, w in ws.workflows.items() if want and key(w.get("name")) == want), None)
+    if same is None:
+        return []
+    ident, row = same
+    whose = " (this conversation built it)" if state.get(LAST_BUILT_KEY) == ident else ""
+    return [f"title: a workflow called \"{row.get('name')}\" is already in this workspace{whose}, id {ident}. Never "
+            "save a second of the same name: when the person means that one, this is a change to it (say so and stop "
+            "with the plan's questions, so their next message updates it); if they may want two, ask once which, and "
+            "give a second one a name of its own"]
 
 
 def _api_names(plan: O.Plan, state: dict) -> list[str]:

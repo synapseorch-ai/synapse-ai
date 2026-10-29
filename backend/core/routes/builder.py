@@ -176,7 +176,7 @@ async def _previous_matches(session_id: str, state: dict | None = None) -> str:
 
 
 async def _target_state(
-    message: str, viewing_id: str | None, previous_matches: str = ""
+    message: str, viewing_id: str | None, previous_matches: str = "", built_id: str = ""
 ) -> dict:
     """Which orchestration this message is about, as the run's state keys.
 
@@ -192,7 +192,7 @@ async def _target_state(
     from core.store.resources import load_orchestrations
 
     visible = [o for o in await load_orchestrations() if _is_visible(o)]
-    target = resolve_target(message, viewing_id, visible, previous_matches)
+    target = resolve_target(message, viewing_id, visible, previous_matches, built_id)
     viewing = next((o for o in visible if viewing_id and o["id"] == viewing_id), None)
     page = describe_page("orchestration", viewing.get("name", ""), viewing["id"]) if viewing else ""
     return {**target.state(), "current_page": page}
@@ -333,6 +333,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
     # which plans from them instead of researching again.
     found = previous_findings(previous)
+    from core.native_builder.target import LAST_BUILT_KEY, last_built
 
     from core import turn_limit
 
@@ -359,7 +360,10 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
             "" if export["export_source"] else message,
             request.current_orchestration_id,
             await _previous_matches(session_id, previous),
+            # The workflow this conversation built last (F1229): "run it", or more detail, is about it.
+            last_built(previous),
         ),
+        LAST_BUILT_KEY: last_built(previous),
         "prior_findings": found,
         "plan_findings": found,
         "org_profile": await _workspace_profile(),
