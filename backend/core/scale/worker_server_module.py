@@ -665,7 +665,7 @@ SHARED_TOOL_ENV_NAMES: frozenset[str] = frozenset({
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
     # What the shared tools' own modules read
-    "EGRESS_ALLOW_HOSTS", "SYNAPSE_HOME", "SYNAPSE_STATE_DIR",
+    "EGRESS_ALLOW_HOSTS", "EGRESS_NAT64_PREFIXES", "SYNAPSE_HOME", "SYNAPSE_STATE_DIR",
     "SYNAPSE_LOG_LEVEL", "SYNAPSE_LOG_FORMAT",
 })
 #: Locale and desktop directories, and the browser the scraper drives.

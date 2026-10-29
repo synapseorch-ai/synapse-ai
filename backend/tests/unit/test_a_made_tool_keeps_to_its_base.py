@@ -15,7 +15,18 @@ from __future__ import annotations
 
 import pytest
 
-from core import http_tool
+from core import egress_guard, http_tool
+
+
+@pytest.fixture(autouse=True)
+def _public_dns(monkeypatch):
+    """Every host is a public address: these tests are about the lock, never the network's DNS (F1238: behind DNS64
+    a real lookup answered a NAT64 address, and the guard refused it)."""
+    async def resolve(host):
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(egress_guard, "resolve", resolve)
+
 
 LOCK = "https://us6.api.mailchimp.com/3.0"
 SEND = {"name": "mailchimp_send_campaign", "tool_type": "http", "method": "POST",
