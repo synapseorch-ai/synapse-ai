@@ -76,6 +76,9 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [boards, setBoards] = useState<BoardsSettings | null>(null);
     // The install's ceiling on a Team agent's members at once (TEAM1b): null until read, not saved until then.
     const [teamCeiling, setTeamCeiling] = useState<number | null>(null);
+    // What an agent does at its turn limit (F1219): '' is the default (ask in chats, stop in unattended runs); null
+    // until read, not saved until then.
+    const [turnLimitMode, setTurnLimitMode] = useState<string | null>(null);
     const [toolPolicyDefaults, setToolPolicyDefaults] = useState<ToolPolicy>({});
     const [bashAllowedDirs, setBashAllowedDirs] = useState<string[]>([]);
 
@@ -269,6 +272,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 boards_enabled: boards.enabled, boards_max_open_cards: boards.maxOpenCards, boards_max_shared: boards.maxShared,
             }),
             ...(teamCeiling === null ? {} : { team_at_once_ceiling: teamCeiling }),
+            ...(turnLimitMode === null ? {} : { turn_limit_mode: turnLimitMode }),
             ...knowledgeModels,
         };
 
@@ -507,6 +511,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                     maxShared: Number(data.boards_max_shared) || 0,
                 });
                 setTeamCeiling(Math.max(1, Number(data.team_at_once_ceiling) || 10));
+                setTurnLimitMode(typeof data.turn_limit_mode === 'string' ? data.turn_limit_mode : '');
                 setToolPolicyDefaults(data.tool_policy_defaults || {});
                 setEmbedCode(data.embed_code || false);
                 setBashAllowedDirs(data.bash_allowed_dirs || []);
@@ -618,6 +623,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         setBoards={setBoards}
                         teamCeiling={teamCeiling}
                         setTeamCeiling={setTeamCeiling}
+                        turnLimitMode={turnLimitMode}
+                        setTurnLimitMode={setTurnLimitMode}
                         toolPolicyDefaults={toolPolicyDefaults}
                         setToolPolicyDefaults={setToolPolicyDefaults}
                         embedCode={embedCode}

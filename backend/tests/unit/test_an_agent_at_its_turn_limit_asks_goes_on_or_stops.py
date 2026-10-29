@@ -247,3 +247,11 @@ class TestAttendanceIsNeverARunsInput:
         orch = await _seed_run("orch_f1219_mcp")
         with pytest.raises(ToolRefusal, match="_attended"):
             await start_run(orch["id"], "go", {turn_limit.ATTENDED_KEY: True}, 0)
+
+
+def test_a_reopened_page_and_the_bell_ask_it_in_words_not_as_a_tool():
+    from core.chat_approval import approval_prompt, public_view
+
+    assert approval_prompt(turn_limit.KIND, turn_limit.KIND) == turn_limit.REOPENED_WORDS
+    view = public_view({"tool_name": turn_limit.KIND, "category": turn_limit.KIND, "approval_id": "turn_limit:2"})
+    assert view["prompt"] == turn_limit.REOPENED_WORDS and "**turn_limit**" not in view["prompt"]

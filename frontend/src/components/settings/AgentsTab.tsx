@@ -17,6 +17,7 @@ import { AgentActivity, ActivityTab, ThisMonth, WhereItWorks } from './AgentActi
 import { AgentTest, toolNamesOf, type AgentStatus } from './AgentTest';
 import { AgentMemory } from './AgentMemory';
 import { ToolPolicyFields, gatingCategories, POLICY_CATEGORIES, toolRules, type ToolPolicy } from './ToolPolicy';
+import { AGENT_TURN_LIMIT_CHOICES } from './turnLimit';
 import { KnowledgeBasePicker } from '@/components/knowledge/KnowledgeBasePicker';
 import { AgentBoards } from '@/components/boards/AgentBoards';
 import { TeamSetup, newTeamBlock } from '@/components/team';
@@ -1392,6 +1393,21 @@ export const AgentsTab = ({
                                                         onChange={e => setDraftAgent({ ...draftAgent, max_turns: parseInt(e.target.value) || 30 })}
                                                     />
                                                     <p className="mt-1 text-xs text-text-faint">Max reasoning turns per request. A workflow&apos;s steps override this value.</p>
+                                                </div>
+
+                                                {/* At the turn limit (F1219): this agent's own choice; Default follows
+                                                    Settings → General. `null`, not undefined, for Default (F73). */}
+                                                <div className="space-y-1">
+                                                    <Label className="block">At the Turn Limit</Label>
+                                                    <Select
+                                                        className="max-w-xs"
+                                                        aria-label="At the turn limit"
+                                                        aria-describedby="age-turn-limit-help"
+                                                        value={draftAgent.turn_limit_mode ?? '__default__'}
+                                                        onChange={v => setDraftAgent({ ...draftAgent, turn_limit_mode: v === '__default__' ? null : v })}
+                                                        options={AGENT_TURN_LIMIT_CHOICES}
+                                                    />
+                                                    <p id="age-turn-limit-help" className="mt-1 text-xs text-text-faint">What it does when it reaches Max Turns without finishing, after one last turn to answer with what it has. Extra turns are billed as any turn is.</p>
                                                 </div>
 
                                                 {/* Max response length (F263) — this agent's own cap; blank

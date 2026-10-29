@@ -176,6 +176,8 @@ export interface BuilderMessage {
      * else, and for runs started before the object was sent.
      */
     context?: Record<string, unknown> | null;
+    /** A step at its turn limit asking whether to keep going (F1219): `more` is what Keep going gives. */
+    turnLimit?: { more: number };
     /** A findings card (`kind: 'findings'`). */
     findings?: ResearchFindings;
     /** An action card (`kind: 'action'`). */
@@ -487,6 +489,9 @@ export function applyBuilderEvent(state: BuilderState, event: any, seq = 0): Bui
                     stepId: event.orch_step_id ?? null,
                     contextKey: event.context_key ?? null,
                     ...(event.context && typeof event.context === 'object' ? { context: event.context } : {}),
+                    // A step at its turn limit asks whether to keep going (F1219): answered with its two buttons.
+                    ...(event.tool_name === 'turn_limit'
+                        ? { turnLimit: { more: Number(event.turn_limit?.more) || 0 } } : {}),
                 },
             );
 

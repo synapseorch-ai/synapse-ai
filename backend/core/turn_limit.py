@@ -49,6 +49,10 @@ def asking_words(turns: int) -> str:
     return f"I've used {turns} turns on this; keep going?"
 
 
+#: The same question on a reopened page or in the bell, where the count is not kept.
+REOPENED_WORDS = "I've reached my turn limit on this; keep going?"
+
+
 def refusal(*, extensions: int, spent_usd: float, cap_reason: str | None, capped: bool) -> str | None:
     """Why `continue` may not go on again, or None. `cap_reason`: the run's own cap's sentence (`run_cap`)."""
     if cap_reason:

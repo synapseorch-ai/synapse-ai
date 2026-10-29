@@ -477,6 +477,9 @@ type TeamQuestion = {
   prompt?: string;
 };
 
+/** The parked approval that asks whether an agent at its turn limit keeps going (F1219; `core/turn_limit.py`). */
+const TURN_LIMIT = 'turn_limit';
+
 /** A tool call the conversation stopped to ask about — the card, without the loop's state. */
 type ParkedApproval = {
   kind: 'tool_approval';
@@ -549,6 +552,44 @@ function ToolApprovalCard({
   // has not been read back yet, and a new message is the only way to move on.
   const why = (msg.data?.why as string | undefined) ?? MOVED_ON;
   const expired = !answered && (movedPast || msg.data?.expired === true);
+  // At its turn limit (F1219): not a call to allow but whether to keep going — the same parked turn, its own words.
+  const turnLimit = msg.data?.tool_name === TURN_LIMIT;
+
+  if (turnLimit) {
+    const more = Number((msg.data?.turn_limit as { more?: number } | undefined)?.more) || 0;
+    return (
+      <AgentTurn avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><AlertCircle className="h-4 w-4" aria-hidden /></AgentAvatar>}>
+        <div className="flex min-w-0 flex-col gap-3 rounded-xl border border-person/60 bg-surface px-4 py-3.5">
+          <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">
+            <span aria-hidden className="size-2 rounded-full bg-person" />
+            Turn limit reached
+          </span>
+          <Markdown className="text-[15px] leading-relaxed">{msg.content}</Markdown>
+          {answered ? (
+            <p className="text-[13px] text-text-faint">Answered.</p>
+          ) : expired ? (
+            <p className="text-[13px] text-text-faint">You moved on, so it stopped here.</p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="person" size="sm" disabled={disabled || sending}
+                  onClick={() => void decide(true, '')}>
+                  Keep going
+                </Button>
+                <Button type="button" variant="secondary" size="sm" disabled={disabled || sending}
+                  onClick={() => void decide(false, '')}>
+                  Answer with what you have
+                </Button>
+              </div>
+              <p className="text-xs text-text-faint">
+                {more > 0 ? `Keep going gives it ${more} more turns. ` : ''}Extra turns are billed as any turn is.
+              </p>
+            </>
+          )}
+        </div>
+      </AgentTurn>
+    );
+  }
 
   return (
     <AgentTurn avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><AlertCircle className="h-4 w-4" aria-hidden /></AgentAvatar>}>

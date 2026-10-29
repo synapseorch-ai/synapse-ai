@@ -134,7 +134,10 @@ def approval_prompt(tool_name: str | None, category: str | None) -> str:
     which it reaches systems outside this workspace" is what a live approval
     card once said.
     """
-    from core import tool_policy
+    from core import tool_policy, turn_limit
+    if tool_name == turn_limit.KIND:
+        # Not a call: whether an agent at its turn limit keeps going (F1219). The live card says how many turns.
+        return turn_limit.REOPENED_WORDS
     return f"The agent wants to run **{tool_name}** — {tool_policy.explain(category)}. Allow it?"
 
 

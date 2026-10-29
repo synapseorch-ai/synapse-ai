@@ -410,6 +410,26 @@ export function BuilderConversation({
                                             onStop={onStop}
                                             estimate={loadRunEstimate}
                                         />
+                                    ) : message.turnLimit ? (
+                                        // At a step's turn limit (F1219): keep going, or answer with what it has.
+                                        <div className="flex min-w-0 flex-col gap-2">
+                                            <QuestionCard content={message.content} open={open} onStop={onStop} />
+                                            {open && (
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Button type="button" size="sm" disabled={streaming}
+                                                        onClick={() => void send('Keep going', [], { approve: true })}>
+                                                        Keep going
+                                                    </Button>
+                                                    <Button type="button" size="sm" variant="secondary" disabled={streaming}
+                                                        onClick={() => void send('Answer with what you have', [], { approve: false })}>
+                                                        Answer with what you have
+                                                    </Button>
+                                                    <span className="text-xs text-text-faint">
+                                                        {message.turnLimit.more > 0 ? `Keep going gives it ${message.turnLimit.more} more turns. ` : ''}Extra turns are billed as any turn is.
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
                                     ) : (
                                         <QuestionCard content={message.content} open={open} onStop={onStop} />
                                     )}

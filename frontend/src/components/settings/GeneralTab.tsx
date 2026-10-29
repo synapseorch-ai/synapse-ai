@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
 import { AlertTriangle } from 'lucide-react';
-import { Button, ConfirmDialog, Input, Label, Section, Spinner, Switch } from '@/components/ui';
+import { Button, ConfirmDialog, Input, Label, Section, Select, Spinner, Switch } from '@/components/ui';
 import { FIELD_LABEL, FORM } from './form';
 import { SaveBar } from './SaveBar';
 import { ToolPolicyFields, type ToolPolicy } from './ToolPolicy';
+import { WORKSPACE_TURN_LIMIT_CHOICES } from './turnLimit';
 
 
 /** A setting that is on or off: what it does, and its switch at the end of the line. */
@@ -68,6 +69,9 @@ interface GeneralTabProps {
     /** The most members a Team agent may run at once on this install (`team_at_once_ceiling`; TEAM1b); null until read. */
     teamCeiling: number | null;
     setTeamCeiling: (v: number) => void;
+    /** What an agent does at its turn limit (`turn_limit_mode`, F1219): '' is the default; null until read. */
+    turnLimitMode: string | null;
+    setTurnLimitMode: (v: string) => void;
     toolPolicyDefaults: ToolPolicy;
     setToolPolicyDefaults: (v: ToolPolicy) => void;
     embedCode: boolean;
@@ -97,6 +101,7 @@ export function GeneralTab({
     knowledgeEnabled, setKnowledgeEnabled,
     boards, setBoards,
     teamCeiling, setTeamCeiling,
+    turnLimitMode, setTurnLimitMode,
     toolPolicyDefaults, setToolPolicyDefaults,
     embedCode, setEmbedCode,
     bashAllowedDirs, setBashAllowedDirs,
@@ -298,6 +303,22 @@ export function GeneralTab({
                         The most members any Team agent here runs side by side. Each Team agent sets its own number up
                         to this; extra members wait for a free slot. More at once costs no more, but providers&apos; rate
                         limits slow a large team down.
+                    </p>
+                </div>
+            </Section>
+
+            <Section {...S} title="Turn limit">
+                <div className={`space-y-1.5 ${FORM}`}>
+                    <Label className={FIELD_LABEL}>When an agent reaches its turn limit</Label>
+                    <Select className="w-full max-w-sm" aria-label="When an agent reaches its turn limit"
+                        aria-describedby="gen-turn-limit-help" disabled={turnLimitMode === null}
+                        value={turnLimitMode === null ? undefined : (turnLimitMode || '__default__')}
+                        onChange={(v) => setTurnLimitMode(v === '__default__' ? '' : v)}
+                        options={WORKSPACE_TURN_LIMIT_CHOICES} />
+                    <p id="gen-turn-limit-help" className="text-xs text-text-faint">
+                        An agent that reaches its turn limit first gets one last turn to answer with what it has. If
+                        it still hasn&apos;t finished, this decides what happens next, here and in Synapse AI. An
+                        agent&apos;s own setting overrides it. Extra turns are billed as any turn is.
                     </p>
                 </div>
             </Section>
