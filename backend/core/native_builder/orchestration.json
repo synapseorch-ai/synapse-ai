@@ -28,6 +28,7 @@
         "can_create_agents": {"type": "bool", "default": false, "description": "Whether the builder may create new agents"},
         "knowledge_steps": {"type": "str", "default": "", "description": "Knowledge's Retrieve and Ingest step types while Knowledge is on; empty while it is off (R1)"},
         "browser_steps": {"type": "str", "default": "", "description": "The workspace's recordings and the Browser step that replays one; empty without a recording (F1193)"},
+        "recording_or_workflow": {"type": "str", "default": "", "description": "A name the message gives that is both a recording and a workflow, which the change route asks about once; empty otherwise (F1231)"},
         "export_guide": {"type": "str", "default": "", "description": "What pasted OpenAI Agents SDK code (an Agent Builder export) becomes here, while the message is such code; empty otherwise (SW1)"},
         "export_source": {"type": "str", "default": "", "description": "That code with its credentials taken out, for the steps that copy its words; empty otherwise (SW1)"},
         "current_orchestration_id": {"type": "str", "default": "", "description": "The orchestration this message is about — open on screen or named in the message — checked by the server; empty when there is none or it is unclear"},

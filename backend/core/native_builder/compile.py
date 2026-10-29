@@ -16,7 +16,8 @@ the defaults the builder's savers fill (`_fill_step_defaults`) and checks the re
   agent that holds it; caps are the workflow's (CAP1);
 * only allowlisted workflow settings are taken from a Plan (`settings`): never a rubric, the `system` marker or
   whether it is active (F784's class);
-* a step whose tool nothing provides is refused (F489).
+* a step whose tool nothing provides is refused (F489), and so is a Loop straight over the run's own input, which is
+  text (F1233).
 
 `validate` runs the checks that need the workspace (a tool's schema, F489, the approvals rule against the Plan's own
 "acts without asking", BWA1's decision 4) and is async; `compile_plan` is pure.
@@ -203,6 +204,13 @@ def _workflow(title: str, summary: str, steps: list[Step], settings: dict[str, A
         if head in written:
             rest = "" if rest in ("output", "result", "results") else rest
             s["loop_over"] = f"state.{written[head]}" + (f".{rest}" if rest else "")
+        elif over.removeprefix("state.") in ("user_input", "user_query"):
+            # The run's own input is text, and a Loop over text runs zero times (F14): a pasted list is made a list
+            # first (F1233).
+            issues.append(f"Loop '{s['id']}': its loop_over is the run's own input, which is text, so it would run "
+                          "zero times. A step before it makes the list: a `transform` where the workspace runs code, "
+                          "else an `llm` step answering a JSON list, its id declared {\"type\": \"list\"} in "
+                          "settings.state_schema; the Loop's loop_over names that step.")
     orch: dict[str, Any] = {"id": orch_id, "name": title, "description": summary,
                             "entry_step_id": steps[0].id if steps else "", "steps": engine}
     for key, value in (settings or {}).items():

@@ -64,8 +64,11 @@ from core.native_builder import prompt_lint, seed
 #: F1228: the build's last message adds what each part does (`{state.build_saved.does}`), and the change planner's
 #: rule 9 (never say what an existing workflow does), f86194bc….
 #: F1229's `built` target (the classify step's words and the state key that carries the last build), bcf13e4a….
-#: F1227's read_vault for a Transform (the step cheatsheet and plan_steps' transform line), 6dd7a340….
-BUNDLE_SHA256 = "d4772f961169ee45558e63d86408f5dcd12f79985b85c1b0455d81f927527277"
+#: F1227's read_vault for a Transform (the step cheatsheet and plan_steps' transform line), 6dd7a340…; on fix-forward
+#: 14's tree, d4772f96….
+#: F1231: the change planner's rule 10 (a recording's request is the use_recording op) and `recordings` among its
+#: read_workspace topics; the state key a name both a recording and a workflow is kept under, b266d656….
+BUNDLE_SHA256 = "b266d656378b15e471658044e071744dc26f714b3f276745106b553a2bff6154"
 
 
 def _sha(definitions) -> str:

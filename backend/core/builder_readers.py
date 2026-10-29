@@ -46,6 +46,8 @@ TOPICS: dict[str, str] = {
                       "and the workflows that use it, with how each one's last run went",
     "boards": "the boards and how many cards are open on each; with `name`, that board's open cards (their ids, who "
               "holds each) and the latest closed ones",
+    "recordings": "tasks a person recorded in the app's browser, which a workflow's Browser step replays: name, id, "
+                  "the sites, the inputs each run fills, how many steps (F1231)",
 }
 
 #: Each topic's answer, on every host (SAI2-P5): its keys, and the keys of each of its `items`. A key ending in `?`
@@ -80,6 +82,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     # The boards (a page of them), or with `name` one board's cards.
     "boards": {"keys": ["items?", "total?", "next_cursor?", "board?", "id?", "open?", "recently_closed?"],
                "item": ["board", "id", "kind", "open", "being_worked_on"]},
+    "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps"]},
 }
 
 _HOST: dict[str, Reader] = {}
@@ -275,6 +278,21 @@ async def _knowledge(args: dict) -> dict:
     return {"items": _named(out, args.get("name")), "note": "" if out else "There are no knowledge bases yet."}
 
 
+async def _recordings(args: dict) -> dict:
+    """The recordings, or none with the host's sentence where its plan has no Browser (its `set_browser_check`)."""
+    from core.browser import recordings
+    from core.builder_tools import _browser_refused
+
+    if (refused := await _browser_refused("recording")) is not None:
+        return {"items": [], "note": refused["error"]}
+    out = [{"name": d.get("name") or d["id"], "id": d["id"], "sites": list(d.get("sites") or []),
+            "inputs": recordings.input_names(d), "steps": len(d.get("steps") or [])}
+           for d in await recordings.all_recordings()]
+    return {"items": _named(out, args.get("name")),
+            "note": "" if out else "There are no recordings yet: a person records one in the app (Recordings › "
+                                   "Record a task)."}
+
+
 async def _usage(args: dict) -> dict:
     from core.orchestration.run_view import list_runs
 
@@ -413,6 +431,7 @@ _SELF_HOSTED: dict[str, Reader] = {
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "waiting": _waiting, "agent_activity": _agent_activity, "boards": _boards,
+    "recordings": _recordings,
 }
 
 

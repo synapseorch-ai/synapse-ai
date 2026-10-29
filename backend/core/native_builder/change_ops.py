@@ -12,10 +12,11 @@ A change is a list of ops, each `{op, target: {kind, id | name}, fields}` (`obje
   check after (`differs`);
 * **what undoes it** (`inverse`), from the target as it was.
 
-Two ops hand the request to another route instead: `edit_steps` (a workflow's steps: the build route's update
-path, on the typed Plan since P3) and `create` (a new agent, skill, HTTP tool or OpenAPI import: today's create
+Three ops hand the request to another route instead: `edit_steps` (a workflow's steps: the build route's update
+path, on the typed Plan since P3), `create` (a new agent, skill, HTTP tool or OpenAPI import: today's create
 path, which holds those tools' checks — F769's host rule, TAG1's method defaults, the Connect card, F489; Naveen's
-split, 10-22). Neither is a second way to make those things.
+split, 10-22) and `use_recording` (running, scheduling or repeating a recording: the build route makes the workflow
+whose Browser step replays it, F1231). None is a second way to make those things.
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool", "feature")
+                "approval", "card", "openapi", "python_tool", "feature", "recording")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -123,6 +124,7 @@ CREATES = ("agent", "skill", "tool", "openapi", "python_tool")
 _HANDOFFS = (
     Op("edit_steps", "handoff", "workflow", fields=("what",), required=("what",), verb="Change the steps of"),
     Op("create", "handoff", "new", fields=("what",), required=("what",), verb="Make"),
+    Op("use_recording", "handoff", "recording", fields=("what",), required=("what",), verb="Make a workflow that runs"),
 )
 
 #: An undo's re-create of what a change deleted, from its before-image (F797): code builds these from the card it
