@@ -294,3 +294,49 @@ async def delete_owned(workflow_id: str) -> dict:
         elif await delete(doc["id"]):
             deleted.append(doc["id"])
     return {"deleted": deleted, "kept": kept}
+
+
+# ── outside the app: MCP's tools and cloud's public API (BRW-API, F1188) ─────
+# One shape for both, and an allowlist: a recording's steps as text, never their pictures (Naveen 10-29: those are its
+# creator's and the Builders', on screen), their targets or its history.
+
+def _named(names: dict | None, who: object) -> object:
+    return (names or {}).get(str(who), who) if who else None
+
+
+def listed_view(doc: dict, names: dict | None = None) -> dict:
+    """A recording as a list shows it. `names` maps the people who made and changed it to their names (cloud's ids);
+    without one, as here, `created_by` already is a name."""
+    return {"id": doc["id"], "name": doc.get("name"), "sites": list(doc.get("sites") or []),
+            "steps": len(doc.get("steps") or []), "inputs": input_names(doc), "version": doc.get("version"),
+            "owner_workflow": doc.get("owner_workflow"), "created_at": doc.get("created_at"),
+            "updated_at": doc.get("updated_at"), "created_by_name": _named(names, doc.get("created_by"))}
+
+
+def text_view(doc: dict, names: dict | None = None) -> dict:
+    """One recording, its steps as the sentences the editor shows (a renamed step by its name)."""
+    return {**listed_view(doc, names),
+            "outputs": [{"name": o.get("name"), "kind": o.get("kind")} for o in doc.get("outputs") or []],
+            "updated_by_name": _named(names, doc.get("updated_by")),
+            "pending_edits": len(doc.get("pending_edits") or []),
+            "steps": [{"id": s.get("id"), "n": s.get("n"), "action": s.get("action"),
+                       "line": s.get("title") or s.get("line") or line_of(s),
+                       "url": s.get("url") if s.get("action") == "open" else None}
+                      for s in doc.get("steps") or [] if isinstance(s, dict)]}
+
+
+async def all_recordings() -> list[dict]:
+    """Every recording, whole, the latest changed first."""
+    from core.store.collections import load
+    return sorted(await load(COLLECTION), key=lambda d: d.get("updated_at") or 0, reverse=True)
+
+
+async def used_by(recording_id: str) -> dict:
+    """What uses a recording: workflow steps (a Browser step's, or one picked for a step's agent) and agents."""
+    from core.store.resources import load_agents, load_orchestrations
+    workflows = [{"id": flow.get("id"), "name": flow.get("name"), "step": s.get("id")}
+                 for flow in await load_orchestrations() for s in (flow or {}).get("steps") or []
+                 if s.get("recording_id") == recording_id or recording_id in (s.get("browser_recordings") or [])]
+    agents = [{"id": a.get("id"), "name": a.get("name")} for a in await load_agents()
+              if recording_id in (((a or {}).get("browser") or {}).get("recordings") or [])]
+    return {"workflows": workflows, "agents": agents}
