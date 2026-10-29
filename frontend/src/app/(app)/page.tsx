@@ -910,6 +910,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   // For a stream that started on an earlier render: who is driving the browser it opens (BRW2).
   const agentNameRef = useRef(agentName);
   agentNameRef.current = agentName;
+  // The browser a reopened chat's parked turn is on (F1182): shown once the agent's name is known.
+  const [reopenedBrowser, setReopenedBrowser] = useState<string | null>(null);
   // Whether the name came from the active agent. The workspace's own name, from
   // settings, is only the fallback when no agent is active: both requests set
   // the name, and when /api/status answered first the page said "Synapse" in
@@ -1109,7 +1111,18 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   const onChangeRef = useRef(onChange);
   const onBusyRef = useRef(onBusy);
   const onOpenChatRef = useRef(onOpenChat);
-  useEffect(() => { onChangeRef.current = onChange; onBusyRef.current = onBusy; onOpenChatRef.current = onOpenChat; });
+  const onBrowserRef = useRef(onBrowser);
+  useEffect(() => {
+    onChangeRef.current = onChange; onBusyRef.current = onBusy; onOpenChatRef.current = onOpenChat;
+    onBrowserRef.current = onBrowser;
+  });
+  // A reopened chat's browser goes in the pane under its agent's name, not the page's "Loading..." before the agent
+  // is read (F1182): the conversation can come back first. Once.
+  useEffect(() => {
+    if (!reopenedBrowser || agentName === 'Loading...') return;
+    onBrowserRef.current({ type: 'browser_session', session_id: reopenedBrowser, owner: '' }, agentName);
+    setReopenedBrowser(null);
+  }, [reopenedBrowser, agentName]);
   // The tab's title is the conversation's first question, as History's row is.
   const firstQuestion = messages.find(m => m.role === 'user' && !m.data?.automated)?.content ?? '';
   useEffect(() => {
@@ -1285,8 +1298,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       if (running) restored.push({ role: 'user', content: running.message,
                                    ...(running.automated ? { data: { automated: running.automated } } : {}) });
       setMessages(restored);
-      if (browserTurn) onBrowser({ type: 'browser_session', session_id: browserTurn.session_id, owner: '' },
-                                 agentNameRef.current);
+      setReopenedBrowser(browserTurn?.session_id ?? null);
       setTurnOutcome(null);
       setSessionId(sid);
       if (agentId) setCurrentAgentId(agentId);
@@ -3535,8 +3547,9 @@ type TabBrowser = {
 function foldBrowser(had: TabBrowser | undefined, event: BrowserEvent, agentName: string): TabBrowser | undefined {
   const fresh = (sessionId: string): TabBrowser => ({ sessionId, agentName, actions: [], shown: true, closed: false });
   if (event.type === 'browser_session') {
-    return had?.sessionId === event.session_id ? had
-      : { ...fresh(event.session_id), signedIn: { sessions: event.sessions, skipped: event.skipped } };
+    // The same browser keeps the person's close; its agent's name is the newest known.
+    if (had?.sessionId === event.session_id) return had.agentName === agentName ? had : { ...had, agentName };
+    return { ...fresh(event.session_id), signedIn: { sessions: event.sessions, skipped: event.skipped } };
   }
   const action = actionOf(event);
   const base = had?.sessionId === action.session_id ? had : fresh(action.session_id);
