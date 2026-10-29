@@ -93,7 +93,7 @@ SUBMIT = {"type": "function", "function": {
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
-        "{message}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
+        "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
         "board_update_card {status, result}; board_comment {text}; board_create {text}; edit_steps and create "
         "{what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
@@ -596,6 +596,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                                      "so I can't bring the old one back under its name."))
                 continue
             target["name"] = name
+        elif op.name in C.MAKES_TARGET:
+            # What it makes is named, not found: its card's own check says when the name is taken (F1200).
+            target["name"] = _text(target.get("name")) or _text(fields.get("name"))
         else:
             if _answers(chosen, n, "target", op.target, target):
                 target["id"] = chosen["id"]

@@ -140,6 +140,57 @@ async def _manifest(upload_id: str) -> dict[str, Any]:
     return manifest
 
 
+def check_file(path: str, size_bytes: int) -> None:
+    """A file a knowledge base takes: a type it reads (415) and within the size per file (413). An upload's rule, and
+    a Vault file's added by the builder (F1200)."""
+    from core.knowledge.config import knowledge_settings
+    from core.knowledge.parse import ACCEPTED_EXTENSIONS, extension
+
+    if extension(path) not in ACCEPTED_EXTENSIONS:
+        raise UploadError(f"{extension(path) or 'A file without an extension'} is not a type a knowledge base "
+                          "takes.", status=415)
+    cap = knowledge_settings().max_file_mb
+    if size_bytes > cap * MIB:
+        raise UploadError(f"The file is {size_bytes / MIB:.1f} MB; the limit is {cap} MB per file.", status=413)
+
+
+async def vault_file_lands(kb: KnowledgeBase, source: str) -> tuple[str, str, int]:
+    """Where a Vault file added to `kb` lands, by an upload's rules (`upload_path`, `check_file`), checked before
+    anything is written: (the file's Vault path, where it lands, its size). One already in the base's folder lands
+    where it is; one elsewhere, in the base's root under its own name, never over a file there (F1200)."""
+    from core.knowledge import kb_settings
+    from core.vault import mention_key
+
+    key = mention_key(source)
+    stat = await asyncio.to_thread(_store().stat, key) if key else None
+    if stat is None:
+        raise NotFound(f"There is no file at {source!r} in the Vault.")
+    rel = key.split("/", 1)[1]
+    if kb_settings.kb_for_path(rel, [kb]) is kb:
+        check_file(rel, stat.size)
+        return rel, rel, stat.size
+    path = upload_path(kb, rel.rsplit("/", 1)[-1], None)
+    check_file(path, stat.size)
+    if await asyncio.to_thread(_store().stat, f"vault/{path}") is not None:
+        raise UploadError(f"{path} is already in this knowledge base; rename the Vault file to add it as well.",
+                          status=409)
+    return rel, path, stat.size
+
+
+async def add_vault_file(kb: KnowledgeBase, source: str) -> list[KnowledgeDocumentDB]:
+    """A file the person already has in the Vault, added to `kb` (F1200): copied to where `vault_file_lands` says,
+    and queued."""
+    from core.knowledge import sync
+    from core.vault_events import VaultChange
+
+    rel, path, _ = await vault_file_lands(kb, source)
+    if path == rel:
+        return await sync.on_vault_change(VaultChange(path=rel, op="write", source="route"))
+    store = _store()
+    size, sha = await asyncio.to_thread(store.put_stream, f"vault/{path}", store.iter_bytes(f"vault/{rel}") or iter(()))
+    return await sync.on_vault_change(VaultChange(path=path, op="write", sha256=sha, size=size, source="upload"))
+
+
 async def start_upload(kb: KnowledgeBase, body: UploadInit, *, part_url: Callable[[str, int], str],
                        token_header: str | None = None) -> UploadSession:
     """Open an upload session for one file into `kb`.
@@ -147,17 +198,9 @@ async def start_upload(kb: KnowledgeBase, body: UploadInit, *, part_url: Callabl
     With `token_header`, the session mints a token, keeps it in its manifest and names it in each part's
     `headers`; `put_part` then takes a part only with it."""
     from core.knowledge.api_models import UploadPart, UploadSession
-    from core.knowledge.config import knowledge_settings
-    from core.knowledge.parse import ACCEPTED_EXTENSIONS, extension
 
     path = upload_path(kb, body.filename, body.path)
-    if extension(path) not in ACCEPTED_EXTENSIONS:
-        raise UploadError(f"{extension(path) or 'A file without an extension'} is not a type a knowledge base "
-                          "takes.", status=415)
-    cap = knowledge_settings().max_file_mb
-    if body.size_bytes > cap * MIB:
-        raise UploadError(f"The file is {body.size_bytes / MIB:.1f} MB; the limit is {cap} MB per file.",
-                          status=413)
+    check_file(path, body.size_bytes)
     upload_id = new_id(UPLOAD_PREFIX)
     parts = max(1, math.ceil(body.size_bytes / PART_SIZE))
     expires = _now() + SESSION_TTL

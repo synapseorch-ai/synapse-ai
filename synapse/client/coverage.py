@@ -76,6 +76,8 @@ TOOLS: dict[str, str] = {
     "trigger_schedule": "schedules trigger",
     "list_knowledge_bases": "knowledge bases list",
     "search_knowledge": "knowledge search",
+    "create_knowledge_base": "knowledge bases create",
+    "add_knowledge_file": "knowledge upload",
     "add_knowledge_pages": "knowledge add-url",
     "add_knowledge_note": "knowledge add-note",
     "retry_knowledge_document": "knowledge docs retry",

@@ -26,6 +26,7 @@ _log = logging.getLogger(__name__)
 ACT_TOOLS = {"run_workflow": "run_orchestration", "run_schedule_now": "trigger_schedule",
              "schedule_on": "set_schedule_enabled", "schedule_off": "set_schedule_enabled",
              "answer_tool_call": "answer_tool_approval", "cancel_run": "cancel_run",
+             "knowledge_create": "create_knowledge_base", "knowledge_add_file": "add_knowledge_file",
              "knowledge_add_pages": "add_knowledge_pages", "knowledge_add_note": "add_knowledge_note",
              "knowledge_retry_document": "retry_knowledge_document",
              "knowledge_delete_document": "delete_knowledge_document", "board_add_card": "add_board_card",

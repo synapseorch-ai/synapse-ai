@@ -162,6 +162,19 @@ async def create_base(body: KnowledgeBaseCreate) -> KnowledgeBase:
     return kb
 
 
+async def make_base(body: KnowledgeBaseCreate) -> KnowledgeBase:
+    """A new knowledge base as the Knowledge screen makes one (F1200): its settings checked before anything is saved,
+    the base on its folder (made if missing), and what the folder already holds queued. The route and the builder's
+    `create_knowledge_base` both make one here."""
+    from core.knowledge import costs, dispatch, sync
+
+    costs.check_settings(embedding=body.embedding, rerank=body.rerank, enrichment=body.enrichment)
+    kb = await create_base(body)
+    await sync.ensure_folder(kb)
+    await dispatch.enqueue(kb.id, "reindex", "reconcile")
+    return kb
+
+
 async def update_base(kb_id: str, patch: KnowledgeBaseUpdate) -> tuple[KnowledgeBase, KnowledgeBase]:
     """Apply `patch`; returns (before, after). `StaleRevision` when `patch.revision` is not the stored one, and
     `ValueError` for a patch that turns `extract_metadata` on (F348; a base that has it may send it back)."""

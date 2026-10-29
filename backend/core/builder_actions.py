@@ -35,6 +35,9 @@ ACTIONS: dict[str, str] = {
     "answer_run": "answer the question a waiting run asks, or approve it (`run_id`, from topic `waiting`)",
     "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
     "cancel_run": "stop a run that is still going (`run_id`)",
+    "knowledge_create": "make a knowledge base (`name`; `text`: what it holds; `folder`: a Vault folder, or leave it "
+                        "out for knowledge/<name>)",
+    "knowledge_add_file": "add a file from the Vault to a knowledge base (`knowledge_base`, `path`: its Vault path)",
     "knowledge_add_pages": "add public web pages to a knowledge base (`knowledge_base`, `urls`, `kind`: page, sitemap "
                            "or site)",
     "knowledge_add_note": "add a note to a knowledge base (`knowledge_base`, `title`, `text`)",
@@ -72,6 +75,8 @@ SCHEMA = {
                 "urls": {"type": "array", "items": {"type": "string"}},
                 "kind": {"type": "string", "enum": ["page", "sitemap", "site"]},
                 "doc_id": {"type": "string"},
+                "folder": {"type": "string", "description": "knowledge_create: a Vault folder; omit for knowledge/<name>."},
+                "path": {"type": "string", "description": "knowledge_add_file: the file's Vault path."},
                 "board": {"type": "string", "description": "The board's name."},
                 "card_id": {"type": "string", "description": "From topic `boards` with the board's name."},
                 "status": {"type": "string", "enum": ["open", "done", "failed"]},
@@ -287,6 +292,26 @@ async def _resolved(lookup):
 async def _knowledge(action: str, args: dict) -> dict:
     from core.product_tools import knowledge
 
+    if action == "knowledge_create":
+        # The tool's own preview checks it (name free, folder allowed and no other base's) before the card (F1200).
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise _NotOffered("Say what the knowledge base is called.")
+        call = {"name": name, "description": str(args.get("text") or "").strip(),
+                **({"folder": str(args["folder"]).strip()} if str(args.get("folder") or "").strip() else {})}
+        button = await _button("Make it", "create_knowledge_base", call)
+        folder = call.get("folder") or knowledge._folder_for(name)
+        return _card(f'Make a knowledge base "{name}"',
+                     detail=f"On the Vault folder {folder}. Files already there are indexed with your embedding model.",
+                     buttons=[button])
+    if action == "knowledge_add_file":
+        kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
+        path = str(args.get("path") or "").strip().lstrip("/")
+        if not path:
+            raise _NotOffered("Say which file: its path in the Vault.")
+        button = await _button("Add", "add_knowledge_file", {"knowledge_base": kb.id, "path": path})
+        return _card(f'Add "{path.rsplit("/", 1)[-1]}" to "{kb.name}"',
+                     detail=f"{path}. Indexing it uses your embedding model.", buttons=[button])
     if action in ("knowledge_add_pages", "knowledge_add_note"):
         kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
         if action == "knowledge_add_pages":

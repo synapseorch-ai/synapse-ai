@@ -67,6 +67,8 @@ _ACTS = (
     Op("answer_run", "act", "run", verb="Answer"),
     Op("answer_tool_call", "act", "approval", verb="Answer"),
     Op("cancel_run", "act", "run", verb="Stop"),
+    Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
+    Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),
        verb="Add pages to"),
     Op("knowledge_add_note", "act", "knowledge_base", fields=("title", "text"), required=("text",),
@@ -145,6 +147,9 @@ PLANNER_OPS = tuple(n for n, op in OPS.items() if not op.internal)
 WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
 
 #: The argument that names an act's target, as `prepare_action` takes it.
+#: Acts whose target is the thing they make, named, never looked up among what exists (F1200).
+MAKES_TARGET = frozenset({"board_create", "knowledge_create"})
+
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id"}
 
@@ -257,7 +262,7 @@ def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
 
 def act_arguments(op: Op, target_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     """`prepare_action`'s arguments for an act on a resolved target."""
-    name_arg = "name" if op.name == "board_create" else _ACT_ARG[op.target]
+    name_arg = "name" if op.name in MAKES_TARGET else _ACT_ARG[op.target]
     return {"action": op.name, name_arg: target_id, **{k: v for k, v in fields.items() if k in op.fields}}
 
 

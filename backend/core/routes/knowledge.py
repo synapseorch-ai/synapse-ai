@@ -107,14 +107,10 @@ async def list_knowledge_bases() -> list[KnowledgeBaseOut]:
 async def create_knowledge_base(body: KnowledgeBaseCreate) -> KnowledgeBaseOut:
     """A new knowledge base on a Vault folder; the folder is created if missing, and what is already
     in it is queued."""
-    from core.knowledge import bases, costs, dispatch, sync
+    from core.knowledge import bases
 
-    costs.check_settings(embedding=body.embedding, rerank=body.rerank,
-                         enrichment=body.enrichment)  # 422 before anything is saved
-    kb = await bases.create_base(body)
-    await sync.ensure_folder(kb)
-    await dispatch.enqueue(kb.id, "reindex", "reconcile")
-    return (await _out([kb]))[0]
+    # 422 before anything is saved; the builder's create_knowledge_base makes one the same way (F1200).
+    return (await _out([await bases.make_base(body)]))[0]
 
 
 @router.get("/api/knowledge/bases/{kb_id}", response_model=KnowledgeBaseOut)
