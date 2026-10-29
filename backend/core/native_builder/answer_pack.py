@@ -30,7 +30,7 @@ ACT_TOOLS = {"run_workflow": "run_orchestration", "run_schedule_now": "trigger_s
              "knowledge_retry_document": "retry_knowledge_document",
              "knowledge_delete_document": "delete_knowledge_document", "board_add_card": "add_board_card",
              "board_update_card": "update_board_card", "board_comment": "comment_on_card",
-             "board_create": "create_board", "board_delete": "delete_board"}
+             "board_create": "create_board", "board_delete": "delete_board", "feature_on": "turn_on_feature"}
 #: An act whose card answers through the run's own door, not a registry tool (`builder_actions`, answer_run).
 _ACT_ROLES = {"answer_run": Role.APPROVER}
 _TARGET_WORDS = {"knowledge_base": "knowledge base", "approval": "tool call that waits"}

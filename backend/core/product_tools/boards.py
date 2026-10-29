@@ -67,7 +67,8 @@ def set_board_host(host: BoardHost | None) -> None:
 
 async def _on() -> None:
     if not await _host.enabled():
-        raise ToolRefusal("Boards are switched off in this workspace.")
+        from core.features import off_sentence
+        raise ToolRefusal(off_sentence("boards"))  # what is off and where it is turned on (F1203)
 
 
 def _refusing(exc: Exception) -> ToolRefusal:

@@ -257,7 +257,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
         "boards": ("On: every agent step in a workflow has board_list, board_read, board_add, board_update and "
                    "board_claim on its workflow's own board; name them in that agent's tools, never as a Tool step. "
                    "It posts there, not to a shared board."
-                   if ws.boards_on else "Off in this workspace: no board tools."),
+                   if ws.boards_on else
+                   "Off in this workspace. Where the request needs a board, still give that agent its board tools as "
+                   "if on: the review says Boards are off and offers to turn them on (F1203)."),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
@@ -275,6 +277,10 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     if ws.kbs is not None:
         pack["knowledge_bases"] = [{"id": i, "name": kb.name} for i, kb in ws.kbs.items()
                                    if getattr(kb, "status", "active") == "active"]
+    else:
+        pack["knowledge"] = ("Off in this workspace. Where the request needs to search or fill a knowledge base, still "
+                             "plan its retrieve or ingest step: the review says Knowledge is off and offers to turn it "
+                             "on, and its base is picked once it is (F1203).")
     if base is not None:
         pack["workflow"] = {"id": (_obj(state.get(EXISTING_KEY)) or {}).get("id") or state.get(
             "current_orchestration_id"), "plan": base.model_dump(exclude_none=True, exclude_defaults=True)}
@@ -321,6 +327,8 @@ class Examined:
     notes: list[str] = field(default_factory=list)
     #: Names nothing provides that code can say what they are instead (F950, F1043): never researched.
     misnamed: list[str] = field(default_factory=list)
+    #: Features the plan needs that are off (`features_needed`, F1203): blocks, with a switch on the card.
+    features: list[str] = field(default_factory=list)
 
 
 def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
@@ -440,8 +448,41 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         # What it is instead, the planner's to fix, before any lookup or card (F950, F1043).
         return Examined(filled, list(misnamed.values()), missing=list(filled.missing), misnamed=list(misnamed))
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
+    needed = features_needed(filled, ws)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
-                    blocks=blocked(filled, state), notes=room_notes)
+                    blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}}, notes=room_notes,
+                    features=needed)
+
+
+def features_needed(plan: O.Plan, ws: Workspace) -> list[str]:
+    """The features this plan needs that are off here: Boards for an agent's board tools, Knowledge for a Retrieve or
+    Ingest step (F1203). The planner plans what the request needs; turning a feature on is the person's."""
+    from core.boards import TOOL_NAMES
+
+    steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
+    out = []
+    if not ws.boards_on and any(t in TOOL_NAMES for t in O.tool_names(plan)):
+        out.append("boards")
+    if ws.kbs is None and any(s.type in ("retrieve", "ingest") for s in steps):
+        out.append("knowledge")
+    return out
+
+
+def _feature_block(feature: str) -> str:
+    """The card's line for a feature that is off: what, where its switch is, and the other way."""
+    from core.features import off_sentence
+
+    without = "the board" if feature == "boards" else "its knowledge steps"
+    return off_sentence(feature).rstrip(".") + f", or build without {without}"
+
+
+def _may_turn_on() -> bool:
+    """Whether this build's person may press a feature's switch (the Settings screen's admin)."""
+    from core.builder_access import current_caller
+    from core.product_tools.roles import Role
+
+    caller = current_caller()
+    return caller is None or caller.role.can_act_as(Role.ADMIN)
 
 
 def _needs(plan: O.Plan, tools: list[str], state: dict) -> list[dict[str, str]]:
@@ -588,12 +629,9 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           f"step {s.id}: its code uses `{reach[1]}`, but a step reaches a service through a tool, "
                           "and its key through the Vault, never from code. Plan a tool step for the service (a tool "
                           "nothing here provides is looked up, or built without); code works on the run's own data")
-        if s.type in ("retrieve", "ingest") and ws.kbs is None:
-            errors.append(f"step {s.id}: Knowledge is off in this workspace, so there are no {s.type} steps")
-    if not ws.boards_on and (used := [t for t in O.tool_names(plan) if t in TOOL_NAMES]):
-        # Never looked up as a missing tool: F866b's invented "Board" provider (SAI2's review, 7).
-        errors.append("Boards are off in this workspace, so no agent has " + ", ".join(f"`{t}`" for t in used)
-                      + ": take the board out of the plan")
+    # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
+    # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
+    # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
     if plan.boards:
         # A workflow's agents post to its own board; a shared board a plan made would have no access for it, as no
         # product tool gives a workflow a shared board yet (SAI2's review, 20).
@@ -1324,6 +1362,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # Not for an API the research read and could make no tool from (F1121): another look reads the same pages.
     if no_way and (not looked or any(t.status == "missing" and t.provider for t in plan.tools)):
         offers.append("find")
+    # A feature that is off where the plan needs it: its switch, for one who may press it (F1203).
+    offers += [f"turn_on:{f}" for f in found.features if _may_turn_on()]
     offers += ["change", "stop"]
 
     names = {i: a.get("name") or i for i, a in ws.agents.items()}
@@ -1401,6 +1441,8 @@ _ALONE = re.compile(r"^\s*let\s+(?P<what>.+?)\s+act\s+without\s+asking\s*[.!]?\s
 #: The card's "Use a stronger model for X" (`plan.ts` `strongerWords`, F966): the person's own act.
 _STRONGER = re.compile(r"^\s*use\s+a\s+stronger\s+model\s+for\s+(?P<who>.+?)\s*[.!]?\s*$", re.I)
 _CONNECTED = re.compile(r"^\s*(?:connected\b|saved the\b|signed in to\b)", re.I)
+#: The card's "Turn on Boards" (`plan.ts` `turnOnWords`, F1203): the person's own press, only for what it offered.
+_TURN_ON = re.compile(r"^\s*turn\s+on\s+(?P<what>boards|knowledge)\s*[.!]?\s*$", re.I)
 
 
 async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -1411,6 +1453,23 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
     answer = str((_obj(state.get("review_feedback")) or {}).get("feedback") or "")
     if _CONNECTED.match(answer):
         return {"outcome": "connected"}
+    on = _TURN_ON.match(answer)
+    if on and f"turn_on:{on.group('what').lower()}" in (checked_in(state).get("offers") or []):
+        # Turned on as its switch in Settings does, for this person (an admin's), then planned again on it, as after a
+        # connection (F1203).
+        from core.builder_access import current_caller
+        from core.product_tools import areas, registry
+        from core.product_tools.caller import Caller
+        from core.product_tools.errors import ToolRefusal
+        from core.product_tools.roles import Role
+
+        areas.ensure_loaded()
+        try:
+            await registry.invoke("turn_on_feature", current_caller() or Caller(role=Role.OWNER, via="assistant"),
+                                  {"feature": on.group("what").lower()})
+        except ToolRefusal:
+            return {"outcome": "revise"}
+        return {"outcome": "connected", "turned_on": on.group("what").lower()}
     let = _ALONE.match(answer)
     if let:
         named = let.group("what").strip(" `'\"").lower()

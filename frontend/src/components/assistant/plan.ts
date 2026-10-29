@@ -705,6 +705,16 @@ export function withoutWords(tool: string): string {
     return `build without ${tool}`;
 }
 
+/** What "Turn on Boards" sends: the person's own press of a feature's switch the build needs (F1203). */
+export function turnOnWords(feature: string): string {
+    return `turn on ${feature}`;
+}
+
+/** The name a feature's switch goes by, as Settings › General names it. */
+export function featureName(feature: string): string {
+    return feature === 'knowledge' ? 'Knowledge' : feature === 'boards' ? 'Boards' : feature;
+}
+
 /** What "Use a stronger model" sends: the person's own choice of the model the card offered (F966). */
 export function strongerWords(agent: string): string {
     return `use a stronger model for ${agent}`;
