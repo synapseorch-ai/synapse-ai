@@ -35,6 +35,31 @@ from core.vault_backend import VAULT_PREFIX, get_vault
 
 VAULT_THRESHOLD = 100000  # characters (fallback default)
 
+#: What one read of a vault file answers at most, in characters (D339 P2). A read under the spill line is never
+#: vaulted again: prod's crawl was read back in "slices" of 113k characters, each saved to the vault once more (TRI1,
+#: 10-29). A reader's own `max_chars` may lower it; the spill line caps it (`read_cap`).
+READ_CAP = 20_000
+#: One matching line as `search_text` shows it, at most: a page held on one line is shown around its match.
+SEARCH_LINE_CAP = 400
+#: The fields a document's text is held in, in a list of documents (`_documents`).
+_TEXT_KEYS = ("markdown", "content", "text", "page_text", "body", "html")
+#: The fields that name a document, in order.
+_NAME_KEYS = ("url", "title", "name", "path", "id")
+#: A list held in one of these is the list of documents, before any other list the result has.
+_LIST_KEYS = ("results", "items", "documents", "pages", "data", "hits")
+#: How much of the index the reference itself shows, in characters.
+_INDEX_SHOWN = 3_000
+
+
+def read_cap(asked: int | None = None) -> int:
+    """What one vault read may answer: `asked` (a reader's `max_chars`, or the engine's from the model's budget),
+    else `READ_CAP`, never more than half the spill line, so the answer is not vaulted again."""
+    from core.config import load_settings
+
+    threshold = int(load_settings().get("vault_threshold", VAULT_THRESHOLD) or VAULT_THRESHOLD)
+    cap = asked if isinstance(asked, int) and asked > 0 else READ_CAP
+    return max(1_000, min(cap, threshold // 2))
+
 
 def _vault_root() -> Path:
     """The current tenant's vault directory.
@@ -65,7 +90,109 @@ def _make_vault_path(tool_name: str, ext: str) -> Path:
     return vault_dir / f"{safe_name}_{timestamp}_{secrets.token_hex(3)}.{ext}"
 
 
-def maybe_vault(tool_name: str, raw_output: str) -> str:
+def _documents(parsed) -> tuple[dict, list[dict], str] | None:
+    """A result that is a list of documents — a crawl's pages, a search's hits, a list endpoint's records — as
+    (the result's other fields, the documents, the field each holds its text in); None for anything else.
+
+    A list of at least two objects, held at the root or under one key (`_LIST_KEYS` first), where most hold a text
+    field (`_TEXT_KEYS`) of real length."""
+    if isinstance(parsed, list):
+        rest, items = {}, parsed
+    elif isinstance(parsed, dict):
+        lists = [k for k, v in parsed.items() if isinstance(v, list)]
+        key = next((k for k in _LIST_KEYS if k in lists), lists[0] if len(lists) == 1 else None)
+        if key is None:
+            return None
+        rest, items = {k: v for k, v in parsed.items() if k != key}, parsed[key]
+    else:
+        return None
+    if len(items) < 2 or not all(isinstance(i, dict) for i in items):
+        return None
+    for text_key in _TEXT_KEYS:
+        long = sum(1 for i in items if isinstance(i.get(text_key), str) and len(i[text_key]) > 200)
+        if long * 2 >= len(items):
+            return rest, items, text_key
+    return None
+
+
+def _named(item: dict) -> dict:
+    return {k: str(item[k])[:200] for k in _NAME_KEYS if isinstance(item.get(k), (str, int)) and str(item[k]).strip()}
+
+
+def _slug(item: dict, i: int) -> str:
+    name = next((str(item[k]) for k in _NAME_KEYS if isinstance(item.get(k), (str, int)) and str(item[k]).strip()), "")
+    name = re.sub(r"^https?://", "", name)
+    words = re.sub(r"[^\w]+", "-", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()).strip("-")
+    return f"{i:02d}-{words[:60].lower() or 'item'}"
+
+
+def outline(value, depth: int = 1) -> object:
+    """What a JSON value holds, without its contents: each key's type and size, a list's length and its first item's
+    outline. Said beside a vaulted JSON file and by `json_slice` for a part too big to show."""
+    size = len(json.dumps(value, ensure_ascii=False, default=str))
+    if isinstance(value, dict):
+        if depth <= 0:
+            return f"object, {len(value)} keys, {size:,} chars"
+        return {k: outline(v, depth - 1) for k, v in list(value.items())[:30]} | (
+            {"…": f"{len(value) - 30} more keys"} if len(value) > 30 else {})
+    if isinstance(value, list):
+        first = outline(value[0], depth - 1) if value and depth > 0 else None
+        return f"list of {len(value)}, {size:,} chars" + (f"; each like {json.dumps(first)}" if first else "")
+    if isinstance(value, str):
+        return f"text, {len(value):,} chars"
+    return type(value).__name__
+
+
+def _vault_documents(tool_name: str, raw_size: int, rest: dict, items: list[dict], text_key: str) -> str:
+    """A list of documents into the vault as a reader wants it (D339 P2): each document's text its own file,
+    `index.json` naming each with its size and file, and `items.json` the documents with their text replaced by
+    its file — nothing dropped. The reference shows the index, so the model picks what to read."""
+    vault = get_vault()
+    folder = _make_vault_path(tool_name, "d").with_suffix("")
+    index, kept = [], []
+    for i, item in enumerate(items):
+        text = item.get(text_key)
+        entry = {"i": i, **_named(item)}
+        if isinstance(text, str):
+            path = folder / f"{_slug(item, i)}.md"
+            vault.write(path, text)
+            ref = path.relative_to(vault.root).as_posix() if vault.materialises else str(path)
+            entry |= {"chars": len(text), "file": ref}
+            item = {**item, text_key: {"file": ref, "chars": len(text)}}
+        index.append(entry)
+        kept.append(item)
+    index_path, items_path = folder / "index.json", folder / "items.json"
+    vault.write(index_path, json.dumps({"tool": tool_name, "fields": rest, "count": len(items), "documents": index},
+                                       indent=2, ensure_ascii=False, default=str))
+    vault.write(items_path, json.dumps(kept, indent=2, ensure_ascii=False, default=str))
+    as_ref = (lambda p: p.relative_to(vault.root).as_posix()) if vault.materialises else str
+    shown, room = [], _INDEX_SHOWN
+    for entry in index:
+        line = json.dumps(entry, ensure_ascii=False)
+        if len(line) > room:
+            break
+        shown.append(entry)
+        room -= len(line)
+    reader = ("read_file with its path (each read is capped; `next` says where to go on)" if vault.materialises
+              else "read_file_by_lines with its path")
+    message = (f"{len(items)} documents ({raw_size:,} chars in all), each saved as its own file; the index is "
+               f"{as_ref(index_path)}. Read one with {reader}. Their other fields (links, metadata) are in "
+               f"{as_ref(items_path)}" + (", by read_json with json_path, e.g. '3'." if vault.materialises else "."))
+    return json.dumps({
+        "vault_file": as_ref(index_path),
+        "file_type": "documents",
+        "size_chars": raw_size,
+        "count": len(items),
+        "fields": rest if len(json.dumps(rest, default=str)) <= 1_000 else outline(rest),
+        "documents": shown,
+        **({"documents_not_shown": len(index) - len(shown)} if len(shown) < len(index) else {}),
+        "items_file": as_ref(items_path),
+        "content_preview": str(items[0].get(text_key) or "")[:500],
+        "message": message,
+    }, ensure_ascii=False, default=str)
+
+
+def maybe_vault(tool_name: str, raw_output: str, *, threshold: int | None = None) -> str:
     """
     If raw_output exceeds the vault threshold (from settings), persist it to vault and return a
     compact JSON reference the LLM can act on with the vault read/search tools.
@@ -78,7 +205,8 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
     settings = load_settings()
     if not settings.get("vault_enabled", True):
         return raw_output
-    threshold = settings.get("vault_threshold", VAULT_THRESHOLD)
+    # The step's spill line when the engine gives one (D339 P1: from its model's window), else the workspace's.
+    threshold = threshold or settings.get("vault_threshold", VAULT_THRESHOLD)
     if len(raw_output) <= threshold:
         return raw_output
 
@@ -88,8 +216,13 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
         ext = "json"
         content = json.dumps(parsed, indent=2, ensure_ascii=False)
     except (json.JSONDecodeError, ValueError):
+        parsed = None
         ext = "txt"
         content = raw_output
+    # A list of documents is saved a document a file, with an index (D339 P2): pretty JSON held each page on one
+    # line, so no slice by lines was smaller than a page.
+    if (docs := _documents(parsed)) is not None:
+        return _vault_documents(tool_name, len(raw_output), *docs)
 
     # One write, and the backend decides what durable means. On a plain install
     # that is the file. On object storage it is the object, and a failure to
@@ -109,8 +242,9 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
         reference = path.relative_to(vault.root).as_posix()
         message = (
             f"{size} Saved to the vault as {reference}. Instead: read_file with "
-            f"start_line/end_line for a slice, read_json for a slice of a JSON file, "
-            f"or search_files for a value — path \"{reference}\"."
+            f"start_line/end_line for a slice (each read is capped; `next` says where to go on), read_json with "
+            f"json_path for one part of a JSON file (its outline is below), or search_files for a value — "
+            f"path \"{reference}\"."
         )
     else:
         # A plain install's agents have the Filesystem tools, which take paths.
@@ -125,6 +259,8 @@ def maybe_vault(tool_name: str, raw_output: str) -> str:
         "file_type": ext,
         "size_chars": len(raw_output),
         "total_lines": total_lines,
+        # What the JSON holds, so a read can go straight to the part it wants (D339 P2).
+        **({"outline": outline(parsed)} if isinstance(parsed, (dict, list)) else {}),
         "content_preview": content[:500],
         "message": message,
     })
@@ -423,24 +559,102 @@ def _ensure_local_path(path: str) -> str:
         return path
 
 
-def slice_lines(text: str, start_line: int, end_line: int) -> dict:
+def slice_lines(text: str, start_line: int, end_line: int, *, max_chars: int | None = None,
+                start_char: int = 0) -> dict:
     """Lines [start_line, end_line], 1-indexed and inclusive, as a result dict.
 
     Pure: takes the content, never a path. Extracted so the same slicing serves
     a file on disk (below) and an object read straight out of the blob store
     (`tools/vault_fs.py`), which has no local path to offer and should not be
     made to invent one.
+
+    At most `max_chars` of content (D339 P2; None: uncapped, for callers that
+    cap themselves): a range that holds more is cut, a line itself if need be,
+    and `next` says where the following read starts — `start_line` and, for a
+    line cut part-way, `start_char` into it.
     """
     lines = text.splitlines()
     total = len(lines)
     s = max(1, start_line) - 1      # 0-indexed
     e = min(end_line, total)
-    return {
-        "start_line": s + 1,
-        "end_line": e,
-        "total_lines": total,
-        "content": "\n".join(lines[s:e]),
-    }
+    if max_chars is None:
+        chunk = lines[s:e]
+        if chunk and start_char > 0:
+            chunk[0] = chunk[0][start_char:]
+        return {"start_line": s + 1, "end_line": e, "total_lines": total, "content": "\n".join(chunk)}
+    out: list[str] = []
+    room, nxt, last = max_chars, None, s
+    for i in range(s, e):
+        offset = start_char if i == s else 0
+        line = lines[i][offset:]
+        sep = 1 if out else 0
+        if len(line) + sep > room:
+            # This line does not fit: as much of it as does, and the next read starts where it was cut.
+            take = max(0, room - sep)
+            if take:
+                out.append(line[:take])
+                last = i + 1
+            nxt = {"start_line": i + 1, **({"start_char": offset + take} if offset + take else {})}
+            break
+        out.append(line)
+        room -= len(line) + sep
+        last = i + 1
+    result = {"start_line": s + 1, "end_line": last, "total_lines": total, "content": "\n".join(out)}
+    if nxt is not None:
+        result["next"] = nxt
+        result["note"] = (f"Cut at {max_chars:,} characters. Go on with start_line={nxt['start_line']}"
+                          + (f", start_char={nxt['start_char']}" if nxt.get("start_char") else "") + ".")
+    return result
+
+
+def _parts(json_path: str) -> list[str | int]:
+    """`results[3].markdown`, `results.3.markdown` or `3` as the keys and indexes it names."""
+    out: list[str | int] = []
+    for token in re.findall(r"[^.\[\]]+|\[\d+\]", (json_path or "").strip()):
+        token = token.strip("[]")
+        out.append(int(token) if token.isdigit() else token)
+    return out
+
+
+def json_slice(doc, json_path: str = "", offset: int = 0, limit: int = 50, *, max_chars: int) -> dict:
+    """One part of a JSON document, at most `max_chars` of it (D339 P2): the value at `json_path` (keys and
+    indexes, `results[3].markdown`; empty, the root) — a list's items [offset:offset+limit], an object's keys from
+    `offset`, a text's characters from `offset` — and `next_offset` when the answer was cut. A part too big to show
+    whole is shown as its outline, to be read deeper by its own path."""
+    value = doc
+    for part in _parts(json_path):
+        if isinstance(value, list) and isinstance(part, int) and part < len(value):
+            value = value[part]
+        elif isinstance(value, dict) and str(part) in value:
+            value = value[str(part)]
+        else:
+            return {"error": f"Nothing at {json_path!r}: {part!r} is not in it. Its outline: "
+                             f"{json.dumps(outline(value), ensure_ascii=False)[:2000]}"}
+    at = {"json_path": json_path or ""}
+    if isinstance(value, str):
+        end = offset + max_chars
+        return {**at, "root": "text", "total_chars": len(value), "offset": offset, "value": value[offset:end],
+                **({"next_offset": end} if end < len(value) else {})}
+    if not isinstance(value, (list, dict)):
+        return {**at, "root": "scalar", "value": value}
+    pairs = list(enumerate(value)) if isinstance(value, list) else list(value.items())
+    shown, room, nxt = [], max_chars, None
+    for n, (key, item) in enumerate(pairs[offset:offset + max(1, limit)], start=offset):
+        text = json.dumps(item, ensure_ascii=False, default=str)
+        if len(text) > room:
+            if not shown and len(text) > max_chars:
+                shown.append((key, {"outline": outline(item), "read_it_with": f"{json_path + '.' if json_path else ''}{key}"}))
+                nxt = n + 1 if n + 1 < len(pairs) else None
+            else:
+                nxt = n
+            break
+        shown.append((key, item))
+        room -= len(text)
+    else:
+        nxt = offset + max(1, limit) if offset + max(1, limit) < len(pairs) else None
+    items = [v for _, v in shown] if isinstance(value, list) else dict(shown)
+    return {**at, "root": "array" if isinstance(value, list) else "object", "total": len(pairs), "offset": offset,
+            "items": items, **({"next_offset": nxt} if nxt is not None else {})}
 
 
 def tool_read_file_chunk(path: str, start_line: int, end_line: int) -> str:
@@ -458,12 +672,25 @@ def tool_read_file_chunk(path: str, start_line: int, end_line: int) -> str:
         return json.dumps({"error": str(ex)})
 
 
-def search_text(text: str, query: str, context_lines: int = 5) -> dict:
-    """Grep-like search over content, with surrounding context. Pure — see `slice_lines`."""
+def _around(line: str, q: str, cap: int = SEARCH_LINE_CAP) -> str:
+    """`line` as a search shows it: whole when short, else `cap` characters around the match (a page on one line)."""
+    if len(line) <= cap:
+        return line
+    at = max(0, line.lower().find(q))
+    start = max(0, min(at - cap // 2, len(line) - cap))
+    return ("…" if start else "") + line[start:start + cap] + ("…" if start + cap < len(line) else "")
+
+
+def search_text(text: str, query: str, context_lines: int = 5, *, max_chars: int | None = None) -> dict:
+    """Grep-like search over content, with surrounding context. Pure — see `slice_lines`.
+
+    Each line shown is cut around the match (`SEARCH_LINE_CAP`), and with `max_chars` the matches stop once their
+    context holds that much, said as `truncated` (D339 P2): a search of a crawl answered 168k characters."""
     lines = text.splitlines()
     q = query.lower()
     results = []
     covered: set[int] = set()
+    room, truncated = max_chars, False
 
     for i, line in enumerate(lines):
         if q not in line.lower():
@@ -476,12 +703,19 @@ def search_text(text: str, query: str, context_lines: int = 5) -> dict:
         block = []
         for j in range(start, end):
             prefix = ">>>" if j == i else "   "
-            block.append(f"{prefix} [L{j + 1}] {lines[j]}")
-        results.append({
+            block.append(f"{prefix} [L{j + 1}] {_around(lines[j], q)}")
+        found = {
             "match_line": i + 1,
-            "match": line,
+            "match": _around(line, q),
             "context": "\n".join(block),
-        })
+        }
+        if room is not None:
+            cost = len(found["match"]) + len(found["context"])
+            if cost > room and results:
+                truncated = True
+                break
+            room -= cost
+        results.append(found)
         if len(results) >= 20:
             break
 
@@ -489,6 +723,7 @@ def search_text(text: str, query: str, context_lines: int = 5) -> dict:
         "query": query,
         "matches_found": len(results),
         "results": results,
+        **({"truncated": True} if truncated else {}),
     }
 
 
