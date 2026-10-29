@@ -9,6 +9,14 @@ Two-stage strategy (mirrors Claude Code's approach):
   Stage 2 — LLM summarise: if Stage 1 alone is not enough (e.g. history is large),
              call the LLM to write a dense summary and archive the full original.
 
+Before either, Stage 0 (D339 P3) moves each older tool observation of any size
+into the vault and leaves its key in its place: no model call, and nothing is
+lost — the agent reads it back with `read_file`. Prod's agent, its pages
+summarised away by Stage 2, fetched the same page four times (TRI1, 10-29).
+Stages 1 and 2 run only when Stage 0 was not enough, and Stage 2's archive goes
+through the vault's own write, under a key its read tools take (F1248): it was
+written to the pod's disk and named by a scratch path no tool accepts.
+
 Both stages keep the request being worked on verbatim at the head (F244). A
 mid-turn Stage 2 once summarised 92,899 characters to 2,478 (−97%) and replaced
 the transcript wholesale; the question went with it, and ten seconds later the
@@ -88,6 +96,67 @@ def _without_pin(context: str, request: str | None) -> str:
     return context
 
 
+#: An older observation at least this long is moved to the vault by Stage 0; a shorter one stays as it is.
+STUB_MIN_CHARS = 2_000
+#: The newest tool results Stage 0 leaves verbatim: the working set the next turns act on (Naveen, 10-30, after how
+#: Claude Code and Codex keep context: recent results whole, older ones by reference).
+KEEP_RESULTS = 3
+#: Below the threshold, Stage 0 moves results only when that frees at least this many characters: each pass rewrites
+#: the transcript from its first moved result on, and the prompt cache with it, so it runs seldom and in batches.
+TIDY_BATCH = 20_000
+#: How much of a moved observation its stub still shows, so the transcript says what it was.
+STUB_HEAD_CHARS = 240
+#: Where an observation starts, and where the transcript's next entry starts after it.
+_OBSERVATION = re.compile(r"\n\[Turn (\d+) — Observation\] ?")
+_NEXT_ENTRY = re.compile(r"\n(?:\[Turn \d+ — |System: )")
+
+
+def _vault_key(path: Path) -> str:
+    """`path` as the vault's read tools take it: relative to the vault (`tools/vault_fs.py`, `@[path]`)."""
+    from core.vault_backend import get_vault
+
+    return path.relative_to(get_vault().root).as_posix()
+
+
+def _move_observations(body: str, session_id: str, keep_results: int = KEEP_RESULTS,
+                       *, at_least: int = 0) -> tuple[str, int, int]:
+    """Stage 0: `body` with each observation of at least `STUB_MIN_CHARS`, but its newest `keep_results`, saved to
+    the vault and replaced by a line naming its key; with how many were moved and the characters that freed. When
+    they would free less than `at_least`, nothing is moved (a tidy pass's batch, `TIDY_BATCH`).
+
+    The saved text is scrubbed of secrets as the archive is (F854). A write that fails leaves that observation
+    where it was: the stub says the content is in the vault, and it has to be true."""
+    from core.secret_scrub import scrub_secrets
+    from core.vault_backend import get_vault
+
+    every = []
+    for m in _OBSERVATION.finditer(body):
+        nxt = _NEXT_ENTRY.search(body, m.end())
+        every.append((m.start(), m.end(), nxt.start() if nxt else len(body), m.group(1)))
+    older = every[:-keep_results] if keep_results > 0 else every
+    spans = [s for s in older if s[2] - s[1] >= STUB_MIN_CHARS]
+    if not spans or sum(end - head_end for _, head_end, end, _ in spans) - 400 * len(spans) < at_least:
+        return body, 0, 0
+    folder = _make_archive_path(session_id).with_suffix("")
+    out, at, moved = [], 0, 0
+    for start, head_end, end, turn in spans:
+        text = body[head_end:end]
+        path = folder / f"turn-{turn}-{start}.txt"
+        try:
+            get_vault().write(path, scrub_secrets(text))
+        except Exception as exc:  # noqa: BLE001 — kept in place rather than lost
+            _log.warning(f"⚠️  Stage 0 could not save turn {turn}'s observation: {exc}")
+            continue
+        head = " ".join(text[:STUB_HEAD_CHARS].split())
+        out.append(body[at:head_end])
+        out.append(f"(moved to the vault to keep this context small — nothing was cut: {_vault_key(path)}, "
+                   f"{len(text):,} chars; read it with read_file) {head}…")
+        at, moved = end, moved + 1
+    out.append(body[at:])
+    moved_body = "".join(out)
+    return moved_body, moved, len(body) - len(moved_body)
+
+
 def _make_archive_path(session_id: str) -> Path:
     archive_dir = _archive_dir()
     archive_dir.mkdir(parents=True, exist_ok=True)
@@ -151,13 +220,32 @@ async def maybe_compact(
         return current_context_text, recent_history_messages, None, None
 
     threshold = settings.get("auto_compact_threshold", 100000)
+    # The tidy line (D339): above it, older tool results go to the vault in batches; the threshold is where
+    # anything is summarised. Without one, Stage 0 waits for the threshold as the rest does.
+    tidy_at = min(threshold, settings.get("auto_compact_tidy_at") or threshold)
     history_chars = sum(
         len(str(m.get("content", ""))) for m in (recent_history_messages or [])
     )
     total_chars = len(current_context_text) + history_chars
 
-    if total_chars <= threshold:
+    if total_chars <= tidy_at:
         return current_context_text, recent_history_messages, None, None
+    if total_chars <= threshold:
+        # Under the threshold: a tidy pass only, worth its rewrite of the cached prefix or not at all.
+        pin = _pin(pinned_request)
+        moved_body, moved, freed = _move_observations(_without_pin(current_context_text, pinned_request),
+                                                      session_id, at_least=TIDY_BATCH)
+        if not moved:
+            return current_context_text, recent_history_messages, None, None
+        tidied = pin + moved_body
+        after = len(tidied) + history_chars
+        _log_compaction("Stage-0 tidy", total_chars, after)
+        await log_compaction_event(stage="refs", chars_before=total_chars, chars_after=after,
+                                   session_id=session_id, agent_id=agent_id, run_id=run_id)
+        return tidied, recent_history_messages, None, {
+            "stage": "refs", "chars_before": total_chars, "chars_after": after,
+            "reduction_pct": round(freed / total_chars * 100) if total_chars else 0, "moved": moved,
+        }
 
     _log.debug(
         f"\n📏 Compaction check — "
@@ -167,12 +255,39 @@ async def maybe_compact(
         f"Attempting Stage-1 trim…",
     )
 
+    pin = _pin(pinned_request)
+    body = _without_pin(current_context_text, pinned_request)
+
+    # ── Stage 0: older observations to the vault, their keys in their place (D339 P3) ──
+    # No model call and nothing lost. When that alone brings the context under the
+    # threshold, it is the whole compaction; otherwise Stages 1 and 2 work on what is left.
+    moved_body, moved, _freed = _move_observations(body, session_id)
+    if moved:
+        body = moved_body
+        current_context_text = pin + body
+        stage0_total = len(current_context_text) + history_chars
+        if stage0_total <= threshold:
+            _log_compaction("Stage-0 refs", total_chars, stage0_total)
+            await log_compaction_event(
+                stage="refs",
+                chars_before=total_chars,
+                chars_after=stage0_total,
+                session_id=session_id,
+                agent_id=agent_id,
+                run_id=run_id,
+            )
+            return current_context_text, recent_history_messages, None, {
+                "stage": "refs",
+                "chars_before": total_chars,
+                "chars_after": stage0_total,
+                "reduction_pct": round((total_chars - stage0_total) / total_chars * 100) if total_chars else 0,
+                "moved": moved,
+            }
+
     # ── Stage 1: drop oldest tool outputs (cheap — no LLM call, no archive) ──────
     # Keep the most recent portion of current_context_text that fits in the budget.
     # Only accept the Stage-1 result when it saves at least MIN_STAGE1_SAVINGS_PCT;
     # otherwise fall through to Stage-2 LLM summarisation for proper ~30% reduction.
-    pin = _pin(pinned_request)
-    body = _without_pin(current_context_text, pinned_request)
     budget = max(0, threshold - history_chars - len(pin) - 60)  # 60 chars for the trim prefix
     if budget > 0 and len(body) > budget:
         stage1_ctx = pin + "[...older tool outputs trimmed...]\n" + body[-budget:]
@@ -214,9 +329,12 @@ async def maybe_compact(
     archive_path = _make_archive_path(session_id)
     try:
         from core.secret_scrub import scrub_secrets
+        from core.vault_backend import get_vault
 
-        # Stored: a secret variable a step's prompt rendered in is kept by name (F854).
-        archive_path.write_text(scrub_secrets(context_block), encoding="utf-8")
+        # Stored: a secret variable a step's prompt rendered in is kept by name (F854). Through the vault's own
+        # write, so on a fleet it is in the object store and not only on this pod's disk (F1248).
+        get_vault().write(archive_path, scrub_secrets(context_block))
+        archive_path = _vault_key(archive_path)
         _log.debug(f"🗄️  Compaction archive saved → {archive_path}")
     except Exception as exc:
         _log.warning(f"⚠️  Could not write compaction archive: {exc}")
@@ -238,7 +356,8 @@ async def maybe_compact(
             source="compaction",
         )
 
-        archive_hint = f" (original archived at: {archive_path})" if archive_path else ""
+        # The key the vault's read tools take, never a scratch path (F1248).
+        archive_hint = f" (the original is in the vault: {archive_path}; read it with read_file)" if archive_path else ""
         compacted = (
             f"{pin}"
             f"[CONTEXT COMPACTED{archive_hint}]\n"

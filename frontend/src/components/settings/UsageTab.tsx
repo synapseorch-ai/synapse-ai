@@ -544,7 +544,9 @@ function TurnTable({ logs, showAgentDividers = false }: { logs: IndexedLog[]; sh
 }
 
 function CompactionRow({ log, idx }: { log: IndexedLog; idx: number }) {
-    const stage = log.stage === 'trim' ? 'Trim' : log.stage === 'llm_summary' ? 'LLM summary' : (log.stage ?? '');
+    // `refs`: older tool results moved to the vault, their keys left in place (D339).
+    const stage = log.stage === 'trim' ? 'Trim' : log.stage === 'llm_summary' ? 'LLM summary'
+        : log.stage === 'refs' ? 'Moved to the vault' : (log.stage ?? '');
     const reductionPct = log.reduction_pct ?? 0;
     const charsBefore = log.chars_before ?? 0;
     const charsAfter = log.chars_after ?? 0;

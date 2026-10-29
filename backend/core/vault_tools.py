@@ -142,7 +142,8 @@ def tools() -> list[types.Tool]:
             description=(
                 "Read a line range from a vault file (1-indexed, inclusive). "
                 "Prefer a range over reading a whole file — vault files are tool "
-                "output and are often very large."
+                "output and are often very large. Each read is capped: when it is "
+                "cut, `next` gives the start_line (and start_char) to read on from."
             ),
             inputSchema={
                 "type": "object",
@@ -150,6 +151,8 @@ def tools() -> list[types.Tool]:
                     "path": {"type": "string", "description": "The path, relative to the vault, as returned by list_files or named by @[path]."},
                     "start_line": {"type": "integer", "description": "First line. Default 1.", "default": 1},
                     "end_line": {"type": "integer", "description": "Last line, inclusive. Default 200.", "default": 200},
+                    "start_char": {"type": "integer", "description": "Where in start_line to begin, from a cut read's `next`. Default 0.", "default": 0},
+                    "max_chars": {"type": "integer", "description": "At most this many characters (the cap applies anyway)."},
                 },
                 "required": ["path"],
             },
@@ -175,15 +178,21 @@ def tools() -> list[types.Tool]:
             name="read_json",
             annotations=types.ToolAnnotations(readOnlyHint=True, idempotentHint=True),
             description=(
-                "Read a slice of a JSON vault file. An array root returns items "
-                "[offset:offset+limit]; an object root returns that slice of its keys."
+                "Read one part of a JSON vault file: the value at json_path "
+                "(e.g. results[3].markdown; empty for the whole file). A list "
+                "returns items [offset:offset+limit], an object its keys from "
+                "offset, a text its characters from offset. Each read is capped: "
+                "`next_offset` reads on, and a part too big to show comes back as "
+                "its outline, to read by its own json_path."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "The path, relative to the vault, as returned by list_files or named by @[path]."},
+                    "json_path": {"type": "string", "description": "Keys and indexes to the part, e.g. results[3].links. Default: the root.", "default": ""},
                     "offset": {"type": "integer", "description": "Where to start. Default 0.", "default": 0},
                     "limit": {"type": "integer", "description": "How many. Default 50.", "default": 50},
+                    "max_chars": {"type": "integer", "description": "At most this many characters (the cap applies anyway)."},
                 },
                 "required": ["path"],
             },
@@ -192,7 +201,7 @@ def tools() -> list[types.Tool]:
 
 
 async def call(name: str, arguments: dict) -> list[types.TextContent]:
-    from core.vault import search_text, slice_lines
+    from core.vault import json_slice, read_cap, search_text, slice_lines
 
     try:
         if name == "list_files":
@@ -220,6 +229,8 @@ async def call(name: str, arguments: dict) -> list[types.TextContent]:
                     text,
                     int(arguments.get("start_line", 1) or 1),
                     int(arguments.get("end_line", 200) or 200),
+                    max_chars=read_cap(arguments.get("max_chars")),
+                    start_char=max(0, int(arguments.get("start_char", 0) or 0)),
                 ),
             })
 
@@ -252,6 +263,18 @@ async def call(name: str, arguments: dict) -> list[types.TextContent]:
                 return {"path": path, **found} if found["matches_found"] else None
 
             hits = [h for h in await asyncio.gather(*(_scan(p) for p in searched)) if h]
+            # The whole answer within one read's cap (D339 P2): files in order until it is spent.
+            room, kept, truncated = read_cap(arguments.get("max_chars")), [], False
+            for hit in hits:
+                cost = len(json.dumps(hit, ensure_ascii=False))
+                if cost > room:
+                    truncated = True
+                    if not kept:
+                        kept.append({**hit, "results": hit["results"][:1], "truncated": True})
+                    break
+                kept.append(hit)
+                room -= cost
+            hits_shown = kept
 
             return _ok({
                 "query": query,
@@ -259,7 +282,9 @@ async def call(name: str, arguments: dict) -> list[types.TextContent]:
                 "files_searched": len(searched),
                 "files_skipped": max(0, len(paths) - _SEARCH_FILE_LIMIT),
                 "files_with_matches": len(hits),
-                "results": hits,
+                "results": hits_shown,
+                **({"truncated": True, "note": "More matches than one read holds: narrow the prefix or the query."}
+                   if truncated else {}),
             })
 
         if name == "read_json":
@@ -269,25 +294,17 @@ async def call(name: str, arguments: dict) -> list[types.TextContent]:
             text, error = _get_text(path)
             if error:
                 return _err(error)
-            offset = int(arguments.get("offset", 0) or 0)
+            offset = max(0, int(arguments.get("offset", 0) or 0))
             limit = int(arguments.get("limit", 50) or 50)
             try:
                 doc = json.loads(text)
             except json.JSONDecodeError as exc:
                 return _err(f"{path} is not valid JSON: {exc}")
-
-            if isinstance(doc, list):
-                return _ok({
-                    "path": path, "root": "array", "total": len(doc),
-                    "offset": offset, "items": doc[offset:offset + limit],
-                })
-            if isinstance(doc, dict):
-                keys_slice = list(doc.keys())[offset:offset + limit]
-                return _ok({
-                    "path": path, "root": "object", "total": len(doc),
-                    "offset": offset, "items": {k: doc[k] for k in keys_slice},
-                })
-            return _ok({"path": path, "root": "scalar", "value": doc})
+            part = json_slice(doc, str(arguments.get("json_path", "") or ""), offset, limit,
+                              max_chars=read_cap(arguments.get("max_chars")))
+            if "error" in part:
+                return _err(part["error"])
+            return _ok({"path": path, **part})
 
         return _err(f"Unknown tool: {name}")
     except Exception as exc:  # noqa: BLE001 — the model gets the reason

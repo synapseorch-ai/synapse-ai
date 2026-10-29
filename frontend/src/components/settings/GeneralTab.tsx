@@ -58,6 +58,8 @@ interface GeneralTabProps {
     setAutoCompactEnabled: (v: boolean) => void;
     autoCompactThreshold: number;
     setAutoCompactThreshold: (v: number) => void;
+    autoCompactWindowPct: number;
+    setAutoCompactWindowPct: (v: number) => void;
     allowDbWrite: boolean;
     setAllowDbWrite: (v: boolean) => void;
     /** Knowledge's switch (`knowledge_enabled`, F367); null until the settings are read. */
@@ -97,6 +99,7 @@ export function GeneralTab({
     vaultThreshold, setVaultThreshold,
     autoCompactEnabled, setAutoCompactEnabled,
     autoCompactThreshold, setAutoCompactThreshold,
+    autoCompactWindowPct, setAutoCompactWindowPct,
     allowDbWrite, setAllowDbWrite,
     knowledgeEnabled, setKnowledgeEnabled,
     boards, setBoards,
@@ -115,6 +118,7 @@ export function GeneralTab({
     const [newDir, setNewDir] = useState('');
     const [vaultDraft, setVaultDraft] = useState(String(vaultThreshold));
     const [compactDraft, setCompactDraft] = useState(String(autoCompactThreshold));
+    const [windowPctDraft, setWindowPctDraft] = useState(String(autoCompactWindowPct));
 
     // Login form local state. The switch shows what is saved, or that login
     // is being turned on while its form is open (`enabling`) — never an "off"
@@ -139,6 +143,7 @@ export function GeneralTab({
 
     useEffect(() => { setVaultDraft(String(vaultThreshold)); }, [vaultThreshold]);
     useEffect(() => { setCompactDraft(String(autoCompactThreshold)); }, [autoCompactThreshold]);
+    useEffect(() => { setWindowPctDraft(String(autoCompactWindowPct)); }, [autoCompactWindowPct]);
     const [embedCheckState, setEmbedCheckState] = useState<EmbedCheckState | null>(null);
     const [dbForm, setDbForm] = useState<DbForm>({ host: 'localhost', port: '5432', username: 'postgres', password: '', dbName: 'synapse' });
     const [setupInProgress, setSetupInProgress] = useState(false);
@@ -349,7 +354,11 @@ export function GeneralTab({
                                     <span className="ml-1">(at ~4 chars / token)</span>
                                 </p>
                             </div>
-                            <p className="text-xs text-text-faint">Responses longer than this many characters will be saved to a file.</p>
+                            <p className="text-xs text-text-faint">
+                                Tool and code steps&apos; outputs longer than this are saved to a file and passed on by
+                                reference. An agent&apos;s own line comes from its model&apos;s window when compaction uses
+                                a share of it; this one applies when the window isn&apos;t known.
+                            </p>
                         </div>
                     )}
                 </div>
@@ -358,11 +367,47 @@ export function GeneralTab({
             <Section {...S} title="Auto context compaction">
                 <div className="space-y-4">
                     <SwitchRow label="Auto context compaction" checked={autoCompactEnabled} onChange={() => setAutoCompactEnabled(!autoCompactEnabled)}>
-                        When the accumulated context exceeds the threshold, the agent summarises everything so far to ~30% of its size and archives the original to the vault so nothing is lost.
+                        When a step&apos;s context fills up, its older tool results move to the vault first, keeping the
+                        newest whole; only if that isn&apos;t enough is the rest summarised, with the original archived to
+                        the vault so nothing is lost.
                     </SwitchRow>
                     {autoCompactEnabled && (
                         <div className={`space-y-1.5 ${FORM}`}>
-                            <Label htmlFor="gen-compaction-threshold-characters" className={FIELD_LABEL}>Compaction threshold (characters)</Label>
+                            <Label htmlFor="gen-compaction-window-share" className={FIELD_LABEL}>Compact at (% of the model&apos;s window)</Label>
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-1.5">
+                                    <Input id="gen-compaction-window-share"
+                                        type="number"
+                                        value={windowPctDraft}
+                                        onChange={(e) => setWindowPctDraft(e.target.value)}
+                                        onBlur={() => {
+                                            const n = parseInt(windowPctDraft);
+                                            const v = Number.isNaN(n) ? 50 : Math.min(90, Math.max(0, n));
+                                            setAutoCompactWindowPct(v);
+                                            setWindowPctDraft(String(v));
+                                        }}
+                                        className="w-24 font-medium tabular-nums"
+                                        min={0}
+                                        max={90}
+                                    />
+                                    <span className="text-sm text-text-muted">%</span>
+                                </div>
+                                {autoCompactWindowPct > 0 && (
+                                    <p className="text-xs text-text-faint">
+                                        e.g. ≈ <span className="font-medium tabular-nums text-text">{(autoCompactWindowPct * 2000).toLocaleString()}</span> tokens
+                                        <span className="ml-1">on a 200k-token model</span>
+                                    </p>
+                                )}
+                            </div>
+                            <p className="text-xs text-text-faint">
+                                Each step uses this share of its own model&apos;s window, so a model with a larger window
+                                holds more before anything is moved. 0 uses the fixed limit below for every model.
+                            </p>
+                        </div>
+                    )}
+                    {autoCompactEnabled && (
+                        <div className={`space-y-1.5 ${FORM}`}>
+                            <Label htmlFor="gen-compaction-threshold-characters" className={FIELD_LABEL}>Fixed limit (characters)</Label>
                             <div className="flex items-center gap-3">
                                 <Input id="gen-compaction-threshold-characters"
                                     type="number"
@@ -382,7 +427,7 @@ export function GeneralTab({
                                 </p>
                             </div>
                             <p className="text-xs text-text-faint">
-                                When context exceeds this, it is compacted using the current model. The full original is archived to the vault.
+                                Used for a model whose window isn&apos;t known, or when the share above is 0.
                             </p>
                         </div>
                     )}

@@ -2341,7 +2341,10 @@ class OrchestrationEngine:
             return "Orchestration cancelled."
 
         last_output = result_of(run.step_history, run.shared_state, result_key)
+        from core.step_refs import for_person, is_ref
 
+        if is_ref(last_output):
+            return for_person(last_output)  # an output saved to the vault: an excerpt and its file (D339 P4)
         if last_output:
             return str(last_output) if not isinstance(last_output, str) else last_output
 
