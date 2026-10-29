@@ -244,7 +244,7 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
     for new in plan.agents:
         agent: dict[str, Any] = {
             "id": agent_ids[new.name], "name": new.name, "description": new.purpose, "avatar": "default",
-            "type": "delegate" if new.type == "team" else "conversational", "tools": list(new.tools),
+            "type": {"team": "delegate", "browser": "browser"}.get(new.type, "conversational"), "tools": list(new.tools),
             "repos": [], "db_configs": [], "system_prompt": "", "orchestration_id": None,
             # Code's pick (F966); with none, the workspace's default, as before.
             "model": picked.model if (picked := getattr(plan, "models", {}).get(new.name)) else None,
@@ -254,6 +254,14 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
         if plan.boards:
             # Its workflow is given the board the person asked for (F1214): its cards go there, not to its own.
             agent["boards"] = {"own": False}
+        # The agent editor's switches (F1223), as its save takes them: a kept session missing here is left out.
+        if new.memory:
+            agent["memory"] = True
+        if kb_ids := [plan.knowledge_ids[n] for n in new.knowledge if n in plan.knowledge_ids]:
+            agent["knowledge"] = kb_ids
+        if new.type == "browser" and new.browser is not None:
+            agent["browser"] = {"sites": list(new.browser.sites), "mode": new.browser.mode,
+                                "sessions": [s for s in new.browser.sessions if s not in new.browser.sessions_missing]}
         if new.type == "team":
             from core.models import AgentTeam
 

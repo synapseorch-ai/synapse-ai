@@ -8,6 +8,8 @@ is left out** — never "(cron expression: )", never "None".
 """
 from __future__ import annotations
 
+from typing import Any
+
 from collections.abc import Set as AbstractSet
 
 from core.native_builder.objects import Gate, Plan, Step
@@ -63,6 +65,29 @@ def gate_words(gate: Gate) -> str:
     return f"{who} asks you before `{gate.tool}`, each time{_SET_BY[gate.set_by]}"
 
 
+def switch_lines(a: Any) -> list[str]:
+    """A new agent's switches as the agent editor shows them (F1223), one line each: what the card says it gets."""
+    out = []
+    if getattr(a, "memory", False):
+        out.append("Memory: on — it keeps what it learns across runs and conversations")
+    if getattr(a, "knowledge", None):
+        out.append("Knowledge: answers from " + ", ".join(f"“{k}”" for k in a.knowledge))
+    for server in getattr(a, "servers", None) or []:
+        out.append(f"MCP server {server}: its tools as of now; tools it adds later are not added")
+    browser = getattr(a, "browser", None)
+    if getattr(a, "type", "") == "browser" and browser is not None:
+        where = ", ".join(browser.sites) if browser.sites else "any public site"
+        mode = "types and sends with you watching" if browser.mode == "co_drive" else "reads only"
+        out.append(f"Browser: {where}; {mode}")
+        signed = [s for s in browser.sessions if s not in browser.sessions_missing]
+        if signed:
+            out.append("Starts signed in on " + ", ".join(signed))
+        for site in browser.sessions_missing:
+            out.append(f"No kept session for {site} yet: sign in to it under Agents › Browser › Sessions, then pick "
+                       f"it in this agent's Browser settings. It is built without it until then")
+    return out
+
+
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     """The plan card's text. `agent_names` names the workspace's agents a plan reuses (by id)."""
     names = dict(agent_names or {})
@@ -99,6 +124,7 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
             if picked := getattr(plan, "models", {}).get(a.name):
                 line += f" — model: {picked.name} ({picked.reason}{f'; {a.why.strip()}' if a.why else ''})"
             agent_lines.append(line)
+            agent_lines += [f"  - {s}" for s in switch_lines(a)]
     if plan.reuse_agents:
         agent_lines.append("### Existing agents it uses")
         agent_lines += [f"- {names.get(a, a)}" for a in plan.reuse_agents]

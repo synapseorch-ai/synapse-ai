@@ -126,7 +126,8 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
                                 "system_prompt": prompts.get(agent["name"]) or agent.get("description") or ""}
         # The model code picked (F966), which the card showed and the yes covers.
-        args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy", "model", "boards") if agent.get(k)}
+        args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy", "model", "boards", "memory",
+                                       "knowledge", "browser") if agent.get(k)}
         calls.append({"tool": "create_agent", "args": args, "makes": agent["id"], "kind": "agent",
                       "name": agent["name"]})
     for inner in inner_order(compiled)[0]:  # each before any workflow of the build that runs it (SAI2's review, 2)

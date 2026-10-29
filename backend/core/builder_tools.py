@@ -18,6 +18,7 @@ from core.state_types import (
 from core.expressions import vocabulary_sentence
 from core.store import collections
 from core.store.resources import load_mcp_servers
+from core import agent_knowledge
 from core.store.ids import new_id as _mint_id
 
 
@@ -492,6 +493,17 @@ AGENT_BROWSER_PROPERTY: dict = {
     },
 }
 
+#: The knowledge bases an agent answers from, as the agent editor's picker sets them (F1223): checked where every
+#: agent is saved (`core.agent_knowledge`).
+AGENT_KNOWLEDGE_PROPERTY: dict = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "Knowledge base ids it answers from (from list_knowledge_bases; at most 10, active ones, while Knowledge is "
+        "on): it is offered search_knowledge and read_knowledge over them. Omit for none."
+    ),
+}
+
 #: An agent's memory (`core.agent_memory`), as the agent editor's Memory switch sets it (F1199).
 AGENT_MEMORY_PROPERTY: dict = {
     "type": "boolean",
@@ -674,6 +686,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "browser": AGENT_BROWSER_PROPERTY,
                     "memory": AGENT_MEMORY_PROPERTY,
+                    "knowledge": AGENT_KNOWLEDGE_PROPERTY,
                     "boards": AGENT_BOARDS_PROPERTY,
                     "tool_policy": {
                         "type": "object",
@@ -752,6 +765,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 },
                                 "browser": AGENT_BROWSER_PROPERTY,
                                 "memory": AGENT_MEMORY_PROPERTY,
+                                "knowledge": AGENT_KNOWLEDGE_PROPERTY,
                                 "boards": AGENT_BOARDS_PROPERTY,
                                 "tool_policy": {
                                     "type": "object",
@@ -2358,6 +2372,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return wrong
         if (wrong := _boards_wrong(args.get("boards"))) is not None:
             return wrong
+        if (wrong := await agent_knowledge.refusal(args.get("knowledge"))) is not None:
+            return {"error": wrong}
         from core import builder_guard  # F489: never a tool nothing provides
         if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
             return phantom
@@ -2401,6 +2417,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             agent["memory"] = args["memory"]
         if args.get("boards") is not None:
             agent["boards"] = dict(args["boards"])
+        if args.get("knowledge"):
+            agent["knowledge"] = agent_knowledge.ids(args["knowledge"])
         await save_agent(agent)
         _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
@@ -2450,6 +2468,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (wrong := _boards_wrong(spec.get("boards"))) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": wrong["error"]})
                     continue
+                if (wrong := await agent_knowledge.refusal(spec.get("knowledge"))) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": wrong})
+                    continue
                 from core import builder_guard  # F489: never a tool nothing provides
                 if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
@@ -2487,6 +2508,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     agent["memory"] = spec["memory"]
                 if spec.get("boards") is not None:
                     agent["boards"] = dict(spec["boards"])
+                if spec.get("knowledge"):
+                    agent["knowledge"] = agent_knowledge.ids(spec["knowledge"])
                 documents.append(agent)
                 created.append({
                     "role": spec.get("role"),
@@ -2541,6 +2564,10 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             turning_on = fields["memory"] is True and agent.get("memory") is not True
             if (refusal := await _memory_room(1 if turning_on else 0, args["agent_id"])) is not None:
                 return refusal
+        if "knowledge" in fields:
+            if (wrong := await agent_knowledge.refusal(fields["knowledge"], agent.get("knowledge"))) is not None:
+                return {"error": wrong}
+            fields["knowledge"] = agent_knowledge.ids(fields["knowledge"])
         if fields.get("team") is not None:
             # A Team's "How members work" (TEAM1a): checked as the agent editor's save checks it, and only on a
             # Team agent (TEAM1e).

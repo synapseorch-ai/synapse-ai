@@ -59,9 +59,23 @@ class Step(_Written):
                                                             "names (e.g. human_fields, loop_max_iterations)")
 
 
+class AgentBrowserPart(_Written):
+    """A Browser agent's settings, as the agent editor's Browser section sets them (F1223)."""
+
+    sites: list[str] = Field(default_factory=list, description="Hosts its pages may reach, e.g. portal.example.com "
+                                                               "(empty: any public site)")
+    sessions: list[str] = Field(default_factory=list, description="Sites it starts signed in on, with the person's "
+                                                                  "kept session for each")
+    mode: Literal["read_only", "co_drive"] = Field("read_only", description="read_only, or co_drive: it may type "
+                                                                            "and send, with the person watching")
+    #: The sites of `sessions` with no kept session here (code sets it, F1223): saved without, said on the card.
+    sessions_missing: list[str] = Field(default_factory=list)
+
+
 class NewAgent(_Written):
     name: str
-    type: Literal["agent", "team"] = Field("agent", description="agent, or team: a lead with members")
+    type: Literal["agent", "team", "browser"] = Field(
+        "agent", description="agent; team: a lead with members; or browser: it works in websites in its own browser")
     purpose: str = Field(description="One or two sentences: what it is for")
     tools: list[str] = Field(default_factory=list, description="Exact tool names it needs")
     members: list[str] = Field(default_factory=list, description="team: the names or ids of its members")
@@ -75,6 +89,15 @@ class NewAgent(_Written):
                                                     "the card offers one at its price, for the person to choose")
     why: str | None = Field(None, description="A few words on what the job needs from its model, shown beside the "
                                               "model, e.g. careful legal wording")
+    # The agent editor's switches (F1223): what the editor sets, the plan sets, and every save door checks.
+    memory: bool = Field(False, description="True when it must remember people, preferences or past results across "
+                                            "runs and conversations")
+    knowledge: list[str] = Field(default_factory=list, description="The knowledge bases it answers from, by their "
+                                                                   "names in `knowledge_bases`")
+    browser: AgentBrowserPart | None = Field(None, description="browser agents only: where it may go and the sites "
+                                                               "it starts signed in on")
+    servers: list[str] = Field(default_factory=list, description="Connected MCP servers, by name: it is given every "
+                                                                 "tool each has now")
 
 
 class ModelPick(BaseModel):
@@ -201,6 +224,8 @@ class Plan(PlanDraft):
     calls_no_model: bool = False
     #: The tool steps whose inputs a model fills in, by id: none set in `config.tool_arguments` (F967). Set by `fill`.
     model_fills: list[str] = Field(default_factory=list)
+    #: Each knowledge base its new agents answer from, by name → id (F1223). Set by `examine`.
+    knowledge_ids: dict[str, str] = Field(default_factory=dict)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":
@@ -656,4 +681,11 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     if _room_check is not None:
         out.room = (await _room_check("orchestration", 1 + len(out.inner_workflows))
                     or (await _room_check("agent", len(out.agents)) if out.agents else None)) or None
+    # The plan's own allowance for what the agents' switches add, as their save checks it (F1223).
+    from core import builder_tools
+
+    if out.room is None and (adding := sum(a.memory is True for a in out.agents)):
+        out.room = ((await builder_tools._memory_room(adding)) or {}).get("error")
+    if out.room is None and any(a.type == "browser" for a in out.agents):
+        out.room = ((await builder_tools._browser_refused("agent")) or {}).get("error")
     return out
