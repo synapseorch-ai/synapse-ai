@@ -13239,15 +13239,29 @@ async def check_brwturn(browser) -> str:
 async def check_brwreopen(browser) -> str:
     """A chat reopened while it waits on the person's turn in the browser shows that turn's card and its browser, and
     Done hands back (F1182). The history read carries the parked turn (`pending_browser_turn`); before, a reload showed
-    the saved turns and nothing to answer, and the agent waited on a hand-back nobody could give."""
+    the saved turns and nothing to answer, and the agent waited on a hand-back nobody could give. The agent's name is
+    read after the conversation here, as it can be: the pane names the agent, never the page's "Loading..."."""
     history = {"turns": [{"user": "check the partner portal", "assistant": "I opened the portal.", "timestamp": ""}],
                "pending_approval": None, "running": None,
                "pending_browser_turn": {"session_id": "bsR", "reason": "Sign in to Saltmarsh's partner portal.",
                                         "banner_kind": "session_expired"}}
-    ctx, page = await _chat_page(browser, "uismoke-brw-reopen", history, extra_init=BROWSER_STUB)
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.add_init_script(CHAT_STUB)
+    await ctx.add_init_script("try { localStorage.setItem('synapseSessionId', 'uismoke-brw-reopen'); } catch (e) {}"
+                              f"\nwindow.__fakeHistory = {json.dumps(history)};")
+    await ctx.add_init_script(BROWSER_STUB)
+    await _brw_shots(ctx)
+
+    async def named_late(route):
+        await asyncio.sleep(2.5)
+        await route.continue_()
+
+    for read in ("**/api/settings", "**/api/status"):
+        await ctx.route(read, named_late)
+    page = await ctx.new_page()
+    await page.goto(APP, wait_until="domcontentloaded")
     bad: list[str] = []
     try:
-        await _brw_shots(ctx)
         card = page.locator("main [data-browser-turn]")
         try:
             await card.wait_for(timeout=8_000)
@@ -13258,9 +13272,13 @@ async def check_brwreopen(browser) -> str:
         if "Your turn: sign in again" not in await card.inner_text():
             bad.append("the reopened card lost its banner")
         try:
-            await _pane(page).wait_for(timeout=5_000)
+            await _pane(page).wait_for(timeout=8_000)
         except Exception:
             bad.append("the reopened chat did not show its browser")
+        else:
+            await asyncio.sleep(3.0)  # past the agent's name
+            if "Loading" in await _pane(page).inner_text():
+                bad.append("the reopened browser's pane names the agent 'Loading...'")
         await card.get_by_role("button", name="Done").click()
         if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsR/wheel/hand-back'))"):
             bad.append("the reopened card's Done did not hand the wheel back")
