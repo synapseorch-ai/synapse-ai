@@ -138,3 +138,55 @@ class TestThePlansPick:
             "your workspace's default model, which fits, from your own keys")
         assert picks["Labeller"].model == "gpt-4.1-mini" and picks["Labeller"].reason.startswith(
             "the lowest-cost model that fits a narrow job")
+
+
+class TestTheDoorsItGuards:
+    """FF14's gate (CI2, 10-30): `synapse agents create --model oaic.fake` was refused, the CLI's create being the
+    person's own door, and an OpenAI-compatible endpoint listing no models while its model answers. The check is
+    Synapse AI's alone, in its own run; and there it takes the workspace's default and a set-up provider whose ids are
+    the person's to name."""
+
+    async def test_the_person_s_own_door_sets_what_they_name(self, client):
+        from core.product_tools import areas, registry
+        from core.product_tools.caller import Caller
+        from core.product_tools.roles import Role
+
+        areas.ensure_loaded()
+        out = await registry.invoke("create_agent", Caller(role=Role.BUILDER, via="mcp"),
+                                    {"name": "Mine", "type": "conversational", "tools": [],
+                                     "model": "gemini-2.0-flash-lite"})
+        out = json.loads(out) if isinstance(out, str) else out
+        assert out["agent"]["model"] == "gemini-2.0-flash-lite"
+
+    @pytest.mark.parametrize("model, settings", [
+        ("oaic.fake", {"openai_compatible_base_url": "http://127.0.0.1:9/v1"}),
+        ("locv1.qwen", {"local_compatible_base_url": "http://127.0.0.1:9/v1"}),
+    ])
+    async def test_an_endpoint_the_person_set_up_takes_any_id(self, client, run, model, settings):
+        out = await _call(run, "create_agent", {"name": "Endpoint", "type": "conversational", "tools": [],
+                                                "model": model})
+        assert "is not a model this workspace can use" in out["error"], "not set up: refused"
+        assert (await client.post("/api/settings", json=settings)).status_code == 200
+        out = await _call(run, "create_agent", {"name": "Endpoint", "type": "conversational", "tools": [],
+                                                "model": model})
+        assert out["agent"]["model"] == model
+
+    async def test_an_ollama_model_is_one_it_has_pulled(self, client, run, monkeypatch):
+        from core import model_readiness
+
+        async def pulled(base):
+            return ["llama3:latest"]
+
+        monkeypatch.setattr(model_readiness, "_ollama_models", pulled)
+        out = await _call(run, "create_agent", {"name": "Local", "type": "conversational", "tools": [],
+                                                "model": "ollama.llama3"})
+        assert out["agent"]["model"] == "ollama.llama3"
+        out = await _call(run, "create_agent", {"name": "Local", "type": "conversational", "tools": [],
+                                                "model": "ollama.never-pulled"})
+        assert "is not a model this workspace can use" in out["error"]
+
+    async def test_the_workspace_s_default_is_always_one(self, client, run, monkeypatch):
+        monkeypatch.setattr(MM, "workspace_model", lambda: "oaic.house")
+        out = await _call(run, "create_agent", {"name": "Default", "type": "conversational", "tools": [],
+                                                "model": "oaic.house"})
+        assert out["agent"]["model"] == "oaic.house"

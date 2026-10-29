@@ -2347,8 +2347,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return wrong
         if (wrong := await agent_knowledge.refusal(args.get("knowledge"))) is not None:
             return {"error": wrong}
-        from core.native_builder.models_menu import model_refusal  # F1250: a model this workspace can call
-        wrong, model = await model_refusal(args.get("model"), has_tools=bool(args.get("tools")))
+        from core.native_builder.models_menu import builder_model_refusal  # F1250: Synapse AI's own, callable
+        wrong, model = await builder_model_refusal(args.get("model"), has_tools=bool(args.get("tools")))
         if wrong is not None:
             return {"error": wrong}
         args = {**args, "model": model}
@@ -2449,8 +2449,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (wrong := await agent_knowledge.refusal(spec.get("knowledge"))) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": wrong})
                     continue
-                from core.native_builder.models_menu import model_refusal  # F1250
-                wrong, model = await model_refusal(spec.get("model"), has_tools=bool(spec.get("tools")))
+                from core.native_builder.models_menu import builder_model_refusal  # F1250
+                wrong, model = await builder_model_refusal(spec.get("model"), has_tools=bool(spec.get("tools")))
                 if wrong is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": wrong})
                     continue
@@ -2536,8 +2536,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if refused:
                 return refused
         if "model" in fields:
-            from core.native_builder.models_menu import model_refusal  # F1250: only a model it did not have is asked
-            wrong, fields["model"] = await model_refusal(fields["model"], agent.get("model"),
+            from core.native_builder.models_menu import builder_model_refusal  # F1250: only one it did not have
+            wrong, fields["model"] = await builder_model_refusal(fields["model"], agent.get("model"),
                                                          has_tools=bool(fields.get("tools", agent.get("tools"))))
             if wrong is not None:
                 return {"error": wrong}
