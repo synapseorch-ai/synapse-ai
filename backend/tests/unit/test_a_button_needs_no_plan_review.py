@@ -204,11 +204,16 @@ def test_a_new_thing_is_made_only_after_the_yes_and_only_with_the_four_create_to
     make = steps["step_make_new"]
     maker = agents[make["agent_id"]]
     writes = {t for t in maker["tools"] if builder_access.KINDS.get(t) == "write"}
-    assert writes == {"create_agent", "create_skill", "create_http_tool", "import_openapi"}
+    # F1198 (BLD1, Naveen 10-29): a Python tool too, made then proved by its test.
+    assert writes == {"create_agent", "create_skill", "create_http_tool", "import_openapi", "create_python_tool",
+                      "test_python_tool"}
     assert make["next_step_id"] == "step_check_made"  # what was made, held to what was approved (MCP2's note 5)
     # One thing, once: the step ends at its first create that worked (E2). On Gemini 3 Flash the maker called
     # create_agent seven times for one approved agent (P2's after-batch, cnt-05) when only its prompt said "one call".
-    assert set(make["finish_tools"]) == {"create_agent", "create_skill", "create_http_tool", "import_openapi", "cannot"}
+    # A Python tool's step ends at its passing test, not at its create (F1198): a failed test is an error to fix.
+    assert set(make["finish_tools"]) == {"create_agent", "create_skill", "create_http_tool", "import_openapi", "cannot",
+                                         "test_python_tool"}
+    assert "create_python_tool" not in make["finish_tools"]
     reaching = [s["id"] for s in steps.values() if "step_make_new" in json.dumps(
         {k: s.get(k) for k in ("next_step_id", "switch_cases", "switch_default_step_id", "if_true_step_id",
                               "if_false_step_id", "route_map")})]

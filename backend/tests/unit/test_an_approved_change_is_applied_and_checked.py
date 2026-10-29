@@ -360,6 +360,10 @@ async def test_a_name_taken_since_the_yes_is_not_made_again_under_it(client):
     ("agent", [{"kind": "skill", "action": "created", "id": "billing", "name": "billing"}],
      'The agent "Weather Forecast Tool" you approved was not made; made instead: the skill "billing".', "set_aside"),
     ("agent", [], 'The agent "Weather Forecast Tool" you approved was not made.', "set_aside"),
+    # F1198: a Python tool is a tool once saved.
+    ("python_tool", [{"kind": "tool", "action": "created", "id": "Weather Forecast Tool",
+                      "name": "Weather Forecast Tool"}], "", "changed"),
+    ("python_tool", [], 'The Python tool "Weather Forecast Tool" you approved was not made.', "set_aside"),
 ])
 async def test_what_the_maker_made_is_held_to_what_was_approved(client, kind, writes, words, stage):
     """MCP2's note 5: the maker is a model calling create tools after the yes, outside the approval's digest. A code

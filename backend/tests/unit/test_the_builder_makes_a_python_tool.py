@@ -155,6 +155,8 @@ class TestTestingOne:
         result = await call("test_python_tool", {"name": "region_totals"})
         assert result["exit_code"] == 1 and result["stderr"].endswith("ValueError: last line")
         assert len(result["stderr"]) == 4000
+        # A failed run is an error, to fix: never a step's finish (E2), and isError over MCP.
+        assert result["error"].startswith("The test failed (exit code 1): ") and result["error"].endswith("last line")
 
 
 class TestWhoHasThem:

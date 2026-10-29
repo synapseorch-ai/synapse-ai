@@ -2437,6 +2437,7 @@
                 "create_agent",
                 "create_skill",
                 "create_http_tool",
+                "test_python_tool",
                 "import_openapi",
                 "cannot"
             ],

@@ -276,7 +276,7 @@ async def test_a_step_edit_goes_to_today_s_update_path_with_its_workflow(client,
 
 
 @pytest.mark.parametrize("kind, said", [("agent", "agent"), ("skill", "skill"), ("tool", "HTTP tool"),
-                                         ("openapi", "OpenAPI import")])
+                                         ("openapi", "OpenAPI import"), ("python_tool", "Python tool")])
 async def test_making_one_new_thing_is_reviewed_then_made_by_the_maker(client, role, kind, said):
     """Naveen, 10-23 (the hand-over probe: today's create path made none of a standalone tool, skill or agent, 0/6):
     one new agent, skill, HTTP tool or OpenAPI import is shown on the review in code's words and, after the yes,
@@ -287,6 +287,16 @@ async def test_making_one_new_thing_is_reviewed_then_made_by_the_maker(client, r
     assert out["outcome"] == "create" and cards == [] and out["calls"] == []
     assert out["review"] == f'- Make the {said} "Mailchimp" — lists their audiences'
     assert "intent" not in run.shared_state or run.shared_state["intent"] != "create"
+
+
+async def test_a_python_tools_name_is_any_tools(client, role):
+    """F1198: a Python tool and an HTTP tool share one list of names, so a new Python tool needs a name no tool has."""
+    from core.store.resources import save_tool
+
+    await save_tool({"name": "region_totals", "tool_type": "http", "method": "GET", "url": "https://api.example.com/t"})
+    taken, _, _ = await _check([{"op": "create", "target": {"kind": "python_tool", "name": "region_totals"},
+                                 "fields": {"what": "totals sales.csv by region"}}])
+    assert taken["outcome"] == "said" and taken["say"] == 'A Python tool is already called "region_totals": say another name.'
 
 
 async def test_a_new_thing_needs_a_free_name_and_the_builder_role(client, role):

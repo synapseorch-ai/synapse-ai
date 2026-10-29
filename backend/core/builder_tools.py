@@ -1410,7 +1410,8 @@ BUILDER_TOOL_SCHEMAS = [
             "description": (
                 "Run a Python tool you made, once, as the editor's Test button runs it (the same sandbox and limits, "
                 "the variables a person gave it), with `args_json` as its arguments. Answers its exit code, output "
-                "and errors. Use it to prove the tool before you say it works."
+                "and errors; a run that fails answers as an error, to fix with create_python_tool and test again. "
+                "Use it to prove the tool before you say it works."
             ),
             "parameters": {
                 "type": "object",
@@ -3298,8 +3299,13 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                                                            globals=tool.get("globals") or None, timeout=30))
         except HTTPException as refused:
             return {"error": str(refused.detail)}
-        return {"exit_code": ran["exit_code"], "stdout": (ran.get("stdout") or "")[-_TEST_OUTPUT:],
-                "stderr": (ran.get("stderr") or "")[-_TEST_OUTPUT:]}
+        out = {"exit_code": ran["exit_code"], "stdout": (ran.get("stdout") or "")[-_TEST_OUTPUT:],
+               "stderr": (ran.get("stderr") or "")[-_TEST_OUTPUT:]}
+        if ran["exit_code"] != 0:
+            # A failed run is the model's to fix, and so never a step's finish (E2): its errors' end says why.
+            why = (out["stderr"] or out["stdout"])[-600:].strip() or "no output"
+            return {"error": f"The test failed (exit code {ran['exit_code']}): {why}", **out}
+        return out
 
     elif tool_name == "import_openapi":
         from core.openapi_import import parse_openapi_spec

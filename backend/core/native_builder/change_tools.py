@@ -824,11 +824,11 @@ def _pick_question(picks: list[dict]) -> str:
 
 #: What one new thing is called on the review, and the registry tool that makes it (the maker step's own four).
 _NEW = {"agent": ("agent", "create_agent"), "skill": ("skill", "create_skill"), "tool": ("HTTP tool", "create_http_tool"),
-        "openapi": ("OpenAPI import", "import_openapi")}
+        "openapi": ("OpenAPI import", "import_openapi"), "python_tool": ("Python tool", "create_python_tool")}
 
 
 async def _a_new_thing(base: dict, raw: dict) -> dict:
-    """One new agent, skill, HTTP tool or OpenAPI import (Naveen, 10-23: today's create path made none of them, 0/6 in
+    """One new agent, skill, HTTP tool, Python tool (F1198) or OpenAPI import (Naveen, 10-23: today's create path made none of them, 0/6 in
     the hand-over probe): shown on the review in code's words and, after the yes, made by the maker step, whose four
     tools hold their own checks (F489, F769's host rule, TAG1, the Connect card). P3's build route replaces it."""
     from core.product_tools import areas, registry
@@ -849,7 +849,9 @@ async def _a_new_thing(base: dict, raw: dict) -> dict:
 
     same = (lambda a, b: skills.normalize_name(a) == skills.normalize_name(b)) if kind == "skill" else (
         lambda a, b: a.lower() == b.lower())
-    if kind in ("agent", "skill", "tool") and any(same(i["name"], name) for i in await candidates(kind) or []):
+    # A Python tool's name is a tool's name: one of either kind holds it.
+    if kind in ("agent", "skill", "tool", "python_tool") and any(
+            same(i["name"], name) for i in await candidates("tool" if kind == "python_tool" else kind) or []):
         article = "An" if said[0] in "aeiou" else "A"
         return {**base, "outcome": "said", "ops": [item],
                 "say": f"{article} {said} is already called {_quoted(name)}: say another name."}
