@@ -18,10 +18,19 @@ work that already happened.
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from core.evals import regression as regression_mod
+from core.evals import regression as regression_mod  # noqa: F401 — kept importable here
+from core.evals import service
 from core.evals import store as evals_store
 
 router = APIRouter()
+
+
+async def _done(call):
+    """A service call, its refusal the route's answer: the same words and status as before (F1255, one place)."""
+    try:
+        return await call
+    except service.EvalsRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from None
 
 #: How many past runs one backfill call will score. A ceiling rather than a
 #: setting: each one is a model call the caller pays for, and a backfill that
@@ -56,12 +65,12 @@ class RubricIn(BaseModel):
 
 @router.get("/api/rubrics")
 async def list_rubrics():
-    return await evals_store.load_rubrics()
+    return await service.list_rubrics()
 
 
 @router.post("/api/rubrics")
 async def create_rubric(payload: RubricIn):
-    return await evals_store.save_rubric(payload.model_dump())
+    return await _done(service.save_rubric(payload.model_dump()))
 
 
 @router.put("/api/rubrics/{rubric_id}")
@@ -72,15 +81,12 @@ async def update_rubric(rubric_id: str, payload: RubricIn):
     be the same one, and every score taken under either becomes unreadable —
     so the field is not on `RubricIn` at all.
     """
-    if await evals_store.get_rubric(rubric_id) is None:
-        raise HTTPException(status_code=404, detail="Rubric not found")
-    return await evals_store.save_rubric({**payload.model_dump(), "id": rubric_id})
+    return await _done(service.save_rubric(payload.model_dump(), rubric_id))
 
 
 @router.delete("/api/rubrics/{rubric_id}")
 async def delete_rubric(rubric_id: str):
-    if not await evals_store.delete_rubric(rubric_id):
-        raise HTTPException(status_code=404, detail="Rubric not found")
+    await _done(service.delete_rubric(rubric_id))
     return {"status": "deleted"}
 
 
@@ -105,22 +111,7 @@ async def orchestration_trend(orch_id: str, limit: int = 200):
     agreement figure carries its own denominator — a rate computed from four
     runs should be shown with its sample size or not at all.
     """
-    from core.store import evals as store
-
-    scores = await store.scores_for_orchestration(orch_id, limit=max(1, min(limit, 500)))
-    feedback = await store.feedback_for_runs([s["run_id"] for s in scores])
-
-    rubric_id = next((s["rubric_id"] for s in reversed(scores)), None)
-    rubric = await evals_store.get_rubric(rubric_id) if rubric_id else None
-    scale_max = float(((rubric or {}).get("scale") or {}).get("max", 10.0))
-
-    return {
-        "scores": scores,
-        "feedback": feedback,
-        "rubric": rubric,
-        "agreement": regression_mod.agreement(scores, feedback, scale_max),
-        "regressions": [s for s in scores if s["regression"]],
-    }
+    return await service.trend(orch_id, limit)
 
 
 async def _score_one(run_id: str, suite_run_id: str | None = None) -> dict | None:
@@ -263,42 +254,24 @@ class GenerateIn(BaseModel):
 
 @router.get("/api/evals/suites")
 async def list_suites():
-    from core.evals import suites as suites_mod
-
-    out = []
-    for suite in await evals_store.load_suites():
-        out.append({
-            **suite,
-            "estimate": suites_mod.estimate(suite),
-            "running": await suites_mod.running_for(suite["id"]) is not None,
-        })
-    return out
+    return await service.list_suites()
 
 
 @router.post("/api/evals/suites")
 async def create_suite(payload: SuiteIn):
-    return await evals_store.save_suite(payload.model_dump())
+    return await _done(service.save_suite(payload.model_dump()))
 
 
 @router.put("/api/evals/suites/{suite_id}")
 async def update_suite(suite_id: str, payload: SuiteIn):
-    if await evals_store.get_suite(suite_id) is None:
-        raise HTTPException(status_code=404, detail="Set not found")
-    return await evals_store.save_suite({**payload.model_dump(), "id": suite_id})
+    return await _done(service.save_suite(payload.model_dump(), suite_id))
 
 
 @router.delete("/api/evals/suites/{suite_id}")
 async def delete_suite(suite_id: str):
     """Delete a golden set; its past runs stay. Never one that is running (F508): the run
     would go on with its own copy of the cases, scoring a set nobody can open any more."""
-    from core.evals import suites as suites_mod
-
-    if await evals_store.get_suite(suite_id) is None:
-        raise HTTPException(status_code=404, detail="Set not found")
-    if await suites_mod.running_for(suite_id) is not None:
-        raise HTTPException(status_code=409, detail="Stop the set's run first.")
-    if not await evals_store.delete_suite(suite_id):
-        raise HTTPException(status_code=404, detail="Set not found")
+    await _done(service.delete_suite(suite_id))
     return {"status": "deleted"}
 
 
@@ -310,25 +283,7 @@ async def generate_cases(suite_id: str, payload: GenerateIn):
     text into the thing the model is later measured against, which is how a
     golden set quietly starts testing what the model finds easy.
     """
-    from core.config import load_settings
-    from core.evals import generate
-    from core.store.resources import get_orchestration
-
-    suite = await evals_store.get_suite(suite_id)
-    if suite is None:
-        raise HTTPException(status_code=404, detail="Set not found")
-    orch = await get_orchestration(suite.get("orchestration_id") or "")
-    if not orch:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-
-    rubric = await evals_store.get_rubric(orch.get("rubric_id") or "")
-    try:
-        cases = await generate.propose(
-            orch, rubric, load_settings(), count=payload.count, steer=payload.steer
-        )
-    except generate.CasesNotWritten as exc:
-        # The model call failed: said, never an empty answer (F512).
-        raise HTTPException(status_code=502, detail=str(exc)) from None
+    cases = await _done(service.propose_for_suite(suite_id, count=payload.count, steer=payload.steer))
     return {"cases": cases, "saved": False}
 
 
@@ -340,30 +295,7 @@ async def run_suite(suite_id: str, request: Request):
     them would be a timeout on every deployment that has one. Progress is read
     from the suite-run row, which is written as each case lands.
     """
-    from core.evals import suites as suites_mod
-
-    suite = await evals_store.get_suite(suite_id)
-    if suite is None:
-        raise HTTPException(status_code=404, detail="Set not found")
-    if not (suite.get("cases") or []):
-        raise HTTPException(status_code=400, detail="This set has no cases yet.")
-    if await suites_mod.running_for(suite_id) is not None:
-        raise HTTPException(status_code=409, detail="This set is already running.")
-
-    server_module = getattr(request.app.state, "server_module", None)
-    suite_run_id = suites_mod.new_suite_run_id()
-
-    async def _drive():
-        try:
-            await suites_mod.run_suite(suite, server_module, suite_run_id=suite_run_id)
-        except Exception as exc:  # noqa: BLE001 - a detached task must not vanish silently
-            from core.log import get_logger
-            get_logger(__name__).warning(f"suite run '{suite_run_id}' failed: {exc}")
-
-    from core.background import spawn_background
-    spawn_background(_drive(), name=f"eval-suite-{suite_run_id}")
-    return {"suite_run_id": suite_run_id, "status": "running",
-            "estimate": suites_mod.estimate(suite)}
+    return await _done(service.start_suite_run(suite_id, getattr(request.app.state, "server_module", None)))
 
 
 @router.post("/api/evals/suites/{suite_id}/cancel")
@@ -373,19 +305,9 @@ async def cancel_suite(suite_id: str):
     The runs that already happened are real runs that really cost money, and
     pretending otherwise by hiding them would make the bill unexplainable.
     """
-    from core.evals import suites as suites_mod
-
-    suite_run_id = await suites_mod.running_for(suite_id)
-    if suite_run_id is None or not await suites_mod.cancel(suite_run_id):
-        raise HTTPException(status_code=404, detail="Nothing running for this set.")
-    return {"status": "cancelling", "suite_run_id": suite_run_id}
+    return await _done(service.cancel_suite_run(suite_id))
 
 
 @router.get("/api/evals/suites/{suite_id}/runs")
 async def suite_history(suite_id: str, limit: int = 20):
-    from core.store import evals as store
-
-    runs = await store.suite_runs_for(suite_id, limit=max(1, min(limit, 100)))
-    for run in runs:
-        run["scores"] = await store.scores_for_suite_run(run["id"])
-    return runs
+    return await service.suite_history(suite_id, limit)
