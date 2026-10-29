@@ -423,6 +423,9 @@ type SessionTurn = {
   images?: { type: string }[];
   /** A question this turn asked and nobody answered: the card, and why it was not run (F247). */
   approval?: ParkedApproval & { outcome: 'expired'; why: string };
+  /** The person's turn in the browser this turn stopped on (F1183): its card, drawn where it was asked. `worded`
+   *  when the agent said something first; else the saved answer is only what the turn is for, and the card says it. */
+  browser_turn?: { session_id?: string; reason?: string; banner_kind?: string; worded?: boolean };
   /** What the turn's model reasoned (`llm_reasoning`) and thought (`llm_thought`), in order —
    *  the Thinking and Reasoning panels a reopened answer draws again (U60). Absent on older turns. */
   reasoning?: string[];
@@ -1253,8 +1256,12 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           continue;
         }
         const notRun = (t.calls ?? []).filter(c => c.refused).map(c => ({ tool: c.tool, reason: c.reason ?? '' }));
-        restored.push({
-          role: 'assistant', content: t.assistant,
+        // A turn that stopped on the person's turn in the browser (F1183): what it did, then its card. Its saved
+        // answer, when the agent said nothing first, is the card's own words, so only the calls are drawn above it.
+        const keptTurn = parkedBrowserTurn(t.browser_turn);
+        const quiet = !!keptTurn && !t.browser_turn?.worded;
+        if (!quiet || (t.calls?.length ?? 0) > 0) restored.push({
+          role: 'assistant', content: quiet ? '' : t.assistant,
           ...(t.calls && t.calls.length > 0 ? { data: { calls: t.calls } } : {}),
           // Its panels, as live (U60): the last thought goes when it only
           // repeats the answer, which it usually does.
@@ -1272,7 +1279,16 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           // Its team, each member as one line that opens (TEAM1b).
           ...(teamFromTurn(t) ? { team: teamFromTurn(t) as TeamState } : {}),
         });
+        if (keptTurn) {
+          restored.push({
+            role: 'assistant', content: keptTurn.reason, msgType: 'human_input_required',
+            data: { kind: 'browser_turn', session_id: keptTurn.session_id, banner_kind: keptTurn.banner_kind },
+          });
+        }
       }
+      // The waiting turn's card is the last saved turn's when that turn keeps it (F1183); drawn here only otherwise.
+      const lastKept = turns.length > 0 ? parkedBrowserTurn(turns[turns.length - 1].browser_turn) : null;
+      const cardDrawn = !!browserTurn && lastKept?.session_id === browserTurn.session_id;
       if (parked) {
         restored.push({ role: 'user', content: parked.message });
         restored.push({
@@ -1288,7 +1304,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           },
         });
       }
-      if (browserTurn) {
+      if (browserTurn && !cardDrawn) {
         // As the live turn drew it: Done hands the browser back and reads the follow-up turn.
         restored.push({
           role: 'assistant', content: browserTurn.reason, msgType: 'human_input_required',
