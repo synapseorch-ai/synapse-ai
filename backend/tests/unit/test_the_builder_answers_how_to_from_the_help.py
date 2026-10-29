@@ -40,6 +40,54 @@ def test_the_json_is_the_help_panels_words():
     assert {t["title"] for t in data.values()} == titles, "help.ts changed: regenerate help_topics.json"
 
 
+#: A TypeScript string literal, single- or double-quoted, as help.ts writes them.
+_STR = r"'(?:[^'\\\n]|\\.)*'|\"(?:[^\"\\\n]|\\.)*\""
+NAV_TS = HELP_TS.parent / "nav.ts"
+
+
+def _text(literal: str) -> str:
+    return re.sub(r"\\(.)", r"\1", literal[1:-1])
+
+
+def _from_help_ts() -> dict:
+    """help_topics.json as `frontend/scripts/help-topics.mjs` writes it, rebuilt from help.ts and nav.ts by its own
+    rules: each topic's title, summary, steps and guide, and its screen's path from nav.ts. Without node, which the
+    suite's runners do not all have."""
+    where = {m[0]: {"label": m[1], "href": m[2]} for m in re.findall(
+        r"id:\s*'([^']+)',\s*label:\s*'([^']+)',\s*href:\s*'([^']+)'", NAV_TS.read_text())}
+    ts = HELP_TS.read_text()
+    body = ts[ts.index("HELP_TOPICS"):]
+    out = {}
+    for key, block in re.findall(r"^    '?([a-z_.]+)'?: \{\s*$(.*?)^    \},?\s*$", body, re.M | re.S):
+        def field(name: str) -> str | None:
+            m = re.search(rf"^        {name}: ({_STR}),?\s*$", block, re.M)
+            return _text(m.group(1)) if m else None
+
+        steps = re.search(r"^        steps: \[\s*$(.*?)^        \],?\s*$", block, re.M | re.S)
+        out[key] = {"title": field("title"), "summary": field("summary"),
+                    "steps": [_text(x) for x in re.findall(rf"^            ({_STR}),?\s*$", steps.group(1), re.M)]
+                    if steps else [],
+                    **({"guide": field("guide")} if field("guide") else {}),
+                    **({"where": where[key]} if key in where else {})}
+    return out
+
+
+@pytest.mark.skipif(not HELP_TS.exists(), reason="the frontend is not beside this backend")
+def test_the_json_is_help_ts_whole_steps_and_all():
+    """F1240 folded two topics' steps in help.ts and left the JSON's old ones, which only keys and titles were
+    compared on, so search_help answered from steps the panel no longer has (as FF5's b40b8adb). The whole file now:
+    a step changed in help.ts and not regenerated fails here."""
+    data = json.loads((Path(builder_help.__file__).parent / "native_builder" / "help_topics.json").read_text())
+    rebuilt = _from_help_ts()
+    ts = HELP_TS.read_text()
+    assert len(rebuilt) == len(re.findall(r"^    '?[a-z_.]+'?: \{\s*$", ts[ts.index("HELP_TOPICS"):], re.M))
+    assert all(t["title"] and t["summary"] and 3 <= len(t["steps"]) for t in rebuilt.values()), "a topic did not read"
+    for key in sorted(set(data) | set(rebuilt)):
+        assert data.get(key) == rebuilt.get(key), (
+            f"help_topics.json's {key!r} is not help.ts's: run "
+            "`node --experimental-strip-types frontend/scripts/help-topics.mjs > backend/core/native_builder/help_topics.json`")
+
+
 @pytest.mark.parametrize("question,title", [
     ("How do I connect Slack?", "Channels"),
     ("How do I put an agent on my website?", "Widgets"),
