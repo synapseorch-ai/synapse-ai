@@ -30,7 +30,7 @@ class Screen:
     #: GUIDE1's pack finds the screen by them (F1257). Each is this row's alone, and never another row's id or label.
     names: tuple[str, ...] = ()
     #: What a workflow built to imitate this screen looks like, so the planner can say plainly why it does not build
-    #: one (F1257): for a screen Synapse AI does not reach, or reaches only in part.
+    #: one (F1257). A screen Synapse AI comes to reach keeps it: then it reads "use the real tools, don't rebuild it".
     imitation: str = ""
 
 

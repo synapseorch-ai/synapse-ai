@@ -137,9 +137,19 @@ def test_evals_is_found_by_its_names_and_says_what_imitating_it_looks_like():
     assert "workflow" in evals.imitation and "score" in evals.imitation
 
 
-def test_an_imitation_is_said_only_where_something_is_not_reached():
-    """An imitation is the planner's to name for a screen it cannot fully reach: every row with one has a `cant`."""
-    assert [s.id for s in _census().CENSUS if s.imitation and not s.cant] == []
+def test_an_imitation_says_what_the_workflow_built_in_its_place_would_be():
+    assert [s.id for s in _census().CENSUS if s.imitation and "workflow" not in s.imitation] == []
+
+
+def test_a_row_that_comes_to_be_reached_keeps_its_imitation():
+    """A lane that gives Synapse AI a screen's tools (Evals, Widgets, Channels) changes its reach and its `cant`, never
+    its imitation: reached, the imitation reads "use the real tools, don't rebuild it" (8a 10-30)."""
+    from dataclasses import replace
+
+    evals = next(s for s in _census().CENSUS if s.id == "evals")
+    reached = replace(evals, does="writes rubrics and test cases and runs eval suites", tools=("save_rubric",), cant="")
+    assert reached.imitation == evals.imitation and reached.names == evals.names
+    assert reached.tools and not reached.cant, "still a whole row: reach, and nothing said as not from here"
 
 
 def test_a_host_s_row_keeps_its_names_and_imitation():
