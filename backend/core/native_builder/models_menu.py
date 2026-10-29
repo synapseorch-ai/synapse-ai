@@ -252,29 +252,63 @@ def workspace_model() -> str:
         return ""
 
 
+#: Providers whose model ids are the person's to name (an endpoint they run, a model they pulled): its list is what the
+#: endpoint answered, which can be empty while the model answers. Set up (an address, a key), any id is theirs.
+OPEN_LISTED = frozenset({"openai_compatible", "local_compatible", "ollama", "huggingface"})
+
+
+async def builder_model_refusal(model: Any, before: Any = None, *, has_tools: bool = False) -> tuple[str | None,
+                                                                                                     str | None]:
+    """`model_refusal` at a builder door, only when Synapse AI itself sets the model, in its own run (Naveen 10-30:
+    builder only). The person's own doors (the CLI, MCP, the app) set what they name, as before (FF14's gate)."""
+    from core.builder_tools import _current_run
+
+    if not _current_run.get():
+        return None, (str(model).strip() or None) if model is not None else None
+    return await model_refusal(model, before, has_tools=has_tools)
+
+
 async def model_refusal(model: Any, before: Any = None, *, has_tools: bool = False,
                         default_ok: bool = True) -> tuple[str | None, str | None]:
     """Why `model` cannot be an agent's model here, in words, or None; and the model to save (F1250). One check at
-    every door that sets one: what the agent editor's picker lists (`model_choices`; a provider with no key lists
-    nothing), a model said by its own id being that one (F959), and its best fit here named (F1251). A model the agent
-    had already is never asked about again, so an agent saved before still saves. No list read refuses nothing."""
+    every door Synapse AI sets one through: what the agent editor's picker lists (`model_choices`; a provider with no
+    key lists nothing), a model said by its own id being that one (F959), the workspace's own default, a set-up
+    provider whose ids are the person's (`OPEN_LISTED`), and its best fit here named (F1251). A model the agent had
+    already is never asked about again, so an agent saved before still saves. No list read refuses nothing."""
     from core import model_choices
 
     said = str(model or "").strip()
     if not said:
         return None, None
-    if said == str(before or "").strip():
+    if said == str(before or "").strip() or said == workspace_model():
         return None, said
     found = await model_choices.choices()
     if model_choices.offers(found, said):
         return None, said
     if (named := model_choices.named(found, said)) is not None:
         return None, named
+    if await _open_listed_ready(said):
+        return None, said
     listed = "; ".join(f"{p}: {', '.join(m[:6])}" for p, m in (found or {}).items())
     best = pick("simple", has_tools=has_tools, menu=await menu(), default=workspace_model())
     fit = f" Its best fit here is {best.id} ({best.reason})." if isinstance(best, Picked) else ""
     tail = " Or leave the model out for the workspace's default." if default_ok else ""
     return f'"{said}" is not a model this workspace can use.{fit} It can use: {listed}.{tail}', None
+
+
+async def _open_listed_ready(model: str) -> bool:
+    """Whether `model` is on a provider whose ids are the person's, set up here (its address or key saved; Ollama's
+    own list read), as a run would call it (`model_readiness`)."""
+    from core.model_readiness import detect_provider_from_model, model_problem
+
+    if detect_provider_from_model(model) not in OPEN_LISTED:
+        return False
+    try:
+        from core.config import load_settings
+
+        return await model_problem(dict(load_settings()), model) is None
+    except Exception:  # noqa: BLE001 — not read: not known to answer, so the list decides
+        return False
 
 
 def _strength(e: ModelEntry | None) -> tuple:

@@ -21,7 +21,7 @@ Browser steps — this workspace has recordings: tasks a person did once in its 
 call unless a page changed. Each by id, with its inputs and its steps (each step's id in brackets):
 {recordings}
 - **browser**: replays one of these recordings. Its `config` is `{{"recording_id": "rec_…", "recording_inputs": \
-{{"<input>": "{{state.key}}"}}}}`: every input the recording lists, filled with a value or a `{{state.key}}` \
+{{"<input>": "{{{{ state.key }}}}"}}}}`: every input the recording lists, filled with a value or a `{{{{ state.key }}}}` \
 placeholder. What the person gives when the run starts (the order number in "when I give you an order number", or a \
 schedule's message) is the run's own input, `{{{{state.user_input}}}}`: fill the input with it, never a human step \
 that asks again for what the run is given. An earlier step's output is `{{{{state.<step id>}}}}`, and inside a Loop's \

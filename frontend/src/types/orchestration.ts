@@ -11,7 +11,7 @@ export const KNOWLEDGE_STEP_TYPES: readonly StepType[] = ['retrieve', 'ingest'];
  */
 export interface RetrieveSettings {
     kb_ids?: string[];
-    /** A template: `{state.key}` or `{{ state.key.path }}`. */
+    /** A template: `{{ state.key.path }}`. */
     query?: string;
     filters?: Record<string, unknown> | null;
     top_k?: number | null;
@@ -46,7 +46,7 @@ export interface StepConfig {
     // BROWSER (F1146; BRW1's engine) — a recording replayed by code in the run's browser. `agent_id` is the Browser
     // agent that finds the way when a page has changed (`on_miss: 'agent'`); `browser_sessions` and `output_key` as above.
     recording_id?: string | null;
-    /** Each of the recording's inputs, filled from the run: input name → a template such as "{state.order}". */
+    /** Each of the recording's inputs, filled from the run: input name → a template such as "{{ state.order }}". */
     recording_inputs?: Record<string, string>;
     /** The recording's click/press steps whose send may go on its own; none by default. */
     may_send_steps?: string[];
@@ -98,7 +98,7 @@ export interface StepConfig {
     // TRANSFORM
     transform_code?: string;
 
-    // PRINT — user-defined text/markdown with {state.key} interpolation
+    // PRINT — user-defined text/markdown with {{ state.key }} interpolation
     print_content?: string;
 
     // IF_ELSE — Python condition, routes to true/false path

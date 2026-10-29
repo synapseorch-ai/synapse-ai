@@ -9,7 +9,7 @@
  * `collect_data` tool's form, which keys an answer by *label* and renders a
  * yes/no as a text box; cloud's run page knew only `number`. The engine, cloud's
  * run page and a channel reply all key the answer by **name**, and a name is
- * what a later step reads (`{state.approval.approved}`), so name is the key.
+ * what a later step reads (`{{ state.approval.approved }}`), so name is the key.
  *
  * A stored type this table does not know is shown back as itself — never
  * replaced by a guess — and answered as text.

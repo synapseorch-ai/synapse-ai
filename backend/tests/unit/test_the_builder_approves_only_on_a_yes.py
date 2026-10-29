@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from core import builder_tools  # noqa: F401 — the builder's modules, loaded as at boot (build_plan alone is a cycle)
 from core.native_builder import bundled_definitions
 from core.orchestration.steps import _eval_state_expr
 

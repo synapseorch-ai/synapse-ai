@@ -1262,7 +1262,7 @@ class OrchestrationEngine:
         The same step's key held `yes` or `{"response": "yes"}` by where it was
         answered: OSS chat sent the mapping, the app's modal and a channel reply
         the string — which the fleet's enqueue wrapped — and v1's and v2's
-        resume always wrapped. So `{state.approval}` rendered differently for
+        resume always wrapped. So `{{ state.approval }}` rendered differently for
         the same answer. Decided here, once, rather than at every sender. A
         step that declares fields keeps its mapping, and so does any other dict:
         a caller that chose a shape keeps it.

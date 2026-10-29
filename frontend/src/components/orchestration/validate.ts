@@ -328,17 +328,20 @@ function checkOrchestration(orch: Orchestration, agents?: { id: string; type?: s
         if (declared && declared !== 'dict') {
             add(s.id, warning(
                 `Collects fields (${names.join(', ')}), so “${key}” holds a mapping {field: value}, not ${declared}: ` +
-                `declare it dict in the state schema and read one field as {state.${key}.${names[0]}}`,
+                `declare it dict in the state schema and read one field as {{ state.${key}.${names[0]} }}`,
             ));
         }
     }
     for (const s of orch.steps) {
         if (s.type !== 'print') continue;
+        // The whole key, in the one form or an older one typed here (written so when it is saved, F1252).
+        const shown = new Set([...(s.print_content || '').matchAll(/\{\{\s*state\.([\w.-]+)\s*\}\}|\{state\.([\w.]+)\}/g)]
+            .map((m) => m[1] || m[2]));
         for (const [key, { stepName, field }] of fielded) {
-            if ((s.print_content || '').includes(`{state.${key}}`)) {
+            if (shown.has(key)) {
                 add(s.id, warning(
-                    `Shows {state.${key}}, “${stepName}”’s whole answer, which prints as a Python dict: ` +
-                    `show one field, {state.${key}.${field}}`,
+                    `Shows {{ state.${key} }}, “${stepName}”’s whole answer, which prints as a Python dict: ` +
+                    `show one field, {{ state.${key}.${field} }}`,
                 ));
             }
         }
@@ -469,6 +472,7 @@ function promptReads(step: StepConfig): Set<string> {
     if (step.type === 'retrieve') texts.push(step.retrieve?.query || '');
     const keys = new Set<string>();
     for (const text of texts) {
+        // `{{ state.key }}` is the one form (F1252); an older `{state.key}` typed here is written so when it is saved.
         for (const m of text.matchAll(/\{\{\s*state\.([A-Za-z_]\w*)|\{state\.(\w+)\}/g)) keys.add(m[1] || m[2]);
     }
     return keys;
