@@ -226,6 +226,37 @@ async def _list_documents(caller: Any, args: dict[str, Any]) -> dict:
     return {"knowledge_base": kb.name, "documents": [d.model_dump(mode="json") for d in listed]}
 
 
+def text_sha256(text: str) -> str:
+    """The fingerprint of a document's text as it was read (F1258): an edit made from it writes only over that."""
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def _edit_document(caller: Any, args: dict[str, Any]) -> dict:
+    """A note's or a text file's text, written as `text` under its own name and folder, and indexed again (F1258).
+    With `was_sha256`, only over the text it was made from: a document changed since is said, never written over."""
+    from core.knowledge import bases, ingest
+
+    row = await _document(str(args.get("doc_id") or ""))
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ToolRefusal("The document's new text is empty: say what it should say.")
+    current, why = await ingest.editable_text(row)
+    if current is None:
+        raise ToolRefusal(f"This document's text can't be changed here: {why}.")
+    if args.get("was_sha256") and args["was_sha256"] != text_sha256(current):
+        raise ToolRefusal("The document changed since I read it, so I left it as it is: ask again to change it.")
+    kb = await bases.require_base(row.kb_id)
+    if kb.status != "active":
+        raise ToolRefusal("Its knowledge base is turned off: turn it on to change its documents.")
+    if text == current:
+        return {"doc_id": row.id, "changed": False}
+    rows = await ingest.write_text(kb, row, text)
+    return {"doc_id": row.id, "changed": True, "knowledge_base": kb.name,
+            "status": rows[0].status if rows else None}
+
+
 async def _changed(kb: Any, args: dict[str, Any]) -> Any:
     """The edit `update_knowledge_base` would save: a new name (none another base has) and what it holds."""
     from pydantic import ValidationError
@@ -392,6 +423,15 @@ def entries() -> list[ProductTool]:
                     handler=_delete_base, irreversible=True, preview=_preview_delete_base,
                     audit_action="knowledge.base.deleted",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("deleted") or "")), **act),
+        ProductTool(name="edit_knowledge_document",
+                    description="Change a note's or a text file's text in its knowledge base: its name and folder "
+                                "stay, and it is indexed again. `text` is its whole new text; `was_sha256`, the "
+                                "fingerprint of the text it was made from (it writes only over that).",
+                    input_schema={"type": "object", "properties": {
+                        **_DOC, "text": {"type": "string"}, "was_sha256": {"type": "string"}},
+                        "required": ["doc_id", "text"]},
+                    handler=_edit_document, audit_action="knowledge.document.edited",
+                    target=lambda a, r: ("knowledge_document", str(a.get("doc_id"))), **act),
         ProductTool(name="retry_knowledge_document", description="Index a document again after it failed.",
                     input_schema={"type": "object", "properties": dict(_DOC), "required": ["doc_id"]},
                     handler=_retry, idempotent=True, audit_action="knowledge.document.retried",

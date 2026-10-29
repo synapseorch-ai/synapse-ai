@@ -80,7 +80,9 @@ from core.native_builder import prompt_lint, seed
 #: F1252: every template over state in the one form, `{{ state.x }}` (Naveen 10-30), c8d173a1….
 #: F1256: the planner's rule 8 (what the pack's `not_here` lists is done on its screen, never built from workflow
 #: parts; `cannot`, naming the screen), fb32ab63… alone; with F1252 (fix-forward 15), 34ca5faa….
-BUNDLE_SHA256 = "34ca5faab4e6d1b6645349afd71a8b5fec22a2b9c33e5d8b9ffd8f2f733c95d4"
+#: F1258: the change planner's search_knowledge and its rule 12 for editing a knowledge base's note or text file,
+#: 77c5f233… (rule 12: BLD1's F1255 adds rule 11).
+BUNDLE_SHA256 = "77c5f2334c09a143d319e18e25438951cdc50513fa8449c44c0ebde7dc959227"
 
 
 def _sha(definitions) -> str:

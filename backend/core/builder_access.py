@@ -39,6 +39,8 @@ READS: frozenset[str] = frozenset({
     "read_api_spec",
     # An answer's own check (F1243): it reads the run's answer and changes nothing.
     "check_answer",
+    # The knowledge bases' passages, by document (F1258): a search, nothing changed.
+    "search_knowledge",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,
