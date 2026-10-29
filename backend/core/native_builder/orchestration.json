@@ -55,7 +55,7 @@
         "connect_stopped": {"type": "str", "default": "", "description": "What a build stopped at its wait said: the tools it removed"},
         "plan_draft": {"type": "dict", "default": {}, "description": "The planner's finish: the Plan it submitted, its question, or why it cannot (E2)"},
         "review_feedback": {"type": "dict", "default": {}, "description": "User's approval or revision feedback on the draft — the answer card's fields, e.g. {\"feedback\": \"approve\"}"},
-        "approval_decision": {"type": "str", "default": "", "description": "Router result: approved or revise"},
+        "approval_decision": {"type": "bool", "default": false, "description": "The If/Else router's result: true when the person approved the plan, false to revise (F1247)"},
         "plan_room": {"type": "dict", "default": {}, "description": "How many orchestrations the plan has room for (-1: no limit) and the sentence refusing one when it has none — set by the embedder (F154)"},
         "final_orch": {"type": "str", "default": "", "description": "The saver's closing reply — DONE, or DONE with the reason it stopped"},
         "summary": {"type": "str", "default": "", "description": "Friendly completion message generated after the orchestration is saved"},
@@ -72,7 +72,7 @@
         "change_applied": {"type": "str", "default": "", "description": "`apply_change`'s answer: what was made, and in words what did not take effect"},
         "change_made": {"type": "dict", "default": {}, "description": "What the maker's one create answered, or its `cannot` (E2: the step ends at the first that worked; SAI2-P2, P3 replaces it)"},
         "change_made_check": {"type": "str", "default": "", "description": "`check_made`'s answer: what the maker made held to the one new thing the person approved, said when it differs (MCP2's note 5)"},
-        "manage_decision": {"type": "str", "default": "", "description": "Router result: approved or revise"}
+        "manage_decision": {"type": "bool", "default": false, "description": "The If/Else router's result: true when the person approved the change, false to revise (F1247)"}
     },
     "max_total_turns": 150,
     "timeout_minutes": 45,
