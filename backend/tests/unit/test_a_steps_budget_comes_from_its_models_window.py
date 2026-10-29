@@ -17,9 +17,35 @@ from core.providers import window_tokens
 
 class TestTheWindowTable:
     def test_a_provider_prefix_is_looked_through(self):
-        assert window_tokens("synapse.claude-sonnet-4-6") == 200_000
+        assert window_tokens("synapse.claude-sonnet-4-6") == 1_000_000
         assert window_tokens("us.anthropic.claude-haiku-4-5") == 200_000
+        assert window_tokens("cli.claude.claude-haiku-4-5") == 200_000
         assert window_tokens("synapse.nova-pro") == 300_000
+
+    def test_claudes_windows_are_the_models_own(self):
+        """The Claude API's models reference (10-2026): the 5 family and Opus 4.6–4.8 / Sonnet 4.6 hold 1M; Haiku 4.5,
+        Sonnet 4.5 and Opus 4.5 hold 200K; an id the table doesn't know is taken at the smaller window."""
+        for model in ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "claude-opus-4-8",
+                      "claude-opus-4-6", "anthropic.claude-sonnet-4-6"):
+            assert window_tokens(model) == 1_000_000, model
+        for model in ("claude-haiku-4-5-20251001", "claude-sonnet-4-5", "claude-opus-4-5", "claude-some-future-id"):
+            assert window_tokens(model) == 200_000, model
+
+    def test_the_other_providers_windows_are_their_docs(self):
+        expected = {"gpt-5-mini": 272_000, "gpt-oss-120b": 131_072, "gemini-3.5-flash": 1_048_576,
+                    "gemma-4-31b-it": 262_144, "bedrock.meta.llama3-70b-instruct-v1:0": 8_000,
+                    "meta.llama3-1-70b-instruct-v1:0": 128_000, "mistral-small-latest": 256_000,
+                    "mistral-large-2407": 128_000, "qwen3.8-max": 983_616, "amazon.nova-2-lite-v1:0": 1_000_000}
+        for model, tokens in expected.items():
+            assert window_tokens(model) == tokens, model
+
+    def test_bedrocks_llama_3_1_and_3_3_never_fall_into_llama_3s_8k(self):
+        for model in ("meta.llama3-1-8b-instruct-v1:0", "meta.llama3-3-70b-instruct-v1:0", "us.meta.llama3-1-405b"):
+            assert window_tokens(model) == 128_000, model
+        assert window_tokens("meta.llama3-8b-instruct-v1:0") == 8_000
+
+    def test_a_retired_id_has_no_row_and_takes_the_fixed_limits(self):
+        assert window_tokens("deepseek-chat") is None and window_tokens("deepseek-reasoner") is None
 
     def test_the_longest_prefix_wins(self):
         assert window_tokens("gemma-3-1b-it") == 32_000
