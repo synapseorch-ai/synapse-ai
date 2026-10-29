@@ -55,6 +55,9 @@ async def test_a_stdio_client_lists_and_calls_through_the_relay(live_server, api
             ClientSession(read, write, read_timeout_seconds=timedelta(seconds=30)) as session:
         init = await session.initialize()
         assert "Synapse" in (init.instructions or "")
+        # Who it is, as the endpoint says it (F1215): an app on stdio draws our mark too.
+        from core.mcp_server.server import ICONS
+        assert [(i.theme, i.src) for i in init.serverInfo.icons or []] == [(i.theme, i.src) for i in ICONS]
         tools = {t.name: t for t in (await session.list_tools()).tools}
         assert {"list_orchestrations", "run_orchestration", "run_say_hello"} <= set(tools)
         # Deletes cross the relay as the server marks them: destructive, confirmed by a token (D292).
