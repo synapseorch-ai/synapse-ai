@@ -159,10 +159,12 @@ class TestAddingAFile:
 
 class TestWhenAndWho:
     async def test_knowledge_off_says_so(self, client):
+        # F1203 (Naveen 10-29): where it is turned on, and its switch as its own card, never the make or the add.
         for args in ({"action": "knowledge_create", "name": "Price list"},
                      {"action": "knowledge_add_file", "knowledge_base": "Price list", "path": "a.csv"}):
             said, cards = await _prepare(args)
-            assert cards == [] and "switched off" in said["error"], args
+            assert "switched off" in said["error"] and "Settings › General › Knowledge" in said["error"], args
+            assert [c["title"] for c in cards] == ["Turn on Knowledge"], args
 
     def test_they_are_a_builders_acts(self):
         from core.product_tools import areas, registry

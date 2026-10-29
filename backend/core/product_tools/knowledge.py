@@ -108,7 +108,7 @@ async def _new_base(args: dict[str, Any]):
     from core.knowledge.kb_settings import validate_folder
 
     if not _on():
-        raise ToolRefusal("Knowledge is switched off in this workspace.")
+        raise ToolRefusal(_OFF())
     name = str(args.get("name") or "").strip()
     try:
         body = KnowledgeBaseCreate(name=name, description=str(args.get("description") or ""),
