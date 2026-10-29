@@ -388,7 +388,7 @@
   "summary": "A recording repeated by code in the run’s own browser, with nobody watching. A step that’s yours to do, a send it may not make, or a page that changed pauses the run for you, unless a Browser agent may find the way.",
   "steps": [
    "Click “Add step” and pick Browser, then pick a “Recording”, or “Record a new one” to make it here; one made here is this workflow’s.",
-   "Under “Inputs”, say what it types for each one: {state.key} from the run, or text.",
+   "Under “Inputs”, say what it types for each one: {{ state.key }} from the run, or text.",
    "Under “Sends”, a click or press that sends something waits for you; tick “May send on its own” only for one that may go without you.",
    "Under “If a page changed”, choose “Pause for you” to do that step yourself in the run’s browser, or “Let a Browser agent find the way” and pick the agent; its fix waits on the recording’s page for “Approve fix”.",
    "Pick “Sessions for this step”, one per site: the run’s browser starts signed in with them."

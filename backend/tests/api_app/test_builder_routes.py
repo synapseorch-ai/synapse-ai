@@ -254,7 +254,9 @@ class TestSeeHowImBuilt:
         # 72 with the build's look-up code first (P3c's splice): the look-up, its route, and code's finals reported;
         # 73 with the question that says what still can't be built instead of the same plan again (F1121);
         # 76 with the effort check before a build: the check, its route, and the offer said (F1153).
-        assert legend["step_count"] == 76
+        # 78 with every answer checked so none asks for a yes nothing can take (F1243): Check The Answer and the print
+        # that says it, Say The Answer.
+        assert legend["step_count"] == 78
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])

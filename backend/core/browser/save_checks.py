@@ -109,7 +109,7 @@ def recording_problems(step: dict, doc: dict) -> list[str]:
     missing = [n for n in names if not str(given.get(n) or "").strip()]
     if missing:
         found.append(f"Browser step '{sid}' must fill its recording's inputs in recording_inputs: "
-                     f"{', '.join(repr(n) for n in missing)}, each a value or a {{state.key}} template.")
+                     f"{', '.join(repr(n) for n in missing)}, each a value or a {{{{ state.key }}}} template.")
     own = {s.get("id") for s in doc.get("steps") or []}
     strays = [s for s in step.get("may_send_steps") or [] if s not in own]
     if strays:
@@ -158,20 +158,15 @@ def run_keys(sid: str, steps: list[dict], schema: dict | None, *, whole: bool) -
 
 
 def _state_keys(text: str) -> list[str]:
-    """The state keys a template reads, in either form (`{state.x}`, `{{ state.x.y }}`)."""
-    from core.orchestration.context import _TASK_REF
-    keys = []
-    for m in _TASK_REF.finditer(text):
-        path = m.group(1).strip() if m.group(1) is not None else f"state.{m.group(2)}"
-        head, _, rest = path.partition(".")
-        if head == "state" and rest:
-            keys.append(rest.split(".")[0])
-    return list(dict.fromkeys(keys))
+    """The state keys a template reads (`{{ state.x.y }}`, the one form; an unsaved step's older form read as it will
+    be saved, F1252)."""
+    from core.templating import STATE_REF, one_form
+    return list(dict.fromkeys(m.group(1).split(".")[0] for m in STATE_REF.finditer(one_form(text))))
 
 
 def input_problems(steps: list[dict], schema: dict | None = None, *, whole: bool = True,
                    of: set[str] | None = None) -> list[str]:
-    """Each Browser step's `{state.…}` inputs (those in `of`, else all) against what the run has (`run_keys`), in
+    """Each Browser step's `{{ state.… }}` inputs (those in `of`, else all) against what the run has (`run_keys`), in
     sentences naming what is missing and what there is: a key nothing has written reads empty, and the run stops at
     the step (F1232)."""
     from core.orchestration.branch_keys import ENGINE_KEYS
@@ -185,9 +180,10 @@ def input_problems(steps: list[dict], schema: dict | None = None, *, whole: bool
         if not (missing := [k for k in read if k not in has]):
             continue
         why = "is written only after it" if all(k in later for k in missing) else "nothing in the run writes"
-        others = ", ".join(f"{{state.{k}}}" for k in sorted(has - ENGINE_KEYS))
-        found.append(f"Browser step '{sid}' reads {', '.join(f'{{state.{k}}}' for k in missing)}, which {why}. It "
-                     f"can read the run's own input, {{state.{RUN_INPUT}}} (what the person gives when it starts)"
+        others = ", ".join(f"{{{{ state.{k} }}}}" for k in sorted(has - ENGINE_KEYS))
+        reads = ", ".join(f"{{{{ state.{k} }}}}" for k in missing)
+        found.append(f"Browser step '{sid}' reads {reads}, which {why}. It can read the run's own input, "
+                     f"{{{{ state.{RUN_INPUT} }}}} (what the person gives when it starts)"
                      + (f", or {others}" if others else "") + ".")
     return found
 
@@ -208,7 +204,7 @@ def loop_problems(steps: list[dict]) -> list[str]:
             if step.get("type") == "browser" and given.strip() and not set(_state_keys(given)) & each:
                 found.append(f"Browser step '{step['id']}' is in Loop '{loop['id']}' but reads nothing of its item, "
                              "so it would replay the same thing for every item: fill an input with "
-                             f"{{state.{loop.get('loop_item_key') or 'loop_item'}}}.")
+                             f"{{{{ state.{loop.get('loop_item_key') or 'loop_item'} }}}}.")
     return found
 
 

@@ -153,13 +153,6 @@ class TestAModelIsGivenAFileItCanRead:
         assert out.startswith("Summarise this: ") and ref["$vault"] in out and "read_file" in out
         assert len(out) < 2_000 and "word word word word" not in out
 
-    def test_the_older_form_is_read_the_same_way(self, store):
-        from core.orchestration.context import _fill_task_template
-
-        ref = step_refs.save("r", "s", PAGE)
-        out = _fill_task_template("Summarise this: {state.page}", {"page": ref}, {}, read_cap=20_000)
-        assert ref["$vault"] in out and len(out) < 2_000
-
     def test_a_field_of_a_saved_object_is_its_value(self, store):
         from core.orchestration.context import _fill_task_template
 

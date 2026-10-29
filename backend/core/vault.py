@@ -290,7 +290,7 @@ _BINARY_KINDS = {
 }
 
 #: A private-use character brackets a masked mention. It carries no brace, so
-#: neither the legacy `{state.x}` pass nor `templating.render` can touch one;
+#: `templating.render` can't touch one;
 #: and `mention_key` refuses the private-use range, so no vault path holds one.
 _MARK = ""
 _MASKED = re.compile(f"{_MARK}(\\d+){_MARK}")
@@ -374,7 +374,7 @@ class MentionReader:
 
     Two shapes. `expand` is for text that is not templated: a chat message.
     `mask` → render → `fill` is for text that is: each mention becomes a
-    placeholder, the caller renders `{state.x}` and `{{ … }}`, and only then
+    placeholder, the caller renders `{{ … }}`, and only then
     does the file's text go in. So a file that says `{{ global.KEY }}` reaches
     the model as those words rather than as the secret, and a state value that
     happens to contain `@[x]` is a value, not a mention.

@@ -96,7 +96,8 @@ class TestItIsOfferedNowhere:
 
     async def test_a_404d_model_is_never_picked_again(self, gemini_choices, monkeypatch):
         """CAP3's stage 0, end to end: picked as the lowest-cost fit, refused by its provider, never picked again."""
-        before = M.pick("simple", has_tools=True, menu=await M.menu())
+        # A narrow job's pick, the cheapest that fits (F1251 keeps it for one): the case itself.
+        before = M.pick("simple", has_tools=True, menu=await M.menu(), narrow=True)
         assert before.id == "gemini-2.5-flash-lite", "the case itself: the lowest-cost model that fits"
 
         from core import llm_providers
@@ -112,7 +113,7 @@ class TestItIsOfferedNowhere:
         with pytest.raises(LLMError):
             await llm_providers.generate_response_ex("hi", "sys", "cloud", "gemini-2.5-flash-lite", {})
 
-        after = M.pick("simple", has_tools=True, menu=await M.menu())
+        after = M.pick("simple", has_tools=True, menu=await M.menu(), narrow=True)
         assert after.id == "gemini-2.5-flash"
 
     async def test_the_models_screen_says_why(self, monkeypatch):

@@ -227,9 +227,12 @@ async def test_board_tools_are_an_agents_while_boards_are_on(client, boards):
     post = {"id": "post", "type": "agent", "name": "Post it", "does": "Posts the warning on the board",
             "agent": "Board poster"}
     poster = {"name": "Board poster", "purpose": "Posts warnings on the board", "tools": ["board_add"]}
+    # The person reads the warnings, so the board is named (F1254 sends back a board nothing reads that is not named);
+    # naming it keeps the board this plan needs, which is what F1203's switch is about.
+    named = {"boards": [{"name": "Delay warnings"}]}
     await boards(True)
     run = await _run()
-    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster], **named)})
     # Buildable: its new agent's instructions are written next, before the review (Q2).
     assert out["outcome"] == "prompts" and [t["status"] for t in out["plan"]["tools"]] == ["present", "present"]
     as_a_step = {"id": "post", "type": "tool", "name": "Post it", "does": "x", "tool": "board_add"}
@@ -239,9 +242,9 @@ async def test_board_tools_are_an_agents_while_boards_are_on(client, boards):
     run = await _run()
     # F1203 (BLD1, Naveen 10-29): Boards off is the person's to turn on, never the planner's to take out. The plan
     # keeps its board; the review blocks it, says where Boards are turned on, and offers the switch.
-    sent, _ = await _call("submit_plan", _plan(CHECK, post, agents=[poster]), run)
+    sent, _ = await _call("submit_plan", _plan(CHECK, post, agents=[poster], **named), run)
     assert "error" not in sent, sent
-    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster], **named)})
     assert "build" not in out["offers"] and {"turn_on:boards", "without:boards"} <= set(out["offers"])
     assert "Boards are switched off in this workspace: turn them on in Settings › General › Boards, or build " \
            "without the board." in out["say"]
@@ -315,9 +318,12 @@ async def test_turn_on_boards_turns_them_on_and_plans_again(client, boards):
     post = {"id": "post", "type": "agent", "name": "Post it", "does": "Posts the warning on the board",
             "agent": "Board poster"}
     poster = {"name": "Board poster", "purpose": "Posts warnings on the board", "tools": ["board_add"]}
+    # The person reads the warnings, so the board is named (F1254 sends back a board nothing reads that is not named);
+    # naming it keeps the board this plan needs, which is what F1203's switch is about.
+    named = {"boards": [{"name": "Delay warnings"}]}
     await boards(False)
     run = await _run(review_feedback={"feedback": "turn on Knowledge"})
-    await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
+    await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster], **named)})
     assert (await _call("read_plan_answer", {}, run))[0]["outcome"] == "revise" and not boards_enabled()
     run.shared_state["review_feedback"] = {"feedback": "Turn on Boards"}
     answer, _ = await _call("read_plan_answer", {}, run)
@@ -440,7 +446,13 @@ async def test_a_plan_reviewed_after_its_sendbacks_never_shows_the_ask(client):
     checked, _ = await _check(run, out)
     shown = json.dumps(checked)
     assert "Secret API Key" not in shown and "auth token" not in shown
-    assert checked["plan"]["questions"] == ["Which list should it use?"]
+    # Since F1253 a plan's own question is asked before any card, in the form: the one left after the key's is cut.
+    assert checked["outcome"] == "ask" and [f["label"] for f in checked["form"]] == ["Which list should it use?"]
+    run.shared_state["human_response"] = {"answer": "The newsletter list"}
+    reviewed, _ = await _check(run, out)
+    shown = json.dumps(reviewed)
+    assert reviewed["outcome"] == "review" and reviewed["plan"]["questions"] == []
+    assert "Secret API Key" not in shown and "auth token" not in shown
     assert "Drafts a delay warning." in shown
 
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from core import builder_tools  # noqa: F401 — the builder's tool modules load in their own order first
 from core.native_builder import objects as O
 from core.native_builder import parts_words as PW
 from core.native_builder.build_plan import PLAN_BEFORE_KEY, plan_before_of, since_last
@@ -64,7 +65,18 @@ class TestARePlanSaysWhatChanged:
     def test_turn_6s_swap_is_listed(self):
         before = _plan("https://synapseorch.com").model_dump()
         assert since_last(_plan("https://synapseorchestrator.com"), before) == [
-            '"Read our site": url https://synapseorch.com → https://synapseorchestrator.com']
+            '"Read our site": url `https://synapseorch.com` → `https://synapseorchestrator.com`']
+
+    def test_an_outside_address_is_never_a_link(self):
+        """A plan card never makes an outside URL clickable (8a, 10-30, F1245's open question): each value is code,
+        which the card's markdown leaves as text, whether it came, went or changed."""
+        import re
+
+        before = _plan("https://synapseorch.com", q="old.example.com").model_dump()
+        lines = since_last(_plan("https://synapseorchestrator.com", dest="/reports/weekly.md"), before)
+        assert lines and all(not re.search(r"(?<!`)https?://", line) for line in lines), lines
+        assert '"Read our site": dest now `/reports/weekly.md`' in lines
+        assert '"Read our site": q `old.example.com` is gone' in lines
 
     def test_a_tool_a_step_added_and_one_removed(self):
         before = _plan("https://synapseorch.com").model_dump()
@@ -90,8 +102,8 @@ class TestARePlanSaysWhatChanged:
         plan = _plan("https://synapseorchestrator.com")
         plan.since_last = since_last(plan, _plan("https://synapseorch.com").model_dump())
         card = render(plan)
-        assert ("## Changed from the last plan\n- \"Read our site\": url https://synapseorch.com → "
-                "https://synapseorchestrator.com\n") in card
+        assert ("## Changed from the last plan\n- \"Read our site\": url `https://synapseorch.com` → "
+                "`https://synapseorchestrator.com`\n") in card
         assert card.index("## Changed from the last plan") < card.index("## Steps")
 
 

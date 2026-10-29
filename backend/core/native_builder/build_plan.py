@@ -29,7 +29,8 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O, one_writer, own_api, periods
+from core import feature_census
+from core.native_builder import boards_rule, objects as O, one_writer, own_api, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -180,6 +181,13 @@ async def _menu_lines() -> list[str]:
     return lines[:24]
 
 
+def narrow(a: O.NewAgent, steps: int) -> bool:
+    """A small agent with a narrow goal and little work (Naveen, 10-30): the one job the cheapest model that fits gets
+    (F1251). One step at most, a simple need, two tools at most, and none of the editor's switches."""
+    return (steps <= 1 and a.type == "agent" and a.needs == "simple" and len(a.tools) <= 2 and not a.long_inputs
+            and not (a.memory or a.knowledge or a.browser or a.servers))
+
+
 async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.ModelPick], list[str], str]:
     """Each new agent's model, picked in code from the models this workspace can call (F966): from what it needs, or
     from the person's own wish, never from an id the planner wrote. Returns the picks; what no model here can do (said
@@ -196,12 +204,15 @@ async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.Mo
     names = {e.id: e.name for e in menu}
     picks: dict[str, O.ModelPick] = {}
     issues: list[str] = []
+    default = MM.workspace_model()
+    uses = [s.agent for s in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)] if s.agent]
     for a in plan.agents:
         # A team's lead hands work to its members through a tool call.
         has_tools = bool(a.tools) or a.type == "team"
         wish = (a.model_wish or "").strip()
         got = (MM.resolve_wish(wish, a.needs, has_tools=has_tools, menu=menu) if wish
-               else MM.pick(a.needs, has_tools=has_tools, menu=menu))
+               else MM.pick(a.needs, has_tools=has_tools, menu=menu, narrow=narrow(a, uses.count(a.name)),
+                            long_inputs=a.long_inputs, default=default))
         if got is None:
             continue
         if isinstance(got, MM.Ask):
@@ -261,13 +272,15 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
                    "board_claim on its workflow's own board; name them in that agent's tools, never as a Tool step. "
                    "It posts there, not to a shared board. When the person asks for a board, put one in the plan's "
                    "boards, named as they said (or for what it holds): it is this workflow's own board under that "
-                   "name, where its cards go (F1214)."
+                   "name, where its cards go (F1214). " + boards_rule.GUIDANCE
                    if ws.boards_on else
                    "Off in this workspace. Where the request needs a board, still give that agent its board tools as "
                    "if on, and its board in boards: the review says Boards are off and offers to turn them on "
-                   "(F1203)."),
+                   "(F1203). " + boards_rule.GUIDANCE),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
+        # What is done on a screen, not from here (F1256): asked for, it is said with the screen, never imitated.
+        "not_here": feature_census.not_here(),
         # What a new agent's switches may name (F1223): connected MCP servers, and the sites with a kept session.
         "servers": sorted(_servers(server_module)),
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
@@ -409,6 +422,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan, errors = O.read(raw if isinstance(raw, dict) else {})
     if plan is None:
         return Examined(None, errors)
+    # A question the planner wrote anyway (F1253): held to F1093 as before, then asked in the form, never shown open.
+    plan.questions = [q.strip() for q in (raw.get("questions") if isinstance(raw, dict) else None) or []
+                      if isinstance(q, str) and q.strip()]
     base = _base(state)
     if plan.kind == "update":
         if base is None:
@@ -755,6 +771,8 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
     # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
+    # When a board is the right thing at all (F1254): not for a hand-off, and never one nothing reads.
+    errors += boards_rule.issues(plan)
     if len(plan.boards) > 1:
         # A workflow's agents post to its own board (no product tool gives a workflow a shared board yet; SAI2's
         # review, 20): the one board a plan names is that board, under the person's name for it (F1214).
@@ -793,9 +811,9 @@ def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     ident, row = same
     whose = " (this conversation built it)" if state.get(LAST_BUILT_KEY) == ident else ""
     return [f"title: a workflow called \"{row.get('name')}\" is already in this workspace{whose}, id {ident}. Never "
-            "save a second of the same name: when the person means that one, this is a change to it (say so and stop "
-            "with the plan's questions, so their next message updates it); if they may want two, ask once which, and "
-            "give a second one a name of its own"]
+            "save a second of the same name: when the person means that one, this is a change to it (plan it as kind "
+            "update of that one); if they may want two, ask once which with ask_person, and give a second one a name "
+            "of its own"]
 
 
 def _api_names(plan: O.Plan, state: dict) -> list[str]:
@@ -1238,11 +1256,14 @@ def since_last(plan: O.Plan, before: dict | None) -> list[str]:
             lines.append(f'"{s.name}" now uses `{s.tool}`, not `{was.get("tool")}`')
         then = shown_inputs((was.get("config") or {}).get("tool_arguments"))
         now = shown_inputs((s.config or {}).get("tool_arguments"))
+        # Each value as code: a plan card never makes an outside address clickable (8a, 10-30), here the wrong site.
+        def code(value: str) -> str:
+            return f"`{value.replace('`', '')}`"
         for key in [*then, *(k for k in now if k not in then)]:
             if then.get(key) == now.get(key):
                 continue
-            moved = (f"{then[key]} → {now[key]}" if key in then and key in now
-                     else f"now {now[key]}" if key in now else f"{then[key]} is gone")
+            moved = (f"{code(then[key])} → {code(now[key])}" if key in then and key in now
+                     else f"now {code(now[key])}" if key in now else f"{code(then[key])} is gone")
             lines.append(f'"{s.name}": {key} {moved}')
     lines += [f'Removed the step "{s.get("name")}"' for s in old if id(s) not in matched]
     return lines
@@ -1344,7 +1365,10 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
     if run is not None:
         run.shared_state.pop(_SENDBACK_KEY, None)
     draft = O.PlanDraft.model_validate(_obj(args) or {})
-    return {"finish": "submit_plan", **draft.model_dump(exclude_none=True)}
+    # A plan carries no question (F1253): one written anyway goes on to the check, which asks it before any plan.
+    questions = [q.strip() for q in (_obj(args) or {}).get("questions") or [] if isinstance(q, str) and q.strip()]
+    return {"finish": "submit_plan", **draft.model_dump(exclude_none=True), **({"questions": questions}
+                                                                               if questions else {})}
 
 
 register_builder_tool(SUBMIT, submit_plan)
@@ -1428,7 +1452,16 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What earlier passes found is carried through a question round, so the lookup and the Connect cards are not
     # repeated, and every question with its answer reaches the planner, not only the last (SAI2's review, 22).
     asked = list(prior.get("asked") or [])
-    if prior.get("outcome") == "ask" and (answered := (_obj(state.get("human_response")) or {}).get("answer")):
+    reply = _obj(state.get("human_response")) or {}
+    reply = reply if isinstance(reply, dict) else {}
+    filled = reply.get("form") if isinstance(reply.get("form"), dict) else {}
+    if prior.get("outcome") == "ask" and prior.get("form") and filled:
+        # A form's answers, each with its own question (F1253): what the planner reads, and what is never asked again.
+        from core.native_builder.change_tools import form_answer
+
+        asked += [{"question": f.get("label") or "", "answer": form_answer(filled.get(f.get("name")))}
+                  for f in prior["form"] if isinstance(f, dict)]
+    elif prior.get("outcome") == "ask" and (answered := reply.get("answer")):
         entry = {"question": prior.get("question") or "", "answer": str(answered)}
         if prior.get("asking_periods"):
             # Code's own question (F1210): the answer is a rule each run works out from its own date. It lives in
@@ -1446,6 +1479,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
         # clock (F1210): a planner picked one of two weeks without saying so.
         return {**base, "outcome": "ask", "question": q.text, "asking_periods": q.dump()}
+    if finish == "ask_person" and isinstance(draft.get("form"), list) and draft["form"]:
+        from core.native_builder.change_tools import FORM_LEAD, form_text
+
+        return {**base, "outcome": "ask", "question": form_text(draft.get("question") or FORM_LEAD, draft["form"]),
+                "form": draft["form"]}
     if finish == "ask_person":
         from core.native_builder.change_tools import asked_text
 
@@ -1492,6 +1530,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 else "That plan has no steps to build."}
     if plan.room:
         return {**base, "outcome": "said", "say": plan.room}
+    asking, unsaid_said = await _asked_first(base, draft, plan.questions, ws, state)
+    if asking is not None:
+        return asking
+    plan.questions = []  # each was asked, or answered before: a plan's card carries no open question (F1253)
     if waiting := [m for m in plan.mcp_servers if not m.connected]:
         # The person's own MCP server, by its URL (F1225): its tools are known only once it is connected, so its card
         # comes before any plan, and its "Connected …" plans again on them (Naveen, 10-29; the exception to F949).
@@ -1571,10 +1613,14 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
+    said += unsaid_said
     # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
     prompts = prompts_for(plan, state) if plan.agents else {}
+    if prompts:
+        # Each board agent is told how to work its board, in code's words the card shows (F1254).
+        prompts = boards_rule.with_board_lines(plan, prompts)
     if buildable and prompts is None:
         # The new agents' instructions are written before the review, so the person reads them and the yes covers
         # them (Naveen, 10-23, Q2 as revised). Not for a plan that cannot be built yet: no call is spent on it.
@@ -1647,6 +1693,68 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         out["outcome"], out["review"] = "same", out["same_say"]
     await _card(out)
     return out
+
+
+#: The form's line when code asks about addresses it was not given (F1253).
+UNSAID_LEAD = "Before I show you the plan, check what I filled in that you haven't told me:"
+#: What the run was given, by state key: the person's words and answers, what is open, the workspace's own profile,
+#: what research read, a pasted export and the recordings. Never a model's own reading of the message (`request`,
+#: `turn`), and never the plan or its check, which hold the guess itself.
+GIVEN_KEYS = ("user_message", "chat_history", "org_profile", "plan_context", "existing_orch", "plan_findings",
+              "plan_research", "plan_lookup", "findings", "prior_findings", "export_source", "knowledge_steps",
+              "browser_steps", "current_page", "human_response", "review_feedback", "connect_answer", "plan_answer",
+              "change_clarify", "change_heard")
+
+
+async def _given(state: dict, ws: Workspace, asked: list[dict]) -> list[Any]:
+    """Everything the run was given that an address may come from (F1253): its state's (`GIVEN_KEYS`), the answers
+    to the request's questions (the seam's, and the check's `asked`), and the workspace (its agents, workflows, tools
+    and connected servers' URLs)."""
+    from core.native_builder.change_tools import _with_answers
+    from core.store.resources import load_mcp_servers
+
+    try:
+        servers = [s.get("url") for s in await load_mcp_servers() if isinstance(s, dict) and s.get("url")]
+    except Exception as exc:  # noqa: BLE001 — no servers read is no server's host given, never a failed build
+        _log.warning("the build's MCP servers were not read: %s", exc)
+        servers = []
+    answers = [a.get("answer") for a in _with_answers(state) if a.get("answer")]
+    answers += [a.get("answer") for a in asked if isinstance(a, dict) and a.get("answer")]
+    return [*(state.get(k) for k in GIVEN_KEYS), *answers, list(ws.agents.values()), list(ws.workflows.values()),
+            ws.tools, servers]
+
+
+async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspace,
+                        state: dict) -> tuple[dict | None, list[str]]:
+    """What only the person can say, asked before any plan, research or Connect card (F1253), in one form, one round
+    of the request's seam (F1226): each address the plan uses that the run was never given, the planner's value
+    filled in, and a question the plan carries anyway (`carried`, as `examine` kept it). Returns the ask, or None and, once the request has asked
+    enough, the review's words for each address it goes on with."""
+    from core.native_builder import addresses
+    from core.native_builder.change_tools import (_ASKS_WAY_IN, FORM_LEAD, FORM_MAX, QUESTIONS, asked_before,
+                                                  form_text, note_question, questions_asked)
+
+    _, run = _run()
+    unsaid = [a for a in addresses.unsaid(draft, await _given(state, ws, base.get("asked") or []))
+              if asked_before(state, "what", a.subject, a.label()) is None]
+    # The plan's own questions as `examine` kept them: one that asked for a key was cut there (F1093).
+    # How a service is reached is looked up, never asked, as `ask_person` refuses it.
+    questions = [q for q in carried if isinstance(q, str) and q.strip() and not _ASKS_WAY_IN.search(q)
+                 and asked_before(state, "what", "", q) is None]
+    if not (unsaid or questions):
+        return None, []
+    if questions_asked(state, run) >= QUESTIONS:
+        return None, [a.said() for a in unsaid]
+    form = []
+    for a in unsaid[:FORM_MAX]:
+        form.append({"name": f"q{len(form) + 1}", "type": addresses.FIELD_TYPE[a.kind], "label": a.label(),
+                     "value": a.value})
+        note_question(state, "what", a.subject, a.label(), field=form[-1]["name"])
+    for q in questions[:max(0, FORM_MAX - len(form))]:
+        form.append({"name": f"q{len(form) + 1}", "type": "string", "label": q.strip()})
+        note_question(state, "what", "", q.strip(), field=form[-1]["name"])
+    lead = UNSAID_LEAD if unsaid else FORM_LEAD
+    return {**base, "outcome": "ask", "question": form_text(lead, form), "form": form}, []
 
 
 async def _connect_first(base: dict, plan: O.Plan, waiting: list[O.McpServerPart], events: list[dict]) -> dict:

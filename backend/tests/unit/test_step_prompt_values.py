@@ -1,6 +1,6 @@
 """A value is a value, never a template — the step prompt's two reference families (F19, F3).
 
-`{state.x}` and `{{ … }}` used to be two passes, and the order was a leak: a state
+`{{ state.x }}` and `{{ … }}` used to be two passes, and the order was a leak: a state
 value written by the first was read by the second as a template, so a crawled
 page or a model answer that said `{{ global.STRIPE_KEY }}` reached the next step
 — and the run log — with the real value. Now `context._fill_task_template` is
@@ -66,7 +66,7 @@ def _llm(step_id, template, **extra):
 
 def _set(step_id, content, key, next_step_id):
     """A print step writes `content` into `shared_state[key]` — it renders
-    `{state.x}` and nothing else, so `{{ … }}` arrives in state as written."""
+    `{{ state.x }}` and nothing else, so `{{ … }}` arrives in state as written."""
     return {"id": step_id, "name": step_id, "type": "print", "print_content": content,
             "output_key": key, "next_step_id": next_step_id}
 
@@ -85,7 +85,7 @@ async def _chain(fake_llm, logged, note, template):
 # ── a state value is a value ───────────────────────────────────────────────────
 class TestAStateValueIsAValue:
     async def test_a_global_reference_inside_a_state_value_stays_as_written(self, fake_llm, logged):
-        prompt = await _chain(fake_llm, logged, "see {{ global.KEY }}", "Echo {state.note}")
+        prompt = await _chain(fake_llm, logged, "see {{ global.KEY }}", "Echo {{ state.note }}")
         assert "see {{ global.KEY }}" in prompt
         assert SECRET not in prompt
 
@@ -102,15 +102,15 @@ class TestAStateValueIsAValue:
     async def test_a_state_reference_inside_a_state_value_is_not_substituted(self, fake_llm, logged):
         """Seeded through a `state_schema` default — a print step would render it."""
         orch = S.make_orchestration(id="orch_v_default", entry_step_id="s1",
-                                    steps=[_llm("s1", "Echo {state.note} and {{ state.note }}")],
-                                    state_schema={"note": {"type": "string", "default": "see {state.user_input}"}})
+                                    steps=[_llm("s1", "Echo {{ state.note }} and {{ state.note }}")],
+                                    state_schema={"note": {"type": "string", "default": "see {{ state.user_input }}"}})
         await _run(orch, initial_input="the input")
         prompt = _prompt(logged, "s1")
-        assert prompt.count("see {state.user_input}") == 2 and "see the input" not in prompt
+        assert prompt.count("see {{ state.user_input }}") == 2 and "see the input" not in prompt
 
     async def test_the_run_log_carries_the_words_not_the_secret(self, fake_llm, logged):
         """The logged `_log_prompt` IS the transcript's INPUT PROMPT line."""
-        prompt = await _chain(fake_llm, logged, "{{ global.KEY }}", "Echo {state.note}")
+        prompt = await _chain(fake_llm, logged, "{{ global.KEY }}", "Echo {{ state.note }}")
         assert prompt.count("{{ global.KEY }}") == 1 and SECRET not in prompt
 
 
@@ -123,8 +123,8 @@ class TestTheRunsInputIsAValue:
         assert "please use {{ global.KEY }}" in prompt and SECRET not in prompt
 
     async def test_a_state_reference_in_the_input_stays_as_written(self, fake_llm, logged):
-        await _run(_orch("s1", [_llm("s1", "")]), initial_input="echo {state.user_input}")
-        assert "echo {state.user_input}" in _prompt(logged, "s1")
+        await _run(_orch("s1", [_llm("s1", "")]), initial_input="echo {{ state.user_input }}")
+        assert "echo {{ state.user_input }}" in _prompt(logged, "s1")
 
     async def test_the_input_is_still_the_task_when_there_is_no_template(self, fake_llm, logged):
         await _run(_orch("s1", [_llm("s1", "")]), initial_input="write a haiku")
@@ -135,7 +135,7 @@ class TestTheRunsInputIsAValue:
 class TestTheTemplateStillRenders:
     async def test_both_families_render_once_each(self, fake_llm, logged):
         prompt = await _chain(fake_llm, logged, "the note",
-                              "Key {{ global.KEY }}; note {state.note}; again {{ state.note }}")
+                              "Key {{ global.KEY }}; note {{ state.note }}; again {{ state.note }}")
         assert f"Key {SECRET}; note the note; again the note" in prompt
         assert prompt.count(SECRET) == 1
 
@@ -150,34 +150,34 @@ class TestTheTemplateStillRenders:
 
     async def test_an_unset_state_key_reads_empty(self, fake_llm, logged):
         """U74 (D267): it used to stay as written, and a model echoed it."""
-        prompt = await _chain(fake_llm, logged, "the note", "before {state.missing}|{{ state.missing }} after")
+        prompt = await _chain(fake_llm, logged, "the note", "before {{ state.missing }}|{{ state.missing }} after")
         assert "before | after" in prompt and "missing" not in prompt
 
     async def test_a_global_value_is_not_a_template_either(self, fake_llm, logged):
         await _run(_orch("s1", [_llm("s1", "Key {{ global.KEY }}")]),
-                   globals_={"KEY": "{{ global.OTHER }} {state.user_input}", "OTHER": "other-VALUE"})
+                   globals_={"KEY": "{{ global.OTHER }} {{ state.user_input }}", "OTHER": "other-VALUE"})
         prompt = _prompt(logged, "s1")
-        assert "Key {{ global.OTHER }} {state.user_input}" in prompt and "other-VALUE" not in prompt
+        assert "Key {{ global.OTHER }} {{ state.user_input }}" in prompt and "other-VALUE" not in prompt
 
 
 # ── the one pass, directly ────────────────────────────────────────────────────
-STATE = {"note": "see {{ global.KEY }} and {state.other}", "other": "O", "d": {"a": 1}}
-GLOBALS = {"KEY": SECRET, "OTHER": "{state.note}"}
+STATE = {"note": "see {{ global.KEY }} and {{ state.other }}", "other": "O", "d": {"a": 1}}
+GLOBALS = {"KEY": SECRET, "OTHER": "{{ state.note }}"}
 
 
 @pytest.mark.parametrize(("template", "expected"), [
-    ("{state.note}", "see {{ global.KEY }} and {state.other}"),
-    ("{{ state.note }}", "see {{ global.KEY }} and {state.other}"),
-    ("{{state.note}}", "see {{ global.KEY }} and {state.other}"),
+    ("{{ state.note }}", "see {{ global.KEY }} and {{ state.other }}"),
+    ("{{ state.note }}", "see {{ global.KEY }} and {{ state.other }}"),
+    ("{{state.note}}", "see {{ global.KEY }} and {{ state.other }}"),
     ("{{ global.KEY }}", SECRET),
-    ("{{ global.OTHER }}", "{state.note}"),
-    ("{state.d}", "{'a': 1}"),
+    ("{{ global.OTHER }}", "{{ state.note }}"),
+    ("{{ state.d }}", '{"a": 1}'),  # an object is JSON in the one form (F1252: the older form wrote str())
     ("{{ state.d }}", '{"a": 1}'),
-    ("{state.nope} {{ state.nope }} {{ global.nope }} {{ bare }}",
+    ("{{ state.nope }} {{ state.nope }} {{ global.nope }} {{ bare }}",
      "  {{ global.nope }} {{ bare }}"),
     ("plain text", "plain text"),
 ], ids=["legacy", "spaced", "unspaced", "global", "global-holding-state-ref",
-        "legacy-dict-is-str", "double-brace-dict-is-json", "unset-state-empty-unknown-global-stays", "plain"])
+        "once-the-older-form-a-dict-is-json-too", "double-brace-dict-is-json", "unset-state-empty-unknown-global-stays", "plain"])
 def test_fill_task_template_is_one_pass(template, expected):
     from core.orchestration.context import _fill_task_template
 
