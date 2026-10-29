@@ -33,6 +33,9 @@ NOT_EVENTS = frozenset({
     # The engine's input to the browser component's viewer `/input` (mouse, key, text, scroll, nav): an HTTP body to
     # the component, never yielded to a client (BRW1, F1142's "Record a task" opens at its start address).
     "nav",
+    # What a product tool's preview will create or delete (`will_create` / `will_delete`: {"type": <its kind>, …}),
+    # the shape every preview shares and an MCP client reads: a Python tool (F1198), a knowledge base (F1200, F1218).
+    "tool", "knowledge_base",
 })
 
 
