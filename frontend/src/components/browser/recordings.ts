@@ -37,7 +37,14 @@ export type RecordingStep = {
 
 export type RecordingInput = { name: string; label: string; step_id: string };
 export type RecordingOutput = { name: string; kind: 'rows' | 'value' | 'file' | string; step_id: string };
-export type PendingEdit = { edit_id: string; step_id: string; steps: RecordingStep[]; by: string; run_id?: string | null; at: number };
+/**
+ * A proposed fix, kept until a person approves or discards it (F1144, F1192): an agent's for one step, or a
+ * re-record's (`rest`) for that step and every one after. `by_name` where the product names people.
+ */
+export type PendingEdit = {
+  edit_id: string; step_id: string; steps: RecordingStep[]; by: string; by_name?: string | null;
+  run_id?: string | null; at: number; rest?: boolean;
+};
 
 export type Recording = {
   id: string;
@@ -49,6 +56,8 @@ export type Recording = {
   version: number;
   pending_edits: PendingEdit[];
   changed: string[];
+  /** False when this person may not see its pictures (cloud: its maker's and Builders', F1192): none is asked for. */
+  pictures?: boolean;
   created_at: number;
   updated_at: number | null;
   updated_by?: string;
@@ -72,6 +81,8 @@ export type RecordingsHost = {
   newUrl: () => string;
   shotUrl: (id: string, ref: string) => string;
   versionsUrl: (id: string) => string;
+  /** POST: a waiting fix approved into a new version, or discarded (F1192). */
+  editUrl: (id: string, editId: string, action: 'approve' | 'discard') => string;
   recordStartUrl: (browserSessionId: string) => string;
   recordStopUrl: (browserSessionId: string) => string;
   /** A recording's own page. */
@@ -79,6 +90,11 @@ export type RecordingsHost = {
   /** The Recordings list. */
   libraryHref: string;
   locked?: { upgradeHref: string };
+  /**
+   * Whether this person may approve or discard a waiting fix: the product's rule for changing a recording (cloud:
+   * Builder and up, the API's CHANGE_ROLE). OSS is one person's: always.
+   */
+  canChange?: boolean;
 };
 
 export type RecordBrowser = { recordingId: string; browserSessionId: string };
@@ -93,6 +109,19 @@ export async function listRecordings(host: RecordingsHost): Promise<RecordingSum
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const body = await res.json();
   return Array.isArray(body?.recordings) ? body.recordings : [];
+}
+
+/**
+ * A waiting fix approved (a new version) or discarded: the recording as it is now, or why not in the API's words
+ * (404: gone, someone else decided it; 403: a person who can't change recordings).
+ */
+export async function decideEdit(host: RecordingsHost, id: string, editId: string, action: 'approve' | 'discard'):
+    Promise<{ doc: Recording } | { gone: string } | { failed: string }> {
+  const res = await fetch(host.editUrl(id, editId, action), { method: 'POST' }).catch(() => null);
+  const body = await res?.json().catch(() => ({})) ?? {};
+  if (res?.ok) return { doc: body as Recording };
+  if (res?.status === 404) return { gone: refusal(body, 'That fix is gone.') };
+  return { failed: refusal(body, action === 'approve' ? 'The fix was not approved. Try again.' : 'The fix was not discarded. Try again.') };
 }
 
 export async function getRecording(host: RecordingsHost, id: string): Promise<Recording | null> {

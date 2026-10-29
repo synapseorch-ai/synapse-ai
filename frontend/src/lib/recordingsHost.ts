@@ -13,6 +13,7 @@ export const OSS_RECORDINGS_HOST: RecordingsHost = {
   newUrl: () => '/api/recordings/new',
   shotUrl: (id, ref) => `/api/recordings/${enc(id)}/shots/${enc(ref)}`,
   versionsUrl: (id) => `/api/recordings/${enc(id)}/versions`,
+  editUrl: (id, editId, action) => `/api/recordings/${enc(id)}/edits/${enc(editId)}/${action}`,
   recordStartUrl: (browserSessionId) => `/api/browser/${enc(browserSessionId)}/record/start`,
   recordStopUrl: (browserSessionId) => `/api/browser/${enc(browserSessionId)}/record/stop`,
   recordingHref: (id) => `/browser/recordings/${enc(id)}`,
