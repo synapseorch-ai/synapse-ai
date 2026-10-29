@@ -73,6 +73,13 @@ async def list_tools() -> list[types.Tool]:
 
 
 @app.call_tool()
+async def answer_tool(name: str, arguments: dict):
+    """What MCP is answered: a failure with `isError` (F1208). `call_tool` keeps its content for direct callers."""
+    from core.tool_result import as_result
+
+    return as_result(await call_tool(name, arguments))
+
+
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     # The tenant and the store are established by `bootstrap()`, which runs
     # alongside the handshake rather than ahead of it. A handler is the first

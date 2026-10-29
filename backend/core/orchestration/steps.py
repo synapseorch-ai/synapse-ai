@@ -1241,6 +1241,12 @@ class ToolStepExecutor:
                     raise ToolCallFailed(
                         f"Tool '{tool_name}' returned an error: {text[:500] or '(no detail)'}",
                         retryable=True)
+                # One of the product's own servers that predates its `isError` (F1208) says a failure in its
+                # content: read its known shape. Never a third-party server's, whose "error" key may be data.
+                from core.tool_result import built_in_failure
+                from core.tools_registry import ALL_NATIVE_TOOLS
+                if agent_name in ALL_NATIVE_TOOLS and (why := built_in_failure(text)):
+                    raise ToolCallFailed(f"Tool '{tool_name}' failed: {why}", retryable=True)
                 return text
         # Custom tools — Python or HTTP. The run's resolved list, the one the
         # schema lookup above already used: the store's raw rows carry a hosted

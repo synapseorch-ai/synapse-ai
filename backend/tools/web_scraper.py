@@ -773,7 +773,10 @@ def _ok(data: dict) -> list[types.TextContent]:
 
 
 def _err(msg: str) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=json.dumps({"success": False, "error": msg}))]
+    # A failure, said the MCP way where `call_tool` answers (F1208): content its callers read, and `isError`.
+    from core.tool_result import failed
+
+    return failed(json.dumps({"success": False, "error": msg}))
 
 
 def _score_links(links: list[dict]) -> list[dict]:
@@ -1610,6 +1613,13 @@ async def _handle_search_page(args: dict) -> list[types.TextContent]:
 # ---------------------------------------------------------------------------
 
 @app.call_tool()
+async def answer_tool(name: str, arguments: dict):
+    """What MCP is answered: a failure with `isError` (F1208). `call_tool` keeps its content for direct callers."""
+    from core.tool_result import as_result
+
+    return as_result(await call_tool(name, arguments))
+
+
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     try:
         meta = app.request_context.meta
