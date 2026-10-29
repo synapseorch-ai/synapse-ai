@@ -13236,6 +13236,46 @@ async def check_brwturn(browser) -> str:
 
 
 @check
+async def check_brwreopen(browser) -> str:
+    """A chat reopened while it waits on the person's turn in the browser shows that turn's card and its browser, and
+    Done hands back (F1182). The history read carries the parked turn (`pending_browser_turn`); before, a reload showed
+    the saved turns and nothing to answer, and the agent waited on a hand-back nobody could give."""
+    history = {"turns": [{"user": "check the partner portal", "assistant": "I opened the portal.", "timestamp": ""}],
+               "pending_approval": None, "running": None,
+               "pending_browser_turn": {"session_id": "bsR", "reason": "Sign in to Saltmarsh's partner portal.",
+                                        "banner_kind": "session_expired"}}
+    ctx, page = await _chat_page(browser, "uismoke-brw-reopen", history, extra_init=BROWSER_STUB)
+    bad: list[str] = []
+    try:
+        await _brw_shots(ctx)
+        card = page.locator("main [data-browser-turn]")
+        try:
+            await card.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("a chat reopened while parked on a browser turn has no card")
+        if "Sign in to Saltmarsh" not in await card.inner_text():
+            bad.append("the reopened card does not say what the turn is for")
+        if "Your turn: sign in again" not in await card.inner_text():
+            bad.append("the reopened card lost its banner")
+        try:
+            await _pane(page).wait_for(timeout=5_000)
+        except Exception:
+            bad.append("the reopened chat did not show its browser")
+        await card.get_by_role("button", name="Done").click()
+        if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsR/wheel/hand-back'))"):
+            bad.append("the reopened card's Done did not hand the wheel back")
+        if not await _wait(page, "() => window.__calls.some(c => /\\/api\\/chat\\/[^/]+\\/events/.test(c.url))"):
+            bad.append("the turn was not read on after the hand-back")
+        if not await _on_screen(page, "You handed the browser back"):
+            bad.append("the conversation does not say the browser was handed back")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a chat reopened on a browser turn shows its card and browser; Done hands back and the turn is read on"
+
+
+@check
 async def check_brwbox(browser) -> str:
     """An answer the run refuses never stays in the conversation (BRW2, F1078). The box keeps card numbers from the
     model: the engine refuses one with "Card details go in the browser; you'll be asked there." The chat drew the

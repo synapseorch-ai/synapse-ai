@@ -592,6 +592,39 @@ async def test_handing_back_a_parked_chat_sends_the_persons_word_as_its_next_mes
     assert "resumed" not in again.json(), "a park is answered once"
 
 
+async def test_a_chat_reopened_while_parked_gets_its_browser_card_back(client, monkeypatch):
+    """A reload while the chat waits on the person's turn in the browser (F1182): the history read carries the turn
+    as the live card's own fields, for the agent it is parked on only, and reading it answers nothing."""
+    fake = browser_client.BrowserTools(_FakeHost())
+    await _parked_on(fake, "chat:conv2", "s7", {"kind": "send", "reason": "Press Pay yourself.", "session_id": "s7",
+                                                "agent_key": "agent_buyer"})
+    monkeypatch.setattr(browser_client, "tools", fake)
+    history = "/api/sessions/conv2/history"
+
+    for _ in range(2):
+        body = (await client.get(history, params={"agent_id": "agent_buyer"})).json()
+        assert body["pending_browser_turn"] == {"session_id": "s7", "reason": "Press Pay yourself.",
+                                                "banner_kind": "send"}
+        assert body["pending_approval"] is None
+    # Another agent's conversation in the same session, or the default one, has no card.
+    assert (await client.get(history, params={"agent_id": "agent_other"})).json()["pending_browser_turn"] is None
+    assert (await client.get(history)).json()["pending_browser_turn"] is None
+    # Read, never taken: Done still answers it.
+    assert (await fake.take_parked("chat:conv2"))["reason"] == "Press Pay yourself."
+    assert (await client.get(history, params={"agent_id": "agent_buyer"})).json()["pending_browser_turn"] is None
+
+
+async def test_a_parked_turn_without_a_banner_comes_back_without_one(client, monkeypatch):
+    fake = browser_client.BrowserTools(_FakeHost())
+    await _parked_on(fake, "chat:conv3", "s6", {"reason": "Your turn.", "session_id": "s6"})
+    monkeypatch.setattr(browser_client, "tools", fake)
+    body = (await client.get("/api/sessions/conv3/history")).json()
+    assert body["pending_browser_turn"] == {"session_id": "s6", "reason": "Your turn."}
+    await fake.close_owner("chat:conv3")
+    assert (await client.get("/api/sessions/conv3/history")).json()["pending_browser_turn"] is None, \
+        "a closed browser has no turn to take"
+
+
 async def test_releasing_a_parked_runs_send_resumes_the_run(client, monkeypatch):
     from core.orchestration import answers
     answered = []

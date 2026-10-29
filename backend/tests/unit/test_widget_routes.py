@@ -156,15 +156,22 @@ class TestTheTokenIsTheAuthority:
         )
         assert response.status_code == 409
 
-    async def test_history_never_returns_a_pending_approval(self, client, seed_agent):
+    async def test_history_never_returns_a_pending_approval(self, client, seed_agent, monkeypatch):
         """A widget shows no approval card, so a parked turn must not come back
-        as one on reload."""
+        as one on reload — nor a turn in the browser, which is the app's (F1182)."""
+        from core.browser import client as browser_client
+
+        async def parked_everywhere(key):
+            return {"kind": "send", "reason": "Your turn.", "session_id": "s1"}
+
+        monkeypatch.setattr(browser_client.tools, "peek_parked", parked_everywhere, raising=False)
         _, _, token = await self._token(client, seed_agent)
         response = await client.get(
             "/api/widget/history", headers={"Authorization": f"Bearer {token}"}
         )
         assert response.status_code == 200
         assert "pending_approval" not in response.json()
+        assert "pending_browser_turn" not in response.json()
 
 
 class TestLimits:
