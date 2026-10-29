@@ -12,7 +12,7 @@
  *
  * Nothing connects silently: the card is the person's to press.
  */
-import { ArrowRight, Check, Lock } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Check, Lock } from 'lucide-react';
 import * as React from 'react';
 
 import { Button, buttonStyles, Input } from '@/components/ui';
@@ -163,6 +163,25 @@ export function ConnectCard({
                     <span className="break-all font-mono text-xs text-text-muted">{spec.server.url}</span>
                 )}
             </div>
+
+            {/* Where the key goes, before any field it is typed in (F1244). */}
+            {!done && spec.kind === 'tool_secret' && (spec.tool?.sends_to?.length ?? 0) > 0 && (
+                <div className="flex flex-col gap-1.5 text-sm">
+                    <span className="text-text-muted">
+                        Keys will be sent to{' '}
+                        <span className="break-all font-mono text-text">{spec.tool!.sends_to!.join(', ')}</span>
+                    </span>
+                    {(spec.tool!.unsure ?? []).map((host) => (
+                        <span key={host} className="inline-flex items-start gap-1.5 text-warning">
+                            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                            <span>
+                                <span className="font-mono">{host}</span> doesn&apos;t look like {name}&apos;s own
+                                domain. Check it&apos;s theirs before you enter a key.
+                            </span>
+                        </span>
+                    ))}
+                </div>
+            )}
 
             {!done && run && hostParams.map((p) => (
                 <label key={p.name} className="flex flex-col gap-1.5">

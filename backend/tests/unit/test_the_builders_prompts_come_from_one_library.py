@@ -75,7 +75,9 @@ from core.native_builder import prompt_lint, seed
 #: (fix-forward 14), ab529469….
 #: F1243: every answer goes through check_answer and is said by a print; the reporter's rule 4 never writes a plan or
 #: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
-BUNDLE_SHA256 = "148653dd7235e35daebc6ba41f6c758138b65493b7a35de938681660eee71a40"
+#: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
+#: branch; on fix-forward 14's tree, 4c222b83….
+BUNDLE_SHA256 = "4c222b83f951094dbbee953f4c44d9549643722d276b77ad2269bfe892fe36b1"
 
 
 def _sha(definitions) -> str:

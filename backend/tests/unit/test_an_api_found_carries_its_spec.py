@@ -7,8 +7,8 @@ can't make a tool for it here yet" and nothing more (F769). Now an `api` option 
 header, its name and scheme), 1–5 endpoints and its docs page. Code holds the spec to the provider's own domain
 before a key is ever given to its host:
 
-- `own_domains` is computed by code: the Registry anchors for the provider ∪ the registrable domains of the own pages
-  read (A3);
+- `own_domains`: the Registry anchors for the provider ∪ the domains the research names that this run read a page on
+  (A3; F1244 — before, code judged them by the provider's name);
 - base_url is https, on one of those domains; one `{param}` may stand as the leftmost host label only (Mailchimp's
   `{dc}`), named in `host_params` (A1);
 - no path climbs out of base_url: no `..`, `//` or encoded slash (A5);
@@ -43,8 +43,10 @@ def read_mailchimps_docs():
     br._LOOSE.clear()
 
 
-async def _report(api=None, *, sources=(DOCS,), how="api", provider="Mailchimp"):
-    option = {"provider": provider, "how": how, "detail": "Sends the newsletter", "sources": list(sources)}
+async def _report(api=None, *, sources=(DOCS,), how="api", provider="Mailchimp", own=("mailchimp.com",)):
+    # The research names the provider's own domains, and code takes the ones it read (F1244).
+    option = {"provider": provider, "how": how, "detail": "Sends the newsletter", "sources": list(sources),
+              "own_domains": list(own)}
     if api is not None:
         option["api"] = api
     out = await br.report_findings({"goal": "send the newsletter", "options": [option]}, None, [])
@@ -191,7 +193,7 @@ async def test_a_spec_on_another_tenant_of_a_shared_host_is_not_kept():
     br._LOOSE[""] = {**br._fresh(), "read_hosts": ["acme.workers.dev"]}
     spec = {**MAILCHIMP, "base_url": "https://evil.workers.dev/v1", "host_params": [],
             "docs_url": "https://acme.workers.dev/docs"}
-    found = await _report(spec, sources=("https://acme.workers.dev/docs",), provider="Acme")
+    found = await _report(spec, sources=("https://acme.workers.dev/docs",), provider="Acme", own=("acme.workers.dev",))
     assert "api" not in found and "own domain" in found["detail"]
 
 
