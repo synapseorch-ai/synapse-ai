@@ -3385,6 +3385,38 @@ def step_successors(s: dict, by_id: dict) -> list[str]:
     return successors
 
 
+#: Tools that read a file's whole content into state (their bare names).
+_FILE_READERS = frozenset({"vault_read", "read_file", "read_text_file", "read_multiple_files"})
+
+
+def _file_content_into_code(step: dict, steps: list[dict]) -> list[str]:
+    """A code runner's program fed a file's content from state (F1212, CAP3's stage 0): the code should read the file
+    where the sandbox mounts the vault, `/data/<path>`, not have its text carried in. Said with the path to use."""
+    from core.orchestration.steps import CODE_TOOLS, tool_argument_refs
+
+    if str(step.get("forced_tool") or "").split("__")[-1] not in CODE_TOOLS:
+        return []
+    code = (step.get("tool_arguments") or {}).get("code")
+    if not isinstance(code, str):
+        return []
+    readers = {str(w.get("output_key")): w for w in steps
+               if w.get("type") == "tool" and str(w.get("forced_tool") or "").split("__")[-1] in _FILE_READERS
+               and w.get("output_key")}
+    issues = []
+    for ref in tool_argument_refs({"code": code}):
+        reader = readers.get(ref.split(".")[0])
+        if reader is None:
+            continue
+        path = str(((reader.get("tool_arguments") or {}).get("path")) or "").lstrip("/")
+        where = f"'/data/{path}'" if path else "'/data/<its vault path>'"
+        issues.append(
+            f"Tool step '{step.get('id')}' runs code on a file's content carried in from 'state.{ref}' (step "
+            f"'{reader.get('id')}' reads it). Code reads the vault where the sandbox mounts it: open {where} in the "
+            f"code itself (e.g. pandas.read_csv({where})), and drop the read step if nothing else needs it."
+        )
+    return issues
+
+
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False) -> dict:
     """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
@@ -3661,6 +3693,7 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                             f"Tool step '{sid}' sets an argument from 'state.{ref}', but nothing writes '{key}' — "
                             f"give an earlier step '{key}' as its output_key, or declare it in the state schema."
                         )
+                issues += _file_content_into_code(s, steps)
         # An Ingest step reads its records from one key. A key the schema
         # declares counts too: a run's caller can fill it, and a list default
         # is a way to seed records.
