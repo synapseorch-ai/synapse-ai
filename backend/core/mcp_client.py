@@ -65,6 +65,24 @@ def remote_url_problem(url: str) -> str | None:
     return None
 
 
+#: The host's own rule for a remote server's address: async `rule(url) -> reason | None`, after the shape check. Cloud
+#: plugs in its egress check, so a private host is refused at every door that adds one (SSRF). None: the shape alone.
+_url_rule: Any = None
+
+
+def set_url_rule(rule: Any) -> None:
+    """Install the host's rule for a remote MCP server's URL. ``None`` removes it."""
+    global _url_rule
+    _url_rule = rule
+
+
+async def remote_url_refusal(url: str) -> str | None:
+    """`remote_url_problem`, then the host's rule: what every door that adds a remote server asks (F1201)."""
+    if (problem := remote_url_problem(url)) is not None:
+        return problem
+    return await _url_rule(url) if _url_rule is not None else None
+
+
 # stdio MCP servers launch arbitrary local OS processes (npx/uvx/python -c/…),
 # which is the whole point of the transport but also an RCE-shaped capability.
 # These helpers gate every path that can spawn one. See GHSA-3j67-x3j8-r32x.
@@ -891,7 +909,7 @@ class MCPClientManager:
                 raise ValueError(f"'{command}' not found in PATH. {hints.get(command, 'Please install it.')}")
             new_config.update({"command": command, "args": args or [], "env": env or {}})
         else:
-            if (problem := remote_url_problem(url)) is not None:
+            if (problem := await remote_url_refusal(url)) is not None:
                 raise ValueError(problem)
             new_config.update({"url": url, "token": token})
 

@@ -101,9 +101,9 @@ async def _outward(url: str) -> str | None:
     """Why `url` is not a remote server the card may offer, or None when it is one: the Apps screen's rule
     (`mcp_client.remote_url_problem`), and, as a model wrote the URL, never a host inside this network unless the
     deployment lets it be reached (`EGRESS_ALLOW_HOSTS`)."""
-    from core.mcp_client import remote_url_problem
+    from core.mcp_client import remote_url_refusal
 
-    if (problem := remote_url_problem(url)) is not None:
+    if (problem := await remote_url_refusal(url)) is not None:
         return problem
     from core.builder_tools import _refuse_inward_url
 

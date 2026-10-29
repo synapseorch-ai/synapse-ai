@@ -47,3 +47,31 @@ async def test_the_apps_screen_refuses_what_the_card_does(manager):
     with pytest.raises(ValueError, match="starts with http:// or https://"):
         await manager.add_server(name="tracker", server_type="remote", url="mcp.example.com/mcp")
     assert manager.servers_config == [] and manager.saved == []
+
+
+async def test_a_hosts_rule_is_asked_at_both_doors(manager):
+    """Cloud's seam (8a 10-29): its egress check is the rule at the Apps screen and the Connect card alike."""
+    import json
+
+    from core import mcp_client
+    from core.builder_tools import execute_builder_tool_with_events
+
+    asked = []
+
+    async def egress(url):
+        asked.append(url)
+        return "That address is inside a private network, which this workspace can't reach." if "10.0.0" in url else None
+
+    mcp_client.set_url_rule(egress)
+    try:
+        with pytest.raises(ValueError, match="private network"):
+            await manager.add_server(name="inner", server_type="remote", url="https://10.0.0.9/mcp")
+        raw, events = await execute_builder_tool_with_events("prepare_connection", {
+            "kind": "mcp_server", "title": "Connect it", "url": "https://10.0.0.9/mcp", "server_name": "Inner"},
+            server_module=None)
+        assert "private network" in json.loads(raw)["error"] and events == []
+        assert await mcp_client.remote_url_refusal("https://mcp.example.com/mcp") is None
+    finally:
+        mcp_client.set_url_rule(None)
+    assert asked == ["https://10.0.0.9/mcp", "https://10.0.0.9/mcp", "https://mcp.example.com/mcp"]
+    assert manager.servers_config == []
