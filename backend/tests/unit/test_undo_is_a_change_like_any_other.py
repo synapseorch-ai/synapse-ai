@@ -279,8 +279,14 @@ async def test_a_workflow_no_door_would_save_now_is_not_promised_back(client):
     assert not [o for o in await load_orchestrations() if o.get("name") == "Router"]
 
 
-async def test_a_deleted_http_tool_comes_back_without_its_headers(client):
+async def test_a_deleted_http_tool_comes_back_without_its_headers(client, monkeypatch):
+    from core import egress_guard
     from core.store.resources import load_tools, save_tool
+
+    async def resolve(host):  # a public address, never the network's DNS (F1238)
+        return ["93.184.216.34"]
+
+    monkeypatch.setattr(egress_guard, "resolve", resolve)
 
     await save_tool({"name": "mailchimp_lists", "description": "Lists", "tool_type": "http", "method": "GET",
                      "url": "https://us1.api.mailchimp.com/3.0/lists",

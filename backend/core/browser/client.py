@@ -82,7 +82,7 @@ class _Host:
 
     def _env(self) -> dict[str, str]:
         keep = ("PATH", "HOME", "LANG", "TMPDIR", "PLAYWRIGHT_BROWSERS_PATH", "XDG_CACHE_HOME",
-                "EGRESS_ALLOW_HOSTS", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
+                "EGRESS_ALLOW_HOSTS", "EGRESS_NAT64_PREFIXES", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY")
         env = {k: os.environ[k] for k in keep if k in os.environ}
         try:
             from core.config import load_settings
