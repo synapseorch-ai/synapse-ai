@@ -14351,6 +14351,157 @@ async def check_brwrecordingedit(browser) -> str:
 
 
 @check
+async def check_brwfixwaiting(browser) -> str:
+    """A waiting fix is approved or discarded on its recording's page (BRW2, F1192, Naveen 10-30). The step panel, a
+    re-record and the list's "A fix is waiting" all send the person there, so the page lists each fix waiting: which
+    step it replaces (a re-record: that step and every one after), its proposed steps with their pictures, who
+    proposed it, from which run, when. Approve fix makes it a new version; Discard fix asks first; a fix that is gone
+    is said in the API's words; the list's badge goes once none waits. A person the API says may not see the
+    recording's pictures (`pictures: false`; cloud's maker-and-Builders rule) gets the steps as words, and no picture
+    is asked for at all."""
+    import base64
+    rid = "rec_" + "w" * 24
+    now = time.time()
+    fix_click = {"id": "s4b", "n": 4, "action": "click", "target": {"role": "button", "name": "Find orders"},
+                 "value": None, "after_shot": "e-s4b", "line": "Click Find orders"}
+    edits = [
+        {"edit_id": "ed_a", "step_id": "s4", "steps": [fix_click], "by": "agent_fixer", "run_id": "run_42", "at": now - 600},
+        {"edit_id": "ed_b", "step_id": "s2", "rest": True, "by": "you", "run_id": None, "at": now - 300, "steps": [
+            {"id": "s2b", "n": 2, "action": "type", "target": {"role": "textbox", "label": "Order"},
+             "value": {"fixed": "A-2002"}, "after_shot": None, "line": "Type “A-2002” into Order"}]},
+        {"edit_id": "ed_c", "step_id": "s5", "steps": [
+            {"id": "s5b", "n": 5, "action": "read", "target": {"role": "table", "name": "Open orders"}, "value": None,
+             "after_shot": None, "output": "orders", "line": "Read Open orders → orders"}],
+         "by": "agent_fixer", "run_id": "run_43", "at": now - 120},
+    ]
+    state = {"doc": _recording(rid, pending_edits=edits), "gone": {"ed_b"}}
+    decided: list[tuple[str, str]] = []
+    shots: list[str] = []
+
+    async def one(route):
+        await route.fulfill(status=200, json=state["doc"])
+
+    async def decide(route):
+        m = re.search(r"/edits/([^/]+)/(approve|discard)$", route.request.url)
+        edit_id, action = m.group(1), m.group(2)
+        decided.append((edit_id, action))
+        doc = dict(state["doc"])
+        doc["pending_edits"] = [e for e in doc["pending_edits"] if e["edit_id"] != edit_id]
+        if edit_id in state["gone"]:
+            state["doc"] = doc  # someone else decided it: a reload no longer lists it
+            return await route.fulfill(status=404, json={"detail": "That fix is gone."})
+        if action == "approve":
+            doc["version"] = int(doc["version"]) + 1
+        state["doc"] = doc
+        await route.fulfill(status=200, json=doc)
+
+    async def shot(route):
+        shots.append(route.request.url)
+        await route.fulfill(status=200, body=base64.b64decode(BRW_JPEG), headers={"Content-Type": "image/jpeg"})
+
+    async def rows(route):
+        d = state["doc"]
+        await route.fulfill(status=200, json={"recordings": [
+            {"id": rid, "name": d["name"], "sites": d["sites"], "version": d["version"], "created_at": now - 3_600,
+             "updated_at": now - 60, "steps": len(d["steps"]), "pending_edits": len(d["pending_edits"])}]})
+
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), one)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/edits/[^/]+/(approve|discard)$"), decide)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/shots/[^/?]+$"), shot)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), lambda r: r.fulfill(status=200, json={"versions": []}))
+    await ctx.route(re.compile(r".*/api/recordings$"), rows)
+    page = await ctx.new_page()
+    bad: list[str] = []
+    try:
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        waiting = page.get_by_role("region", name="Fixes waiting")
+        try:
+            await waiting.wait_for(timeout=30_000)
+        except Exception:
+            raise AssertionError("a recording with fixes waiting shows none of them on its page")
+        await asyncio.sleep(SETTLE)
+        fixes = waiting.get_by_role("listitem")
+        if await fixes.count() != 3:
+            bad.append(f"the page lists {await fixes.count()} fixes waiting, not 3")
+        first, second = (await fixes.nth(0).inner_text()), (await fixes.nth(1).inner_text())
+        if "step 4" not in first or "Click Search" not in first or "Click Find orders" not in first:
+            bad.append(f"the agent's fix does not say the step it replaces and its own step: {first[:160]!r}")
+        if "run" not in first.lower():
+            bad.append("the agent's fix does not say the run it came from")
+        if "every step after" not in second:
+            bad.append(f"a re-record's fix does not say it replaces that step and every one after: {second[:160]!r}")
+        if await fixes.nth(0).get_by_role("img").count() != 1:
+            bad.append("the agent's fix does not show its proposed step's picture")
+        if not any(u.endswith("/e-s4b") for u in shots):
+            bad.append("the fix's picture was not asked for by its own name")
+
+        # Gone meanwhile (another person decided it): said in the API's words, and the page reads the recording again.
+        await fixes.nth(1).get_by_role("button", name="Approve fix").click()
+        await asyncio.sleep(1.2)
+        if "That fix is gone." not in await page.locator("main").inner_text():
+            bad.append("a fix that is gone is not said in the API's words")
+        if await waiting.get_by_role("listitem").count() != 2:
+            bad.append("after a gone fix the page does not read the recording again")
+
+        # Discard asks first.
+        last = waiting.get_by_role("listitem").filter(has_text="Read Open orders")
+        await last.get_by_role("button", name="Discard fix").click()
+        ask = page.get_by_role("alertdialog").or_(page.get_by_role("dialog"))
+        await ask.first.wait_for(timeout=5_000)
+        if ("ed_c", "discard") in decided:
+            bad.append("Discard fix discarded before it asked")
+        await ask.first.get_by_role("button", name="Discard fix").click()
+        await asyncio.sleep(1.2)
+        if ("ed_c", "discard") not in decided:
+            bad.append("Discard fix sent no discard")
+
+        await waiting.get_by_role("listitem").first.get_by_role("button", name="Approve fix").click()
+        await asyncio.sleep(1.2)
+        if ("ed_a", "approve") not in decided:
+            bad.append("Approve fix sent no approve")
+        if await page.get_by_role("region", name="Fixes waiting").count():
+            bad.append("with no fix left the page still shows Fixes waiting")
+        if "version 2" not in (await page.locator("main").inner_text()).lower():
+            bad.append("an approved fix does not say it is the recording's new version")
+
+        await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+        await page.get_by_role("list", name="Recordings").wait_for(timeout=15_000)
+        await asyncio.sleep(SETTLE)
+        if re.search(r"fix(es)? (is|are) waiting", await page.locator("main").inner_text()):
+            bad.append("the list still says a fix is waiting once none is")
+    finally:
+        await ctx.close()
+
+    # Pictures this person may not see (the API's `pictures: false`): the fix and the steps as words, none asked for.
+    state["doc"] = _recording(rid, pending_edits=[edits[0]], pictures=False)
+    shots.clear()
+    ctx = await browser.new_context(viewport={"width": WIDE[0], "height": WIDE[1]})
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}$"), one)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/shots/[^/?]+$"), shot)
+    await ctx.route(re.compile(rf".*/api/recordings/{rid}/versions$"), lambda r: r.fulfill(status=200, json={"versions": []}))
+    page = await ctx.new_page()
+    try:
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        waiting = page.get_by_role("region", name="Fixes waiting")
+        await waiting.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE + 1.0)
+        if "Click Find orders" not in await waiting.inner_text():
+            bad.append("without pictures the fix's proposed step is not shown as words")
+        if shots:
+            bad.append(f"a picture the API says this person may not see was asked for: {shots[:3]}")
+        if await page.get_by_role("main").get_by_role("img").count():
+            bad.append("without pictures the page still draws a picture")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("a recording's page lists each fix waiting with the step it replaces, its steps and pictures, who and which "
+            "run; Approve fix makes a new version, Discard fix asks first, a gone fix is said, the list's badge goes; "
+            "without pictures, words only and none asked for")
+
+
+@check
 async def check_brwrecordingredo(browser) -> str:
     """Re-record from a step (BRW2, F1142; BRW1 10-29): the browser is the recording's own, its steps before the one
     picked replay, then the person records; Stop keeps the new steps as a fix waiting to be approved. If the replay
