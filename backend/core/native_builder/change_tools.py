@@ -937,7 +937,8 @@ async def said_without_secret_asks(run: Any) -> None:
     """A builder turn's reply never asks for a key, a token or a password: a sentence of it that does is taken out,
     and code's line pointing to the Connect card and the Vault is said in its place (the manager's net, 10-27). The
     replies of the talk and answer routes are a model's own words, with no finish tool to refuse them; here, where
-    every run ends (fleet included), before the panel reads `summary` and the conversation keeps it."""
+    every run ends (fleet included), before the panel reads `summary` and the conversation keeps it. A file the reply
+    says is in the Vault is held to the Vault there too (F1211, `vault_claims`)."""
     from core.native_builder.identity import is_builder_run
     from core.orchestration.state import SharedState
     from core.secret_scrub import without_secret_asks
@@ -947,9 +948,15 @@ async def said_without_secret_asks(run: Any) -> None:
     said = run.shared_state.get("summary")
     if not isinstance(said, str):
         return
+    from core.native_builder import vault_claims
+
     cleaned, was = without_secret_asks(said)
     # Which run it is, asked last: on a host it is a read, and every run that ends comes here.
-    if was and await is_builder_run(run):
+    if not (was or vault_claims.claimed(cleaned)) or not await is_builder_run(run):
+        return
+    # A file it says is in the Vault is read there first (F1211): one that is not is said so, by code.
+    cleaned, wrong = await vault_claims.checked(cleaned)
+    if was or wrong:
         run.shared_state["summary"] = cleaned
         await SharedState(run).checkpoint()
 
