@@ -30,6 +30,8 @@ TOPICS: dict[str, str] = {
     "widgets": "website widgets: the agent that answers, the sites allowed, on or off",
     "tool_policy": "whether agents must ask before destructive, open-world or undeclared tools, by default and per agent",
     "knowledge": "knowledge bases, or that Knowledge is switched off",
+    "evals": "evals: each workflow a rubric scores, its golden sets and its latest scores and regressions; with "
+             "`name`, that workflow's eval in full (its rubric, recent scores, golden sets and their last runs)",
     "usage": "what each workflow's runs used over the last `days` days (runs, credits, model dollars)",
     "plan": "the plan this workspace is on and the credits and model money left",
     "models": "the default model, the builder's models, and which providers have a key (never the key)",
@@ -66,6 +68,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "widgets": {"keys": ["items", "note"], "item": ["name", "agent", "allowed_sites", "on", "messages_per_day"]},
     "tool_policy": {"keys": ["default", "agents_with_their_own", "note"]},
     "knowledge": {"keys": ["items", "note"], "item": ["name", "description", "status"]},
+    "evals": {"keys": ["items?", "note?", "workflow?", "rubric?", "scores?", "regressions?", "agreement?",
+                       "golden_sets?"], "item": ["workflow", "rubric", "golden_sets", "last_score", "regressions"]},
     # Where the host charges credits, they come beside the model dollars (F843).
     "usage": {"keys": ["items", "window", "note"], "item": ["workflow", "runs", "model_dollars", "credits?"]},
     # Self-hosted has no plan: no items, and a note saying so.
@@ -106,6 +110,8 @@ ELSEWHERE: dict[str, str] = {
                    "`agents`.",
     "knowledge": "This shows knowledge bases, or that Knowledge is off. What a workflow's steps search is in topic "
                  "`workflow` with its name.",
+    "evals": "This shows evals: rubrics scoring workflows, golden sets and scores. A workflow's steps are topic "
+             "`workflow` with its name; what its runs did, `runs`.",
     "usage": "This shows what each workflow's runs used. The runs themselves are topic `runs`; the plan and what is "
              "left of it, `plan`.",
     "plan": "This shows the plan and what is left of it. What runs used is topic `usage`.",
@@ -502,12 +508,43 @@ async def _workflow(args: dict) -> dict:
             "missing_or_off": [scrub_secrets(x) for x in said["off"]]}
 
 
+async def _evals(args: dict) -> dict:
+    """Evals (F1255): with `name`, one workflow's eval in full, through the product tool's own read; else each
+    workflow a rubric scores or a golden set tests, with its latest score and how many regressions it has had."""
+    from core.evals import service
+    from core.product_tools import evals as E
+    from core.product_tools.errors import ToolRefusal
+
+    if str(args.get("name") or "").strip():
+        try:
+            return await E._read_scores(None, {"workflow": args["name"]})
+        except ToolRefusal as exc:
+            return {"items": [], "note": str(exc)}
+    from core.builder_tools import _is_visible
+    from core.routes.orchestrations import load_orchestrations
+
+    rubrics = {r["id"]: r.get("name") for r in await service.list_rubrics()}
+    sets = await service.list_suites()
+    items = []
+    for o in [o for o in await load_orchestrations() if _is_visible(o)]:
+        mine = [s for s in sets if s.get("orchestration_id") == o["id"]]
+        if not o.get("rubric_id") and not mine:
+            continue
+        trend = await service.trend(o["id"], 50)
+        last = trend["scores"][-1]["score"] if trend["scores"] else None
+        items.append({"workflow": o.get("name"), "rubric": rubrics.get(o.get("rubric_id") or "") or None,
+                      "golden_sets": [f'{s.get("name")} ({len(s.get("cases") or [])} cases)' for s in mine],
+                      "last_score": last, "regressions": len(trend["regressions"])})
+    return {"items": items} if items else {"items": [], "note": "No workflow here is scored by a rubric or tested by "
+                                                                "a golden set yet."}
+
+
 _SELF_HOSTED: dict[str, Reader] = {
     "schedules": _schedules, "runs": _runs, "channels": _channels, "phone": _phone, "widgets": _widgets,
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
-    "boards": _boards, "recordings": _recordings,
+    "boards": _boards, "recordings": _recordings, "evals": _evals,
 }
 
 

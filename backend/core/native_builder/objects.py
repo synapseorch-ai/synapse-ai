@@ -345,6 +345,11 @@ class Request(_Written):
     """The quick model's classify (`classify_request`): four labels, and what code needs to override one."""
 
     kind: Literal["answer", "change", "build", "research"]
+    #: The product feature the ask is about, typed (D340: one field for every feature, a census row's id), never read
+    #: from words: `evals` goes to Evals' own ops, never a build (F1255). D0 maps it onto its act route.
+    feature: Literal["evals"] | None = Field(
+        None, description="evals when the ask is to measure or read how well a workflow does: an eval, a rubric "
+                          "scoring its runs, golden test cases, running them, or its scores. Else leave out")
     providers: list[str] = Field(default_factory=list, description="Outside services the message names")
     also: str | None = Field(None, description="A second request in the same message, in its words, if any")
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")

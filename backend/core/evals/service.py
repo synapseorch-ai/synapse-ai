@@ -220,6 +220,25 @@ async def trend(orch_id: str, limit: int = 200) -> dict:
             "regressions": [s for s in scores if s["regression"]]}
 
 
+async def judge_once(rubric: dict, input_text: str, output_text: str, settings: dict | None = None) -> dict | None:
+    """Score one input and its output against a rubric with the product's own judge (`judge.judge_run`), with no saved
+    workflow or run: D340 E's gate scores a builder's plan this way. The verdict, or None when the judge gave none."""
+    import uuid
+    from types import SimpleNamespace
+
+    from core.evals import judge
+
+    if settings is None:
+        from core.config import load_settings
+
+        settings = load_settings()
+    run = SimpleNamespace(run_id=f"judge_once_{uuid.uuid4().hex[:12]}", session_id=None, status="completed",
+                          step_history=[{"step_id": "answer", "step_name": "Answer", "step_type": "agent",
+                                         "status": "completed", "output": output_text}],
+                          shared_state={"user_input": input_text, "answer": output_text})
+    return await judge.judge_run(run, evals_store.clean_rubric(dict(rubric)), dict(settings), result_key="answer")
+
+
 def _said(exc: Any) -> str:
     """A validation error in the form's own words: each field and what is wrong with it."""
     parts = []

@@ -151,6 +151,9 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
                         model_needs=request.needs)
         return routed if _may("build", state) else routed.model_copy(update={"route": "step_not_yours"})
     kind, by = request.kind, None
+    if request.feature == "evals" and kind in ("change", "build"):
+        # Evals' own ops, on the change route, never a workflow built to imitate them (F1255; the field is typed).
+        kind, by = "change", "evals"
     named = _named(text, inventory)
     things = {k: v for k, v in named.items() if v}
 
@@ -169,7 +172,7 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
             or any(w in text.split() for k in ("schedule", "agent") if inventory.get(k) for w in _KINDS[k])):
         kind, by = "change", "named_change"
     # Findings, then a yes or a build: the build plans from them (F766).
-    elif _findings(state.get("prior_findings")) and kind != "build" and (
+    elif _findings(state.get("prior_findings")) and kind != "build" and by != "evals" and (
             kind == "research" or is_yes(message) or (_BUILD.search(text) and kind != "answer")):
         kind, by = "build", "after_findings"
     # A question about how or whether is an answer (P4's router replay: Nova Pro labelled how-tos as changes).

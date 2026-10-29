@@ -77,7 +77,9 @@ from core.native_builder import prompt_lint, seed
 #: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
 #: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
 #: branch; on fix-forward 14's tree, 4c222b83….
-BUNDLE_SHA256 = "4c222b83f951094dbbee953f4c44d9549643722d276b77ad2269bfe892fe36b1"
+#: F1255: classify's typed `feature` (evals; the classifier's line for it, D340's one field for every feature), and
+#: the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c….
+BUNDLE_SHA256 = "b5d2233cba2d84248638a1a54be5892933bfcb26007bfb08b96f8a6b182efb0a"
 
 
 def _sha(definitions) -> str:
