@@ -103,6 +103,9 @@ def _datetime_context() -> str:
 #: How close to its end a run must be for a cancel to be its limit's (F420).
 _CUT_SLACK_S = 0.5
 
+#: Where an agent step keeps the calls its reply made after its finish tool, which were not made (F1242), by step id.
+NOT_MADE_PREFIX = "_not_made_"
+
 
 def cut_by_the_run(engine, run: OrchestrationRun, sub_step: StepConfig, step_start: float) -> None:
     """Enter a Loop's or a Parallel's body step that the run's limit stopped mid-way (F420).
@@ -508,6 +511,9 @@ class AgentStepExecutor:
                     # A finish tool's result is the output as the object it is (E2); otherwise the reply's text.
                     finish = event.get("finish")
                     final_response = finish["result"] if isinstance(finish, dict) else event.get("response", "")
+                    if isinstance(finish, dict) and finish.get("not_made"):
+                        # The reply's calls after its finish, not made (F1242): kept for whoever checks the step.
+                        run.shared_state[f"{NOT_MADE_PREFIX}{step.id}"] = list(finish["not_made"])
         except asyncio.CancelledError:
             # A step timeout, a cancel, a parent's stop — not an Exception, so
             # it used to reach the `finally` still reading "completed" (F257).

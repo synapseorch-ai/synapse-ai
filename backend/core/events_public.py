@@ -98,6 +98,9 @@ PRIVATE_STATE_PREFIXES = (
     # Whether a person watches the run, which decides what a step does at its turn limit (`turn_limit.ATTENDED_KEY`,
     # F1219): the engine's, set by its starter, never a run's input or a client's to read.
     "_attended",
+    # The calls a step's reply made after its finish tool, which were not made (`steps.NOT_MADE_PREFIX`, F1242); and
+    # the kinds a change named its new things as, within its step (`change_tools._KINDS_KEY`).
+    "_not_made_", "_change_kinds",
 )
 
 

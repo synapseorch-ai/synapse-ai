@@ -367,9 +367,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         ),
         LAST_BUILT_KEY: last_built(previous),
         "prior_findings": found,
-        # The questions this conversation's request asked in its earlier runs (F1226), staged: classify decides whether
-        # this message continues that request (`adopt_carry`).
-        CARRY_KEY: carry_request(previous, previous_steps),
+        # The questions this conversation's request asked in its earlier runs (F1226), and a plan left waiting at its
+        # review (F1241), staged: classify decides whether this message continues that request (`adopt_carry`).
+        CARRY_KEY: carry_request(previous, previous_steps, previous_id),
         "plan_findings": found,
         "org_profile": await _workspace_profile(),
         "requirements": "",

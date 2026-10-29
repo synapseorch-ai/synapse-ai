@@ -265,7 +265,8 @@
                 "step_not_yours": "step_not_yours",
                 "step_change_context": "step_may_change",
                 "step_plan_room": "step_may_change",
-                "step_fetch_existing": "step_may_change"
+                "step_fetch_existing": "step_may_change",
+                "step_review_research": "step_review_research"
             },
             "switch_default_step_id": "step_answer",
             "max_iterations": 3,
