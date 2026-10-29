@@ -61,7 +61,9 @@ from core.native_builder import prompt_lint, seed
 #: F1219's turn limits
 #: (Naveen's table with HOT3: 60 turns in 1200 s for the steps that read and plan, 40 in 600 s for the rest, the quick
 #: classify step at 2; no prompt changes), 2fcbfc0f… alone; with F1193 and F1198 (fix-forward 13), ff332d9b….
-BUNDLE_SHA256 = "ff332d9b853c548e1235c90592d31d40ef948cb7303256e46b6fb9be21b13111"
+#: F1228: the build's last message adds what each part does (`{state.build_saved.does}`), and the change planner's
+#: rule 9 (never say what an existing workflow does), f86194bc….
+BUNDLE_SHA256 = "f86194bcaf644c6a74b7d03930ce825539db5892e2ff6b449b25d486902bae48"
 
 
 def _sha(definitions) -> str:

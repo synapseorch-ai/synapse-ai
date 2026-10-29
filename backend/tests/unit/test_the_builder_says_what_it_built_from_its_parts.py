@@ -112,7 +112,7 @@ class TestBrief2AnAgentWithNoToolsSaysSo:
             "nothing"]
         text = PW.summary(plan)
         assert '**Missing or off**\n- "help_answerer" has no tools' in text
-        assert "look up" not in text.lower()
+        assert "can look up" not in text and "orders API" not in text, "nothing says what it cannot do"
 
     def test_a_missing_tool_and_a_connection_are_said_too(self):
         plan = _said(_plan(SUPPORT, missing=["orders_lookup"], connections_needed=["Orders API"]))
@@ -179,6 +179,12 @@ class TestBld1sPartsAreRows:
 class TestEveryPartHasItsRow:
     def test_every_step_type_has_words(self):
         assert set(O.STEP_TYPES) - {"end"} <= set(PW._STEP), "a new step type needs its row in `_STEP`"
+
+    def test_a_browser_step_says_it_replays_a_recording(self):
+        step = O.Step(id="b", type="browser", name="File Refund", does="Files it.",
+                      config={"recording_id": "rec_1", "browser_sessions": ["portal.localhost"]})
+        assert PW._STEP["browser"](step, None) == ("replays a browser recording made in the app, signed in to "
+                                                   "portal.localhost; a page that changed waits for you")
 
     def test_a_board_holds_what_its_tools_say(self):
         from core.boards.tools import _SCHEMAS
