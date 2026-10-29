@@ -507,9 +507,10 @@ async def test_a_handover_is_kept_for_the_engine_and_told_to_the_agent():
 class _HandoverHost(_FakeHost):
     """The component, answering the first action with the person's turn."""
 
-    def __init__(self, kind="send"):
+    def __init__(self, kind="send", reason="The agent tried to send this to shop.example.com."):
         super().__init__()
         self.kind = kind
+        self.reason = reason
         self.turns = 0
 
     async def call(self, method, path, *, json=None, params=None, timeout=120):
@@ -521,7 +522,7 @@ class _HandoverHost(_FakeHost):
             self.turns += 1
             return 200, {"text": "### Page\n- Page URL: https://shop.example.com/cart", "is_error": False,
                          "log": {"n": self.turns, "action": "browser_click", "shot_ref": str(self.turns)},
-                         "handover": {"kind": self.kind, "reason": "The agent tried to send this to shop.example.com.",
+                         "handover": {"kind": self.kind, "reason": self.reason,
                                       "session_id": json["session_id"]}}
         return await super().call(method, path, json=json, params=params, timeout=timeout)
 
@@ -553,6 +554,152 @@ async def test_the_persons_turn_ends_the_agents_turn_with_a_park(fake_llm):
                                   "session_id": "s1", "banner_kind": "send"}]
     assert len(fake_llm.calls) == 1, "the agent stopped at the person's turn"
     assert (await tools.take_parked("chat:s_turn"))["kind"] == "send"
+
+
+# ── a turn parked on the person's turn is kept with its conversation (F1183) ──
+
+PARKED_WORDS = "Your turn in the browser: The agent tried to send this to shop.example.com."
+
+
+def _fleet(monkeypatch, server):
+    """The fleet's chat job, its MCP pool answering with `server`."""
+    from core.scale import mcp_pool, worker
+
+    async def acquire():
+        return server
+
+    async def nothing():
+        return None
+    monkeypatch.setattr(mcp_pool, "acquire", acquire)
+    monkeypatch.setattr(mcp_pool, "release", nothing)
+    monkeypatch.setattr(worker, "_load_job_settings", nothing)
+    return worker
+
+
+async def _in_process(agent_id, session_id, message, server):
+    import core.react_engine as re_mod
+    from core.models import ChatRequest
+    return [e async for e in re_mod.run_react_loop(
+        ChatRequest(message=message, session_id=session_id, agent_id=agent_id), server)]
+
+
+async def _on_the_fleet(monkeypatch, fake_redis, agent_id, session_id, message, server):
+    from core.store import get_store
+    worker = _fleet(monkeypatch, server)
+    ctx = {"redis": fake_redis, "session_factory": await get_store(), "job_try": 1, "job_id": session_id}
+    return await worker.run_agent_chat_job(ctx, session_id, agent_id, message)
+
+
+async def _saved(session_id, agent_id):
+    from core.store import sessions as store
+    return (await store.get(session_id, agent_id))["messages"]
+
+
+@pytest.mark.parametrize("path", ["in_process", "fleet"])
+async def test_a_turn_parked_on_the_persons_turn_is_kept_once_with_its_card(
+        path, fake_llm, fake_redis, monkeypatch):
+    """Both chat paths keep the parked turn: the question, the call that handed over, and — the agent having said
+    nothing — what the turn is for, never silence to the model; with the card a reopened chat draws (F1183)."""
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+    from core.session import _get_conversation_history
+
+    tools = browser_client.BrowserTools(_HandoverHost())
+    agent = S.make_agent(id=f"agent_keep_{path}", tools=["browser_click"], skip_default_tools=True)
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_click", target="e5"), "This must never be written."])
+    sid = f"s_keep_{path}"
+    if path == "fleet":
+        await _on_the_fleet(monkeypatch, fake_redis, agent["id"], sid, "buy it", _browser_server(tools))
+    else:
+        await _in_process(agent["id"], sid, "buy it", _browser_server(tools))
+
+    messages = await _saved(sid, agent["id"])
+    assert [(m["role"], m["content"]) for m in messages] == [("user", "buy it"), ("assistant", PARKED_WORDS)]
+    answer = messages[1]
+    assert answer["browser_turn"] == {"session_id": "s1", "banner_kind": "send", "worded": False,
+                                      "reason": "The agent tried to send this to shop.example.com."}
+    assert [c["tool"] for c in answer["calls"]] == ["browser_click"]
+    [turn] = await _get_conversation_history(sid, agent_id=agent["id"])
+    assert turn["browser_turn"] == answer["browser_turn"]
+
+
+@pytest.mark.parametrize("path", ["in_process", "fleet"])
+async def test_the_kept_turn_holds_no_card_number_key_or_secret(path, fake_llm, fake_redis, monkeypatch):
+    """The saved turn goes back to the model: the person's turn's words are cleaned as a call's text is (F1183)."""
+    import json as _json
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+    from core.secret_scrub import hold_secrets
+
+    hold_secrets({"STRIPE_KEY": "sk-live-123456"})
+    reason = ("Pay with 4111 1111 1111 1111 using sk-live-123456 and "
+              "sk-proj-abcdefghijklmnopqrstuvwxyz0123 on shop.example.com.")
+    tools = browser_client.BrowserTools(_HandoverHost(reason=reason))
+    agent = S.make_agent(id=f"agent_clean_{path}", tools=["browser_click"], skip_default_tools=True)
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_click", target="e5")])
+    sid = f"s_clean_{path}"
+    if path == "fleet":
+        await _on_the_fleet(monkeypatch, fake_redis, agent["id"], sid, "buy it", _browser_server(tools))
+    else:
+        await _in_process(agent["id"], sid, "buy it", _browser_server(tools))
+
+    kept = _json.dumps(await _saved(sid, agent["id"]))
+    for leak in ("4111 1111 1111 1111", "sk-live-123456", "sk-proj-abcdefghijklmnopqrstuvwxyz0123"):
+        assert leak not in kept, leak
+    assert "shop.example.com" in kept
+
+
+async def test_the_hand_back_turn_is_its_own_and_reads_the_question(fake_llm):
+    """A hand-back starts a new turn (`_resume`): the parked turn is not saved again, and the new turn's model reads
+    the question the parked one asked (F1183)."""
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+
+    tools = browser_client.BrowserTools(_HandoverHost())
+    agent = S.make_agent(id="agent_back", tools=["browser_click"], skip_default_tools=True)
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_click", target="e5"), "Bought."])
+    await _in_process(agent["id"], "s_back", "buy the blue mug", _browser_server(tools))
+    await _in_process(agent["id"], "s_back", "I handed the browser back.", _browser_server(tools))
+
+    messages = await _saved("s_back", agent["id"])
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", "buy the blue mug"), ("assistant", PARKED_WORDS),
+        ("user", "I handed the browser back."), ("assistant", "Bought.")]
+    assert "browser_turn" not in messages[3]
+    assert "buy the blue mug" in _json_of(fake_llm.calls[-1])
+
+
+def _json_of(call) -> str:
+    import json as _json
+    return _json.dumps(call, default=str)
+
+
+@pytest.mark.parametrize("path", ["in_process", "fleet"])
+async def test_a_turn_with_no_browser_turn_is_saved_as_before(path, fake_llm, fake_redis, monkeypatch, seed_agent):
+    """Every other turn's saved answer is exactly what it was before F1183: no field more, none less."""
+    import types as _types
+    import core.server as server_mod
+
+    agent = await seed_agent(id=f"agent_plain_{path}", tools=[], skip_default_tools=True)
+    monkeypatch.setitem(server_mod._session_tools, "_test", [])
+    server = _types.SimpleNamespace(agent_sessions={"_test": object()}, memory_store=None, tool_router={})
+    fake_llm.script(["It is sunny."])
+    sid = f"s_plain_{path}"
+    if path == "fleet":
+        await _on_the_fleet(monkeypatch, fake_redis, agent["id"], sid, "Weather?", server)
+    else:
+        await _in_process(agent["id"], sid, "Weather?", server)
+
+    question, answer = await _saved(sid, agent["id"])
+    assert question == {"role": "user", "content": "Weather?"}
+    answer.pop("timestamp", None)
+    expected = {"role": "assistant", "content": "It is sunny."}
+    if path == "in_process":
+        expected["tools"] = []
+    assert answer == expected
 
 
 async def test_a_chat_parked_on_the_persons_turn_stores_no_approval(client, monkeypatch):
