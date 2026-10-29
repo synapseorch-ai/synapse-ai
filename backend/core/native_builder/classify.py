@@ -90,8 +90,26 @@ _HELP = re.compile(
     r"supports?|feature|features|pricing|price|plans?|tutorial|guide|where do i|where is the)\b")
 
 _KINDS = {"schedule": ("schedule", "schedules"), "agent": ("agent", "agents"),
-          "workflow": ("workflow", "workflows", "orchestration")}
+          "workflow": ("workflow", "workflows", "orchestration"), "recording": ("recording", "recordings")}
 _STOP = frozenset("the a an my our this that for to of and on off in at with every each daily nightly".split())
+#: The state key holding a name that is both a recording and a workflow, which the change route asks about (F1231).
+BOTH_KEY = "recording_or_workflow"
+
+
+def _recording_named(text: str, things: dict[str, list[str]], inventory: dict[str, list[str]]) -> str | None:
+    """`recording` when the message is about a recording it names, `both` when that name is a workflow's too and it
+    says neither word, else None (F1231). A recording is replayed by a workflow's Browser step, so running,
+    scheduling or repeating one is a build."""
+    if not things.get("recording"):
+        return None
+    words = set(text.split())
+    said_recording, said_workflow = bool(words & set(_KINDS["recording"])), bool(words & set(_KINDS["workflow"]))
+    if said_workflow and not said_recording:
+        return None
+    workflows = {_words(w) for w in inventory.get("workflow") or []}
+    if not said_recording and any(_words(r) in workflows for r in things["recording"]):
+        return "both"
+    return "recording"
 
 
 def _named(text: str, inventory: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -136,8 +154,14 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
     named = _named(text, inventory)
     things = {k: v for k, v in named.items() if v}
 
+    recording = _recording_named(text, things, inventory)
+    asked = _QUESTION.match(text) or (_QUESTION_IF_ASKED.match(text) and message.rstrip().endswith("?"))
+    # A request to run, schedule or repeat a recording builds the workflow whose Browser step replays it; a name that
+    # is a workflow's too is asked about first, on the change route (F1231). An edit of the recording is the app's.
+    if recording and kind in ("change", "build") and not asked and not _CHANGE_ONLY.search(text):
+        kind, by = ("change", "recording_or_workflow") if recording == "both" else ("build", "recording_named")
     # An act on something that exists is a change; P2 decides card or review (F755/act).
-    if _ACT.search(text) and things and kind != "change":
+    elif _ACT.search(text) and things and kind != "change":
         kind, by = "change", "act_on_existing"
     # A change verb on a named schedule or agent is a change, never a build ("change the schedule to 09:00").
     elif kind == "build" and not _NEW.search(text) and _CHANGE.search(text) and (
@@ -166,7 +190,13 @@ def override(request: Request, *, message: str, state: dict, inventory: dict[str
         kind, by = "research", "provider_unknown"
 
     needs = _needs(kind, request.needs, text, things)
-    route = _entry(kind, text, state)
+    # What a recording's request names is the recording: not the conversation's last build (F1229's "it"), nor a
+    # workflow found by the recording's own name.
+    source = state.get("current_orchestration_source")
+    not_it = source == "built" or source in ("named", "picked") and _words(
+        state.get("current_orchestration_name") or "") in {_words(r) for r in things.get("recording") or []}
+    route = _entry(kind, text, {**state, "current_orchestration_source": ""} if by == "recording_named" and not_it
+                   else state)
     if route == "step_answer" and kind == "build":
         needs = "workspace"  # two workflows match: the answer asks which, from the list
     if route not in ("step_answer", "step_research") and not _may(kind, state):
@@ -229,7 +259,7 @@ async def _inventory() -> dict[str, list[str]]:
     from core.native_builder.change_tools import candidates
 
     out: dict[str, list[str]] = {}
-    for kind in ("schedule", "agent", "workflow"):
+    for kind in ("schedule", "agent", "workflow", "recording"):
         try:
             out[kind] = [str(i["name"]) for i in await candidates(kind) or []]
         except Exception as exc:  # noqa: BLE001 — a store that cannot list it: nothing of that kind is named
@@ -273,11 +303,21 @@ async def classify_request(args: dict, server_module: Any, events: list[dict]) -
         request = Request.model_validate(args or {})
     except Exception:  # noqa: BLE001 — a call that is not a Request: an answer, read by code alone
         request = Request(kind="answer")
-    routed = override(request, message=str(state.get("user_message") or ""), state=state,
-                      inventory=await _inventory(), connectable=await _connectable())
+    message = str(state.get("user_message") or "")
+    inventory = await _inventory()
+    routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable())
     if run is not None:
         # The role door (`step_may_change`) and the build route read the legacy intent.
         run.shared_state["intent"] = intent_of(routed)
+        if routed.overridden_by == "recording_or_workflow":
+            # The change route asks which, once (F1231).
+            named = _named(_words(message), inventory).get("recording") or []
+            workflows = {_words(w) for w in inventory.get("workflow") or []}
+            run.shared_state[BOTH_KEY] = next((r for r in named if _words(r) in workflows), "")
+        # The previous request's questions are this run's only if this message continues it (F1226).
+        from core.native_builder.change_tools import adopt_carry
+
+        adopt_carry(run.shared_state, request.continues)
     if routed.also and routed.also.strip():
         await turn_facts.keep(run_id, _caller().user_id, also=routed.also.strip())
         events.append(also_notice(routed.also.strip()))

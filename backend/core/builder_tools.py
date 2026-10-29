@@ -1960,11 +1960,14 @@ async def _picks_refused(lists: list[list[str]], stored: list[list[str]]) -> dic
     return {"error": reason, "refused": "pick"} if reason else None
 
 
-async def _refuse_browser_steps(steps: list, before: list | None = None) -> dict | None:
+async def _refuse_browser_steps(steps: list, before: list | None = None, *, wired: bool = False,
+                                schema: dict | None = None, agents: dict | None = None) -> dict | None:
     """Steps' browser parts as the editor's save checks them (F1146, F1140, F1167), and what a model gets wrong that
-    the editor's pickers never let a person: a recording's inputs left unfilled, sends that aren't its steps (F1189).
-    `before` is the workflow's steps as saved, whose sessions and recordings stay. Sessions named by site become ids
-    here, in `steps`."""
+    the editor's pickers never let a person: a recording's inputs left unfilled, sends that aren't its steps (F1189),
+    a `{state.…}` input the run never has (F1232). `before` is the workflow's steps as saved, whose sessions and
+    recordings stay. `wired`: `steps` is the whole workflow, so its inputs are read in order (`input_problems`);
+    else the steps go into `before` mid-build. `schema` is its declared state; `agents`, those not saved yet, by id
+    (a plan's own, F1233). Sessions named by site become ids here, in `steps`."""
     from core.browser import recordings, save_checks
     from core.browser.picks import PickRefused
     from core.orchestration.save_rules import browser_step_problems
@@ -1977,7 +1980,7 @@ async def _refuse_browser_steps(steps: list, before: list | None = None) -> dict
         return None
     if browsers and (refused := await _browser_refused("step")) is not None:
         return refused
-    agents = {}
+    agents = dict(agents or {})
     for s in browsers:
         if s.get("agent_id") and s["agent_id"] not in agents:
             agents[s["agent_id"]] = await get_agent(s["agent_id"])
@@ -1997,6 +2000,10 @@ async def _refuse_browser_steps(steps: list, before: list | None = None) -> dict
             said += save_checks.recording_problems(s, await recordings.get(s["recording_id"]))
         except recordings.NotFound:
             continue  # gone since this workflow named it: the run says so (F1146)
+    whole = steps if wired else list({s.get("id"): s for s in [*(before or []), *steps] if isinstance(s, dict)}.values())
+    said += save_checks.input_problems(whole, schema, whole=wired, of={s.get("id") for s in browsers})
+    if wired:
+        said += save_checks.loop_problems(steps)
     if said:
         return {"error": "Refusing to save: " + " ".join(said)}
     had = {b.get("id"): b.get("browser_sessions") or [] for b in before or [] if isinstance(b, dict)}
@@ -2747,7 +2754,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(steps)
         if refused:
             return refused
-        refused = await _refuse_browser_steps(steps)
+        refused = await _refuse_browser_steps(steps, wired=True, schema=args.get("state_schema"))
         if refused:
             return refused
         try:
@@ -2820,7 +2827,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             refused = _refuse_unsafe_expression(fields["steps"])
             if refused:
                 return refused
-            refused = await _refuse_browser_steps(fields["steps"], orch.get("steps"))
+            refused = await _refuse_browser_steps(fields["steps"], orch.get("steps"), wired=True,
+                                                  schema=fields.get("state_schema", orch.get("state_schema")))
             if refused:
                 return refused
         if not fields or set(fields.keys()) - {"orch_id"} == set():
@@ -2905,7 +2913,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
-        refused = await _refuse_browser_steps(filled, existing)
+        refused = await _refuse_browser_steps(filled, existing, schema=orch.get("state_schema"))
         if refused:
             return refused
         for i, s in enumerate(filled):
@@ -2966,7 +2974,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
-        refused = await _refuse_browser_steps(filled, existing)
+        refused = await _refuse_browser_steps(filled, existing, schema=orch.get("state_schema"))
         if refused:
             return refused
         # Position continues the zig-zag past any existing steps.
@@ -3026,7 +3034,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
-        refused = await _refuse_browser_steps(filled, existing)
+        refused = await _refuse_browser_steps(filled, existing, schema=orch.get("state_schema"))
         if refused:
             return refused
         offset = len(existing)
@@ -3100,7 +3108,7 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression([steps[sidx]])
         if refused:
             return refused
-        refused = await _refuse_browser_steps([steps[sidx]], had)
+        refused = await _refuse_browser_steps([steps[sidx]], had, schema=orch.get("state_schema"))
         if refused:
             return refused
         orch["steps"] = steps

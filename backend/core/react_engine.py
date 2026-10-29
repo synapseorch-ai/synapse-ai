@@ -37,6 +37,7 @@ from core import chat_approval as _chat_approval
 from core import turn_limit as _turn_limit
 from core import visitor as _visitor_mod
 import anyio as _anyio
+import hashlib
 import itertools as _itertools
 import re as _re
 from datetime import timedelta
@@ -50,6 +51,13 @@ _log = get_logger(__name__)
 NO_TOOLS_SENTENCE = "Sorry, I couldn't put that into words; could you say it another way?"
 
 MAX_TURNS = 30
+
+
+def _builder_reads() -> frozenset[str]:
+    """The AI builder's tools that only read (`builder_access.READS`): reads for the repeat guard (F1236)."""
+    from core.builder_access import READS
+
+    return READS
 
 
 def _call_usd(model: str | None, result) -> float:
@@ -1811,6 +1819,13 @@ async def run_agent_step(
     _repeat_count = 0
     _repeat_stop: dict | None = None
     REPEAT_NOTE_AT, REPEAT_STOP_AT = 2, 3
+    # And for reads anywhere in the step (F1236, Naveen 10-29: "reads count, waits reset"): a call that only reads,
+    # with the same arguments and the same result as one since the last call that could have changed things, is a
+    # repeat however many other reads sit between. Naveen's prod run read the workspace 7 times in one step, A,B,A,B.
+    # A wait, a write, or any call nothing marks as read-only starts the window again, so polling stays allowed.
+    # Kept by a hash of the call, on the step's snapshot: a resumed step goes on counting.
+    _read_window: dict[str, int] = {k: int(v) for k, v in ((resume_state or {}).get("repeat_window") or {}).items()}
+    _reads_only: set[str] = set()
     # And for a round (F476): one reply's calls, all of them, made again by the next reply with the same arguments
     # and the same results. gpt-4.1-mini made the same three searches three replies in a row (A,B,C,A,B,C,A,B,C),
     # where no call is like the one just before it. The same counts as for a call, told after the whole round.
@@ -1835,11 +1850,21 @@ async def run_agent_step(
         _key = json.dumps([_record["tool"], _record["args"], _record["result"]], sort_keys=True, default=str)
         _repeat_count = _repeat_count + 1 if _key == _repeat_key else 1
         _repeat_key = _key
-        if _repeat_count >= REPEAT_STOP_AT:
-            _repeat_stop = {"tool_name": _record["tool"], "count": _repeat_count}
-        elif _repeat_count == REPEAT_NOTE_AT:
+        if _record["tool"] in _reads_only or _record["tool"] in _builder_reads():
+            _hash = hashlib.sha256(_key.encode("utf-8", "surrogatepass")).hexdigest()[:20]
+            _read_window[_hash] = _read_window.get(_hash, 0) + 1
+            _seen = _read_window[_hash]
+        else:
+            _read_window.clear()  # it could have changed things: what was read before may read differently now
+            _seen = 0
+        _count = max(_repeat_count, _seen)
+        if _count >= REPEAT_STOP_AT:
+            _repeat_stop = {"tool_name": _record["tool"], "count": _count}
+        elif _count == REPEAT_NOTE_AT:
+            _when = ("twice in a row" if _repeat_count == _count else
+                     "twice in this step, with nothing between that could have changed it,")
             current_context_text += (
-                f"\nSystem: you called {_record['tool']} with these same arguments twice in a row and "
+                f"\nSystem: you called {_record['tool']} with these same arguments {_when} and "
                 "got the same result both times — you already have that answer. Use it, try something "
                 "different, or give your final response; a third identical call ends this turn.\n"
             )
@@ -1939,6 +1964,8 @@ async def run_agent_step(
             # the turn from outside it (a stop, the fleet's chat job).
             "calls": [{**c, "result": str(c.get("result") or "")[:2_000]}
                       for c in _turn_calls[-20:]],
+            # The repeat guard's reads since the last call that could change things (F1236), by hash.
+            "repeat_window": dict(_read_window),
             # Past its turn limit (F1219): the turns it has now, how often it went on, and what it has spent.
             "turns_given": max_turns,
             "turn_extensions": _turn_extensions,
@@ -3396,6 +3423,8 @@ async def run_agent_step(
                     _declared_tool if _declared_tool is not None else _UndeclaredTool(tool_name),
                     _policy,
                 )
+                if _category == "read_only":
+                    _reads_only.add(tool_name)  # a trusted read-only declaration: the repeat guard's reads (F1236)
                 _approval_key = _approval_id(tool_name, tool_args)
                 if _decision != "allow" and _approval_key in _denied_calls:
                     _denied_calls.discard(_approval_key)

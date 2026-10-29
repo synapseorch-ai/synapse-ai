@@ -334,7 +334,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
     # which plans from them instead of researching again.
     found = previous_findings(previous)
-    from core.native_builder.change_tools import carry_request
+    from core.native_builder.change_tools import CARRY_KEY, carry_request
     from core.native_builder.target import LAST_BUILT_KEY, last_built
 
     from core import turn_limit
@@ -367,8 +367,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         ),
         LAST_BUILT_KEY: last_built(previous),
         "prior_findings": found,
-        # The questions this conversation's request asked in its earlier runs (F1226): never asked again, and counted.
-        **carry_request(previous, previous_steps),
+        # The questions this conversation's request asked in its earlier runs (F1226), staged: classify decides whether
+        # this message continues that request (`adopt_carry`).
+        CARRY_KEY: carry_request(previous, previous_steps),
         "plan_findings": found,
         "org_profile": await _workspace_profile(),
         "requirements": "",
