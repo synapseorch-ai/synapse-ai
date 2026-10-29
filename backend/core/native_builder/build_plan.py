@@ -29,7 +29,7 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O, one_writer, periods
+from core.native_builder import objects as O, one_writer, own_api, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -419,7 +419,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan = edited.model_copy(update={
                 "kind": "update", "title": plan.title or edited.title, "summary": plan.summary or edited.summary,
                 **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
-                                                 "questions", "not_carried_over")}})
+                                                 "apis", "mcp_servers", "questions", "not_carried_over")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     plan = _without(plan, without or [])
     from core.native_builder.change_tools import _holds_a_key
@@ -445,7 +445,12 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state) + asked
     errors += await _knowledge_parts(plan, ws)
+    # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
+    errors += await own_api.server_parts(plan, server_module)
     errors += await _agent_switches(plan, ws, server_module)
+    # The person's own API (F1225): each operation the plan uses is a tool the build makes, as a read API's is (F944).
+    api_errors, own_tools = await own_api.api_parts(plan)
+    errors += api_errors
     if plan.schedule:
         # A schedule runs on its person's clock (F948, Naveen 10-23): the timezone they named, else their own (the
         # browser's, sent with the turn); with neither, UTC.
@@ -462,7 +467,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # Only the person lets a tool act without asking, by a press on the card (SAI2's review, 11); never the planner.
     plan.approvals = O.Approvals(acts_without_asking=list(alone or []))
     plan, renamed, room_notes = await _make_room(plan, state)
-    filled = await O.fill(plan, server_module, found=_found(plan, state, renamed), agents=ws.agents)
+    filled = await O.fill(plan, server_module, found={**_found(plan, state, renamed), **own_tools},
+                          agents=ws.agents)
     misnamed = _misnamed(filled, server_module, ws, state)
     if misnamed:
         # What it is instead, the planner's to fix, before any lookup or card (F950, F1043).
@@ -1430,6 +1436,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 else "That plan has no steps to build."}
     if plan.room:
         return {**base, "outcome": "said", "say": plan.room}
+    if waiting := [m for m in plan.mcp_servers if not m.connected]:
+        # The person's own MCP server, by its URL (F1225): its tools are known only once it is connected, so its card
+        # comes before any plan, and its "Connected …" plans again on them (Naveen, 10-29; the exception to F949).
+        return await _connect_first(base, plan, waiting, events)
     if plan.kind == "update" and (held := one_writer.asked(await one_writer.holds_now(), _orch_id(plan, state) or "",
                                                            events)):
         return {**base, "outcome": "said", "say": held}  # one chat writes a workflow at a time (TABS2, F1063)
@@ -1561,7 +1571,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         # What the person says yes to: each call, its host and its path, made only from this approved spec (F944).
         review += "\n## The tools it makes\n" + "\n".join(
             f"- `{t.name}`: {t.api['endpoint']['method']} {t.api['endpoint']['path']} on "
-            f"{urlsplit(t.api['base_url']).hostname} ({t.provider}). You give it your key on a card after your yes."
+            f"{urlsplit(t.api['base_url']).hostname} ({t.provider}). "
+            + ("It takes no key." if t.api.get("keyless") else "You give it your key on a card after your yes.")
             for t in makes if t.api) + "\n"
     out = {**base, "outcome": "review", "plan": plan.model_dump(), "prompts": prompts or {}, "review": review,
            "offers": offers, "say": " ".join([*said, *board_notes]), "issues": found.errors, "offered": offered,
@@ -1576,6 +1587,26 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         # The same plan as the card above, and still not buildable (F1121): what stands in the way, at its own
         # question, never the plan drawn again (bld-01/02/07 went round until "we went back and forth").
         out["outcome"], out["review"] = "same", out["same_say"]
+    await _card(out)
+    return out
+
+
+async def _connect_first(base: dict, plan: O.Plan, waiting: list[O.McpServerPart], events: list[dict]) -> dict:
+    """Each of the person's own MCP servers not connected yet, on its Connect card, and no plan beside it: what a
+    plan does with its tools is drawn once they are known (F1225). Nothing is offered to build."""
+    from core.builder_connect import prepare_connection
+    from core.native_builder.render import connect_first_lead, connect_first_text
+    from core.product_tools.approved import digest
+
+    for m in waiting:
+        await prepare_connection({"kind": "mcp_server", "url": m.url, "server_name": m.name,
+                                  "title": f"Connect {m.name}",
+                                  "why": f"This build uses {m.name}'s tools: I plan it on them once it is connected."},
+                                 None, events)
+    out = {**base, "outcome": "review", "plan": plan.model_dump(), "review": connect_first_text(waiting),
+           "offers": ["change", "stop"], "say": "", "lead": connect_first_lead(waiting), "connect_first": [m.name for m in waiting],
+           "same_say": connect_first_text(waiting)}
+    out["digest"] = digest(reviewed_of(out))
     await _card(out)
     return out
 

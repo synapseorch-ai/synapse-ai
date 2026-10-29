@@ -131,6 +131,50 @@ def knowledge_lines(plan: Any) -> list[str]:
     return out
 
 
+def api_part_line(part: Any) -> str:
+    """The person's own API (F1225), as the card and the build's parts both say it."""
+    tools = ", ".join(f"`{t}`" for t in part.tools)
+    return f"“{part.name}”, from the spec at `{part.spec}`: " + (f"made with it as {tools}" if tools
+                                                                 else "none of its tools is used")
+
+
+def api_problem_line(part: Any) -> str:
+    """Why the person's own API's spec cannot be used here (F1225): the card's line and the build's."""
+    return f"“{part.name}”: {part.problem}"
+
+
+def mcp_server_line(part: Any) -> str:
+    """The person's own MCP server (F1225), connected or not yet: the card's line and the build's."""
+    if part.connected:
+        return f"MCP server “{part.name}” at {part.url}: connected; its tools as of now are used"
+    return unconnected_server_line(part)
+
+
+def unconnected_server_line(part: Any) -> str:
+    """The person's own MCP server before it is connected (F1225): its Connect card comes before the plan."""
+    return (f"MCP server “{part.name}” at {part.url} is not connected yet: connect it on its card above, and I'll "
+            "plan on its tools")
+
+
+def own_part_lines(plan: Any) -> list[str]:
+    """The person's own APIs and MCP servers in the plan (F1225), one line each."""
+    return [*(api_problem_line(p) if p.problem else api_part_line(p) for p in getattr(plan, "apis", None) or []),
+            *(mcp_server_line(m) for m in getattr(plan, "mcp_servers", None) or [])]
+
+
+def connect_first_lead(waiting: list[Any]) -> str:
+    """The lead-in when the person's own MCP server is connected before any plan (F1225)."""
+    one = len(waiting) == 1
+    return (f"Before I plan this, connect the MCP server{'' if one else 's'} you gave: what "
+            f"{'it' if one else 'they'} can do is known only once {'it is' if one else 'they are'} connected.")
+
+
+def connect_first_text(waiting: list[Any]) -> str:
+    """What stands in the place of the plan until the person's own MCP server is connected (F1225)."""
+    return ("\n".join(f"- {unconnected_server_line(m)}" for m in waiting)
+            + f"\n\nOr tell me to plan it without {'it' if len(waiting) == 1 else 'them'}.")
+
+
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     """The plan card's text. `agent_names` names the workspace's agents a plan reuses (by id)."""
     names = dict(agent_names or {})
@@ -153,7 +197,8 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
                     "set_meta": "Change the workflow's details"}[e.op]
             lines.append(f"{len(lines) + 1}. {what}")
         # A part the card says in its own section below (a knowledge base) is said there, once (F1228).
-        own = [w for w in getattr(plan, "part_words", []) or [] if w not in knowledge_lines(plan)]
+        said = [*knowledge_lines(plan), *own_part_lines(plan)]
+        own = [w for w in getattr(plan, "part_words", []) or [] if w not in said]
         parts.append("## Steps\n" + "\n".join(lines) + ("\n\n" + _bullets(own) if own else ""))
     for w in plan.inner_workflows:
         steps = [_step_line(i, s, names, inner, words=words)
@@ -183,6 +228,8 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
 
     if lines := knowledge_lines(plan):
         parts.append("## Knowledge bases\n" + "\n".join(f"- {line}" for line in lines))
+    if lines := own_part_lines(plan):
+        parts.append("## Your APIs and MCP servers\n" + "\n".join(f"- {line}" for line in lines))
 
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()
@@ -222,7 +269,7 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
 
     # What the card already said under an agent or a knowledge base is not said again (F1228): the panel, which has
     # neither section, shows each in its own "Missing or off".
-    shown = [*knowledge_lines(plan), *(line for a in plan.agents for line in switch_lines(a))]
+    shown = [*knowledge_lines(plan), *own_part_lines(plan), *(line for a in plan.agents for line in switch_lines(a))]
     missing = missing_words(plan) + [o for o in getattr(plan, "off", []) or []
                                      if o not in shown and not any(o.endswith(f": {s}") for s in shown)]
     if missing:

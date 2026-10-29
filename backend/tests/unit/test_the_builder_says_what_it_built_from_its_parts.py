@@ -157,13 +157,6 @@ class TestBrief5ASiteWithNoKeptSignInSaysWhereToSignIn:
         assert render(plan).count(NO_SESSION) == 1
 
 
-class _Bld1Plan(O.Plan):
-    """A Plan with BLD1's F1225 parts, as its fields are named (BLD1 to GUIDE1, 10-29); F1224's `knowledge` is the
-    Plan's own (4153e43a)."""
-    apis: list[dict] = []
-    mcp_servers: list[dict] = []
-
-
 class TestBld1sPartsAreRows:
     def test_an_agents_switches_are_said(self):
         a = PW.agent_parts({"name": "Clerk", "tools": ["vault_read"], "memory": True, "knowledge": ["kb_1"],
@@ -175,21 +168,23 @@ class TestBld1sPartsAreRows:
             "as of now; tools it adds later are not added")
 
     def test_the_plans_knowledge_apis_and_apps_are_parts_and_what_is_off(self):
-        plan = _Bld1Plan.model_validate({**_plan(SUPPORT).model_dump(), "knowledge": [
+        plan = O.Plan.model_validate({**_plan(SUPPORT).model_dump(), "knowledge": [
             {"name": "Help docs", "purpose": "answers", "files": ["help/a.md", "help/b.md"],
              "files_missing": ["help/b.md"]}],
-            "apis": [{"name": "Orders", "spec": "http://x/openapi.json", "tools": ["get_order"], "problem": None},
+            "apis": [{"name": "Orders", "spec": "http://x/openapi.json", "tools": ["get_order"]},
                      {"name": "Billing", "spec": "billing.yaml", "problem": "its spec did not read as OpenAPI"}],
             "mcp_servers": [{"name": "Tracker", "url": "https://t.example/mcp", "connected": False}]})
         _said(plan)
-        # BLD1's own lines (render.knowledge_lines, F1224).
+        # BLD1's own lines (render.knowledge_lines, F1224; render.own_part_lines' helpers, F1225).
         assert plan.part_words == ["“Help docs”: made with it, in the Vault folder knowledge/help-docs; it is given "
                                    "`help/a.md`",
-                                   'the API "Orders", its tools: get_order', 'the API "Billing"',
-                                   'the app "Tracker" at https://t.example/mcp']
-        assert plan.off[-3:] == [MISSING_FILE,
-                                 'the API "Billing": its spec did not read as OpenAPI',
-                                 'the app "Tracker" is not connected: connect it under Apps']
+                                   "“Orders”, from the spec at `http://x/openapi.json`: made with it as `get_order`"]
+        assert plan.off[-3:] == [MISSING_FILE, "“Billing”: its spec did not read as OpenAPI",
+                                 "MCP server “Tracker” at https://t.example/mcp is not connected yet: connect it on its "
+                                 "card above, and I'll plan on its tools"]
+        card = render(plan)
+        for line in [*plan.part_words[1:], *plan.off[-2:]]:
+            assert card.count(line) == 1, line
 
     def test_the_card_says_a_knowledge_base_and_its_missing_file_once(self):
         plan = _said(O.Plan.model_validate({**_plan(SUPPORT).model_dump(), "knowledge": [

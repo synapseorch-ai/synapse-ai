@@ -179,6 +179,17 @@ def _tool_call(status: O.ToolStatus) -> dict:
     api, endpoint = status.api or {}, (status.api or {}).get("endpoint") or {}
     base = _unfilled(str(api.get("base_url") or "")).rstrip("/")
     method, path = str(endpoint.get("method") or "GET").upper(), str(endpoint.get("path") or "")
+    if own := api.get("tool"):
+        # The person's own API (F1225): the operation as the spec's import makes it, every argument it has (a GET
+        # sends the rest as its query, a call that sends as its JSON), on the spec's own server, its base locked.
+        args = {"name": status.name, "method": method, "url": own["url"], "base_lock": base,
+                "group": status.provider or "", "input_schema_json": json.dumps(own["inputSchema"]),
+                "description": f"{own['description']} ({status.provider}: {method} {path})"}
+        if method == "GET":
+            args["read_only"] = True
+        elif method == "DELETE":
+            args["destructive"] = True
+        return {"tool": "create_http_tool", "args": args, "makes": None, "kind": "tool", "name": status.name}
     params = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path)
     properties: dict[str, Any] = {p: {"type": "string"} for p in params}
     args: dict[str, Any] = {"name": status.name, "method": method, "url": base + path, "base_lock": base,
@@ -656,7 +667,7 @@ async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> 
     by: dict[str, list[O.ToolStatus]] = {}
     later: dict[str, list[O.ToolStatus]] = {}
     for t in plan.tools:
-        if t.name in names and t.api:
+        if t.name in names and t.api and not t.api.get("keyless"):
             by.setdefault(t.provider or t.name, []).append(t)
         elif t.status == "found" and t.via in ("catalog_app", "mcp_server"):
             later.setdefault(t.provider or t.name, []).append(t)
@@ -764,6 +775,8 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
     said = "stop" if args.get("give_up") else str((_obj(state.get("connect_answer")) or {}).get("feedback") or "")
     plan = _plan_of(checked_in(state))
     made = _made_tools(run)
+    # A tool of the person's own API that takes no key is connected as it is made (F1225).
+    keyless = {t.name for t in plan.tools if (t.api or {}).get("keyless")}
     # An app's or an MCP server's tools, connected after the yes (F949), and every tool's provider.
     later = [t for t in plan.tools if t.status == "found" and t.via in ("catalog_app", "mcp_server")]
     providers = {t.name: t.provider or t.name for t in plan.tools if t.name in made or t in later}
@@ -778,7 +791,7 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
                                            "which keeps it with the tool, never in this conversation."}
     if not _WITHOUT.match(said) and not _STOP.match(said) and says_done(said):
         current = {t.get("name"): t for t in await load_tools()}
-        waiting = [n for n in made if not _connected(current.get(n))]
+        waiting = [n for n in made if n not in keyless and not _connected(current.get(n))]
         # Each tool the approved plan names, compared exactly with what is here now (SAI2: never a partial save).
         from core import builder_guard
 
@@ -811,7 +824,7 @@ async def read_connect_answer(args: dict, server_module: Any, events: list[dict]
             return {"outcome": "again", "say": "Which one? Say \"build without\" and the provider's name, or "
                                                "\"stop\"."}
         current = {t.get("name"): t for t in await load_tools()}
-        gone = [n for n in made if n in named or not _connected(current.get(n))]
+        gone = [n for n in made if n in named or not (n in keyless or _connected(current.get(n)))]
         removed = await undo_made_tools(run, events, "the build went on without them", gone)
         kept = [n for n in made if n not in removed]
         # The planner's own names, not the `_2` this build made under (the endpoint's tool, A7).

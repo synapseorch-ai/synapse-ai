@@ -80,6 +80,12 @@ async def remote_url_refusal(url: str) -> str | None:
     """`remote_url_problem`, then the host's rule: what every door that adds a remote server asks (F1201)."""
     if (problem := remote_url_problem(url)) is not None:
         return problem
+    return await host_url_refusal(url)
+
+
+async def host_url_refusal(url: str) -> str | None:
+    """The host's rule alone, for another address a model wrote that the product reaches out to: an API spec's URL
+    (F1225). None where the host has no rule."""
     return await _url_rule(url) if _url_rule is not None else None
 
 
