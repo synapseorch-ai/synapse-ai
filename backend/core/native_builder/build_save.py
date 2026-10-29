@@ -121,6 +121,15 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
     compiled = compile_plan(plan, mint=placeholder_mint(), orch_id=_orch_id(plan, state))
     # A read API's tools first (F944): `step_make_tools` makes them, and the person connects them, before the rest.
     calls: list[dict] = [_tool_call(t) for t in plan.tools if t.status == "found" and t.via == "http_tool" and t.api]
+    for kb in compiled.knowledge:
+        # The knowledge base the plan needs (F1224): made unless one of its name is here, then given the files the
+        # person has in the Vault, as the Knowledge screen makes and fills one. Before the agents and steps naming it.
+        if not kb["existing"]:
+            calls.append({"tool": "create_knowledge_base", "args": {"name": kb["name"],
+                                                                    "description": kb.get("description") or ""},
+                          "makes": kb["id"], "kind": "knowledge_base", "name": kb["name"]})
+        calls += [{"tool": "add_knowledge_file", "args": {"knowledge_base": kb["name"], "path": path},
+                   "makes": None, "kind": "knowledge_file", "name": f"{kb['name']}: {path}"} for path in kb["files"]]
     for agent in sorted(compiled.agents, key=lambda a: a.get("type") == "delegate"):  # members before their team
         args: dict[str, Any] = {"name": agent["name"], "description": agent.get("description") or "",
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
@@ -389,7 +398,8 @@ def _id_of(call: dict, result: Any) -> str | None:
     return call["args"].get("orch_id")
 
 
-async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict], why: str) -> None:
+async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict], why: str, *,
+                caller: Any = None) -> None:
     """Remove what this pass made, newest first, as `finish_build` removes a build's leftovers (F156, F492): the
     person reads each removal and why. An updated workflow goes back to how it was."""
     from core import agent_memory
@@ -427,6 +437,12 @@ async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict
                 if given.get("was"):
                     rows.append((given["kind"], given["id"], given["was"]))
                 await board_store.set_access(given["board"], rows)
+            elif kind == "knowledge_base":
+                # As its Delete does (F1218): its index and records go; its Vault folder and files stay.
+                from core.product_tools import knowledge as K
+
+                await (K._host.delete_base or K._oss_delete_base)(caller, real)
+                _emit(events, "knowledge_base", "deleted", real, name, reason=reason)
             elif kind == "tool":
                 from core.store.resources import delete_tool_named
 
@@ -591,7 +607,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                     failure = f"{call['name']}: it was not made"
                     break
                 made[call["makes"]] = real
-            if real and call["kind"] in ("agent", "orchestration", "schedule", "board", "tool"):
+            if real and call["kind"] in ("agent", "orchestration", "schedule", "board", "tool", "knowledge_base"):
                 done.append(("updated" if call.get("update") else call["kind"], real, call["name"]))
             if real and call["kind"] == "board_access":
                 given = _filled(call["args"], made)
@@ -601,7 +617,7 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
             await _keep(run, approval.id, made, done, calls_done)
     if failure:
         reason = " ".join(failure.split()).rstrip(". ")
-        await _undo(done, state, events, reason)
+        await _undo(done, state, events, reason, caller=caller)
         run.step_progress.pop(PROGRESS_KEY, None)  # what it recorded is gone again
         return _stopped(events, f"Nothing was built: {reason}.")
     if only == "tools":

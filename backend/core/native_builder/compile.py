@@ -60,6 +60,8 @@ class Compiled:
     inner: list["Compiled"] = field(default_factory=list)
     schedule: dict[str, Any] | None = None
     boards: list[dict[str, Any]] = field(default_factory=list)
+    #: The knowledge bases it makes or uses (F1224): made first, so its agents and steps name them by id.
+    knowledge: list[dict[str, Any]] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -239,7 +241,10 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
     existing = dict(existing_agents or {})
     issues: list[str] = []
 
-    # New agents first: their ids are what the steps name.
+    # The knowledge bases first (F1224): one this build makes has an id the save fills in; agents and steps name each.
+    kb_ids = {**plan.knowledge_ids, **{p.name: mint("kb") for p in plan.knowledge if not p.existing}}
+    plan = _naming_bases(plan, kb_ids)
+    # New agents next: their ids are what the steps name.
     asks = set(plan.approvals.asks_first)
     agent_ids: dict[str, str] = {}
     agents: list[dict[str, Any]] = []
@@ -261,8 +266,8 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
         # The agent editor's switches (F1223), as its save takes them: a kept session missing here is left out.
         if new.memory:
             agent["memory"] = True
-        if kb_ids := [plan.knowledge_ids[n] for n in new.knowledge if n in plan.knowledge_ids]:
-            agent["knowledge"] = kb_ids
+        if answers_from := [kb_ids[n] for n in new.knowledge if n in kb_ids]:
+            agent["knowledge"] = answers_from
         if new.type == "browser" and new.browser is not None:
             agent["browser"] = {"sites": list(new.browser.sites), "mode": new.browser.mode,
                                 "sessions": [s for s in new.browser.sessions if s not in new.browser.sessions_missing]}
@@ -318,8 +323,34 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
             issues.append(f"The schedule cannot run: {e}")
     boards = [{"name": b.name, "description": b.purpose, "existing": b.existing,
                "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]} for b in plan.boards]
+    knowledge = [{"name": p.name, "description": p.purpose, "existing": p.existing, "id": kb_ids[p.name],
+                  "files": [f for f in dict.fromkeys(f.strip().lstrip("/") for f in p.files if f.strip())
+                            if f not in p.files_missing]} for p in plan.knowledge]
     return Compiled(orchestration=orch, agents=agents, inner=inner, schedule=schedule, boards=boards,
-                    issues=issues, warnings=warned)
+                    knowledge=knowledge, issues=issues, warnings=warned)
+
+
+def _naming_bases(plan: Plan, kb_ids: dict[str, str]) -> Plan:
+    """The plan with each Retrieve and Ingest step's knowledge bases named by id where it named one by name (F1224):
+    a base this build makes has no id until the save, so the planner names it."""
+    if not kb_ids:
+        return plan
+    by_name = {name.lower(): kb_id for name, kb_id in kb_ids.items()}
+
+    def as_id(ref: Any) -> Any:
+        return by_name.get(ref.strip().lower(), ref) if isinstance(ref, str) else ref
+
+    def step(s: Step) -> Step:
+        config = dict(s.config or {})
+        if isinstance(config.get("retrieve"), dict) and isinstance(config["retrieve"].get("kb_ids"), list):
+            config["retrieve"] = {**config["retrieve"], "kb_ids": [as_id(r) for r in config["retrieve"]["kb_ids"]]}
+        if isinstance(config.get("ingest"), dict) and "kb_id" in config["ingest"]:
+            config["ingest"] = {**config["ingest"], "kb_id": as_id(config["ingest"]["kb_id"])}
+        return s.model_copy(update={"config": config}) if config != (s.config or {}) else s
+
+    return plan.model_copy(update={
+        "steps": [step(s) for s in plan.steps],
+        "inner_workflows": [w.model_copy(update={"steps": [step(s) for s in w.steps]}) for w in plan.inner_workflows]})
 
 
 async def validate(compiled: Compiled, plan: Plan, server_module: Any,

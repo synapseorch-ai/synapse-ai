@@ -101,6 +101,23 @@ def switch_lines(a: Any) -> list[str]:
     return out
 
 
+def knowledge_lines(plan: Any) -> list[str]:
+    """Each knowledge base the plan makes or uses (F1224), one line each, and each file it could not find."""
+    from core.product_tools.knowledge import _folder_for
+
+    out = []
+    for part in getattr(plan, "knowledge", None) or []:
+        added = [f for f in part.files if f not in part.files_missing]
+        line = (f"“{part.name}”: already here, used as it is" if part.existing
+                else f"“{part.name}”: made with it, in the Vault folder {_folder_for(part.name)}")
+        if added:
+            line += "; it is given " + ", ".join(f"`{f}`" for f in added)
+        out.append(line)
+        out += [f"`{f}` is not in the Vault: add it there, then to “{part.name}” on the Knowledge screen. It is built "
+                "without it" for f in part.files_missing]
+    return out
+
+
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     """The plan card's text. `agent_names` names the workspace's agents a plan reuses (by id)."""
     names = dict(agent_names or {})
@@ -149,6 +166,9 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         parts.append("## Agents\n" + "\n".join(agent_lines))
     elif getattr(plan, "calls_no_model", False):
         parts.append("## Agents\nNo agents: it runs on tools only, with no model called.")
+
+    if lines := knowledge_lines(plan):
+        parts.append("## Knowledge bases\n" + "\n".join(f"- {line}" for line in lines))
 
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()
