@@ -61,7 +61,7 @@ async def workspace():
                        "allowed_origins": ["https://harbordental.example"], "enabled": True})
 
 
-ARGS = {"run": {"run_id": "run_ok"}, "agent_activity": {"name": "Front desk"}}
+ARGS = {"run": {"run_id": "run_ok"}, "workflow": {"name": "Invoice chaser"}, "agent_activity": {"name": "Front desk"}}
 
 
 def test_every_topic_has_a_shape():
