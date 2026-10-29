@@ -77,8 +77,9 @@ async def _preview_delete(caller: Any, args: dict[str, Any]) -> dict:
     if uses["workflows"] or uses["agents"]:
         note += (" The Browser steps named here stop at it until they pick another recording, and the agents named "
                  "here lose it.")
-    return {"will_delete": {"type": "recording", "id": doc["id"], "name": doc.get("name"),
-                            "steps": len(doc.get("steps") or [])}, "used_by": uses, "note": note}
+    # Keyword arguments, not a literal: `"type": "…"` in code reads as an event type to F854's event census.
+    will = dict(type="recording", id=doc["id"], name=doc.get("name"), steps=len(doc.get("steps") or []))
+    return {"will_delete": will, "used_by": uses, "note": note}
 
 
 async def _delete(caller: Any, args: dict[str, Any]) -> dict:
