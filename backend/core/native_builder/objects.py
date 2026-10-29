@@ -612,9 +612,13 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     out = plan.model_copy(deep=True)
     exists = await builder_guard._resolver(server_module)
     custom = await load_custom_tools()
+    from core.boards import TOOL_NAMES as BOARD_TOOLS
+
     statuses: list[ToolStatus] = []
     for name in tool_names(out):
-        if await exists(name):
+        # A board tool is the product's own, never missing nor looked up (F866b): while Boards are off, the review
+        # blocks it with their switch (F1203, `build_plan.features_needed`).
+        if name in BOARD_TOOLS or await exists(name):
             statuses.append(ToolStatus(name=name, status="present"))
         elif found and name in found:
             # The research's verdict: found (connect first), or missing with why (`none` / `unclear`, A6).

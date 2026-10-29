@@ -93,7 +93,7 @@ SUBMIT = {"type": "function", "function": {
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
-        "{message}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
+        "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
         "board_update_card {status, result}; board_comment {text}; board_create {text}; edit_steps and create "
         "{what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
@@ -496,7 +496,7 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
 async def check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     """Every fact about the planner's change, decided here; see the module's docstring. `draft` is the planner's
     finish (E2's object); the person and their role are the run's, read now, never an argument."""
-    from core.builder_actions import _NotOffered, _offer
+    from core.builder_actions import _FeatureOff, _NotOffered, _offer, feature_switch
     from core.product_tools import areas, registry
     from core.product_tools.approved import digest
 
@@ -596,6 +596,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                                      "so I can't bring the old one back under its name."))
                 continue
             target["name"] = name
+        elif op.name in C.MAKES_TARGET:
+            # What it makes is named, not found: its card's own check says when the name is taken (F1200).
+            target["name"] = _text(target.get("name")) or _text(fields.get("name"))
         else:
             if _answers(chosen, n, "target", op.target, target):
                 target["id"] = chosen["id"]
@@ -643,6 +646,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             try:
                 card = await _offer(op.name, C.act_arguments(op, target["id"] if target.get("id") else
                                                              target.get("name", ""), fields))
+            except _FeatureOff as off:
+                # What is off and where, with its switch as a card for one who may press it (F1203).
+                said, switch = await feature_switch(off)
+                if switch is not None:
+                    events.append(switch)
+                item.update(status="noop", say=said)
+                continue
             except _NotOffered as why:
                 item.update(status="noop", say=str(why))
                 continue

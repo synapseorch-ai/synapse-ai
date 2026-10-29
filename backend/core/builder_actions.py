@@ -35,16 +35,23 @@ ACTIONS: dict[str, str] = {
     "answer_run": "answer the question a waiting run asks, or approve it (`run_id`, from topic `waiting`)",
     "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
     "cancel_run": "stop a run that is still going (`run_id`)",
+    "knowledge_create": "make a knowledge base (`name`; `text`: what it holds; `folder`: a Vault folder, or leave it "
+                        "out for knowledge/<name>)",
+    "knowledge_add_file": "add a file from the Vault to a knowledge base (`knowledge_base`, `path`: its Vault path)",
     "knowledge_add_pages": "add public web pages to a knowledge base (`knowledge_base`, `urls`, `kind`: page, sitemap "
                            "or site)",
     "knowledge_add_note": "add a note to a knowledge base (`knowledge_base`, `title`, `text`)",
     "knowledge_retry_document": "index a failed document again (`doc_id`)",
+    "knowledge_rename": "rename a knowledge base or say what it holds (`knowledge_base`; `name`, `text`)",
+    "knowledge_rebuild": "start a knowledge base's failed or paused rebuild again (`knowledge_base`)",
+    "knowledge_delete_base": "delete a knowledge base; its Vault folder stays (`knowledge_base`)",
     "knowledge_delete_document": "delete a document from its knowledge base (`doc_id`)",
     "board_add_card": "add a card to a board (`board`, `title`, `text`)",
     "board_update_card": "close a card as done or failed, or reopen it (`card_id`, `status`, `result`)",
     "board_comment": "comment on a card (`card_id`, `text`)",
     "board_create": "make a shared board (`name`, `text`: what it is for)",
     "board_delete": "delete a shared board (`board`)",
+    "feature_on": "turn on Boards or Knowledge for this workspace (`feature`: boards or knowledge), when one is off",
 }
 
 SCHEMA = {
@@ -72,10 +79,13 @@ SCHEMA = {
                 "urls": {"type": "array", "items": {"type": "string"}},
                 "kind": {"type": "string", "enum": ["page", "sitemap", "site"]},
                 "doc_id": {"type": "string"},
+                "folder": {"type": "string", "description": "knowledge_create: a Vault folder; omit for knowledge/<name>."},
+                "path": {"type": "string", "description": "knowledge_add_file: the file's Vault path."},
                 "board": {"type": "string", "description": "The board's name."},
                 "card_id": {"type": "string", "description": "From topic `boards` with the board's name."},
                 "status": {"type": "string", "enum": ["open", "done", "failed"]},
                 "result": {"type": "string", "description": "board_update_card: what came of it."},
+                "feature": {"type": "string", "enum": ["boards", "knowledge"]},
                 "name": {"type": "string"},
                 "title": {"type": "string"},
                 "text": {"type": "string"},
@@ -86,6 +96,11 @@ SCHEMA = {
 }
 
 
+#: What turning each feature on does, on its card.
+_TURNS_ON = {"boards": "Every workflow's agents get a board of their own, and you can make shared ones.",
+             "knowledge": "Knowledge bases become searchable by your agents. Indexing them uses your embedding model."}
+
+
 class _NotOffered(Exception):
     """Why no card: said to the model, which says it to the person. A "which one?" carries its options with their
     ids, and the field they answer, so the turn keeps them for the next turn's pick (F977)."""
@@ -93,6 +108,28 @@ class _NotOffered(Exception):
     def __init__(self, why: str, *, field: str = "", options: list[dict] | None = None) -> None:
         super().__init__(why)
         self.field, self.options = field, options or []
+
+
+class _FeatureOff(_NotOffered):
+    """The action needs a feature that is off: what is said names where it is turned on, and its switch is a card of
+    its own for one who may press it (`feature_switch`, F1203)."""
+
+    def __init__(self, feature: str) -> None:
+        from core.features import off_sentence
+        super().__init__(off_sentence(feature))
+        self.feature = feature
+
+
+async def feature_switch(off: _FeatureOff) -> tuple[str, dict | None]:
+    """What is said for a feature that is off, and its switch's card, or None for one who may not turn it on."""
+    from core import features
+
+    said = features.off_sentence(off.feature)
+    try:
+        switch = await _feature_card(off.feature)
+    except _NotOffered:
+        return f"{said} Ask an admin of this workspace to turn {features.label(off.feature)} on.", None
+    return f"{said} A card is up to turn it on; ask again for this once it is on.", switch
 
 
 def _caller() -> Caller:
@@ -268,12 +305,33 @@ async def _offer(action: str, args: dict) -> dict:
                               await _button("Refuse", "answer_tool_approval", {**where, "approve": False,
                                                                                "wait_seconds": 0})])
 
+    if action == "feature_on":
+        return await _feature_card(str(args.get("feature") or "").strip().lower())
     if action.startswith("knowledge_"):
+        from core import features
+        if not await features.is_on("knowledge"):
+            raise _FeatureOff("knowledge")
         return await _knowledge(action, args)
     if action.startswith("board_"):
+        from core import features
+        if not await features.is_on("boards"):
+            raise _FeatureOff("boards")
         return await _board(action, args)
 
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _feature_card(feature: str) -> dict:
+    """Its switch, as a card: only for a person who may turn it on (the Settings screen's admin)."""
+    from core import features
+
+    if feature not in features.FEATURES:
+        raise _NotOffered(f"feature is one of {', '.join(features.FEATURES)}.")
+    name = features.label(feature)
+    if await features.is_on(feature):
+        raise _NotOffered(f"{name} is already on.")
+    return _card(f"Turn on {name}", detail=f"{_TURNS_ON[feature]} Its switch is in {features.where(feature)}.",
+                 buttons=[await _button(f"Turn on {name}", "turn_on_feature", {"feature": feature})])
 
 
 async def _resolved(lookup):
@@ -287,6 +345,51 @@ async def _resolved(lookup):
 async def _knowledge(action: str, args: dict) -> dict:
     from core.product_tools import knowledge
 
+    if action == "knowledge_create":
+        # The tool's own preview checks it (name free, folder allowed and no other base's) before the card (F1200).
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise _NotOffered("Say what the knowledge base is called.")
+        call = {"name": name, "description": str(args.get("text") or "").strip(),
+                **({"folder": str(args["folder"]).strip()} if str(args.get("folder") or "").strip() else {})}
+        button = await _button("Make it", "create_knowledge_base", call)
+        folder = call.get("folder") or knowledge._folder_for(name)
+        return _card(f'Make a knowledge base "{name}"',
+                     detail=f"On the Vault folder {folder}. Files already there are indexed with your embedding model.",
+                     buttons=[button])
+    if action == "knowledge_add_file":
+        kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
+        path = str(args.get("path") or "").strip().lstrip("/")
+        if not path:
+            raise _NotOffered("Say which file: its path in the Vault.")
+        button = await _button("Add", "add_knowledge_file", {"knowledge_base": kb.id, "path": path})
+        return _card(f'Add "{path.rsplit("/", 1)[-1]}" to "{kb.name}"',
+                     detail=f"{path}. Indexing it uses your embedding model.", buttons=[button])
+    if action in ("knowledge_rename", "knowledge_rebuild", "knowledge_delete_base"):
+        # Each tool's own checks come first: a name taken, nothing to change, what uses it (F1218).
+        kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
+        if action == "knowledge_rename":
+            call = {"knowledge_base": kb.id,
+                    **({"name": str(args["name"]).strip()} if str(args.get("name") or "").strip() else {}),
+                    **({"description": str(args["text"]).strip()} if str(args.get("text") or "").strip() else {})}
+            await _resolved(knowledge._changed(kb, call))
+            what = f' to "{call["name"]}"' if call.get("name") else ""
+            return _card(f'Change "{kb.name}"{what}', detail=call.get("description", ""),
+                         buttons=[await _button("Save", "update_knowledge_base", call)])
+        if action == "knowledge_rebuild":
+            return _card(f'Rebuild "{kb.name}"', detail="Its index is built again beside the one answering now, "
+                                                        "with its embedding model; nothing happens when it is current.",
+                         buttons=[await _button("Rebuild", "retry_knowledge_rebuild", {"knowledge_base": kb.id})])
+        from core.knowledge import bases
+
+        uses = await bases.used_by(kb.id)
+        users = [f'the workflow "{w["name"]}"' for w in uses["workflows"]] + [f'the agent "{a["name"]}"'
+                                                                             for a in uses["agents"]]
+        detail = f"Its index and documents go; {kb.folder} and its files stay in the Vault. This cannot be undone."
+        if users:
+            detail += " Used by " + ", ".join(dict.fromkeys(users)) + ": they stop finding anything in it."
+        return _card(f'Delete the knowledge base "{kb.name}"', danger=True, detail=detail,
+                     buttons=[await _button("Delete it", "delete_knowledge_base", {"knowledge_base": kb.id})])
     if action in ("knowledge_add_pages", "knowledge_add_note"):
         kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
         if action == "knowledge_add_pages":
@@ -372,6 +475,13 @@ async def prepare_action(args: dict, server_module: Any, events: list[dict]) -> 
     action = str(args.get("action") or "").strip()
     try:
         card = await _offer(action, args)
+    except _FeatureOff as off:
+        # Never a quiet refusal (F1203): what is off and where; and its switch as a card, for one who may press it.
+        said, switch = await feature_switch(off)
+        if switch is None:
+            return {"error": said}
+        events.append(switch)
+        return {"error": said, "card": switch["title"]}
     except _NotOffered as why:
         if why.options:
             from core.builder_tools import _current_run

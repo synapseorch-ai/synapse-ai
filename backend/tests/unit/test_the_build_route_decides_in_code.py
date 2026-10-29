@@ -237,8 +237,15 @@ async def test_board_tools_are_an_agents_while_boards_are_on(client, boards):
     assert "board tools are an agent's" in sent["error"]
     await boards(False)
     run = await _run()
+    # F1203 (BLD1, Naveen 10-29): Boards off is the person's to turn on, never the planner's to take out. The plan
+    # keeps its board; the review blocks it, says where Boards are turned on, and offers the switch.
     sent, _ = await _call("submit_plan", _plan(CHECK, post, agents=[poster]), run)
-    assert "Boards are off" in sent["error"] and "`board_add`" in sent["error"]  # never looked up as a provider
+    assert "error" not in sent, sent
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
+    assert "build" not in out["offers"] and {"turn_on:boards", "without:boards"} <= set(out["offers"])
+    assert "Boards are switched off in this workspace: turn them on in Settings › General › Boards, or build " \
+           "without the board." in out["say"]
+    assert [t["status"] for t in out["plan"]["tools"]] == ["present", "present"]  # never looked up as a provider
     sent, _ = await _call("submit_plan", _plan(CHECK, boards=[{"name": "Shipment delays"}]), run)
     assert "a plan makes no shared board" in sent["error"]
 
@@ -294,6 +301,51 @@ async def test_the_check_reads_the_workspace_s_own_catalogue_and_never_offers_sy
 
 
 # ── the card's words and the check's (synced UI, F939) ────────────────────────────────────────────────────────────
+
+async def test_turn_on_boards_turns_them_on_and_plans_again(client, boards):
+    """F1203: the review's "Turn on Boards" is the person's press of the switch the build needs: Boards turned on as
+    Settings turns them on, then planned again on them, as after a connection. Words for a switch it never offered
+    are a revision, as any other words."""
+    from core.boards.config import boards_enabled
+
+    post = {"id": "post", "type": "agent", "name": "Post it", "does": "Posts the warning on the board",
+            "agent": "Board poster"}
+    poster = {"name": "Board poster", "purpose": "Posts warnings on the board", "tools": ["board_add"]}
+    await boards(False)
+    run = await _run(review_feedback={"feedback": "turn on Knowledge"})
+    await _check(run, {"finish": "submit_plan", **_plan(CHECK, post, agents=[poster])})
+    assert (await _call("read_plan_answer", {}, run))[0]["outcome"] == "revise" and not boards_enabled()
+    run.shared_state["review_feedback"] = {"feedback": "Turn on Boards"}
+    answer, _ = await _call("read_plan_answer", {}, run)
+    assert answer == {"outcome": "connected", "turned_on": "boards"} and boards_enabled()
+
+
+async def test_a_knowledge_step_while_knowledge_is_off_is_its_switch_on_the_review(client, monkeypatch):
+    """F1203: "answer from our price list" while Knowledge is off kept no Retrieve step ("there are no retrieve
+    steps"). The step stays; the review says Knowledge is off, where it is turned on, and offers it."""
+    use_saved_settings(monkeypatch)
+    find = {"id": "find", "type": "retrieve", "name": "Find the price", "does": "Looks the item up in the price list",
+            "config": {"retrieve": {"kb_ids": [], "query": "{state.user_input}"}}}
+    run = await _run()
+    sent, _ = await _call("submit_plan", _plan(find, TELL), run)
+    assert "error" not in sent, sent
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(find, TELL)})
+    assert "turn_on:knowledge" in out["offers"] and "build" not in out["offers"]
+    assert "Knowledge is switched off in this workspace: turn it on in Settings › General › Knowledge" in out["say"]
+
+
+def test_the_cards_turn_on_words_are_what_the_answer_reads():
+    import re
+    from pathlib import Path
+
+    plan_ts = (Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/plan.ts").read_text()
+    template = re.search(r"export function turnOnWords\(feature: string\): string \{\s*return `([^`]+)`;", plan_ts)
+    assert template, "plan.ts names the words its Turn on button sends"
+    for name in ("Boards", "Knowledge"):
+        assert build_plan._TURN_ON.match(template.group(1).replace("${feature}", name))
+    cards = (Path(__file__).resolve().parents[3] / "frontend/src/components/assistant/cards.tsx").read_text()
+    assert "o.startsWith('turn_on:')" in cards
+
 
 def test_the_cards_build_without_words_are_what_the_answer_reads():
     """The card's "Build without X" sends `withoutWords(X)` (`plan.ts`); `read_plan_answer` must read it as that

@@ -107,14 +107,10 @@ async def list_knowledge_bases() -> list[KnowledgeBaseOut]:
 async def create_knowledge_base(body: KnowledgeBaseCreate) -> KnowledgeBaseOut:
     """A new knowledge base on a Vault folder; the folder is created if missing, and what is already
     in it is queued."""
-    from core.knowledge import bases, costs, dispatch, sync
+    from core.knowledge import bases
 
-    costs.check_settings(embedding=body.embedding, rerank=body.rerank,
-                         enrichment=body.enrichment)  # 422 before anything is saved
-    kb = await bases.create_base(body)
-    await sync.ensure_folder(kb)
-    await dispatch.enqueue(kb.id, "reindex", "reconcile")
-    return (await _out([kb]))[0]
+    # 422 before anything is saved; the builder's create_knowledge_base makes one the same way (F1200).
+    return (await _out([await bases.make_base(body)]))[0]
 
 
 @router.get("/api/knowledge/bases/{kb_id}", response_model=KnowledgeBaseOut)
@@ -133,26 +129,10 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
     enrichment, language) rebuilds it beside the serving one, which keeps answering until the new one is
     complete (`reindex_started`; B2b). Any edit retries a rebuild that failed, and a raised or cleared
     budget resumes what it paused."""
-    from core.knowledge import bases, budgets, costs, dispatch, snapshots, sync
+    from core.knowledge import bases
 
-    costs.check_settings(embedding=body.embedding, rerank=body.rerank,
-                         enrichment=body.enrichment)  # only the blocks the edit sends
-    before, after = await bases.update_base(kb_id, body)
-    if after.folder != before.folder:
-        await sync.rehome(before, after)
-    elif after.status == "active" and before.status != "active":
-        await dispatch.enqueue(after.id, "reindex", "reconcile")
-    if after.web.sources != before.web.sources:  # S1: a removed source's pages go; an added one is crawled
-        from core.knowledge import web
-
-        await web.sources_changed(before, after)
-    if budgets.cap_raised(before, after):  # what the budget paused is queued again (B2b)
-        await budgets.resume(after, reason="budget_raised")
-    started = await snapshots.after_save(before, after)
-    if not started:  # V1: a search setting changed with no rebuild; a switch re-runs on its own event
-        from core.knowledge import evals_auto
-
-        await evals_auto.settings_changed(before, after)
+    # The builder's tools edit a base the same way (F1218, `bases.apply_update`).
+    _, after, started = await bases.apply_update(kb_id, body)
     out = (await _out([after]))[0]
     return out.model_copy(update={"reindex_started": started})
 
@@ -162,13 +142,8 @@ async def update_knowledge_base(kb_id: str, body: KnowledgeBaseUpdate) -> Knowle
 async def delete_knowledge_base(kb_id: str) -> DeleteAccepted:
     """Forget the knowledge base: its index, documents and snapshots. Its Vault folder and files stay."""
     from core.knowledge import bases
-    from core.knowledge.jobs import drop_base
 
-    from core.knowledge import evals
-
-    await bases.require_base(kb_id)
-    await drop_base(kb_id)
-    await evals.forget_base(kb_id)  # V1: its question sets and runs go with it
+    await bases.forget(kb_id)  # and the builder's delete_knowledge_base (F1218)
     return DeleteAccepted()
 
 

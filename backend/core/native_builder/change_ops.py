@@ -26,7 +26,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool")
+                "approval", "card", "openapi", "python_tool", "feature")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -67,17 +67,23 @@ _ACTS = (
     Op("answer_run", "act", "run", verb="Answer"),
     Op("answer_tool_call", "act", "approval", verb="Answer"),
     Op("cancel_run", "act", "run", verb="Stop"),
+    Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
+    Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),
        verb="Add pages to"),
     Op("knowledge_add_note", "act", "knowledge_base", fields=("title", "text"), required=("text",),
        verb="Add a note to"),
     Op("knowledge_retry_document", "act", "document", verb="Index again"),
+    Op("knowledge_rename", "act", "knowledge_base", fields=("name", "text"), any_of=True, verb="Change"),
+    Op("knowledge_rebuild", "act", "knowledge_base", verb="Rebuild"),
+    Op("knowledge_delete_base", "act", "knowledge_base", verb="Delete"),
     Op("knowledge_delete_document", "act", "document", verb="Delete"),
     Op("board_add_card", "act", "board", fields=("title", "text"), required=("title",), verb="Add a card to"),
     Op("board_update_card", "act", "card", fields=("status", "result"), verb="Update"),
     Op("board_comment", "act", "card", fields=("text",), required=("text",), verb="Comment on"),
     Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
+    Op("feature_on", "act", "feature", verb="Turn on"),
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
@@ -148,8 +154,12 @@ PLANNER_OPS = tuple(n for n, op in OPS.items() if not op.internal)
 WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
 
 #: The argument that names an act's target, as `prepare_action` takes it.
+#: Acts whose target is the thing they make, named, never looked up among what exists (F1200).
+MAKES_TARGET = frozenset({"board_create", "knowledge_create"})
+
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
-            "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id"}
+            "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
+            "feature": "feature"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────
@@ -260,7 +270,7 @@ def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
 
 def act_arguments(op: Op, target_id: str, fields: dict[str, Any]) -> dict[str, Any]:
     """`prepare_action`'s arguments for an act on a resolved target."""
-    name_arg = "name" if op.name == "board_create" else _ACT_ARG[op.target]
+    name_arg = "name" if op.name in MAKES_TARGET else _ACT_ARG[op.target]
     return {"action": op.name, name_arg: target_id, **{k: v for k, v in fields.items() if k in op.fields}}
 
 
