@@ -244,7 +244,7 @@ class ScheduleManager:
         gone = await gone_target(s)
         if gone:
             raise TargetGone(await self._turn_off(s, gone))
-        sched_log = self._schedule_logger(s)
+        sched_log = await self._open_log(s)
         task = asyncio.create_task(self._run(s, sched_log))
         # A task nobody references can be collected mid-run.
         self._manual_runs.add(task)
@@ -401,7 +401,7 @@ class ScheduleManager:
             s.get("name"), schedule_id, s["next_run_at"],
         )
 
-        await self._run(s, self._schedule_logger(s))
+        await self._run(s, await self._open_log(s))
 
         # Record when this occurrence started. One row update — the whole-file
         # rewrite this used to be clobbered any edit made through the API while
@@ -416,13 +416,21 @@ class ScheduleManager:
         sentence = why[:1].upper() + why[1:] + "."
         await schedule_store.save({**s, "enabled": False})
         logger.warning("[Scheduler] Schedule '%s' turned off: %s", name, sentence)
-        sched_log = self._schedule_logger(s)
+        sched_log = await self._open_log(s)
         sched_log.log_event({"type": "error", "message": sentence})
         sched_log.run_end("skipped")
         sched_log.close()
         hub.publish("schedule_skipped", f"{name} was turned off", body=sentence,
                     data={"schedule_id": s["id"], "schedule_name": name})
         return sentence
+
+    async def _open_log(self, s: dict, *, continues: str | None = None, note: str = ""):
+        """The schedule's log, opened once the tenant's variables are read (F1185): a secret among them is then held
+        for this task, so the banner's prompt names it rather than carrying it, as a chat's log does (F1184). A run
+        started from here inherits the hold."""
+        from core import variables
+        await variables.load()
+        return self._schedule_logger(s, continues=continues, note=note)
 
     @staticmethod
     def _schedule_logger(s: dict, *, continues: str | None = None, note: str = ""):
@@ -666,7 +674,7 @@ class ScheduleManager:
             (f"A person allowed `{q.get('tool_name')}`." if v.get("approve") else
              f"A person refused `{q.get('tool_name')}`" + (f": {v['reason']}." if v.get("reason") else "."))
             for v in verdicts for q in [asked.get(v.get("question_id")) or {}])
-        sched_log = self._schedule_logger(s, continues=run_id, note=said)
+        sched_log = await self._open_log(s, continues=run_id, note=said)
         agent_log = AgentLogger(agent_id=agent_id, agent_name=s["name"], session_id=_session_of(s["id"]),
                                 source="schedule", user_message=message)
         status, final_response = "completed", ""

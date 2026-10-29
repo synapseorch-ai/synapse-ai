@@ -119,10 +119,11 @@ class OrchestrationLogger:
 
     def _write(self, text: str):
         from core.orchestration.journal import _executor
-        from core.secret_scrub import scrub_secrets
+        from core.secret_scrub import for_storage
 
-        # In the caller's task, where its secrets are held; the writer thread has none (F854).
-        text = scrub_secrets(text)
+        # In the caller's task, where its secrets are held; the writer thread has none (F854). Kept as a chat turn
+        # is, card numbers masked too (F1185).
+        text = for_storage(text)
 
         def guarded():
             try:
