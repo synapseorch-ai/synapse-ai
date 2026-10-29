@@ -29,7 +29,7 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O, one_writer, own_api, periods
+from core.native_builder import boards_rule, objects as O, one_writer, own_api, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -271,11 +271,11 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
                    "board_claim on its workflow's own board; name them in that agent's tools, never as a Tool step. "
                    "It posts there, not to a shared board. When the person asks for a board, put one in the plan's "
                    "boards, named as they said (or for what it holds): it is this workflow's own board under that "
-                   "name, where its cards go (F1214)."
+                   "name, where its cards go (F1214). " + boards_rule.GUIDANCE
                    if ws.boards_on else
                    "Off in this workspace. Where the request needs a board, still give that agent its board tools as "
                    "if on, and its board in boards: the review says Boards are off and offers to turn them on "
-                   "(F1203)."),
+                   "(F1203). " + boards_rule.GUIDANCE),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
         # What a new agent's switches may name (F1223): connected MCP servers, and the sites with a kept session.
@@ -765,6 +765,8 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
     # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
+    # When a board is the right thing at all (F1254): not for a hand-off, and never one nothing reads.
+    errors += boards_rule.issues(plan)
     if len(plan.boards) > 1:
         # A workflow's agents post to its own board (no product tool gives a workflow a shared board yet; SAI2's
         # review, 20): the one board a plan names is that board, under the person's name for it (F1214).
@@ -1585,6 +1587,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
     prompts = prompts_for(plan, state) if plan.agents else {}
+    if prompts:
+        # Each board agent is told how to work its board, in code's words the card shows (F1254).
+        prompts = boards_rule.with_board_lines(plan, prompts)
     if buildable and prompts is None:
         # The new agents' instructions are written before the review, so the person reads them and the yes covers
         # them (Naveen, 10-23, Q2 as revised). Not for a plan that cannot be built yet: no call is spent on it.
