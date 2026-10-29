@@ -87,7 +87,7 @@ def _browser_step(**fields) -> dict:
 
 
 def _good(w, **more) -> dict:
-    return {"recording_id": w.rec, "recording_inputs": {"order number": "{state.user_input}"}, **more}
+    return {"recording_id": w.rec, "recording_inputs": {"order number": "{{ state.user_input }}"}, **more}
 
 
 async def _write(door: str, step: dict) -> dict:
@@ -136,17 +136,17 @@ class TestABrowserStepNeedsItsRecording:
 
     async def test_with_its_recording_and_inputs_it_saves_every_field(self, world):
         result = await call("add_single_step", {"orch_id": "orch_b", **_browser_step(
-            recording_id=world.rec, recording_inputs_json=json.dumps({"order number": "{state.user_input}"}),
+            recording_id=world.rec, recording_inputs_json=json.dumps({"order number": "{{ state.user_input }}"}),
             may_send_steps=["s3"], on_miss="agent", agent_id="agent_web")})
         assert "error" not in result, result
         step = (await _steps())["step_web"]
         assert step["recording_id"] == world.rec
-        assert step["recording_inputs"] == {"order number": "{state.user_input}"}
+        assert step["recording_inputs"] == {"order number": "{{ state.user_input }}"}
         assert step["may_send_steps"] == ["s3"] and step["on_miss"] == "agent" and step["agent_id"] == "agent_web"
 
     async def test_an_input_the_recording_has_not_got_is_refused(self, world):
         result = await _write("add_single_step", _browser_step(**_good(world, recording_inputs={
-            "order number": "{state.user_input}", "colour": "red"})))
+            "order number": "{{ state.user_input }}", "colour": "red"})))
         assert "colour" in result["error"] and "order number" in result["error"], result
 
     async def test_an_input_left_unfilled_is_refused_naming_it(self, world):

@@ -234,7 +234,7 @@ class TestTheLastWordAndLaterTurnsReadTheParts:
     def test_the_build_prints_its_parts_after_what_it_wrote(self):
         steps = {s["id"]: s for s in json.loads((NB / "orchestration.json").read_text("utf-8"))["steps"]}
         assert steps["step_build_done"]["print_content"] == (
-            "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}")
+            "{{ state.run_changes }}{{ state.build_saved.effect }}{{ state.build_saved.does }}")
 
     def test_a_stopped_build_says_no_parts(self):
         from core.native_builder.build_save import _stopped

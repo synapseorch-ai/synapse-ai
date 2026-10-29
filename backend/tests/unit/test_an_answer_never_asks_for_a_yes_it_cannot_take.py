@@ -66,7 +66,7 @@ class TestEveryAnswerGoesThroughTheCheck:
         assert (check["type"], check["forced_tool"], check["tool_arguments"]) == ("tool", "check_answer", {})
         said = STEPS[check["next_step_id"]]
         assert said["type"] == "print" and said["output_key"] == "summary"
-        assert said["print_content"] == "{state.answer_checked.text}"
+        assert said["print_content"] == "{{ state.answer_checked.text }}"
         assert said["next_step_id"] == "step_end"
 
     async def test_the_tool_reads_the_answer_from_the_run(self):

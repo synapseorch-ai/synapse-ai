@@ -262,7 +262,7 @@ class TestTheAnswerSteps:
         talk = steps["step_answer_talk"]
         assert talk["type"] == "agent" and talk["allowed_tools"] == [] and not talk.get("forced_tool")
         assert agents[talk["agent_id"]]["tools"] == [] and agents[talk["agent_id"]]["skip_default_tools"] is True
-        assert "{state.answer_pack.pack}" in talk["prompt_template"]
+        assert "{{ state.answer_pack.pack }}" in talk["prompt_template"]
 
     def test_help_is_offered_the_help_and_no_workspace_read(self):
         steps, _ = self._bundle()

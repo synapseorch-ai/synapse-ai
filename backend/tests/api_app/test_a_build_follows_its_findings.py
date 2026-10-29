@@ -92,7 +92,7 @@ def test_the_planner_and_the_check_read_the_findings():
     import inspect
 
     from core.native_builder import build_plan
-    assert "{state.plan_findings}" in _steps()["step_plan"]["prompt_template"]
+    assert "{{ state.plan_findings }}" in _steps()["step_plan"]["prompt_template"]
     assert build_plan.FINDINGS_KEY == "plan_findings" and "FINDINGS_KEY" in inspect.getsource(build_plan._found)
     schema = bundled_definitions()["orchestration"]["state_schema"]
     assert schema["prior_findings"]["type"] == "dict" and schema["plan_findings"]["type"] == "dict"

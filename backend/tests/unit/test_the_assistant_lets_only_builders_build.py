@@ -74,7 +74,7 @@ async def test_a_person_who_may_not_is_told_why_and_nothing_is_planned(engine, l
         "step_not_yours"
     refusal = engine.step_map["step_not_yours"]
     assert refusal.type.value == "print" and refusal.output_key == "summary"
-    assert "{state.asker_role}" in refusal.print_content and "builder" in refusal.print_content
+    assert "{{ state.asker_role }}" in refusal.print_content and "builder" in refusal.print_content
     assert await _next(engine, "step_not_yours", {}) == "step_end"
 
 

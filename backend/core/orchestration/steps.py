@@ -2621,7 +2621,8 @@ class LoopStepExecutor:
 
 
 def render_state_refs(text: str, state: dict) -> str:
-    """`{state.key}` and `{state.key.nested.path}` in text, from shared state.
+    """`{{ state.key }}` and `{{ state.key.nested.path }}` in text, from shared state: the one form (`STATE_REF`,
+    F1252), which a step's templates are written in as the step is read.
 
     A reference that resolves to nothing is left as written, so a typo shows
     rather than vanishing. A human step's prompt and a Print's content read
@@ -2641,7 +2642,9 @@ def render_state_refs(text: str, state: dict) -> str:
                 break
         return str(val) if val is not None else match.group(0)
 
-    return re.sub(r"\{state\.([\w.]+)\}", _resolve, text)
+    from core.templating import STATE_REF
+
+    return STATE_REF.sub(_resolve, text)
 
 
 class MissingStateRef(ValueError):
