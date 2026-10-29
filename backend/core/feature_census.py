@@ -32,11 +32,14 @@ class Screen:
     #: What a workflow built to imitate this screen looks like, so the planner can say plainly why it does not build
     #: one (F1257). A screen Synapse AI comes to reach keeps it: then it reads "use the real tools, don't rebuild it".
     imitation: str = ""
+    #: What a plan is made of (workflows, agents, tools, runs and their logs): never looked up as a feature the request
+    #: names, since nearly every request names it and the pack lists the workspace's own (F1257).
+    plan_part: bool = False
 
 
 def _s(id: str, label: str, href: str, does: str = "", tools: tuple[str, ...] = (), cant: str = "", *,
-       names: tuple[str, ...] = (), imitation: str = "") -> Screen:
-    return Screen(id, label, href, does, tools, cant, names, imitation)
+       names: tuple[str, ...] = (), imitation: str = "", plan_part: bool = False) -> Screen:
+    return Screen(id, label, href, does, tools, cant, names, imitation, plan_part)
 
 
 #: The self-hosted app's screens (nav.ts's HUB_NAV, then SETTINGS_NAV), in the rail's order.
@@ -46,9 +49,10 @@ CENSUS: tuple[Screen, ...] = (
        names=("dashboard", "today", "overview")),
     _s("runs", "Runs", "/runs", "lists runs, reads one step by step, answers a run's question, stops one",
        ("list_runs", "get_run", "read_workspace:run", "answer_run", "cancel_run"),
-       names=("run", "run history", "executions")),
+       names=("run", "run history", "executions"), plan_part=True),
     _s("logs", "Logs", "/logs", "reads what a run or an agent did",
-       ("read_workspace:run", "read_workspace:agent_activity", "agent_activity"), names=("log", "activity log")),
+       ("read_workspace:run", "read_workspace:agent_activity", "agent_activity"), names=("log", "activity log"),
+       plan_part=True),
     _s("evals", "Evals", "/evals",
        cant="writing a rubric, making golden test cases, running an eval suite and reading eval scores",
        names=("eval", "evaluation", "evaluations", "eval suite", "test cases", "golden set", "rubric", "scores"),
@@ -58,7 +62,7 @@ CENSUS: tuple[Screen, ...] = (
     _s("orchestrations", "Workflows", "/workflows", "builds, changes, checks, runs and deletes workflows",
        ("create_orchestration", "update_orchestration", "add_single_step", "update_step", "remove_step",
         "validate_orchestration", "run_orchestration", "delete_orchestration", "read_workspace:workflow"),
-       names=("workflow", "orchestration", "automation", "automations", "pipeline")),
+       names=("workflow", "orchestration", "automation", "automations", "pipeline"), plan_part=True),
     _s("schedules", "Schedules", "/schedules", "makes, changes, pauses, runs now and deletes schedules",
        ("create_schedule", "update_schedule", "set_schedule_enabled", "trigger_schedule", "delete_schedule"),
        names=("schedule", "cron", "timer")),
@@ -67,7 +71,7 @@ CENSUS: tuple[Screen, ...] = (
        imitation="a workflow rebuilt by hand to copy one of the ready-made templates"),
     _s("agents", "Agents", "/agents", "makes, changes and deletes agents, talks to one, and says what one has done",
        ("create_agent", "update_agent", "delete_agent", "chat_with_agent", "read_workspace:agent_activity"),
-       names=("agent", "assistant", "bot")),
+       names=("agent", "assistant", "bot"), plan_part=True),
     _s("skills", "Skills", "/skills", "writes skills and gives them to agents",
        ("create_skill", "update_skill", "attach_skills", "list_skills"), names=("skill",)),
     _s("browser", "Browser", "/browser", "lists the kept sign-ins and recorded tasks, and deletes a recording",
@@ -92,7 +96,7 @@ CENSUS: tuple[Screen, ...] = (
     _s("custom_tools", "Tools", "/tools", "makes HTTP and Python tools, imports an API's OpenAPI spec, tests a tool",
        ("create_http_tool", "create_python_tool", "import_openapi", "test_python_tool", "list_custom_tools",
         "delete_custom_tool"),
-       names=("tool", "http tool", "python tool", "openapi", "api spec")),
+       names=("tool", "http tool", "python tool", "openapi", "api spec"), plan_part=True),
     _s("messaging", "Channels", "/channels", "says which chat channels are connected and which agents answer",
        ("read_workspace:channels",), cant="connecting a chat channel",
        names=("channel", "telegram", "slack", "whatsapp", "discord"),

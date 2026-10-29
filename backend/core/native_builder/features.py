@@ -10,8 +10,8 @@ without touching this), and the planner's pack carries `features`, one entry eac
 * the "?" panel's steps for it, and the docs page on it (`builder_help`).
 
 No model is called for it. A message that names no feature leaves the pack as it was. What every plan is made of
-(`PLAN_ITSELF`: workflows, agents, tools, runs and their logs) is never a feature here: "run", "workflow" and
-"agent" are in nearly every request, and the pack lists what the workspace has of them already.
+(a census row's `plan_part`: workflows, agents, tools, runs and their logs) is never a feature here: "run",
+"workflow" and "agent" are in nearly every request, and the pack lists what the workspace has of them already.
 """
 from __future__ import annotations
 
@@ -21,10 +21,6 @@ from typing import Any, Iterable
 
 from core import feature_census
 from core.feature_census import Screen
-
-
-#: The census rows that are what a plan is made of, by id: never looked up as a feature (see the module's words).
-PLAN_ITSELF = frozenset({"orchestrations", "agents", "custom_tools", "runs", "logs"})
 
 
 def _norm(text: str) -> str:
@@ -53,7 +49,7 @@ def named_in(text: str, also: Iterable[str] = (), census: tuple[Screen, ...] | N
     said = f" {_norm(text)} "
     extra = set(also)
     return [s for s in (census or feature_census.current())
-            if s.id in extra or s.id not in PLAN_ITSELF and any(f" {w} " in said for w in words_of(s))]
+            if s.id in extra or not s.plan_part and any(f" {w} " in said for w in words_of(s))]
 
 
 def _reach(screen: Screen) -> str:
