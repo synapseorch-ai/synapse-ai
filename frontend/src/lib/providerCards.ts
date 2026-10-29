@@ -23,6 +23,8 @@ export interface ProviderInfo {
     error?: string;
     /** A model CLI's own word on itself, asked without a model call (CLIM1). */
     cli?: CliInfo;
+    /** Models its provider said are gone, left out of `models`, each with the provider's words (F1213). */
+    unavailable?: { model: string; reason: string }[];
 }
 
 /** What `/api/models` says of an installed model CLI (CLIM1, D299). */

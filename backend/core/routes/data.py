@@ -185,6 +185,16 @@ async def get_rerank_models(refresh: bool = False):
     return {"providers": [asdict(listing) for listing in listings]}
 
 
+@router.delete("/api/models/unavailable/{model:path}")
+async def try_model_again(model: str):
+    """The Models screen's "Try again" on a model its provider said is gone (F1213): the mark goes, and every picker
+    offers it again. A call that fails the same way marks it again. Self-hosted has one person, its owner; a host
+    with roles serves its own (cloud: owner and admin)."""
+    from core import model_availability
+
+    return {"cleared": await model_availability.clear(model), "model": model}
+
+
 @router.get("/api/models")
 async def get_models(refresh: bool = False):
     """Fetches available models dynamically from each provider's API.
@@ -197,7 +207,8 @@ async def get_models(refresh: bool = False):
     # --- Fallback model lists (used when API calls fail) ---
     # Current stable ids (F187): the old list named only retired 1.5 / 2.0 /
     # preview models, so a failed fetch offered models no call could reach.
-    GEMINI_FALLBACK = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-pro-latest", "gemini-flash-latest"]
+    # gemini-2.5-flash-lite left (F1213): Google answers it "no longer available to new users".
+    GEMINI_FALLBACK = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-pro-latest", "gemini-flash-latest"]
     ANTHROPIC_FALLBACK = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
     BEDROCK_FALLBACK = ["bedrock.anthropic.claude-3-5-sonnet-20240620-v1:0", "bedrock.anthropic.claude-3-sonnet-20240229-v1:0"]
@@ -667,6 +678,16 @@ async def get_models(refresh: bool = False):
         if spec.id in hosted_errors:
             providers[spec.id]["error"] = hosted_errors[spec.id]
         hosted_chat += chat
+
+    # A model its provider said is gone (F1213) is listed nowhere, and its card says why.
+    from core import model_availability
+
+    gone = await model_availability.unavailable()
+    if gone:
+        for info in providers.values():
+            info["models"], left = model_availability.gone_from(info.get("models") or [], gone)
+            if left:
+                info["unavailable"] = left
 
     # --- Flat list of all available models ---
     all_available = []
