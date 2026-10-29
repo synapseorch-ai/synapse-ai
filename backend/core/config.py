@@ -212,6 +212,9 @@ _DEFAULTS = {
         "vault_threshold": 100000,
         "auto_compact_enabled": True,
         "auto_compact_threshold": 80000,
+        # A step compacts at this share of its model's window, and spills and reads by it; 0 keeps the two fixed
+        # limits (D339; Naveen, 10-30).
+        "auto_compact_window_pct": 50,
         # Prompt caching: decorate provider payloads with cache_control markers
         # so subsequent ReAct turns reuse the cached system + tools prefix.
         # ~50–80% cost reduction on multi-turn agents at the cost of a 25% write

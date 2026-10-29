@@ -8,7 +8,27 @@ from __future__ import annotations
 #: Known input windows: `(id prefix, tokens)`, matched against a model's id and each id its provider's prefix leaves
 #: (`us.anthropic.claude-haiku-4-5` is also `claude-haiku-4-5`); the longest prefix that matches wins. The rows are
 #: D339's (TRI1), each from its provider's docs.
-WINDOWS: tuple[tuple[str, int], ...] = ()
+WINDOWS: tuple[tuple[str, int], ...] = (
+    # Anthropic: every current Claude model's standard window (a 1M beta is opt-in, not assumed).
+    ("claude-", 200_000),
+    # OpenAI.
+    ("gpt-4.1", 1_047_576),
+    ("gpt-4o", 128_000),
+    ("o3", 200_000),
+    ("o4-mini", 200_000),
+    # Google.
+    ("gemini-2.", 1_048_576),
+    ("gemma-3-1b", 32_000),
+    ("gemma-3", 128_000),
+    # Amazon.
+    ("nova-pro", 300_000),
+    ("nova-lite", 300_000),
+    ("nova-micro", 128_000),
+    # Meta and Mistral.
+    ("llama-3.1", 128_000),
+    ("llama-3.3", 128_000),
+    ("mistral-large", 128_000),
+)
 
 
 def window_tokens(model_id: str) -> int | None:

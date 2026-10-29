@@ -215,6 +215,23 @@ _REASONING_ONLY_NUDGE = (
 )
 
 
+#: The vault's read tools, on any server that serves them (`core/vault_tools.py`, `tools/file_reader.py`).
+_VAULT_READERS = frozenset({"read_file", "read_json", "search_files", "read_file_by_lines"})
+
+
+def _vault_read_capped(tool_name: str, args, schema: dict | None, cap: int):
+    """`args` with `max_chars` no more than `cap`, for a vault read whose schema takes one (D339 P2); any other
+    call as it was."""
+    bare = (tool_name or "").rsplit("__", 1)[-1]
+    schema = schema or {}
+    schema = (schema.get("function") or {}).get("parameters") or schema.get("parameters") or schema
+    props = schema.get("properties") or {}
+    if bare not in _VAULT_READERS or "max_chars" not in props or not isinstance(args, dict):
+        return args
+    asked = args.get("max_chars")
+    return {**args, "max_chars": min(asked, cap) if isinstance(asked, int) and asked > 0 else cap}
+
+
 def _finish_result(pending: tuple[str, int] | None, summary: list[str]) -> dict | None:
     """A finish tool's call that succeeded, as `{"tool", "result"}`, or None (E2, F772).
 
@@ -1221,6 +1238,10 @@ async def run_agent_step(
     # Precedence: per-step model (from orchestration) > per-agent model > global default
     step_model = model_override.strip() if (model_override and model_override.strip().lower() not in ("", "default")) else None
     current_model = step_model or agent_model or current_settings.get("model", "mistral")
+    # The step's context budget, from its model's window (D339 P1): where it compacts, what one tool result may
+    # hold before it is vaulted, what one vault read answers, and the prompt's last-resort cut.
+    from core.context_budget import budget as _context_budget
+    _budget = _context_budget(current_model, current_settings)
     # Reasoning effort follows the same precedence as the model: the agent's own
     # setting, then the workspace default. It is deliberately not a per-step
     # override — a step picks a *model*, and how hard that model thinks is a
@@ -2095,7 +2116,7 @@ async def run_agent_step(
     _tool_by_name = {getattr(t, 'name', None) or t.get('function', {}).get('name'): t
                      for t in all_tools}
 
-    MAX_PROMPT_CHARS = 400000
+    MAX_PROMPT_CHARS = _budget.prompt_max
     MAX_TRUNCATION_RETRIES = 2
     MAX_PARSE_RETRIES = 1
     MAX_REASONING_RETRIES = 1
@@ -2513,7 +2534,7 @@ async def run_agent_step(
                 _compact_wait = ModelWait(maybe_compact(
                     current_context_text,
                     recent_history_messages,
-                    current_settings,
+                    {**current_settings, "auto_compact_threshold": _budget.compact_at},
                     current_model,
                     mode,
                     current_settings,
@@ -3049,6 +3070,8 @@ async def run_agent_step(
                 # The declaration itself — tool policy reads its annotations.
                 _declared_tool = _tool_by_name.get(tool_name)
                 tool_args = _apply_sticky_args(session_id, tool_name, tool_args, tool_schema)
+                # A vault read answers at most this step's read cap, under its spill line (D339 P2).
+                tool_args = _vault_read_capped(tool_name, tool_args, tool_schema, _budget.read_cap)
 
                 # ── browser_snapshot filename guard ────────────────────────────
                 # Ensure the `filename` arg always lives under data/vault/ so
@@ -3494,7 +3517,7 @@ async def run_agent_step(
                 if tool_executor is not None:
                     _exec_result = await tool_executor(tool_name, tool_args)
                     if _exec_result is not None:
-                        raw_output = maybe_vault(tool_name, _exec_result)
+                        raw_output = maybe_vault(tool_name, _exec_result, threshold=_budget.spill_at)
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                         tools_used_summary.append(f"{tool_name}: {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -3560,7 +3583,7 @@ async def run_agent_step(
                         from core.knowledge.citations import neutralize as _kn_neutralize
                         sub_final = _kn_neutralize(
                             await _delegate_to_workflow(target_agent, task_message, server_module))
-                        raw_output = maybe_vault(tool_name, sub_final)
+                        raw_output = maybe_vault(tool_name, sub_final, threshold=_budget.spill_at)
                         current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                         tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                         preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -3658,7 +3681,7 @@ async def run_agent_step(
                         sub_final = f"Error: Sub-agent '{agent_name}' failed: {e}"
                         _log.warning(f"❌ Delegate sub-agent failed: {e}")
 
-                    raw_output = maybe_vault(tool_name, sub_final)
+                    raw_output = maybe_vault(tool_name, sub_final, threshold=_budget.spill_at)
                     current_context_text += f"\n[Turn {turn + 1} — Observation] Agent '{agent_name}' response:\n{raw_output}\n"
                     tools_used_summary.append(f"delegate_to_agent({agent_name}): {raw_output}")
                     preview = raw_output[:500] + "..." if len(raw_output) > 500 else raw_output
@@ -3761,7 +3784,7 @@ async def run_agent_step(
                                     if _result.stderr:
                                         _log.debug(f"Python tool stderr: {_result.stderr[:200]}")
 
-                                raw_output = maybe_vault(tool_name, raw_output)
+                                raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
                                 current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                                 tools_used_summary.append(f"{tool_name}: {raw_output}")
                                 _log.debug(f"🐍 Python Tool Result ({tool_name}): {raw_output}")
@@ -3792,7 +3815,7 @@ async def run_agent_step(
                             json_resp, raw_output = _http_tool.decode(resp, target_tool)
 
                             # Vault large outputs
-                            raw_output = maybe_vault(tool_name, raw_output)
+                            raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
 
                             current_context_text += f"\n[Turn {turn + 1} — Observation] Tool '{tool_name}' returned:\n{raw_output}\n"
                             tools_used_summary.append(f"{tool_name}: {raw_output}")
@@ -3922,7 +3945,7 @@ async def run_agent_step(
                     _log.debug(f"MCP: ✓ call_tool OK [{round(time.time()-_mcp_t0,2)}s] tool='{tool_name}'")
 
                     # Vault large outputs before any further processing
-                    raw_output = maybe_vault(tool_name, raw_output)
+                    raw_output = maybe_vault(tool_name, raw_output, threshold=_budget.spill_at)
 
                     try:
                         parsed = json.loads(raw_output)
