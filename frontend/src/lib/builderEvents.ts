@@ -84,6 +84,10 @@ export interface ConnectSpec {
     tool?: {
         id: string; name: string; header: string; scheme?: string; tools?: string[];
         host_params?: { name: string; says: string }[];
+        /** The hosts its key is sent to, said before the key is entered (F1244). */
+        sends_to?: string[];
+        /** Those that don't look like the provider's own domain: warned on, never refused (F1244). */
+        unsure?: string[];
     };
     screen?: { id: string; label?: string };
     /** A build waits on this settings screen (F1104): the card's press says "Connected <this>.", and the build checks. */

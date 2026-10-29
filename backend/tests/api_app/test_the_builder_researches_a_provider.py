@@ -105,13 +105,20 @@ async def test_a_verdict_stands_only_on_what_the_run_read():
         events: list[dict] = []
         await read_web_page({"url": "https://duffel.com/docs/api"},
                             _server(_Session({"success": True, "markdown": "Duffel API: test mode"})), [])
-        got = await report_findings({"goal": "book a flight", "options": [
-            {"provider": "Duffel", "how": "API", "sources": ["https://duffel.com/docs/api", "javascript:alert(1)"]},
-            {"provider": "IRCTC", "how": "none", "sources": ["https://www.irctc.co.in/partners"]},
+        # Each names the own domains it claims (F1244); IRCTC's was never read and USPS's isn't the page it cites.
+        report = {"goal": "book a flight", "options": [
+            {"provider": "Duffel", "how": "API", "sources": ["https://duffel.com/docs/api", "javascript:alert(1)"],
+             "own_domains": ["duffel.com"]},
+            {"provider": "IRCTC", "how": "none", "sources": ["https://www.irctc.co.in/partners"],
+             "own_domains": ["irctc.co.in"]},
             {"provider": "Amadeus", "how": "mcp"},
-            {"provider": "USPS", "how": "none", "sources": ["https://duffel.com/docs/api"]},
+            {"provider": "USPS", "how": "none", "sources": ["https://duffel.com/docs/api"], "own_domains": ["usps.com"]},
             {"how": "api"},
-        ]}, None, events)
+        ]}
+        # Neither IRCTC nor USPS names an own domain it read: asked once each to (F1244), then each is unclear.
+        assert "IRCTC" in (await report_findings(report, None, events))["error"]
+        assert "USPS" in (await report_findings(report, None, events))["error"]
+        got = await report_findings(report, None, events)
     finally:
         _current_run.reset(token)
     (card,) = events
@@ -124,24 +131,32 @@ async def test_a_verdict_stands_only_on_what_the_run_read():
     assert "error" in await report_findings({"options": []}, None, [])
 
 
-@pytest.mark.parametrize("provider, page, how", [
-    ("Microsoft Teams", "https://learn.microsoft.com/en-us/graph/api/channel-post-message", "api"),
-    ("Google Calendar", "https://developers.google.com/calendar/api", "api"),
-    ("Tesco Groceries", "https://dev.tesco.co.uk/docs", "api"),
-    ("Microsoft Teams", "https://teamsbot.io/docs", "unclear"),            # someone else's site
-    ("Common Appointment Systems", "https://learn.microsoft.com/graph", "unclear"),
+@pytest.mark.parametrize("provider, page, looks_own", [
+    ("Microsoft Teams", "https://learn.microsoft.com/en-us/graph/api/channel-post-message", True),
+    ("Google Calendar", "https://developers.google.com/calendar/api", True),
+    ("Tesco Groceries", "https://dev.tesco.co.uk/docs", True),
+    ("Microsoft Teams", "https://teamsbot.io/docs", False),            # someone else's site
+    ("Common Appointment Systems", "https://learn.microsoft.com/graph", False),
 ])
-async def test_a_products_page_on_its_companys_domain_is_its_own(provider, page, how):
+async def test_a_products_page_on_its_companys_domain_is_its_own(provider, page, looks_own):
     """F667 (Naveen's brand-word rule, 2026-10-16): Microsoft's own Graph page did not count for "Microsoft Teams",
     because the host must contain the provider's whole name. A page now also counts when the host's registrable name
-    is the provider name's first word."""
+    is the provider name's first word.
+
+    Since F1244 (Naveen, 10-30) the research names the provider's own domains and the one it read stands; the brand
+    rule is the Connect card's warning on a host that doesn't look like the provider's (`_providers_own_page`)."""
+    from core.builder_research import _host, _providers_own_page, _registrable_domain
+
+    assert _providers_own_page(provider, _host(page)) is looks_own
+    how = "api"
     from core.builder_tools import _current_run
 
     token = _current_run.set(f"run_brand_{provider}_{how}")
     try:
         await read_web_page({"url": page}, _server(_Session({"success": True, "markdown": "API docs"})), [])
         events: list[dict] = []
-        await report_findings({"options": [{"provider": provider, "how": "api", "sources": [page]}]}, None, events)
+        await report_findings({"options": [{"provider": provider, "how": "api", "sources": [page],
+                                            "own_domains": [_registrable_domain(_host(page))]}]}, None, events)
     finally:
         _current_run.reset(token)
     assert events[0]["options"][0]["how"] == how
@@ -344,7 +359,10 @@ async def test_a_plan_answered_find_who_can_is_researched_and_builds_nothing(cli
     fake_llm.script([
         "Shippo has a public API with a test mode.\nShippo — api — an account and a key — https://docs.goshippo.com",
         tool_call("report_findings", goal="buy shipping labels", options=[
-            {"provider": "Shippo", "how": "api", "sources": ["https://docs.goshippo.com"]}]),
+            {"provider": "Shippo", "how": "api", "sources": ["https://docs.goshippo.com"],
+             "own_domains": ["goshippo.com"]}]),
+        # It read nothing there, so it is asked once to name the own domains it read (F1244); it says unclear.
+        tool_call("report_findings", goal="buy shipping labels", options=[{"provider": "Shippo", "how": "unclear"}]),
         tool_call("submit_plan", kind="create", title="Kit labels", summary="Labels for each kit.", steps=[
             {"id": "kits", "type": "tool", "name": "List kits", "does": "Reads the kits", "tool": "list_kits"}]),
     ])
@@ -365,7 +383,10 @@ async def test_a_goal_with_no_tool_is_researched_and_ends_in_findings(client, bu
         route("research"),
         tool_call("report_findings", goal="buy shipping labels", options=[
             {"provider": "Shippo", "how": "api", "needs": "An account and an API key",
-             "sources": ["https://docs.goshippo.com"]}]),
+             "sources": ["https://docs.goshippo.com"], "own_domains": ["goshippo.com"]}]),
+        # It read nothing there, so it is asked once to name the own domains it read (F1244); it says unclear.
+        tool_call("report_findings", goal="buy shipping labels", options=[
+            {"provider": "Shippo", "how": "unclear", "needs": "An account and an API key"}]),
     ])
     events = await stream(client, "/api/builder/chat", {"message": "Automate buying shipping labels for our kits"})
     steps = [e.get("step_name") for e in events if e["type"] == "step_start"]

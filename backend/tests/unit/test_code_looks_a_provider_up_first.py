@@ -352,7 +352,7 @@ async def test_report_findings_merges_the_look_up_with_the_researchers_report(wo
     events: list[dict] = []
     card = await br.report_findings({"goal": "Links and a newsletter", "options": [
         {"provider": "Mailchimp", "how": "api", "detail": "Open API with a key.", "needs": "A Mailchimp account",
-         "sources": ["https://mailchimp.com/developer/"]}]}, None, events)
+         "sources": ["https://mailchimp.com/developer/"], "own_domains": ["mailchimp.com"]}]}, None, events)
     assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Mailchimp", "api")]
     assert len(events) == 1 and events[0]["options"] == card["options"]
     assert got["left"][0]["provider"] == "Mailchimp"
@@ -386,8 +386,9 @@ async def test_an_app_in_the_catalogue_is_never_replaced_by_a_none(world):
     await br.read_web_page({"url": "https://acme.com/partners"}, None, [])
     await br.read_web_page({"url": "https://stripe.com/partners"}, None, [])
     card = await br.report_findings({"options": [
-        {"provider": "Acme", "how": "none", "sources": ["https://acme.com/partners"]},
-        {"provider": "Stripe", "how": "none", "sources": ["https://stripe.com/partners"]}]}, None, [])
+        {"provider": "Acme", "how": "none", "sources": ["https://acme.com/partners"], "own_domains": ["acme.com"]},
+        {"provider": "Stripe", "how": "none", "sources": ["https://stripe.com/partners"],
+         "own_domains": ["stripe.com"]}]}, None, [])
     assert [(o["provider"], o["how"]) for o in card["options"]] == [("Stripe", "catalog_app"), ("Acme", "catalog_app")]
 
 
@@ -484,7 +485,8 @@ async def test_the_models_option_folds_into_code_s_verdict_by_identity(world):
     await _look(providers=["Stripe"])
     await br.read_web_page({"url": "https://docs.stripe.com/payments"}, None, [])
     card = await br.report_findings({"options": [
-        {"provider": "Stripe Payments", "how": "api", "sources": ["https://docs.stripe.com/payments"]},
+        {"provider": "Stripe Payments", "how": "api", "sources": ["https://docs.stripe.com/payments"],
+         "own_domains": ["stripe.com"]},
         {"provider": "Stripe Terminal", "how": "unclear"},
         {"provider": "Square", "how": "unclear"}]}, None, [])
     assert [(o["provider"], o["how"]) for o in card["options"]] == [
@@ -498,8 +500,10 @@ async def test_another_products_none_never_replaces_code_s_verdict(world):
     state["pages"]["https://teams.live.com/partners"] = "# Teams\n\nPartners only."
     await _route(state, ["Microsoft"])
     await br.read_web_page({"url": "https://teams.live.com/partners"}, None, [])
-    card = await br.report_findings({"options": [
-        {"provider": "Microsoft Teams", "how": "none", "sources": ["https://teams.live.com/partners"]}]}, None, [])
+    options = {"options": [{"provider": "Microsoft Teams", "how": "none", "sources": ["https://teams.live.com/partners"]}]}
+    # It names no own domain it read: asked once to (F1244), then, saying none again, it is unclear.
+    assert "own_domains" in (await br.report_findings(options, None, []))["error"]
+    card = await br.report_findings(options, None, [])
     assert [(o["provider"], o["how"]) for o in card["options"]] == [("Microsoft", "catalog_app"),
                                                                     ("Microsoft Teams", "unclear")]
 
@@ -533,8 +537,10 @@ async def test_another_product_under_the_same_umbrella_domain_is_its_own_option(
     await _route(state, ["Google Calendar"])
     await br.read_web_page({"url": "https://developers.google.com/sheets"}, None, [])
     card = await br.report_findings({"options": [
-        {"provider": "Google Sheets", "how": "none", "sources": ["https://developers.google.com/sheets"]},
-        {"provider": "Google Drive", "how": "api", "sources": ["https://developers.google.com/sheets"]}]}, None, [])
+        {"provider": "Google Sheets", "how": "none", "sources": ["https://developers.google.com/sheets"],
+         "own_domains": ["google.com"]},
+        {"provider": "Google Drive", "how": "api", "sources": ["https://developers.google.com/sheets"],
+         "own_domains": ["google.com"]}]}, None, [])
     assert [(o["provider"], o["how"]) for o in card["options"]] == [
         ("Google Calendar", "catalog_app"), ("Google Sheets", "none"), ("Google Drive", "api")]
 

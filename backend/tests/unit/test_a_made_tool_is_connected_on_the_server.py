@@ -97,7 +97,9 @@ async def test_the_card_names_the_providers_tools_its_header_scheme_and_host_par
     [card] = [e for e in events if e.get("type") == "connection_needed"]
     assert card["tool"] == {"id": "mailchimp_send_campaign", "name": "Mailchimp", "header": "Authorization",
                             "scheme": "Bearer", "tools": BODY["tools"],
-                            "host_params": [{"name": "dc", "says": "after the dash"}]}
+                            "host_params": [{"name": "dc", "says": "after the dash"}],
+                            # Where the key goes, said before it is entered; Mailchimp's own, so no warning (F1244).
+                            "sends_to": ["api.mailchimp.com"], "unsure": []}
 
 
 async def test_connecting_keeps_the_builders_tags_a_claim(client):
