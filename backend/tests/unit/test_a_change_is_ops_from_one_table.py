@@ -150,7 +150,7 @@ def _samples():
         ("set_agent_skills", {"add": ["x"]}), ("set_agent_instructions", {"system_prompt": "s"}),
         ("rename_agent", {"name": "N"}), ("set_tool_policy", {"open_world": "deny"}), ("delete_agent", {}),
         ("update_skill", {"description": "d"}), ("delete_tool", {}),
-        ("knowledge_edit_document", {"text": "Open 8 to 6."}),
+        ("knowledge_edit_document", {"text": "Open 8 to 6."}), ("knowledge_settings", {"language": "english"}),
         ("restore_agent", {"name": "N", "description": "d", "type": "conversational", "tools": [],
                            "system_prompt": "s", "model": "m"}),
         ("restore_workflow", {"name": "N", "steps_json": "[]", "entry_step_id": "s1", "max_run_credits": 2}),
@@ -234,7 +234,8 @@ def _shown(value):
 
 #: A value for every field an op declares (MCP2's re-check, B: a hand-made sample that sets no `description` let
 #: a new schedule's line leave it out though its call sent it). Each is distinctive, so its presence is checked.
-_EVERY = {"text": "OPEN 8 TO 6", "find": "OPEN 9 TO 5", "replace": "OPEN 8 TO 6", "name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND THE DIGEST", "model": "model-x",
+_EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 25, "clear_budget": False,
+          "text": "OPEN 8 TO 6", "find": "OPEN 9 TO 5", "replace": "OPEN 8 TO 6", "name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND THE DIGEST", "model": "model-x",
           "cron_expression": "0 3 * * *", "schedule_type": "cron", "timezone": "Europe/Amsterdam", "interval_value": 6, "interval_unit": "hours",
           "runs": {"kind": "workflow", "id": "w1", "name": "Nightly digest"}, "add": ["send_email"],
           "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
