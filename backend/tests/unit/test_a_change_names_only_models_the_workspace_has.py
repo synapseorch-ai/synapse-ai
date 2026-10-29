@@ -146,7 +146,8 @@ async def test_a_need_is_a_model_code_picks_and_the_review_says_from_what_to_wha
     assert out["outcome"] == "review", out
     assert out["calls"] == [["update_agent", {"agent_id": agent["id"], "fields": {"model": "claude-sonnet-4-5"}}]]
     assert ('Change the model of the agent "Front desk" — model: claude-sonnet-4-5 (was claude-haiku-4-5: a '
-            'stronger model, for reasoning)') in out["review"]
+            'stronger model, for reasoning, from your own keys: one that calls tools; reasons carefully)') \
+        in out["review"]
 
 
 async def test_a_wish_is_the_person_s_model_and_an_unclear_one_is_asked(client, role, priced):

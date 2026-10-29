@@ -935,17 +935,15 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                                   "say another name.")
                 continue
         if op.name == "set_agent_model":
-            from core import model_choices
+            from core.native_builder import models_menu as MM
 
             if not _text(fields.get("model")):
                 # What the agent needs, or the person's wish, made a model id by code (F966): the planner never
                 # writes one. Its reason goes on the review beside the model it replaces.
-                from core.native_builder import models_menu as MM
-
                 needs, wish, menu = fields.get("needs") or "simple", _text(fields.get("wish")), await MM.menu()
                 has_tools = bool(live.get("tools"))
                 got = (MM.resolve_wish(wish, needs, has_tools=has_tools, menu=menu) if wish
-                       else MM.pick(needs, has_tools=has_tools, menu=menu))
+                       else MM.pick(needs, has_tools=has_tools, menu=menu, default=MM.workspace_model()))
                 if got is None:
                     item.update(status="refused", say="I can't read which models this workspace can use right now: "
                                                       "name the model you want.")
@@ -958,16 +956,15 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                     continue
                 fields["model"] = got.id
                 item["why"] = f"was {live.get('model') or 'the workspace default'}: {got.reason}"
-            found = await model_choices.choices()
-            if not model_choices.offers(found, _text(fields.get("model"))):
-                # One choice whose own id is what was said ("nova-pro" for `synapse.nova-pro`, F959) is that choice;
-                # the review shows its full id, so the exact model is what the person approves.
-                fields["model"] = model_choices.named(found, _text(fields.get("model"))) or fields["model"]
-            if not model_choices.offers(found, _text(fields.get("model"))):
-                listed = "; ".join(f"{p}: {', '.join(m[:6])}" for p, m in found.items())
-                item.update(status="refused", say=f"{_quoted(_text(fields.get('model')))} is not a model this "
-                                                  f"workspace can use. It can use: {listed}.")
+            # One check at every door that sets an agent's model (F1250): one whose own id is what was said
+            # ("nova-pro" for `synapse.nova-pro`, F959) is that choice, and the review shows its full id, so the exact
+            # model is what the person approves.
+            refused, model = await MM.model_refusal(_text(fields.get("model")), has_tools=bool(live.get("tools")),
+                                                    default_ok=False)
+            if refused:
+                item.update(status="refused", say=refused)
                 continue
+            fields["model"] = model
         if op.name == "set_agent_skills":
             refusal = await _skill_names(fields)
             if refusal:
