@@ -153,6 +153,17 @@ class TestAModelIsGivenAFileItCanRead:
         assert out.startswith("Summarise this: ") and ref["$vault"] in out and "read_file" in out
         assert len(out) < 2_000 and "word word word word" not in out
 
+    def test_an_older_workflows_single_brace_form_reads_the_same_way(self, store):
+        """A workflow saved with `{state.page}` is written in the one form as it is read (F1252's converter); the
+        prompt it then fills gets the saved output's file the same way."""
+        from core.orchestration.context import _fill_task_template
+
+        ref = step_refs.save("r", "s", PAGE)
+        template = templating.one_form("Summarise this: {state.page}")
+        assert template == "Summarise this: {{ state.page }}"
+        out = _fill_task_template(template, {"page": ref}, {}, read_cap=20_000)
+        assert ref["$vault"] in out and len(out) < 2_000
+
     def test_a_field_of_a_saved_object_is_its_value(self, store):
         from core.orchestration.context import _fill_task_template
 
