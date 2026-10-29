@@ -136,6 +136,15 @@ class StepConfig(BaseModel):
     # the context window and the bill. They ride on the engine instead.
     pass_images: bool = False
 
+    @model_validator(mode="before")
+    @classmethod
+    def _templates_in_one_form(cls, data: Any) -> Any:
+        """Every template over state in the one form, `{{ state.x }}` (F1252, Naveen 10-30): an older `{state.x}` in a
+        step's templates is written that way as the step is read, so a workflow saved before keeps working."""
+        from core.templating import one_form_step
+
+        return one_form_step(data)
+
     @model_validator(mode="after")
     def _images_only_where_they_are_read(self):
         """`pass_images` is read by the agent executor and nowhere else.

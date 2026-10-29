@@ -4374,18 +4374,21 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             issues.append(
                 f"Human step '{hid}' collects fields ({', '.join(names)}), so '{key}' holds a mapping "
                 f"{{field: value}}, not {declared}: declare '{key}' as dict in state_schema and read one "
-                f"field as {{state.{key}.{names[0]}}}. Clearer still, name the output_key for the step "
+                f"field as {{{{ state.{key}.{names[0]} }}}}. Clearer still, name the output_key for the step "
                 f"(e.g. 'review'), not after one of its fields."
             )
+    from core.templating import STATE_REF, one_form
+
     for s in steps:
         if s.get("type") != "print":
             continue
+        shown = {m.group(1) for m in STATE_REF.finditer(one_form(s.get("print_content") or ""))}
         for key, (hid, field) in fielded.items():
-            if f"{{state.{key}}}" in (s.get("print_content") or ""):
+            if key in shown:
                 issues.append(
-                    f"Print step '{s.get('id', '?')}' shows {{state.{key}}}, human step '{hid}'s whole "
+                    f"Print step '{s.get('id', '?')}' shows {{{{ state.{key} }}}}, human step '{hid}'s whole "
                     f"answer, which is a mapping and prints as a Python dict: show one field, "
-                    f"{{state.{key}.{field}}}."
+                    f"{{{{ state.{key}.{field} }}}}."
                 )
 
     # ── State schema ─────────────────────────────────────────────────────────

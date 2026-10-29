@@ -339,17 +339,25 @@ async def _replace(model, items: list[dict], build, index_elements, key_column, 
 
 async def load_orchestrations() -> list[dict]:
     from core.store.models import OrchestrationDB
-    return await _list(OrchestrationDB)
+    from core.templating import one_form_definition
+
+    # Every template in the one form, a row saved before F1252 too: what a read (the API's, an export) returns.
+    return [one_form_definition(o) for o in await _list(OrchestrationDB)]
 
 
 async def get_orchestration(orch_id: str) -> dict | None:
     from core.store.models import OrchestrationDB
-    return await _get(OrchestrationDB, OrchestrationDB.id, orch_id)
+    from core.templating import one_form_definition
+
+    return one_form_definition(await _get(OrchestrationDB, OrchestrationDB.id, orch_id))
 
 
 async def save_orchestration(item: dict) -> None:
     from core.store import session
     from core.store.models import OrchestrationDB
+    from core.templating import one_form_definition
+
+    item = one_form_definition(item)  # saved in the one form, `{{ state.x }}` (F1252)
 
     async with session() as s:
         await _save(

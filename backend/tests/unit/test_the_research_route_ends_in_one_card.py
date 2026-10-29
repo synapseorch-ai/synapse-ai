@@ -137,13 +137,13 @@ def test_the_route_is_code_then_the_researcher_then_code():
                                                           "research": "step_lookup_research"}
     research = steps["step_lookup_research"]
     assert research["finish_tools"] == ["report_findings"] and research["finish_fallback"] == {"status": "no_report"}
-    assert "{state.lookup.left}" in research["prompt_template"]
+    assert "{{ state.lookup.left }}" in research["prompt_template"]
     assert research["next_step_id"] == research["on_exhausted_step_id"] == "step_findings"
     card = steps["step_findings"]
     assert (card["forced_tool"], card["tool_arguments"], card["next_step_id"]) == (
         "finish_findings", {}, "step_findings_said")
     said = steps["step_findings_said"]
-    assert (said["type"], said["print_content"], said["output_key"]) == ("print", "{state.findings.said}", "summary")
+    assert (said["type"], said["print_content"], said["output_key"]) == ("print", "{{ state.findings.said }}", "summary")
 
 
 @pytest.mark.parametrize("value, branch", [

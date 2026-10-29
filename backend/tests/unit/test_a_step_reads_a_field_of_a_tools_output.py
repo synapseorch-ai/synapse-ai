@@ -4,7 +4,7 @@ SAI2-P2, D308).
 
 A builder tool answers with JSON text, and a Tool step keeps that text as its output. E1's set arguments already step
 into it (`{{ state.checked.outcome }}`, `steps._state_value`), but nothing else did: `state.checked.outcome` in a
-switch raised "'str' object has no attribute 'outcome'" (so the switch matched nothing), and `{state.checked.say}` in
+switch raised "'str' object has no attribute 'outcome'" (so the switch matched nothing), and `{{ state.checked.say }}` in
 a Print was left as written. Synapse AI's change route branches on its code steps' answers, so every step now reads a
 field of JSON text the one way. Only paths that failed before change: a string that is not a JSON object, and
 anything a method call or `len` does to a string, are as they were.
@@ -57,14 +57,14 @@ def test_a_switch_value_from_json_text_is_plain_json():
 
 
 def test_a_prompt_and_a_print_read_a_field_of_json_text():
-    assert render_state_refs("{state.checked.say} ({state.checked.count})", STATE) == "Two cards are up. (3)"
-    assert render_state_refs("{state.checked.inner.ok}", STATE) == "True"
+    assert render_state_refs("{{ state.checked.say }} ({{ state.checked.count }})", STATE) == "Two cards are up. (3)"
+    assert render_state_refs("{{ state.checked.inner.ok }}", STATE) == "True"
 
 
 def test_a_reference_into_text_that_is_not_json_is_left_as_written():
-    assert render_state_refs("{state.plain.say}", STATE) == "{state.plain.say}"
-    assert render_state_refs("{state.checked.nothing}", STATE) == "{state.checked.nothing}"
-    assert render_state_refs("{state.checked}", STATE) == OUT
+    assert render_state_refs("{{ state.plain.say }}", STATE) == "{{ state.plain.say }}"
+    assert render_state_refs("{{ state.checked.nothing }}", STATE) == "{{ state.checked.nothing }}"
+    assert render_state_refs("{{ state.checked }}", STATE) == OUT
 
 
 SNEAKY = {"x": json.dumps({"__class__": "boom", "_private": "secret", "ok": 1})}
@@ -103,9 +103,9 @@ def test_text_nested_too_deep_to_read_has_no_fields_and_fails_nothing():
     deep = '{"a": ' * 100_000 + "1" + "}" * 100_000
     state = {"deep": deep}
     assert evaluate_expression("state.deep.a", state, "fallback").value == "fallback"
-    assert render_state_refs("{state.deep.a}", state) == "{state.deep.a}"
+    assert render_state_refs("{{ state.deep.a }}", state) == "{{ state.deep.a }}"
     assert _fill_task_template("{{ state.deep.a }}", state, {}) == "{{ state.deep.a }}"
-    assert _fill_task_template("{state.deep.a}", state, {}) == "{state.deep.a}"
+    assert _fill_task_template("{{ state.deep.a }}", state, {}) == "{{ state.deep.a }}"
 
 
 def test_a_set_argument_into_text_nested_too_deep_names_nothing():
@@ -130,12 +130,12 @@ def test_json_text_is_read_to_a_counted_depth_whatever_the_stack():
 
     at, over = {"deep": _nested(MAX_JSON_DEPTH)}, {"deep": _nested(MAX_JSON_DEPTH + 1)}
     assert evaluate_expression("state.deep.a", at, "fallback").value != "fallback"
-    assert render_state_refs("{state.deep.a}", at) != "{state.deep.a}"
+    assert render_state_refs("{{ state.deep.a }}", at) != "{{ state.deep.a }}"
     assert _fill_task_template("{{ state.deep.a }}", at, {}) != "{{ state.deep.a }}"
     assert render_tool_arguments({"x": "{{ state.deep.a }}"}, at)["x"]
 
     assert evaluate_expression("state.deep.a", over, "fallback").value == "fallback"
-    assert render_state_refs("{state.deep.a}", over) == "{state.deep.a}"
+    assert render_state_refs("{{ state.deep.a }}", over) == "{{ state.deep.a }}"
     assert _fill_task_template("{{ state.deep.a }}", over, {}) == "{{ state.deep.a }}"
     with pytest.raises(MissingStateRef):
         render_tool_arguments({"x": "{{ state.deep.a }}"}, over)
@@ -147,4 +147,4 @@ def test_braces_inside_a_string_are_not_depth():
     braces = "{[" * MAX_JSON_DEPTH
     state = {"deep": json.dumps({"a": braces})}
     assert evaluate_expression("state.deep.a", state, "fallback").value == braces
-    assert render_state_refs("{state.deep.a}", state) == braces
+    assert render_state_refs("{{ state.deep.a }}", state) == braces
