@@ -191,3 +191,15 @@ class TestTheBuildAsksOnce:
         run = await _run(SALES)
         out = await _check(run, {"finish": "cannot", "why": "No", "nearest": "Try X"})
         assert out["outcome"] == "said"
+
+    async def test_the_questions_asked_alone_carry_it(self, client, desk):
+        # Whatever carries a request's questions into a later builder run (F1226) carries this one: a restated
+        # request with the answered question in `asked` is not asked about its dates again.
+        run = await _run(SALES)
+        await _check(run, PLAN)
+        run.shared_state["human_response"] = {"answer": "2"}
+        asked = (await _check(run, PLAN))["asked"]
+        later = await _run(SALES)
+        later.shared_state[build_plan.CHECKED_KEY] = {"asked": asked}
+        out = await _check(later, PLAN)
+        assert out["outcome"] == "review" and "the 7 days up to the day before the run" in out["review"]

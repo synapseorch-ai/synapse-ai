@@ -1226,24 +1226,24 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What earlier passes found is carried through a question round, so the lookup and the Connect cards are not
     # repeated, and every question with its answer reaches the planner, not only the last (SAI2's review, 22).
     asked = list(prior.get("asked") or [])
-    periods_said = list(prior.get("periods") or [])
     if prior.get("outcome") == "ask" and (answered := (_obj(state.get("human_response")) or {}).get("answer")):
         entry = {"question": prior.get("question") or "", "answer": str(answered)}
         if prior.get("asking_periods"):
-            # Code's own question (F1210): the answer is a rule each run works out from its own date.
+            # Code's own question (F1210): the answer is a rule each run works out from its own date. It lives in
+            # `asked` alone, so whatever carries the questions asked carries it, and it is never asked again.
             entry["means"] = periods.meanings(prior["asking_periods"], str(answered), state.get("person_timezone"))
-            periods_said += entry["means"]
         asked.append(entry)
+    periods_said = [rule for a in asked if isinstance(a, dict) for rule in a.get("means") or []]
     base: dict[str, Any] = {"object": "plan", "plan": None, "review": "", "offers": [], "question": "", "say": "",
                             "issues": [], "checks": int(prior.get("checks") or 0) + 1, "asked": asked,
                             "research": prior.get("research") or [], "offered": prior.get("offered") or [],
-                            "periods_asked": bool(prior.get("periods_asked")), "periods": periods_said}
-    if finish in ("submit_plan", "ask_person") and not base["periods_asked"] and (
+                            "periods": periods_said}
+    if finish in ("submit_plan", "ask_person") and not periods_said and not prior.get("asking_periods") and (
             q := periods.question(f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}",
                                   state.get("person_timezone"))):
         # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
         # clock (F1210): a planner picked one of two weeks without saying so.
-        return {**base, "outcome": "ask", "question": q.text, "periods_asked": True, "asking_periods": q.dump()}
+        return {**base, "outcome": "ask", "question": q.text, "asking_periods": q.dump()}
     if finish == "ask_person":
         options = draft.get("options") or []
         question = (draft.get("question") or "") + ("\n" + "\n".join(f"{n}. {o}" for n, o in enumerate(options, 1))
