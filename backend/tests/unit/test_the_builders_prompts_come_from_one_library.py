@@ -71,7 +71,9 @@ from core.native_builder import prompt_lint, seed
 #: F1225: the planner's read_api_spec (the person's own API spec, among its tools; no prompt changes), 3d11ab71….
 #: F1241: the router's route to a waiting plan's review (`step_review_research` among step_classify_route's cases; no
 #: prompt changes), 16182ae3….
-BUNDLE_SHA256 = "16182ae3532cde35953c829268f90c8380d80597e86e829836e3804c712c4554"
+#: F1247: the two approval routers' keys declared as the bool their If/Else steps write, cbc03e50… alone; with F1241
+#: (fix-forward 14), ab529469….
+BUNDLE_SHA256 = "ab52946932b56d5da70bb2c4a534ee8e4d72d8e48039d9f33a21fb947f117c72"
 
 
 def _sha(definitions) -> str:
