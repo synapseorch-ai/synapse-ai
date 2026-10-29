@@ -64,7 +64,8 @@ async def _relay(url: str, api_key: str | None) -> None:
             ClientSession(read, write) as upstream:
         init = await upstream.initialize()
 
-        server: Server = Server("synapse", instructions=init.instructions)
+        # Named as the endpoint names itself: its instructions, and its icons (F1215).
+        server: Server = Server("synapse", instructions=init.instructions, icons=init.serverInfo.icons)
 
         @server.list_tools()
         async def list_tools():
