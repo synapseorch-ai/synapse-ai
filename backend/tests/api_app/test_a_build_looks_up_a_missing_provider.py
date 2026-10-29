@@ -27,7 +27,7 @@ def _stripe_script():
         tool_call("submit_plan", **STRIPE_PLAN),                               # step_plan (the planner's finish)
         tool_call("report_findings", goal="send a payment link", options=[      # the researcher's finish (E2)
             {"provider": "Stripe", "how": "mcp", "needs": "A Stripe account"}]),
-        tool_call("submit_plan", **{**STRIPE_PLAN, "questions": ["Connect Stripe first."]}),  # step_plan again
+        tool_call("submit_plan", **STRIPE_PLAN),  # step_plan again (a plan carries no question since F1253)
     ]
 
 

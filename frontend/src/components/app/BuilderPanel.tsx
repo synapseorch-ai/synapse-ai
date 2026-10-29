@@ -22,6 +22,7 @@ import {
     ActionCard,
     AGENT_BUILDER_SWITCH,
     AgentTurn,
+    askedForm,
     Composer,
     composerPillClass,
     ConnectCard,
@@ -431,7 +432,10 @@ export function BuilderConversation({
                                             )}
                                         </div>
                                     ) : (
-                                        <QuestionCard content={message.content} open={open} onStop={onStop} />
+                                        // A form question (F1253) is answered in its fields, words and fields at once.
+                                        <QuestionCard content={message.content} open={open} onStop={onStop}
+                                            form={askedForm(message.context)} busy={streaming} formId={message.key}
+                                            onAnswer={(text, answer) => void send(text, [], { form: answer })} />
                                     )}
                                 </AgentTurn>
                             );

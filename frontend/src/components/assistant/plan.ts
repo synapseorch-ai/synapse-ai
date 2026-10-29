@@ -15,6 +15,7 @@
  * Pure: no React, no request. Synced into the cloud app with the rest of
  * `components/assistant/`.
  */
+import type { HumanField } from '@/components/orchestration/humanFields';
 import { roleOf, type StepRole } from '@/components/run/model';
 import { scheduleWords, zoneWords } from '@/components/run/workflowList';
 import { STEP_TYPE_META, type StepType } from '@/types/orchestration';
@@ -791,4 +792,41 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
         asksFirst: asks && !isNone(asks) ? asks : null,
         actsAlone: alone && !isNone(alone) ? alone : null,
     };
+}
+
+/** A field of the form the builder asks before it plans (F1253): a human field, the planner's guess as its `value`. */
+export type AskedField = HumanField & { value?: string };
+
+/**
+ * The form a builder question asks (F1253): its check's `form`, sent as the question's context — the build's
+ * `plan_checked`, a change's `change_checked`. `null` for a question asked in words alone, which the chat box answers.
+ */
+export function askedForm(context: Record<string, unknown> | null | undefined): AskedField[] | null {
+    const form = context?.form;
+    if (!Array.isArray(form)) return null;
+    const fields = form.filter(
+        (f): f is AskedField => !!f && typeof f === 'object' && typeof f.name === 'string' && !!f.name
+            && typeof f.label === 'string',
+    );
+    return fields.length ? fields : null;
+}
+
+/** A form question's own line: its words before the numbered fields (`change_tools.form_text`). */
+export function askedLead(content: string): string {
+    const lines = content.split('\n');
+    const first = lines.findIndex((l) => /^\d+\.\s/.test(l));
+    return (first < 0 ? content : lines.slice(0, first).join('\n')).trim();
+}
+
+/**
+ * A form's answers in words, one line a field (`change_tools.form_answer`'s words): what the chat shows as the
+ * person's reply, and what a planner reads beside each field's own answer.
+ */
+export function askedWords(fields: AskedField[], answer: Record<string, string | number | boolean | null>): string {
+    return fields.map((f) => {
+        const value = answer[f.name];
+        const said = typeof value === 'boolean' ? (value ? 'yes' : 'no')
+            : value === null || value === undefined || String(value).trim() === '' ? '(left empty)' : String(value).trim();
+        return `${f.label} ${said}`;
+    }).join('\n');
 }

@@ -446,7 +446,13 @@ async def test_a_plan_reviewed_after_its_sendbacks_never_shows_the_ask(client):
     checked, _ = await _check(run, out)
     shown = json.dumps(checked)
     assert "Secret API Key" not in shown and "auth token" not in shown
-    assert checked["plan"]["questions"] == ["Which list should it use?"]
+    # Since F1253 a plan's own question is asked before any card, in the form: the one left after the key's is cut.
+    assert checked["outcome"] == "ask" and [f["label"] for f in checked["form"]] == ["Which list should it use?"]
+    run.shared_state["human_response"] = {"answer": "The newsletter list"}
+    reviewed, _ = await _check(run, out)
+    shown = json.dumps(reviewed)
+    assert reviewed["outcome"] == "review" and reviewed["plan"]["questions"] == []
+    assert "Secret API Key" not in shown and "auth token" not in shown
     assert "Drafts a delay warning." in shown
 
 

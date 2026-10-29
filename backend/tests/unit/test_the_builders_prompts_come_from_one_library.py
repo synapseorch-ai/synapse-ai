@@ -80,7 +80,10 @@ from core.native_builder import prompt_lint, seed
 #: F1252: every template over state in the one form, `{{ state.x }}` (Naveen 10-30), c8d173a1….
 #: F1256: the planner's rule 8 (what the pack's `not_here` lists is done on its screen, never built from workflow
 #: parts; `cannot`, naming the screen), fb32ab63… alone; with F1252 (fix-forward 15), 34ca5faa….
-BUNDLE_SHA256 = "34ca5faab4e6d1b6645349afd71a8b5fec22a2b9c33e5d8b9ffd8f2f733c95d4"
+#: F1253: the planner and the change planner ask every question at once in one form, a plan carries none, and an
+#: address of theirs is never guessed (planner.json, change_planner.json, plan_steps' tool line); with F1252,
+#: 6dd38c6f…; on fix-forward 15's tree with F1256, 5005cdff….
+BUNDLE_SHA256 = "5005cdff4189a85fe9ada39eed51da741898c4864dc35c6235ae3e74245c54d5"
 
 
 def _sha(definitions) -> str:

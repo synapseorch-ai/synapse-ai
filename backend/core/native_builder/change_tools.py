@@ -104,21 +104,36 @@ SUBMIT = {"type": "function", "function": {
     }},
 }}
 
+_SUBJECT = ("The thing the question is about, in a few words: the knowledge base 'competitor_pricing', the Monday "
+            "schedule. A question already asked about it is not asked again.")
+_OPTIONS = "The choices, when there are a few: here only, never also listed in the question."
 ASK = {"type": "function", "function": {
     "name": "ask_person",
-    "description": ("Finish with one question that only the person can answer: which one they mean, what time, "
-                    "what value, who, or how much. Never ask what reading the workspace or a lookup would tell you, "
-                    "and never for a key or how to connect a service: those come through a Connect card."),
+    "description": ("Finish with what only the person can answer: which one they mean, what time, what value, who, or "
+                    "how much. Several at once go in `questions`, one form they answer in one go, each with your "
+                    "best guess filled in for them; one alone may be `question`. Never ask what reading the "
+                    "workspace or a lookup would tell you, and never for a key or how to connect a service: those "
+                    "come through a Connect card."),
     "parameters": {"type": "object", "properties": {
-        "question": {"type": "string"},
+        "question": {"type": "string", "description": "One question; with `questions`, the line above them."},
         "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
-        "subject": {"type": "string", "description": "The thing the question is about, in a few words: the knowledge "
-                                                    "base 'competitor_pricing', the Monday schedule. A question "
-                                                    "already asked about it is not asked again."},
-        "options": {"type": "array", "items": {"type": "string"}, "description": "The choices, when there are "
-                                                                                 "a few: here only, never also "
-                                                                                 "listed in the question."},
-    }, "required": ["question", "about"]},
+        "subject": {"type": "string", "description": _SUBJECT},
+        "options": {"type": "array", "items": {"type": "string"}, "description": _OPTIONS},
+        "questions": {"type": "array", "maxItems": 6, "description": (
+            "Every question at once, as one form: each a field the person fills in, your guess already in it."),
+            "items": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "kind": {"type": "string", "enum": ["text", "address", "email", "number", "date", "yes_no",
+                                                    "choice"]},
+                "guess": {"type": "string", "description": (
+                    "Your best guess as the answer itself, filled in for them to keep or change: a value (an address, "
+                    "a day and time, a number, one of the options), never a description of what it could be. Leave "
+                    "it out when you have no such value.")},
+                "options": {"type": "array", "items": {"type": "string"}, "description": _OPTIONS},
+                "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
+                "subject": {"type": "string", "description": _SUBJECT},
+            }, "required": ["question"]}},
+    }},
 }}
 
 CANNOT = {"type": "function", "function": {
@@ -249,8 +264,15 @@ WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a t
 ABOUT = ("which", "when", "what", "who", "how_much")
 #: How many questions one request asks, across its runs, before it goes on with what it has (F1226).
 QUESTIONS = 5
-ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know, and put what is still "
-                "open under the plan's questions.")
+ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know. What you pick is on the "
+                "plan's card for them to check.")
+#: The most questions one form asks (F1253): a form is one round of the request's cap.
+FORM_MAX = 6
+#: A form question's kind, as the field it is (`humanFields.ts`).
+KIND_TYPE = {"text": "string", "address": "string", "email": "email", "number": "number", "date": "date",
+             "yes_no": "boolean", "choice": "choice"}
+#: The form's line when the planner gives none.
+FORM_LEAD = "A few things before I plan it:"
 #: The steps that put a planner's question to the person.
 _ASKING_STEPS = ("step_human_clarify", "step_change_clarify")
 #: The questions this conversation's request has asked, across its runs (F1226): `[{about, subject, question, answer,
@@ -259,7 +281,7 @@ ASKED_KEY = "request_questions"
 #: How many questions the request showed the person in its earlier runs (F1226): the cap counts the request.
 ROUNDS_KEY = "request_rounds"
 ASKED_ALREADY = ("You asked the person this already: \"{question}\" Their answer: {answer}. Don't ask it again: go on "
-                 "with that answer, and put what is still open under the plan's questions.")
+                 "with that answer.")
 
 
 def _question_words(text: Any) -> set[str]:
@@ -276,22 +298,49 @@ def _same_question(earlier: dict, about: str, subject: str, question: str) -> bo
     return bool(a and b) and len(a & b) / len(a | b) >= 0.8
 
 
-def _answer_of(state: dict) -> str | None:
-    """The person's answer to the question a run last put (a build's clarify or a change's), if it has one."""
+def reply_of(state: dict) -> tuple[str | None, dict]:
+    """The person's answer to what a run last asked (a build's clarify or a change's), if it has one: its words, and a
+    form's answers by field (F1253; `{}` for a reply typed in the chat box or a channel)."""
     for key in ("human_response", "change_clarify"):
         value = state.get(key)
         value = json.loads(value) if isinstance(value, str) and value.startswith("{") else value
         said = value.get("answer") if isinstance(value, dict) else value
-        if isinstance(said, str) and said.strip():
-            return said.strip()
-    return None
+        form = value.get("form") if isinstance(value, dict) and isinstance(value.get("form"), dict) else {}
+        if isinstance(said, str) and said.strip() or form:
+            return (said.strip() if isinstance(said, str) and said.strip() else None), form
+    return None, {}
+
+
+def _answer_of(state: dict) -> str | None:
+    """The person's answer to the question a run last put (a build's clarify or a change's), if it has one."""
+    return reply_of(state)[0]
+
+
+def form_answer(value: Any) -> str:
+    """A form field's answer as words: yes or no for a tick box, "(left empty)" for nothing."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value).strip() if value is not None and str(value).strip() else "(left empty)"
 
 
 def _with_answers(state: dict) -> list[dict]:
-    """The run's questions, the last one given the answer the run holds for it."""
+    """The run's questions, those it last put given the answer the run holds for them: a form's each by its field,
+    or all of them the reply typed instead (F1253); one question alone, as before it."""
     asked = [dict(a) for a in state.get(ASKED_KEY) or [] if isinstance(a, dict)]
-    if asked and not asked[-1].get("answer") and (said := _answer_of(state)):
-        asked[-1]["answer"] = said
+    said, form = reply_of(state)
+    if not (said or form):
+        return asked
+    # The form this run put last: its fields still unanswered, at the end. A carried one is an earlier run's.
+    last = []
+    for a in reversed(asked):
+        if a.get("answer") or not a.get("field") or a.get("carried"):
+            break
+        last.append(a)
+    for a in last or ([asked[-1]] if asked and not asked[-1].get("answer") else []):
+        if a.get("field") in form:
+            a["answer"] = form_answer(form[a["field"]])
+        elif said:
+            a["answer"] = said
     return asked
 
 
@@ -367,9 +416,24 @@ def questions_asked(state: dict, run: Any = None) -> int:
         1 for h in (getattr(run, "step_history", None) or []) if h.get("step_id") in _ASKING_STEPS)
 
 
-def note_question(state: dict, about: str, subject: str, question: str) -> None:
-    """Record a question put to the person, so no later run of the request asks it again."""
-    state[ASKED_KEY] = [*_with_answers(state), {"about": about, "subject": subject, "question": question}]
+def note_question(state: dict, about: str, subject: str, question: str, field: str = "") -> None:
+    """Record a question put to the person, so no later run of the request asks it again; `field` is its field in a
+    form (F1253), which its answer comes back by."""
+    state[ASKED_KEY] = [*_with_answers(state), {"about": about, "subject": subject, "question": question,
+                                                 **({"field": field} if field else {})}]
+
+
+def form_text(lead: str, fields: list[dict]) -> str:
+    """A form's words (F1253): its line, then each field numbered, with its choices or the guess filled in. What the
+    run page, a channel and the chat box answer; the panel draws the fields themselves."""
+    def line(f: dict) -> str:
+        options, value, label = f.get("options") or [], f.get("value"), str(f.get("label") or f.get("name") or "")
+        if options:
+            label += " (" + (", ".join(options[:-1]) + " or " + options[-1] if len(options) > 1 else options[0]) + ")"
+        elif value and str(value) not in label:
+            label += f" (my guess: {value})"
+        return label
+    return "\n".join([lead.strip(), *(f"{n}. {line(f)}" for n, f in enumerate(fields, 1))]).strip()
 
 
 def carry_request(previous: dict | None, history: list[dict] | None = None, run_id: str = "") -> dict:
@@ -407,6 +471,9 @@ def carry_request(previous: dict | None, history: list[dict] | None = None, run_
 
 
 async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict:
+    items = [q for q in args.get("questions") or [] if isinstance(q, dict) and _text(q.get("question"))]
+    if items:
+        return _ask_form(_text(args.get("question")) or FORM_LEAD, items[:FORM_MAX])
     question = _text(args.get("question"))
     if not question:
         return {"error": "ask_person needs the question."}
@@ -431,6 +498,39 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     if run is not None:
         note_question(state, about, subject, question)
     return {"finish": "ask_person", "question": question, "about": about, "options": options}
+
+
+def _ask_form(lead: str, items: list[dict]) -> dict:
+    """Several questions as one form (F1253): one round of the request's cap, each question checked and noted as
+    `ask_person`'s one is, and kept with its field, which its answer comes back by."""
+    asked: list[tuple[str, str, str, list[str], dict]] = []
+    for n, item in enumerate(items, 1):
+        question, options = asked_options(_text(item.get("question")), list(item.get("options") or []))
+        options = options[:8]
+        words = " / ".join([lead, question, *options])
+        if _ASKS_SECRET.search(words):
+            return {"error": SECRET_ASKED}
+        way_in = _ASKS_WAY_IN.search(words)
+        if way_in and not (item.get("about") == "which" and way_in.group(0).lower().startswith("http tool")):
+            return {"error": WAY_IN_ASKED}
+        kind = "choice" if options else item.get("kind") if item.get("kind") in KIND_TYPE else "text"
+        field = {"name": f"q{n}", "type": KIND_TYPE[kind], "label": question,
+                 **({"options": options} if options else {}),
+                 **({"value": guess} if (guess := _text(item.get("guess"))) and kind != "yes_no" else {})}
+        asked.append((item.get("about") if item.get("about") in ABOUT else "what", _text(item.get("subject")),
+                      question, options, field))
+    _, run = _run()
+    state = run.shared_state if run is not None else {}
+    for about, subject, question, _, _ in asked:
+        if (same := asked_before(state, about, subject, question)) is not None:
+            return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
+                                                  answer=same.get("answer") or "none yet")}
+    if (n := questions_asked(state, run)) >= QUESTIONS:
+        return {"error": ASKED_ENOUGH.format(n=n)}
+    if run is not None:
+        for about, subject, question, _, field in asked:
+            note_question(state, about, subject, question, field=field["name"])
+    return {"finish": "ask_person", "question": lead, "form": [field for *_, field in asked]}
 
 
 async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -746,6 +846,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
 
     if (which := _recording_or_workflow(base)) is not None:
         return which
+    if finish == "ask_person" and isinstance(draft.get("form"), list) and draft["form"]:
+        return {**base, "outcome": "ask", "question": form_text(draft.get("question") or FORM_LEAD, draft["form"]),
+                "form": draft["form"]}
     if finish == "ask_person":
         return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
                                                                  list(draft.get("options") or []))}
