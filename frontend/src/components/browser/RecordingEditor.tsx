@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MoreHorizontal, RotateCcw, Trash2 } from 'lucide-react';
 
+import { useHelpTopic } from '@/components/help';
 import { Button, buttonStyles, ConfirmDialog, ErrorNote, Input, Menu, MenuItem, Modal } from '@/components/ui';
 
 import { BrowserPane } from './BrowserPane';
@@ -43,6 +44,7 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
   /** Gone: back to the list. */
   onDeleted: () => void;
 }) {
+  useHelpTopic('browser.recordings');
   const [doc, setDoc] = useState<Recording | null | undefined>(undefined);
   const [readFailed, setReadFailed] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);

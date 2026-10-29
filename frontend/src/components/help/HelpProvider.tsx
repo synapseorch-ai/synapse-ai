@@ -35,9 +35,16 @@ const TOUR_AFTER_MS = 1500;
 export function HelpProvider({ host, children }: { host: HelpHost; children: ReactNode }) {
     const pathname = usePathname() ?? '/';
     const [open, setOpen] = useState(false);
-    const [override, setOverride] = useState<string | null>(null);
+    // The parts a screen names while they show (`useHelpTopic`), each by when it first rendered: a part inside
+    // another renders after it, so the newest is the innermost, and a part that closes leaves the rest (F1191).
+    const [shownParts, setShownParts] = useState<{ id: string; at: number }[]>([]);
+    const holdTopic = useCallback((id: string, at: number) => {
+        setShownParts(list => [...list.filter(p => p.at !== at), { id, at }]);
+        return () => setShownParts(list => list.filter(p => p.at !== at));
+    }, []);
+    const partTopic = shownParts.filter(p => host.topics[p.id]).sort((a, b) => b.at - a.at)[0]?.id ?? null;
 
-    const topicId = (override && host.topics[override] ? override : null)
+    const topicId = partTopic
         ?? host.topicFor(pathname)
         ?? host.fallback;
     // A page's own tour, and its section's tabs (F1028): each remembered on its own, run as one when both are new.
@@ -96,10 +103,10 @@ export function HelpProvider({ host, children }: { host: HelpHost; children: Rea
 
     const value = useMemo<HelpState>(
         () => ({
-            host, open, setOpen, setOverride, topicId, topic: host.topics[topicId] ?? host.topics[host.fallback],
+            host, open, setOpen, holdTopic, topicId, topic: host.topics[topicId] ?? host.topics[host.fallback],
             tour, startTour,
         }),
-        [host, open, topicId, tour, startTour],
+        [host, open, holdTopic, topicId, tour, startTour],
     );
 
     return (
@@ -110,16 +117,21 @@ export function HelpProvider({ host, children }: { host: HelpHost; children: Rea
     );
 }
 
+/** How many `useHelpTopic` parts have rendered: each part's place in the order. */
+let rendered = 0;
+
 /**
  * Name the part of a page that is showing, for as long as it shows: the workflow
  * editor over the list, an agent being edited, a knowledge base that is open.
- * The page's own path decides the topic again when this unmounts or gets `null`.
+ * When it unmounts or gets `null`, the part it sits in, or else the page's own path, decides again.
  */
 export function useHelpTopic(id: string | null) {
-    const setOverride = useHelp()?.setOverride;
+    const holdTopic = useHelp()?.holdTopic;
+    // Taken at first render, parent before child: effects run child first, so their order would put the editor
+    // over a Browser step that mounted with it.
+    const [at] = useState(() => ++rendered);
     useEffect(() => {
-        if (!setOverride || !id) return;
-        setOverride(id);
-        return () => setOverride(current => (current === id ? null : current));
-    }, [setOverride, id]);
+        if (!holdTopic || !id) return;
+        return holdTopic(id, at);
+    }, [holdTopic, id, at]);
 }

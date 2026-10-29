@@ -176,6 +176,31 @@ export const HELP_TOPICS: Record<string, HelpTopic> = {
         // The browser's own guide is written with the docs at the announcement (outline in pro drafts/brw2).
         guide: '/guides/start/agents',
     },
+    'browser.recordings': {
+        title: 'Recordings',
+        summary: 'Tasks done once in the browser while Synapse recorded them, for workflows to repeat. Each thing you did is a step with its picture; passwords, card details and codes are never kept, so those steps stay yours to do.',
+        steps: [
+            'Click “Record a task”, pick the “Sessions it starts with” and where to “Start at”, and click “Open the browser”. Do the task once as you normally would, then “Stop and keep”, or “Discard”.',
+            'On its page, “Make them inputs” turns what you typed into values asked for on each run, and “Keep them fixed” types them as recorded; a step’s “Make it an input” or “Keep it fixed” changes one later.',
+            'Open a step’s “Details” for what it acts on, “Rename” it, or use its ⋯ menu to “Re-record from here” or “Delete step”.',
+            'A Browser agent’s fix, or steps you re-recorded, wait on the recording’s page, and its row in Recordings says “A fix is waiting”: “Approve fix” makes it the next version, “Discard fix” drops it, and “Versions” keeps the ones before.',
+            'Use it in a workflow’s Browser step. “Delete recording” deletes it, its steps and their pictures at once, and nothing can repeat it after.',
+        ],
+        // As `browser`: the full guide comes with the docs pass.
+        guide: '/guides/start/agents',
+    },
+    'orchestrations.browser_step': {
+        title: 'A Browser step',
+        summary: 'A recording repeated by code in the run’s own browser, with nobody watching. A step that’s yours to do, a send it may not make, or a page that changed pauses the run for you, unless a Browser agent may find the way.',
+        steps: [
+            'Click “Add step” and pick Browser, then pick a “Recording”, or “Record a new one” to make it here; one made here is this workflow’s.',
+            'Under “Inputs”, say what it types for each one: {state.key} from the run, or text.',
+            'Under “Sends”, a click or press that sends something waits for you; tick “May send on its own” only for one that may go without you.',
+            'Under “If a page changed”, choose “Pause for you” to do that step yourself in the run’s browser, or “Let a Browser agent find the way” and pick the agent; its fix waits on the recording’s page for “Approve fix”.',
+            'Pick “Sessions for this step”, one per site: the run’s browser starts signed in with them.',
+        ],
+        guide: '/guides/start/workflows',
+    },
     'agents.editor': {
         title: 'Setting up an agent',
         summary: 'An agent is a model with instructions and tools. Say what it is for, pick what it may use, then try it in the chat beside its setup before you put it to work.',

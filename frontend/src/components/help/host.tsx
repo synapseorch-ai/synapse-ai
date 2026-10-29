@@ -94,8 +94,8 @@ export type HelpState = {
     host: HelpHost;
     open: boolean;
     setOpen: (open: boolean) => void;
-    /** A sub-state a screen named while it is shown (`useHelpTopic`), over the path's topic. */
-    setOverride: (next: string | null | ((current: string | null) => string | null)) => void;
+    /** A part a screen names while it shows (`useHelpTopic`), over the path's topic; returns its release. */
+    holdTopic: (id: string, at: number) => () => void;
     /** The topic the panel shows now, and its id. */
     topicId: string;
     topic: HelpTopic | undefined;
