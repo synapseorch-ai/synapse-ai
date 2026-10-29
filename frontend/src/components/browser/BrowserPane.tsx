@@ -254,7 +254,7 @@ export function BrowserPane({
             {/* 20rem of words before the buttons: on a phone they go under the words rather than squeeze them. */}
             <p className="min-w-0 grow basis-80 leading-relaxed">
               <strong className="font-semibold">Keep me signed in to <span translate="no">{signIn.site}</span> for your agents.</strong>{' '}
-              Synapse keeps the site’s session, never your password. It expires in 30 days; remove it anytime.
+              {host.product} keeps the site’s session, never your password. It expires in 30 days; remove it anytime.
               Only you drive this browser, and nothing is recorded.
             </p>
             <div className="ml-auto flex shrink-0 gap-2">

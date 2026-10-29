@@ -7,6 +7,7 @@ const enc = encodeURIComponent;
  * and `/api/browser/{sid}/record/*` routes, through the app's catch-all proxy. No plan locks them here.
  */
 export const OSS_RECORDINGS_HOST: RecordingsHost = {
+  product: 'Synapse',
   listUrl: () => '/api/recordings',
   recordingUrl: (id) => `/api/recordings/${enc(id)}`,
   newUrl: () => '/api/recordings/new',

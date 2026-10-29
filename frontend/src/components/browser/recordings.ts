@@ -63,6 +63,8 @@ export type RecordingSummary = Pick<Recording, 'id' | 'name' | 'sites' | 'versio
 export type RecordingVersion = { version: number; at: number | null; by: string | null; steps: number; current: boolean };
 
 export type RecordingsHost = {
+  /** The product's name, as the kit says it ("Synapse", cloud's "SynapseOrch"): the host's, never the kit's own. */
+  product: string;
   listUrl: () => string;
   /** GET, PATCH (`base_version`), DELETE one recording. */
   recordingUrl: (id: string) => string;

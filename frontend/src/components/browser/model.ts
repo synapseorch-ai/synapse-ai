@@ -134,6 +134,8 @@ export type ResumedTurn =
   | { kind: 'run'; run_id: string };
 
 export type BrowserHost = {
+  /** The product's name, as the kit says it ("Synapse", cloud's "SynapseOrch"): the host's, never the kit's own. */
+  product: string;
   framesUrl: (sessionId: string) => string;
   shotUrl: (sessionId: string, ref: string) => string;
   /** The screenshot `shot_ref` names, kept with its chat or run once the browser closed (the filmstrip). */

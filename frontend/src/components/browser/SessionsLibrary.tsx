@@ -132,8 +132,8 @@ export function SessionsLibrary({ host, browserHost, onShare }: {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-prose text-sm text-text-muted">
-          A session keeps your agents signed in to a site, so a run that needs the site starts signed in. Synapse
-          keeps the site’s session, never your password: you type that yourself, and agents never see it. A session
+          A session keeps your agents signed in to a site, so a run that needs the site starts signed in.{' '}
+          {host.product} keeps the site’s session, never your password: you type that yourself, and agents never see it. A session
           expires in 30 days at most, or sooner when the site ends it.
         </p>
         <Button size="sm" onClick={() => { setAsking(true); setStartFailed(null); }}>Keep me signed in to a site</Button>
