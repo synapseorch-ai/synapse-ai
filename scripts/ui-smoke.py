@@ -12859,10 +12859,12 @@ async def check_brwclickfit(browser) -> str:
     """The person's click lands where they pressed on the page, whatever the pane's shape (BRW2, F1197; MEDIA1 10-30).
     The frame is drawn whole inside the page's box (object-contain), so a pane that isn't 16:10 has bars beside or
     above the picture; a click used to be scaled across the whole box and missed by up to ~70 px near the edges. Now
-    it is placed through the picture as drawn, and a press in a bar sends nothing. Checked at a wide pane (bars at the
-    sides) and a tall one (bars above and below): corners and centre to within 3 page px."""
+    it is placed through the picture as drawn, and a press in a bar sends nothing. The bars come where MEDIA1 met them: a
+    pane wider than the frame and shorter than it keeps the picture's full width and holds its height, so the frame is
+    drawn with bars at the sides (a narrower pane holds its width and keeps its shape, with nothing to miss). Checked
+    at two such panes, on a full-size frame: corners and centre to within 3 page px."""
     bad: list[str] = []
-    for size in ((1600, 900), (1600, 1300)):
+    for size in ((2560, 900), (2200, 820)):
         ctx, page = await _brw_page(browser, f"uismoke-brw-fit-{size[1]}", width=size)
         try:
             await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsF",
