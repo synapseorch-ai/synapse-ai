@@ -39,6 +39,12 @@ async def choices() -> dict[str, list[str]] | None:
     except Exception:  # noqa: BLE001 — a list that cannot be read refuses nothing and is not shown
         _log.warning("model choices not read", exc_info=True)
         return None
+    # A model its provider said is gone is offered nowhere (F1213), whatever a host's or the provider's list says.
+    from core import model_availability
+
+    gone = await model_availability.unavailable()
+    if gone:
+        found = {k: model_availability.gone_from(v, gone)[0] for k, v in (found or {}).items()}
     return {k: v for k, v in (found or {}).items() if v} or None
 
 

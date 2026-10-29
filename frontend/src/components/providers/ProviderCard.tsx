@@ -60,6 +60,8 @@ export function ProviderCard({
   extras,
   models = [],
   modelsCached = false,
+  unavailable = [],
+  onTryAgain,
   open: openProp,
   onToggle,
 }: {
@@ -83,6 +85,10 @@ export function ProviderCard({
   models?: string[];
   /** The list is the last one read, not a fresh one. */
   modelsCached?: boolean;
+  /** Models the provider said it no longer serves this workspace, left out of every picker, each with its words (F1213). */
+  unavailable?: { model: string; reason: string }[];
+  /** "Try again" on one of them: its mark goes, and every picker offers it again. Absent: no button (no right to). */
+  onTryAgain?: (model: string) => Promise<void>;
   /** Controlled open state; left out, the card keeps its own. */
   open?: boolean;
   onToggle?: () => void;
@@ -301,6 +307,30 @@ export function ProviderCard({
                   </span>
                 )}
               </div>
+            </div>
+          )}
+
+          {unavailable.length > 0 && (
+            <div className="space-y-1.5" data-unavailable-models>
+              <p className="text-xs text-text-muted">Not offered</p>
+              <ul className="space-y-1">
+                {unavailable.map((u) => (
+                  <li key={u.model} className="text-2xs text-text-faint">
+                    <span className="font-mono text-text-muted">{u.model}</span>
+                    {": "}
+                    {meta.label} refused it as no longer available, so no picker offers it. In its words: “{u.reason}”
+                    {onTryAgain && (
+                      <button
+                        type="button"
+                        className="ml-2 text-2xs text-accent underline-offset-2 hover:underline"
+                        onClick={() => void onTryAgain(u.model)}
+                      >
+                        Try again
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

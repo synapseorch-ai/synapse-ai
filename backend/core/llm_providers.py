@@ -32,6 +32,7 @@ from core.providers import cli_invocation as _cli_invocation
 from core.providers import registry as _providers
 
 from core.log import get_logger
+from core import model_availability as _model_availability
 
 _log = get_logger(__name__)
 
@@ -4189,6 +4190,8 @@ async def generate_response_ex(
         # LLM errors must propagate — do NOT swallow them.
         # Orchestration engine will catch this and stop execution.
         failed.via_gateway = spec.id == "model_gateway"
+        # A provider that says the model is gone: never offered to this workspace again (F1213).
+        await _model_availability.note_failure(current_model, failed, provider=spec.id, settings=current_settings)
         raise
     except Exception as e:
         if spec.error is None:
@@ -4198,7 +4201,10 @@ async def generate_response_ex(
         # an evaluator took its fallback route on it.
         failed = LLMError(f"{spec.error}: {str(e)}")
         failed.via_gateway = spec.id == "model_gateway"
+        await _model_availability.note_failure(current_model, failed, provider=spec.id, settings=current_settings)
         raise failed from e
+    # It answered: a mark saying its provider no longer serves it is wrong now (F1213).
+    await _model_availability.note_success(current_model)
 
     # ── Inline thinking tags, whichever provider answered (F32) ──────────────
     # Folded into `reasoning` rather than dropped: the loop shows it as the

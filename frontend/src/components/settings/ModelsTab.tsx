@@ -291,6 +291,11 @@ export const ModelsTab = ({
                                 onRemoveKey={secret ? async () => { await removeSecret(secret); } : undefined}
                                 extras={extrasFor(key, providerData)}
                                 models={key === 'ollama' ? [] : providerData.models}
+                                unavailable={providerData.unavailable}
+                                onTryAgain={async (model: string) => {
+                                    await fetch(`/api/models/unavailable/${encodeURIComponent(model)}`, { method: 'DELETE' });
+                                    onRefresh();
+                                }}
                                 open={expandedProvider === key}
                                 onToggle={() => setExpandedProvider(expandedProvider === key ? null : key)}
                             />
