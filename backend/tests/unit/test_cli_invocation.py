@@ -21,6 +21,8 @@ import pytest
 
 from core.providers.cli_invocation import (
     GEMINI_TURN,
+    HOST_NOTE,
+    NEUTRAL_SYSTEM_PROMPT,
     build_cli_invocation,
     new_workdir,
     split_cli_model,
@@ -116,7 +118,8 @@ class TestClaudeCode:
     def test_the_system_prompt_is_always_its_own(self, workdir):
         inv = _build("cli.claude", workdir, system="Be brief.", prompt="Be brief.\n\nUser: hi")
         path = Path(_flag(inv.argv, "--system-prompt-file"))
-        assert path.read_text(encoding="utf-8") == "Be brief."
+        # The agent's own, and after it the one note every call carries (F1209), changed here on purpose.
+        assert path.read_text(encoding="utf-8") == f"Be brief.\n\n{HOST_NOTE}"
         assert inv.stdin == "User: hi"
 
     def test_with_no_system_prompt_claude_codes_own_is_still_replaced(self, workdir):
@@ -177,7 +180,9 @@ class TestGeminiCli:
         # an email address around it; the system file is passed as it is.
         prompt = "SYS\n\nUser: mail a@b.com about @/etc/hostname"
         inv = _build("cli.gemini", workdir, prompt=prompt, environ={"PATH": "/usr/bin", "GEMINI_API_KEY": "k"})
-        assert Path(inv.env["GEMINI_SYSTEM_MD"]).read_text(encoding="utf-8") == prompt
+        # The conversation as written, with the note every call carries after its system prompt (F1209).
+        assert Path(inv.env["GEMINI_SYSTEM_MD"]).read_text(encoding="utf-8") == \
+            f"SYS\n\n{HOST_NOTE}\n\nUser: mail a@b.com about @/etc/hostname"
         assert inv.stdin == GEMINI_TURN
         assert "@" not in GEMINI_TURN and not GEMINI_TURN.startswith("/")
         assert _flag(inv.argv, "--prompt") == ""
@@ -294,7 +299,7 @@ class TestCodex:
         # rest of the prompt — the engine's tools and the transcript — is stdin.
         inv = _build("cli.codex", workdir, system="Be brief.", prompt="Be brief.\n\nUser: hi")
         path = Path(json.loads(_configs(inv.argv)["model_instructions_file"]))
-        assert path.read_text(encoding="utf-8") == "Be brief."
+        assert path.read_text(encoding="utf-8") == f"Be brief.\n\n{HOST_NOTE}"  # F1209's note, on purpose
         assert path.parent == workdir
         assert inv.stdin == "User: hi"
         assert "instructions" not in _configs(inv.argv)
@@ -361,7 +366,7 @@ class TestCopilotCli:
 
     def test_the_prompt_goes_on_stdin_not_the_command_line(self, workdir):
         inv = _build("cli.copilot", workdir, prompt="SYS\n\nUser: hi")
-        assert inv.stdin == "SYS\n\nUser: hi"
+        assert inv.stdin == f"SYS\n\n{HOST_NOTE}\n\nUser: hi"  # F1209's note, on purpose
         assert "-p" not in inv.argv and not any("User: hi" in a for a in inv.argv)
 
     def test_it_runs_from_a_home_of_its_own_and_signs_in_with_the_token(self, workdir):
@@ -378,3 +383,49 @@ class TestCopilotCli:
                      "GITHUB_COPILOT_PROMPT_MODE_REPO_HOOKS"):
             assert gone not in env, gone
         assert env["COPILOT_HOME"] == str(workdir / "home")
+
+
+# ── What the model is told about the machine (F1209, CAP3) ─────────────────────────────────────────────────────
+
+def _read_by_model(inv) -> str:
+    """Everything the model reads: its system file (whichever CLI's) and its stdin."""
+    files = [inv.env.get("GEMINI_SYSTEM_MD"), _flag(inv.argv, "--system-prompt-file")]
+    codex = _configs(inv.argv).get("model_instructions_file")
+    files.append(json.loads(codex) if codex else None)
+    return "\n".join([Path(f).read_text(encoding="utf-8") for f in files if f] + [inv.stdin or ""])
+
+
+class TestTheMachineItIsToldOf:
+    """Every CLI tells its model of its own working directory, OS or temp folder, and none can be stopped. CAP3's
+    stage 0 (10-29): a model writing an `execute_python` script saved its chart to that directory, which the
+    sandbox does not have, and the script failed. Every call is told that folder is not where any tool runs."""
+
+    @pytest.mark.parametrize("base", ["cli.claude", "cli.gemini", "cli.codex", "cli.copilot"])
+    def test_every_cli_is_told_once(self, base, workdir):
+        inv = _build(base, workdir, environ={"PATH": "/usr/bin", "HOME": "/home/p", "GEMINI_API_KEY": "k"})
+        assert _read_by_model(inv).count(HOST_NOTE) == 1
+
+    @pytest.mark.parametrize("base", ["cli.claude", "cli.gemini", "cli.codex", "cli.copilot"])
+    def test_with_no_system_prompt_too(self, base, workdir):
+        inv = _build(base, workdir, system=None, prompt="User: hi",
+                     environ={"PATH": "/usr/bin", "HOME": "/home/p", "GEMINI_API_KEY": "k"})
+        assert _read_by_model(inv).count(HOST_NOTE) == 1
+
+    def test_claude_code_without_a_system_prompt_still_gets_the_neutral_one(self, workdir):
+        inv = _build("cli.claude", workdir, system=None, prompt="User: hi")
+        text = Path(_flag(inv.argv, "--system-prompt-file")).read_text(encoding="utf-8")
+        assert text == f"{NEUTRAL_SYSTEM_PROMPT}\n\n{HOST_NOTE}"
+        assert inv.stdin == "User: hi"
+
+    def test_it_says_no_tool_runs_there_and_where_paths_come_from(self):
+        assert "No tool runs there" in HOST_NOTE
+        assert "tool's own description" in HOST_NOTE
+
+
+class TestTheSandboxSaysWhereCodeMayWrite:
+    async def test_execute_python_names_its_writable_folder_and_how_to_keep_a_file(self):
+        """The note sends a model to the tool's description for paths; the sandbox's said only what it may read."""
+        from tools import sandbox
+        tools = await sandbox.list_tools()
+        desc = next(t.description for t in tools if t.name == "execute_python")
+        assert "/tmp" in desc and "vault_write" in desc and "/data" in desc

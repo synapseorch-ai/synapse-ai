@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from core.llm_providers import LLMError, call_cli_provider
+from core.providers.cli_invocation import HOST_NOTE
 
 
 class _Proc:
@@ -221,7 +222,7 @@ class TestCopilotCli:
                                      _COPILOT_ANSWER, {"type": "result", "data": None}))
         text, _, _ = await call_cli_provider("cli.copilot", "hi")
         assert text == "hello"
-        assert cli["calls"][0]["stdin"] == "hi"
+        assert cli["calls"][0]["stdin"] == f"{HOST_NOTE}\n\nhi"  # F1209's note, on purpose
 
     async def test_a_tool_request_is_refused(self, cli):
         cli["proc"] = _Proc(_copilot({"type": "assistant.message",

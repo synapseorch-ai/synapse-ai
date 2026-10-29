@@ -60,6 +60,16 @@ GEMINI_TURN = "Write the assistant's next reply to the conversation above."
 #: directory, git status, memory paths) is never sent in its place.
 NEUTRAL_SYSTEM_PROMPT = "You are a helpful assistant."
 
+#: What every call is told about the machine its CLI says it runs on (F1209, CAP3). None of the CLIs can be stopped
+#: from telling its model of its own working directory, OS or temp folder (the module's note), and a model writing
+#: code for a tool took that directory for the tool's: CAP3's stage 0 saw an `execute_python` script save its chart to
+#: `/tmp/synapse-cli-…/cwd`, which the sandbox does not have, and fail. The correction goes where the false fact comes
+#: in, on every call: a Tool step's call carries its tool in the prompt, not as `tools`.
+HOST_NOTE = ("About the machine you may be told you run on (a working directory, an operating system, a temp "
+             "folder): that is an empty folder made for this one reply and deleted after it. No tool runs there, and "
+             "nothing written there is kept. When a tool needs a path, take it from that tool's own description or "
+             "from the task, never from that folder.")
+
 # Claude Code's variables that say how it signs in or reaches its provider.
 # Everything else under CLAUDE_CODE_* is dropped: a Synapse started from inside
 # a Claude Code session inherits that session's variables (its id, its entry
@@ -358,6 +368,25 @@ def _copilot(variant, *, workdir, prompt, environ, github_token=None, **_):
     return CliInvocation(argv, env, workdir / "cwd", prompt)
 
 
+#: The CLIs whose system prompt is a file of its own (the rest read it all as their prompt).
+SYSTEM_FILE_CLIS = ("cli.claude", "cli.codex")
+
+
+def _with_host_note(base: str, system_prompt: str | None, prompt: str) -> tuple[str | None, str]:
+    """`HOST_NOTE` where each CLI reads it once, after the system prompt (`_build_cli_prompt` puts that first). A CLI
+    with a system file: the note ends its system prompt (the neutral one when the agent has none, so Claude Code's own
+    is still never sent). A CLI that reads it all as its prompt: the note follows the system prompt in the prompt, or
+    opens it when there is none."""
+    system = (system_prompt or "").strip()
+    starts = bool(system) and prompt.startswith(system)
+    if base in SYSTEM_FILE_CLIS:
+        noted = f"{system or NEUTRAL_SYSTEM_PROMPT}\n\n{HOST_NOTE}"
+        return noted, (noted + prompt[len(system):]) if starts else prompt
+    if starts:
+        return system_prompt, f"{system}\n\n{HOST_NOTE}{prompt[len(system):]}"
+    return system_prompt, f"{HOST_NOTE}\n\n{prompt}"
+
+
 _BUILDERS = {"cli.claude": _claude, "cli.gemini": _gemini, "cli.codex": _codex, "cli.copilot": _copilot}
 
 
@@ -374,6 +403,7 @@ def build_cli_invocation(base: str, variant: str | None, *, workdir: Path, syste
     builder = _BUILDERS.get(base)
     if builder is None:
         raise ValueError(f"Unknown CLI base '{base}'. Supported: {list(_BUILDERS)}")
+    system_prompt, prompt = _with_host_note(base, system_prompt, prompt)
     return builder(variant, workdir=workdir, system_prompt=system_prompt, prompt=prompt, effort=effort,
                    environ=dict(os.environ if environ is None else environ),
                    codex_catalog=codex_catalog, github_token=github_token,

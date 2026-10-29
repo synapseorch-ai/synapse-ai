@@ -270,6 +270,8 @@ async def list_tools() -> list[Tool]:
                 "Additional packages can be installed via the 'packages' parameter. "
                 "Vault files are mounted read-only at /data — e.g. vault path "
                 "'reports/q1.json' is available at '/data/reports/q1.json'. "
+                "Write scratch files under /tmp: they are gone when the call ends, so a result to keep is "
+                "printed, or saved to the vault with vault_write. "
                 "Use for calculations, data processing, or testing logic safely."
             ),
             inputSchema={
