@@ -94,8 +94,8 @@ SUBMIT = {"type": "function", "function": {
         "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
         "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
-        "board_update_card {status, result}; board_comment {text}; board_create {text}; edit_steps and create "
-        "{what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
+        "board_update_card {status, result}; board_comment {text}; board_create {text}; edit_steps, create and "
+        "use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
         "ops": {"type": "array", "items": _op_schema()},
@@ -385,6 +385,11 @@ async def candidates(kind: str) -> list[dict] | None:
 
         return [{"id": t["name"], "name": t["name"], "detail": t.get("description") or ""}
                 for t in await load_tools() if t.get("name")]
+    if kind == "recording":
+        from core.browser import recordings
+
+        return [{"id": d["id"], "name": d.get("name") or d["id"], "detail": ", ".join(d.get("sites") or [])}
+                for d in await recordings.all_recordings()]
     return None
 
 
@@ -421,7 +426,7 @@ def resolve(items: list[dict], target: dict) -> list[dict]:
 
 #: The words a person puts after a name to say what kind of thing it is: "the Front desk agent".
 _KIND_WORDS = {"agent": ("agent",), "workflow": ("workflow", "orchestration"), "schedule": ("schedule",),
-               "tool": ("tool",), "skill": ("skill",)}
+               "tool": ("tool",), "skill": ("skill",), "recording": ("recording",)}
 
 
 async def read(kind: str, target_id: str) -> dict | None:
@@ -648,6 +653,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     finish = draft.get("finish")
     base = {"object": "change", "ops": [], "picks": [], "calls": [], "review": "", "say": "", "question": ""}
 
+    if (which := _recording_or_workflow(base)) is not None:
+        return which
     if finish == "ask_person":
         return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
                                                                  list(draft.get("options") or []))}
@@ -1006,10 +1013,61 @@ async def _a_new_thing(base: dict, raw: dict) -> dict:
     return out
 
 
+#: A recording's request said where none is (F1231): recording is a person's, in the app.
+NO_RECORDING = ("No recording is called {name}. A person records one in the app (Recordings › Record a task); then "
+                "ask me again.")
+
+
+def _to_a_new_workflow(base: dict, ops: list[dict], **facts: Any) -> dict:
+    """The run goes on as a new build (F1231): its plan room makes the workflow whose Browser step replays the
+    recording, from the person's message; nothing open or last built is it."""
+    _routed("create", current_orchestration_id="", current_orchestration_name="", current_orchestration_source="")
+    return {**base, "outcome": "steps", "ops": ops, **facts}
+
+
+def _recording_or_workflow(base: dict) -> dict | None:
+    """A name that is both a recording and a workflow (`classify.BOTH_KEY`, set by the router): asked once, through the
+    request's seam (F1226), unless answered; the recording answered goes to a new build, the workflow goes on as
+    this change. None when there is nothing to ask, or the workflow was meant."""
+    from core.native_builder.classify import BOTH_KEY
+
+    _, run = _run()
+    state = run.shared_state if run is not None else {}
+    name = _text(state.get(BOTH_KEY))
+    if not name:
+        return None
+    question = f"{_quoted(name)} is both a recording and a workflow. Which do you mean?"
+    options = [f"The recording {_quoted(name)}", f"The workflow {_quoted(name)}"]
+    subject = f"recording or workflow {name}"
+    earlier = asked_before(state, "which", subject, question)
+    if earlier is None:
+        if questions_asked(state, run) >= QUESTIONS:
+            state[BOTH_KEY] = ""
+            return None  # asked enough: the change goes on as the planner wrote it
+        note_question(state, "which", subject, question)
+        return {**base, "outcome": "ask", "question": asked_text(question, options)}
+    state[BOTH_KEY] = ""
+    said = _plain_words(earlier.get("answer") or "").split()
+    if "recording" in said and "workflow" not in said or said == ["1"]:
+        return _to_a_new_workflow(base, [], recording={"name": name})
+    return None
+
+
 async def _handed_over(base: dict, handoffs: list[dict], events: list[dict]) -> dict:
-    """`edit_steps` goes to the build route's update path with the workflow on it (Naveen's split, 10-22). Same turn:
-    the person is not asked again. (One new thing is `_a_new_thing`'s: the review, then the maker.)"""
+    """`edit_steps` goes to the build route's update path with the workflow on it (Naveen's split, 10-22), and
+    `use_recording` to a new build (F1231). Same turn: the person is not asked again. (One new thing is
+    `_a_new_thing`'s: the review, then the maker.)"""
     first = handoffs[0]
+    if first["op"] == "use_recording":
+        found = resolve(await candidates("recording") or [], first.get("target") or {})
+        if len(found) > 1:
+            pick = {"op": 0, "field": "target", "kind": "recording", "wanted": first["target"].get("name"),
+                    "options": found[:8]}
+            return {**base, "outcome": "ask", "ops": handoffs, "picks": [pick], "question": _pick_question([pick])}
+        if not found:
+            return {**base, "outcome": "said", "ops": handoffs, "say": NO_RECORDING.format(
+                name=_quoted(first["target"].get("name") or first["target"].get("id") or ""))}
+        return _to_a_new_workflow(base, handoffs, recording={"id": found[0]["id"], "name": found[0]["name"]})
     if first["op"] == "edit_steps":
         found = resolve(await candidates("workflow") or [], first.get("target") or {})
         if len(found) > 1:
