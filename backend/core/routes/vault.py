@@ -2,7 +2,7 @@
 Vault management REST API.
 
 Handles CRUD operations on the user-managed vault directory (data/vault/ minus the
-auto-generated tool_outputs/ subfolder).  Only .json, .md, and .txt files may be created.
+auto-generated tool_outputs/ subfolder).  Only .json, .md, .txt, .csv and .tsv files may be created.
 
 When the blob store has no filesystem — S3 — every operation goes through it, by key,
 with the tenant applied inside the store (`core.storage`).  A store with a directory
@@ -37,7 +37,9 @@ def VAULT_USER_DIR() -> Path:
 #: folder itself is not a person's to remove or to re-create by hand. The files
 #: inside it still are.
 _ENGINE_OWNED = {"tool_outputs", "playwright", "compaction_archives"}
-_ALLOWED_EXTENSIONS = {".json", ".md", ".txt"}
+#: What a person may create and edit here: text, with the plain-data tables Knowledge reads (its `csv` format),
+#: as cloud's vault takes `csv` (F1202).
+_ALLOWED_EXTENSIONS = {".json", ".md", ".txt", ".csv", ".tsv"}
 
 # S3 key prefix for user vault files (relative to the bucket prefix)
 _S3_VAULT_REL = "vault"
@@ -363,14 +365,14 @@ async def get_vault_file(path: str = Query(..., description="Relative path to va
 
 class CreateFileRequest(BaseModel):
     path: str          # relative parent folder path (empty = vault root)
-    name: str          # filename including extension (.json or .md)
+    name: str          # filename including extension (`_ALLOWED_EXTENSIONS`)
     content: Optional[str] = ""
     source: str = "auto"
 
 
 @router.post("/api/vault/file")
 async def create_vault_file(req: CreateFileRequest):
-    """Create a new .json, .md, or .txt file in the vault."""
+    """Create a new .json, .md, .txt, .csv or .tsv file in the vault."""
     name = _segment(req.name)
     suffix = Path(name).suffix.lower()
     if suffix not in _ALLOWED_EXTENSIONS:
@@ -384,7 +386,7 @@ async def create_vault_file(req: CreateFileRequest):
     if not initial_content:
         if suffix == ".json":
             initial_content = "{}\n"
-        elif suffix == ".txt":
+        elif suffix in (".txt", ".csv", ".tsv"):
             initial_content = ""
         else:
             initial_content = f"# {Path(name).stem}\n\n"
