@@ -469,7 +469,9 @@ class AgentStepExecutor:
                         "memory_tainted": event.get("memory_tainted"),
                         "attempt": resume_attempt,
                         # Past its turn limit (F1219): the turns it has, how often it went on, what it spent.
-                        **{k: event[k] for k in ("turns_given", "turn_extensions", "turn_spent_usd") if k in event},
+                        # The repeat guard's reads since the last call that could change things (F1236), too.
+                        **{k: event[k] for k in ("turns_given", "turn_extensions", "turn_spent_usd", "repeat_window")
+                           if k in event},
                     }
                     # A delegate's question the step is about to pause on (F286):
                     # kept with the lead's snapshot, as chat parks it.
