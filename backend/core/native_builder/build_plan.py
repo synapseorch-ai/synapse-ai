@@ -1184,10 +1184,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                             "issues": [], "checks": int(prior.get("checks") or 0) + 1, "asked": asked,
                             "research": prior.get("research") or [], "offered": prior.get("offered") or []}
     if finish == "ask_person":
-        options = draft.get("options") or []
-        question = (draft.get("question") or "") + ("\n" + "\n".join(f"{n}. {o}" for n, o in enumerate(options, 1))
-                                                    if options else "")
-        return {**base, "outcome": "ask", "question": question}
+        from core.native_builder.change_tools import asked_text
+
+        return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
+                                                                 list(draft.get("options") or []))}
     if finish == "cannot":
         return {**base, "outcome": "said", "say": f"{str(draft.get('why', '')).rstrip('.')}. "
                                                   f"{draft.get('nearest', '')}".strip()}

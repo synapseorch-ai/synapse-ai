@@ -113,7 +113,8 @@ ASK = {"type": "function", "function": {
         "question": {"type": "string"},
         "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
         "options": {"type": "array", "items": {"type": "string"}, "description": "The choices, when there are "
-                                                                                 "a few."},
+                                                                                 "a few: here only, never also "
+                                                                                 "listed in the question."},
     }, "required": ["question", "about"]},
 }}
 
@@ -132,6 +133,50 @@ FINISH_TOOLS = ("submit_change", "ask_person", "cannot")
 
 def _text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+#: A line of a list a question carries in its own words: "1. …", "2) …", "- …", "• …".
+_LISTED = re.compile(r"^\s*(?:\d{1,2}[.)]|[-*•])\s+(.+?)\s*$")
+#: How much of a choice two must share before one cut short ("Reb…") is the other.
+_SAME_FROM = 12
+
+
+def _choice_key(option: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFKC", option).casefold() if c.isalnum())
+
+
+def asked_options(question: str, options: list[str]) -> tuple[str, list[str]]:
+    """The question without a list of its own, and its choices once each (F1220).
+
+    The Asked card is the question in Markdown with the choices after it as a numbered list. A planner that also
+    numbered them in its question showed two lists Markdown runs together — 1–3, then the same choices again as 4–5
+    — so a list in the question is lifted into the choices, and a choice that repeats another (case, punctuation and a
+    cut-short end aside) is kept once: as first said, or in full where the first was cut short."""
+    lines = (question or "").splitlines()
+    listed = [m.group(1) for line in lines if (m := _LISTED.match(line))]
+    rest = "\n".join(line for line in lines if not _LISTED.match(line)).strip()
+    if len(listed) >= 2 and rest:
+        question = rest
+    else:
+        listed = []  # one listed line, or a question that is only its list: the words stay as they were
+    kept: list[str] = []
+    for option in [*listed, *(o.strip() for o in options if isinstance(o, str))]:
+        key = _choice_key(option.rstrip(".…"))
+        if not key:
+            continue
+        same = next((n for n, k in enumerate(kept) if (a := _choice_key(k.rstrip(".…"))) == key
+                     or (min(len(a), len(key)) >= _SAME_FROM and (a.startswith(key) or key.startswith(a)))), None)
+        if same is None:
+            kept.append(option)
+        elif len(key) > len(_choice_key(kept[same].rstrip(".…"))):
+            kept[same] = option  # the one cut short gives way to its whole words; the same words keep the first
+    return (question or "").strip(), kept
+
+
+def asked_text(question: str, options: list[str]) -> str:
+    """What the Asked card shows: the question, then its choices numbered once (F1220)."""
+    question, options = asked_options(question, options)
+    return question + ("\n" + "\n".join(f"{n}. {o}" for n, o in enumerate(options, 1)) if options else "")
 
 
 async def submit_change(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -189,7 +234,8 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     question = _text(args.get("question"))
     if not question:
         return {"error": "ask_person needs the question."}
-    options = [o.strip() for o in args.get("options") or [] if isinstance(o, str) and o.strip()][:8]
+    question, options = asked_options(question, list(args.get("options") or []))
+    options = options[:8]
     asked = " / ".join([question, *options])
     if _ASKS_SECRET.search(asked):
         return {"error": SECRET_ASKED}
@@ -511,11 +557,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
     base = {"object": "change", "ops": [], "picks": [], "calls": [], "review": "", "say": "", "question": ""}
 
     if finish == "ask_person":
-        options = draft.get("options") or []
-        question = draft.get("question") or ""
-        if options:
-            question += "\n" + "\n".join(f"{n}. {o}" for n, o in enumerate(options, 1))
-        return {**base, "outcome": "ask", "question": question}
+        return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
+                                                                 list(draft.get("options") or []))}
     if finish == "cannot" and draft.get("fallback"):
         # The planner answered in words, not with a finish (F958: a channel's agent, which no op re-points). Code's
         # words, never the model's, which said "Done, it's moved" of a change nobody made.
