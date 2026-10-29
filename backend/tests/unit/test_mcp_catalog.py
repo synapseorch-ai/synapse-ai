@@ -40,6 +40,9 @@ class TestTheAllowlist:
             "deploy_orchestration", "update_schedule",
             # D292 (Naveen): deletes, behind a confirmation token.
             "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool",
+            # F1198 (BLD1, Naveen 10-29): a Python tool, previewed with its code and made with a token; its test
+            # run, through the editor's Test route.
+            "create_python_tool", "test_python_tool",
         }
 
     @pytest.mark.parametrize("name", ["finish_build", "list_variables"])

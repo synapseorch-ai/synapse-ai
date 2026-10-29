@@ -218,6 +218,17 @@ KNOWLEDGE_BUILDER_TOOLS = frozenset({"list_knowledge_bases"})
 #: Builder tools `"all"` does not reach (`core.tools.permits(opt_in=)`): an agent names them, as the builder's
 #: analyst does. Knowledge on or off, no `"all"` agent's roster — nor its prompt cache — changes (B1b's rule).
 OPT_IN_BUILDER_TOOLS: set[str] = set(KNOWLEDGE_BUILDER_TOOLS)
+#: Python tools are code with the internet: offered to an agent that names them (the builder's maker), never through
+#: "all", as `create_http_tool` long was (F1198; F495's reason too: every "all" agent's prompt would grow).
+OPT_IN_BUILDER_TOOLS |= {"create_python_tool", "test_python_tool"}
+
+#: Why the builder's Python tool names no variable (F1198, Naveen 10-29).
+_PYTHON_VARIABLES_ARE_A_PERSONS = (
+    "A Python tool's code reads a workspace variable only when a person adds it, in the tool's editor (Tools, the "
+    "tool, 'Variables this tool can read'): make the tool without `globals`, and say which variable it needs."
+)
+#: How much of a test run's output and errors the builder reads back: their ends, where a result and a traceback are.
+_TEST_OUTPUT = 4000
 _KNOWLEDGE_OFF = "Knowledge is switched off in this workspace"
 
 
@@ -229,6 +240,39 @@ def builder_tool_offered(name: str) -> bool:
     from core.knowledge.config import knowledge_enabled
 
     return knowledge_enabled()
+
+
+async def python_tool_draft(args: dict) -> tuple[dict, dict | None, dict | None]:
+    """The Python tool `create_python_tool` would save from `args`, the tool it would replace, and its refusal: one
+    copy for the save and for its preview over MCP (F1198)."""
+    from core import python_tool
+    from core.store.resources import load_tools
+
+    name = _tool_name(args.get("name"))
+    if not name:
+        return {}, None, {"error": "name must be a tool-style identifier (letters, digits, underscores)"}
+    if "globals" in args:
+        # A person decides which variable (often a key) code with the internet receives (Naveen 10-29, F28).
+        return {}, None, {"error": _PYTHON_VARIABLES_ARE_A_PERSONS}
+    input_schema = _parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}})
+    if not isinstance(input_schema, dict):
+        return {}, None, {"error": "input_schema_json must decode to a JSON Schema object"}
+    before = next((t for t in await load_tools() if t.get("name") == name), None)
+    if before is not None and (before.get("tool_type") or "http") != "python":
+        return {}, before, {"error": f"`{name}` is an HTTP tool here: a Python tool is a new tool, under another name."}
+    tool = {
+        "name": name,
+        "generalName": name.replace("_", " ").title()[:80],
+        "description": str(args.get("description") or "").strip(),
+        "tool_type": "python",
+        "code": str(args.get("code") or ""),
+        "inputSchema": input_schema,
+        # Replacing it keeps what a person gave it to read; the builder never adds one.
+        "globals": list((before or {}).get("globals") or []),
+    }
+    if refused := await python_tool.refusal(tool):
+        return tool, before, {"error": refused}
+    return tool, before, None
 
 
 def _refuse_knowledge_off(steps: list) -> dict | None:
@@ -486,7 +530,9 @@ def _builder_tags(tool: dict, before: dict | None, claimed: dict | None) -> dict
 
     carried(tool, before)
     persons = isinstance(tool.get("annotations"), dict) and not tool.get("annotations_by")
-    base = tags_of(tool.get("annotations")) or defaults_for(tool.get("method"))
+    # A Python tool has no method, and its code may do anything: it starts as a write (F1198), never as GET's read.
+    method = tool.get("method") or ("POST" if tool.get("tool_type") == "python" else None)
+    base = tags_of(tool.get("annotations")) or defaults_for(method)
     tool["annotations"] = hints_of(tighten(base, claimed))
     if not persons:
         tool["annotations_by"] = BUILDER_HINTS
@@ -1328,6 +1374,51 @@ BUILDER_TOOL_SCHEMAS = [
                     **_TAG_PARAMS,
                 },
                 "required": ["name", "description", "url"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_python_tool",
+            "description": (
+                "Create a custom Python tool an agent can call: code run in the sandbox, with the internet, the Vault "
+                "read-only at /data and 30 s a call. `_args` is the call's arguments as a dict; what the code prints "
+                "is the tool's result (print JSON for structured results). Its code reads no workspace variable "
+                "until a person adds one in the tool's editor (Tools, the tool, 'Variables this tool can read'): "
+                "when it needs a key, name the variable and say so. Prove it with test_python_tool. Re-creating a "
+                "Python tool with an existing name replaces it, keeping the variables a person added."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Unique tool name (snake_case, e.g. region_totals)"},
+                    "description": {"type": "string", "description": "What the tool does — the model reads this to decide when to call it"},
+                    "code": {"type": "string", "description": "The Python source. Reads `_args`, prints its result."},
+                    "input_schema_json": {"type": "string", "description": "JSON Schema object describing the tool's arguments, e.g. '{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}'"},
+                    "group": {"type": "string", "description": "Optional group name to file the tool under"},
+                    **_TAG_PARAMS,
+                },
+                "required": ["name", "description", "code"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "test_python_tool",
+            "description": (
+                "Run a Python tool you made, once, as the editor's Test button runs it (the same sandbox and limits, "
+                "the variables a person gave it), with `args_json` as its arguments. Answers its exit code, output "
+                "and errors. Use it to prove the tool before you say it works."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The Python tool's name"},
+                    "args_json": {"type": "string", "description": "JSON object of the arguments, e.g. '{\"path\": \"sales.csv\"}'"},
+                },
+                "required": ["name"],
             },
         },
     },
@@ -3171,6 +3262,44 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         await save_tool(_builder_tags(tool, before, claimed))
         _emit(events, "tool", "created", name, name, tool)
         return {"status": "created", "id": name, "name": name}
+
+    elif tool_name == "create_python_tool":
+        from core.store.resources import save_tool
+
+        tool, before, refused = await python_tool_draft(args)
+        if refused:
+            return refused
+        name = tool["name"]
+        group_name = str(args.get("group") or "").strip()
+        if group_name:
+            from core.routes.tools import _group_id, _upsert_group
+            tool["group"] = _group_id(group_name)
+            await _upsert_group({"id": tool["group"], "name": group_name, "description": ""})
+        claimed = {t: args[t] for t in ("read_only", "destructive", "idempotent", "open_world") if t in args}
+        await save_tool(_builder_tags(tool, before, claimed))
+        _emit(events, "tool", "created", name, name, tool)
+        return {"status": "created", "id": name, "name": name, "reads_variables": tool["globals"],
+                "next": "Prove it with test_python_tool."}
+
+    elif tool_name == "test_python_tool":
+        from fastapi import HTTPException
+
+        from core.routes.tools import PythonTestRequest, test_python_tool
+        from core.store.resources import load_tools
+
+        tool = next((t for t in await load_tools() if t.get("name") == _tool_name(args.get("name"))), None)
+        if tool is None or tool.get("tool_type") != "python":
+            return {"error": f"No Python tool named '{args.get('name')}'. Make it with create_python_tool first."}
+        call_args = _parse_json_field(args.get("args_json"), {})
+        if not isinstance(call_args, dict):
+            return {"error": "args_json must decode to a JSON object"}
+        try:
+            ran = await test_python_tool(PythonTestRequest(code=tool.get("code") or "", args=call_args,
+                                                           globals=tool.get("globals") or None, timeout=30))
+        except HTTPException as refused:
+            return {"error": str(refused.detail)}
+        return {"exit_code": ran["exit_code"], "stdout": (ran.get("stdout") or "")[-_TEST_OUTPUT:],
+                "stderr": (ran.get("stderr") or "")[-_TEST_OUTPUT:]}
 
     elif tool_name == "import_openapi":
         from core.openapi_import import parse_openapi_spec
