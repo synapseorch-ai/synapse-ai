@@ -68,7 +68,7 @@ SCHEMA = {
             "Put a Connect card in front of the person, so a credential or a sign-in goes to a secure screen and "
             "never into this chat. Use it whenever something needs a key, a token, a password or a sign-in. Kinds: "
             "`app` (an app from this workspace's Apps catalog, by `catalog_slug`), `mcp_server` (a remote MCP "
-            "server at an https `url`), `provider_key` (a model provider's API key, by `provider`), `tool_secret` "
+            "server at its http or https `url`), `provider_key` (a model provider's API key, by `provider`), `tool_secret` "
             "(the secret header of an existing custom tool, by `tool_name` and `header`), `settings` (a link to a "
             "settings screen, by `screen`). Nothing connects until the person presses Connect on the card; you then "
             "hear \"Connected …\" from them. Never ask the person to type a secret in the chat."
@@ -80,7 +80,7 @@ SCHEMA = {
                 "title": {"type": "string", "description": "What to connect, in a few words: 'Connect Notion'."},
                 "why": {"type": "string", "description": "One sentence: what the connection is for."},
                 "catalog_slug": {"type": "string", "description": "kind=app: the app's slug in the Apps catalog."},
-                "url": {"type": "string", "description": "kind=mcp_server: the server's https URL."},
+                "url": {"type": "string", "description": "kind=mcp_server: the server's URL (http or https)."},
                 "server_name": {"type": "string", "description": "kind=mcp_server: a short name for it."},
                 "provider": {"type": "string", "description": "kind=provider_key: e.g. openai, anthropic, gemini."},
                 "tool_name": {"type": "string", "description": "kind=tool_secret: the custom tool's name."},
@@ -93,15 +93,22 @@ SCHEMA = {
 }
 
 
-async def _https_outward(url: str) -> str | None:
-    """Why `url` is not a remote server the card may offer, or None when it is one."""
-    parsed = urlparse(url or "")
-    if parsed.scheme != "https" or not parsed.hostname:
-        return "A remote MCP server needs an https URL."
+#: Said after the private-host refusal: the card stops there, the Apps screen does not (F1201, Naveen 10-29).
+_ADD_IT_YOURSELF = "A server on your own machine or network is added on the Apps screen, by you."
+
+
+async def _outward(url: str) -> str | None:
+    """Why `url` is not a remote server the card may offer, or None when it is one: the Apps screen's rule
+    (`mcp_client.remote_url_problem`), and, as a model wrote the URL, never a host inside this network unless the
+    deployment lets it be reached (`EGRESS_ALLOW_HOSTS`)."""
+    from core.mcp_client import remote_url_refusal
+
+    if (problem := await remote_url_refusal(url)) is not None:
+        return problem
     from core.builder_tools import _refuse_inward_url
 
     refused = await _refuse_inward_url(url)
-    return (refused.get("error") or str(refused)) if refused else None
+    return f"{refused.get('error') or refused} {_ADD_IT_YOURSELF}" if refused else None
 
 
 def _slug(text: str) -> str:
@@ -128,12 +135,12 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
         if entry is None:
             known = ", ".join(sorted(str(e.get("slug")) for e in options["catalog"])[:60]) or "none here"
             return {"error": f"'{slug}' is not in this workspace's Apps catalog (it has: {known}). For a server "
-                             "found elsewhere, use kind=mcp_server with its https URL."}
+                             "found elsewhere, use kind=mcp_server with its URL."}
         card["app"] = {k: entry.get(k) for k in ("slug", "name", "auth", "url", "token_hint")}
 
     elif kind == "mcp_server":
         url = (args.get("url") or "").strip()
-        why_not = await _https_outward(url)
+        why_not = await _outward(url)
         if why_not:
             return {"error": why_not}
         name = _slug(args.get("server_name") or urlparse(url).hostname or "")

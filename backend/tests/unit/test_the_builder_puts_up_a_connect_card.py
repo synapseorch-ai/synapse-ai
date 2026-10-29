@@ -4,7 +4,8 @@
 up, and that the card is an event the panel receives:
 
 - an app must be in this deployment's Apps catalog (a host's, through `set_connect_options`; self-hosted has none);
-- a remote MCP server must be https and outward (the builder's own egress refusal);
+- a remote MCP server's URL passes the Apps screen's rule (http or https, a host: F1201) and is outward (the
+  builder's own egress refusal, as a model wrote it);
 - a provider key, a custom tool's header and a settings screen must be ones that exist;
 - the card is a `connection_needed` event, and the model is told the card is where the connection happens;
 - tools in their own modules join the builder through `register_builder_tool`, without editing builder_tools.py.
@@ -66,14 +67,33 @@ async def test_self_hosted_has_no_catalog():
 
 
 @pytest.mark.parametrize("url,why", [
-    ("http://mcp.example.com/mcp", "https"),
     ("https://127.0.0.1/mcp", "inside our own network"),
-    ("https://10.0.0.5/mcp", "inside our own network"),
-    ("mcp.example.com", "https"),
+    ("http://10.0.0.5/mcp", "inside our own network"),
+    ("http://localhost:9415/mcp", "inside our own network"),
+    ("mcp.example.com", "http:// or https://"),
+    ("ftp://mcp.example.com/mcp", "http:// or https://"),
+    ("", "URL is required"),
 ])
-async def test_a_server_must_be_https_and_outward(url, why):
+async def test_a_server_is_the_apps_screens_and_outward(url, why):
     result, events = await _call(kind="mcp_server", title="Connect it", url=url, server_name="Example")
     assert why in result["error"] and events == []
+    if "inside" in why:  # the card stops; the person can still add it (F1201)
+        assert "added on the Apps screen, by you" in result["error"]
+
+
+async def test_an_http_server_becomes_a_card_as_on_the_apps_screen():
+    # Was refused, "needs an https URL", where the Apps screen saved it (F1201, CAP3's F-f).
+    result, events = await _call(kind="mcp_server", title="Connect the tracker", url="http://tracker.example.com:9416/mcp",
+                                 server_name="Tracker")
+    assert result["status"] == "card_shown"
+    assert events[0]["server"]["url"] == "http://tracker.example.com:9416/mcp"
+
+
+async def test_a_host_the_deployment_lets_through_is_offered(monkeypatch):
+    monkeypatch.setenv("EGRESS_ALLOW_HOSTS", "localhost")
+    result, events = await _call(kind="mcp_server", title="Connect it", url="http://localhost:9415/mcp",
+                                 server_name="Local")
+    assert result["status"] == "card_shown" and events[0]["server"]["url"] == "http://localhost:9415/mcp"
 
 
 async def test_a_remote_server_becomes_a_card():
