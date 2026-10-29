@@ -88,7 +88,7 @@ export function ConnectCard({
     /** A tool that signs in: its address alone, in its link or its command; no key is made (F1178). */
     async function signIn(client: AiClientId, label: string) {
         setProblem('');
-        const link = installLink(client, { url: host.mcpUrl });
+        const link = installLink(client, { url: host.mcpUrl, registryName: host.registryName });
         if (link) {
             window.location.assign(link);
             setDone({ said: `${label} should open and ask to add Synapse. Say yes, then sign in when it asks.`, link: { href: link, label: `Open ${label}` } });

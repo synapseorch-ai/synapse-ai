@@ -121,9 +121,14 @@ export function signInWhere(client: AiClientId): string {
  * connecting"): Cursor's deeplink takes the server's config as base64 JSON, VS Code's URL handler the same object
  * as `--add-mcp` takes, URL-encoded. The key rides in the link to the app on this machine, never over the network.
  * Claude Code and Codex have none (their button copies one command); Claude signs in instead (`CLAUDE_CONNECTORS`).
+ *
+ * `registryName`, once the product is listed in VS Code's gallery (F1215): VS Code's link asks the gallery for that
+ * name, whose page has our logo and description, and opens this config as before when it isn't found. A listed
+ * entry installs the gallery's config, which has no key, so a keyed link never asks.
  */
 export function installLink(
-    client: AiClientId, { url, key, name = 'synapse' }: { url: string; key?: string; name?: string },
+    client: AiClientId,
+    { url, key, name = 'synapse', registryName }: { url: string; key?: string; name?: string; registryName?: string },
 ): string | null {
     // No key: a public server (the docs'), which takes no Authorization at all.
     const auth = key ? { headers: { Authorization: `Bearer ${key}` } } : {};
@@ -132,7 +137,8 @@ export function installLink(
         return `cursor://anysphere.cursor-deeplink/mcp/install?name=${encodeURIComponent(name)}&config=${encodeURIComponent(config)}`;
     }
     if (client === 'vscode') {
-        return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ name, type: 'http', url, ...auth }))}`;
+        const listed = registryName && !key ? { name: registryName, gallery: true } : { name };
+        return `vscode:mcp/install?${encodeURIComponent(JSON.stringify({ ...listed, type: 'http', url, ...auth }))}`;
     }
     return null;
 }
