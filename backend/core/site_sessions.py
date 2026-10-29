@@ -285,3 +285,25 @@ async def list_sessions() -> list[dict]:
 async def forget(session_id: str) -> bool:
     """Remove a session at once. False when there was none."""
     return await asyncio.to_thread(_forget, session_id)
+
+
+# ── who may use which (BRW-API, F1188/F1189) ────────────────────────────────
+
+_lister = None
+
+
+def set_lister(fn) -> None:
+    """Where the sessions a caller may see come from: async `fn(caller) -> rows`, each a `list_sessions` row with
+    `owner_name`, `mine` and `usable` (theirs, or shared with them). Cloud lists its own table for the person
+    (`caller.user_id`, or a key's creator through `caller.principal`). None puts this install's back."""
+    global _lister
+    _lister = fn
+
+
+async def listed(caller: Any = None) -> list[dict]:
+    """Every session, each marked `mine` and `usable` for `caller`. Here one person uses the install: each is theirs."""
+    if _lister is not None:
+        return await _lister(caller)
+    me = install_person()
+    return [{**r, "owner_name": r["owner"], "mine": r["owner"] == me, "usable": r["owner"] == me}
+            for r in await list_sessions()]

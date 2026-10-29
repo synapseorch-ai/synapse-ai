@@ -161,27 +161,17 @@ async def _save_agent(agent: Agent) -> dict:
 
     document = agent.dict()
     await _check_type(document)
-    if (document.get("browser") or {}).get("sessions"):
+    if (document.get("browser") or {}).get("sessions") or (document.get("browser") or {}).get("recordings"):
         # One kept session per site (F1140), and only the person's own or shared with them (F1167): the editor
-        # offers just those; this is the backstop. A refusal (`PickRefused`) is answered flat by the route.
-        from core.browser.picks import one_per_site, usable_new
+        # offers just those; this is the backstop. A refusal (`PickRefused`) is answered flat by the route. A
+        # recording picked now must exist (F1145); one deleted since it was picked drops out of the pick.
+        from core.browser import save_checks
         from core.store.resources import get_agent
-        await one_per_site(document["browser"]["sessions"])
-        before = ((await get_agent(document["id"]) or {}).get("browser") or {}) if document.get("id") else {}
-        await usable_new(document["browser"]["sessions"],
-                         before=[*(before.get("sessions") or []), *([before["login_ref"]] if before.get("login_ref") else [])])
-    if (document.get("browser") or {}).get("recordings"):
-        # A recording picked now must exist (F1145); one deleted since it was picked drops out of the pick.
-        from core.browser import recordings as _recs
-        from core.store.resources import get_agent
-        picks = document["browser"]["recordings"]
-        known = {d["id"] for d in await _recs.picked(picks)}
-        before = set(((await get_agent(document["id"]) or {}).get("browser") or {}).get("recordings") or []) \
-            if document.get("id") else set()
-        unknown = [r for r in picks if r not in known and r not in before]
-        if unknown:
-            raise HTTPException(status_code=422, detail=f"No such recording: {', '.join(unknown)}.")
-        document["browser"]["recordings"] = [r for r in picks if r in known]
+        before = await get_agent(document["id"]) if document.get("id") else None
+        try:
+            await save_checks.agent_browser(document, before)
+        except save_checks.RecordingGone as gone:
+            raise HTTPException(status_code=422, detail=str(gone)) from None
     # A workflow agent runs its orchestration, so one with none runs nothing:
     # it was saved and failed on its first message (F264). The Deploy button
     # (`POST /api/orchestrations/{id}/deploy`) is how one is made.
