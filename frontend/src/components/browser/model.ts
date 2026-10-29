@@ -179,6 +179,17 @@ export function browserTurnOf(fields: unknown): RunBrowserTurn | null {
   return { session_id: f.session_id, reason: String(f.label ?? ''), banner_kind: bannerKindOf(f.banner_kind) };
 }
 
+/**
+ * The browser turn a chat waits on, as its history read carries it (`pending_browser_turn`, F1182): a chat reopened
+ * while parked shows its card again. None when it is not one.
+ */
+export function parkedBrowserTurn(raw: unknown): RunBrowserTurn | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const t = raw as { session_id?: unknown; reason?: unknown; banner_kind?: unknown };
+  if (typeof t.session_id !== 'string' || !t.session_id) return null;
+  return { session_id: t.session_id, reason: String(t.reason ?? ''), banner_kind: bannerKindOf(t.banner_kind) };
+}
+
 /** The site a URL is on, for a sentence. */
 export function hostOf(url: string): string {
   try {

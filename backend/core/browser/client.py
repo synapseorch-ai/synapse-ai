@@ -503,6 +503,11 @@ class BrowserTools:
             raise RuntimeError(body.get("refused") or body.get("error") or "the person could not be given the browser")
         return body["handover"]
 
+    async def peek_parked(self, key: str | None) -> dict | None:
+        """The turn the owner is parked on, left in place: a chat reopened while it waits shows its card (F1182)."""
+        record = await self.store.get_owner(key) if key else None
+        return (record or {}).get("parked") or None
+
     async def take_parked(self, key: str | None) -> dict | None:
         """The parked turn the person just answered, once."""
         record = await self.store.get_owner(key) if key else None

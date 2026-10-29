@@ -38,7 +38,7 @@ import { OSS_BROWSER_HOST } from '@/lib/browserHost';
 import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import {
   BrowserActionLine, BrowserPane, BrowserTurnCard, PANE_SHARE, PaneHandle, actionOf, browserTurnOf, isBrowserEvent,
-  parseShare, useChatPicks,
+  parkedBrowserTurn, parseShare, useChatPicks,
   type BrowserAction, type BrowserEvent, type BrowserSessionEvent, type FrameMemory,
 } from '@/components/browser';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -1209,8 +1209,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       setOpenFailed(false);
       const turns: SessionTurn[] = data.turns || [];
       const parked: ParkedApproval | null = data.pending_approval ?? null;
+      // The person's turn in the browser it stopped on (F1182): its card, and its browser in the pane.
+      const browserTurn = parkedBrowserTurn(data.pending_browser_turn);
       const running: RunningTurn | null = data.running ?? null;
-      if (turns.length === 0 && !parked && !running) return null;
+      if (turns.length === 0 && !parked && !browserTurn && !running) return null;
 
       const restored: Message[] = [];
       for (const t of turns) {
@@ -1273,9 +1275,18 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           },
         });
       }
+      if (browserTurn) {
+        // As the live turn drew it: Done hands the browser back and reads the follow-up turn.
+        restored.push({
+          role: 'assistant', content: browserTurn.reason, msgType: 'human_input_required',
+          data: { kind: 'browser_turn', session_id: browserTurn.session_id, banner_kind: browserTurn.banner_kind },
+        });
+      }
       if (running) restored.push({ role: 'user', content: running.message,
                                    ...(running.automated ? { data: { automated: running.automated } } : {}) });
       setMessages(restored);
+      if (browserTurn) onBrowser({ type: 'browser_session', session_id: browserTurn.session_id, owner: '' },
+                                 agentNameRef.current);
       setTurnOutcome(null);
       setSessionId(sid);
       if (agentId) setCurrentAgentId(agentId);
