@@ -125,7 +125,10 @@ ASK = {"type": "function", "function": {
                 "question": {"type": "string"},
                 "kind": {"type": "string", "enum": ["text", "address", "email", "number", "date", "yes_no",
                                                     "choice"]},
-                "guess": {"type": "string", "description": "Your best guess, filled in for them to keep or change"},
+                "guess": {"type": "string", "description": (
+                    "Your best guess as the answer itself, filled in for them to keep or change: a value (an address, "
+                    "a day and time, a number, one of the options), never a description of what it could be. Leave "
+                    "it out when you have no such value.")},
                 "options": {"type": "array", "items": {"type": "string"}, "description": _OPTIONS},
                 "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
                 "subject": {"type": "string", "description": _SUBJECT},

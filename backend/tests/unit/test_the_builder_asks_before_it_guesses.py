@@ -323,6 +323,14 @@ class TestTheForm:
         assert out["question"].startswith("Two things before I plan it:\n1. ")
 
 
+def test_a_guess_is_the_answer_itself():
+    """R5 (CC Haiku 4.5 on TRI1's words, 10-30): the planner asked rightly, but guessed "A Vault file or website URL
+    with product documentation", which Continue would have sent as the answer."""
+    guess = " ".join(T.ASK["function"]["parameters"]["properties"]["questions"]["items"]["properties"]["guess"]
+                     ["description"].split())
+    assert "the answer itself" in guess and "never a description" in guess and "Leave it out" in guess
+
+
 class TestTheDefinition:
     @pytest.mark.parametrize("step_id, checked", [("step_human_clarify", "plan_checked"),
                                                   ("step_change_clarify", "change_checked")])
