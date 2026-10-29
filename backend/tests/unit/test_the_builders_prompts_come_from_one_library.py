@@ -77,7 +77,10 @@ from core.native_builder import prompt_lint, seed
 #: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
 #: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
 #: branch; on fix-forward 14's tree, 4c222b83….
-BUNDLE_SHA256 = "4c222b83f951094dbbee953f4c44d9549643722d276b77ad2269bfe892fe36b1"
+#: F1241's follow-up: while a plan waits, classify through `step_classify_door` to `step_classify_at_plan`, whose
+#: classifier's one call requires `continues` and whose prompt names the plan and asks plainly; the classify step's
+#: context and the classifier's kinds move into the library (`classify_context`, `classify_kinds`) unchanged, c9ada080….
+BUNDLE_SHA256 = "c9ada080369a36299255772ef4719663de8f4bc313e627985de77a0fed535089"
 
 
 def _sha(definitions) -> str:
