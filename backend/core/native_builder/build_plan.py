@@ -290,6 +290,10 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     if ws.kbs is not None:
         pack["knowledge_bases"] = [{"id": i, "name": kb.name} for i, kb in ws.kbs.items()
                                    if getattr(kb, "status", "active") == "active"]
+        pack["new_knowledge"] = ("When the request needs a knowledge base that is not here, put it in the plan's "
+                                 "knowledge, with the Vault files the person named; name it, by its name, in its "
+                                 "agents' knowledge and its retrieve and ingest steps. It is made with the build "
+                                 "(F1224).")
     else:
         pack["knowledge"] = ("Off in this workspace. Where the request needs to search or fill a knowledge base, still "
                              "plan its retrieve or ingest step: the review says Knowledge is off and offers to turn it "
@@ -413,7 +417,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                 return Examined(None, problems)
             plan = edited.model_copy(update={
                 "kind": "update", "title": plan.title or edited.title, "summary": plan.summary or edited.summary,
-                **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards",
+                **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
                                                  "questions", "not_carried_over")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     plan = _without(plan, without or [])
@@ -439,6 +443,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state) + asked
+    errors += await _knowledge_parts(plan, ws)
     errors += await _agent_switches(plan, ws, server_module)
     if plan.schedule:
         # A schedule runs on its person's clock (F948, Naveen 10-23): the timezone they named, else their own (the
@@ -468,6 +473,53 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
                     features=needed)
 
 
+async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
+    """The knowledge bases the plan makes or uses (F1224), as F1214's board: one of that name already here is used,
+    never made again; a new one is checked as `create_knowledge_base` checks it; each file it is given is one the
+    person has in the Vault, of a kind an upload takes. A file not there is said and left out, never refused."""
+    if ws.kbs is None or not plan.knowledge:
+        return []  # Knowledge off: the feature's card (`features_needed`)
+    import asyncio
+
+    from core.knowledge import ingest
+    from core.product_tools import knowledge as K
+    from core.product_tools.errors import ToolRefusal
+    from core.storage import get_blob_store
+    from core.vault import mention_key
+
+    errors: list[str] = []
+    here = {kb.name.lower(): kb for kb in ws.kbs.values()}
+    seen: set[str] = set()
+    for part in plan.knowledge:
+        part.name = " ".join(part.name.split())
+        if part.name.lower() in seen:
+            errors.append(f"knowledge: '{part.name}' is in the plan twice; name each base once")
+            continue
+        seen.add(part.name.lower())
+        kb = here.get(part.name.lower())
+        part.existing = kb is not None
+        if kb is not None:
+            part.name = kb.name
+            plan.knowledge_ids[kb.name] = kb.id
+        else:
+            try:
+                await K._new_base({"name": part.name, "description": part.purpose})
+            except ToolRefusal as why:
+                errors.append(f"knowledge '{part.name}': {why}")
+        part.files_missing = []
+        for path in dict.fromkeys(p.strip().lstrip("/") for p in part.files if p.strip()):
+            key = mention_key(path)
+            stat = await asyncio.to_thread(get_blob_store().stat, key) if key else None
+            if stat is None:
+                part.files_missing.append(path)
+                continue
+            try:
+                ingest.check_file(path, stat.size)
+            except ingest.UploadError as why:
+                errors.append(f"knowledge '{part.name}': {path}: {why}")
+    return errors
+
+
 async def _agent_switches(plan: O.Plan, ws: Workspace, server_module: Any) -> list[str]:
     """Each new agent's switches as the agent editor sets them, held to what its save will check (F1223): its
     knowledge bases by name (resolved to ids here, for the save), its MCP servers (given every tool each has now), its
@@ -479,12 +531,14 @@ async def _agent_switches(plan: O.Plan, ws: Workspace, server_module: Any) -> li
     errors: list[str] = []
     by_name = {kb.name.lower(): kb for kb in (ws.kbs or {}).values()}
     servers = _servers(server_module)
-    plan.knowledge_ids = {}
+    made = {p.name.lower(): p.name for p in plan.knowledge if not p.existing}
     for a in plan.agents:
         kept: list[str] = []
         for name in a.knowledge if ws.kbs is not None else []:
             kb = by_name.get(name.strip().lower()) or ws.kbs.get(name.strip())
-            if kb is None:
+            if kb is None and name.strip().lower() in made:
+                kept.append(made[name.strip().lower()])  # one this build makes (F1224): its id comes at the save
+            elif kb is None:
                 errors.append(f"agent {a.name}: knowledge: there is no knowledge base '{name}' here; name one from "
                               "knowledge_bases")
             elif kb.status != "active":
@@ -523,7 +577,7 @@ def features_needed(plan: O.Plan, ws: Workspace) -> list[str]:
     if not ws.boards_on and (any(t in TOOL_NAMES for t in O.tool_names(plan)) or plan.boards):
         out.append("boards")
     if ws.kbs is None and (any(s.type in ("retrieve", "ingest") for s in steps)
-                           or any(a.knowledge for a in plan.agents)):
+                           or any(a.knowledge for a in plan.agents) or plan.knowledge):
         out.append("knowledge")
     return out
 
@@ -1059,9 +1113,14 @@ async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dic
             if (refused := await _refuse_browser_steps(doc["steps"], before)) is not None:
                 issues.append(refused["error"])
         if ws.kbs is not None:
+            # A base this build makes is there by the time its steps are saved (F1224): made first, active.
+            from types import SimpleNamespace
+
+            kbs = {**ws.kbs, **{k["id"]: SimpleNamespace(name=k["name"], status="active")
+                                for k in compiled.knowledge if not k["existing"]}}
             for s in doc["steps"]:
                 if s.get("type") in ("retrieve", "ingest"):
-                    issues += _knowledge_step_issues(s, ws.kbs, False)
+                    issues += _knowledge_step_issues(s, kbs, False)
         reachable = {**doc, "steps": [s for s in doc["steps"] if not str(s.get("workflow_id") or "").startswith(MADE)]}
         issues += (await _workflows_called(reachable, agents))[1]
     return list(dict.fromkeys(issues))

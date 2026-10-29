@@ -138,6 +138,20 @@ class BoardPart(_Written):
     existing: bool = False
 
 
+class KnowledgePart(_Written):
+    """A knowledge base the build makes, or one here it uses, as F1214's board is (F1224): only while Knowledge is
+    on; its files are ones the person already has in the Vault."""
+
+    name: str
+    purpose: str = ""
+    files: list[str] = Field(default_factory=list, description="Vault paths of files the person already has, "
+                                                               "e.g. help/returns.md")
+    #: A base already here of that name (code sets it): used, never made again.
+    existing: bool = False
+    #: Paths of `files` not in the Vault (code sets it): said on the card, never added.
+    files_missing: list[str] = Field(default_factory=list)
+
+
 class Edit(_Written):
     """An update Plan's change to an existing workflow, by step id."""
 
@@ -163,6 +177,9 @@ class PlanDraft(_Written):
                                                                                     "saved first")
     caps: Caps | None = None
     boards: list[BoardPart] = Field(default_factory=list)
+    knowledge: list[KnowledgePart] = Field(default_factory=list, description="Knowledge bases this build makes or "
+                                                                             "uses, by name: what its agents answer "
+                                                                             "from and its retrieve/ingest steps name")
     questions: list[str] = Field(default_factory=list, description="Only what the person alone knows")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")
