@@ -13306,15 +13306,18 @@ async def check_brwreopen(browser) -> str:
 async def check_brwreopenkept(browser) -> str:
     """A turn that stopped on the person's turn in the browser is kept with the conversation (F1183), and a reopened
     chat draws its card where it was asked: an earlier one answered, the waiting one once (not again from the pending
-    read) and answerable. When the agent said nothing first, the saved answer is only what the turn is for, which the
-    card says, so no bubble repeats it."""
-    def kept(user: str, sid: str, reason: str, kind: str) -> dict:
+    read) and answerable; one the person wrote past says they moved on. When the agent said nothing first, the saved
+    answer is only what the turn is for, which the card says, so no bubble repeats it."""
+    def kept(user: str, sid: str, reason: str, kind: str, answered: bool = False) -> dict:
         return {"user": user, "assistant": f"Your turn in the browser: {reason}", "timestamp": "",
                 "calls": [{"tool": "browser_click", "args": {"target": "e5"}, "result": "clicked"}],
-                "browser_turn": {"session_id": sid, "reason": reason, "banner_kind": kind, "worded": False}}
+                "browser_turn": {"session_id": sid, "reason": reason, "banner_kind": kind, "worded": False,
+                                 "answered": answered}}
     waiting = "Sign in to Saltmarsh's partner portal."
-    history = {"turns": [kept("pay the stock order", "bsOld", "Press Pay yourself.", "send"),
+    history = {"turns": [kept("pay the stock order", "bsOld", "Press Pay yourself.", "send", answered=True),
                          {"user": "I handed the browser back.", "assistant": "Paid.", "timestamp": ""},
+                         kept("order the blue mugs", "bsSkip", "Press Order yourself.", "send"),
+                         {"user": "never mind the mugs", "assistant": "Left them.", "timestamp": ""},
                          kept("check the partner portal", "bsK", waiting, "session_expired")],
                "pending_approval": None, "running": None,
                "pending_browser_turn": {"session_id": "bsK", "reason": waiting, "banner_kind": "session_expired"}}
@@ -13324,17 +13327,20 @@ async def check_brwreopenkept(browser) -> str:
         await _brw_shots(ctx)
         cards = page.locator("main [data-browser-turn]")
         try:
-            await cards.nth(1).wait_for(timeout=8_000)
+            await cards.nth(2).wait_for(timeout=8_000)
         except Exception:
             raise AssertionError("a reopened chat did not draw its kept browser turns' cards")
         await asyncio.sleep(0.5)
-        if await cards.count() != 2:
-            bad.append(f"{await cards.count()} browser-turn cards for two kept turns (the waiting one drawn twice?)")
-        first, last = cards.first, cards.last
+        if await cards.count() != 3:
+            bad.append(f"{await cards.count()} browser-turn cards for three kept turns (the waiting one drawn twice?)")
+        first, skipped, last = cards.nth(0), cards.nth(1), cards.nth(2)
         if "You handed the browser back" not in await first.inner_text():
-            bad.append("an earlier kept turn's card is not drawn as answered")
-        if await first.get_by_role("button", name="Done").count():
-            bad.append("an earlier kept turn's card can still be answered")
+            bad.append("a kept turn handed back is not drawn as handed back")
+        if "You moved on" not in await skipped.inner_text():
+            bad.append("a kept turn the person wrote past does not say they moved on")
+        for earlier in (first, skipped):
+            if await earlier.get_by_role("button", name="Done").count():
+                bad.append("an earlier kept turn's card can still be answered")
         if "Saltmarsh" not in await last.inner_text() or "Your turn: sign in again" not in await last.inner_text():
             bad.append("the waiting turn's card does not say what it is for, with its banner")
         if await _on_screen(page, "Your turn in the browser:", tries=3):
@@ -13356,7 +13362,63 @@ async def check_brwreopenkept(browser) -> str:
         await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return "kept browser turns reopen as their cards, the earlier answered and the waiting one once and answerable"
+    return "kept browser turns reopen as their cards: handed back, moved on, and the waiting one once and answerable"
+
+
+@check
+async def check_brwturnended(browser) -> str:
+    """A browser turn nobody handed back says what became of it, with no buttons (F1183; BRW2's card): the person
+    wrote instead ("You moved on"), or a reopened chat's last kept turn has nothing waiting on it any more ("The
+    browser closed"). Its Done would have answered nothing."""
+    bad: list[str] = []
+    ctx, page = await _brw_page(browser, "uismoke-brw-ended")
+    try:
+        await _brw_push(page, "post", "".join(_frame(e, f"m-{i + 1}") for i, e in enumerate([
+            {"type": "browser_session", "session_id": "bsM", "owner": "chat:uismoke-brw-ended"},
+            {"type": "human_input_required", "kind": "browser_turn", "session_id": "bsM", "banner_kind": "send",
+             "prompt": "Press Pay yourself.",
+             "fields": [{"name": "browser_turn", "type": "browser_turn", "label": "Press Pay yourself.",
+                         "session_id": "bsM", "banner_kind": "send"}]},
+            {"type": "done"}])))
+        card = page.locator("main [data-browser-turn]")
+        await card.wait_for(timeout=8_000)
+        await _send(page, "never mind, cancel the order")
+        for _ in range(30):
+            if "You moved on" in await card.inner_text():
+                break
+            await asyncio.sleep(0.2)
+        else:
+            bad.append("a browser turn the person wrote past does not say they moved on")
+        if "You handed the browser back" in await card.inner_text():
+            bad.append("a browser turn the person wrote past says it was handed back")
+        if await card.get_by_role("button", name="Done").count():
+            bad.append("a browser turn the person wrote past can still be answered")
+    finally:
+        await ctx.close()
+
+    history = {"turns": [{"user": "check the partner portal", "timestamp": "",
+                          "assistant": "Your turn in the browser: Sign in to Saltmarsh's partner portal.",
+                          "calls": [{"tool": "browser_click", "args": {"target": "e5"}, "result": "clicked"}],
+                          "browser_turn": {"session_id": "bsGone", "reason": "Sign in to Saltmarsh's partner portal.",
+                                           "banner_kind": "session_expired", "worded": False}}],
+               "pending_approval": None, "running": None, "pending_browser_turn": None}
+    ctx, page = await _chat_page(browser, "uismoke-brw-gone", history, extra_init=BROWSER_STUB)
+    try:
+        card = page.locator("main [data-browser-turn]")
+        try:
+            await card.wait_for(timeout=8_000)
+        except Exception:
+            raise AssertionError("a reopened chat's last kept browser turn has no card")
+        if "The browser closed" not in await card.inner_text():
+            bad.append("a kept browser turn nothing waits on does not say its browser closed")
+        for name in ("Done", "Open the browser"):
+            if await card.get_by_role("button", name=name).count():
+                bad.append(f"a kept browser turn nothing waits on still offers {name}")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a browser turn written past says the person moved on; a reopened one nothing waits on says it closed"
 
 
 @check

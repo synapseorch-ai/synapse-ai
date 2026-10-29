@@ -617,7 +617,7 @@ async def test_a_turn_parked_on_the_persons_turn_is_kept_once_with_its_card(
     messages = await _saved(sid, agent["id"])
     assert [(m["role"], m["content"]) for m in messages] == [("user", "buy it"), ("assistant", PARKED_WORDS)]
     answer = messages[1]
-    assert answer["browser_turn"] == {"session_id": "s1", "banner_kind": "send", "worded": False,
+    assert answer["browser_turn"] == {"session_id": "s1", "banner_kind": "send", "worded": False, "answered": False,
                                       "reason": "The agent tried to send this to shop.example.com."}
     assert [c["tool"] for c in answer["calls"]] == ["browser_click"]
     [turn] = await _get_conversation_history(sid, agent_id=agent["id"])
@@ -670,6 +670,33 @@ async def test_the_hand_back_turn_is_its_own_and_reads_the_question(fake_llm):
         ("user", "I handed the browser back."), ("assistant", "Bought.")]
     assert "browser_turn" not in messages[3]
     assert "buy the blue mug" in _json_of(fake_llm.calls[-1])
+
+
+async def test_handing_back_marks_the_kept_turn_answered(client, monkeypatch, fake_llm):
+    """A reopened chat tells a turn handed back from one moved past (F1183): the hand-back marks the kept turn."""
+    from _fakes import seed as S
+    from _fakes.fake_llm import tool_call
+    from core.routes import chat
+    from core.session import _get_conversation_history
+
+    monkeypatch.setattr(chat, "_start", lambda request, **kw: None)
+    tools = browser_client.BrowserTools(_HandoverHost())
+    agent = S.make_agent(id="agent_mark", tools=["browser_click"], skip_default_tools=True)
+    await S.seed_agents([agent])
+    fake_llm.script([tool_call("browser_click", target="e5")])
+    await _in_process(agent["id"], "s_mark", "buy it", _browser_server(tools))
+    [turn] = await _get_conversation_history("s_mark", agent_id=agent["id"])
+    assert turn["browser_turn"]["answered"] is False
+
+    async def viewer(sid, path, body=None):
+        return 200, {"wheel": "agent"}
+    monkeypatch.setattr(tools, "viewer", viewer)
+    monkeypatch.setattr(browser_client, "tools", tools)
+    handed = await client.post("/api/browser/s1/wheel/hand-back", json={})
+    assert handed.json()["resumed"] == {"kind": "chat", "session_id": "s_mark"}
+    [turn] = await _get_conversation_history("s_mark", agent_id=agent["id"])
+    assert turn["browser_turn"]["answered"] is True
+    assert turn["assistant"] == PARKED_WORDS, "the words are not touched"
 
 
 def _json_of(call) -> str:
