@@ -43,6 +43,11 @@ class EvalsHost:
     cancel_suite_run: Callable[[Any, str], Awaitable[dict]] | None = None
     #: `(caller, suite) -> str`: what running it costs, in the host's own units ("about 40 credits").
     estimate_words: Callable[[Any, dict], Awaitable[str]] | None = None
+    #: `(rubrics, golden sets) -> why there is no room | None`: its plan's counts, before a build makes them.
+    room: Callable[[int, int], Awaitable[str | None]] | None = None
+    #: `(caller, rubric_id)` / `(caller, suite_id)`: what a stopped build made, removed as its Delete does.
+    delete_rubric: Callable[[Any, str], Awaitable[None]] | None = None
+    delete_suite: Callable[[Any, str], Awaitable[None]] | None = None
 
 
 _host: EvalsHost | None = None
@@ -70,6 +75,23 @@ def _held(check, *args, **kw):
 
 def _hosted(name: str):
     return getattr(_host, name, None) if _host is not None else None
+
+
+async def room(rubrics: int, sets: int) -> str | None:
+    """Why this plan has no room for a build's eval, in its host's words; None on self-hosted, which counts none."""
+    host = _hosted("room")
+    return await host(rubrics, sets) if host is not None else None
+
+
+async def remove(caller: Any, kind: str, made_id: str) -> None:
+    """What a stopped build made, removed as the Evals screen's Delete does: a rubric, or a golden set."""
+    host = _hosted("delete_rubric" if kind == "rubric" else "delete_suite")
+    if host is not None:
+        await host(caller, made_id)
+    elif kind == "rubric":
+        await service.delete_rubric(made_id)
+    else:
+        await service.delete_suite(made_id)
 
 
 # ── finding what was named ────────────────────────────────────────────────────

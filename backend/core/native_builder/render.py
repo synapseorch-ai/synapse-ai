@@ -175,6 +175,40 @@ def connect_first_text(waiting: list[Any]) -> str:
             + f"\n\nOr tell me to plan it without {'it' if len(waiting) == 1 else 'them'}.")
 
 
+def eval_part_line(part: Any) -> str:
+    """A plan's eval (F1255, D340 F), in one line: the card's and the build's parts' words."""
+    cases = len(part.cases)
+    if part.keeps:
+        line = f"its eval: it keeps its rubric “{part.keeps}”, which a judge scores each run that finishes by"
+    else:
+        many = "criterion" if len(part.criteria) == 1 else "criteria"
+        line = (f"its eval: the rubric “{part.name}” ({len(part.criteria)} {many}, scored 0–{part.scale_max:g}), "
+                "which a judge scores each run that finishes by")
+    line += (f", and a golden set of {cases} case{'s' if cases != 1 else ''} to run on Evals" if cases
+             else "; its scores come from its real runs")
+    return line + (f"; it replaces the rubric “{part.replaces}”, so its score trend starts again"
+                   if part.replaces else "")
+
+
+def eval_lines(plan: Any) -> list[str]:
+    """A plan's eval in full (F1255): each criterion with its weight, and every case as it will be saved, since the
+    yes saves exactly these (Naveen, 10-30); and what judging costs, every run (TRI1, D340 F)."""
+    part = getattr(plan, "eval", None)
+    if part is None:
+        return []
+    out = [eval_part_line(part)]
+    if not part.keeps:
+        out += [f"Criterion “{c.name}” (weight {c.weight:g})" + (f": {c.guidance}" if c.guidance else "")
+                for c in part.criteria]
+        if part.floor is not None:
+            out.append(f"A score below {part.floor:g} is a regression")
+    out += [f"Case {i}{f' “{c.name}”' if c.name else ''}: {c.input}" + (f" — {c.notes}" if c.notes else "")
+            for i, c in enumerate(part.cases, 1)]
+    out.append("Every run that finishes is judged: one more model call per run"
+               + (f", to {part.judge}" if part.judge else "") + ", on top of the run's own")
+    return out
+
+
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     """The plan card's text. `agent_names` names the workspace's agents a plan reuses (by id)."""
     names = dict(agent_names or {})
@@ -200,7 +234,7 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
                     "set_meta": "Change the workflow's details"}[e.op]
             lines.append(f"{len(lines) + 1}. {what}")
         # A part the card says in its own section below (a knowledge base) is said there, once (F1228).
-        said = [*knowledge_lines(plan), *own_part_lines(plan)]
+        said = [*knowledge_lines(plan), *own_part_lines(plan), *eval_lines(plan)]
         own = [w for w in getattr(plan, "part_words", []) or [] if w not in said]
         parts.append("## Steps\n" + "\n".join(lines) + ("\n\n" + _bullets(own) if own else ""))
     for w in plan.inner_workflows:
@@ -233,6 +267,8 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         parts.append("## Knowledge bases\n" + "\n".join(f"- {line}" for line in lines))
     if lines := own_part_lines(plan):
         parts.append("## Your APIs and MCP servers\n" + "\n".join(f"- {line}" for line in lines))
+    if lines := eval_lines(plan):
+        parts.append("## Eval\n" + "\n".join(f"- {line}" for line in lines))
 
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()

@@ -179,6 +179,40 @@ class McpServerPart(_Written):
     connected: bool = False
 
 
+class EvalCriterion(_Written):
+    name: str
+    weight: float = 1.0
+    guidance: str = Field("", description="What a good result does, for the judge")
+
+
+class EvalCase(_Written):
+    name: str = ""
+    input: str = Field(description="What a run starts with, as a person would give it")
+    notes: str = Field("", description="What a good result does with it, for the person reading the scores")
+
+
+class EvalPart(_Written):
+    """The workflow's eval, made with it (F1255, D340 F): a rubric a judge scores each finished run by, and a golden
+    set of test inputs a person runs to see whether a later change made it worse. Its cases are saved only as the
+    card shows them, on the yes (Naveen, 10-30)."""
+
+    name: str = Field(description="The rubric's name, e.g. Post quality")
+    criteria: list[EvalCriterion] = Field(description="What a good result is, each with its weight, from what the "
+                                                      "workflow is for")
+    scale_max: float = Field(10.0, description="The top of the score scale (0 to it)")
+    floor: float | None = Field(None, description="A score below it is a regression")
+    cases: list[EvalCase] = Field(default_factory=list, description="When the workflow takes an input: 3 to 10 test "
+                                                                     "inputs (a typical one, an edge case, a hard one); "
+                                                                     "none when it takes no input")
+    replace_rubric: bool = Field(False, description="An update of a workflow scored by a rubric already: true only "
+                                                    "when the ask is about how it is judged; else its rubric is kept")
+    #: The rubric an updated workflow is scored by now, by name (code sets these): kept, or replaced by this one.
+    keeps: str = ""
+    replaces: str = ""
+    #: The model that judges each finished run (code sets it): the rubric's, else the workspace's judge or default.
+    judge: str = ""
+
+
 class Edit(_Written):
     """An update Plan's change to an existing workflow, by step id."""
 
@@ -213,6 +247,8 @@ class PlanDraft(_Written):
     mcp_servers: list[McpServerPart] = Field(default_factory=list, description=(
         "A remote MCP server the person gave by URL that is not in `servers` yet: plan no step on its tools; it is "
         "connected first, and you plan again on its tools"))
+    eval: EvalPart | None = Field(None, description="Its eval: a rubric its runs are scored by and golden test "
+                                                    "cases, made with it")
     questions: list[str] = Field(default_factory=list, description="Only what the person alone knows")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")
@@ -767,4 +803,9 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
         out.room = ((await builder_tools._memory_room(adding)) or {}).get("error")
     if out.room is None and any(a.type == "browser" for a in out.agents):
         out.room = ((await builder_tools._browser_refused("agent")) or {}).get("error")
+    if out.room is None and out.eval is not None:
+        # A host's plan counts its rubrics and golden sets (cloud: Solo 3, Growth 25; F1255).
+        from core.product_tools import evals
+
+        out.room = await evals.room(1, 1 if out.eval.cases else 0)
     return out

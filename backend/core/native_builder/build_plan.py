@@ -431,7 +431,7 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
             plan = edited.model_copy(update={
                 "kind": "update", "title": plan.title or edited.title, "summary": plan.summary or edited.summary,
                 **{k: getattr(plan, k) for k in ("agents", "schedule", "inner_workflows", "caps", "boards", "knowledge",
-                                                 "apis", "mcp_servers", "questions", "not_carried_over")}})
+                                                 "apis", "mcp_servers", "eval", "questions", "not_carried_over")}})
             plan.reuse_agents = list(dict.fromkeys([*edited.reuse_agents, *plan.reuse_agents]))
     plan = _without(plan, without or [])
     from core.native_builder.change_tools import _holds_a_key
@@ -460,6 +460,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
     errors += await own_api.server_parts(plan, server_module)
     errors += await _agent_switches(plan, ws, server_module)
+    # Its eval (F1255, D340 F): held to what the Evals screen's forms hold a rubric and a golden set to.
+    errors += await _eval_part(plan, base, state)
     # The person's own API (F1225): each operation the plan uses is a tool the build makes, as a read API's is (F944).
     api_errors, own_tools = await own_api.api_parts(plan)
     errors += api_errors
@@ -1027,6 +1029,75 @@ def model_work(name: str) -> bool:
     `natural_language_processing`, `summarize_text`; never a name that says where (`save_to_google_sheet`)."""
     words = set(re.findall(r"[a-z]+", name.lower()))
     return bool(words) and words <= (_MODEL_WORK | _KEEP | _FILLER) and bool(words & (_MODEL_WORK | _KEEP))
+
+
+async def _eval_part(plan: O.Plan, base: O.Plan | None, state: dict) -> list[str]:
+    """A plan's eval held to the Evals screen's own rules (`core.evals.service`) and to TRI1's shape (D340 F): a rubric
+    with at least one criterion; 3 to 10 cases when the workflow takes an input (every one is on the card), none when
+    it takes none (its scores then come from its real runs). An update keeps the rubric its workflow is scored by,
+    unless the ask is about how it is judged (`replace_rubric`: its score trend then starts again)."""
+    part = plan.eval
+    if part is None:
+        return []
+    from core.evals import service
+    from core.native_builder.models_menu import workspace_model
+
+    part.keeps = part.replaces = ""
+    existing = (_obj(state.get(EXISTING_KEY)) or {}) if plan.kind == "update" and base is not None else {}
+    if existing.get("rubric_id"):
+        rubric = await service.evals_store.get_rubric(existing["rubric_id"])
+        named = str((rubric or {}).get("name") or existing["rubric_id"])
+        if part.replace_rubric:
+            part.replaces = named
+        else:
+            part.keeps = named
+    errors = []
+    if not part.keeps:
+        if not part.criteria:
+            errors.append("eval: a rubric needs at least one criterion: what a good result is, from what the workflow "
+                          "is for")
+        else:
+            try:
+                service.rubric_body(rubric_of(part))
+            except service.EvalsRefused as exc:
+                errors.append(f"eval: {exc.detail}")
+    if _takes_input(plan):
+        if not 3 <= len(part.cases) <= 10:
+            errors.append("eval.cases: give 3 to 10 cases (a typical one, an edge case, a hard one); more are added "
+                          "later on Evals")
+    elif part.cases:
+        errors.append("eval.cases: this workflow takes no input, so a case has nothing to start a run with: leave "
+                      "cases out; its scores come from its real runs")
+    if part.cases and not errors:
+        try:
+            service.suite_body({"name": "golden set", "orchestration_id": "orch_check",
+                                "cases": [c.model_dump() for c in part.cases]}, whole=True)
+        except service.EvalsRefused as exc:
+            errors.append(f"eval.cases: {exc.detail}")
+    try:
+        from core.config import load_settings
+
+        part.judge = str(load_settings().get("judge_model") or "").strip() or workspace_model()
+    except Exception:  # noqa: BLE001 — no settings read: the card names none
+        part.judge = ""
+    return errors
+
+
+#: How a run's own input is read (F1232: what the person gives when it starts, or its schedule's message).
+_RUN_INPUT = re.compile(r"state\.(?:user_input|user_query|input)\b")
+
+
+def _takes_input(plan: O.Plan) -> bool:
+    """Whether the workflow reads what each run starts with: a golden set's case is that."""
+    return bool(_RUN_INPUT.search(json.dumps([s.model_dump() for s in [*plan.steps,
+                                                                        *(x for w in plan.inner_workflows
+                                                                          for x in w.steps)]], default=str)))
+
+
+def rubric_of(part: O.EvalPart) -> dict:
+    """A plan's eval as the rubric the Evals screen saves (`RubricIn`'s fields)."""
+    return {"name": part.name, "criteria": [c.model_dump() for c in part.criteria],
+            "scale": {"min": 0.0, "max": part.scale_max}, **({"floor": part.floor} if part.floor is not None else {})}
 
 
 def _servers(server_module: Any) -> dict[str, list[str]]:
