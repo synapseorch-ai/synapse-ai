@@ -40,6 +40,9 @@ TOPICS: dict[str, str] = {
              "what waits on a person, schedules that ran, cost",
     "run": "one run step by step, with the start of what each step wrote: `run_id`, or `name` for that workflow's "
            "latest run. 'Did it finish', 'what did it do', 'why did it fail'",
+    # What a workflow is made of, not what it did (F1237): the builder's own words for its steps, never its configs.
+    "workflow": "one workflow's steps, by `name` (or its id): what each step does, its own parts, and what is "
+                "missing or off. 'What does it do', 'what are its steps'",
     "waiting": "what waits on a person: workflow runs asking a question and tool calls an agent stopped on, each "
                "with what answers it",
     "agent_activity": "what the agent `name` has been doing: its recent conversations (last question and answer) "
@@ -76,6 +79,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
                        "model_dollars", "credits?", "note"]},
     "run": {"keys": ["run_id", "status", "workflow", "started_at", "ended_at", "steps", "response", "shared_state",
                      "error?", "model_dollars", "credits?"]},
+    "workflow": {"keys": ["workflow", "id", "steps", "parts", "missing_or_off"]},
     # A run's question and a tool's approval carry their own keys, each with the tool that answers it.
     "waiting": {"keys": ["items", "total", "next_cursor"]},
     "agent_activity": {"keys": ["agent", "conversations", "workflows", "schedules", "note"]},
@@ -83,6 +87,45 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "boards": {"keys": ["items?", "total?", "next_cursor?", "board?", "id?", "open?", "recently_closed?"],
                "item": ["board", "id", "kind", "open", "being_worked_on"]},
     "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps"]},
+}
+
+#: What each topic shows and where to look instead, said with every answer that has nothing (F1237): on an error it
+#: ends the error, on an empty list it is the answer's `elsewhere`. Fixed words, so the same question gets the same
+#: answer and a repeat is still seen as one (CAP3's F1236). Each names only read_workspace's own topics: the planner
+#: holds no other tool.
+ELSEWHERE: dict[str, str] = {
+    "schedules": "This shows schedules. A workflow with none runs only when it is started: topic `workflows` lists "
+                 "the workflows, `runs` what ran.",
+    "runs": "This shows workflow runs. A workflow that has not run has none: to see its steps, read topic `workflow` "
+            "with its name.",
+    "channels": "This shows chat channels (Slack, Telegram, Discord…). Phone numbers are topic `phone`, website "
+                "widgets `widgets`.",
+    "phone": "This shows phone numbers. Chat channels are topic `channels`, website widgets `widgets`.",
+    "widgets": "This shows website widgets. Chat channels are topic `channels`, phone numbers `phone`.",
+    "tool_policy": "This shows when agents must ask before a tool. The agents and how many tools each has are topic "
+                   "`agents`.",
+    "knowledge": "This shows knowledge bases, or that Knowledge is off. What a workflow's steps search is in topic "
+                 "`workflow` with its name.",
+    "usage": "This shows what each workflow's runs used. The runs themselves are topic `runs`; the plan and what is "
+             "left of it, `plan`.",
+    "plan": "This shows the plan and what is left of it. What runs used is topic `usage`.",
+    "models": "This shows the models and which providers have a key. Each agent's own model is in topic `agents`.",
+    "agents": "This shows the workspace's agents. The workflows are topic `workflows`; one workflow's steps, "
+              "`workflow` with its name.",
+    "workflows": "This lists the workflows by name. One workflow's steps are topic `workflow` with its name; its "
+                 "latest run, `run` with its name.",
+    "today": "This shows what happened over the last days. One run step by step is topic `run`; what is set up, "
+             "`workflows` and `schedules`.",
+    "run": "This shows one run of a workflow, step by step. To see a workflow's steps, read topic `workflow` with its "
+           "name; the workflows here are topic `workflows`.",
+    "workflow": "This shows one workflow's steps. The workflows here are topic `workflows`; what one did when it ran, "
+                "`run` with its name.",
+    "waiting": "This shows what waits on a person. Runs that finished or failed are topic `runs`.",
+    "agent_activity": "This shows what one agent has been doing, by its `name`. The agents here are topic `agents`.",
+    "boards": "This shows boards and their open cards. What a workflow adds to a board is in topic `workflow` with "
+              "its name.",
+    "recordings": "This shows browser recordings a person made in the app. Which workflow replays one is in topic "
+                  "`workflow` with its name.",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -101,7 +144,7 @@ def shape_problems(topic: str, answer: dict) -> list[str]:
         if where and "item" not in shape:
             continue
         need = {k for k in keys if not k.endswith("?")}
-        allowed = need | {k[:-1] for k in keys if k.endswith("?")} | ({"topic"} if not where else set())
+        allowed = need | {k[:-1] for k in keys if k.endswith("?")} | ({"topic", "elsewhere"} if not where else set())
         for one in given:
             if not isinstance(one, dict):
                 problems.append(f"{topic}: {where or 'the answer '}is not an object")
@@ -426,12 +469,45 @@ async def _run(args: dict) -> dict:
             "started_at": row.get("started_at"), "ended_at": row.get("ended_at"), **paid}
 
 
+async def _workflow(args: dict) -> dict:
+    """One workflow's steps in the builder's own words (F1237; F1228's `parts_words`), never its configs or prompts:
+    by its id, its name (any case), or the one name that holds what was asked. Only a workflow the `workflows` topic
+    lists to this caller, on this host (its own reader, with its roles and sharing): any other is not here."""
+    import core.server as _server
+    from core.native_builder.parts_words import workflow_said
+    from core.routes.orchestrations import load_orchestrations
+    from core.secret_scrub import scrub_secrets
+
+    asked = (args.get("name") or "").strip()
+    if not asked:
+        return {"error": "Say which workflow: its name or id."}
+    listed = await (_HOST.get("workflows") or _SELF_HOSTED["workflows"])({})
+    seen = {item.get("name") for item in listed.get("items") or [] if isinstance(item, dict)}
+    flows = [o for o in await load_orchestrations()
+             if not o.get("system") and o.get("is_active") is not False and o.get("name") in seen]
+    one = ([o for o in flows if o.get("id") == asked]
+           or [o for o in flows if str(o.get("name") or "").casefold() == asked.casefold()]
+           or [o for o in flows if asked.casefold() in str(o.get("name") or "").casefold()])
+    if not one:
+        return {"error": f"There is no workflow called {asked!r} here."}
+    if len(one) > 1:
+        return {"error": f"More than one workflow is called that: {', '.join(repr(o.get('name')) for o in one[:8])}. "
+                         "Say which, by its whole name."}
+    orch = one[0]
+    said = await workflow_said(orch, _server)
+    if said is None:
+        return {"error": f"I can't read the steps of {orch.get('name')!r}: it is saved in a shape this cannot read."}
+    return {"workflow": orch.get("name") or orch.get("id"), "id": orch.get("id"),
+            "steps": [scrub_secrets(x) for x in said["steps"]], "parts": [scrub_secrets(x) for x in said["parts"]],
+            "missing_or_off": [scrub_secrets(x) for x in said["off"]]}
+
+
 _SELF_HOSTED: dict[str, Reader] = {
     "schedules": _schedules, "runs": _runs, "channels": _channels, "phone": _phone, "widgets": _widgets,
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
-    "today": _today, "run": _run, "waiting": _waiting, "agent_activity": _agent_activity, "boards": _boards,
-    "recordings": _recordings,
+    "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
+    "boards": _boards, "recordings": _recordings,
 }
 
 
@@ -443,8 +519,17 @@ async def read_workspace(args: dict, server_module: Any, events: list[dict]) -> 
     try:
         result = await reader(args)
     except Exception as exc:  # noqa: BLE001 — a reader that fails says so; the model must not fill the gap
-        return {"topic": topic, "error": f"I can't read {topic} right now ({type(exc).__name__}). Say so."}
-    return {"topic": topic, **result}
+        result = {"error": f"I can't read {topic} right now ({type(exc).__name__}). Say so."}
+    return {"topic": topic, **result, **_elsewhere(topic, result)}
+
+
+def _elsewhere(topic: str, result: dict) -> dict:
+    """Where else to look, on an answer that has nothing (F1237): the end of its error, or its `elsewhere`."""
+    if isinstance(result.get("error"), str):
+        return {"error": f"{result['error'].rstrip()} {ELSEWHERE[topic]}"}
+    if result.get("items") == []:
+        return {"elsewhere": ELSEWHERE[topic]}
+    return {}
 
 
 register_builder_tool(SCHEMA, read_workspace)
