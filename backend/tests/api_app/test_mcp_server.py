@@ -695,3 +695,43 @@ class TestAnEmbeddersGrant:
 
         from core.store.resources import load_agents
         assert not [a for a in await load_agents() if a.get("name") == "Sneaky"]  # refused, not dispatched
+
+
+class TestItShowsWhoItIs:
+    """F1215 (Naveen 10-29): an AI tool that draws a server's icon draws ours. VS Code puts serverInfo's
+    icons on its tools picker: PNG, WebP, JPEG or GIF only (never SVG), as a data: URI or from the server's
+    own host, by theme. Ours: the white rounded tile on a dark theme, the bare mark on a light one, the tile
+    first for a tool that reads no theme (it shows on any background)."""
+
+    async def test_its_first_answer_carries_our_mark_for_each_theme(self, mcp_app, api_key):
+        import base64
+        import io
+
+        from PIL import Image
+
+        async with _http(mcp_app, api_key["headers"]) as http, \
+                streamable_http_client(URL, http_client=http) as (read, write, _), \
+                ClientSession(read, write) as session:
+            init = await session.initialize()
+        icons = init.serverInfo.icons or []
+        assert [i.theme for i in icons] == ["dark", "light"]
+
+        drawn = {}
+        for icon in icons:
+            assert icon.mimeType == "image/png" and icon.sizes == ["48x48"]
+            head, _, data = icon.src.partition(",")
+            assert head == "data:image/png;base64"
+            image = Image.open(io.BytesIO(base64.b64decode(data)))
+            assert (image.format, image.size) == ("PNG", (48, 48))
+            drawn[icon.theme] = image.convert("RGBA")
+
+        def blue(px) -> bool:  # the mark's #0f71b0
+            r, g, b, a = px
+            return a > 200 and abs(r - 15) < 40 and abs(g - 113) < 40 and abs(b - 176) < 40
+
+        for theme, image in drawn.items():
+            assert sum(map(blue, image.getdata())) > 200, f"{theme}: our mark is drawn"
+            assert image.getpixel((0, 0))[3] == 0, f"{theme}: the corner is clear"
+        # Just inside the rounded corner, clear of the mark: the tile's white on dark, nothing on light.
+        assert drawn["dark"].getpixel((6, 6)) == (255, 255, 255, 255)
+        assert drawn["light"].getpixel((6, 6))[3] == 0
