@@ -9,6 +9,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { ExternalLink, Plus, Trash2 } from 'lucide-react';
+import { useHelpTopic } from '@/components/help';
 import { Button, Checkbox, CodeEditor, Combobox, Field, Input, MarkdownEditor, Segmented, Select, TemplateInput, Textarea, TextLink } from '@/components/ui';
 import { SessionPicker, onSite, stepWords, type Recording } from '@/components/browser';
 import { vaultMentions } from '@/components/VaultMention';
@@ -1527,6 +1528,7 @@ function EndSection() {
  * changed pauses the run for the person, or lets a Browser agent find the way, the fix waiting for approval.
  */
 function BrowserStepSection({ step, update, agents, browserRecordings, browserSessions }: StepSectionProps) {
+    useHelpTopic('orchestrations.browser_step');
     const id = step.recording_id ?? '';
     // The recording picked, read for its inputs and steps; set when the read answers.
     const [doc, setDoc] = useState<Recording | null>(null);

@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { Film } from 'lucide-react';
 
+import { useHelpTopic } from '@/components/help';
 import { Button, EmptyState, ErrorNote, Field, Input, Modal } from '@/components/ui';
 
 import { BrowserPane } from './BrowserPane';
@@ -26,6 +27,7 @@ export function RecordingsLibrary({ host, sessionsHost, browserHost, onOpen }: {
   /** Open a recording's own page. */
   onOpen: (id: string) => void;
 }) {
+  useHelpTopic('browser.recordings');
   const [rows, setRows] = useState<RecordingSummary[] | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
