@@ -34,7 +34,7 @@ from core.native_builder.objects import Edit, Plan, PlanDraft, Step, settled
 SETTINGS = ("state_schema", "result_key", "max_total_turns", "timeout_minutes", "strict_state_types")
 #: The step types whose output is kept: each gets an output key (the validator's `_RESULT_STEP_TYPES`).
 _RESULT_TYPES = frozenset({"agent", "llm", "tool", "merge", "transform", "extract_json", "human", "retrieve",
-                           "workflow"})
+                           "workflow", "browser"})
 #: The step types a model's prompt reaches, which read the run's input and what came before.
 _READING_TYPES = frozenset({"agent", "llm", "tool", "evaluator", "workflow"})
 #: Fields the mapping writes itself, never copied from `config`, and never read back into it.
@@ -85,7 +85,7 @@ def _engine_step(step: Step, *, agent_ids: dict[str, str], workflow_ids: dict[st
 
     out: dict[str, Any] = {"id": step.id, "name": step.name, "type": step.type}
     t = step.type
-    if step.agent and t in ("agent", "evaluator"):
+    if step.agent and t in ("agent", "evaluator", "browser"):  # a Browser step's: the Browser agent that finds the way
         out["agent_id"] = agent_ids.get(step.agent, step.agent)
     if t in ("agent", "llm", "tool", "workflow") and step.prompt is not None:
         out["prompt_template"] = step.prompt
@@ -347,7 +347,7 @@ def _plan_step(step: dict[str, Any], *, end_ids: set[str], bodies: set[str]) -> 
         return "end" if target is None or target in end_ids else target
 
     out: dict[str, Any] = {"id": s["id"], "type": t, "name": s["name"], "does": s["name"]}
-    if t in ("agent", "evaluator") and s.get("agent_id"):
+    if t in ("agent", "evaluator", "browser") and s.get("agent_id"):
         out["agent"] = s["agent_id"]
     if t in ("agent", "llm", "tool", "workflow"):
         out["prompt"] = s.get("prompt_template")

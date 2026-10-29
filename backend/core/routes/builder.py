@@ -269,6 +269,13 @@ def _knowledge_steps() -> str:
     return KNOWLEDGE_STEPS_PALETTE if knowledge_enabled() else ""
 
 
+async def _browser_steps() -> str:
+    """The Browser step's palette with the workspace's recordings, else nothing (F1193)."""
+    from core.native_builder.browser_steps import palette
+
+    return await palette()
+
+
 def _quick_roles() -> dict[str, str]:
     """`{"quick": model}` when the workspace sets "Model for quick steps", else nothing (BWA1, D274)."""
     from core.config import load_settings
@@ -337,6 +344,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         # is on; empty while off, so no workspace is offered steps that would
         # fail its runs (R1).
         "knowledge_steps": _knowledge_steps(),
+        # The workspace's recordings and the Browser step that replays one, for the planner; empty without a
+        # recording (F1193).
+        "browser_steps": await _browser_steps(),
         "export_guide": export["export_guide"],
         "export_source": export["export_source"],
         **await _target_state(

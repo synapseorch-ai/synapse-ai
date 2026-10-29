@@ -939,8 +939,11 @@ def _found(plan: O.Plan, state: dict, renamed: dict[str, str] | None = None) -> 
 async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dict) -> list[str]:
     """Every issue a save door would find, before anything is saved: the compiler's own, the workspace's
     (`compile.validate`: F489, E1's arguments, BWA1's decision 4), the engine's save rule (F850/F853), F691's
-    cross-workflow loops, knowledge bases by id, and the transform gate."""
-    from core.builder_tools import _knowledge_step_issues, _refuse_ungated_transform, _workflows_called
+    cross-workflow loops, knowledge bases by id, the transform gate, and a Browser step's recording, inputs, sends
+    and sessions as every builder door checks them (F1189, F1193)."""
+    from core.builder_tools import (_knowledge_step_issues, _refuse_browser_steps, _refuse_ungated_transform,
+                                    _workflows_called)
+    from core.store.resources import get_orchestration
     from core.native_builder.compile import compile_plan, validate
     from core.orchestration import save_rules
 
@@ -954,6 +957,10 @@ async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dic
             issues.append(refused["error"])
         if (said := save_rules.refusal(doc, agents)) is not None:
             issues.append(said)
+        if not save_rules.browser_step_problems(doc, agents):  # its own sentences are the save rule's, said above
+            before = ((await get_orchestration(doc["id"])) or {}).get("steps") if doc.get("id") else None
+            if (refused := await _refuse_browser_steps(doc["steps"], before)) is not None:
+                issues.append(refused["error"])
         if ws.kbs is not None:
             for s in doc["steps"]:
                 if s.get("type") in ("retrieve", "ingest"):

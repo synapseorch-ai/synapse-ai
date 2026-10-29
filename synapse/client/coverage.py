@@ -124,6 +124,11 @@ NOT_BY_THE_CLI: dict[str, str] = {
     "POST /api/v2/orchestrations/runs/{run_id}/resume": "`runs answer`",
     "GET /api/v2/workers": "fleet operations, for an operator: `synapse api GET /api/v2/workers`",
     "GET /api/v2/queue/stats": "fleet operations, for an operator: `synapse api GET /api/v2/queue/stats`",
+    # The browser's library (BRW-API, F1188): read and tidied from outside; made only in the app.
+    "list_recordings": "`tools call list_recordings`",
+    "get_recording": "`tools call get_recording`",
+    "list_browser_sessions": "`tools call list_browser_sessions`",
+    "delete_recording": "`tools call delete_recording` (previewed, then --yes)",
     # Builder tools a person rarely types; `tools call` reaches each.
     "create_agents": "several `agents create`",
     "create_orchestration_skeleton": "a builder's step-by-step form; `workflows create -f` makes one whole",

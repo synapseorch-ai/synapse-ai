@@ -170,6 +170,8 @@ def _with_confirm(tool) -> dict:
 
 
 class Session:
+    _nav_watch: "_NavWatch | None" = None
+
     def __init__(self, sid: str, owner: str, mode: str, limits: dict, root: Path, sites: list[str] | None = None,
                  wheel: str = "agent"):
         self.id = sid
@@ -321,6 +323,8 @@ class Session:
         try:
             nav = req.is_navigation_request()
             top = nav and _is_main_frame(req)
+            if top and self._nav_watch is not None:
+                self._nav_watch.requested.set()  # the person's step leads somewhere: its picture waits for it
             reason = await gate.verdict(req.url, req.method, self.mode,
                                         sites=self.sites if (agent and top) else None)
             if (reason is None and agent and only is not None
@@ -689,17 +693,32 @@ class Session:
                 self._push_state()
                 return {"ok": True, "select": self.select}
         step = await self._record_input(kind, body) if self._rec() is not None else None
+        watch = self._watch_navigation(page) if step is not None else None
         task = asyncio.ensure_future(self._act(page, kind, body))
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=3)
         except asyncio.TimeoutError:
+            self._end_watch(watch)
             return {"ok": True, "pending": True}
         except Exception as exc:
+            self._end_watch(watch)
             return {"ok": False, "error": str(exc)[:200]}
         self.last_used = time.monotonic()
         if step is not None:
-            await self._picture(step)
+            await self._picture(step, watch)
         return {"ok": True}
+
+    def _watch_navigation(self, page) -> "_NavWatch":
+        """Whether the step about to be acted leads to another page, and when that page is there (F1196)."""
+        self._end_watch(self._nav_watch)
+        self._nav_watch = _NavWatch(page)
+        return self._nav_watch
+
+    def _end_watch(self, watch: "_NavWatch | None") -> None:
+        if watch is not None:
+            watch.close()
+            if self._nav_watch is watch:
+                self._nav_watch = None
 
     # ── replaying a recording by code (F1143) ────────────────────────────────
     async def replay(self, steps: list[dict], inputs: dict, *, unattended: bool, recording_id: str = "",
@@ -965,22 +984,32 @@ class Session:
             return rec.went_back()
         return None
 
-    async def _picture(self, step: dict | None) -> None:
-        """The page after a step, about 1024 px wide: none on a page the person typed something of theirs on."""
+    async def _picture(self, step: dict | None, watch: "_NavWatch | None" = None) -> None:
+        """The page after a step, about 1024 px wide: none on a page the person typed something of theirs on.
+
+        A step that leads to another page is pictured there: its picture waits for that page's document (`watch`).
+        All of it within `_SHOT_DEADLINE_S`, and the page is never scaled to picture it, only the picture here: a
+        capture with CDP's `clip.scale` held the page laid out, drawn and clicked at that scale while it waited on
+        the next page, a minute at worst, and the person's reply with it (F1196). A picture that is late is none,
+        and the step is kept without one (`after_shot` stays None, as on a page the person typed something of
+        theirs on)."""
         if step is None or self._rec() is None or self.page is None:
+            self._end_watch(watch)
             self._push_state()
             return
+        loop = asyncio.get_running_loop()
+        until = loop.time() + _SHOT_DEADLINE_S
         jpeg = None
         try:
-            cdp = await self.ctx.new_cdp_session(self.page)
-            try:
-                shot = await cdp.send("Page.captureScreenshot", {"format": "jpeg", "quality": 55, "clip": {
-                    "x": 0, "y": 0, "width": _VIEWPORT["width"], "height": _VIEWPORT["height"], "scale": 0.8}})
-                jpeg = base64.b64decode(shot["data"])
-            finally:
-                await cdp.detach()
-        except Exception:
+            if watch is not None:
+                await watch.settled(until)
+            raw = await asyncio.wait_for(self.page.screenshot(type="jpeg", quality=80, timeout=0),
+                                         timeout=max(0.5, until - loop.time()))
+            jpeg = await asyncio.to_thread(_thumbnail, raw)
+        except Exception:  # late, or the page went away: the step stands without its picture
             jpeg = None
+        finally:
+            self._end_watch(watch)
         self._rec().shot(step, jpeg, self._page_url())
         self._push_state()
 
@@ -1215,6 +1244,66 @@ class Session:
         self.last_frame = {"jpeg_b64": base64.b64encode(shot).decode(), "w": _VIEWPORT["width"],
                            "h": _VIEWPORT["height"], "url": self.page.url, "wheel": self.wheel, "banner": self.banner}
         return self.last_frame
+
+
+#: A recording's pictures: this wide, as JPEG at this quality (a stop carries every one inline, F1142).
+_THUMB_WIDTH, _THUMB_QUALITY = 1024, 55
+#: The longest a step's picture may hold up the person's reply (F1196).
+_SHOT_DEADLINE_S = 5.0
+#: How long after a step its page has to start going somewhere else for the picture to wait for it.
+_NAV_GRACE_S = 0.25
+
+
+class _NavWatch:
+    """A step's way to another page, as the browser takes it: `requested` when the main frame's navigation goes out
+    (`Session._route`), `committed` when the new document is the page's (F1196)."""
+
+    def __init__(self, page) -> None:
+        self.page, self.requested, self.committed = page, asyncio.Event(), asyncio.Event()
+
+        def navigated(frame) -> None:
+            if frame == page.main_frame:
+                self.committed.set()
+
+        self._navigated = navigated
+        page.on("framenavigated", navigated)
+
+    async def settled(self, until: float) -> None:
+        """Back when the step went nowhere (no navigation in `_NAV_GRACE_S`), or its next page has its document;
+        never past `until`."""
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(self.requested.wait(), timeout=_NAV_GRACE_S)
+        except asyncio.TimeoutError:
+            if not self.committed.is_set():
+                return
+        try:
+            await asyncio.wait_for(self.committed.wait(), timeout=max(0.0, until - loop.time() - 0.5))
+            await self.page.wait_for_load_state("domcontentloaded",
+                                                timeout=max(1.0, (until - loop.time() - 0.5) * 1000))
+        except Exception:
+            pass  # still on its way: pictured as it is
+
+    def close(self) -> None:
+        try:
+            self.page.remove_listener("framenavigated", self._navigated)
+        except Exception:
+            pass
+
+
+def _thumbnail(jpeg: bytes) -> bytes:
+    """A picture of the page made `_THUMB_WIDTH` wide, off the page (F1196)."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(jpeg)) as image:
+        image = image.convert("RGB")
+        if image.width > _THUMB_WIDTH:
+            image = image.resize((_THUMB_WIDTH, round(image.height * _THUMB_WIDTH / image.width)), Image.LANCZOS)
+        out = io.BytesIO()
+        image.save(out, format="JPEG", quality=_THUMB_QUALITY)
+        return out.getvalue()
 
 
 def _is_main_frame(req) -> bool:

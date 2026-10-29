@@ -82,6 +82,17 @@ PRIVATE_STATE_PREFIXES = (
     "_step_tasks",
     # Whom an assistant run works for (ASSIST1): the host's, never shown.
     "_caller",
+    # The browser's own keys in a run (F1205): the sessions its start picked (`picks.RUN_KEY`), and any the browser
+    # keeps there later, by its prefix.
+    "_browser_",
+    # Which models a run's steps use (`OrchestrationEngine.MODEL_OVERRIDE_KEY`, `MODEL_ROLES_KEY`).
+    "_model_override", "_model_roles",
+    # Where a waiting human step was announced (`human_prompts.HUMAN_CHANNEL_KEY`).
+    "_human_channel_id",
+    # A build's record of what it wrote, what failed and why it stopped (`run_writes`); its words are `run_changes`.
+    "_run_writes", "_run_failures", "_run_stopped",
+    # Synapse AI's approved review and its send-backs (`review.REVIEW_KEY`, `build_plan._SENDBACK_KEY`).
+    "_approved_review", "_plan_sendbacks",
 )
 
 

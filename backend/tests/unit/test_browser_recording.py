@@ -77,3 +77,68 @@ def test_a_full_recording_refuses_more_steps_and_says_so():
         rec.clicked(SEARCH)
     assert rec.clicked(SEARCH) is None and len(rec.steps) == recording.MAX_STEPS
     assert rec.frame()["full"] is True and "full" in rec.frame()["words"]
+
+
+async def test_a_picture_that_stalls_never_holds_the_click_and_the_step_is_kept(monkeypatch):
+    """F1196: a step's picture is taken within its deadline. One that stalls (a capture waiting on the next page once
+    held the click a minute, the page at 80%) is given up: the reply comes at once, the step stays, with no picture."""
+    import asyncio
+    import time
+    import types
+
+    from core.browser import host
+
+    monkeypatch.setattr(host, "_SHOT_DEADLINE_S", 0.2)
+    rec = Recorder()
+    step = rec.clicked({"role": "button", "name": "Save", "css": "#save"})
+
+    async def stall(*_, **__):
+        await asyncio.sleep(5)
+        raise TimeoutError
+
+    class StalledPage:
+        url = "https://portal.example.com/order"
+        screenshot = staticmethod(stall)
+
+    class Cdp:  # however the picture is taken, it stalls
+        send = staticmethod(stall)
+
+        async def detach(self):
+            pass
+
+    class Ctx:
+        async def new_cdp_session(self, _page):
+            return Cdp()
+
+    session = types.SimpleNamespace(page=StalledPage(), ctx=Ctx(), _rec=lambda: rec, _push_state=lambda: None,
+                                    _end_watch=lambda w: None, _page_url=lambda: StalledPage.url)
+    started = time.monotonic()
+    await host.Session._picture(session, step)
+    assert time.monotonic() - started < 1.0, "the picture gave up at its deadline"
+    assert rec.steps == [step] and step["after_shot"] is None and rec.shots == {}
+
+
+async def test_a_picture_in_time_is_kept_smaller_than_the_page():
+    """F1196: the picture is made 1024 wide here, never by the page."""
+    import io
+    import types
+
+    from PIL import Image
+
+    from core.browser import host
+
+    rec = Recorder()
+    step = rec.clicked({"role": "button", "name": "Save", "css": "#save"})
+    shot = io.BytesIO()
+    Image.new("RGB", (1280, 800), (11, 110, 79)).save(shot, format="JPEG")
+
+    class Page:
+        async def screenshot(self, **kwargs):
+            assert not {"clip", "scale"} & set(kwargs), "the page is never scaled to picture it"
+            return shot.getvalue()
+
+    session = types.SimpleNamespace(page=Page(), _rec=lambda: rec, _push_state=lambda: None, _end_watch=lambda w: None,
+                                    _page_url=lambda: "https://portal.example.com/order")
+    await host.Session._picture(session, step)
+    with Image.open(io.BytesIO(rec.shots[step["after_shot"]])) as picture:
+        assert picture.size == (1024, 640)

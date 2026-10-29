@@ -65,6 +65,18 @@ async def usable_new(ids: list[str], *, before: list[str] | None = None, for_use
             raise NotUsable(row.get("site") or "", [sid], row.get("owner_name") or row.get("owner") or "")
 
 
+def session_view(row: dict, who: str | None = None) -> dict:
+    """A kept session as it is shown outside the app (MCP's tools, cloud's public API; BRW-API, F1188): its site, whose
+    it is and when it ends; an allowlist, so never what it holds, nor whom it is shared with. `mine` on the row (a
+    lister's) decides "you"; else its owner against `who`. A lister's row names its owner (`owner_name`), and one with
+    none is None, never the owner's id; a row without the field (this install's) is named by its owner."""
+    mine = row["mine"] if "mine" in row else row.get("owner") == who
+    return {"id": row.get("id"), "site": row.get("site"), "owner": "you" if mine else "shared",
+            "owner_name": (row.get("owner_name") or None) if "owner_name" in row else row.get("owner"),
+            "expires_at": row.get("expires_at"),
+            "last_used_at": row.get("last_used_at"), "status": "expired" if row.get("expired") else "active"}
+
+
 def _store():
     from core.browser.client import _logins
     return _logins()

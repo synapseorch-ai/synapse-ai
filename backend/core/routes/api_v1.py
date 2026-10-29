@@ -38,7 +38,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from core.api_key_middleware import require_api_key
-from core.events_public import public_event
+from core.events_public import public_event, public_state
 from core.images import checked_images
 from core.models_schedule import ScheduleCreate, ScheduleUpdate
 from core.run_ids import new_run_id
@@ -743,7 +743,7 @@ async def v1_orchestration_run(
 
         if etype == "orchestration_complete":
             status = event.get("status", "completed")
-            shared_state = event.get("final_state", {})
+            shared_state = public_state(event.get("final_state", {}))  # the engine\'s own keys stay in (F1205)
 
         if etype == "final":
             final_response = event.get("response", "")
@@ -853,7 +853,7 @@ async def v1_orchestration_resume(
             if etype == "orchestration_complete":
                 _raw_status = event.get("status", "completed")
                 status = _raw_status if _raw_status in _allowed_statuses else "completed"
-                shared_state = event.get("final_state", {})
+                shared_state = public_state(event.get("final_state", {}))  # the engine\'s own keys stay in (F1205)
 
             if etype == "final":
                 final_response = event.get("response", "")
