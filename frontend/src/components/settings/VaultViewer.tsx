@@ -145,7 +145,7 @@ export function TableView({ ext, editor, text }: { ext: string; editor: React.Re
                 <EmptyState title="Empty table">Switch to Text to write its first row.</EmptyState>
             ) : (
                 <div className="grid min-w-0 gap-2">
-                    <div className="max-h-[calc(100vh-380px)] min-h-60 overflow-auto rounded-md border border-border modern-scrollbar">
+                    <div className="max-h-[calc(100vh-380px)] min-h-60 overflow-auto modern-scrollbar">
                         <DataTable
                             rows={rows}
                             columns={columns}
