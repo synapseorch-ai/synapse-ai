@@ -147,6 +147,29 @@ class TestTheReads:
         doc = await invoke("get_recording", _caller(), {"recording_id": world["rec"]})
         assert doc["created_by_name"] == "Naveen" == doc["updated_by_name"]
 
+    async def test_someone_a_host_cannot_name_is_no_one_never_their_id(self, world):
+        from core.product_tools import browser
+
+        async def names(ids):
+            return {}  # they have left the workspace
+
+        browser.set_names(names)
+        doc = await invoke("get_recording", _caller(), {"recording_id": world["rec"]})
+        listed = await invoke("list_recordings", _caller(), {})
+        assert doc["created_by_name"] is None and doc["updated_by_name"] is None
+        assert listed["items"][0]["created_by_name"] is None
+
+    async def test_a_shared_session_whose_owner_has_no_name_shows_none_not_their_id(self, world):
+        owner = "6f1c2a9e-0000-4000-8000-00000000abcd"
+
+        async def lister(caller):
+            return [{"id": "s-a", "site": "a.example", "owner": owner, "owner_name": None, "mine": False,
+                     "usable": True, "expires_at": 1.0, "last_used_at": None, "expired": False}]
+
+        site_sessions.set_lister(lister)
+        page = await invoke("list_browser_sessions", _caller(), {})
+        assert page["items"][0]["owner_name"] is None and owner not in json.dumps(page)
+
     async def test_the_sessions_are_the_caller_s_own_and_nobody_else_s(self, world):
         page = await invoke("list_browser_sessions", _caller(Role.VIEWER), {})
         assert page["items"] == [{"id": world["mine"], "site": "saltmarsh.example", "owner": "you",

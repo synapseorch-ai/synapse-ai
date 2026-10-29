@@ -301,7 +301,11 @@ async def delete_owned(workflow_id: str) -> dict:
 # creator's and the Builders', on screen), their targets or its history.
 
 def _named(names: dict | None, who: object) -> object:
-    return (names or {}).get(str(who), who) if who else None
+    """A person's name: from `names` when a host gives it (cloud's ids; one not there, someone gone, is None, never
+    their id), else `who` itself, which here already is a name."""
+    if not who:
+        return None
+    return who if names is None else names.get(str(who))
 
 
 def listed_view(doc: dict, names: dict | None = None) -> dict:
