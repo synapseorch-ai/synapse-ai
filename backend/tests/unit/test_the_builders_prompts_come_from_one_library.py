@@ -83,7 +83,11 @@ from core.native_builder import prompt_lint, seed
 #: F1253: the planner and the change planner ask every question at once in one form, a plan carries none, and an
 #: address of theirs is never guessed (planner.json, change_planner.json, plan_steps' tool line); with F1252,
 #: 6dd38c6f…; on fix-forward 15's tree with F1256, 5005cdff….
-BUNDLE_SHA256 = "5005cdff4189a85fe9ada39eed51da741898c4864dc35c6235ae3e74245c54d5"
+#: F1241's follow-up: while a plan waits, classify through `step_classify_door` to `step_classify_at_plan`, whose
+#: classifier's one call requires `continues` and whose prompt names the plan and asks plainly; the classify step's
+#: context and the classifier's kinds move into the library (`classify_context`, `classify_kinds`) unchanged,
+#: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
+BUNDLE_SHA256 = "258533db5086b4996e0acef41480aa0271ff3c5c89fb6d3446c3e8dc53f25233"
 
 
 def _sha(definitions) -> str:

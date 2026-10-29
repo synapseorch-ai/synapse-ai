@@ -14,7 +14,7 @@ import logging
 import re
 from typing import Any
 
-from core.native_builder.objects import Request, Routed
+from core.native_builder.objects import Request, RequestAtPlan, Routed
 from core.native_builder.review import is_yes
 from core.native_builder.target import _words
 
@@ -291,6 +291,27 @@ def also_notice(also: str) -> dict:
 
 async def classify_request(args: dict, server_module: Any, events: list[dict]) -> dict:
     """The quick model's `Request`, corrected in code (`override`), as the `Routed` the front door switches on."""
+    try:
+        request = Request.model_validate(args or {})
+    except Exception:  # noqa: BLE001 — a call that is not a Request: an answer, read by code alone
+        request = Request(kind="answer")
+    return await _classified(request, events)
+
+
+async def classify_at_plan(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """The same, while a plan waits at its review (`step_classify_at_plan`): `continues` is required. A call that
+    still leaves it out, or says null, is read as unsure: the plan is not carried and the notice says it waits."""
+    try:
+        request: Request = RequestAtPlan.model_validate(args or {})
+    except Exception:  # noqa: BLE001 — not said as asked: its kind still counts, its continues does not
+        try:
+            request = Request.model_validate({**(args or {}), "continues": None})
+        except Exception:  # noqa: BLE001
+            request = Request(kind="answer")
+    return await _classified(request, events)
+
+
+async def _classified(request: Request, events: list[dict]) -> dict:
     from core.builder_tools import _current_run
     from core.native_builder import turn_facts
     from core.native_builder.change_tools import _caller
@@ -299,10 +320,6 @@ async def classify_request(args: dict, server_module: Any, events: list[dict]) -
     run_id = _current_run.get() or ""
     run = live_run(run_id) if run_id else None
     state = run.shared_state if run is not None else {}
-    try:
-        request = Request.model_validate(args or {})
-    except Exception:  # noqa: BLE001 — a call that is not a Request: an answer, read by code alone
-        request = Request(kind="answer")
     message = str(state.get("user_message") or "")
     inventory = await _inventory()
     routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable())
@@ -342,11 +359,22 @@ SCHEMA = {"type": "function", "function": {
     "parameters": {k: v for k, v in Request.model_json_schema().items() if k in ("type", "properties", "required")},
 }}
 
+#: While a plan waits at its review (`read_turn`'s `plan_waiting`, the door `step_classify_door`): the same call with
+#: `continues` required, a boolean (F1241's follow-up). Optional everywhere else, as before.
+SCHEMA_AT_PLAN = {"type": "function", "function": {
+    "name": "classify_at_plan",
+    "description": "Say what the person's message asks for while a plan waits at its review, and whether it changes "
+                   "that plan, so the right route answers it.",
+    "parameters": {k: v for k, v in RequestAtPlan.model_json_schema().items()
+                   if k in ("type", "properties", "required")},
+}}
+
 
 def _register() -> None:
     from core.builder_tools import register_builder_tool
 
     register_builder_tool(SCHEMA, classify_request)
+    register_builder_tool(SCHEMA_AT_PLAN, classify_at_plan)
 
 
 _register()

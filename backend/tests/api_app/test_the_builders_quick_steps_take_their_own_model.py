@@ -65,7 +65,8 @@ def test_the_builders_quick_steps_are_its_routing_and_its_one_call_look_ups():
     assert evaluators <= quick and "step_classify" in quick
     # P3b: the build's researcher notes its own findings (E2), so step_plan_findings and its quick call are gone.
     # SAI2-P5: the research route's card is code's (finish_findings), so step_findings asks no model either.
-    assert quick - evaluators == {"step_classify"}
+    # F1241's follow-up: the classify at a waiting plan is the same quick call, with `continues` required.
+    assert quick - evaluators == {"step_classify", "step_classify_at_plan"}
     assert not [s["id"] for s in steps if s["type"] == "tool" and s.get("tool_arguments") is not None
                 and s.get("model_role")], "a code step calls no model, quick or not"
     for s in steps:

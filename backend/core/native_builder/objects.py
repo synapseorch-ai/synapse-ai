@@ -334,6 +334,15 @@ class Request(_Written):
                                           "or a board), nested (a workflow inside a workflow)")
 
 
+class RequestAtPlan(Request):
+    """The classify while a plan waits at its review (F1241's follow-up, 8a 10-30): `continues` is asked plainly and is
+    required, true or false. Probe E found prod's quick model leaves it out every time when it may (0/3 on
+    nova-pro), so F1241's carry never fired; asked as a required field it has to say."""
+
+    continues: bool = Field(  # type: ignore[assignment]
+        description="Does this message change or add to the waiting plan (true), or ask for something else (false)?")
+
+
 #: The route entries code hands a request to: a contract with the routes' owners (EDIT-LEDGER.md).
 ENTRIES = ("step_answer", "step_change_context", "step_plan_room", "step_fetch_existing", "step_research",
            "step_not_yours")

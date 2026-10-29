@@ -7,7 +7,7 @@
     "entry_step_id": "step_turn",
     "state_schema": {
         "user_message": {"type": "str", "default": "", "description": "The user's latest message"},
-        "turn": {"type": "dict", "default": {}, "description": "Code's reading of this message against the conversation's previous turn, before any model: its route, what a pick chose, and what code said (read_turn, SAI2-P4)"},
+        "turn": {"type": "dict", "default": {}, "description": "Code's reading of this message against the conversation's previous turn, before any model: its route, what a pick chose, and what code said (read_turn, SAI2-P4); `plan_waiting`, the title of a plan waiting at its review (F1241)"},
         "request": {"type": "dict", "default": {}, "description": "What was asked: the quick model's four kinds and what the answer needs, corrected by code, with the route it goes to (classify_request, SAI2-P4)"},
         "effort": {"type": "dict", "default": {}, "description": "A build's effort check: the entry it goes to, or the offer of a stronger model that ends the turn, with the ask, the model and why (effort_check, F1153)"},
         "effort_accepted": {"type": "str", "default": "", "description": "The turn whose effort offer this build was pressed from: it runs on the stronger model (F1153)"},
@@ -143,10 +143,10 @@
             "switch_cases": {
                 "said": "step_turn_said",
                 "change": "step_may_change",
-                "classify": "step_classify",
+                "classify": "step_classify_door",
                 "build": "step_may_change"
             },
-            "switch_default_step_id": "step_classify",
+            "switch_default_step_id": "step_classify_door",
             "max_iterations": 3,
             "position_x": -450,
             "position_y": 0
@@ -185,11 +185,45 @@
             "position_y": 150
         },
         {
+            "id": "step_classify_door",
+            "name": "Route: A Plan Waiting?",
+            "type": "if_else",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 3,
+            "position_x": -375,
+            "position_y": 75,
+            "input_keys": [
+                "turn"
+            ],
+            "output_key": null,
+            "if_condition": "bool(state.turn.plan_waiting)",
+            "if_true_step_id": "step_classify_at_plan",
+            "if_false_step_id": "step_classify"
+        },
+        {
             "id": "step_classify",
             "name": "What Was Asked",
             "type": "agent",
             "agent_id": "agent_native_builder_classifier",
-            "prompt_template": "The message:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\nThe context says which workflow the message is about, as the server checked it: `current_orchestration_name` and `current_orchestration_source`, empty when there is none. `viewing` means it is open on their screen, so 'this' and 'it' mean it. `named` means the message names it. `picked` means the previous turn asked which one and this message chose it: the request is the previous user message in the conversation. `built` means this conversation built or changed it last, so 'this' and 'it' mean it: 'run it' runs it, and more detail is a change to it. `ambiguous` means more than one fits.\n\nCall `classify_request` once.",
+            "prompt_template": "{{PROMPT:classify_context}}\n\nCall `classify_request` once.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -231,6 +265,54 @@
             "max_iterations": 3,
             "position_x": -300,
             "position_y": 0
+        },
+        {
+            "id": "step_classify_at_plan",
+            "name": "What Was Asked, at a Waiting Plan",
+            "type": "agent",
+            "agent_id": "agent_native_builder_classifier_at_plan",
+            "prompt_template": "{{PROMPT:classify_context}}\n\nA plan is waiting at its review: “{state.turn.plan_waiting}”. Does this message change or add to the waiting plan (true), or ask for something else (false)? Say it as `continues`.\n\nCall `classify_at_plan` once.",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "model_role": "quick",
+            "input_keys": [
+                "user_message",
+                "chat_history",
+                "current_orchestration_id",
+                "current_orchestration_name",
+                "current_orchestration_source",
+                "current_orchestration_matches"
+            ],
+            "output_key": "request",
+            "forced_tool": null,
+            "finish_tools": [
+                "classify_at_plan"
+            ],
+            "finish_fallback": {
+                "kind": "answer",
+                "needs": "workspace",
+                "route": "step_answer",
+                "providers": [],
+                "overridden_by": "no_classify"
+            },
+            "max_turns": 2,
+            "timeout_seconds": 120,
+            "allowed_tools": null,
+            "next_step_id": "step_classify_route",
+            "max_iterations": 3,
+            "position_x": -300,
+            "position_y": 150
         },
         {
             "id": "step_classify_route",

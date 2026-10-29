@@ -378,6 +378,22 @@ def staged_plan(state: dict) -> dict | None:
     return plan if isinstance(plan, dict) and plan.get("state") else None
 
 
+def waiting_plan_title(state: dict) -> str:
+    """The title of the plan waiting at its review for this run (`staged_plan`), "" when none waits: the classify
+    names it and asks plainly whether this message changes it (F1241's follow-up)."""
+    from core.native_builder.build_plan import CHECKED_KEY, DRAFT_KEY, _obj
+
+    plan = staged_plan(state)
+    if not plan:
+        return ""
+    held = plan["state"]
+    checked = _obj(held.get(CHECKED_KEY))
+    for raw in ((checked or {}).get("plan") if isinstance(checked, dict) else None, _obj(held.get(DRAFT_KEY))):
+        if isinstance(raw, dict) and str(raw.get("title") or "").strip():
+            return str(raw["title"]).strip()
+    return "the plan above"
+
+
 def adopt_carry(state: dict, continues: bool | None) -> bool:
     """The staged carry becomes the run's when classify said this message continues the previous request; anything
     else (false, unsure, not said) starts afresh: one question asked again costs less than another request's carried
