@@ -609,7 +609,9 @@ class TestWhatWasAskedForIsBuilt:
         assert '"Friday report"' in said and '"0 16 * * 5" (UTC)' in said
         assert "paused: turn it on under Schedules" in said
         # The build's own ending says the same record, with what reading it back found after it.
-        assert self._step("step_build_done")["print_content"] == "{state.run_changes}{state.build_saved.effect}"
+        # F1228: then what each part does and what is missing or off, from the plan's parts in code.
+        assert self._step("step_build_done")["print_content"] == (
+            "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}")
 
 
 class TestAFullPlanAndAStoppedBuild:

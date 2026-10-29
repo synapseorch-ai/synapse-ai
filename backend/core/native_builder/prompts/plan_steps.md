@@ -10,6 +10,6 @@ Each step has an `id` (short snake_case, unique), a `type`, a `name` a person re
 - `parallel`: `body` lists the branches' first step ids; they meet at a `merge` step.
 - `workflow`: runs another workflow, by an existing workflow's id or a title from `inner_workflows`, which are saved first.
 - `retrieve` / `ingest`: search or fill knowledge bases, named by id in `config`.
-- `transform`: Python in `config.transform_code`, only where the workspace runs code. It reads earlier steps as `state.<step id>` and puts its answer in `result` (`result = ...`, never `return`). It reaches no service and reads no key: a service is a `tool` step.
+- `transform`: Python in `config.transform_code`, only where the workspace runs code. It reads earlier steps as `state.<step id>` and puts its answer in `result` (`result = ...`, never `return`). It reaches no service and reads no key: a service is a `tool` step. It reads a Vault file itself with `read_vault("path/in/vault.csv")`, the path written out; a `vault_read` step's answer in state is JSON `{"path", "content"}`, not the file.
 - `end`: ends the run.
 A step with no `next` goes on to the next step in the list, and the last one ends the run. A step's output is kept under its id, which is how later steps and conditions read it.

@@ -201,7 +201,8 @@ def _entry(kind: str, text: str, state: dict) -> str:
         return "step_plan_room"
     if source == "ambiguous":
         return "step_answer"
-    if source in ("named", "picked") and not _NEW.search(text):
+    # The conversation's own last build too (F1229): more detail, or a change, is about it unless they ask for a new one.
+    if source in ("named", "picked", "built") and not _NEW.search(text):
         return "step_fetch_existing"
     if source == "viewing" and _EDIT.search(text) and not _NEW.search(text):
         return "step_fetch_existing"

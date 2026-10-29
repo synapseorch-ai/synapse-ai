@@ -51,8 +51,12 @@ def reason_of(exc: BaseException, limit: int = 300) -> str:
     exception keeps its name: "KeyError: 'x'" says nothing without it, and the
     run card reads a model's failure by "LLMError:" / "EmptyAnswer:".
     """
+    from core.orchestration.read_shapes import Unreadable
     from core.secret_scrub import scrub_secrets
 
+    # A workflow that does not read is said as what to mend, a sentence per step, whole (F1235).
+    if isinstance(exc, Unreadable):
+        return scrub_secrets(str(exc))[:max(limit, 1200)]
     # A tool's rendered URL or header can be in its error: recorded by name (F854).
     text = scrub_secrets(str(exc))[:limit]
     return text if type(exc) is RuntimeError else f"{type(exc).__name__}: {text}"

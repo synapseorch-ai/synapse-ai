@@ -410,3 +410,47 @@ async def test_settings_alone_do_not_count_as_a_populated_store(tmp_path):
         await s.commit()
 
     assert await store_is_empty() is True
+
+
+# ── A v1.9 workflow the v2 engine refuses (F1235) ──────────────────────────────
+# v1.9's builder saved a step's fields as the model wrote them — a human step's
+# form fields as `{"fields": [...]}` (HOT2's prod step) — and v2's engine will
+# not run that step. The import is the one time every upgrader's documents pass
+# through code, so each is read into the engine's shape there, once.
+
+V19_HUMAN = {"id": "keys", "name": "Generate API Keys", "type": "human", "human_prompt": "Your API keys?",
+             "human_fields": {"fields": [{"name": "api_key", "type": "str"}]}, "output_key": "keys",
+             "next_step_id": "done"}
+V19_END = {"id": "done", "name": "Done", "type": "end"}
+
+
+async def _imported(data_dir, doc: dict) -> dict:
+    (data_dir / "orchestrations.json").write_text(json.dumps([doc]), encoding="utf-8")
+    await import_data_dir(data_dir)
+    async with session() as s:
+        return (await s.execute(select(OrchestrationDB))).scalar_one().definition
+
+
+async def test_a_v1_9_step_in_another_shape_comes_across_in_the_engines(data_dir):
+    from core.models_orchestration import Orchestration
+
+    doc = {"id": "orch_h", "name": "Weekly post", "entry_step_id": "keys", "steps": [V19_HUMAN, V19_END]}
+    with pytest.raises(ValueError):
+        Orchestration.model_validate(doc)
+
+    definition = await _imported(data_dir, doc)
+
+    Orchestration.model_validate(definition)
+    assert definition["steps"][0]["human_fields"] == [{"name": "api_key", "type": "str"}]
+    assert {k: v for k, v in definition.items() if k != "steps"} == {k: v for k, v in doc.items() if k != "steps"}
+
+
+async def test_a_workflow_already_in_the_engines_shape_comes_across_as_it_was(data_dir):
+    human = {**V19_HUMAN, "human_fields": [{"name": "api_key", "type": "str"}]}
+    doc = {"id": "orch_h", "name": "Weekly post", "entry_step_id": "keys", "steps": [human, V19_END]}
+    assert await _imported(data_dir, doc) == doc
+
+
+async def test_a_workflow_whose_steps_are_not_a_list_comes_across_as_it_was(data_dir):
+    doc = {"id": "orch_h", "name": "Weekly post", "steps": {"s1": {"type": "print"}}}
+    assert await _imported(data_dir, doc) == doc

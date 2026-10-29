@@ -284,7 +284,24 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     out["previous_run_id"] = previous_id
     # What the last turn did, for the answer's pack: its reply's first sentence.
     out["last"] = _first_sentence(str(previous.get("summary") or ""))
+    # The workflows the last few turns built or changed, newest first: the pack says what each does, from its parts
+    # (F1228), so an answer about one never says what it does from memory.
+    out["built"] = built_in(earlier)
     return out
+
+
+def built_in(earlier: list[tuple[str, dict]], most: int = 3) -> list[str]:
+    """The workflows these turns' own writes created or changed (`run_writes`), newest first, once each."""
+    from core.orchestration.run_writes import WRITES_KEY
+
+    ids: list[str] = []
+    for _, state_ in earlier:
+        writes = state_.get(WRITES_KEY) if isinstance(state_, dict) else None
+        for w in reversed(writes if isinstance(writes, list) else []):
+            if isinstance(w, dict) and w.get("kind") == "orchestration" and w.get("action") in ("created", "updated") \
+                    and w.get("id") and w["id"] not in ids:
+                ids.append(str(w["id"]))
+    return ids[:most]
 
 
 SCHEMA = {"type": "function", "function": {

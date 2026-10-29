@@ -121,8 +121,8 @@ def _format_history(history: list[dict]) -> str:
     return "\n".join(f"{m.get('role', 'user')}: {_as_kept(str(m.get('content', '')))}" for m in history)
 
 
-async def _newest(session_id: str) -> tuple[str, str | None, dict]:
-    """This conversation's newest turn, before this message's own run exists: its run id, status and state."""
+async def _newest(session_id: str) -> tuple[str, str | None, dict, list]:
+    """This conversation's newest turn, before this message's own run exists: its run id, status, state and steps."""
     from sqlalchemy import select
 
     from core.store import session
@@ -131,10 +131,11 @@ async def _newest(session_id: str) -> tuple[str, str | None, dict]:
 
     async with session() as s:
         row = (await s.execute(
-            select(OrchestrationRunDB.run_id, OrchestrationRunDB.status, OrchestrationRunDB.shared_state)
+            select(OrchestrationRunDB.run_id, OrchestrationRunDB.status, OrchestrationRunDB.shared_state,
+                   OrchestrationRunDB.step_history)
             .where(OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.session_id == session_id)
             .order_by(OrchestrationRunDB.created_at.desc()).limit(1))).first()
-    return (row[0], row[1], row[2] or {}) if row else ("", None, {})
+    return (row[0], row[1], row[2] or {}, row[3] or []) if row else ("", None, {}, [])
 
 
 async def _newest_state(session_id: str) -> dict:
@@ -176,7 +177,7 @@ async def _previous_matches(session_id: str, state: dict | None = None) -> str:
 
 
 async def _target_state(
-    message: str, viewing_id: str | None, previous_matches: str = ""
+    message: str, viewing_id: str | None, previous_matches: str = "", built_id: str = ""
 ) -> dict:
     """Which orchestration this message is about, as the run's state keys.
 
@@ -192,7 +193,7 @@ async def _target_state(
     from core.store.resources import load_orchestrations
 
     visible = [o for o in await load_orchestrations() if _is_visible(o)]
-    target = resolve_target(message, viewing_id, visible, previous_matches)
+    target = resolve_target(message, viewing_id, visible, previous_matches, built_id)
     viewing = next((o for o in visible if viewing_id and o["id"] == viewing_id), None)
     page = describe_page("orchestration", viewing.get("name", ""), viewing["id"]) if viewing else ""
     return {**target.state(), "current_page": page}
@@ -322,7 +323,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # stronger model a set-aside build was pressed onto. A press or a retry names its own model.
     from core.native_builder import effort
 
-    previous_id, previous_status, previous = await _newest(session_id)
+    previous_id, previous_status, previous, previous_steps = await _newest(session_id)
     following = await effort.next_turn(previous_id, previous_status, previous)
     if following["model"] and not (retried or pressed):
         request = request.model_copy(update={"model": following["model"]})
@@ -333,6 +334,8 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
     # which plans from them instead of researching again.
     found = previous_findings(previous)
+    from core.native_builder.change_tools import carry_request
+    from core.native_builder.target import LAST_BUILT_KEY, last_built
 
     from core import turn_limit
 
@@ -359,8 +362,13 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
             "" if export["export_source"] else message,
             request.current_orchestration_id,
             await _previous_matches(session_id, previous),
+            # The workflow this conversation built last (F1229): "run it", or more detail, is about it.
+            last_built(previous),
         ),
+        LAST_BUILT_KEY: last_built(previous),
         "prior_findings": found,
+        # The questions this conversation's request asked in its earlier runs (F1226): never asked again, and counted.
+        **carry_request(previous, previous_steps),
         "plan_findings": found,
         "org_profile": await _workspace_profile(),
         "requirements": "",

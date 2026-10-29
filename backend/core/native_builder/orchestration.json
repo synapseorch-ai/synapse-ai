@@ -32,7 +32,8 @@
         "export_source": {"type": "str", "default": "", "description": "That code with its credentials taken out, for the steps that copy its words; empty otherwise (SW1)"},
         "current_orchestration_id": {"type": "str", "default": "", "description": "The orchestration this message is about — open on screen or named in the message — checked by the server; empty when there is none or it is unclear"},
         "current_orchestration_name": {"type": "str", "default": "", "description": "Name of current_orchestration_id"},
-        "current_orchestration_source": {"type": "str", "default": "", "description": "Why it is the target: viewing (open on screen), named (the message names it), picked (chosen from the list the previous turn asked about), ambiguous (more than one fits, id left empty), or empty"},
+        "current_orchestration_source": {"type": "str", "default": "", "description": "Why it is the target: viewing (open on screen), named (the message names it), picked (chosen from the list the previous turn asked about), built (this conversation built or changed it last), ambiguous (more than one fits, id left empty), or empty"},
+        "last_built_orchestration_id": {"type": "str", "default": "", "description": "The workflow this conversation built or changed last, carried from turn to turn by the route (F1229)"},
         "current_orchestration_matches": {"type": "str", "default": "", "description": "When the target is ambiguous: one line per orchestration it could be"},
         "current_page": {"type": "str", "default": "", "description": "What the user has open on screen, in one line; empty when nothing is"},
         "intent": {"type": "str", "default": "", "description": "The route taken, for the role door and the build route: create, update, manage, answer or research (classify_request)"},
@@ -186,7 +187,7 @@
             "name": "What Was Asked",
             "type": "agent",
             "agent_id": "agent_native_builder_classifier",
-            "prompt_template": "The message:\n{state.user_message}\n\nThe conversation so far:\n{state.chat_history}\n\nThe context says which workflow the message is about, as the server checked it: `current_orchestration_name` and `current_orchestration_source`, empty when there is none. `viewing` means it is open on their screen, so 'this' and 'it' mean it. `named` means the message names it. `picked` means the previous turn asked which one and this message chose it: the request is the previous user message in the conversation. `ambiguous` means more than one fits.\n\nCall `classify_request` once.",
+            "prompt_template": "The message:\n{state.user_message}\n\nThe conversation so far:\n{state.chat_history}\n\nThe context says which workflow the message is about, as the server checked it: `current_orchestration_name` and `current_orchestration_source`, empty when there is none. `viewing` means it is open on their screen, so 'this' and 'it' mean it. `named` means the message names it. `picked` means the previous turn asked which one and this message chose it: the request is the previous user message in the conversation. `built` means this conversation built or changed it last, so 'this' and 'it' mean it: 'run it' runs it, and more detail is a change to it. `ambiguous` means more than one fits.\n\nCall `classify_request` once.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -1691,7 +1692,7 @@
                 "build_saved"
             ],
             "output_key": "summary",
-            "print_content": "{state.run_changes}{state.build_saved.effect}",
+            "print_content": "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}",
             "next_step_id": "step_end"
         },
         {

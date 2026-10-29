@@ -50,6 +50,13 @@ async def _give(role: Role, **args):
 
 
 # ── the product tool: the Boards screen's access editor, as a door ──────────────────────────────────────────────
+def test_it_is_audited_under_the_screen_s_own_name():
+    """The same act, the same audit name, from the Boards screen or from the tool (cloud's PUT /boards/{id}/access
+    records `board.access_set`; its audit filters read that name). D3ASM's twin audit, 10-29."""
+    areas.ensure_loaded()
+    assert registry.get("give_board_access").audit_action == "board.access_set"
+
+
 class TestGiveBoardAccess:
     async def test_a_builder_gives_a_workflow_a_shared_board_and_the_list_keeps_the_rest(self, boards_on, flow):
         board = await store.create_shared_board("Sales Analysis")

@@ -139,7 +139,7 @@ const NUMBER: Record<PlanStep['role'], string> = {
 
 function Steps({ plan }: { plan: Plan }) {
     return (
-        <ol aria-label={plan.kind === 'change' ? 'What it would do' : 'Steps'} className="flex flex-col">
+        <ol aria-label={plan.kind === 'change' ? 'What it would do' : 'What it will do'} className="flex flex-col">
             {plan.steps.map((step) => (
                 <li
                     key={step.n}
@@ -228,8 +228,16 @@ export function PlanCard({
             <Header open={open} title={title} />
             {plan ? (
                 <>
-                    {plan.overview && <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>}
+                    {plan.overview && (plan.kind === 'build' ? (
+                        // The planner's words are the request, never what it built (F1228): what it does is below.
+                        <div className="flex flex-col gap-0.5">
+                            <span className="text-xs font-medium text-text">You asked for</span>
+                            <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>
+                        </div>
+                    ) : <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>)}
+                    {plan.kind === 'build' && <span className="-mb-2 text-xs font-medium text-text">What it will do</span>}
                     <Steps plan={plan} />
+                    {plan.parts && <Markdown className="text-[13px] leading-relaxed text-text-muted">{plan.parts}</Markdown>}
                     {facts.length > 0 && (
                         <p className="text-xs text-text-muted">
                             {facts.map((f, i) => <React.Fragment key={f}>{i > 0 && ' · '}{i === 0 ? f.charAt(0).toUpperCase() + f.slice(1) : f}</React.Fragment>)}
@@ -315,13 +323,14 @@ export function PlanCard({
                             <Markdown className="text-[13px] leading-relaxed">{plan.actsAlone}</Markdown>
                         </div>
                     )}
-                    {plan.needs && (
+                    {(plan.needs || plan.off) && (
                         <div className="flex flex-col gap-1 rounded-lg border border-person/60 bg-person-subtle px-3 py-2.5">
                             <span className="inline-flex items-center gap-1.5 text-xs font-medium text-person-ink">
                                 <span aria-hidden className="size-2 rounded-full bg-person" />
-                                Missing here
+                                Missing or off
                             </span>
-                            <Markdown className="text-[13px] leading-relaxed">{plan.needs}</Markdown>
+                            {plan.needs && <Markdown className="text-[13px] leading-relaxed">{plan.needs}</Markdown>}
+                            {plan.off && <Markdown className="text-[13px] leading-relaxed">{plan.off}</Markdown>}
                             {open && (turnOn.length > 0 || without.length > 0 || canFind) && (
                                 <div className="mt-1 flex flex-wrap gap-2">
                                     {turnOn.map((feature) => (

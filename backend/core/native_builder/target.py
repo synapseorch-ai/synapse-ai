@@ -36,6 +36,11 @@ AMBIGUOUS = "ambiguous"
 #: Chosen from the list the previous turn asked about. The request itself is
 #: that turn's — the router reads it from `chat_history`.
 PICKED = "picked"
+#: This conversation's own last build (F1229): with nothing open and nothing named, "it" is the workflow its last turn
+#: built or changed. Brief 4's "run it" and brief 7's follow-up details each planned a second, same-named workflow.
+BUILT = "built"
+#: The run's state key that carries that workflow's id from turn to turn, through turns that build nothing.
+LAST_BUILT_KEY = "last_built_orchestration_id"
 
 #: The state keys this module fills. Declared in the seed's `state_schema`; the
 #: commercial edition sets them from its own RLS-scoped rows.
@@ -154,6 +159,7 @@ def resolve_target(
     viewing_id: str | None,
     visible: Iterable[Mapping],
     previous_matches: Iterable[str] | str = (),
+    built_id: str | None = None,
 ) -> Target:
     """The orchestration `message` is about, from what is open and what is named.
 
@@ -184,7 +190,9 @@ def resolve_target(
 
     if not named:
         if viewing is None:
-            return Target()
+            # What the screen and the message leave open is the conversation's own last build (F1229).
+            built = next((row for row in rows if built_id and row["id"] == built_id), None)
+            return Target(built["id"], str(built.get("name") or ""), BUILT) if built is not None else Target()
         return Target(viewing["id"], str(viewing.get("name") or ""), VIEWING)
 
     if len(named) == 1 and (viewing is None or named[0]["id"] == viewing["id"]):
@@ -201,3 +209,16 @@ def describe_page(surface: str, name: str, ident: str = "") -> str:
     """One line saying what is open on screen, for the steps that read `current_page`."""
     label = f'the {surface} "{name}"' if name else f"a {surface}"
     return f"The user has {label}{f' ({ident})' if ident else ''} open on screen."
+
+
+def last_built(previous: Mapping | None) -> str:
+    """The workflow this conversation built or changed last (F1229): the newest run's own write, else the one that run
+    carried. Empty after a delete, or when nothing was built."""
+    if not isinstance(previous, Mapping):
+        return ""
+    from core.orchestration.run_writes import WRITES_KEY
+
+    for write in reversed(previous.get(WRITES_KEY) or []):
+        if isinstance(write, Mapping) and write.get("kind") == "orchestration" and write.get("id"):
+            return "" if write.get("action") == "deleted" else str(write["id"])
+    return str(previous.get(LAST_BUILT_KEY) or "")

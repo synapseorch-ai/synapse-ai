@@ -700,6 +700,16 @@ _SSE_HEADERS = {
 
 # ── Orchestration Endpoints ─────────────────────────────────────────────────
 
+def _runnable(orch_data: dict):
+    """The workflow as the engine reads it, or a 422 saying what to mend in it (F1235), never a server error."""
+    from core.orchestration.read_shapes import Unreadable, load_to_run
+
+    try:
+        return load_to_run(orch_data)
+    except Unreadable as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 @router.post("/orchestrations/{orch_id}/run")
 async def v1_orchestration_run(
     orch_id: str,
@@ -708,14 +718,11 @@ async def v1_orchestration_run(
 ):
     """Start an orchestration (sync). Returns final result or human_input_required."""
     import core.server as _server
-    from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
     from core.orchestration.runner import stream_engine_events
 
-    orch_data = await _workspace_orchestration(orch_id)
-
+    orch = _runnable(await _workspace_orchestration(orch_id))
     run_id = new_run_id(orch_id)
-    orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, _server)
 
     final_response = None
@@ -780,13 +787,10 @@ async def v1_orchestration_run_stream(
 ):
     """Start an orchestration (SSE stream)."""
     import core.server as _server
-    from core.models_orchestration import Orchestration
     from core.orchestration.engine import OrchestrationEngine
 
-    orch_data = await _workspace_orchestration(orch_id)
-
+    orch = _runnable(await _workspace_orchestration(orch_id))
     run_id = new_run_id(orch_id)
-    orch = Orchestration.model_validate(orch_data)
     engine = OrchestrationEngine(orch, _server)
 
     # Spawned here, not inside the response: the run belongs to no reader.
@@ -1105,7 +1109,5 @@ async def v1_get_orchestration(orch_id: str, key_record: dict = Depends(require_
     (F69). Validated, so what comes back is the model's current fields and
     not whatever older keys a stored document still carries.
     """
-    from core.models_orchestration import Orchestration
-    orch = await _workspace_orchestration(orch_id)
-    return Orchestration.model_validate(orch).model_dump(mode="json")
+    return _runnable(await _workspace_orchestration(orch_id)).model_dump(mode="json")
 

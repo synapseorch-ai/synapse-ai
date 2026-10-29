@@ -112,6 +112,9 @@ ASK = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {
         "question": {"type": "string"},
         "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
+        "subject": {"type": "string", "description": "The thing the question is about, in a few words: the knowledge "
+                                                    "base 'competitor_pricing', the Monday schedule. A question "
+                                                    "already asked about it is not asked again."},
         "options": {"type": "array", "items": {"type": "string"}, "description": "The choices, when there are "
                                                                                  "a few: here only, never also "
                                                                                  "listed in the question."},
@@ -222,12 +225,94 @@ SECRET_ASKED = ("Never ask the person for a key, a token or a password: a connec
 WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a tool, and how it is reached, is "
                 "looked up, not asked. Ask only what the person alone knows.")
 ABOUT = ("which", "when", "what", "who", "how_much")
-#: How many questions one run asks before it goes on with what it has (the clarify cycle's old cap, now in code).
+#: How many questions one request asks, across its runs, before it goes on with what it has (F1226).
 QUESTIONS = 5
 ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know, and put what is still "
                 "open under the plan's questions.")
 #: The steps that put a planner's question to the person.
 _ASKING_STEPS = ("step_human_clarify", "step_change_clarify")
+#: The questions this conversation's request has asked, across its runs (F1226): `[{about, subject, question, answer,
+#: carried}]`. A run starts with the ones its conversation asked since the last thing it saved (`carried_questions`).
+ASKED_KEY = "request_questions"
+#: How many questions the request showed the person in its earlier runs (F1226): the cap counts the request.
+ROUNDS_KEY = "request_rounds"
+ASKED_ALREADY = ("You asked the person this already: \"{question}\" Their answer: {answer}. Don't ask it again: go on "
+                 "with that answer, and put what is still open under the plan's questions.")
+
+
+def _question_words(text: Any) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKC", str(text or "")).casefold())
+            if len(w) > 2}
+
+
+def _same_question(earlier: dict, about: str, subject: str, question: str) -> bool:
+    """Whether `earlier` asked this: the same kind of question about the same thing, or, where either names no
+    subject, nearly the same words (a fallback: a rephrasing about one subject is caught by its subject)."""
+    if subject and earlier.get("subject"):
+        return earlier.get("about") == about and _question_words(earlier["subject"]) == _question_words(subject)
+    a, b = _question_words(earlier.get("question")), _question_words(question)
+    return bool(a and b) and len(a & b) / len(a | b) >= 0.8
+
+
+def _answer_of(state: dict) -> str | None:
+    """The person's answer to the question a run last put (a build's clarify or a change's), if it has one."""
+    for key in ("human_response", "change_clarify"):
+        value = state.get(key)
+        value = json.loads(value) if isinstance(value, str) and value.startswith("{") else value
+        said = value.get("answer") if isinstance(value, dict) else value
+        if isinstance(said, str) and said.strip():
+            return said.strip()
+    return None
+
+
+def _with_answers(state: dict) -> list[dict]:
+    """The run's questions, the last one given the answer the run holds for it."""
+    asked = [dict(a) for a in state.get(ASKED_KEY) or [] if isinstance(a, dict)]
+    if asked and not asked[-1].get("answer") and (said := _answer_of(state)):
+        asked[-1]["answer"] = said
+    return asked
+
+
+# ── the request's questions: one seam for every question put to the person (F1226) ──────────────────────────────
+# `ask_person` uses these, and so does a question code asks itself (F1210's dates): each is counted and never repeated.
+def asked_before(state: dict, about: str, subject: str, question: str) -> dict | None:
+    """The question this request already asked that this one repeats, with its answer, or None."""
+    return next((a for a in _with_answers(state) if _same_question(a, about, subject, question)), None)
+
+
+def questions_asked(state: dict, run: Any = None) -> int:
+    """How many questions this request has put to the person: the rounds of its earlier runs, then this run's own.
+    A round is any question shown, the planner's or code's own (F1210's dates)."""
+    return int(state.get(ROUNDS_KEY) or 0) + sum(
+        1 for h in (getattr(run, "step_history", None) or []) if h.get("step_id") in _ASKING_STEPS)
+
+
+def note_question(state: dict, about: str, subject: str, question: str) -> None:
+    """Record a question put to the person, so no later run of the request asks it again."""
+    state[ASKED_KEY] = [*_with_answers(state), {"about": about, "subject": subject, "question": question}]
+
+
+def carry_request(previous: dict | None, history: list[dict] | None = None) -> dict:
+    """What a new run of a conversation starts with from its request so far (F1226), as initial state, from the
+    newest run (`previous`, its state; `history`, its step history) unless that run saved something: a saved build,
+    change or card ends the request, and the next one asks afresh. Stage 1's brief 6 asked "has the knowledge base been
+    created?" in three runs, five times each.
+
+    * `ASKED_KEY`: the questions `ask_person` put, with their answers, never asked again;
+    * `ROUNDS_KEY`: how many questions the request has shown so far, the cap's count;
+    * the build check's own `asked` (`CHECKED_KEY`), each entry whole: the planner reads every question with its
+      answer, and a question code asked itself is known by its entry (F1210's dates, by `means`)."""
+    from core.native_builder.build_plan import CHECKED_KEY, checked_in
+    from core.orchestration.run_writes import WRITES_KEY
+
+    if not isinstance(previous, dict) or not previous or previous.get(WRITES_KEY):
+        return {}
+    shown = sum(1 for h in history or [] if isinstance(h, dict) and h.get("step_id") in _ASKING_STEPS)
+    out: dict[str, Any] = {ASKED_KEY: [{**a, "carried": True} for a in _with_answers(previous)],
+                           ROUNDS_KEY: int(previous.get(ROUNDS_KEY) or 0) + shown}
+    if asked := (checked_in(previous) or {}).get("asked"):
+        out[CHECKED_KEY] = {"asked": [dict(a) for a in asked if isinstance(a, dict)]}
+    return out
 
 
 async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -243,10 +328,17 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     if way_in and not (args.get("about") == "which" and way_in.group(0).lower().startswith("http tool")):
         return {"error": WAY_IN_ASKED}
     _, run = _run()
-    asked = sum(1 for h in (run.step_history if run is not None else []) if h.get("step_id") in _ASKING_STEPS)
-    if asked >= QUESTIONS:
-        return {"error": ASKED_ENOUGH.format(n=asked)}
     about = args.get("about") if args.get("about") in ABOUT else "what"
+    subject = _text(args.get("subject"))
+    state = run.shared_state if run is not None else {}
+    if (same := asked_before(state, about, subject, question)) is not None:
+        return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
+                                              answer=same.get("answer") or "none yet")}
+    # The request's count, not the run's: its questions in earlier runs, then this run's own (F1226).
+    if (asked := questions_asked(state, run)) >= QUESTIONS:
+        return {"error": ASKED_ENOUGH.format(n=asked)}
+    if run is not None:
+        note_question(state, about, subject, question)
     return {"finish": "ask_person", "question": question, "about": about, "options": options}
 
 
@@ -980,7 +1072,8 @@ async def said_without_secret_asks(run: Any) -> None:
     """A builder turn's reply never asks for a key, a token or a password: a sentence of it that does is taken out,
     and code's line pointing to the Connect card and the Vault is said in its place (the manager's net, 10-27). The
     replies of the talk and answer routes are a model's own words, with no finish tool to refuse them; here, where
-    every run ends (fleet included), before the panel reads `summary` and the conversation keeps it."""
+    every run ends (fleet included), before the panel reads `summary` and the conversation keeps it. A file the reply
+    says is in the Vault is held to the Vault there too (F1211, `vault_claims`)."""
     from core.native_builder.identity import is_builder_run
     from core.orchestration.state import SharedState
     from core.secret_scrub import without_secret_asks
@@ -990,9 +1083,15 @@ async def said_without_secret_asks(run: Any) -> None:
     said = run.shared_state.get("summary")
     if not isinstance(said, str):
         return
+    from core.native_builder import vault_claims
+
     cleaned, was = without_secret_asks(said)
     # Which run it is, asked last: on a host it is a read, and every run that ends comes here.
-    if was and await is_builder_run(run):
+    if not (was or vault_claims.claimed(cleaned)) or not await is_builder_run(run):
+        return
+    # A file it says is in the Vault is read there first (F1211): one that is not is said so, by code.
+    cleaned, wrong = await vault_claims.checked(cleaned)
+    if was or wrong:
         run.shared_state["summary"] = cleaned
         await SharedState(run).checkpoint()
 

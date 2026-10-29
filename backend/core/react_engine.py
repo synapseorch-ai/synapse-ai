@@ -4307,8 +4307,8 @@ async def run_orchestrator_agent(
         yield {"type": "error", "message": "Orchestrator agent has no orchestration_id configured"}
         return
     try:
-        from core.models_orchestration import Orchestration
         from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.read_shapes import Unreadable, load_to_run
         from core.orchestration.runner import stream_engine_events
         from core.run_ids import new_run_id
         from core.scale.context import resolve_orchestration
@@ -4320,7 +4320,11 @@ async def run_orchestrator_agent(
             # said naming the agent the person chose, not an id (F408).
             yield {"type": "error", "message": workflow_gone(agent)}
             return
-        orch = Orchestration.model_validate(orch_data)
+        try:
+            orch = load_to_run(orch_data)
+        except Unreadable as e:  # said in the chat, as a workflow that is gone is (F1235)
+            yield {"type": "error", "message": str(e)}
+            return
         engine = OrchestrationEngine(orch, server_module)
         engine.caller_tools = list(caller_tools or [])
         engine.images = list(images or [])
