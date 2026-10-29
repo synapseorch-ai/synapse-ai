@@ -196,6 +196,8 @@ SERVER_PLAN = {"kind": "create", "title": "Triage tickets", "summary": "Triages 
 
 class TestThePlansServer:
     async def test_not_connected_its_card_stands_where_the_plan_would(self, client, run):
+        # The person gave the server by its URL (F1225): an address a plan writes is one they gave (F1253).
+        run.shared_state["user_message"] = "Triage new tickets in our tracker: its MCP server is https://tracker.example/mcp"
         run.shared_state[build_plan.DRAFT_KEY] = {"finish": "submit_plan", **SERVER_PLAN}
         out, events = await _call(run, "check_build", {"draft": {"finish": "submit_plan", **SERVER_PLAN}})
         assert out["outcome"] == "review" and "build" not in out["offers"]

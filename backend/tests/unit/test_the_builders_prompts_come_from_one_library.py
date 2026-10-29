@@ -78,7 +78,9 @@ from core.native_builder import prompt_lint, seed
 #: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
 #: branch; on fix-forward 14's tree, 4c222b83….
 #: F1252: every template over state in the one form, `{{ state.x }}` (Naveen 10-30), c8d173a1….
-BUNDLE_SHA256 = "c8d173a1791bd98c53b7a3794a6a16f24010b4855e3bb70731dd8768ee0bf918"
+#: F1253: the planner and the change planner ask every question at once in one form, a plan carries none, and an
+#: address of theirs is never guessed (planner.json, change_planner.json, plan_steps' tool line); with F1252, 6dd38c6f….
+BUNDLE_SHA256 = "6dd38c6fefa3026cc5e15b008804260ff93889c6d7dfcbe65df37d2c7092efea"
 
 
 def _sha(definitions) -> str:

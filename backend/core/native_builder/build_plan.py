@@ -409,6 +409,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     plan, errors = O.read(raw if isinstance(raw, dict) else {})
     if plan is None:
         return Examined(None, errors)
+    # A question the planner wrote anyway (F1253): held to F1093 as before, then asked in the form, never shown open.
+    plan.questions = [q.strip() for q in (raw.get("questions") if isinstance(raw, dict) else None) or []
+                      if isinstance(q, str) and q.strip()]
     base = _base(state)
     if plan.kind == "update":
         if base is None:
@@ -1509,9 +1512,10 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 else "That plan has no steps to build."}
     if plan.room:
         return {**base, "outcome": "said", "say": plan.room}
-    asking, unsaid_said = await _asked_first(base, draft, ws, state)
+    asking, unsaid_said = await _asked_first(base, draft, plan.questions, ws, state)
     if asking is not None:
         return asking
+    plan.questions = []  # each was asked, or answered before: a plan's card carries no open question (F1253)
     if waiting := [m for m in plan.mcp_servers if not m.connected]:
         # The person's own MCP server, by its URL (F1225): its tools are known only once it is connected, so its card
         # comes before any plan, and its "Connected …" plans again on them (Naveen, 10-29; the exception to F949).
@@ -1699,19 +1703,22 @@ async def _given(state: dict, ws: Workspace, asked: list[dict]) -> list[Any]:
             ws.tools, servers]
 
 
-async def _asked_first(base: dict, draft: dict, ws: Workspace, state: dict) -> tuple[dict | None, list[str]]:
+async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspace,
+                        state: dict) -> tuple[dict | None, list[str]]:
     """What only the person can say, asked before any plan, research or Connect card (F1253), in one form, one round
     of the request's seam (F1226): each address the plan uses that the run was never given, the planner's value
-    filled in, and a question the plan carries anyway. Returns the ask, or None and, once the request has asked
+    filled in, and a question the plan carries anyway (`carried`, as `examine` kept it). Returns the ask, or None and, once the request has asked
     enough, the review's words for each address it goes on with."""
     from core.native_builder import addresses
-    from core.native_builder.change_tools import (FORM_LEAD, FORM_MAX, QUESTIONS, asked_before, form_text,
-                                                  note_question, questions_asked)
+    from core.native_builder.change_tools import (_ASKS_WAY_IN, FORM_LEAD, FORM_MAX, QUESTIONS, asked_before,
+                                                  form_text, note_question, questions_asked)
 
     _, run = _run()
     unsaid = [a for a in addresses.unsaid(draft, await _given(state, ws, base.get("asked") or []))
               if asked_before(state, "what", a.subject, a.label()) is None]
-    questions = [q for q in draft.get("questions") or [] if isinstance(q, str) and q.strip()
+    # The plan's own questions as `examine` kept them: one that asked for a key was cut there (F1093).
+    # How a service is reached is looked up, never asked, as `ask_person` refuses it.
+    questions = [q for q in carried if isinstance(q, str) and q.strip() and not _ASKS_WAY_IN.search(q)
                  and asked_before(state, "what", "", q) is None]
     if not (unsaid or questions):
         return None, []

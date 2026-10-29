@@ -317,7 +317,9 @@ class TestAnUpdatesEdits:
 
 class TestTheCardsText:
     def test_every_section_it_has_and_none_it_has_not(self):
-        plan = _report_plan(questions=["Which sheet holds the numbers?"])
+        plan = _report_plan()
+        # An older card's open question, as it is stored: a plan carries none since F1253, and a card still shows one.
+        plan.questions = ["Which sheet holds the numbers?"]
         plan.approvals = O.Approvals(asks_first=["send_mail"])
         plan.missing = ["read_sheet"]
         plan.connections_needed = ["Google Sheets"]
