@@ -185,6 +185,9 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     overview = (plan.summary or "").strip()
     if overview:
         parts.append(f"## You asked for\n{overview}")
+    # What a re-plan changed from the plan the person last saw (F1245), before the steps it changed.
+    if since := getattr(plan, "since_last", None):
+        parts.append("## Changed from the last plan\n" + _bullets(since))
 
     words = getattr(plan, "step_words", {}) or {}
     if plan.steps or plan.edits:
