@@ -88,6 +88,8 @@ class NewAgent(_Written):
                               "writing), or vision (it reads images). Never a model's name: code picks the model")
     model_wish: str | None = Field(None, description="Only when the person named a model for this agent: their own "
                                                      "words, e.g. Claude, the cheapest, nova pro")
+    long_inputs: bool = Field(False, description="True when it reads long inputs: whole documents, many pages or long "
+                                                 "lists at once")
     stronger_helps: bool = Field(False, description="True when a stronger model would clearly do this job better: "
                                                     "the card offers one at its price, for the person to choose")
     why: str | None = Field(None, description="A few words on what the job needs from its model, shown beside the "

@@ -34,10 +34,10 @@ async def _menu(choices: dict[str, list[str]], facts: dict[str, dict] | None = N
 
 
 def _entry(id, *, source="key", tools="native", vision=True, reasoning=False, price_out=None, can_pay=True,
-           name=None, provider="anthropic"):
+           name=None, provider="anthropic", window=None):
     return M.ModelEntry(id=id, name=name or id, provider=provider, source=source, tools=tools, vision=vision,
                         reasoning=reasoning, price_in=None if price_out is None else price_out / 5,
-                        price_out=price_out, can_pay=can_pay)
+                        price_out=price_out, can_pay=can_pay, window=window)
 
 
 # ── the menu ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -87,23 +87,65 @@ BLIND_NO_TOOLS = _entry("hf.tiny", tools="none", vision=False, price_out=0.1, pr
 
 
 class TestPick:
-    def test_simple_is_the_lowest_cost_that_fits(self):
-        got = M.pick("simple", has_tools=True, menu=[SONNET, HAIKU, MINI, CLI, LOCAL])
-        assert got == M.Picked("gpt-4.1-mini", "the lowest-cost model that fits")
+    """F1251 (Naveen, 10-30), replacing F966's cheapest-first: the best fit among the workspace's own-key models, then
+    the platform's; the cheapest only for a narrow job."""
+
+    def test_a_narrow_job_is_the_lowest_cost_that_fits(self):
+        got = M.pick("simple", has_tools=True, menu=[SONNET, HAIKU, MINI, CLI, LOCAL], narrow=True)
+        assert got == M.Picked("gpt-4.1-mini", "the lowest-cost model that fits a narrow job, from your own keys: one "
+                                               "that calls tools")
+
+    def test_any_other_agent_is_the_strongest_that_fits_within_the_ceiling(self):
+        got = M.pick("simple", has_tools=True, menu=[SONNET, HAIKU, MINI, OPUS, CLI, LOCAL])
+        assert got == M.Picked("claude-sonnet-4-5", "the strongest that fits, within the automatic price ceiling, "
+                                                    "from your own keys: one that calls tools")
+
+    def test_the_workspace_s_default_where_it_fits(self):
+        got = M.pick("simple", has_tools=True, menu=[SONNET, HAIKU, MINI], default="claude-haiku-4-5")
+        assert got == M.Picked("claude-haiku-4-5", "your workspace's default model, which fits, from your own keys: "
+                                                   "one that calls tools")
+        # A default that cannot call tools is not this agent's fit.
+        assert M.pick("simple", has_tools=True, menu=[SONNET, BLIND_NO_TOOLS], default="hf.tiny").id == SONNET.id
+
+    def test_own_keys_first_then_the_platform_s(self):
+        platform = _entry("synapse.claude-opus", source="managed", price_out=12, reasoning=True,
+                          provider="model_gateway")
+        assert M.pick("simple", has_tools=True, menu=[platform, MINI, HAIKU]).id == "claude-haiku-4-5"
+        got = M.pick("simple", has_tools=True, menu=[platform, BLIND_NO_TOOLS,
+                                                     _entry("synapse.nova-lite", source="managed", price_out=0.24,
+                                                            provider="model_gateway")])
+        assert got == M.Picked("synapse.claude-opus", "the strongest that fits, within the automatic price ceiling, "
+                                                      "from the platform's models: one that calls tools")
+
+    def test_long_inputs_skip_a_model_whose_window_is_known_too_small(self):
+        small = _entry("claude-haiku-4-5", price_out=5, window=32_000)
+        big = _entry("gpt-4.1-mini", price_out=1.6, provider="openai", window=1_000_000)
+        unknown = _entry("claude-sonnet-4-5", price_out=15, reasoning=True)
+        assert M.pick("simple", has_tools=False, menu=[small, big], long_inputs=True, narrow=True).id == big.id
+        assert M.pick("simple", has_tools=False, menu=[small, unknown], long_inputs=True).id == unknown.id
+        assert "reads long inputs" in M.pick("simple", has_tools=False, menu=[small, big], long_inputs=True).reason
+        assert M.pick("simple", has_tools=False, menu=[small], long_inputs=True) == M.NoModel(
+            "No model this workspace can use reads long inputs (a window of 128k tokens or more).")
 
     def test_reasoning_is_the_strongest_within_the_ceiling(self):
         got = M.pick("reasoning", has_tools=True, menu=[HAIKU, SONNET, OPUS, MINI])
-        assert got == M.Picked("claude-sonnet-4-5", "a stronger model, for reasoning")
+        assert got == M.Picked("claude-sonnet-4-5", "a stronger model, for reasoning, from your own keys: one that "
+                                                    "calls tools; reasons carefully")
         assert M.AUTO_PICK_CEILING_USD_PER_MTOK_OUT == 15
+        # A narrow job that needs reasoning still gets a stronger model.
+        assert M.pick("reasoning", has_tools=True, menu=[HAIKU, SONNET, MINI], narrow=True).id == SONNET.id
 
     def test_vision_needs_a_model_that_sees(self):
-        assert M.pick("vision", has_tools=False, menu=[MINI, HAIKU, SONNET]) == M.Picked(
-            "claude-haiku-4-5", "it can read images")
+        assert M.pick("vision", has_tools=False, menu=[MINI, HAIKU, SONNET], narrow=True) == M.Picked(
+            "claude-haiku-4-5", "the lowest-cost model that fits a narrow job, from your own keys: one that reads "
+                                "images")
+        assert M.pick("vision", has_tools=False, menu=[MINI, HAIKU, SONNET]).id == SONNET.id
 
     def test_an_agent_with_tools_never_gets_a_model_without_them_and_prefers_native(self):
         prompt_only = _entry("bedrock.cheap", tools="prompt", price_out=0.5, provider="bedrock")
-        assert M.pick("simple", has_tools=True, menu=[BLIND_NO_TOOLS, prompt_only, HAIKU]).id == "claude-haiku-4-5"
-        assert M.pick("simple", has_tools=False, menu=[BLIND_NO_TOOLS, HAIKU]).id == "hf.tiny"
+        assert M.pick("simple", has_tools=True, menu=[BLIND_NO_TOOLS, prompt_only, HAIKU],
+                      narrow=True).id == "claude-haiku-4-5"
+        assert M.pick("simple", has_tools=False, menu=[BLIND_NO_TOOLS, HAIKU], narrow=True).id == "hf.tiny"
 
     def test_a_cli_or_local_model_is_never_picked_unasked(self):
         assert M.pick("simple", has_tools=True, menu=[CLI, LOCAL, HAIKU]).id == "claude-haiku-4-5"
@@ -113,13 +155,13 @@ class TestPick:
         assert M.pick("simple", has_tools=True, menu=[broke, HAIKU]).id == "claude-haiku-4-5"
 
     def test_an_unpriced_model_comes_after_priced_ones_never_excluded(self):
-        assert M.pick("simple", has_tools=True, menu=[UNPRICED, SONNET]).id == "claude-sonnet-4-5"
+        assert M.pick("simple", has_tools=True, menu=[UNPRICED, SONNET], narrow=True).id == "claude-sonnet-4-5"
         assert M.pick("simple", has_tools=True, menu=[UNPRICED]).id == "oaic.house-model"
 
     def test_one_usable_model_is_picked_and_said_so(self):
         """SAI2's review: "fewer than two → the default" left a tools agent on a default that cannot call tools."""
         assert M.pick("reasoning", has_tools=True, menu=[BLIND_NO_TOOLS, HAIKU]) == M.Picked(
-            "claude-haiku-4-5", "the only model here that fits")
+            "claude-haiku-4-5", "the only model here that fits: one that calls tools; reasons carefully")
 
     def test_none_usable_is_said_never_a_silent_default(self):
         broke = _entry("synapse.nova-pro", source="managed", provider="model_gateway", price_out=3.2, can_pay=False)

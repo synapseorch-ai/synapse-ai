@@ -42,6 +42,8 @@ class ModelEntry:
     price_out: float | None
     #: Whether this workspace can pay for a call now (cloud: its wallet). Self-hosted: always.
     can_pay: bool
+    #: Its input window in tokens (`core.providers.window_tokens`, a host's facts over it); None when not known.
+    window: int | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +88,7 @@ def _source(model_id: str, mode: str) -> str:
 
 async def _own(model_id: str, pricing: dict) -> ModelEntry:
     from core.images import model_can_see_images
+    from core.providers import window_tokens
     from core.providers.registry import provider_for
     from core.reasoning import supports_native
     from core.usage_tracker import _resolve_pricing_entry
@@ -98,7 +101,7 @@ async def _own(model_id: str, pricing: dict) -> ModelEntry:
         vision=model_can_see_images(model_id), reasoning=supports_native(model_id),
         price_in=0 if source == "local" else (priced or {}).get("input_per_1m"),
         price_out=0 if source == "local" else (priced or {}).get("output_per_1m"),
-        can_pay=True)
+        can_pay=True, window=window_tokens(model_id))
 
 
 async def menu() -> list[ModelEntry]:
@@ -132,13 +135,30 @@ async def menu() -> list[ModelEntry]:
 
 # ── pick ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-_REASONS = {"simple": "the lowest-cost model that fits", "reasoning": "a stronger model, for reasoning",
-            "vision": "it can read images"}
+#: The input window an agent that reads long inputs needs, in tokens (F1251): a model known to have less is skipped.
+LONG_WINDOW = 128_000
+
+#: The pools a pick looks in, in order (Naveen, 10-30): the workspace's own keys, then the platform's models.
+POOLS = (("key", "from your own keys"), ("managed", "from the platform's models"))
+
+_REASONS = {"narrow": "the lowest-cost model that fits a narrow job", "reasoning": "a stronger model, for reasoning",
+            "default": "your workspace's default model, which fits",
+            "best": "the strongest that fits, within the automatic price ceiling"}
 _ONLY = "the only model here that fits"
 
 
-def _fits(e: ModelEntry, needs: str, has_tools: bool) -> bool:
-    return e.can_pay and (not has_tools or e.tools in ("native", "prompt")) and (needs != "vision" or e.vision)
+def _fits(e: ModelEntry, needs: str, has_tools: bool, long_inputs: bool = False) -> bool:
+    return (e.can_pay and (not has_tools or e.tools in ("native", "prompt")) and (needs != "vision" or e.vision)
+            and (not long_inputs or e.window is None or e.window >= LONG_WINDOW))
+
+
+def fit_words(needs: str, *, has_tools: bool, long_inputs: bool = False) -> str:
+    """What "fits" asked of the model, in the card's words (F1251): what the job needs, never a guess at more."""
+    said = [w for w, on in (("calls tools", has_tools), ("reads images", needs == "vision"),
+                            ("reasons carefully", needs == "reasoning"),
+                            (f"reads long inputs (a window of {LONG_WINDOW // 1000}k tokens or more, where known)",
+                             long_inputs)) if on]
+    return "; ".join(said)
 
 
 def _cheapest_first(e: ModelEntry, has_tools: bool = False) -> tuple:
@@ -162,36 +182,99 @@ def _no_model(candidates: list[ModelEntry], needs: str, has_tools: bool, *, of: 
     if has_tools and not any(e.tools in ("native", "prompt") for e in payable):
         lacks = "calls tools and reads images" if needs == "vision" and not any(e.vision for e in payable) else \
             "calls tools"
-    else:
+    elif needs == "vision" and not any(e.vision for e in payable):
         lacks = "reads images"
+    else:
+        lacks = f"reads long inputs (a window of {LONG_WINDOW // 1000}k tokens or more)"
     return NoModel(f"{kind} {lacks}." if not of else f"{kind} {lacks}, which this agent needs.")
+
+
+def _within(fitting: list[ModelEntry], ceiling: bool) -> list[ModelEntry]:
+    return [e for e in fitting
+            if not ceiling or e.price_out is None or e.price_out <= AUTO_PICK_CEILING_USD_PER_MTOK_OUT] or fitting
 
 
 def _by_need(fitting: list[ModelEntry], needs: str, *, ceiling: bool, has_tools: bool) -> ModelEntry:
     if needs == "reasoning":
-        within = [e for e in fitting
-                  if not ceiling or e.price_out is None or e.price_out <= AUTO_PICK_CEILING_USD_PER_MTOK_OUT]
-        return sorted(within or fitting, key=lambda e: _strongest_first(e, has_tools))[0]
+        return sorted(_within(fitting, ceiling), key=lambda e: _strongest_first(e, has_tools))[0]
     return sorted(fitting, key=lambda e: _cheapest_first(e, has_tools))[0]
 
 
-def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry]) -> Picked | NoModel | None:
-    """The model an agent that needs `needs` gets. None with no menu (the workspace default, as before); `NoModel`
-    when nothing on it can do the job, said rather than defaulted (SAI2's review)."""
+def _best(fitting: list[ModelEntry], needs: str, *, has_tools: bool, narrow: bool,
+          default: str | None) -> tuple[ModelEntry, str]:
+    """The best fit in one pool (Naveen, 10-30, replacing F966's cheapest-first): the cheapest only for a narrow job;
+    the strongest within the ceiling for reasoning; else the workspace's default where it fits, then the strongest
+    within the ceiling."""
+    if narrow and needs != "reasoning":
+        return _by_need(fitting, "simple", ceiling=True, has_tools=has_tools), "narrow"
+    if needs == "reasoning":
+        return _by_need(fitting, "reasoning", ceiling=True, has_tools=has_tools), "reasoning"
+    if default and (mine := next((e for e in fitting if e.id == default), None)):
+        return mine, "default"
+    return sorted(_within(fitting, True), key=lambda e: _strongest_first(e, has_tools))[0], "best"
+
+
+def pick(needs: str, *, has_tools: bool, menu: list[ModelEntry], narrow: bool = False, long_inputs: bool = False,
+         default: str | None = None) -> Picked | NoModel | None:
+    """The model an agent that needs `needs` gets: the best fit among the workspace's own-key models, then among the
+    platform's (F1251). `narrow`: a small job with a narrow goal, which gets the cheapest that fits; `default`: the
+    workspace's default model. None with no menu (the workspace default, as before); `NoModel` when nothing on it can
+    do the job, said rather than defaulted (SAI2's review)."""
     if not menu:
         return None
     usable = [e for e in menu if e.source not in ("cli", "local")]
-    fitting = [e for e in usable if _fits(e, needs, has_tools)]
-    if not fitting:
-        # A local model is offered when it is the only kind there is (Naveen: only when asked, or the only option).
-        local = [e for e in menu if e.source == "local" and _fits(e, needs, has_tools)]
-        if local and not usable:
-            fitting = local
-        else:
-            return _no_model(usable or menu, needs, has_tools)
-    if len(fitting) == 1:
-        return Picked(fitting[0].id, _ONLY)
-    return Picked(_by_need(fitting, needs, ceiling=True, has_tools=has_tools).id, _REASONS[needs])
+    asked = fit_words(needs, has_tools=has_tools, long_inputs=long_inputs)
+    said = f": one that {asked}" if asked else ""
+    every = [e for e in usable if _fits(e, needs, has_tools, long_inputs)]
+    if len(every) == 1:
+        return Picked(every[0].id, _ONLY + said)
+    for source, where in POOLS:
+        fitting = [e for e in every if e.source == source]
+        if fitting:
+            chosen, why = _best(fitting, needs, has_tools=has_tools, narrow=narrow, default=default)
+            return Picked(chosen.id, f"{_REASONS[why]}, {where}{said}")
+    # A local model is offered when it is the only kind there is (Naveen: only when asked, or the only option).
+    local = [e for e in menu if e.source == "local" and _fits(e, needs, has_tools, long_inputs)]
+    if local and not usable:
+        chosen = local[0] if len(local) == 1 else _by_need(local, needs, ceiling=True, has_tools=has_tools)
+        return Picked(chosen.id, (_ONLY if len(local) == 1 else _REASONS["narrow" if needs != "reasoning"
+                                                                          else "reasoning"]) + said)
+    return _no_model(usable or menu, needs, has_tools)
+
+
+def workspace_model() -> str:
+    """The workspace's own default model, which a pick prefers where it fits (F1251); "" when none is set."""
+    try:
+        from core.config import load_settings
+
+        return str(load_settings().get("model") or "").strip()
+    except Exception:  # noqa: BLE001 — no settings read: no default to prefer
+        return ""
+
+
+async def model_refusal(model: Any, before: Any = None, *, has_tools: bool = False,
+                        default_ok: bool = True) -> tuple[str | None, str | None]:
+    """Why `model` cannot be an agent's model here, in words, or None; and the model to save (F1250). One check at
+    every door that sets one: what the agent editor's picker lists (`model_choices`; a provider with no key lists
+    nothing), a model said by its own id being that one (F959), and its best fit here named (F1251). A model the agent
+    had already is never asked about again, so an agent saved before still saves. No list read refuses nothing."""
+    from core import model_choices
+
+    said = str(model or "").strip()
+    if not said:
+        return None, None
+    if said == str(before or "").strip():
+        return None, said
+    found = await model_choices.choices()
+    if model_choices.offers(found, said):
+        return None, said
+    if (named := model_choices.named(found, said)) is not None:
+        return None, named
+    listed = "; ".join(f"{p}: {', '.join(m[:6])}" for p, m in (found or {}).items())
+    best = pick("simple", has_tools=has_tools, menu=await menu(), default=workspace_model())
+    fit = f" Its best fit here is {best.id} ({best.reason})." if isinstance(best, Picked) else ""
+    tail = " Or leave the model out for the workspace's default." if default_ok else ""
+    return f'"{said}" is not a model this workspace can use.{fit} It can use: {listed}.{tail}', None
 
 
 def _strength(e: ModelEntry | None) -> tuple:
