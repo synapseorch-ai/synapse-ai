@@ -53,6 +53,18 @@ _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
 
 # ── stdio MCP registration policy (security) ────────────────────────────────────
+def remote_url_problem(url: str) -> str | None:
+    """Why `url` is not a remote MCP server's address, or None (F1201). One rule for every door that adds one: the
+    Apps screen (through `add_server`) and the builder's Connect card. http or https, with a host: a server on this
+    machine or this network is a person's to add, so neither scheme nor host is refused here."""
+    if not url:
+        return "URL is required for remote servers."
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "A remote MCP server's URL starts with http:// or https:// and names its host."
+    return None
+
+
 # stdio MCP servers launch arbitrary local OS processes (npx/uvx/python -c/…),
 # which is the whole point of the transport but also an RCE-shaped capability.
 # These helpers gate every path that can spawn one. See GHSA-3j67-x3j8-r32x.
@@ -879,8 +891,8 @@ class MCPClientManager:
                 raise ValueError(f"'{command}' not found in PATH. {hints.get(command, 'Please install it.')}")
             new_config.update({"command": command, "args": args or [], "env": env or {}})
         else:
-            if not url:
-                raise ValueError("URL is required for remote servers.")
+            if (problem := remote_url_problem(url)) is not None:
+                raise ValueError(problem)
             new_config.update({"url": url, "token": token})
 
         # Always save first
