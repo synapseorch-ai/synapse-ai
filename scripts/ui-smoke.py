@@ -13664,8 +13664,10 @@ async def check_brwsessionsreal(browser) -> str:
 
     stamp = int(time.time())
     aid, oid = f"agent_uismoke_brwreal_{stamp}", f"orch_uismoke_brwreal_{stamp}"
+    # Sessions follow the sites (Naveen 10-29): its own session's site, and Priya's, so the section has a row for each.
     agent = {**_agent(aid, f"Browser real {stamp % 1_000_000}"), "type": "browser",
-             "browser": {"mode": "read_only", "sites": [], "sessions": [mine], "action_budget": 40}}
+             "browser": {"mode": "read_only", "sites": ["saltmarsh.example", "ledger.example"], "sessions": [mine],
+                         "action_budget": 40}}
     try:
         api("/api/agents", "POST", agent)
         api("/api/orchestrations", "POST", _browser_orchestration(oid, aid))
@@ -13678,13 +13680,17 @@ async def check_brwsessionsreal(browser) -> str:
         await page.goto(f"{APP}/agents?id={aid}", wait_until="domcontentloaded")
         await page.get_by_role("tab", name="Setup").wait_for(timeout=30_000)
         await asyncio.sleep(SETTLE)
-        picker = page.locator("section[data-tour='setup-browser']").get_by_role("group", name="Sessions it starts with")
-        await picker.wait_for(timeout=10_000)
-        # By its id: a scratch seeded twice keeps two of the person's sessions for the site.
-        if not await picker.locator(f"#session-pick-{mine}").is_checked():
-            bad.append("the agent's own saved session is not shown picked")
-        if await picker.get_by_role("group", name="ledger.example").count():
-            bad.append("the agent's picker offers Priya's unshared session")
+        section = page.locator("section[data-tour='setup-browser']")
+        # Each site with its session beside it: the agent's own saved one shown picked beside its site.
+        salt = section.get_by_role("combobox", name="Session for saltmarsh.example")
+        await salt.wait_for(timeout=10_000)
+        if (await salt.inner_text()).strip() == "Not signed in":
+            bad.append("the agent's own saved session is not shown picked beside saltmarsh.example")
+        # Priya's unshared session is never offered: ledger.example has no session to pick, and her name is nowhere.
+        if await section.get_by_role("combobox", name="Session for ledger.example").count():
+            bad.append("the agent's section offers a session for ledger.example, Priya's unshared one")
+        if "Priya" in await section.inner_text():
+            bad.append("the agent's section names Priya's unshared session")
 
         refused("an agent's save", *_answered("/api/agents", "POST", {**agent, "browser": {**agent["browser"], "sessions": [mine, priya]}}))
         refused("a chat's picks", *_answered("/api/chat/uismoke-real-picks/browser-sessions", "PUT", {"ids": [priya]}))
