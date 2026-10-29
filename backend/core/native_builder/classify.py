@@ -314,6 +314,10 @@ async def classify_request(args: dict, server_module: Any, events: list[dict]) -
             named = _named(_words(message), inventory).get("recording") or []
             workflows = {_words(w) for w in inventory.get("workflow") or []}
             run.shared_state[BOTH_KEY] = next((r for r in named if _words(r) in workflows), "")
+        # The previous request's questions are this run's only if this message continues it (F1226).
+        from core.native_builder.change_tools import adopt_carry
+
+        adopt_carry(run.shared_state, request.continues)
     if routed.also and routed.also.strip():
         await turn_facts.keep(run_id, _caller().user_id, also=routed.also.strip())
         events.append(also_notice(routed.also.strip()))

@@ -119,3 +119,57 @@ async def test_a_restated_request_is_not_asked_its_dates_again(client, desk):
     out = await _check(later, PLAN)
     assert out["outcome"] == "review" and "the 7 days up to the day before the run" in out["review"]
     assert later.shared_state[T.ROUNDS_KEY] == 1
+
+
+# ── classify says whether a new message continues the request (8a's review of the FF14 check, 10-29) ─────────────
+def _staged(**previous) -> dict:
+    return {T.CARRY_KEY: T.carry_request(previous, [{"step_id": "step_human_clarify"}])}
+
+
+class TestOnlyAMessageThatContinuesCarries:
+    def test_another_request_asks_afresh(self):
+        """test_builder_comes_back's "first ask" then "second ask": classify says it does not continue."""
+        state = _staged(**{T.ASKED_KEY: [{"question": "What should it do?", "about": "what", "subject": ""}]})
+        assert T.adopt_carry(state, False) is False and T.ASKED_KEY not in state and T.CARRY_KEY not in state
+
+    def test_unsure_or_not_said_asks_afresh(self):
+        for verdict in (None,):
+            state = _staged(**{T.ASKED_KEY: [ASKED]})
+            assert T.adopt_carry(state, verdict) is False and T.ASKED_KEY not in state
+
+    def test_a_restated_request_carries(self):
+        """Brief 6's second run: the request said again; classify says it continues."""
+        state = _staged(**{T.ASKED_KEY: [ASKED]})
+        assert T.adopt_carry(state, True) is True
+        assert state[T.ASKED_KEY][0]["subject"] == KB and state[T.ROUNDS_KEY] == 1
+
+    @pytest.mark.parametrize("said", [
+        "Set up the pricing KB thing we talked about",          # a paraphrase sharing no subject word
+        "हाँ, वही वाला — हर सोमवार कीमतें सहेजो",                 # another language
+        "yes, the same one",                                      # a short reply
+    ])
+    def test_classify_decides_not_the_words(self, said):
+        """No word of the subject need appear: classify read the conversation and said it continues."""
+        state = {"user_message": said, **_staged(**{T.ASKED_KEY: [ASKED]})}
+        assert T.adopt_carry(state, True) is True and state[T.ASKED_KEY][0]["subject"] == KB
+
+    def test_a_message_that_shares_words_but_asks_for_something_else_does_not(self):
+        state = {"user_message": "Delete the competitor_pricing knowledge base", **_staged(**{T.ASKED_KEY: [ASKED]})}
+        assert T.adopt_carry(state, False) is False and T.ASKED_KEY not in state
+
+    def test_the_dates_carry_with_a_continued_request(self):
+        from core.native_builder.build_plan import CHECKED_KEY
+
+        dates = {"question": "Which dates is 'last week'?", "answer": "Mon to Sun", "means": [{"period": "last_week"}]}
+        state = {T.CARRY_KEY: T.carry_request({CHECKED_KEY: {"asked": [dates]}}, [])}
+        assert T.adopt_carry(state, True) and state[CHECKED_KEY] == {"asked": [dates]}
+
+
+async def test_classify_adopts_the_carry_only_when_it_says_continues(client):
+    """Through `classify_request` itself: the model's `continues` is what decides."""
+    for verdict, carried in ((True, True), (False, False), (None, False)):
+        run = await _run(run_id=f"builder_f1226_cls{verdict}", user_message="the same one",
+                         **_staged(**{T.ASKED_KEY: [ASKED]}))
+        args = {"kind": "build", **({"continues": verdict} if verdict is not None else {})}
+        await _call("classify_request", args, run)
+        assert (T.ASKED_KEY in run.shared_state) is carried and T.CARRY_KEY not in run.shared_state
