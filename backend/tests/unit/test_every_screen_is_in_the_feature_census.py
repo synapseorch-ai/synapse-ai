@@ -126,6 +126,22 @@ def test_no_name_is_another_row_s_id_or_label():
     assert clash == []
 
 
+#: Words nearly every request has (8a, GUIDE1's F1257): a name that is one of them alone would find its screen in
+#: requests that never meant it, so these come as phrases ("vault file", "phone call", "eval score").
+PLAN_WORDS = {w for base in ("run", "workflow", "agent", "tool", "file", "note", "card", "call", "chat", "model",
+                             "score", "cost", "app", "token", "upload") for w in (base, base + "s")}
+
+
+def test_no_name_is_a_bare_plan_word():
+    assert [f"{row}: {name}" for name, row in _names(_census().CENSUS) if name in PLAN_WORDS] == []
+
+
+def test_the_plan_parts_are_the_rows_every_plan_is_made_of():
+    """The pack's `features` leave these out (GUIDE1's F1257): a workflow, its agents and tools, its runs and logs."""
+    assert {s.id for s in _census().CENSUS if s.plan_part} == {"orchestrations", "agents", "custom_tools", "runs",
+                                                                "logs"}
+
+
 def test_a_name_is_written_as_a_person_types_it():
     assert [n for n, _ in _names(_census().CENSUS) if not n.strip() or n != n.strip().lower()] == []
 
@@ -159,4 +175,5 @@ def test_a_host_s_row_keeps_its_names_and_imitation():
     evals = next(s for s in _census().CENSUS if s.id == "evals")
     moved = replace(evals, id="evals_cloud", href="/evals")
     assert (moved.names, moved.imitation) == (evals.names, evals.imitation)
-    assert _census().Screen("x", "X", "/x", "", (), "nope").names == (), "the positional form still builds a row"
+    row = _census().Screen("x", "X", "/x", "", (), "nope")
+    assert (row.names, row.imitation, row.plan_part) == ((), "", False), "the positional form still builds a row"
