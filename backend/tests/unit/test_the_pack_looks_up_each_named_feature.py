@@ -53,7 +53,7 @@ class TestWhatAMessageNames:
 
     def test_a_word_is_whole_never_part_of_another(self):
         assert FT.named_in("Cardiff's rubrics") == [s for s in feature_census.CENSUS if s.id == "evals"]
-        assert FT.named_in("a scoreboard of boarding passes") == [], "score and board only as whole words"
+        assert FT.named_in("a scoreboard of boarding passes") == [], "board only as a whole word, phrases too"
 
     def test_a_feature_named_in_a_new_census_row_is_found_with_no_change_here(self):
         row = feature_census.Screen("sparks", "Sparks", "/sparks", names=("spark plug",))
