@@ -244,16 +244,15 @@ def _knowledge(plan: Plan, _ctx: _Ctx) -> list[str]:
 
 
 def _apis(plan: Plan, _ctx: _Ctx) -> list[str]:
-    out = []
-    for p in getattr(plan, "apis", None) or []:  # F1225
-        tools = _get(p, "tools", None) or []
-        out.append(f'the API "{_get(p, "name")}"' + (f", its tools: {_plain(tools)}" if tools else ""))
-    return out
+    from core.native_builder.render import api_part_line
+
+    return [api_part_line(p) for p in getattr(plan, "apis", None) or [] if not p.problem]  # F1225, as the card says it
 
 
 def _mcp_servers(plan: Plan, _ctx: _Ctx) -> list[str]:
-    return [f'the app "{_get(m, "name")}" at {_get(m, "url")}'
-            for m in getattr(plan, "mcp_servers", None) or []]  # F1225
+    from core.native_builder.render import mcp_server_line
+
+    return [mcp_server_line(m) for m in getattr(plan, "mcp_servers", None) or [] if m.connected]  # F1225
 
 
 def _schedule(plan: Plan, _ctx: _Ctx) -> list[str]:
@@ -291,13 +290,15 @@ def _off_knowledge(plan: Plan, _ctx: _Ctx) -> list[str]:
 
 
 def _off_apis(plan: Plan, _ctx: _Ctx) -> list[str]:
-    return [f'the API "{_get(p, "name")}": {_get(p, "problem")}'
-            for p in getattr(plan, "apis", None) or [] if _get(p, "problem")]  # F1225
+    from core.native_builder.render import api_problem_line
+
+    return [api_problem_line(p) for p in getattr(plan, "apis", None) or [] if p.problem]  # F1225
 
 
 def _off_mcp(plan: Plan, _ctx: _Ctx) -> list[str]:
-    return [f'the app "{_get(m, "name")}" is not connected: connect it under Apps'
-            for m in getattr(plan, "mcp_servers", None) or [] if not _get(m, "connected", False)]  # F1225
+    from core.native_builder.render import unconnected_server_line
+
+    return [unconnected_server_line(m) for m in getattr(plan, "mcp_servers", None) or [] if not m.connected]  # F1225
 
 
 _OFF: list[Callable[[Plan, _Ctx], list[str]]] = [_off_schedule, _off_no_tools, _off_sessions, _off_knowledge,

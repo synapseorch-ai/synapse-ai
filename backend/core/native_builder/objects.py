@@ -155,6 +155,28 @@ class KnowledgePart(_Written):
     files_missing: list[str] = Field(default_factory=list)
 
 
+class ApiPart(_Written):
+    """The person's own API, from the OpenAPI spec they gave (F1225): the build makes a tool for each operation its
+    steps and agents use, as it makes a read API's (F944), and asks for its key on a card after the yes."""
+
+    name: str = Field(description="A short name for the API, e.g. Orders API")
+    spec: str = Field(description="The spec as the person gave it: its https URL, or its Vault path")
+    #: The tools the plan uses from it, by the names `read_api_spec` gave (code sets it).
+    tools: list[str] = Field(default_factory=list)
+    #: Why its spec cannot be used here (code sets it): said on the card.
+    problem: str = ""
+
+
+class McpServerPart(_Written):
+    """A remote MCP server the person gave by its URL (F1225). Its tools are known only once it is connected, so its
+    Connect card comes before the plan, and the plan is drawn again on its real tools (Naveen, 10-29)."""
+
+    name: str = Field(description="A short name for the server, e.g. Tracker")
+    url: str = Field(description="Its http or https URL, as the person gave it")
+    #: Connected here, by that URL (code sets it): its tools are in the workspace's `servers`.
+    connected: bool = False
+
+
 class Edit(_Written):
     """An update Plan's change to an existing workflow, by step id."""
 
@@ -183,6 +205,12 @@ class PlanDraft(_Written):
     knowledge: list[KnowledgePart] = Field(default_factory=list, description="Knowledge bases this build makes or "
                                                                              "uses, by name: what its agents answer "
                                                                              "from and its retrieve/ingest steps name")
+    apis: list[ApiPart] = Field(default_factory=list, description="The person's own APIs, from the OpenAPI spec "
+                                                                  "they gave: read it with read_api_spec first, and "
+                                                                  "use its tools by the names that gives")
+    mcp_servers: list[McpServerPart] = Field(default_factory=list, description=(
+        "A remote MCP server the person gave by URL that is not in `servers` yet: plan no step on its tools; it is "
+        "connected first, and you plan again on its tools"))
     questions: list[str] = Field(default_factory=list, description="Only what the person alone knows")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")

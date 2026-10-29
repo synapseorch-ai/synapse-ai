@@ -79,18 +79,18 @@ def _megabytes(n: int) -> str:
     return f"{n / (1024 * 1024):g} MB"
 
 
-async def fetch_bytes(url: str) -> bytes:
-    """GET `url` and return its body, or raise `FetchRefused`."""
+async def fetch_bytes(url: str, *, max_bytes: int | None = None) -> bytes:
+    """GET `url` and return its body, or raise `FetchRefused`. `max_bytes` lowers the cap for one caller."""
     try:
         async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):
-            return await _fetch(url)
+            return await _fetch(url, max_bytes)
     except TimeoutError:
         raise FetchRefused(
             f"the download did not finish within {TOTAL_TIMEOUT_SECONDS:g} seconds"
         ) from None
 
 
-async def _fetch(url: str) -> bytes:
+async def _fetch(url: str, cap: int | None = None) -> bytes:
     timeout = httpx.Timeout(TOTAL_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS)
     async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
         for _hop in range(MAX_REDIRECTS + 1):
@@ -109,7 +109,7 @@ async def _fetch(url: str) -> bytes:
                         raise FetchRefused(
                             f"the server answered {response.status_code} for {url}"
                         )
-                    return await _read_capped(response)
+                    return await _read_capped(response, cap)
             except httpx.HTTPError as exc:
                 raise FetchRefused(f"could not download {url}: {type(exc).__name__}") from None
 
