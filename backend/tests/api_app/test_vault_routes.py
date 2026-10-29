@@ -45,6 +45,14 @@ class _Pathless:
         cut = tenant_key("")
         return [k[len(cut):] for k in self.blobs if k.startswith(scoped)]
 
+    def stat(self, key):  # the store protocol's, which the tree and the editor's size check read (F1207)
+        from core.storage.base import BlobStat
+        content = self.get(key)
+        return None if content is None else BlobStat(key=key, size=len(content.encode("utf-8")))
+
+    def list_stats(self, prefix=""):
+        return [self.stat(k) for k in self.list(prefix)]
+
     def path_for(self, key):
         return None
 

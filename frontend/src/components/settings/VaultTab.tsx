@@ -2,15 +2,18 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library, Sheet } from 'lucide-react';
+import { FolderOpen, Folder, FileText, FileJson, FileCode, Image as ImageIcon, ChevronRight, ChevronDown, Plus, Trash2, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library, Sheet, Download, Maximize2, Minimize2 } from 'lucide-react';
 import { DetailHead, LIST_DETAIL, ROW_CURRENT, showDetail } from '@/components/run';
 import {
-    Badge, Button, ConfirmDialog, EmptyState, ErrorNote, Field, IconButton, Input, MarkdownEditor, Modal, Segmented,
-    Spinner, Textarea, Toast, useToast,
+    Badge, Button, buttonStyles, CodeEditor, ConfirmDialog, EmptyState, Field, IconButton, Input, MarkdownEditor, Modal,
+    SearchInput, Segmented, Spinner, Toast, useToast,
 } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { DocBadge, useVaultKnowledge, vaultKnowledge, type VaultKnowledge } from '@/components/knowledge/VaultKnowledge';
 import { ACCEPTED, REASONS, uploadToKnowledge, useKnowledgeEnabled, type KnowledgeBase } from '@/lib/knowledge';
+import {
+    codeLanguage, DownloadOnly, fileKind, formatSize, formatWhen, ImageView, rawUrl, TableView,
+} from './VaultViewer';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,6 +25,10 @@ interface VaultNode {
     type: 'file' | 'folder';
     ext?: string;
     children?: VaultNode[];
+    /** Files (F1207): bytes, ISO time, and whether runs write it (the engine's folders), so it opens read-only. */
+    size?: number | null;
+    modified?: string | null;
+    read_only?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,6 +86,7 @@ function TreeNode({
                     aria-current={isSelected ? 'true' : undefined}
                     className="flex min-h-9 min-w-0 flex-1 items-center gap-1.5 rounded-md text-left"
                     style={{ paddingLeft: `${8 + depth * 16}px` }}
+                    title={isFolder ? undefined : [formatSize(node.size), formatWhen(node.modified)].filter(Boolean).join(' · ') || undefined}
                 >
                     {/* Expand/collapse arrow for folders */}
                     {isFolder ? (
@@ -90,6 +98,11 @@ function TreeNode({
                     )}
                     <span className="shrink-0 text-text-faint"><FileIcon node={node} open={expanded} /></span>
                     <span className="flex-1 truncate">{node.name}</span>
+                    {!isFolder && formatSize(node.size) && (
+                        <span className="shrink-0 font-code text-[11px] tabular-nums text-text-faint md:group-focus-within:hidden md:group-hover:hidden">
+                            {formatSize(node.size)}
+                        </span>
+                    )}
                 </button>
 
                 {isFolder && knowledge?.baseAt(node.path) && (
@@ -151,14 +164,47 @@ function FileIcon({ node, open, className = 'size-3.5' }: { node: VaultNode; ope
     if (node.type === 'folder') return open ? <FolderOpen className={className} aria-hidden /> : <Folder className={className} aria-hidden />;
     if (node.ext === '.json') return <FileJson className={className} aria-hidden />;
     if (node.ext === '.txt') return <AlignLeft className={className} aria-hidden />;
-    if (node.ext && TABLE_EXTS.has(node.ext)) return <Sheet className={className} aria-hidden />;
+    const kind = fileKind(node.ext);
+    if (kind === 'table') return <Sheet className={className} aria-hidden />;
+    if (kind === 'image') return <ImageIcon className={className} aria-hidden />;
+    if (kind === 'code') return <FileCode className={className} aria-hidden />;
     return <FileText className={className} aria-hidden />;
 }
 
-const KIND_WORD: Record<string, string> = { '.json': 'JSON', '.txt': 'Plain text', '.csv': 'CSV', '.tsv': 'TSV' };
+const KIND_WORD: Record<string, string> = {
+    '.json': 'JSON', '.txt': 'Plain text', '.csv': 'CSV', '.tsv': 'TSV', '.pdf': 'PDF', '.py': 'Python',
+};
 
-/** Plain-data tables (F1202): edited as text, as `.txt` is. */
-const TABLE_EXTS = new Set(['.csv', '.tsv']);
+/** What a file is, in a word: its kind's, or its extension's ("YAML file"), or Markdown's. */
+function kindWord(node: VaultNode): string {
+    if (KIND_WORD[node.ext ?? '']) return KIND_WORD[node.ext ?? ''];
+    const kind = fileKind(node.ext);
+    if (kind === 'markdown') return 'Markdown';
+    if (kind === 'image') return 'Image';
+    return node.ext ? `${node.ext.slice(1).toUpperCase()} file` : 'Text file';
+}
+
+type SortBy = 'name' | 'modified' | 'size';
+
+/** The tree in the order picked: folders first, then files by name, newest first or largest first (F1207). */
+function sortTree(nodes: VaultNode[], by: SortBy): VaultNode[] {
+    const files = nodes.filter(n => n.type === 'file');
+    const folders = nodes.filter(n => n.type === 'folder').map(n => ({ ...n, children: sortTree(n.children ?? [], by) }));
+    const byName = (a: VaultNode, b: VaultNode) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    const order = by === 'modified'
+        ? (a: VaultNode, b: VaultNode) => (b.modified ?? '').localeCompare(a.modified ?? '') || byName(a, b)
+        : by === 'size' ? (a: VaultNode, b: VaultNode) => (b.size ?? -1) - (a.size ?? -1) || byName(a, b) : byName;
+    return [...folders.sort(byName), ...files.sort(order)];
+}
+
+/** Every file whose name or path holds `query`, in the order picked. */
+function matchingFiles(nodes: VaultNode[], query: string, by: SortBy): VaultNode[] {
+    const q = query.trim().toLowerCase();
+    const out: VaultNode[] = [];
+    const walk = (list: VaultNode[]) => list.forEach(n => n.type === 'folder' ? walk(n.children ?? []) : n.path.toLowerCase().includes(q) && out.push(n));
+    walk(nodes);
+    return sortTree(out, by);
+}
 
 /** The first file in the tree, depth first: what opens when nothing is picked (UX1: never an empty pane). */
 function firstFile(nodes: VaultNode[]): VaultNode | null {
@@ -288,48 +334,9 @@ function DeleteConfirm({
 // ---------------------------------------------------------------------------
 
 const EDITOR_HEIGHT = 'h-[clamp(280px,calc(100vh-330px),900px)] resize-none';
-
-function JsonEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-    const [error, setError] = useState<string | null>(null);
-
-    const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-        const v = e.target.value;
-        onChange(v);
-        try {
-            JSON.parse(v);
-            setError(null);
-        } catch (err: any) {
-            setError(err.message);
-        }
-    };
-
-    return (
-        <div className="grid gap-2">
-            <Textarea
-                aria-label="File contents"
-                value={value}
-                onChange={handleChange}
-                spellCheck={false}
-                invalid={!!error}
-                className={cn('font-code text-[13px] leading-relaxed', EDITOR_HEIGHT)}
-            />
-            {error && <ErrorNote>{error}</ErrorNote>}
-        </div>
-    );
-}
-
-function PlainTextEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
-    return (
-        <Textarea
-            aria-label="File contents"
-            value={value}
-            onChange={e => onChange(e.target.value)}
-            spellCheck={false}
-            className={cn('font-code text-[13px] leading-relaxed', EDITOR_HEIGHT)}
-            placeholder="Start typing..."
-        />
-    );
-}
+/** The code editor's frame takes its height from a style; these win over it (F1207). Full screen: the window. */
+const CODE_HEIGHT = '!h-[clamp(280px,calc(100vh-330px),900px)]';
+const CODE_HEIGHT_FULL = '!h-[calc(100vh-9rem)]';
 
 // ---------------------------------------------------------------------------
 // Main VaultTab Component
@@ -360,6 +367,12 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
     const [treeLoads, setTreeLoads] = useState(0);
     const kn = useVaultKnowledge(knowledgeOn, treeLoads);
     const [binary, setBinary] = useState(false);
+    // F1207: a file over the editor's 5 MB (the API's words), one runs write, and the pane over the whole window.
+    const [tooLarge, setTooLarge] = useState<string | null>(null);
+    const [readOnly, setReadOnly] = useState(false);
+    const [fullScreen, setFullScreen] = useState(false);
+    const [filter, setFilter] = useState('');
+    const [sortBy, setSortBy] = useState<SortBy>('name');
     const uploadInput = React.useRef<HTMLInputElement>(null);
     const [uploadTarget, setUploadTarget] = useState<{ folder: string; kb: KnowledgeBase } | null>(null);
     const [uploading, setUploading] = useState(0);
@@ -446,30 +459,42 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
     // unsaved edits (its text may have changed under it, and a keyboard's Enter
     // on it should do something).
     const [reads, setReads] = useState(0);
+    const openKind = fileKind(openNode?.ext);
+    const shownAsIs = openKind === 'image' || openKind === 'pdf';  // never read as text: `/api/vault/raw` has them
     useEffect(() => {
         if (!openPath) return;
-        setLoadingFile(true);
         setBinary(false);
+        setTooLarge(null);
+        setReadOnly(false);
+        if (shownAsIs) {
+            setFileContent('');
+            setSavedContent('');
+            return;
+        }
+        setLoadingFile(true);
         fetch(`/api/vault/file?path=${encodeURIComponent(openPath)}&source=${storageSource}`)
-            .then(r => {
-                // 415: a PDF, an image — nothing an editor can open (F323).
+            .then(async r => {
+                // 415: bytes, nothing an editor can open (F323); 413: more than the editor opens (F1207).
                 if (r.status === 415) setBinary(true);
+                if (r.status === 413) setTooLarge((await r.json().catch(() => null))?.detail ?? 'Too large to open here.');
                 return r.ok ? r.json() : null;
             })
             .then(data => {
                 const c = data?.content ?? '';
                 setFileContent(c);
                 setSavedContent(c);
+                setReadOnly(!!data?.read_only);
             })
             .catch(() => {
                 setFileContent('');
                 setSavedContent('');
             })
             .finally(() => setLoadingFile(false));
-    }, [openPath, storageSource, reads]);
+    }, [openPath, storageSource, reads, shownAsIs]);
 
+    const editable = !!openNode && !shownAsIs && !binary && !tooLarge && !readOnly;
     const handleSave = async () => {
-        if (!openNode) return;
+        if (!openNode || !editable) return;
         setSavingFile(true);
         try {
             const res = await fetch('/api/vault/file', {
@@ -480,8 +505,10 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
             if (res.ok) {
                 setSavedContent(fileContent);
                 show('Saved');
+                fetchTree();  // its size and time
             } else {
-                show(`Could not save ${openNode.name}`, 'danger');
+                const detail = (await res.json().catch(() => null))?.detail;
+                show(typeof detail === 'string' ? detail : `Could not save ${openNode.name}`, 'danger');
             }
         } catch {
             show(`Could not save ${openNode.name}`, 'danger');
@@ -545,6 +572,36 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
     };
 
     const isDirty = fileContent !== savedContent;
+
+    // Ctrl/Cmd+S saves an edited file; Escape leaves full screen.
+    const saveRef = React.useRef(handleSave);
+    saveRef.current = handleSave;
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's' && isDirty && editable) {
+                e.preventDefault();
+                saveRef.current();
+            } else if (e.key === 'Escape' && fullScreen) setFullScreen(false);
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+    }, [isDirty, editable, fullScreen]);
+
+    const shownTree = React.useMemo(() => sortTree(tree, sortBy), [tree, sortBy]);
+    const selectNode = (n: VaultNode) => {
+        setSelectedNode(n);
+        // Never over unsaved edits: the open file read again would lose them.
+        if (!(n.path === openNode?.path && fileContent !== savedContent)) setReads(r => r + 1);
+        // Set context folder for "new" actions
+        if (n.type === 'folder') {
+            setContextFolder(n.path);
+        } else {
+            const parts = n.path.split('/');
+            setContextFolder(parts.slice(0, -1).join('/'));
+        }
+        showDetail(detailRef.current);
+    };
+    const found = React.useMemo(() => (filter.trim() ? matchingFiles(tree, filter, sortBy) : null), [tree, filter, sortBy]);
     const newAt = (type: 'file' | 'folder') => { setContextFolder(''); setCreateDialog({ type, parentPath: '' }); };
     const switchSource = (source: 's3' | 'local') => {
         setStorageSource(source); setSelectedNode(null); setFileContent(''); setSavedContent('');
@@ -607,30 +664,56 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                     <IconButton size="sm" icon={RefreshCw} label="Refresh" onClick={fetchTree} />
                 </div>
 
-                <div className="max-h-[calc(100vh-17rem)] overflow-y-auto modern-scrollbar max-lg:max-h-80">
+                {/* F1207: find a file by name or path, and the order files sit in. */}
+                <div className="grid gap-2">
+                    <SearchInput value={filter} onChange={setFilter} placeholder="Filter files…" aria-label="Filter files" className="max-w-none" />
+                    <Segmented
+                        label="Sort files by"
+                        value={sortBy}
+                        onChange={setSortBy}
+                        options={[{ value: 'name', label: 'Name' }, { value: 'modified', label: 'Newest' }, { value: 'size', label: 'Largest' }]}
+                    />
+                </div>
+
+                <div className="max-h-[calc(100vh-21rem)] overflow-y-auto modern-scrollbar max-lg:max-h-80">
                     {loading ? (
                         <div className="flex items-center gap-2 px-2 py-4 text-sm text-text-faint" role="status">
                             <Spinner size={14} /> Loading…
                         </div>
+                    ) : found ? (
+                        found.length === 0 ? (
+                            <p className="m-0 px-2 py-4 text-sm text-text-faint">No file&apos;s name or path has “{filter.trim()}”.</p>
+                        ) : (
+                            <ul className="m-0 grid list-none gap-0.5 p-0" aria-label="Files found">
+                                {found.map(n => (
+                                    <li key={n.path}>
+                                        <button
+                                            type="button"
+                                            onClick={() => selectNode(n)}
+                                            aria-current={openNode?.path === n.path ? 'true' : undefined}
+                                            className={cn(
+                                                'grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-2 rounded-md px-2 py-1.5 text-left text-sm',
+                                                openNode?.path === n.path ? ROW_CURRENT : 'text-text-muted hover:bg-row-hover hover:text-text',
+                                            )}
+                                        >
+                                            <span className="text-text-faint"><FileIcon node={n} /></span>
+                                            <span className="min-w-0">
+                                                <span className="block truncate">{n.name}</span>
+                                                <span className="block truncate font-code text-[11px] text-text-faint">{n.path}</span>
+                                            </span>
+                                            <span className="font-code text-[11px] tabular-nums text-text-faint">{formatSize(n.size)}</span>
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        )
                     ) : (
-                        tree.map(node => (
+                        shownTree.map(node => (
                             <TreeNode
                                 key={node.path}
                                 node={node}
                                 selectedPath={openNode?.path ?? null}
-                                onSelect={(n) => {
-                                    setSelectedNode(n);
-                                    // Never over unsaved edits: the open file read again would lose them.
-                                    if (!(n.path === openNode?.path && fileContent !== savedContent)) setReads(r => r + 1);
-                                    // Set context folder for "new" actions
-                                    if (n.type === 'folder') {
-                                        setContextFolder(n.path);
-                                    } else {
-                                        const parts = n.path.split('/');
-                                        setContextFolder(parts.slice(0, -1).join('/'));
-                                    }
-                                    showDetail(detailRef.current);
-                                }}
+                                onSelect={selectNode}
                                 onDelete={setDeleteTarget}
                                 onCreateInFolder={(folderPath) => {
                                     setContextFolder(folderPath);
@@ -665,21 +748,56 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
             </nav>
 
             {/* The open file */}
-            <section ref={detailRef} aria-label="File" className="grid min-w-0 scroll-mt-4 content-start gap-4">
+            <section
+                ref={detailRef}
+                aria-label="File"
+                className={cn(
+                    'grid min-w-0 scroll-mt-4 content-start gap-4',
+                    fullScreen && 'fixed inset-0 z-50 overflow-auto bg-bg p-4 md:p-6',
+                )}
+            >
                 {openNode && (
                     <>
                         <DetailHead
                             leading={<span className="mt-1 text-text-faint"><FileIcon node={openNode} className="size-5" /></span>}
                             title={openNode.name}
-                            sub={<><span>{KIND_WORD[openNode.ext ?? ''] ?? 'Markdown'}</span> · <span className="font-code">{openNode.path}</span></>}
+                            sub={
+                                <>
+                                    <span>{kindWord(openNode)}</span>
+                                    {formatSize(openNode.size) && <> · <span>{formatSize(openNode.size)}</span></>}
+                                    {formatWhen(openNode.modified) && <> · <span>{formatWhen(openNode.modified)}</span></>}
+                                    {' · '}<span className="font-code">{openNode.path}</span>
+                                </>
+                            }
                             actions={
                                 <>
+                                    {readOnly && (
+                                        <span title="Runs write the files in this folder, so they open read-only.">
+                                            <Badge size="sm">Read-only</Badge>
+                                        </span>
+                                    )}
                                     {isDirty && (
                                         <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs font-medium text-text-muted">Unsaved</span>
                                     )}
-                                    <Button onClick={handleSave} disabled={savingFile || !isDirty || binary} loading={savingFile}>
-                                        Save
-                                    </Button>
+                                    {editable && (
+                                        <Button onClick={handleSave} disabled={savingFile || !isDirty} loading={savingFile}>
+                                            Save
+                                        </Button>
+                                    )}
+                                    <a
+                                        href={rawUrl(openNode.path, storageSource, true)}
+                                        download={openNode.name}
+                                        aria-label={`Download ${openNode.name}`}
+                                        title="Download"
+                                        className={buttonStyles({ variant: 'secondary', iconOnly: true })}
+                                    >
+                                        <Download className="size-4" aria-hidden />
+                                    </a>
+                                    <IconButton
+                                        icon={fullScreen ? Minimize2 : Maximize2}
+                                        label={fullScreen ? 'Leave full screen' : 'Full screen'}
+                                        onClick={() => setFullScreen(f => !f)}
+                                    />
                                     <IconButton icon={Trash2} tone="danger" label={`Delete ${openNode.name}`} onClick={() => setDeleteTarget(openNode)} />
                                 </>
                             }
@@ -702,26 +820,52 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                             <div className="flex items-center gap-2 py-10 text-sm text-text-faint" role="status">
                                 <Spinner size={16} /> Reading…
                             </div>
+                        ) : openKind === 'image' ? (
+                            <ImageView key={openNode.path} src={rawUrl(openNode.path, storageSource)} name={openNode.name} />
+                        ) : openKind === 'pdf' ? (
+                            <DownloadOnly title="A PDF" href={rawUrl(openNode.path, storageSource, true)} name={openNode.name}>
+                                PDFs open in your own PDF viewer: download it. Agents can still reference it with @[path].
+                            </DownloadOnly>
                         ) : binary ? (
-                            <EmptyState title="Not a text file">
-                                This file can&apos;t be opened here. Agents can still reference it with @[path].
-                            </EmptyState>
-                        ) : openNode.ext === '.json' ? (
-                            <JsonEditor key={openNode.path} value={fileContent} onChange={setFileContent} />
-                        ) : openNode.ext === '.txt' || (openNode.ext && TABLE_EXTS.has(openNode.ext)) ? (
-                            <PlainTextEditor value={fileContent} onChange={setFileContent} />
-                        ) : (
+                            <DownloadOnly title="Not a text file" href={rawUrl(openNode.path, storageSource, true)} name={openNode.name}>
+                                This file can&apos;t be opened here. Download it, or reference it in a prompt with @[path].
+                            </DownloadOnly>
+                        ) : tooLarge ? (
+                            <DownloadOnly title="Too large to open here" href={rawUrl(openNode.path, storageSource, true)} name={openNode.name}>
+                                {tooLarge}
+                            </DownloadOnly>
+                        ) : openKind === 'markdown' ? (
                             <MarkdownEditor
                                 key={openNode.path}
                                 aria-label="File contents"
                                 value={fileContent}
                                 onChange={setFileContent}
-                                textareaClassName={EDITOR_HEIGHT}
+                                textareaClassName={fullScreen ? 'h-[calc(100vh-11rem)] resize-none' : EDITOR_HEIGHT}
                                 placeholder={"# Title\n\nStart writing..."}
                                 previewEmpty="Empty file"
                                 frontMatter
+                                disabled={readOnly}
+                                defaultTab={readOnly ? 'preview' : undefined}
                             />
-                        )}
+                        ) : (() => {
+                            const editor = (
+                                <CodeEditor
+                                    key={openNode.path}
+                                    aria-label="File contents"
+                                    value={fileContent}
+                                    onChange={setFileContent}
+                                    language={openKind === 'json' ? 'json' : codeLanguage(openNode.ext)}
+                                    lint={openKind === 'json' ? 'json' : undefined}
+                                    format={openKind === 'json' && !readOnly}
+                                    readOnly={readOnly}
+                                    placeholder="Start typing…"
+                                    className={fullScreen ? CODE_HEIGHT_FULL : CODE_HEIGHT}
+                                />
+                            );
+                            return openKind === 'table'
+                                ? <TableView key={openNode.path} ext={openNode.ext ?? '.csv'} text={fileContent} editor={editor} />
+                                : editor;
+                        })()}
                     </>
                 )}
             </section>
