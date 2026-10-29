@@ -282,7 +282,7 @@ def entries() -> list[ProductTool]:
                         **_BOARD, "kind": {"type": "string", "enum": ["agent", "workflow", "schedule"]},
                         "id": {"type": "string"}, "access": {"type": "string", "enum": ["add", "work"]}},
                         "required": ["board", "kind", "id", "access"]},
-                    handler=_give_access, audit_action="board.access.given",
+                    handler=_give_access, audit_action="board.access_set",
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
         ProductTool(name="delete_board", description="Delete a shared board with its cards and history.",
                     input_schema={"type": "object", "properties": dict(_BOARD), "required": ["board"]},
