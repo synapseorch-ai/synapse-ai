@@ -39,7 +39,7 @@ async def _agent(agent_id: str) -> dict:
 
 
 def _kept_right(messages: list) -> None:
-    kept = json.dumps(messages)
+    kept = json.dumps(messages, ensure_ascii=False)  # the mark's own quotes, unescaped
     assert CANARY not in kept and CARD not in kept
     assert MARK in kept and "[card number]" in kept
     assert NOT_A_CARD in kept, "a number that is not a card's is kept"
