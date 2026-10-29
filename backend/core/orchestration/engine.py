@@ -23,6 +23,7 @@ from .step_usage import exact_window, step_scope
 from .state import SharedState
 from .steps import STEP_EXECUTORS, extract_all_json
 from .run_cap import RunCap
+from .read_shapes import Unreadable, load_to_run
 from .run_gate import stop_reason
 from .answers import QuestionNotAsked
 from .time_limits import CONTAINERS, OWN_BUDGET, deadline_scope, run_ceiling, step_time_limit, timed_out
@@ -1008,7 +1009,11 @@ class OrchestrationEngine:
             yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
             return
 
-        orch = Orchestration.model_validate(orch_data)
+        try:
+            orch = load_to_run(orch_data)
+        except Unreadable as e:  # said as the run's error, never pydantic's (F1235)
+            yield {"type": "orchestration_error", "error": str(e)}
+            return
         if not interrupted:
             run.keep_definition(kept_definition(orch))
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY),
@@ -1095,7 +1100,11 @@ class OrchestrationEngine:
             yield {"type": "orchestration_error", "error": f"Orchestration '{run.orchestration_id}' not found"}
             return
 
-        orch = Orchestration.model_validate(orch_data)
+        try:
+            orch = load_to_run(orch_data)
+        except Unreadable as e:
+            yield {"type": "orchestration_error", "error": str(e)}
+            return
         apply_model_override(orch, run.shared_state.get(cls.MODEL_OVERRIDE_KEY),
                              run.shared_state.get(cls.MODEL_ROLES_KEY))
         engine = cls(orch, server_module, depth=depth)

@@ -12,6 +12,9 @@ to keep up: a list held alone in an object is that list (the builder's wrapping)
 left out (a lone id where a branch is a list of ids is that branch); a number or true/false where text goes is that
 text; a field set on a step type that does not read it is dropped; anything else is the field's default. Never
 guessed at, and each repair is said, by step and field. Pure: the stored document is not changed.
+
+What still does not read is refused to a run in words (`load_to_run`): the step by its name and id, the field, the
+shape it needs, and where to mend it, never pydantic's text or a server error.
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from core.models_orchestration import StepConfig
+from core.models_orchestration import Orchestration, StepConfig, StepType
 
 #: Fields one step type reads and `StepConfig`'s rules refuse on any other (its `model_validator`s), and what the
 #: rule needs: dropped from a step that does not read them, as the save would have refused them (F1047).
@@ -112,3 +115,76 @@ def _shape(value: Any) -> str:
         return "true/false"
     return {dict: "an object", list: "a list", str: "text", int: "a number", float: "a number",
             type(None): "nothing"}.get(type(value), type(value).__name__)
+
+
+class Unreadable(ValueError):
+    """A stored workflow the engine does not read, said as what to mend and where (F1235). Its words are the
+    refusal: a route answers 422 with them, and a run that stops on it keeps them as its reason (`reason_of`)."""
+
+
+def load_to_run(doc: dict[str, Any]) -> Orchestration:
+    """The engine's own strict read of a stored workflow, for a run; `Unreadable` in words when it does not read."""
+    try:
+        return Orchestration.model_validate(doc)
+    except ValidationError as e:
+        raise Unreadable(unreadable_words(doc, e)) from e
+
+
+def unreadable_words(doc: Any, exc: ValidationError) -> str:
+    """Why a workflow does not read, a sentence per step: the step by its name and id, never `steps[0]`."""
+    steps = doc.get("steps") if isinstance(doc, dict) else None
+    by_step: dict[str, list[str]] = {}
+    for err in exc.errors():
+        loc = tuple(err.get("loc") or ())
+        if len(loc) >= 2 and loc[0] == "steps" and isinstance(loc[1], int):
+            step = steps[loc[1]] if isinstance(steps, list) and loc[1] < len(steps) else None
+            by_step.setdefault(_named(step, loc[1]), []).append(shape_problem({**err, "loc": loc[2:]}))
+        else:
+            by_step.setdefault("", []).append(shape_problem(err))
+    said = [f"{f'Step {who}' if who else 'The workflow'}: {'; '.join(dict.fromkeys(p))}." for who, p in by_step.items()]
+    return ("This workflow can't run: it was saved in a shape the engine does not read. " + " ".join(said)
+            + " Open it in the editor and save it, or ask Synapse AI to change it.")
+
+
+def _named(step: Any, index: int) -> str:
+    if not isinstance(step, dict):
+        return f"{index + 1}"
+    name, sid = step.get("name"), step.get("id")
+    if isinstance(name, str) and name and isinstance(sid, str) and sid and name != sid:
+        return f'"{name}" ({sid})'
+    return f"'{sid}'" if isinstance(sid, str) and sid else f"{index + 1}"
+
+
+def shape_problem(err: dict) -> str:
+    """One pydantic error as the field, the shape it needs and what it was given (F1047's words: the builder's save
+    refusal and `Unreadable` both say them)."""
+
+    loc = err.get("loc") or ()
+    if not loc:  # a rule across fields: its own sentence
+        return str(err.get("msg", "")).removeprefix("Value error, ")
+    field = str(loc[0]) + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in loc[1:])
+    kind = err.get("type", "")
+    if kind == "missing":
+        return f"`{field}` is required"
+    if kind == "enum" and loc == ("type",):
+        return f"`type` must be one of {', '.join(t.value for t in StepType)}, not {err.get('input')!r}"
+    need = _NEEDS.get(kind)
+    if need is None:
+        return f"`{field}`: {err.get('msg', 'not readable')}"
+    if field == "human_fields":
+        need = 'a list of objects, e.g. [{"name": "email", "type": "string"}]'
+    return f"`{field}` must be {need}, not {_given(err.get('input'))}"
+
+
+_NEEDS = {
+    "list_type": "a list", "dict_type": "an object", "string_type": "a string",
+    "int_type": "a whole number", "int_parsing": "a whole number", "int_from_float": "a whole number",
+    "float_type": "a number", "float_parsing": "a number", "bool_type": "true or false", "bool_parsing": "true or false",
+}
+
+
+def _given(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true/false"
+    return {dict: "an object", list: "a list", str: "a string", int: "a number", float: "a number",
+            type(None): "null"}.get(type(value), type(value).__name__)
