@@ -256,6 +256,7 @@ def go_ahead_request(state: dict) -> str | None:
 
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_help import product_capabilities
+    from core.native_builder import features
 
     ws = await workspace(server_module)
     state = _state()
@@ -281,6 +282,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
         "code_steps": ws.code_steps,
         # What is done on a screen, not from here (F1256): asked for, it is said with the screen, never imitated.
         "not_here": feature_census.not_here(),
+        # Each feature the person's message names, looked up before any plan (F1257): what is done there from here or
+        # not, what imitating it looks like, and the help and docs on it. None named, no key.
+        **({"features": named} if (named := features.features(str(state.get("user_message") or ""))) else {}),
         # What a new agent's switches may name (F1223): connected MCP servers, and the sites with a kept session.
         "servers": sorted(_servers(server_module)),
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
