@@ -131,7 +131,7 @@ class TestSW1sPrograms:
     def test_e2s_loop_reads_its_item_first(self):
         compiled = compile_plan(O.read(SW1["E2"])[0], mint=_counter())
         research = next(s for s in compiled.orchestration["steps"] if s["id"] == "research")
-        assert research["prompt_template"].startswith("This item: {state.keyword}")
+        assert research["prompt_template"].startswith("This item: {{ state.keyword }}")
 
     def test_s1s_team_holds_its_members_by_their_new_ids(self):
         compiled = compile_plan(O.read(SW1["S1"])[0], mint=_counter())

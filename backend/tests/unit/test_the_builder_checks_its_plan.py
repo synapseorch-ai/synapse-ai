@@ -198,7 +198,7 @@ def test_the_builder_checks_between_the_plan_and_the_review():
     assert steps["step_check_plan"]["next_step_id"] == "step_plan_route"
     assert steps["step_plan_route"]["switch_cases"]["review"] == "step_human_review"
     review = steps["step_human_review"]
-    assert review["human_prompt"].endswith("{state.plan_checked.review}\n\n{state.plan_checked.say}")
+    assert review["human_prompt"].endswith("{{ state.plan_checked.review }}\n\n{{ state.plan_checked.say }}")
     assert review["input_keys"][0] == "plan_checked"  # its typed context, the card's object (F795)
     assert orch["state_schema"]["plan_checked"]["type"] == "str"  # JSON text, read field by field (F801)
     assert "{{ state.plan_checked.say }}" in steps["step_plan"]["prompt_template"]
@@ -230,7 +230,7 @@ async def test_a_far_name_is_not_offered_as_the_nearest():
 def test_the_plan_card_reads_the_needs_you_section():
     from core.orchestration.steps import render_state_refs
 
-    review = render_state_refs("x\n\n---\n\n{state.plan_draft}\n\n{state.plan_check.section}",
+    review = render_state_refs("x\n\n---\n\n{{ state.plan_draft }}\n\n{{ state.plan_check.section }}",
                                {"plan_draft": PLAN, "plan_check": {"section": ""}})
     assert review.rstrip().endswith("```"), "no section, nothing added"
 

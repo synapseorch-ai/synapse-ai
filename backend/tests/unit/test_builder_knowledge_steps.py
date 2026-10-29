@@ -43,7 +43,7 @@ async def _steps(orch_id: str) -> dict:
 
 RETRIEVE_ARGS = {
     "orch_id": "orch_k", "step_id": "step_find", "name": "Find clauses", "type": "retrieve",
-    "retrieve_kb_ids": [CONTRACTS.id], "retrieve_query": "{state.user_input}",
+    "retrieve_kb_ids": [CONTRACTS.id], "retrieve_query": "{{ state.user_input }}",
     "retrieve_filters_json": '{"doc_type": "contract"}', "retrieve_top_k": 5, "output_key": "found",
 }
 
@@ -99,7 +99,7 @@ class TestWritingTheSteps:
         assert (await call("add_single_step", RETRIEVE_ARGS))["status"] == "step_added"
 
         step = (await _steps("orch_k"))["step_find"]
-        assert step["retrieve"] == {"kb_ids": [CONTRACTS.id], "query": "{state.user_input}",
+        assert step["retrieve"] == {"kb_ids": [CONTRACTS.id], "query": "{{ state.user_input }}",
                                     "filters": {"doc_type": "contract"}, "top_k": 5}
         assert not any(k.startswith("retrieve_") for k in step)
 
@@ -107,10 +107,10 @@ class TestWritingTheSteps:
         await S.seed_orchestrations([S.make_orchestration(id="orch_k")])
         await call("add_single_step", RETRIEVE_ARGS)
         result = await call("update_step", {"orch_id": "orch_k", "step_id": "step_find",
-                                            "patch_json": '{"retrieve_query": "{state.question}"}'})
+                                            "patch_json": '{"retrieve_query": "{{ state.question }}"}'})
         assert result["status"] == "step_updated"
         assert (await _steps("orch_k"))["step_find"]["retrieve"] == {
-            "kb_ids": [CONTRACTS.id], "query": "{state.question}", "filters": {"doc_type": "contract"}, "top_k": 5}
+            "kb_ids": [CONTRACTS.id], "query": "{{ state.question }}", "filters": {"doc_type": "contract"}, "top_k": 5}
 
     async def test_a_batch_and_a_steps_json_fold_the_same_way(self, on):
         await S.seed_orchestrations([S.make_orchestration(id="orch_k")])
@@ -147,7 +147,7 @@ def _orch(*steps: dict, schema: dict | None = None) -> dict:
 
 
 def _retrieve(**kw) -> dict:
-    settings = {"kb_ids": [CONTRACTS.id], "query": "{state.user_input}", **kw.pop("retrieve", {})}
+    settings = {"kb_ids": [CONTRACTS.id], "query": "{{ state.user_input }}", **kw.pop("retrieve", {})}
     return {"id": "r", "name": "Find", "type": "retrieve", "retrieve": settings, "output_key": "found",
             "next_step_id": "e", **kw}
 
@@ -222,7 +222,7 @@ class TestTheBuildersPrompts:
         assert orch["state_schema"]["knowledge_steps"]["default"] == ""
         steps = self._steps()
         # SAI2-P3: the planner writes the Plan, and code reads the knowledge bases for it, by id, into its pack.
-        assert "{state.knowledge_steps}" in steps["step_plan"]["prompt_template"]
+        assert "{{ state.knowledge_steps }}" in steps["step_plan"]["prompt_template"]
         import inspect
 
         from core.native_builder import build_plan

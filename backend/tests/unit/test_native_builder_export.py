@@ -221,7 +221,7 @@ class TestTheBuildersPromptsReadIt:
 
     @pytest.mark.parametrize("step_id,key", READERS)
     def test_each_step_reads_its_key(self, step_id, key):
-        assert "{state.%s}" % key in self._steps()[step_id]["prompt_template"]
+        assert "{{ state.%s }}" % key in self._steps()[step_id]["prompt_template"]
 
     @pytest.mark.parametrize("step_id,key", READERS)
     def test_empty_keys_leave_the_prompt_as_it_was(self, step_id, key):
@@ -232,14 +232,14 @@ class TestTheBuildersPromptsReadIt:
 
     def test_the_code_reaches_the_prompt_whole_and_unrendered(self):
         """The prompt writer copies an agent's instructions from it, so it must not be
-        cut; and a `{state.x}` or `{{ … }}` inside it is the code's, not ours."""
-        state = export_state(TS_EXPORT + "\n// {state.user_message} {{ global.SECRET }}\n")
+        cut; and a `{{ state.x }}` or `{{ … }}` inside it is the code's, not ours."""
+        state = export_state(TS_EXPORT + "\n// {{ state.user_message }} {{ global.SECRET }}\n")
         rendered = _fill_task_template(self._steps()["step_agent_prompts"]["prompt_template"],
                                        {**state, "plan_checked": {"review": "p", "plan": {"agents": []}},
                                         "user_message": "x"},
                                        {"SECRET": "s3cr3t"})
         assert state["user_message"] in rendered
-        assert "{state.user_message} {{ global.SECRET }}" in rendered and "s3cr3t" not in rendered
+        assert "{{ state.user_message }} {{ global.SECRET }}" in rendered and "s3cr3t" not in rendered
 
     def test_a_bare_paste_is_routed_to_create(self):
         """The front door's classifier reads a paste as a build (SAI2-P4), and code sends any turn carrying an export

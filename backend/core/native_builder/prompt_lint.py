@@ -17,6 +17,8 @@ import re
 from collections import defaultdict
 from typing import Any
 
+from core.templating import STATE_REF, one_form
+
 from . import seed
 
 #: A sentence this long or longer is a passage someone wrote, not a phrase two prompts happen to share.
@@ -86,15 +88,14 @@ def loops_not_item_first(orch: dict[str, Any]) -> list[str]:
     for loop in steps.values():
         if loop.get("type") != "loop" or not loop.get("loop_over"):
             continue
-        item = re.escape(loop.get("loop_item_key") or "loop_item")
-        names_it = re.compile(r"\{\{?\s*state\." + item + r"\b")
+        item = loop.get("loop_item_key") or "loop_item"
         for sid in loop.get("loop_step_ids") or []:
             body = steps.get(sid) or {}
             prompt = body.get("prompt_template") if body.get("type") in ("agent", "llm", "tool") else None
             if not isinstance(prompt, str) or not prompt.strip():
                 continue
-            first = next(line for line in prompt.splitlines() if line.strip())
-            if not names_it.search(first):
+            first = one_form(next(line for line in prompt.splitlines() if line.strip()))
+            if not any(m.group(1).split(".")[0] == item for m in STATE_REF.finditer(first)):
                 late.append(sid)
     return late
 

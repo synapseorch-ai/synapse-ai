@@ -77,7 +77,8 @@ from core.native_builder import prompt_lint, seed
 #: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
 #: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
 #: branch; on fix-forward 14's tree, 4c222b83….
-BUNDLE_SHA256 = "4c222b83f951094dbbee953f4c44d9549643722d276b77ad2269bfe892fe36b1"
+#: F1252: every template over state in the one form, `{{ state.x }}` (Naveen 10-30), c8d173a1….
+BUNDLE_SHA256 = "c8d173a1791bd98c53b7a3794a6a16f24010b4855e3bb70731dd8768ee0bf918"
 
 
 def _sha(definitions) -> str:

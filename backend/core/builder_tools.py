@@ -381,7 +381,7 @@ STEPS_JSON_DESCRIPTION = (
     "a person attaches in chat sets \"pass_images\": true.\n"
     "Minimal example (2 agent steps):\n"
     "'[{\"id\":\"step_abc1234\",\"name\":\"Analyse\",\"type\":\"agent\","
-    "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {state.user_input}\","
+    "\"agent_id\":\"agent_123\",\"prompt_template\":\"Summarise {{ state.user_input }}\","
     "\"input_keys\":[\"user_input\"],\"output_key\":\"summary\","
     "\"next_step_id\":\"step_def5678\"},"
     "{\"id\":\"step_def5678\",\"name\":\"Done\",\"type\":\"end\"}]'"
@@ -407,7 +407,7 @@ BROWSER_STEP_PROPERTIES: dict = {
     "recording_inputs_json": {
         "type": "string",
         "description": "JSON object filling each of the recording's inputs (get_recording names them), each a value "
-                       "or a {state.key} template. Example: '{\"order number\":\"{state.user_input}\"}' "
+                       "or a {{ state.key }} template. Example: '{\"order number\":\"{{ state.user_input }}\"}' "
                        "(browser steps; every input filled).",
     },
     "may_send_steps": {
@@ -1130,7 +1130,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "description": "Step type",
                     },
                     "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps; on a browser step with on_miss 'agent', a Browser agent)"},
-                    "prompt_template": {"type": "string", "description": "Prompt with {state.key} placeholders (for agent/llm steps)"},
+                    "prompt_template": {"type": "string", "description": "Prompt with {{ state.key }} placeholders (for agent/llm steps)"},
                     "input_keys": {
                         "type": "array", "items": {"type": "string"},
                         "description": "State keys this step reads",
@@ -1153,7 +1153,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "human_prompt": {"type": "string", "description": "Prompt shown to user (human steps)"},
                     "human_fields_json": {
                         "type": "string",
-                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{state.review.feedback}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
+                        "description": "JSON string of field definitions. The answer is stored under output_key as a mapping {field name: value}: name the output_key for the step (e.g. `review`), not after a field, type it dict, and read one field as `{{ state.review.feedback }}`. Types: string, textarea, number, boolean, email, date, phone, choice (a dropdown; give it \"options\": [..], one is picked). Example: '[{\"name\":\"feedback\",\"type\":\"textarea\",\"label\":\"Your feedback\"},{\"name\":\"decision\",\"type\":\"choice\",\"label\":\"Decision\",\"options\":[\"Approve\",\"Later\"]}]'",
                     },
                     "forced_tool": {"type": "string", "description": "Tool name for tool steps"},
                     "workflow_id": {"type": "string", "description": "The id of the workflow a workflow step runs, as a nested run (workflow steps)"},
@@ -1178,7 +1178,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "string",
                         "description": (
                             "Markdown or plain text to store in output_key (print steps). "
-                            "Use {state.key} or {state.key.nested} to embed shared state values."
+                            "Use {{ state.key }} or {{ state.key.nested }} to embed shared state values."
                         ),
                     },
                     "if_condition": {
@@ -1216,7 +1216,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "array", "items": {"type": "string"},
                         "description": "Knowledge base ids to search, from list_knowledge_bases (retrieve steps; at most 10)",
                     },
-                    "retrieve_query": {"type": "string", "description": "What to search for, with {state.key} placeholders, e.g. `{state.question}` (retrieve steps)"},
+                    "retrieve_query": {"type": "string", "description": "What to search for, with {{ state.key }} placeholders, e.g. `{{ state.question }}` (retrieve steps)"},
                     "retrieve_filters_json": {
                         "type": "string",
                         "description": (
@@ -1309,7 +1309,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "loop_break_condition": {"type": "string", "description": "Condition evaluated after each iteration; True stops the loop (loop steps). Same restricted expression syntax as if_condition."},
                                 "loop_max_iterations": {"type": "integer", "description": "Hard ceiling on iterations for any loop mode (default 50)"},
                                 "transform_code": {"type": "string"},
-                                "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {state.key} interpolation."},
+                                "print_content": {"type": "string", "description": "Markdown/text for print steps. Supports {{ state.key }} interpolation."},
                                 "if_condition": {"type": "string", "description": "Condition for if_else steps (e.g. `state.flag == True`). " + _EXPRESSION_DIALECT},
                                 "if_true_step_id": {"type": "string", "description": "Step ID when condition is True"},
                                 "if_false_step_id": {"type": "string", "description": "Step ID when condition is False"},
@@ -1318,7 +1318,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
                                 **BROWSER_STEP_PROPERTIES,
                                 "retrieve_kb_ids": {"type": "array", "items": {"type": "string"}, "description": "Knowledge base ids to search (retrieve steps)"},
-                                "retrieve_query": {"type": "string", "description": "Search query with {state.key} placeholders (retrieve steps)"},
+                                "retrieve_query": {"type": "string", "description": "Search query with {{ state.key }} placeholders (retrieve steps)"},
                                 "retrieve_filters_json": {"type": "string", "description": "JSON metadata filter (retrieve steps)"},
                                 "retrieve_top_k": {"type": "integer"},
                                 "retrieve_rerank": {"type": "boolean"},
@@ -1964,7 +1964,7 @@ async def _refuse_browser_steps(steps: list, before: list | None = None, *, wire
                                 schema: dict | None = None, agents: dict | None = None) -> dict | None:
     """Steps' browser parts as the editor's save checks them (F1146, F1140, F1167), and what a model gets wrong that
     the editor's pickers never let a person: a recording's inputs left unfilled, sends that aren't its steps (F1189),
-    a `{state.…}` input the run never has (F1232). `before` is the workflow's steps as saved, whose sessions and
+    a `{{ state.… }}` input the run never has (F1232). `before` is the workflow's steps as saved, whose sessions and
     recordings stay. `wired`: `steps` is the whole workflow, so its inputs are read in order (`input_problems`);
     else the steps go into `before` mid-build. `schema` is its declared state; `agents`, those not saved yet, by id
     (a plan's own, F1233). Sessions named by site become ids here, in `steps`."""
@@ -4391,18 +4391,21 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             issues.append(
                 f"Human step '{hid}' collects fields ({', '.join(names)}), so '{key}' holds a mapping "
                 f"{{field: value}}, not {declared}: declare '{key}' as dict in state_schema and read one "
-                f"field as {{state.{key}.{names[0]}}}. Clearer still, name the output_key for the step "
+                f"field as {{{{ state.{key}.{names[0]} }}}}. Clearer still, name the output_key for the step "
                 f"(e.g. 'review'), not after one of its fields."
             )
+    from core.templating import STATE_REF, one_form
+
     for s in steps:
         if s.get("type") != "print":
             continue
+        shown = {m.group(1) for m in STATE_REF.finditer(one_form(s.get("print_content") or ""))}
         for key, (hid, field) in fielded.items():
-            if f"{{state.{key}}}" in (s.get("print_content") or ""):
+            if key in shown:
                 issues.append(
-                    f"Print step '{s.get('id', '?')}' shows {{state.{key}}}, human step '{hid}'s whole "
+                    f"Print step '{s.get('id', '?')}' shows {{{{ state.{key} }}}}, human step '{hid}'s whole "
                     f"answer, which is a mapping and prints as a Python dict: show one field, "
-                    f"{{state.{key}.{field}}}."
+                    f"{{{{ state.{key}.{field} }}}}."
                 )
 
     # ── State schema ─────────────────────────────────────────────────────────

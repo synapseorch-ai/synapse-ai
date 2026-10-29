@@ -11,26 +11,25 @@
  * |-----------------------|-----------------------------------------|----------------------------------------------|
  * | `tool-url`            | a custom tool's URL                     | `{{ arg }}`, `{{ args }}`, `{{ global.k }}`  |
  * | `tool`                | its headers and body                    | the same                                     |
- * | `step-prompt`         | agent / LLM / tool step prompt          | `{{ state.k }}`, `{{ global.k }}`, `{state.k}` |
- * | `legacy-state-nested` | print step content                      | `{state.k}`, `{state.k.path}` only           |
- * | `legacy-state`        | human step prompt                       | `{state.k}` only                             |
+ * | `step-prompt`         | agent / LLM / tool step prompt          | `{{ state.k }}`, `{{ global.k }}`            |
+ * | `state`               | human step prompt, print step content   | `{{ state.k }}`, `{{ state.k.path }}` only   |
  * | `global`              | agent system prompt                     | `{{ global.k }}` only                        |
+ *
+ * A reference to state has one form, `{{ state.k }}` (F1252): the engine writes an older `{state.k}` that way as a
+ * step is read, and offers nothing else. A person's text (a Human or a Print step) never renders a global.
  *
  * A skill body renders nothing, so it has no profile. Offering a name a field
  * never renders would teach a syntax that silently stays literal.
  *
  * Details that are not style:
  *
- * - **Insertions are always spaced** — `{{ state.topic }}`. In a step prompt
- *   the older single-brace pass runs first and matches the *inside* of an
- *   unspaced `{{state.topic}}`, which then renders as `{gold}`.
+ * - **Insertions are always spaced** — `{{ state.topic }}`: the form the engine writes.
  * - **A tool argument is offered bare** — `{{ invoice_id }}`, never
  *   `{{ args.invoice_id }}`. Both resolve, but in a URL only the bare form
  *   marks the argument as used, so the namespaced one is sent again as a query
  *   parameter.
- * - **A lone `{` opens nothing**, even where only the single-brace form works:
- *   prose and JSON are full of them, and an open list takes Enter. The list
- *   waits for the `s` of `state`.
+ * - **A lone `{` opens nothing**: prose and JSON are full of them, and an open
+ *   list takes Enter. The list waits for `{{`.
  * - **A token never crosses a line.** The engine's pattern would; a suggestion
  *   list anchored three lines up would not help anyone.
  * - **A secret variable is a name and a flag, never a value.**
@@ -41,8 +40,7 @@ export type TemplateProfile =
   | "tool-url"
   | "tool"
   | "step-prompt"
-  | "legacy-state"
-  | "legacy-state-nested"
+  | "state"
   | "global";
 
 export type TemplateVariable = { key: string; secret: boolean };
@@ -78,16 +76,12 @@ export type TemplateMatch = {
 
 /** The engine's name rule (`templating.REF`) without the braces, one segment at a time. */
 const SEGMENT = /^[A-Za-z_][\w-]*$/;
-/** `{state.key}` is `\w+` in every single-brace pass — no hyphen. */
-const LEGACY_SEGMENT = /^\w+$/;
 /** Only `args` is special to a bare lookup: `{{ args }}` is the whole payload, never an argument. */
 const RESERVED_ARG = "args";
 
 const DOUBLE_OPEN = /\{\{[ \t]*([A-Za-z_][\w.-]*)?$/;
 const DOUBLE_CLOSE = /^[ \t]*\}\}/;
-const LEGACY_QUERY = /^s(t(a(t(e(\.[\w.]*)?)?)?)?)?$/;
 const WORD_TAIL = /^[\w-]*/;
-const LEGACY_WORD_TAIL = /^\w*/;
 
 const LIMIT = 100;
 
@@ -100,7 +94,7 @@ function doubleCandidates(profile: TemplateProfile, sources: TemplateSources): T
     }
     out.push({ kind: "args", label: "args", insert: "{{ args }}", detail: "every argument, as JSON" });
   }
-  if (profile === "step-prompt") {
+  if (profile === "step-prompt" || profile === "state") {
     for (const key of sources.state) {
       if (!SEGMENT.test(key)) continue;
       out.push({ kind: "state", label: `state.${key}`, insert: `{{ state.${key} }}`, detail: "state" });
@@ -120,14 +114,8 @@ function doubleCandidates(profile: TemplateProfile, sources: TemplateSources): T
   return out;
 }
 
-function legacyCandidates(sources: TemplateSources): TemplateCandidate[] {
-  return sources.state
-    .filter((key) => LEGACY_SEGMENT.test(key))
-    .map((key): TemplateCandidate => ({ kind: "state", label: `state.${key}`, insert: `{state.${key}}`, detail: "state" }));
-}
-
 /** Prefix matches first, then anything containing the query; source order within each. */
-function rank(candidates: TemplateCandidate[], query: string, prefixOnly = false): TemplateCandidate[] {
+function rank(candidates: TemplateCandidate[], query: string): TemplateCandidate[] {
   const q = query.toLowerCase();
   if (!q) return candidates.slice(0, LIMIT);
   const prefix: TemplateCandidate[] = [];
@@ -135,7 +123,7 @@ function rank(candidates: TemplateCandidate[], query: string, prefixOnly = false
   for (const candidate of candidates) {
     const label = candidate.label.toLowerCase();
     if (label.startsWith(q)) prefix.push(candidate);
-    else if (!prefixOnly && label.includes(q)) inside.push(candidate);
+    else if (label.includes(q)) inside.push(candidate);
   }
   return [...prefix, ...inside].slice(0, LIMIT);
 }
@@ -158,57 +146,25 @@ export function matchTemplate(
   const lineEnd = text.indexOf("\n", cursor);
   const before = text.slice(lineStart, cursor);
   const after = text.slice(cursor, lineEnd < 0 ? text.length : lineEnd);
-  const legacyOnly = profile === "legacy-state" || profile === "legacy-state-nested";
-
-  if (!legacyOnly) {
-    const open = DOUBLE_OPEN.exec(before);
-    if (open) {
-      const query = open[1] ?? "";
-      const candidates = rank(doubleCandidates(profile, sources), query);
-      if (!candidates.length) return null;
-      const word = WORD_TAIL.exec(after)?.[0] ?? "";
-      const rest = after.slice(word.length);
-      const close = DOUBLE_CLOSE.exec(rest)?.[0];
-      // `.name` after the word stays, and so does the `}}` after it — the
-      // choice then replaces only `{{ word`.
-      const keepsPath = rest.startsWith(".");
-      return {
-        from: lineStart + open.index,
-        to: cursor + word.length + (close && !keepsPath ? close.length : 0),
-        query,
-        candidates: keepsPath
-          ? candidates.map((c) => ({ ...c, insert: c.insert.replace(/ \}\}$/, "") }))
-          : candidates,
-      };
-    }
-  }
-
-  if (legacyOnly || profile === "step-prompt") {
-    const brace = before.lastIndexOf("{");
-    const query = brace < 0 ? "" : before.slice(brace + 1);
-    const doubled = brace > 0 && before[brace - 1] === "{";
-    const shaped = query !== "" && LEGACY_QUERY.test(query);
-    // Where `{{ }}` also works, only a finished `{state.` asks for the old form.
-    const wanted = legacyOnly ? shaped : shaped && query.startsWith("state.");
-    if (brace >= 0 && !doubled && wanted) {
-      // Past the key — `{state.result.fl` — there is nothing left to suggest:
-      // state is offered by its top-level keys only.
-      if (query.split(".").length > 2) return null;
-      const candidates = rank(legacyCandidates(sources), query, true);
-      if (!candidates.length) return null;
-      const word = LEGACY_WORD_TAIL.exec(after)?.[0] ?? "";
-      const rest = after.slice(word.length);
-      const keepsTail = rest.startsWith("}") || rest.startsWith(".");
-      return {
-        from: lineStart + brace,
-        to: cursor + word.length,
-        query,
-        candidates: keepsTail ? candidates.map((c) => ({ ...c, insert: c.insert.slice(0, -1) })) : candidates,
-      };
-    }
-  }
-
-  return null;
+  const open = DOUBLE_OPEN.exec(before);
+  if (!open) return null;
+  const query = open[1] ?? "";
+  const candidates = rank(doubleCandidates(profile, sources), query);
+  if (!candidates.length) return null;
+  const word = WORD_TAIL.exec(after)?.[0] ?? "";
+  const rest = after.slice(word.length);
+  const close = DOUBLE_CLOSE.exec(rest)?.[0];
+  // `.name` after the word stays, and so does the `}}` after it — the
+  // choice then replaces only `{{ word`.
+  const keepsPath = rest.startsWith(".");
+  return {
+    from: lineStart + open.index,
+    to: cursor + word.length + (close && !keepsPath ? close.length : 0),
+    query,
+    candidates: keepsPath
+      ? candidates.map((c) => ({ ...c, insert: c.insert.replace(/ \}\}$/, "") }))
+      : candidates,
+  };
 }
 
 /** Replace the token with the candidate; the cursor lands after it. */
