@@ -2912,6 +2912,21 @@ _NO_NETWORK_ERRORS = re.compile(
 )
 
 
+async def _vault_files_for(paths: list[str]) -> dict[str, str]:
+    """The text of each Vault file a transform reads with `read_vault` (F1227), read before it runs through the vault
+    tools' own read (the Vault's path rule, the blob store a host overlays, their size limit), so the same code reads
+    the same file in Docker, on the host and on a fleet's Lambda. A file it cannot read fails the step, named."""
+    from core.vault_tools import _get_text
+
+    files: dict[str, str] = {}
+    for path in paths:
+        text, error = await asyncio.to_thread(_get_text, path)
+        if error:
+            raise RuntimeError(f"read_vault({path!r}): {error}")
+        files[path] = text or ""
+    return files
+
+
 class TransformStepExecutor:
     """Run sandboxed Python code to transform shared state."""
 
@@ -2975,7 +2990,7 @@ class TransformStepExecutor:
         import os
 
         from core.execution import DockerRunner, ExecRequest, HostRunner, Network, get_runner, wrap_transform
-        from core.execution.scripts import transform_failure, transform_line_offset
+        from core.execution.scripts import transform_failure, transform_line_offset, vault_paths_named
 
         runtime = "host" if os.environ.get("SYNAPSE_TRANSFORM_RUNTIME", "").strip().lower() == "host" else "sandbox"
         runner = HostRunner() if runtime == "host" else get_runner()
@@ -2988,8 +3003,9 @@ class TransformStepExecutor:
 
         from core.vault import _vault_root
 
+        files = await _vault_files_for(vault_paths_named(code)[0])
         result = await runner.run(ExecRequest(
-            code=wrap_transform(code, state),
+            code=wrap_transform(code, state, files),
             network=network,
             timeout_s=capped,
             vault_path=_vault_root(),
@@ -3003,7 +3019,7 @@ class TransformStepExecutor:
             # the runner's temp path and the whole traceback (F407).
             label = "Transform (host)" if runtime == "host" else "Transform"
             said = transform_failure(
-                result.stderr, code, transform_line_offset(state), result.exit_code, label=label)
+                result.stderr, code, transform_line_offset(state, files), result.exit_code, label=label)
             if network is Network.NONE and _NO_NETWORK_ERRORS.search(result.stderr or ""):
                 # It reached for the network it no longer has: said, not left as a bare resolve error (F968).
                 said = f"{said} {TRANSFORM_NO_NETWORK}"

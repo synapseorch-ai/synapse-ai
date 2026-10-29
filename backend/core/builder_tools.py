@@ -3911,6 +3911,93 @@ def _file_content_into_code(step: dict, steps: list[dict]) -> list[str]:
     return issues
 
 
+#: What reads a file's text as data: a CSV reader, a frame, a text buffer (F1227). By the callee's last name.
+_PARSES_TEXT = frozenset({"reader", "DictReader", "StringIO", "read_csv", "read_table", "read_json"})
+#: …and the string methods that split it into lines.
+_SPLITS_TEXT = frozenset({"splitlines", "split"})
+
+
+def _state_key(node) -> str | None:
+    """The key a node reads straight out of `state` — `state.k`, `state['k']`, `state.get('k')` — or None."""
+    import ast
+
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "state":
+        return node.attr
+    if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "state" \
+            and isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+        return node.slice.value
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get" \
+            and isinstance(node.func.value, ast.Name) and node.func.value.id == "state" and node.args \
+            and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+        return node.args[0].value
+    return None
+
+
+def _wrappers_parsed(code: str, keys: set[str]) -> list[str]:
+    """Which of `keys` the code parses as text without unwrapping: handed, directly or through a name assigned from
+    it, to a CSV reader, a frame or a text buffer, or split into lines. `json.loads(...)` and `[...]['content']` are
+    reads of the wrapper and never count."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and (key := _state_key(node.value)) in keys:
+            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
+
+    def raw(node) -> str | None:
+        key = _state_key(node)
+        if key in keys:
+            return key
+        return names.get(node.id) if isinstance(node, ast.Name) else None
+
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+        if callee in _PARSES_TEXT and node.args and (key := raw(node.args[0])):
+            found.append(key)
+        elif callee in _SPLITS_TEXT and isinstance(node.func, ast.Attribute) and (key := raw(node.func.value)):
+            found.append(key)
+    return list(dict.fromkeys(found))
+
+
+def _transform_reads_a_wrapper(step: dict, steps: list[dict]) -> list[str]:
+    """A Transform that parses a file reader's answer as the file itself (F1227, CAP3's stage 1).
+
+    A Tool step on `vault_read` (or another reader) puts its answer in state as JSON, `{"path": …, "content": …}`: a
+    Transform that hands it, as it is, to a CSV reader, a frame or a split into lines parses that wrapper, finds no
+    rows, and reports zeros (brief 4's $0.00 for every region). Reading `['content']` out of it stays right. Such
+    code is refused, naming `read_vault('<path>')`, which reads the file itself; so is a `read_vault` whose path is not
+    written out, which the step cannot read before it runs."""
+    from core.execution.scripts import vault_paths_named
+
+    if step.get("type") != "transform" or not isinstance(step.get("transform_code"), str):
+        return []
+    code = step["transform_code"]
+    sid = step.get("id")
+    issues = [f"Transform step '{sid}' calls read_vault without its path written out (line {n}): name the file; "
+              "read_vault needs the path written out, as in read_vault('reports/sales.csv')."
+              for n in vault_paths_named(code)[1]]
+    readers = {str(w.get("output_key")): w for w in steps
+               if w.get("type") == "tool" and str(w.get("forced_tool") or "").split("__")[-1] in _FILE_READERS
+               and w.get("output_key")}
+    for key in _wrappers_parsed(code, set(readers)):
+        reader = readers[key]
+        path = str(((reader.get("tool_arguments") or {}).get("path")) or "").lstrip("/")
+        where = f"read_vault('{path}')" if path else "read_vault('<its vault path>')"
+        issues.append(
+            f"Transform step '{sid}' parses 'state.{key}' as the file, but step '{reader.get('id')}' put its answer "
+            f"there as JSON {{\"path\": …, \"content\": …}}. Read the file itself with {where} in the code (and "
+            "drop the read step if nothing else needs it), or parse its ['content']."
+        )
+    return issues
+
+
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
                             knowledge_off: bool = False, allow_dead_ends: bool = False,
                             knowledge_later: bool = False) -> dict:
@@ -4191,6 +4278,7 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
                             f"give an earlier step '{key}' as its output_key, or declare it in the state schema."
                         )
                 issues += _file_content_into_code(s, steps)
+        issues += _transform_reads_a_wrapper(s, steps)
         # An Ingest step reads its records from one key. A key the schema
         # declares counts too: a run's caller can fill it, and a list default
         # is a way to seed records.

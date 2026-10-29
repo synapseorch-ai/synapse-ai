@@ -64,28 +64,66 @@ _STATE_CLASS = '''class _SynapseState(dict):
 '''
 
 
-def _transform_head(state: dict[str, Any]) -> str:
+#: `read_vault(path)` in a transform (F1227): a Vault file's text, read by the engine before the step ran — the
+#: runner mounts nothing it can rely on (cloud's Lambda mounts no Vault at all), so the files ride in as `state` does.
+_READ_VAULT = '''
+def read_vault(path):
+    """A Vault file's text. The path is written out in the code, so the step reads it before it runs."""
+    key = str(path).strip().lstrip("/")
+    if key not in _vault_files:
+        raise FileNotFoundError(f"read_vault({path!r}): only a path written out in the code is read, as in "
+                                f"read_vault('reports/sales.csv')")
+    return _vault_files[key]
+'''
+
+
+def _transform_head(state: dict[str, Any], files: dict[str, str] | None = None) -> str:
     """What a transform's script runs before the person's code."""
     return (
         f'import json\n{_STATE_CLASS}\nstate = json.loads("""{_embed(state)}""", object_hook=_SynapseState)\n'
+        f'_vault_files = json.loads("""{_embed(files or {})}"""){_READ_VAULT}'
         'result = None\n\n'
     )
 
 
-def wrap_transform(code: str, state: dict[str, Any]) -> str:
-    """A transform step: `state` in, `result` out, printed as JSON."""
+def wrap_transform(code: str, state: dict[str, Any], files: dict[str, str] | None = None) -> str:
+    """A transform step: `state` in, `result` out, printed as JSON. `files`: the Vault files its code names with
+    `read_vault`, by path, read before it runs (F1227)."""
     return (
-        _transform_head(state)
+        _transform_head(state, files)
         + code
         + '\n\nif result is not None:\n    print(json.dumps({"result": result}, default=str))\n'
         'else:\n    print(json.dumps({"result": None}))\n'
     )
 
 
-def transform_line_offset(state: dict[str, Any]) -> int:
+def transform_line_offset(state: dict[str, Any], files: dict[str, str] | None = None) -> int:
     """How many script lines come before the person's first: their line N is the
     script's N + this (F407)."""
-    return _transform_head(state).count("\n")
+    return _transform_head(state, files).count("\n")
+
+
+def vault_paths_named(code: str) -> tuple[list[str], list[int]]:
+    """The paths a transform's code reads with `read_vault("…")`, written out, and the lines of any call whose path is
+    not written out (F1227). Code that does not parse names none: the step fails on it as before."""
+    import ast
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return [], []
+    paths: list[str] = []
+    unnamed: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "read_vault":
+            arg = node.args[0] if node.args else None
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str) and arg.value.strip():
+                key = arg.value.strip().lstrip("/")
+                if key not in paths:
+                    paths.append(key)
+            else:
+                unnamed.append(node.lineno)
+    return paths, unnamed
 
 
 #: A traceback's frame in the wrapped script, whatever the runner named its file:
