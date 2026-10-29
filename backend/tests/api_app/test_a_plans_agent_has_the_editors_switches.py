@@ -95,6 +95,11 @@ class TestTheKnowledgeCheck:
 
 
 class TestTheAppsDoor:
+    async def test_post_agents_with_knowledge_off_is_refused_with_its_switch(self, client):
+        # Knowledge is off by default (D187): the editor hides its picker then, and the app's door says why.
+        resp = await client.post("/api/agents", json=_agent(knowledge=["kb_x"]))
+        assert resp.status_code == 422 and "turn it on in Settings › General › Knowledge" in resp.json()["detail"]
+
     async def test_post_agents_refuses_a_base_that_is_not_here(self, on):
         resp = await on.post("/api/agents", json=_agent(knowledge=["kb_gone"]))
         assert resp.status_code == 422 and "no knowledge base 'kb_gone'" in resp.json()["detail"]
