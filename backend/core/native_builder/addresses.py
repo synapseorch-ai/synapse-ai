@@ -9,7 +9,7 @@ tell the person's own site from a public one (synapseorch.com looked public to t
 typed is asked about too (Naveen, 10-30).
 
 A link is known by its host: the person who gave synapseorch.com gave its pages. What an earlier step writes
-(`{{state.read}}`) is the run's own, never a guess. Handles and phone numbers count only as a tool's whole input:
+(`{{ state.read }}`) is the run's own, never a guess. Handles and phone numbers count only as a tool's whole input:
 in words, "@" and digits mean too many other things.
 """
 from __future__ import annotations
@@ -26,8 +26,8 @@ _HANDLE = re.compile(r"(?<![\w.@])@[a-z0-9_]{2,30}\b", re.I)
 _PHONE = re.compile(r"\+?\d[\d ().-]{5,}\d")
 _WHOLE_HANDLE = re.compile(r"^@[a-z0-9_]{2,30}$", re.I)
 _WHOLE_PHONE = re.compile(r"^\+?\d[\d ().-]{5,}\d$")
-#: A run's own value: `{{state.x}}`, `{state.x}`, `{{input.x}}` (the engine's references, `parts_words._FROM_THE_RUN`).
-_REF = re.compile(r"\{\{?\s*(?:state|input|global)\.[^{}]*\}\}?")
+#: A run's own value: `{{ state.x }}`, `{{ input.x }}`, `{{ global.x }}`, the engine's one form (F1252).
+_REF = re.compile(r"\{\{\s*(?:state|input|global)\.[^{}]*\}\}")
 _TRAILING = ".,;:!?"
 
 #: What a plan says that nobody acts on: the export's left-outs, and the questions it asks (asked on their own).
