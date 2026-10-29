@@ -2,7 +2,7 @@
 'use client';
 import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
-import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library } from 'lucide-react';
+import { FolderOpen, Folder, FileText, FileJson, ChevronRight, ChevronDown, Plus, Trash2, RefreshCw, FolderPlus, FilePlus, AlignLeft, Cloud, Upload, Library, Sheet } from 'lucide-react';
 import { DetailHead, LIST_DETAIL, ROW_CURRENT, showDetail } from '@/components/run';
 import {
     Badge, Button, ConfirmDialog, EmptyState, ErrorNote, Field, IconButton, Input, MarkdownEditor, Modal, Segmented,
@@ -151,10 +151,14 @@ function FileIcon({ node, open, className = 'size-3.5' }: { node: VaultNode; ope
     if (node.type === 'folder') return open ? <FolderOpen className={className} aria-hidden /> : <Folder className={className} aria-hidden />;
     if (node.ext === '.json') return <FileJson className={className} aria-hidden />;
     if (node.ext === '.txt') return <AlignLeft className={className} aria-hidden />;
+    if (node.ext && TABLE_EXTS.has(node.ext)) return <Sheet className={className} aria-hidden />;
     return <FileText className={className} aria-hidden />;
 }
 
-const KIND_WORD: Record<string, string> = { '.json': 'JSON', '.txt': 'Plain text' };
+const KIND_WORD: Record<string, string> = { '.json': 'JSON', '.txt': 'Plain text', '.csv': 'CSV', '.tsv': 'TSV' };
+
+/** Plain-data tables (F1202): edited as text, as `.txt` is. */
+const TABLE_EXTS = new Set(['.csv', '.tsv']);
 
 /** The first file in the tree, depth first: what opens when nothing is picked (UX1: never an empty pane). */
 function firstFile(nodes: VaultNode[]): VaultNode | null {
@@ -184,7 +188,7 @@ function CreateDialog({
     onCreate: (name: string, ext?: string) => void;
 }) {
     const [name, setName] = useState('');
-    const [fileType, setFileType] = useState<'md' | 'json' | 'txt'>('md');
+    const [fileType, setFileType] = useState<'md' | 'json' | 'txt' | 'csv'>('md');
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -226,6 +230,7 @@ function CreateDialog({
                             { value: 'md', label: 'Markdown', icon: <FileText className="size-3.5" aria-hidden /> },
                             { value: 'json', label: 'JSON', icon: <FileJson className="size-3.5" aria-hidden /> },
                             { value: 'txt', label: 'Text', icon: <AlignLeft className="size-3.5" aria-hidden /> },
+                            { value: 'csv', label: 'CSV', icon: <Sheet className="size-3.5" aria-hidden /> },
                         ]}
                     />
                 )}
@@ -588,7 +593,7 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                         </div>
                     }
                 >
-                    Create <span className="font-code">.md</span>, <span className="font-code">.json</span>, or <span className="font-code">.txt</span> files
+                    Create <span className="font-code">.md</span>, <span className="font-code">.json</span>, <span className="font-code">.txt</span> or <span className="font-code">.csv</span> files
                     to use as context in agent prompts, and reference them with <span className="font-code">@[path]</span>.
                 </EmptyState>
             ) : (
@@ -703,7 +708,7 @@ export function VaultTab({ initialPath }: { initialPath?: string } = {}) {
                             </EmptyState>
                         ) : openNode.ext === '.json' ? (
                             <JsonEditor key={openNode.path} value={fileContent} onChange={setFileContent} />
-                        ) : openNode.ext === '.txt' ? (
+                        ) : openNode.ext === '.txt' || (openNode.ext && TABLE_EXTS.has(openNode.ext)) ? (
                             <PlainTextEditor value={fileContent} onChange={setFileContent} />
                         ) : (
                             <MarkdownEditor
