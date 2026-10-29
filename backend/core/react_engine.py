@@ -1168,6 +1168,7 @@ async def run_agent_step(
     team_seat=None,                       # core.team.Seat: this turn is a member's, working for its team's lead (TEAM1a)
     step_limits=None,                     # core.team.StepLimits: a workflow step's time and the run's cap, for its team (TEAM1e)
     finish_tools=None,                    # [name]: the turn ends when one is called and succeeds; its result is the output (E2)
+    output_step=None,                     # an Agent step without finish tools: its id, to save and finish with files (D339 P4)
     person_present: bool | None = None,   # a person is in this turn (F1219): None = a chat turn that can ask one
     run_cap=None,                         # core.orchestration.run_cap.RunCap: the run's cost cap, for going on past the limit
 ):
@@ -1427,6 +1428,28 @@ async def run_agent_step(
             "description": _task_tool.description,
             "parameters": _task_tool.inputSchema,
         }})
+        tools_json = str([
+            {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
+             "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
+             "schema": t.inputSchema if hasattr(t, "inputSchema") else t.get("function", {}).get("parameters")}
+            for t in all_tools
+        ])
+
+    # ── A step's own files (D339 P4): an Agent step with no finish tools may save files and finish with one ──
+    # The engine's own, like the task list: `write_output` saves to this run's outputs in the vault, and
+    # `submit_output` ends the step with a reference to a file as its output. A reply in words still ends it.
+    from core import step_refs as _step_refs
+    _output_step = output_step if (output_step and run_id and not finish_tools) else None
+    _written_outputs: list[str] = []
+    if _output_step:
+        for _out_tool in _step_refs.output_tools():
+            all_tools = [t for t in all_tools
+                         if (t.name if hasattr(t, "name") else t.get("function", {}).get("name", "")) != _out_tool.name]
+            all_tools.append(_out_tool)
+            tool_schema_map[_out_tool.name] = _out_tool.inputSchema
+            ollama_tools = [t for t in ollama_tools if t.get("function", {}).get("name") != _out_tool.name]
+            ollama_tools.append({"type": "function", "function": {
+                "name": _out_tool.name, "description": _out_tool.description, "parameters": _out_tool.inputSchema}})
         tools_json = str([
             {"tool": t.name if hasattr(t, "name") else t.get("function", {}).get("name"),
              "description": t.description if hasattr(t, "description") else t.get("function", {}).get("description"),
@@ -2766,6 +2789,25 @@ async def run_agent_step(
                 _cut_words = strip_reasoning(llm_output)
                 _cut_is_words = bool(_cut_words.strip()) and not (
                     getattr(_llm_result, "tool_calls", None) or _cut_words.lstrip().startswith(("{", "[{")))
+                if _output_step and _cut_is_words and _truncation_retries >= 2:
+                    # A step's answer cut at the output limit twice (D339 P4): what it wrote is saved whole as a
+                    # file, and that file is the step's output — not a third call to learn again that it does not fit.
+                    try:
+                        _saved = _step_refs.save(
+                            run_id, _output_step, "".join(_partial_answer) + _cut_words, name="answer",
+                            note=("The answer was longer than one reply can hold: what was written is saved whole "
+                                  "in this file, and it may stop short of the end."))
+                    except Exception as _save_err:  # noqa: BLE001 — the partial answer is accepted, as before
+                        _log.warning(f"⚠️ The cut answer could not be saved: {_save_err}")
+                        _saved = None
+                    if _saved is not None:
+                        for _e in _unstream("truncated"):
+                            yield _e
+                        yield {"type": "truncated_output", "turn": turn + 1, "retry": _truncation_retries,
+                               "chars": len(llm_output), "saved": _saved[_step_refs.REF]}
+                        _finished = {"tool": _step_refs.SUBMIT_OUTPUT, "result": _saved}
+                        final_response = json.dumps(_saved, ensure_ascii=False)
+                        break
                 if _truncation_retries <= MAX_TRUNCATION_RETRIES:
                     if _cut_is_words:
                         _partial_answer.append(_cut_words)
@@ -3066,7 +3108,7 @@ async def run_agent_step(
                 tool_name = _offered_name(tool_call.get("tool", ""), tool_schema_map)
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue
-                if tool_name in _finish:
+                if tool_name in _finish or (_output_step and tool_name == _step_refs.SUBMIT_OUTPUT):
                     # Whatever path runs it, a result it produced is the summary's next entry.
                     _finish_pending = (tool_name, len(tools_used_summary))
                 tool_args = tool_call.get("arguments", {})
@@ -3113,6 +3155,13 @@ async def run_agent_step(
                 _log.debug(f"📥 Args: {json.dumps(tool_args, indent=2, default=str)[:1000]}")
 
                 # ── UPDATE_TASKS: native task list, handled in-engine ─────────────
+                if _output_step and tool_name in (_step_refs.WRITE_OUTPUT, _step_refs.SUBMIT_OUTPUT):
+                    _said, _out = _step_refs.call_output_tool(tool_name, tool_args, run_id=run_id,
+                                                              step_id=_output_step, written=_written_outputs)
+                    current_context_text += f"\n[Turn {turn + 1} — Observation] {_said}\n"
+                    tools_used_summary.append(f"{tool_name}: {json.dumps(_out, default=str)}")
+                    yield {"type": "tool_result", "tool_name": tool_name, "preview": _said[:500]}
+                    continue
                 if tool_name == TASK_TOOL_NAME and _task_tool_enabled:
                     _new_tasks, _task_err = validate_tasks_args(tool_args)
                     if _task_err:

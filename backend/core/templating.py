@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
+
+from core.step_refs import is_ref, resolved
 
 REF = re.compile(r"\{\{\s*([A-Za-z_][\w.\-]*)\s*\}\}")
 
@@ -65,15 +67,20 @@ def loads_within_depth(text: str) -> Any:
     return json.loads(text)
 
 
-def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
+def _walk(root: Any, path: list[str], *, keep_ref: bool = False) -> tuple[bool, Any]:
     """Follow `path` into dicts (and list indexes). `(found, value)`.
 
     A step into text that holds a JSON object reads the object (F801): a builder tool's output is JSON text in
     state, and a prompt names a field of it as a condition or a set argument does. The text is parsed, never
     rendered: nothing in it is read as a template.
+
+    A step output saved to the vault (`core.step_refs`, D339 P4) is read as what it was, on the way and at the end;
+    `keep_ref` leaves the reference itself at the end, for a reader that shows it as a file (a model's prompt).
     """
     cur = root
     for part in path:
+        if is_ref(cur):
+            cur = resolved(cur)
         if isinstance(cur, str) and cur.lstrip().startswith("{"):
             try:
                 parsed = loads_within_depth(cur)
@@ -89,6 +96,8 @@ def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
             cur = cur[int(part)]
         else:
             return False, None
+    if is_ref(cur) and not keep_ref:
+        cur = resolved(cur)
     return True, cur
 
 
@@ -100,7 +109,8 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None) -> tuple[bool, Any]:
+def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None,
+           keep_ref: bool = False) -> tuple[bool, Any]:
     """Resolve one reference (without braces) against `context`.
 
     `context` maps namespace → mapping. `bare` names the namespace a
@@ -121,19 +131,25 @@ def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None) 
     if len(parts) == 1 and parts[0] == "args" and "args" in context:
         return True, context["args"]
     if parts[0] in context and len(parts) > 1 and parts[0] in NAMESPACES:
-        return _walk(context[parts[0]], parts[1:])
+        return _walk(context[parts[0]], parts[1:], keep_ref=keep_ref)
     if bare is not None and bare in context:
-        return _walk(context[bare], parts)
+        return _walk(context[bare], parts, keep_ref=keep_ref)
     return False, None
 
 
-def render(text: str, context: dict[str, Any], *, bare: str | None = None) -> str:
-    """Substitute every `{{ … }}` in `text` it can resolve; leave the rest."""
+def render(text: str, context: dict[str, Any], *, bare: str | None = None,
+           refs: Callable[[dict], str] | None = None) -> str:
+    """Substitute every `{{ … }}` in `text` it can resolve; leave the rest.
+
+    A step output saved to the vault renders as what it was, unless `refs` is given: then a reference that is the
+    whole value renders as `refs` says (a model's prompt shows the file it does not fit; D339 P4)."""
     if not text or "{{" not in text:
         return text
 
     def _sub(match: re.Match[str]) -> str:
-        found, value = lookup(match.group(1), context, bare=bare)
+        found, value = lookup(match.group(1), context, bare=bare, keep_ref=refs is not None)
+        if found and refs is not None and is_ref(value):
+            return refs(value)
         return _text(value) if found else match.group(0)
 
     return REF.sub(_sub, text)

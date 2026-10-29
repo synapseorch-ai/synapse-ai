@@ -636,14 +636,17 @@ def _format_context_value(
     visually confused with `{state.<key>}` template placeholders. The Source
     line carries provenance (which agent / step produced this value).
     """
+    from core.step_refs import for_prompt, is_ref
+
     # List values from loop/parallel accumulation
     if isinstance(val, list) and val and isinstance(val[0], dict) and "result" in val[0]:
         parts = []
         for entry in val:
             iteration = entry.get("iteration", entry.get("run", ""))
             agent = entry.get("agent", "")
-            result_str = str(entry.get("result", ""))
-            if len(result_str) > max_chars:
+            result = entry.get("result", "")
+            result_str = for_prompt(result, max_chars) if is_ref(result) else str(result)
+            if not is_ref(result) and len(result_str) > max_chars:
                 from .summarizer import smart_truncate
                 result_str = smart_truncate(result_str, max_chars)
             iter_suffix = f" (iteration {iteration})" if iteration else ""
@@ -651,10 +654,13 @@ def _format_context_value(
             parts.append(f"### {key}{iter_suffix}\nSource: {source}\n{result_str}")
         return "\n\n".join(parts)
 
-    val_str = str(val)
-    if len(val_str) > max_chars:
-        from .summarizer import smart_truncate
-        val_str = smart_truncate(val_str, max_chars)
+    if is_ref(val):
+        val_str = for_prompt(val, max_chars)  # a saved output: inline if it fits, else its file (D339 P4)
+    else:
+        val_str = str(val)
+        if len(val_str) > max_chars:
+            from .summarizer import smart_truncate
+            val_str = smart_truncate(val_str, max_chars)
     source = label if label and label != key else "shared state"
     return f"### {key}\nSource: {source}\n{val_str}"
 
@@ -666,7 +672,8 @@ def _format_context_value(
 _TASK_REF = re.compile(rf"{_templating.REF.pattern}|\{{state\.([\w.]+)\}}")
 
 
-def _fill_task_template(template: str, shared_state: dict, global_variables: dict) -> str:
+def _fill_task_template(template: str, shared_state: dict, global_variables: dict, *,
+                        read_cap: int | None = None, as_values: bool = False) -> str:
     """`{{ global.x }}`, `{{ state.x }}` and the older `{state.x}` — in one pass.
 
     One pass, because two were a leak (F19): the `{state.x}` pass wrote a state
@@ -689,7 +696,23 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
     "what happened on the first pass" read as template text on its first). A
     person's text — a Human or a Print step's — keeps the gap
     (`steps.render_state_refs`).
+
+    A step output saved to the vault (`core.step_refs`, D339 P4) is inline when it fits `read_cap`, this step's read
+    share (`context_budget`; by default the one its step set, `step_refs.reading`), and otherwise the file and how to
+    read it; a field of one is its value. `as_values` fills in what a saved output holds, whatever its size: text
+    typed into a site or searched for is a value, not a prompt.
     """
+    from core.step_refs import for_prompt, is_ref, read_cap_now, resolved
+    from core.vault import READ_CAP
+
+    cap = read_cap or read_cap_now() or READ_CAP
+
+    def _ref_text(ref: dict) -> str:
+        if as_values:
+            value = resolved(ref)
+            return value if isinstance(value, str) else _templating._text(value)
+        return for_prompt(ref, cap)
+
     context = {"global": global_variables, "state": shared_state}
 
     def _sub(match: re.Match) -> str:
@@ -699,7 +722,7 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
                 top = shared_state.get(parts[1])
                 if top is None or (len(parts) > 2 and top in ("", {}, [])):
                     return ""
-            return _templating.render(match.group(0), context)
+            return _templating.render(match.group(0), context, refs=_ref_text)
         # The older single-brace form walks a path too (`{state.review.final_summary}`), as a person's text
         # (`render_state_refs`) and the `{{ }}` form do: it took one word only, so a path reached the model as
         # those words even when it was set.
@@ -708,12 +731,12 @@ def _fill_task_template(template: str, shared_state: dict, global_variables: dic
         if value is None or (path and value in ("", {}, [])):
             return ""
         if path:
-            found, value = _templating._walk(value, path)
+            found, value = _templating._walk(value, path, keep_ref=True)
             if not found:
                 return match.group(0)  # a wrong path inside a key that is set stays visible, as `{{ }}`'s does
             if value is None:
                 return ""
-        return str(value)
+        return _ref_text(value) if is_ref(value) else str(value)
 
     return _TASK_REF.sub(_sub, template)
 
