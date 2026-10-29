@@ -43,7 +43,7 @@ export function RecordingsLibrary({ host, sessionsHost, browserHost, onOpen }: {
   if (host.locked) {
     return (
       <EmptyState title="Recordings come with Solo and up.">
-        Do a task once in the browser while Synapse records it, and your agents and workflows can repeat it.{' '}
+        Do a task once in the browser while {host.product} records it, and your agents and workflows can repeat it.{' '}
         <a href={host.locked.upgradeHref} className="font-medium text-accent-ink underline-offset-2 hover:underline">See plans</a>
       </EmptyState>
     );
@@ -53,7 +53,7 @@ export function RecordingsLibrary({ host, sessionsHost, browserHost, onOpen }: {
     <div className="space-y-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="min-w-0 max-w-prose grow basis-64 text-sm text-text-muted">
-          Do a task once in the browser while Synapse records it, and your agents and workflows can repeat it. Each
+          Do a task once in the browser while {host.product} records it, and your agents and workflows can repeat it. Each
           thing you do is a step with its picture. Passwords, card details and codes are never kept: those steps
           stay yours to do.
         </p>
@@ -64,7 +64,7 @@ export function RecordingsLibrary({ host, sessionsHost, browserHost, onOpen }: {
         <p className="py-4 text-sm text-text-faint">Loading…</p>
       ) : rows.length === 0 ? (
         <EmptyState title="No recordings yet.">
-          Do a task once in the browser while Synapse records it, and your agents and workflows can repeat it.
+          Do a task once in the browser while {host.product} records it, and your agents and workflows can repeat it.
         </EmptyState>
       ) : (
         <ul aria-label="Recordings" className="divide-y divide-border rounded-md border border-border">

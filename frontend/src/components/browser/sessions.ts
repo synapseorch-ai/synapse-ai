@@ -53,6 +53,8 @@ export function shortDate(at: number): string {
 export type KeptSession = Pick<SiteSession, 'id' | 'site' | 'expires_at'>;
 
 export type SessionsHost = {
+  /** The product's name, as the kit says it ("Synapse", cloud's "SynapseOrch"): the host's, never the kit's own. */
+  product: string;
   listUrl: () => string;
   /** One session: DELETE removes it, PATCH shares it (cloud). */
   sessionUrl: (id: string) => string;

@@ -8,6 +8,7 @@ const enc = encodeURIComponent;
  * proxy, which streams. They answer 404 once the browser is closed.
  */
 export const OSS_BROWSER_HOST: BrowserHost = {
+  product: 'Synapse',
   framesUrl: (sessionId) => `/api/browser/${enc(sessionId)}/frames`,
   shotUrl: (sessionId, ref) => `/api/browser/${enc(sessionId)}/shot/${enc(ref)}`,
   keptShotUrl: (owner, id, n) => `/api/browser/kept/${owner}/${enc(id)}/${n}`,

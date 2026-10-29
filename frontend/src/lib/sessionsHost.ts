@@ -8,6 +8,7 @@ const enc = encodeURIComponent;
  * to share with, and no plan locks it.
  */
 export const OSS_SESSIONS_HOST: SessionsHost = {
+  product: 'Synapse',
   listUrl: () => '/api/site-sessions',
   sessionUrl: (id) => `/api/site-sessions/${enc(id)}`,
   newUrl: () => '/api/site-sessions/new',
