@@ -58,7 +58,8 @@ async def test_a_build_naming_a_missing_tool_finds_who_provides_it_before_the_re
     replanned = [c for c in fake_llm.calls
                  if "Planner for Synapse AI" in str(c.get("sys_prompt")) + str(c.get("prompt_msg"))][-1]
     said = str(replanned.get("prompt_msg"))
-    assert "'provider': 'Stripe'" in said and "'how': 'unclear'" in said, "the planner reads what the lookup found"
+    # The findings, as the one template form renders an object: JSON (F1252; Python's str() before).
+    assert '"provider": "Stripe"' in said and '"how": "unclear"' in said, "the planner reads what the lookup found"
 
 
 async def test_a_build_whose_tools_all_exist_is_not_researched(client, builder, fake_llm):
