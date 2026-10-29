@@ -11,6 +11,7 @@ import { ArrowLeft, CheckCircle2, RotateCcw, SquareCheck, StickyNote, XCircle } 
 import { Badge, Button, ErrorNote, Field, Hint, Input, Segmented, Spinner, Textarea, tileHue } from '@/components/ui';
 import { when } from '@/components/run/model';
 import { cn } from '@/lib/cn';
+import { VaultText } from './VaultText';
 
 import {
     FROM_CONTENT_HINT, actorName, dayAndTime, eventLine, heldFor, holderName, provenance, statusLabel, timeLeft,
@@ -217,7 +218,7 @@ export function CardPanel({ cardId, api, canEdit, currentRunId, onBack, onChange
                             <section className="space-y-1">
                                 <h4 className="text-xs font-semibold text-text-muted">Description</h4>
                                 {card.body
-                                    ? <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">{card.body}</p>
+                                    ? <p className="whitespace-pre-wrap text-sm leading-relaxed text-text"><VaultText text={card.body} /></p>
                                     : <p className="text-sm text-text-faint">None.</p>}
                             </section>
                         </header>
@@ -226,7 +227,7 @@ export function CardPanel({ cardId, api, canEdit, currentRunId, onBack, onChange
                     {card.result && (
                         <section className="space-y-1">
                             <h4 className="text-xs font-semibold text-text-muted">{card.outcome === 'failed' ? 'Why it failed' : 'Result'}</h4>
-                            <p className="whitespace-pre-wrap text-sm text-text">{card.result}</p>
+                            <p className="whitespace-pre-wrap text-sm text-text"><VaultText text={card.result} /></p>
                         </section>
                     )}
 

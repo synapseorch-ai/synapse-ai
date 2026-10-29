@@ -32,6 +32,8 @@ export type BoardsHost = {
     linkTo?: (kind: 'workflow' | 'schedule', id: string) => string | null;
     /** A board's page in the Boards tab. */
     boardHref?: (boardId: string) => string;
+    /** Where a card's `@[path]` opens its Vault file (F1204); `/vault?path=` when absent. */
+    vaultHref?: (path: string) => string;
     offHint?: string;
 };
 
