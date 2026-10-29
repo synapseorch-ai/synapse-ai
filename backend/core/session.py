@@ -78,6 +78,9 @@ def _turns(messages: list[dict]) -> list[dict]:
         if assistant.get("approval"):
             # A question nobody answered: the card, marked why (F247).
             turn["approval"] = assistant["approval"]
+        if assistant.get("browser_turn"):
+            # The person's turn in the browser it stopped on (F1183): its card, drawn where it was asked.
+            turn["browser_turn"] = dict(assistant["browser_turn"])
         if assistant.get("interrupted"):
             # A phone call's barge-in: the answer is what the caller heard (VOX1a V14).
             turn["interrupted"] = True
@@ -405,6 +408,7 @@ async def _save_conversation_turn(
     members: list[dict] | None = None,
     team: dict | None = None,
     notes: list[str] | None = None,
+    browser_turn: dict | None = None,
 ):
     """Append a turn to the session and update last_message_at.
 
@@ -418,6 +422,8 @@ async def _save_conversation_turn(
     the helpers whose results the answer read — so each is known to have arrived.
     `notes` are what the turn warned of beside its answer (F584), drawn under it
     reopened; like the panels, never sent to the model as history.
+    `browser_turn` is the person's turn in the browser the turn stopped on
+    (`parked_browser_turn`, F1183): the card a reopened chat draws.
     """
     from core.store import sessions as store
 
@@ -446,11 +452,37 @@ async def _save_conversation_turn(
         answer["team"] = dict(team)
     if notes:
         answer["notes"] = list(notes)
+    if browser_turn:
+        answer["browser_turn"] = dict(browser_turn)
     await store.append_turn(
         session_id,
         _agent(agent_id),
         [question, answer],
     )
+
+
+#: What a turn that stopped on the person's turn in the browser says when the agent said nothing first (F1183): never
+#: silence to the model (F116's rule), and what the hand-back's turn reads back as the agent's last word.
+BROWSER_TURN_ANSWER = "Your turn in the browser: {reason}"
+
+
+def parked_browser_turn(*, session_id: str | None, reason: str, banner_kind: str | None,
+                        said: str) -> tuple[str, dict]:
+    """A turn parked on the person's turn in the browser, as both chat paths keep it (F1183): its answer — the
+    agent's own words, else what the turn is for — and the `browser_turn` record a reopened chat draws the card from.
+
+    The reason is the component's sentence and goes back to the model, so it is cleaned as a call's text is: no card
+    number (`gate.without_cards`), no credential, no held secret.
+    """
+    from core.browser.gate import without_cards
+    from core.secret_scrub import scrub_credentials, scrub_secrets
+
+    clean = scrub_secrets(scrub_credentials(without_cards(str(reason or "")))[0])
+    worded = bool((said or "").strip())
+    record: dict = {"session_id": session_id, "reason": clean, "worded": worded}
+    if banner_kind:
+        record["banner_kind"] = banner_kind
+    return (said if worded else BROWSER_TURN_ANSWER.format(reason=clean)), record
 
 
 async def pop_last_conversation_turn(session_id: str, agent_id: str | None = None,

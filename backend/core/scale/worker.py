@@ -1149,6 +1149,8 @@ async def run_agent_chat_job(
         # `_consume` returns, which is why it is declared out here (the last
         # snapshot and the calls since it are declared above the `try`).
         paused_on: dict | None = None
+        # The person's turn in the browser the turn stopped on (F1183): kept with the turn, its card with it.
+        parked_browser: dict | None = None
         # A workflow agent's run waiting on a person (a Human step): its turn is
         # saved where the run ends (F261), so this job writes none (F294).
         workflow_waiting = False
@@ -1157,7 +1159,7 @@ async def run_agent_chat_job(
             """Drive the loop. Separated so the cancel watcher has a task to
             cancel that is not the whole job."""
             nonlocal response_text, total_cost, latest_progress, paused_on, workflow_waiting, turn_citations, \
-                turn_helpers, turn_inbox_read, parked_inbox, turn_members, turn_team, turn_notes
+                turn_helpers, turn_inbox_read, parked_inbox, turn_members, turn_team, turn_notes, parked_browser
             async for event in _visitor_turn(visitor, run_react_loop(
                 chat_request, server_module,
                 progress_events=True, resume_state=resume_state,
@@ -1235,6 +1237,8 @@ async def run_agent_chat_job(
                 elif (etype == "human_input_required" and event.get("kind") != "tool_approval"
                       and event.get("run_id")):
                     workflow_waiting = True
+                elif etype == "human_input_required" and event.get("kind") == "browser_turn":
+                    parked_browser = event
                 elif etype == "human_input_required" and event.get("kind") == "tool_approval":
                     # The loop has already returned by the time we see this —
                     # it yields the question and stops. Remember it; the parking
@@ -1359,7 +1363,15 @@ async def run_agent_chat_job(
             question["automated"] = dict(automated)
         history.append(question)
         calls = turn_calls(latest_progress, events_since_progress, resumed=resume_state)
-        answer_entry = {"role": "assistant", "content": response_text}
+        saved_text, browser_turn = response_text, None
+        if parked_browser is not None and not cancelled:
+            # What the turn is for when the agent said nothing first, and the card a reopened chat draws (F1183).
+            # The saved row's alone: what the job delivers is the answer, as before.
+            from core.session import parked_browser_turn
+            saved_text, browser_turn = parked_browser_turn(
+                session_id=parked_browser.get("session_id"), reason=parked_browser.get("prompt") or "",
+                banner_kind=parked_browser.get("banner_kind"), said=response_text)
+        answer_entry = {"role": "assistant", "content": saved_text}
         if chat_turn:
             # Which turn saved it: a phone call that cut this turn marks exactly this answer as heard (F486).
             answer_entry["chat_turn"] = chat_turn
@@ -1390,6 +1402,8 @@ async def run_agent_chat_job(
             answer_entry["team"] = {k: v for k, v in turn_team.items() if k != "work"}
         if turn_notes and visitor is None:
             answer_entry["notes"] = list(turn_notes)
+        if browser_turn:
+            answer_entry["browser_turn"] = browser_turn
         history.append(answer_entry)
         recorded = True
         await _save_row("cancelled" if cancelled else "completed", history)
