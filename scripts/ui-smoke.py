@@ -14923,6 +14923,90 @@ async def main() -> int:
     return failed
 
 
+async def _help_heading(page) -> str:
+    """The "?" panel's heading on this screen, the panel put away again."""
+    _, dialog = await _open_help(page)
+    name = (await dialog.get_by_role("heading").first.inner_text()).strip()
+    await page.keyboard.press("Escape")
+    await dialog.wait_for(state="hidden", timeout=5_000)
+    return name
+
+
+@check
+async def check_helpbrowser(browser) -> str:
+    """The "?" says what is on Recordings, a recording's page and a Browser step, and a part that closes gives the
+    screen's own topic back (GUIDE1, F1190, F1191). Recordings and a recording read "Recordings"; a workflow's Browser
+    step "A Browser step", and the editor again once its card is put away. The Board's close comes back to the editor
+    too: one slot held the part on show, and a closing part emptied it, so "?" read the Workflows list."""
+    _boards_on()
+    stamp = int(time.time())
+    rid = "rec_" + "h" * 24
+    oid = f"orch_uismoke_helpbrw_{stamp}"
+    api("/api/orchestrations", "POST", {
+        "id": oid, "name": f"Smoke help browser {stamp % 1_000_000}", "description": "", "entry_step_id": "p",
+        "trigger": "manual", "steps": [{"id": "p", "name": "Say", "type": "print", "print_content": "hi",
+                                        "output_key": "o", "next_step_id": None}]})
+    rows = {"recordings": [{"id": rid, "name": "Find an order", "sites": ["saltmarsh.example"], "version": 1,
+                            "created_at": time.time() - 86_400, "updated_at": time.time() - 3_600, "steps": 5,
+                            "pending_edits": 0}]}
+    ctx, _ = await _help_context(browser, routes=[
+        (re.compile(r".*/api/recordings$"), lambda r: r.fulfill(status=200, json=rows)),
+        (re.compile(rf".*/api/recordings/{rid}$"), lambda r: r.fulfill(status=200, json=_recording(rid))),
+        (re.compile(r".*/api/site-sessions$"), lambda r: r.fulfill(status=200, json={"sessions": []})),
+    ])
+    page = await ctx.new_page()
+    bad: list[str] = []
+
+    async def expect(where: str, want: str) -> None:
+        got = await _help_heading(page)
+        if got != want:
+            bad.append(f"{where}: \"?\" reads {got!r}, not {want!r}")
+
+    try:
+        await page.goto(f"{APP}/browser/recordings", wait_until="domcontentloaded")
+        await page.get_by_role("list", name="Recordings").wait_for(timeout=30_000)
+        await expect("Recordings", "Recordings")
+        await page.goto(f"{APP}/browser/recordings/{rid}", wait_until="domcontentloaded")
+        await page.get_by_role("heading", name="Find an order").wait_for(timeout=30_000)
+        await expect("a recording's page", "Recordings")
+
+        await page.goto(f"{APP}/workflows?id={oid}", wait_until="domcontentloaded")
+        node = page.locator('.react-flow__node[data-id="p"]')
+        await node.wait_for(timeout=30_000)
+        await asyncio.sleep(SETTLE)
+        await expect("the editor", "Editing a workflow")
+
+        await page.get_by_role("button", name=re.compile(r"^Board")).click(timeout=30_000)
+        board = page.get_by_role("region", name="This workflow's board")
+        await board.wait_for(timeout=10_000)
+        await expect("the Board", "A workflow’s board")
+        await board.get_by_role("button", name="Close the board").click()
+        await board.wait_for(state="hidden", timeout=5_000)
+        await expect("the editor after the Board", "Editing a workflow")
+
+        panel = page.locator('aside[aria-label="Step configuration"]')
+        await node.focus()
+        await page.keyboard.press("Enter")
+        await panel.wait_for(timeout=10_000)
+        await panel.get_by_role("combobox", name="Step type").click()
+        await page.get_by_role("option", name="Browser", exact=True).click()
+        change = page.get_by_role("button", name="Change type")
+        if await change.count():
+            await change.click()
+        await panel.get_by_role("combobox", name="Recording").wait_for(timeout=5_000)
+        await expect("a Browser step", "A Browser step")
+        await page.keyboard.press("Escape")             # puts the card away
+        await panel.wait_for(state="hidden", timeout=5_000)
+        await expect("the editor after the Browser step", "Editing a workflow")
+    finally:
+        await ctx.close()
+        drop_fixtures([oid])
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("Recordings and a recording read Recordings, a Browser step A Browser step, and the editor comes back "
+            "after the step's card and the Board")
+
+
 @check
 async def check_skillsfirst(browser) -> str:
     """Skills never opens on an empty pane (M2h-2): the first skill is open beside the list, on Preview, with the
