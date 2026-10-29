@@ -37,6 +37,8 @@ export type ConnectHost = {
     signIn?: boolean;
     /** Where a person sees and removes what they connected by signing in (cloud: Settings › Developer). */
     connectedAppsHref?: string;
+    /** This product's name in VS Code's gallery, once it is listed there (F1215): cloud at launch; OSS never. */
+    registryName?: string;
     /** Makes a key named for the tool. Null when this person can't make keys here (cloud: owners and admins). */
     makeKey: ((name: string, canBuild: boolean) => Promise<{ id: string; key: string }>) | null;
     /** Keys here only run things unless made to build too (cloud, F847): offer that choice, with its trade-off. */
