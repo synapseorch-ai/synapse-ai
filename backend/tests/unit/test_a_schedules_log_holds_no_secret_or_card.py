@@ -10,7 +10,6 @@ from __future__ import annotations
 import types
 
 import pytest
-
 from _fakes import canary
 from _fakes import seed as S
 
