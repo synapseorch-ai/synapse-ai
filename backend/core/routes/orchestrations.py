@@ -560,9 +560,12 @@ async def run_orchestration(orch_id: str, request: Request):
             await usable_new(picked)
         except PickRefused as refused:
             return JSONResponse(status_code=422, content=refused.body())
+    from core.orchestration.read_shapes import Unreadable, load_to_run
+    try:
+        orch = load_to_run(orch_data)
+    except Unreadable as e:  # said, never a server error (F1235)
+        raise HTTPException(status_code=422, detail=str(e))
     run_id = new_run_id(orch_id)
-
-    orch = Orchestration.model_validate(orch_data)
     server_module = request.app.state.server_module
 
     from core.orchestration.engine import OrchestrationEngine

@@ -714,8 +714,8 @@ class ScheduleManager:
 
     async def _run_orchestration_schedule(self, s: dict, sched_log) -> str:
         """Run orchestration schedule and return the final output text."""
-        from core.models_orchestration import Orchestration
         from core.orchestration.engine import OrchestrationEngine
+        from core.orchestration.read_shapes import load_to_run
         from core.orchestration.runner import stream_engine_events
         from core.store.resources import get_orchestration
 
@@ -723,7 +723,7 @@ class ScheduleManager:
         if not orch_data:
             raise ValueError(f"Orchestration {s.get('target_id')} not found")
 
-        orch = Orchestration.model_validate(orch_data)
+        orch = load_to_run(orch_data)
         engine = OrchestrationEngine(orch, self._server_module)
 
         session_id = f"schedule_{s['id']}"

@@ -1801,13 +1801,14 @@ async def _load_orchestration(session_factory, orch_id: str, run=None):
     """
     from sqlalchemy import select
     from core.scale.models_db import OrchestrationDB
-    from core.models_orchestration import Orchestration
+    # A workflow that does not read stops its job with what to mend as the run's reason (F1235, `_dead_job`).
+    from core.orchestration.read_shapes import load_to_run
 
     if run is not None and getattr(run, "definition", None):
         from core.orchestration.engine import definition_of
         data = await definition_of(run)
         if data:
-            return Orchestration.model_validate(data)
+            return load_to_run(data)
 
     async with session_factory() as session:
         result = await session.execute(
@@ -1820,7 +1821,7 @@ async def _load_orchestration(session_factory, orch_id: str, run=None):
         # job that dies here leaves this on its run as the reason (F430).
         raise RuntimeError(f"The workflow this run belongs to ('{orch_id}') no longer exists, so it could not run.")
 
-    return Orchestration.model_validate(row.definition)
+    return load_to_run(row.definition)
 
 
 async def _load_run_row(session_factory, run_id: str):

@@ -23,12 +23,16 @@ the defaults the builder's savers fill (`_fill_step_defaults`) and checks the re
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from core.models_orchestration import Orchestration, StepConfig
 from core.native_builder import prompt_lint
 from core.native_builder.objects import Edit, Plan, PlanDraft, Step, settled
+from core.orchestration.read_shapes import read_steps
+
+_log = logging.getLogger(__name__)
 
 #: The workflow settings a Plan may carry (`PlanDraft.settings`). Anything else is refused by name.
 SETTINGS = ("state_schema", "result_key", "max_total_turns", "timeout_minutes", "strict_state_types")
@@ -412,7 +416,11 @@ def plan_from_workflow(orch: dict[str, Any], *, agents: dict[str, dict] | None =
     """A saved workflow as a Plan: the base an update Plan's edits apply to (P2/P3), and how a template is checked to
     round-trip. Its agents are existing ones, by id; what the mapping does not carry rides in each step's
     `config`, and the allowlisted workflow settings in `settings`."""
-    steps = list(orch.get("steps") or [])
+    # A step a saver left in another shape (rc4.x's builder, v1.9's) is read in the engine's first, said, never
+    # stored: the update that follows saves it in that shape (F1235).
+    steps, read_differently = read_steps(orch.get("steps"))
+    for note in read_differently:
+        _log.warning("workflow %s: %s", orch.get("id"), note)
     end_ids = {s["id"] for s in steps if s.get("type") == "end"}
     entry = orch.get("entry_step_id")
     steps.sort(key=lambda s: s.get("id") != entry)  # the entry first: a Plan starts where the workflow does

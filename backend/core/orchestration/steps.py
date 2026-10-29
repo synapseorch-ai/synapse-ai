@@ -611,7 +611,7 @@ async def run_nested_workflow(
     is the name its execution memory is kept under.
     """
     from core.scale.context import resolve_orchestration
-    from core.models_orchestration import Orchestration
+    from core.orchestration.read_shapes import load_to_run
     from .engine import OrchestrationEngine, MAX_NESTED_DEPTH
 
     parent_depth = getattr(engine, "depth", 0)
@@ -632,7 +632,7 @@ async def run_nested_workflow(
             f"Sub-orchestration '{sub_orch_id}' (from {source}) not found"
         )
 
-    sub_orch = Orchestration.model_validate(sub_orch_data)
+    sub_orch = load_to_run(sub_orch_data)
     from core.run_ids import new_child_run_id
 
     sub_engine = OrchestrationEngine(sub_orch, engine.server_module, depth=parent_depth + 1)

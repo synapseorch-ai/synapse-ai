@@ -341,6 +341,7 @@ def _refuse_misshapen_steps(steps: list) -> dict | None:
     from pydantic import ValidationError
 
     from core.models_orchestration import StepConfig
+    from core.orchestration.read_shapes import shape_problem as _shape_problem
 
     problems = []
     for s in steps:
@@ -357,41 +358,6 @@ def _refuse_misshapen_steps(steps: list) -> dict | None:
             "nor run. " + " ".join(problems) + " Write the step again with each field in that shape."
         )
     }
-
-
-def _shape_problem(err: dict) -> str:
-    """One pydantic error as the field, the shape it needs and what it was given."""
-    from core.models_orchestration import StepType
-
-    loc = err.get("loc") or ()
-    if not loc:  # a rule across fields: its own sentence
-        return str(err.get("msg", "")).removeprefix("Value error, ")
-    field = str(loc[0]) + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in loc[1:])
-    kind = err.get("type", "")
-    if kind == "missing":
-        return f"`{field}` is required"
-    if kind == "enum" and loc == ("type",):
-        return f"`type` must be one of {', '.join(t.value for t in StepType)}, not {err.get('input')!r}"
-    need = _NEEDS.get(kind)
-    if need is None:
-        return f"`{field}`: {err.get('msg', 'not readable')}"
-    if field == "human_fields":
-        need = 'a list of objects, e.g. [{"name": "email", "type": "string"}]'
-    return f"`{field}` must be {need}, not {_given(err.get('input'))}"
-
-
-_NEEDS = {
-    "list_type": "a list", "dict_type": "an object", "string_type": "a string",
-    "int_type": "a whole number", "int_parsing": "a whole number", "int_from_float": "a whole number",
-    "float_type": "a number", "float_parsing": "a number", "bool_type": "true or false", "bool_parsing": "true or false",
-}
-
-
-def _given(value: Any) -> str:
-    if isinstance(value, bool):
-        return "true/false"
-    return {dict: "an object", list: "a list", str: "a string", int: "a number", float: "a number",
-            type(None): "null"}.get(type(value), type(value).__name__)
 
 
 # ─── JSON-string boundary ────────────────────────────────────────────────────
