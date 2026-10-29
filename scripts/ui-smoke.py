@@ -12908,8 +12908,8 @@ async def check_brwclickfit(browser) -> str:
             await ctx.close()
     if bad:
         raise AssertionError("; ".join(bad))
-    return ("the person's presses land where they were made on the picture at a wide and a tall pane, corners and "
-            "centre to 3 px, and a press in a bar sends nothing")
+    return ("the person's presses land where they were made on the picture at two panes that draw it with bars at the "
+            "sides, corners and centre to 3 px, and a press in a bar sends nothing")
 
 
 @check
