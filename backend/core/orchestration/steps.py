@@ -956,10 +956,15 @@ class ToolStepExecutor:
         _set_args: dict | None = None
         if step.tool_arguments is not None and _replay is None:
             try:
-                _set_args = render_tool_arguments(step.tool_arguments, run.shared_state)
+                _set_args = render_tool_arguments(step.tool_arguments, run.shared_state,
+                                                  code_tool=tool_obj.name.split("__")[-1] in CODE_TOOLS)
             except MissingStateRef as missing:
                 message = (f"Tool step '{step.name}' could not set its arguments: {missing} is not in the run's "
                            "state")
+                yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
+                raise RuntimeError(message) from None
+            except UnsafeCodeRef as unsafe:  # never sent as text (F1212)
+                message = f"Tool step '{step.name}' could not set its code: {unsafe}"
                 yield {"type": "final", "orch_step_id": step.id, "step_name": step.name, "response": message}
                 raise RuntimeError(message) from None
 
@@ -2673,13 +2678,141 @@ def tool_argument_refs(value: Any) -> list[str]:
     return found
 
 
-def render_tool_arguments(value: Any, state: dict) -> Any:
+#: Code runners whose `code` argument is a program (F1212): a state value reaches it as data, never as code.
+CODE_TOOLS = frozenset({"execute_python", "tool_code"})
+
+
+class UnsafeCodeRef(ValueError):
+    """A code runner's program has a state reference that cannot be filled as data (F1212): never pasted as text."""
+
+
+def render_code(code: str, state: dict) -> str:
+    """A code runner's program with its state references filled as data, never pasted in as text (F1212).
+
+    CAP3's stage 0 (10-29): a planned `csv_content = '{{state.read_csv}}'` had a file's text pasted between its quotes
+    and died with a SyntaxError — and whatever is pasted into a program is part of it, so a file's or a person's words
+    could run. No value is ever written into the program: the values ride in a JSON prelude as `_values`, and each
+    reference reads one. Python's own tokenizer says where each stands:
+    - in code: `_values[i]`;
+    - in a string literal (plain, raw, bytes, triple-quoted): the literal becomes an expression of `repr()`-written
+      pieces and `str(_values[i])` (`.encode()` for bytes), so no escaping is relied on;
+    - in an f-string's text or format spec: a replacement field `{_values[i]}`;
+    - in a comment: its name, `state.<path>`.
+    Code that does not compile with its references in place gets every one as `_values[i]` (the runner says what is
+    wrong with it); a program that would not compile once filled is refused (`UnsafeCodeRef`), never sent as text.
+    """
+    import ast
+    import io
+    import tokenize
+
+    found: list[str] = []
+
+    def marker(m: re.Match) -> str:
+        path = m.group(1) or m.group(2)
+        if path not in found:
+            found.append(path)
+        return f"__synapse_ref_{found.index(path)}__"
+
+    marked = _ARG_REF.sub(marker, code)
+    if not found:
+        return code
+    values = [_state_value(state, p) for p in found]
+    mark = re.compile(r"__synapse_ref_(\d+)__")
+    data = lambda m: f"_values[{m.group(1)}]"  # noqa: E731
+
+    def prelude(body: str) -> str:
+        blob = json.dumps(values, default=str)
+        named = ", ".join(f"state.{p}" for p in found)
+        return f"import json as _json\n_values = _json.loads({blob!r})  # {named}\n{body}"
+
+    try:
+        compile(marked, "<code>", "exec")
+        tokens = list(tokenize.generate_tokens(io.StringIO(marked).readline))
+    except (SyntaxError, ValueError, tokenize.TokenError):
+        return prelude(mark.sub(data, marked))
+
+    starts = [0]
+    for line in marked.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+
+    def at(pos: tuple[int, int]) -> int:
+        return starts[pos[0] - 1] + pos[1]
+
+    def as_expression(literal: str) -> str:
+        value = ast.literal_eval(literal)
+        if isinstance(value, bytes):
+            parts = re.split(rb"__synapse_ref_(\d+)__", value)
+            out = [repr(p) if i % 2 == 0 else f"str(_values[{int(p)}]).encode('utf-8', 'surrogatepass')"
+                   for i, p in enumerate(parts) if i % 2 or p]
+        else:
+            parts = mark.split(value)
+            out = [repr(p) if i % 2 == 0 else f"str(_values[{p}])" for i, p in enumerate(parts) if i % 2 or p]
+        return "(" + " + ".join(out) + ")"
+
+    edits: list[tuple[int, int, str]] = []
+    ends = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_END", "TSTRING_END") if hasattr(tokenize, n)}
+    begins = {tokenize.STRING} | {getattr(tokenize, n) for n in ("FSTRING_START", "TSTRING_START")
+                                  if hasattr(tokenize, n)}
+    quiet = {tokenize.NL, tokenize.COMMENT}
+    for k, tok in enumerate(tokens):
+        if not mark.search(tok.string):
+            continue
+        a, b = at(tok.start), at(tok.end)
+        if tok.type == tokenize.NAME:
+            edits.append((a, b, mark.sub(data, tok.string)))
+        elif tok.type == tokenize.STRING:
+            # Beside another string, Python joins the two as written (`'a' 'b'`): the expression is joined with `+`.
+            before = next((t for t in reversed(tokens[:k]) if t.type not in quiet), None)
+            after = next((t for t in tokens[k + 1:] if t.type not in quiet), None)
+            joined = as_expression(marked[a:b])
+            if before is not None and before.type in ends:
+                joined = " + " + joined
+            if after is not None and after.type in begins:
+                joined = joined + " + "
+            edits.append((a, b, joined))
+        elif tok.type == tokenize.COMMENT:
+            edits.append((a, b, mark.sub(lambda m: f"state.{found[int(m.group(1))]}", tok.string)))
+    # An f-string's text and format specs: every marker in its whole span that no token above took is a replacement
+    # field, `{_values[i]}`. Read from the source span (a template's own tokens misplace escaped braces).
+    depth, opened = 0, 0
+    for tok in tokens:
+        kind = tokenize.tok_name.get(tok.type, "")
+        if kind in ("FSTRING_START", "TSTRING_START"):
+            if depth == 0:
+                opened = at(tok.start)
+            depth += 1
+        elif kind in ("FSTRING_END", "TSTRING_END"):
+            depth -= 1
+            if depth == 0:
+                for m in mark.finditer(marked, opened, at(tok.end)):
+                    if not any(a <= m.start() < b for a, b, _ in edits):
+                        edits.append((m.start(), m.end(), "{" + data(m) + "}"))
+    body = marked
+    for a, b, text in sorted(edits, reverse=True):
+        body = body[:a] + text + body[b:]
+    left = mark.search(body)
+    if left:
+        raise UnsafeCodeRef(f"state.{found[int(left.group(1))]} stands where it cannot be filled as data")
+    filled = prelude(body)
+    try:
+        compile(filled, "<code>", "exec")
+    except SyntaxError as e:
+        raise UnsafeCodeRef(f"a reference cannot be filled as data here ({e.msg}): write it outside the string, "
+                            f"e.g. 'x = {{{{state.{found[0]}}}}}', and use x") from None
+    return filled
+
+
+def render_tool_arguments(value: Any, state: dict, *, code_tool: bool = False) -> Any:
     """A Tool step's set arguments, rendered from state (E1).
 
     A string that is one reference and nothing else becomes that value, keeping its type (a list stays a list); a
     reference inside text is written as text, an object or a list as JSON (`templating`'s rule, not Python's repr).
     Dicts and lists are rendered all the way down. A reference to nothing raises `MissingStateRef` naming it.
+    A code runner's `code` (`code_tool`) takes its references as data (`render_code`, F1212).
     """
+    if code_tool and isinstance(value, dict) and isinstance(value.get("code"), str):
+        return {k: (render_code(v, state) if k == "code" else render_tool_arguments(v, state))
+                for k, v in value.items()}
     if isinstance(value, dict):
         return {k: render_tool_arguments(v, state) for k, v in value.items()}
     if isinstance(value, list):
