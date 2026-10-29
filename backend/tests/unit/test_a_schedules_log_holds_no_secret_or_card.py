@@ -15,7 +15,6 @@ from _fakes import seed as S
 
 canary_secret = canary.canary_secret
 CANARY, MARK = canary.CANARY, canary.MARK
-_left_behind = canary.left_behind
 
 CARD = "4111 1111 1111 1111"  # passes Luhn
 NOT_A_CARD = "4111 1111 1111 1112"
@@ -51,8 +50,9 @@ def _logs(root) -> list[str]:
 def _kept_right(root) -> None:
     logs = _logs(root)
     assert logs, "the log was written"
-    assert _left_behind(root) == [], _left_behind(root)
+    # The logs, not the schedule itself: its saved prompt is the member's own text, kept as they wrote it.
     joined = "\n".join(logs)
+    assert CANARY not in joined, [p.name for p in root.rglob("*.log") if CANARY in p.read_text(encoding="utf-8")]
     assert CARD not in joined and "[card number]" in joined and NOT_A_CARD in joined
     assert MARK in joined
     assert SCHEDULE in joined, "an id is not a card"
