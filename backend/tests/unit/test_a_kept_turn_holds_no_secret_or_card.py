@@ -61,6 +61,36 @@ def test_the_stored_copy_masks_cards_and_held_secrets_and_is_stable():
     assert turn[0]["content"] == SAID, "the turn as sent is untouched"
 
 
+def test_a_number_inside_an_id_is_not_a_card():
+    """A run of digits with letters or `_` around it is an id (a session's, a run's), never masked; the same digits
+    standing as a number are."""
+    from core.browser.gate import without_cards
+
+    assert without_cards("chat_4222222222222 and run 4222222222222_b0") == "chat_4222222222222 and run 4222222222222_b0"
+    assert without_cards("card 4222222222222.") == "card [card number]."
+
+
+async def test_the_agent_log_holds_no_card_number_and_keeps_its_ids(canary_secret, fake_llm, tmp_path):
+    """The agent's run log is stored too (the published blob is its copy): kept as a turn is, with its banner's ids
+    intact for the Logs screen (F1184)."""
+    from core.agent_logger import meta_for
+    from core.models import ChatRequest
+    from core.react_engine import run_react_loop
+
+    agent = await _agent("agent_kept_log")
+    fake_llm.set_default("Charged.")
+    session = "chat_4222222222222"  # an id whose digits pass the card test
+    [e async for e in run_react_loop(ChatRequest(message=SAID, session_id=session, agent_id=agent["id"]),
+                                     _server())]
+
+    logs = [path.read_text(encoding="utf-8") for path in tmp_path.rglob("agentrun_*.log")]
+    assert logs, "the run was logged"
+    for text in logs:
+        assert CARD not in text and CANARY not in text
+        assert "[card number]" in text and NOT_A_CARD in text
+        assert meta_for(text)["session_id"] == session
+
+
 async def test_in_process_the_model_reads_it_as_sent_and_the_store_keeps_it_masked(
         canary_secret, fake_llm, tmp_path):
     from core.models import ChatRequest
