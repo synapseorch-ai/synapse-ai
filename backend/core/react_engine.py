@@ -1928,6 +1928,9 @@ async def run_agent_step(
     _last_compact_turn: int | None = None
     COMPACT_COOLDOWN_TURNS = 3
     _truncation_retries = 0  # consecutive responses cut off at the output limit
+    # The words of an answer cut at the output limit, in order (F1273): the reply that finishes it is their rest, so
+    # the answer is all of them — only the last piece used to be kept, and a long answer lost its start.
+    _partial_answer: list[str] = []
     _parse_retries = 0        # consecutive responses that looked like a tool call and were not
     _reasoning_retries = 0    # replies that were all reasoning, asked for again (F305)
     _retry_effort: str | None = None  # the effort that retry asks with, a step lower, for one call (F863)
@@ -2760,7 +2763,12 @@ async def run_agent_step(
             # attempt would just spend another call to learn that again.
             if _llm_result.stop_reason == "max_tokens" and turn + 1 < max_turns:
                 _truncation_retries += 1
+                _cut_words = strip_reasoning(llm_output)
+                _cut_is_words = bool(_cut_words.strip()) and not (
+                    getattr(_llm_result, "tool_calls", None) or _cut_words.lstrip().startswith(("{", "[{")))
                 if _truncation_retries <= MAX_TRUNCATION_RETRIES:
+                    if _cut_is_words:
+                        _partial_answer.append(_cut_words)
                     _log.warning(f"⚠️ Response hit the output limit (retry {_truncation_retries}/{MAX_TRUNCATION_RETRIES})")
                     current_context_text += (
                         f"\n[Turn {turn + 1} — Partial]\n{llm_output}\n"
@@ -2998,13 +3006,14 @@ async def run_agent_step(
                             f"its answer. Call {_names} now with what you have.\n")
                         yield {"type": "status", "message": f"Not done yet: this step finishes by calling {_names}"}
                         continue
-                    final_response = action_text
+                    final_response = "".join(_partial_answer) + action_text
                     _unanswered = {"why": "no_finish", "tools": list(_finish)}
                     break
 
                 # Final response: strip any leftover reasoning so it never
-                # reaches the user or the session history.
-                final_response = action_text
+                # reaches the user or the session history. An answer that was
+                # cut at the output limit is all of its pieces (F1273).
+                final_response = "".join(_partial_answer) + action_text
                 if _answer_filter is not None:
                     # The call was the answer: what was held while it might
                     # have been a tool call goes out now.
@@ -3038,6 +3047,7 @@ async def run_agent_step(
                 )[0] == "allow"
             )
 
+            _partial_answer = []  # a reply that calls tools moved on: any cut answer before it was not the answer
             _round_from = len(_turn_calls)
             for _call_index, tool_call in enumerate(tool_calls):
                 _close_call()
