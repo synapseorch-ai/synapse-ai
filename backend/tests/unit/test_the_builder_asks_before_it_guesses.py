@@ -111,9 +111,10 @@ class TestAnAddressNobodyGave:
         assert out["outcome"] == "ask" and out["plan"] is None, "no card before the person has said it"
         [field] = out["form"]
         assert field["value"] == SITE and field["type"] == "string"
-        assert field["label"].startswith(f'"Read the product page" uses {SITE}')
-        assert "haven't given me" in field["label"]
-        assert SITE in out["question"], "the words alone ask it too: the run page and a channel reply"
+        assert field["label"] == ("\"Read the product page\" uses this address, which you haven't given me. Is it the "
+                                  "right one?"), "the address is the field's own, filled in, never said twice"
+        assert f"1. {field['label']} (my guess: {SITE})" in out["question"], (
+            "the words alone ask it too, with the address: the run page and a channel reply")
         [noted] = run.shared_state[T.ASKED_KEY]
         assert noted["subject"] == "address synapseorch.com" and noted["field"] == field["name"]
 

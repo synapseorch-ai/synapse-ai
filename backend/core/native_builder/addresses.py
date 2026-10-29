@@ -53,7 +53,8 @@ class Address:
         return f"address {self.key}"
 
     def label(self) -> str:
-        return f"{self.where} uses {self.value}, which you haven't given me. Is that the right {NOUN[self.kind]}?"
+        """The form's question; the value itself is the field's, filled in below it (the words add it as the guess)."""
+        return f"{self.where} uses this {NOUN[self.kind]}, which you haven't given me. Is it the right one?"
 
     def said(self) -> str:
         return f"{self.where} uses {self.value}, which you haven't given me: check it before you build."
