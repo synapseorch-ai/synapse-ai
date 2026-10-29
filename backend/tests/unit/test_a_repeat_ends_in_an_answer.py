@@ -74,7 +74,9 @@ class TestTheGuardAsksForTheAnswer:
     async def test_on_the_last_turn_there_is_no_extra_reply(self, fake_llm):
         events = await _chat(fake_llm, [LOOK, LOOK, LOOK, "never reached"], max_turns=3)
         assert fake_llm.call_count == 3
-        assert _final(events)["no_answer"]["why"] == "repeating"
+        # Its third turn is its last, an answer turn since F1219: the third call is never made, so the turn ran out
+        # of turns rather than seeing the same result a third time.
+        assert _final(events)["no_answer"]["why"] == "turns"
 
 
 class TestAStepThatFinishesWithATool:

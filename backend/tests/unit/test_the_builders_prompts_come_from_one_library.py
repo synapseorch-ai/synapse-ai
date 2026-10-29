@@ -54,8 +54,10 @@ from core.native_builder import prompt_lint, seed
 #: code), and the by-hand steps are a passage of the build's researcher's own (`research_by_hand`, its prompt
 #: unchanged), 1d2a272d…; with F1121's question on what still can't be built (`step_plan_same`, and the `same` and
 #: `no_tool` cases that reach it), 90b30a42…; with F1153's effort check after the role door (`step_effort`, its route
-#: and `step_effort_offered`, with its four state keys and the press's route), 787b2662….
-BUNDLE_SHA256 = "787b2662d32b466c55a4af6798d97b69f81c4bd1b792b9880ef9ebb44325ed4a"
+#: and `step_effort_offered`, with its four state keys and the press's route), 787b2662…; with F1219's turn limits
+#: (Naveen's table with HOT3: 60 turns in 1200 s for the steps that read and plan, 40 in 600 s for the rest, the quick
+#: classify step at 2; no prompt changes), 2fcbfc0f….
+BUNDLE_SHA256 = "2fcbfc0ffe9684ab993f6fb64b6544d5af3198f5ae77c262b39184312678fe96"
 
 
 def _sha(definitions) -> str:

@@ -196,7 +196,9 @@ def _no_answer_reason(step_name: str, no_answer: dict) -> str:
     if no_answer.get("why") == "spend_limit":
         return (f"Agent step '{step_name}' stopped without an answer: another step would pass its team's spend "
                 f"limit (${float(no_answer.get('limit_usd') or 0):g}).")
-    return f"Agent step '{step_name}' ran out of turns ({no_answer.get('max_turns')}) before answering."
+    # Its last turn was already an answer turn (F1219): what is left to say is where the limit is raised.
+    return (f"Agent step '{step_name}' ran out of turns ({no_answer.get('max_turns')}) before answering: raise the "
+            "step's turn limit (Max turns, in its settings) if it needs more.")
 
 
 class AgentStepExecutor:

@@ -2301,6 +2301,17 @@ async def run_agent_step(
             yield {"type": "thinking", "message": "Analyzing your request..."}
 
             turns_remaining = max_turns - turn  # after this turn starts, turns_remaining decreases
+            if turns_remaining == 1 and max_turns > 1 and _answering_from is None and _team is None:
+                # The last turn answers (F1219): its tools are withheld but a finish one, as F1015's answer turn
+                # withholds them. Told only "do not call tools" while still offered them, a model spent its last turn
+                # on one more call and the step failed as out of turns ("Plan the Build", Naveen's prod turn). A team's
+                # lead keeps its tools: its last call may be the wait its members finish in, and a team has its own
+                # stall guard (TEAM1a).
+                _answering_from = {"why": "turns", "max_turns": max_turns}
+                _finish_line = (f" by calling {' or '.join(f'`{n}`' for n in _finish)}" if _finish else "")
+                current_context_text += (f"\nSystem: this is your last turn. Give your final response now"
+                                         f"{_finish_line}, from what you have: no other tool is offered for this "
+                                         "reply.\n")
 
             # ── Prompt layout for prefix caching ─────────────────────────────
             # Every provider caches by prefix, in the order tools → system →
@@ -2693,6 +2704,11 @@ async def run_agent_step(
                 # Asked to answer from what it had, it called again: the guard's ending, as before F1015.
                 for _e in _unstream("tool_call"):
                     yield _e
+                if _answering_from.get("why") == "turns":
+                    # Its last turn, and it called a tool anyway (F1219): out of turns, said as it always was.
+                    tool_calls = []
+                    _ran_out = True
+                    break
                 _repeat_stop = _answering_from
                 tool_calls = []
                 yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
