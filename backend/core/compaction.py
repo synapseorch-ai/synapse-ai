@@ -98,8 +98,12 @@ def _without_pin(context: str, request: str | None) -> str:
 
 #: An older observation at least this long is moved to the vault by Stage 0; a shorter one stays as it is.
 STUB_MIN_CHARS = 2_000
-#: The newest share of the threshold Stage 0 leaves verbatim: what the next turn acts on.
-KEEP_RECENT_RATIO = 0.25
+#: The newest tool results Stage 0 leaves verbatim: the working set the next turns act on (Naveen, 10-30, after how
+#: Claude Code and Codex keep context: recent results whole, older ones by reference).
+KEEP_RESULTS = 3
+#: Below the threshold, Stage 0 moves results only when that frees at least this many characters: each pass rewrites
+#: the transcript from its first moved result on, and the prompt cache with it, so it runs seldom and in batches.
+TIDY_BATCH = 20_000
 #: How much of a moved observation its stub still shows, so the transcript says what it was.
 STUB_HEAD_CHARS = 240
 #: Where an observation starts, and where the transcript's next entry starts after it.
@@ -114,26 +118,25 @@ def _vault_key(path: Path) -> str:
     return path.relative_to(get_vault().root).as_posix()
 
 
-def _move_observations(body: str, session_id: str, keep_recent: int) -> tuple[str, int]:
-    """Stage 0: `body` with each observation of at least `STUB_MIN_CHARS` that ends before its newest
-    `keep_recent` characters saved to the vault and replaced by a line naming its key, and how many were moved.
+def _move_observations(body: str, session_id: str, keep_results: int = KEEP_RESULTS,
+                       *, at_least: int = 0) -> tuple[str, int, int]:
+    """Stage 0: `body` with each observation of at least `STUB_MIN_CHARS`, but its newest `keep_results`, saved to
+    the vault and replaced by a line naming its key; with how many were moved and the characters that freed. When
+    they would free less than `at_least`, nothing is moved (a tidy pass's batch, `TIDY_BATCH`).
 
     The saved text is scrubbed of secrets as the archive is (F854). A write that fails leaves that observation
     where it was: the stub says the content is in the vault, and it has to be true."""
     from core.secret_scrub import scrub_secrets
     from core.vault_backend import get_vault
 
-    limit = len(body) - keep_recent
-    spans = []
+    every = []
     for m in _OBSERVATION.finditer(body):
         nxt = _NEXT_ENTRY.search(body, m.end())
-        end = nxt.start() if nxt else len(body)
-        if end > limit:
-            break
-        if end - m.end() >= STUB_MIN_CHARS:
-            spans.append((m.start(), m.end(), end, m.group(1)))
-    if not spans:
-        return body, 0
+        every.append((m.start(), m.end(), nxt.start() if nxt else len(body), m.group(1)))
+    older = every[:-keep_results] if keep_results > 0 else every
+    spans = [s for s in older if s[2] - s[1] >= STUB_MIN_CHARS]
+    if not spans or sum(end - head_end for _, head_end, end, _ in spans) - 400 * len(spans) < at_least:
+        return body, 0, 0
     folder = _make_archive_path(session_id).with_suffix("")
     out, at, moved = [], 0, 0
     for start, head_end, end, turn in spans:
@@ -150,7 +153,8 @@ def _move_observations(body: str, session_id: str, keep_recent: int) -> tuple[st
                    f"{len(text):,} chars; read it with read_file) {head}…")
         at, moved = end, moved + 1
     out.append(body[at:])
-    return "".join(out), moved
+    moved_body = "".join(out)
+    return moved_body, moved, len(body) - len(moved_body)
 
 
 def _make_archive_path(session_id: str) -> Path:
@@ -216,13 +220,32 @@ async def maybe_compact(
         return current_context_text, recent_history_messages, None, None
 
     threshold = settings.get("auto_compact_threshold", 100000)
+    # The tidy line (D339): above it, older tool results go to the vault in batches; the threshold is where
+    # anything is summarised. Without one, Stage 0 waits for the threshold as the rest does.
+    tidy_at = min(threshold, settings.get("auto_compact_tidy_at") or threshold)
     history_chars = sum(
         len(str(m.get("content", ""))) for m in (recent_history_messages or [])
     )
     total_chars = len(current_context_text) + history_chars
 
-    if total_chars <= threshold:
+    if total_chars <= tidy_at:
         return current_context_text, recent_history_messages, None, None
+    if total_chars <= threshold:
+        # Under the threshold: a tidy pass only, worth its rewrite of the cached prefix or not at all.
+        pin = _pin(pinned_request)
+        moved_body, moved, freed = _move_observations(_without_pin(current_context_text, pinned_request),
+                                                      session_id, at_least=TIDY_BATCH)
+        if not moved:
+            return current_context_text, recent_history_messages, None, None
+        tidied = pin + moved_body
+        after = len(tidied) + history_chars
+        _log_compaction("Stage-0 tidy", total_chars, after)
+        await log_compaction_event(stage="refs", chars_before=total_chars, chars_after=after,
+                                   session_id=session_id, agent_id=agent_id, run_id=run_id)
+        return tidied, recent_history_messages, None, {
+            "stage": "refs", "chars_before": total_chars, "chars_after": after,
+            "reduction_pct": round(freed / total_chars * 100) if total_chars else 0, "moved": moved,
+        }
 
     _log.debug(
         f"\n📏 Compaction check — "
@@ -238,7 +261,7 @@ async def maybe_compact(
     # ── Stage 0: older observations to the vault, their keys in their place (D339 P3) ──
     # No model call and nothing lost. When that alone brings the context under the
     # threshold, it is the whole compaction; otherwise Stages 1 and 2 work on what is left.
-    moved_body, moved = _move_observations(body, session_id, int(threshold * KEEP_RECENT_RATIO))
+    moved_body, moved, _freed = _move_observations(body, session_id)
     if moved:
         body = moved_body
         current_context_text = pin + body

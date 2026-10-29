@@ -36,6 +36,7 @@ class TestTheBudget:
         assert b.source == "window" and b.window == 200_000
         assert b.compact_at > 4 * 80_000
         assert b.read_cap < b.spill_at < b.compact_at
+        assert b.tidy_at < b.compact_at / 3, "older results go to the vault long before anything is summarised"
 
     def test_a_small_window_gets_a_small_budget(self):
         small, large = budget("gemma-3-1b-it", default_settings()), budget("claude-haiku-4-5", default_settings())
@@ -54,7 +55,7 @@ class TestTheBudget:
         for model, pct in (("some-local-model", 50), ("claude-haiku-4-5", 0)):
             s["auto_compact_window_pct"] = pct
             b = budget(model, s)
-            assert (b.source, b.compact_at, b.spill_at) == ("fixed", 120_000, 90_000)
+            assert (b.source, b.compact_at, b.spill_at, b.tidy_at) == ("fixed", 120_000, 90_000, 120_000)
             assert b.read_cap <= 45_000
 
     def test_the_prompts_last_cut_leaves_room_in_the_window(self):

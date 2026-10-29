@@ -2534,7 +2534,8 @@ async def run_agent_step(
                 _compact_wait = ModelWait(maybe_compact(
                     current_context_text,
                     recent_history_messages,
-                    {**current_settings, "auto_compact_threshold": _budget.compact_at},
+                    {**current_settings, "auto_compact_threshold": _budget.compact_at,
+                     "auto_compact_tidy_at": _budget.tidy_at},
                     current_model,
                     mode,
                     current_settings,

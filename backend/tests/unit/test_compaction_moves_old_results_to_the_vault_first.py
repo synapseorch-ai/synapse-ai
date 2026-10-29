@@ -80,21 +80,21 @@ class TestStageZero:
         ctx = _ctx(4)
         out, hist, archive, stats = await _compact(ctx, [], 40_000)
 
-        # The newest quarter of the threshold stays verbatim: page 4 is in it.
-        assert stats["stage"] == "refs" and stats["moved"] == 3 and archive is None
+        # The newest three results stay whole: pages 3 and 4 and the newest read.
+        assert stats["stage"] == "refs" and stats["moved"] == 2 and archive is None
         assert fake_llm.call_count == 0, "Stage 0 is code, never a model call"
         assert out.startswith(f"User Request: {QUESTION}\n")
-        assert "NEWEST-OBSERVATION" in out and _page(4) in out
-        assert len(out) < 15_000
+        assert "NEWEST-OBSERVATION" in out and _page(3) in out and _page(4) in out
+        assert len(out) < 26_000
 
     async def test_nothing_is_lost(self, store, fake_llm):
         """Each moved result is in the vault word for word, under the key its stub names."""
-        ctx = _ctx(3)
-        out, *_ = await _compact(ctx, [], 30_000)
+        ctx = _ctx(5)
+        out, *_ = await _compact(ctx, [], 50_000)
 
         keys = [line.split("nothing was cut: ", 1)[1].split(",", 1)[0]
                 for line in out.splitlines() if "nothing was cut: " in line]
-        assert len(keys) == 2
+        assert len(keys) == 3
         for n, key in enumerate(keys, start=1):
             assert key.startswith("compaction_archives/"), key
             assert store.get(f"vault/{key}").strip() == _page(n)
@@ -113,7 +113,7 @@ class TestStageZero:
             async def resolve_mcp_servers(self):
                 return []
 
-        out, *_ = await _compact(_ctx(2), [], 20_000)
+        out, *_ = await _compact(_ctx(4), [], 40_000)
         key = out.split("nothing was cut: ", 1)[1].split(",", 1)[0]
 
         async def _noop() -> None:
@@ -139,6 +139,34 @@ class TestStageZero:
         out, _h, _a, stats = await _compact(ctx, [], 10_000)
         assert stats["stage"] != "refs"
         assert "nothing was cut" not in out
+
+
+class TestTheTidyLine:
+    """Past the tidy line and under the threshold, older results move in batches; nothing is summarised (D339)."""
+
+    async def _tidy(self, ctx, tidy_at, threshold=400_000):
+        from core.compaction import maybe_compact
+
+        return await maybe_compact(ctx, [], {"auto_compact_threshold": threshold, "auto_compact_tidy_at": tidy_at},
+                                   "m", "cloud", {}, "orch_run_d339", "a_d339", pinned_request=QUESTION)
+
+    async def test_a_batch_worth_its_rewrite_is_moved(self, store, fake_llm):
+        out, _h, archive, stats = await self._tidy(_ctx(6), tidy_at=30_000)
+        # Seven results: the newest three (pages 5 and 6, the last read) stay whole, pages 1-4 move.
+        assert stats["stage"] == "refs" and stats["moved"] == 4 and archive is None
+        assert fake_llm.call_count == 0
+        assert _page(4) not in out and _page(5) in out and _page(6) in out
+
+    async def test_a_small_batch_waits(self, store, fake_llm):
+        """One older page frees ~11k: under TIDY_BATCH, so the cached prefix is left alone this turn."""
+        ctx = _ctx(3)
+        out, _h, _a, stats = await self._tidy(ctx, tidy_at=20_000)
+        assert stats is None and out == ctx
+
+    async def test_under_the_tidy_line_nothing_happens(self, store, fake_llm):
+        ctx = _ctx(6)
+        out, _h, _a, stats = await self._tidy(ctx, tidy_at=500_000, threshold=500_000)
+        assert stats is None and out == ctx
 
 
 class TestStageTwosArchive:
