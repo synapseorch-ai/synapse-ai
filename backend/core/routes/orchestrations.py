@@ -483,23 +483,13 @@ async def create_or_update_orchestration(orch: OrchestrationIn, request: Request
 
 async def _refuse_step_picks(orch: dict, existing: dict | None) -> None:
     """A step's kept sessions (F1140, F1167): one per site, and an id new to the step only if it is the person's own
-    or shared with them. Ids the step already had stay."""
-    from core.browser.picks import one_per_site, usable_new
-    had = {s.get("id"): s.get("browser_sessions") or [] for s in (existing or {}).get("steps") or []}
-    for step in orch.get("steps") or []:
-        if step.get("browser_sessions"):
-            await one_per_site(step["browser_sessions"])
-            await usable_new(step["browser_sessions"], before=had.get(step.get("id")))
-    # A Browser step's recording, and recordings picked for a step's agent, exist (F1146).
-    from core.browser import recordings as _recordings
-    named = {r for s in orch.get("steps") or [] for r in [s.get("recording_id") if s.get("type") == "browser" else None,
-                                                          *(s.get("browser_recordings") or [])] if r}
-    if named:
-        before = {r for s in (existing or {}).get("steps") or []
-                  for r in [s.get("recording_id"), *(s.get("browser_recordings") or [])] if r}
-        gone = named - before - {d["id"] for d in await _recordings.picked(sorted(named))}
-        if gone:
-            raise HTTPException(status_code=422, detail=f"No such recording: {', '.join(sorted(gone))}.")
+    or shared with them; ids the step already had stay. A Browser step's recording, and recordings picked for a
+    step's agent, exist (F1146). `core.browser.save_checks`, as the builder's step tools check them."""
+    from core.browser import save_checks
+    try:
+        await save_checks.step_browser(orch, existing)
+    except save_checks.RecordingGone as gone:
+        raise HTTPException(status_code=422, detail=str(gone)) from None
 
 
 async def _refuse_to_save(orch: dict, extra_agents: dict | None = None) -> None:

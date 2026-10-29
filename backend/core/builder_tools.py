@@ -381,9 +381,62 @@ PATCH_JSON_DESCRIPTION = (
     "field you don't want touched. Use *_json string keys for sub-structures "
     "(route_map_json, parallel_branches_json, human_fields_json, "
     "route_descriptions_json); a retrieve or ingest step's flat retrieve_* / ingest_* "
-    "fields change only those settings; pass_images (agent steps) turns Sees attachments on or off. "
+    "fields change only those settings; pass_images (agent steps) turns Sees attachments on or off; a browser "
+    "step's recording_inputs_json, may_send_steps, on_miss and browser_sessions as add_single_step takes them. "
     "Example: '{\"prompt_template\":\"New prompt\",\"next_step_id\":\"step_xyz7890\"}'"
 )
+
+#: A Browser step's own fields (F1146, F1189), as the step tools take them flat.
+BROWSER_STEP_PROPERTIES: dict = {
+    "recording_id": {
+        "type": "string",
+        "description": "The recording a browser step replays by code, from list_recordings (browser steps; required). "
+                       "Recordings are made by a person in the app, never by the builder.",
+    },
+    "recording_inputs_json": {
+        "type": "string",
+        "description": "JSON object filling each of the recording's inputs (get_recording names them), each a value "
+                       "or a {state.key} template. Example: '{\"order number\":\"{state.user_input}\"}' "
+                       "(browser steps; every input filled).",
+    },
+    "may_send_steps": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Ids of the recording's steps that may send on their own (get_recording lists them). A run is "
+                       "never watched: any other send pauses it for the person. Default none (browser steps).",
+    },
+    "on_miss": {
+        "type": "string", "enum": ["pause", "agent"],
+        "description": "When a page no longer matches a step: 'pause' (the default) gives the person the wheel; "
+                       "'agent' has the step's agent_id, a Browser agent, find the way (browser steps). Either way "
+                       "the new path waits as a fix for a person to approve.",
+    },
+    "browser_sessions": {
+        "type": "array", "items": {"type": "string"},
+        "description": "Kept sessions the step's browser starts signed in with: ids from list_browser_sessions, or a "
+                       "site (e.g. 'portal.example.com') for the person's own session there. One per site; only the "
+                       "person's own or shared with them. Signing in is the person's, in Sessions.",
+    },
+}
+
+#: A Browser agent's settings (`core.models.AgentBrowser`), as the agent tools take them.
+AGENT_BROWSER_PROPERTY: dict = {
+    "type": "object",
+    "description": (
+        "For a Browser agent (type 'browser') only: where it may go and what it starts with. sites: hosts its "
+        "pages may reach ('portal.example.com', or '*.example.com' for its subdomains; empty = any public site); "
+        "sessions: kept sessions it starts signed in with, by id from list_browser_sessions or by site (the "
+        "person's own; one per site); recordings: recording ids it may run by code; mode: 'read_only' (default) or "
+        "'co_drive' (it may type and send, with the person watching); action_budget: actions per task (1-200, "
+        "default 40). Signing in and recording are a person's, in the app."
+    ),
+    "properties": {
+        "sites": {"type": "array", "items": {"type": "string"}},
+        "sessions": {"type": "array", "items": {"type": "string"}},
+        "recordings": {"type": "array", "items": {"type": "string"}},
+        "mode": {"type": "string", "enum": ["read_only", "co_drive"]},
+        "action_budget": {"type": "integer", "minimum": 1, "maximum": 200},
+    },
+}
 
 STATE_SCHEMA_JSON_DESCRIPTION = (
     "JSON-encoded state-schema object mapping each state key to "
@@ -493,6 +546,7 @@ BUILDER_TOOL_SCHEMAS = [
             "description": (
                 "Create a new agent and save it. Returns the created agent with its new ID. "
                 "Use type='conversational' for general-purpose agents, 'code' for agents that work with repos/files, "
+                "'browser' for an agent that works in websites in its own browser (its `browser` settings), "
                 "'delegate' for a Team agent: a lead whose members (delegate_agent_ids; empty = any agent) do the work, "
                 "as a team in parallel (the default) or one at a time (`team`); its own tools are what its lead answers "
                 "small questions with, usually none. "
@@ -505,7 +559,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "description": {"type": "string", "description": "What this agent does"},
                     "type": {
                         "type": "string",
-                        "enum": ["conversational", "code", "delegate"],
+                        "enum": ["conversational", "code", "delegate", "browser"],
                         "description": "Agent type",
                     },
                     "tools": {
@@ -552,6 +606,7 @@ BUILDER_TOOL_SCHEMAS = [
                             "spend_limit_usd": {"type": "number"},
                         },
                     },
+                    "browser": AGENT_BROWSER_PROPERTY,
                     "tool_policy": {
                         "type": "object",
                         "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
@@ -589,7 +644,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "description": {"type": "string"},
                                 "type": {
                                     "type": "string",
-                                    "enum": ["conversational", "code", "delegate"],
+                                    "enum": ["conversational", "code", "delegate", "browser"],
                                 },
                                 "tools": {
                                     "type": "array",
@@ -627,6 +682,7 @@ BUILDER_TOOL_SCHEMAS = [
                                         "spend_limit_usd": {"type": "number"},
                                     },
                                 },
+                                "browser": AGENT_BROWSER_PROPERTY,
                                 "tool_policy": {
                                     "type": "object",
                                     "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
@@ -653,7 +709,8 @@ BUILDER_TOOL_SCHEMAS = [
                         "type": "object",
                         "description": "Fields to update (name, description, tools, system_prompt, model, etc.; "
                                        "for a Team agent, delegate_agent_ids and team: how its members work, as "
-                                       "create_agent takes it)",
+                                       "create_agent takes it; for a Browser agent, browser: the settings to "
+                                       "change, kept where not given)",
                     },
                 },
                 "required": ["agent_id", "fields"],
@@ -1022,7 +1079,7 @@ BUILDER_TOOL_SCHEMAS = [
                         "enum": ["agent", "llm", "evaluator", "parallel", "merge", "human", "tool", "loop", "transform", "extract_json", "if_else", "switch", "print", "end", "retrieve", "ingest", "workflow", "browser"],
                         "description": "Step type",
                     },
-                    "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps)"},
+                    "agent_id": {"type": "string", "description": "Agent ID (required for agent/tool steps; on a browser step with on_miss 'agent', a Browser agent)"},
                     "prompt_template": {"type": "string", "description": "Prompt with {state.key} placeholders (for agent/llm steps)"},
                     "input_keys": {
                         "type": "array", "items": {"type": "string"},
@@ -1102,6 +1159,8 @@ BUILDER_TOOL_SCHEMAS = [
                         ),
                     },
                     "switch_default_step_id": {"type": "string", "description": "Fallback step when no switch case matches"},
+                    # ── Browser steps: a recording replayed by code (F1146) ──
+                    **BROWSER_STEP_PROPERTIES,
                     # ── Knowledge steps: retrieve / ingest (only while Knowledge is on) ──
                     "retrieve_kb_ids": {
                         "type": "array", "items": {"type": "string"},
@@ -1207,6 +1266,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 "switch_expression": {"type": "string", "description": "Expression to evaluate for switch steps. Same restricted expression syntax as if_condition."},
                                 "switch_cases_json": {"type": "string", "description": "JSON string: '{\"value\":\"step_id\"}'"},
                                 "switch_default_step_id": {"type": "string", "description": "Fallback step when no case matches"},
+                                **BROWSER_STEP_PROPERTIES,
                                 "retrieve_kb_ids": {"type": "array", "items": {"type": "string"}, "description": "Knowledge base ids to search (retrieve steps)"},
                                 "retrieve_query": {"type": "string", "description": "Search query with {state.key} placeholders (retrieve steps)"},
                                 "retrieve_filters_json": {"type": "string", "description": "JSON metadata filter (retrieve steps)"},
@@ -1691,6 +1751,162 @@ async def _refused(kind: str, adding: int) -> dict | None:
     return {"error": reason, "refused": "plan_limit"} if reason else None
 
 
+# ─── The Browser's parts: what a host decides (F1189; BRW3's binding) ────────
+
+#: Whether the Browser is on this workspace's plan: async `check(kind) -> reason | None`, kind "step" (a Browser
+#: step), "agent" (a Browser agent) or "agent_browser" (an agent's sites, sessions or recordings). None: OSS, always.
+_browser_check: Any = None
+#: The host's own pick rule: async `check(caller, lists, stored) -> reason | None` (cloud's `picks.checked`). None:
+#: this engine's (`save_checks.check_picks`).
+_pick_check: Any = None
+#: The agent types a new agent may have, and the sentence that refuses another: the host's agent route's own.
+_agent_types: tuple[frozenset, str] | None = None
+
+
+def set_browser_check(check: Any) -> None:
+    """Install the Browser's plan check. ``None`` removes it."""
+    global _browser_check
+    _browser_check = check
+
+
+def set_pick_check(check: Any) -> None:
+    """Install the host's rule for picked sessions. ``None`` puts this engine's back."""
+    global _pick_check
+    _pick_check = check
+
+
+def set_agent_types(types: frozenset | None, sentence: str | None = None) -> None:
+    """The types the host's agent route lets a person choose, and its sentence for another. ``None`` puts this
+    engine's back (`routes/agents.CHOOSABLE_TYPES`)."""
+    global _agent_types
+    _agent_types = None if types is None else (frozenset(types), sentence or "")
+
+
+def _acting_caller() -> Any:
+    """Who the builder works for: the assistant's run's person, or an MCP call's caller; None for neither."""
+    from core import builder_access
+    from core.product_tools import caller as _caller
+    return builder_access.current_caller() or _caller.current()
+
+
+def _type_refused(kind: Any, current: str | None = None) -> dict | None:
+    """A type the host's agent route would refuse for a new agent (or one changing to it), in its words. An
+    agent keeps the type it already has."""
+    kind = kind or "conversational"
+    if current is not None and kind == current:
+        return None
+    if _agent_types is not None:
+        allowed, sentence = _agent_types
+    else:
+        from core.routes.agents import CHOOSABLE_TYPES
+        allowed, sentence = CHOOSABLE_TYPES, ""
+    if kind in allowed:
+        return None
+    return {"error": sentence or f"'{kind}' is not an agent type. Choose conversational, delegate (a team), code "
+                                 "or browser."}
+
+
+async def _browser_refused(kind: str) -> dict | None:
+    if _browser_check is None:
+        return None
+    reason = await _browser_check(kind)
+    return {"error": reason, "refused": "plan_limit"} if reason else None
+
+
+async def _picks_refused(lists: list[list[str]], stored: list[list[str]]) -> dict | None:
+    """The picked sessions by the host's rule, or this engine's (F1140, F1167)."""
+    if not any(lists):
+        return None
+    if _pick_check is not None:
+        reason = await _pick_check(_acting_caller(), lists, stored)
+    else:
+        from core.browser import save_checks
+        from core.browser.picks import PickRefused
+        try:
+            await save_checks.check_picks(lists, stored)
+            reason = None
+        except PickRefused as refused:
+            reason = str(refused)
+    return {"error": reason, "refused": "pick"} if reason else None
+
+
+async def _refuse_browser_steps(steps: list, before: list | None = None) -> dict | None:
+    """Steps' browser parts as the editor's save checks them (F1146, F1140, F1167), and what a model gets wrong that
+    the editor's pickers never let a person: a recording's inputs left unfilled, sends that aren't its steps (F1189).
+    `before` is the workflow's steps as saved, whose sessions and recordings stay. Sessions named by site become ids
+    here, in `steps`."""
+    from core.browser import recordings, save_checks
+    from core.browser.picks import PickRefused
+    from core.orchestration.save_rules import browser_step_problems
+    from core.store.resources import get_agent
+
+    steps = [s for s in steps if isinstance(s, dict)]
+    browsers = [s for s in steps if s.get("type") == "browser"]
+    picked = [s for s in steps if s.get("browser_sessions")]
+    if not browsers and not picked and not any(s.get("browser_recordings") for s in steps):
+        return None
+    if browsers and (refused := await _browser_refused("step")) is not None:
+        return refused
+    agents = {}
+    for s in browsers:
+        if s.get("agent_id") and s["agent_id"] not in agents:
+            agents[s["agent_id"]] = await get_agent(s["agent_id"])
+    said = browser_step_problems({"steps": steps}, {k: v for k, v in agents.items() if v})
+    if said:
+        return {"error": "Refusing to save: " + " ".join(said)}
+    try:
+        for s in picked:
+            s["browser_sessions"] = await save_checks.resolve_sessions(s["browser_sessions"], caller=_acting_caller())
+        await save_checks.step_recordings({"steps": steps}, {"steps": before or []})
+    except PickRefused as refused:
+        return {"error": str(refused), "refused": "pick"}
+    except save_checks.RecordingGone as gone:
+        return {"error": str(gone)}
+    for s in browsers:
+        try:
+            said += save_checks.recording_problems(s, await recordings.get(s["recording_id"]))
+        except recordings.NotFound:
+            continue  # gone since this workflow named it: the run says so (F1146)
+    if said:
+        return {"error": "Refusing to save: " + " ".join(said)}
+    had = {b.get("id"): b.get("browser_sessions") or [] for b in before or [] if isinstance(b, dict)}
+    return await _picks_refused([s["browser_sessions"] for s in picked], [had.get(s.get("id")) or [] for s in picked])
+
+
+async def _agent_browser(kind: str, given: Any, before: dict | None) -> tuple[dict | None, dict | None]:
+    """An agent's `browser` settings as the agent editor would save them: `(settings, None)`, or `(None, refusal)`.
+    Given on an update, they change what they name and keep the rest. Sessions named by site become ids."""
+    from pydantic import ValidationError
+
+    from core.browser import save_checks
+    from core.browser.picks import PickRefused
+    from core.models import AgentBrowser
+
+    if not isinstance(given, dict):
+        return None, {"error": "`browser` is an object of a Browser agent's settings (sites, sessions, recordings, "
+                               "mode, action_budget)."}
+    if kind != "browser":
+        return None, {"error": "Only a Browser agent has browser settings (sites, sessions, recordings): make it "
+                               "type 'browser', or leave `browser` out."}
+    had = (before or {}).get("browser") or {}
+    try:
+        settings = AgentBrowser.model_validate({**had, **given}).model_dump()
+    except ValidationError as e:
+        said = "; ".join(f"{'.'.join(str(p) for p in err['loc']) or 'browser'}: {err['msg']}" for err in e.errors())
+        return None, {"error": f"The browser settings are not in the shape they take: {said}."}
+    settings.pop("login_ref", None)
+    try:
+        settings["sessions"] = await save_checks.resolve_sessions(settings["sessions"], caller=_acting_caller())
+        settings["recordings"] = await save_checks.existing_recordings(settings["recordings"],
+                                                                       had.get("recordings") or [])
+    except PickRefused as refused:
+        return None, {"error": str(refused), "refused": "pick"}
+    except save_checks.RecordingGone as gone:
+        return None, {"error": str(gone)}
+    refused = await _picks_refused([settings["sessions"]], [save_checks.agent_sessions(before)])
+    return (None, refused) if refused else (settings, None)
+
+
 #: The run a builder tool is working inside, when the engine says (F156). A
 #: skeleton is stamped with it until it validates, so `finish_build` can remove
 #: what its own run started and never finished — never another run's.
@@ -1977,6 +2193,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": team_refusal}
         if args.get("type") == "orchestrator":
             return {"error": _HOLLOW_WORKFLOW_AGENT}
+        if (refused := _type_refused(args.get("type"))) is not None:
+            return refused
+        if args.get("type") == "browser" and (refused := await _browser_refused("agent")) is not None:
+            return refused
+        browser = None
+        if args.get("browser") is not None:
+            browser, refused = await _agent_browser(args.get("type") or "conversational", args["browser"], None)
+            if refused:
+                return refused
         if (too_long := _long_agent_name(args.get("name"))) is not None:
             return {"error": too_long}
         from core import builder_guard  # F489: never a tool nothing provides
@@ -2012,6 +2237,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         }
         if team_block is not None:
             agent["team"] = team_block
+        if browser is not None:
+            agent["browser"] = browser
         if (policy := _agent_policy(args.get("tool_policy"))):
             agent["tool_policy"] = policy
         await save_agent(agent)
@@ -2040,6 +2267,15 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             else:
                 if spec.get("type") == "orchestrator":
                     errors.append({"index": i, "role": spec.get("role"), "error": _HOLLOW_WORKFLOW_AGENT})
+                    continue
+                refused = _type_refused(spec.get("type"))
+                if refused is None and spec.get("type") == "browser":
+                    refused = await _browser_refused("agent")
+                browser = None
+                if refused is None and spec.get("browser") is not None:
+                    browser, refused = await _agent_browser(spec.get("type") or "conversational", spec["browser"], None)
+                if refused is not None:
+                    errors.append({"index": i, "role": spec.get("role"), **refused})
                     continue
                 team_block, team_refusal = _team_block(spec.get("type"), spec.get("team"), new=True)
                 if team_refusal:
@@ -2077,6 +2313,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 }
                 if team_block is not None:
                     agent["team"] = team_block
+                if browser is not None:
+                    agent["browser"] = browser
                 if (policy := _agent_policy(spec.get("tool_policy"))):
                     agent["tool_policy"] = policy
                 documents.append(agent)
@@ -2104,6 +2342,19 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": "An agent cannot be made part of the builder: `system` and type 'builder' are not editable."}
         if "name" in fields and (too_long := _long_agent_name(fields["name"])) is not None:
             return {"error": too_long}
+        current = agent.get("type") or "conversational"
+        if "type" in fields and (refused := _type_refused(fields["type"], current)) is not None:
+            return refused
+        kind = fields.get("type") or current
+        if kind == "browser" and current != "browser" and (refused := await _browser_refused("agent")) is not None:
+            return refused
+        if fields.get("browser") is not None:
+            if kind == "browser" and current == "browser" \
+                    and (refused := await _browser_refused("agent_browser")) is not None:
+                return refused
+            fields["browser"], refused = await _agent_browser(kind, fields["browser"], agent)
+            if refused:
+                return refused
         if "tools" in fields:
             from core import builder_guard  # F489: never a tool nothing provides
             if (phantom := await builder_guard.unknown(fields.get("tools") or [], server_module)) is not None:
@@ -2324,6 +2575,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(steps)
         if refused:
             return refused
+        refused = await _refuse_browser_steps(steps)
+        if refused:
+            return refused
         try:
             caps = _run_cap_args(args)
         except ValueError as e:
@@ -2392,6 +2646,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if refused:
                 return refused
             refused = _refuse_unsafe_expression(fields["steps"])
+            if refused:
+                return refused
+            refused = await _refuse_browser_steps(fields["steps"], orch.get("steps"))
             if refused:
                 return refused
         if not fields or set(fields.keys()) - {"orch_id"} == set():
@@ -2476,6 +2733,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
+        refused = await _refuse_browser_steps(filled, existing)
+        if refused:
+            return refused
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
             s["position_y"] = _zigzag_y(offset + i)
@@ -2532,6 +2792,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if refused:
             return refused
         refused = _refuse_unsafe_expression(filled)
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps(filled, existing)
         if refused:
             return refused
         # Position continues the zig-zag past any existing steps.
@@ -2591,6 +2854,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _refuse_unsafe_expression(filled)
         if refused:
             return refused
+        refused = await _refuse_browser_steps(filled, existing)
+        if refused:
+            return refused
         offset = len(existing)
         for i, s in enumerate(filled):
             s["position_x"] = _POS_X_START + (offset + i) * _POS_X_STEP
@@ -2644,6 +2910,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         sidx = next((i for i, s in enumerate(steps) if s.get("id") == step_id), None)
         if sidx is None:
             return {"error": f"Step '{step_id}' not found in orchestration '{args['orch_id']}'"}
+        if "recording_inputs_json" in patch:
+            patch["recording_inputs"] = _parse_json_field(patch.pop("recording_inputs_json"), {})
+        had = list(steps)
         merged = {**steps[sidx], **patch}
         merged["id"] = step_id  # id is immutable via patch
         steps[sidx] = _fill_step_defaults([merged])[0]
@@ -2657,6 +2926,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         if refused:
             return refused
         refused = _refuse_unsafe_expression([steps[sidx]])
+        if refused:
+            return refused
+        refused = await _refuse_browser_steps([steps[sidx]], had)
         if refused:
             return refused
         orch["steps"] = steps
@@ -3856,6 +4128,8 @@ def _normalize_step_inputs(step: dict) -> dict:
         s["human_fields"] = _parse_json_field(s.pop("human_fields_json"), [])
     if "switch_cases_json" in s:
         s["switch_cases"] = _parse_json_field(s.pop("switch_cases_json"), {})
+    if "recording_inputs_json" in s:
+        s["recording_inputs"] = _parse_json_field(s.pop("recording_inputs_json"), {})
     # A Retrieve or Ingest step keeps its settings as one block, the contract's
     # own body (`step.retrieve` / `step.ingest`); the model writes them flat.
     # Folded into whatever block the step already has, so a patch of one field
