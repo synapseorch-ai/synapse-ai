@@ -131,6 +131,27 @@ def _read(path: Path):
         return None
 
 
+def _in_the_engines_shape(item: dict) -> dict:
+    """A v1.x workflow as v2's engine reads it (F1235). v1.9's builder saved a
+    step's fields as the model wrote them — a human step's form fields as
+    `{"fields": [...]}` — and the engine refuses to run such a step. This is the
+    one time every upgrader's documents pass through code, so each step is read
+    into the engine's shape here, by the engine's own reader, and what was read
+    differently is said. A workflow already in that shape, or whose steps are
+    not a list at all, comes across as it was."""
+    from core.orchestration.read_shapes import read_steps
+
+    steps = item.get("steps")
+    if not isinstance(steps, list):
+        return item
+    read, notes = read_steps(steps)
+    if read == steps:
+        return item
+    for note in notes:
+        print(f"[import] workflow {item.get('id')}: {note}", flush=True)
+    return {**item, "steps": read}
+
+
 def _parse_stamp(value) -> datetime | None:
     if not value:
         return None
@@ -241,7 +262,7 @@ async def import_data_dir(data_dir: str | Path, tenant_id: str = DEFAULT_TENANT)
     #: rows — when these drifted, the importer became a second schema.
     collections = (
         ("orchestrations.json", "orchestrations", OrchestrationDB, ["id"],
-         orchestration_values, lambda i: bool(i.get("id"))),
+         lambda i, t: orchestration_values(_in_the_engines_shape(i), t), lambda i: bool(i.get("id"))),
         ("user_agents.json", "user_agents", AgentDB, ["id"],
          agent_values, lambda i: bool(i.get("id"))),
         ("custom_tools.json", "custom_tools", ToolDB, ["id"],
