@@ -96,6 +96,7 @@ export const AgentsTab = ({
     const knowledgeOn = useKnowledgeEnabled();
     const boardsOn = !!useNavFlags().boards_enabled;
     const [allBases, setAllBases] = useState<KnowledgeBase[]>([]);
+    const [basesRead, setBasesRead] = useState(false);
     const [dbConfigs, setDbConfigs] = useState<any[]>([]);
     const [agentTypes, setAgentTypes] = useState<{ value: string; label: string; description: string; disabled?: boolean }[]>([]);
     // The kept sessions a Browser agent may start signed in with (Agents › Browser › Sessions, BRW2); null while read.
@@ -137,9 +138,29 @@ export const AgentsTab = ({
         guard(() => { void duplicate(agent); });
     };
 
+    // A copy's knowledge bases come with it where they can (Naveen, 10-30): those here and on. A copy is a new agent,
+    // so the save asks about each of its bases (F1223); the rest are left out and said, never a failed copy.
+    const copyableBases = (ids: string[]): { kept: string[]; leftOut: string } => {
+        if (!ids.length) return { kept: [], leftOut: '' };
+        // Not read yet: sent as it is, and the save says why if it refuses.
+        if (knowledgeOn === null || (knowledgeOn && !basesRead)) return { kept: ids, leftOut: '' };
+        if (!knowledgeOn) {
+            return { kept: [], leftOut: `its knowledge base${ids.length > 1 ? 's' : ''} (Knowledge is off: turn it on in Settings › General › Knowledge)` };
+        }
+        const kept = ids.filter(id => allBases.some(kb => kb.id === id && kb.status === 'active'));
+        const off = ids.map(id => allBases.find(kb => kb.id === id)).filter(kb => kb && kb.status !== 'active');
+        const gone = ids.filter(id => !allBases.some(kb => kb.id === id)).length;
+        const said = [
+            ...off.map(kb => `“${kb!.name}” (turned off)`),
+            ...(gone ? [`${gone} knowledge base${gone > 1 ? 's' : ''} no longer here`] : []),
+        ];
+        return { kept, leftOut: said.join(' and ') };
+    };
+
     const duplicate = async (agent: any) => {
         // The original is clipped, not the marker, so a copy of a long name still says so.
-        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${String(agent.name).slice(0, AGENT_NAME_MAX - 7).trimEnd()} (Copy)` };
+        const { kept, leftOut } = copyableBases(Array.isArray(agent.knowledge) ? agent.knowledge : []);
+        const copy = { ...agent, id: `agent_${Date.now()}`, name: `${String(agent.name).slice(0, AGENT_NAME_MAX - 7).trimEnd()} (Copy)`, knowledge: kept };
         delete copy.created_at;
         delete copy.updated_at;
         try {
@@ -154,9 +175,12 @@ export const AgentsTab = ({
                 dispatch(addAgent(saved));
                 setSelectedAgentId(saved.id);
                 loadDraftAgent(saved);
-                showToast('Agent duplicated', 'success');
+                showToast(leftOut ? `Agent duplicated without ${leftOut}` : 'Agent duplicated', 'success');
             } else {
-                showToast('Failed to duplicate agent', 'error');
+                // Why it was not made, in the save's own words, never a bare failure.
+                const err = await res.json().catch(() => null);
+                const why = typeof err?.detail === 'string' ? err.detail : '';
+                showToast(why ? `Not duplicated: ${why}` : 'Failed to duplicate agent', 'error');
             }
         } catch {
             showToast('Error duplicating agent', 'error');
@@ -308,7 +332,7 @@ export const AgentsTab = ({
         if (!knowledgeOn) return;
         let live = true;
         knowledgeApi.bases()
-            .then(list => { if (live) setAllBases(list); })
+            .then(list => { if (live) { setAllBases(list); setBasesRead(true); } })
             .catch(err => console.error('Failed to fetch knowledge bases', err));
         return () => { live = false; };
     }, [knowledgeOn]);
