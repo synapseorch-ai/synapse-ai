@@ -96,7 +96,9 @@ async def test_a_board_is_made_carded_closed_and_commented_on(client, boards_on)
 async def test_boards_off_says_so(monkeypatch):
     use_saved_settings(monkeypatch)
     said, cards = await _prepare({"action": "board_add_card", "board": "Bugs", "title": "x"})
-    assert cards == [] and "switched off" in said["error"]
+    # F1203: where they are turned on, and the switch as its own card (this person may press it); never the add.
+    assert "switched off" in said["error"] and "Settings › General › Boards" in said["error"]
+    assert [c["title"] for c in cards] == ["Turn on Boards"]
 
 
 async def test_a_viewer_gets_no_board_card(boards_on):
@@ -115,7 +117,9 @@ async def test_a_viewer_gets_no_board_card(boards_on):
 async def test_knowledge_off_says_so(monkeypatch):
     use_saved_settings(monkeypatch)
     said, cards = await _prepare({"action": "knowledge_add_note", "knowledge_base": "FAQ", "text": "Open 9 to 5"})
-    assert cards == [] and "switched off" in said["error"]
+    # F1203: as Boards above.
+    assert "switched off" in said["error"] and "Settings › General › Knowledge" in said["error"]
+    assert [c["title"] for c in cards] == ["Turn on Knowledge"]
 
 
 @pytest.fixture

@@ -26,7 +26,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi")
+                "approval", "card", "openapi", "feature")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -80,6 +80,7 @@ _ACTS = (
     Op("board_comment", "act", "card", fields=("text",), required=("text",), verb="Comment on"),
     Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
+    Op("feature_on", "act", "feature", verb="Turn on"),
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
@@ -151,7 +152,8 @@ WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
 MAKES_TARGET = frozenset({"board_create", "knowledge_create"})
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
-            "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id"}
+            "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
+            "feature": "feature"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────

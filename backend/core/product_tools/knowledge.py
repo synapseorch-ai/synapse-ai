@@ -22,6 +22,12 @@ async def _search(caller: Any, args: dict[str, Any]) -> str:
     return await knowledge.search_tool(args, caller.principal)
 
 
+def _OFF() -> str:  # noqa: N802 — read like the constant it was
+    """What is off and where it is turned on (F1203)."""
+    from core.features import off_sentence
+    return off_sentence("knowledge")
+
+
 def _on() -> bool:
     from core.knowledge.config import knowledge_enabled
     return knowledge_enabled()
@@ -33,7 +39,7 @@ async def _base(wanted: str):
     from core.knowledge import bases
 
     if not _on():
-        raise ToolRefusal("Knowledge is switched off in this workspace.")
+        raise ToolRefusal(_OFF())
     listed = await bases.list_bases()
     needle = (wanted or "").strip().lower()
     exact = [b for b in listed if b.id == wanted or b.name.lower() == needle]
@@ -51,7 +57,7 @@ async def _document(doc_id: str):
     from core.knowledge import documents
 
     if not _on():
-        raise ToolRefusal("Knowledge is switched off in this workspace.")
+        raise ToolRefusal(_OFF())
     row = await documents.get(str(doc_id or ""))
     if row is None:
         raise ToolRefusal("There is no such document.")

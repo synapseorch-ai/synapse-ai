@@ -28,7 +28,7 @@ import { cn } from '@/lib/cn';
 
 import {
     aloneWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan, splitQuestion,
-    strongerWords, withoutWords,
+    featureName, strongerWords, turnOnWords, withoutWords,
     type Plan, type PlanStep,
 } from './plan';
 
@@ -207,6 +207,7 @@ export function PlanCard({
     const canFind = !offers || offers.includes('find');
     const without = (offers ?? []).filter((o) => o.startsWith('without:')).map((o) => o.slice('without:'.length));
     const alone = (offers ?? []).filter((o) => o.startsWith('alone:')).map((o) => o.slice('alone:'.length));
+    const turnOn = (offers ?? []).filter((o) => o.startsWith('turn_on:')).map((o) => o.slice('turn_on:'.length));
     const [expanded, setExpanded] = React.useState(false);
     const [sent, setSent] = React.useState(false);
     const title = kind === 'change' ? 'The change' : 'The plan';
@@ -321,8 +322,23 @@ export function PlanCard({
                                 Missing here
                             </span>
                             <Markdown className="text-[13px] leading-relaxed">{plan.needs}</Markdown>
-                            {open && (without.length > 0 || canFind) && (
+                            {open && (turnOn.length > 0 || without.length > 0 || canFind) && (
                                 <div className="mt-1 flex flex-wrap gap-2">
+                                    {turnOn.map((feature) => (
+                                        <Button
+                                            key={`on-${feature}`}
+                                            type="button"
+                                            variant="primary"
+                                            size="sm"
+                                            disabled={sent}
+                                            onClick={() => {
+                                                setSent(true);
+                                                onAnswer(turnOnWords(featureName(feature)));
+                                            }}
+                                        >
+                                            Turn on {featureName(feature)}
+                                        </Button>
+                                    ))}
                                     {without.map((tool) => (
                                         <Button
                                             key={tool}

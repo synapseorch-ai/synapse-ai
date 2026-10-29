@@ -215,8 +215,12 @@ def _plan_targets(step: Step) -> list[str]:
 
 def _validated(orch: dict[str, Any], agents: dict[str, dict], *, called: bool) -> tuple[list[str], list[str]]:
     from core.builder_tools import _validate_orchestration
+    from core.knowledge.config import knowledge_enabled
 
-    verdict = _validate_orchestration(orch, agents=agents, allow_dead_ends=called)
+    # While Knowledge is off a Retrieve or Ingest step names no base yet: the review blocks it with Knowledge's switch,
+    # and the plan after it is turned on is checked whole (F1203).
+    verdict = _validate_orchestration(orch, agents=agents, allow_dead_ends=called,
+                                      knowledge_later=not knowledge_enabled())
     try:
         Orchestration.model_validate(orch)
     except Exception as e:  # noqa: BLE001 — the engine would refuse it the same way

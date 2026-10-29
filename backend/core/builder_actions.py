@@ -48,6 +48,7 @@ ACTIONS: dict[str, str] = {
     "board_comment": "comment on a card (`card_id`, `text`)",
     "board_create": "make a shared board (`name`, `text`: what it is for)",
     "board_delete": "delete a shared board (`board`)",
+    "feature_on": "turn on Boards or Knowledge for this workspace (`feature`: boards or knowledge), when one is off",
 }
 
 SCHEMA = {
@@ -81,6 +82,7 @@ SCHEMA = {
                 "card_id": {"type": "string", "description": "From topic `boards` with the board's name."},
                 "status": {"type": "string", "enum": ["open", "done", "failed"]},
                 "result": {"type": "string", "description": "board_update_card: what came of it."},
+                "feature": {"type": "string", "enum": ["boards", "knowledge"]},
                 "name": {"type": "string"},
                 "title": {"type": "string"},
                 "text": {"type": "string"},
@@ -91,6 +93,11 @@ SCHEMA = {
 }
 
 
+#: What turning each feature on does, on its card.
+_TURNS_ON = {"boards": "Every workflow's agents get a board of their own, and you can make shared ones.",
+             "knowledge": "Knowledge bases become searchable by your agents. Indexing them uses your embedding model."}
+
+
 class _NotOffered(Exception):
     """Why no card: said to the model, which says it to the person. A "which one?" carries its options with their
     ids, and the field they answer, so the turn keeps them for the next turn's pick (F977)."""
@@ -98,6 +105,28 @@ class _NotOffered(Exception):
     def __init__(self, why: str, *, field: str = "", options: list[dict] | None = None) -> None:
         super().__init__(why)
         self.field, self.options = field, options or []
+
+
+class _FeatureOff(_NotOffered):
+    """The action needs a feature that is off: what is said names where it is turned on, and its switch is a card of
+    its own for one who may press it (`feature_switch`, F1203)."""
+
+    def __init__(self, feature: str) -> None:
+        from core.features import off_sentence
+        super().__init__(off_sentence(feature))
+        self.feature = feature
+
+
+async def feature_switch(off: _FeatureOff) -> tuple[str, dict | None]:
+    """What is said for a feature that is off, and its switch's card, or None for one who may not turn it on."""
+    from core import features
+
+    said = features.off_sentence(off.feature)
+    try:
+        switch = await _feature_card(off.feature)
+    except _NotOffered:
+        return f"{said} Ask an admin of this workspace to turn {features.label(off.feature)} on.", None
+    return f"{said} A card is up to turn it on; ask again for this once it is on.", switch
 
 
 def _caller() -> Caller:
@@ -273,12 +302,33 @@ async def _offer(action: str, args: dict) -> dict:
                               await _button("Refuse", "answer_tool_approval", {**where, "approve": False,
                                                                                "wait_seconds": 0})])
 
+    if action == "feature_on":
+        return await _feature_card(str(args.get("feature") or "").strip().lower())
     if action.startswith("knowledge_"):
+        from core import features
+        if not await features.is_on("knowledge"):
+            raise _FeatureOff("knowledge")
         return await _knowledge(action, args)
     if action.startswith("board_"):
+        from core import features
+        if not await features.is_on("boards"):
+            raise _FeatureOff("boards")
         return await _board(action, args)
 
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _feature_card(feature: str) -> dict:
+    """Its switch, as a card: only for a person who may turn it on (the Settings screen's admin)."""
+    from core import features
+
+    if feature not in features.FEATURES:
+        raise _NotOffered(f"feature is one of {', '.join(features.FEATURES)}.")
+    name = features.label(feature)
+    if await features.is_on(feature):
+        raise _NotOffered(f"{name} is already on.")
+    return _card(f"Turn on {name}", detail=f"{_TURNS_ON[feature]} Its switch is in {features.where(feature)}.",
+                 buttons=[await _button(f"Turn on {name}", "turn_on_feature", {"feature": feature})])
 
 
 async def _resolved(lookup):
@@ -397,6 +447,13 @@ async def prepare_action(args: dict, server_module: Any, events: list[dict]) -> 
     action = str(args.get("action") or "").strip()
     try:
         card = await _offer(action, args)
+    except _FeatureOff as off:
+        # Never a quiet refusal (F1203): what is off and where; and its switch as a card, for one who may press it.
+        said, switch = await feature_switch(off)
+        if switch is None:
+            return {"error": said}
+        events.append(switch)
+        return {"error": said, "card": switch["title"]}
     except _NotOffered as why:
         if why.options:
             from core.builder_tools import _current_run

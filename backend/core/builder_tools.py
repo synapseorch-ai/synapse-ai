@@ -218,7 +218,7 @@ KNOWLEDGE_BUILDER_TOOLS = frozenset({"list_knowledge_bases"})
 #: Builder tools `"all"` does not reach (`core.tools.permits(opt_in=)`): an agent names them, as the builder's
 #: analyst does. Knowledge on or off, no `"all"` agent's roster — nor its prompt cache — changes (B1b's rule).
 OPT_IN_BUILDER_TOOLS: set[str] = set(KNOWLEDGE_BUILDER_TOOLS)
-_KNOWLEDGE_OFF = "Knowledge is switched off in this workspace"
+_KNOWLEDGE_OFF = "Knowledge is switched off in this workspace (turn it on in Settings › General › Knowledge)"
 
 
 def builder_tool_offered(name: str) -> bool:
@@ -3658,7 +3658,8 @@ def step_successors(s: dict, by_id: dict) -> list[str]:
 
 
 def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | None = None,
-                            knowledge_off: bool = False, allow_dead_ends: bool = False) -> dict:
+                            knowledge_off: bool = False, allow_dead_ends: bool = False,
+                            knowledge_later: bool = False) -> dict:
     """Return {"ok": bool, "issues": [str, ...], "warnings": [str, ...]}: wiring
     problems, and what probably is not meant but runs (a prompt that reads a key
     before any step writes it, U74) — warnings never make `ok` false.
@@ -3831,7 +3832,9 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
             issues.append(f"Extract JSON step '{sid}' has no output_key — extracted JSON will not be stored.")
         if stype == "print" and not s.get("print_content"):
             issues.append(f"Print step '{sid}' has no print_content.")
-        if stype in KNOWLEDGE_STEP_TYPES:
+        if stype in KNOWLEDGE_STEP_TYPES and not knowledge_later:
+            # `knowledge_later`: a build's check while Knowledge is off, where the step is its switch's block on the
+            # review and is checked whole once Knowledge is on (F1203). A save still refuses it (`_refuse_knowledge_off`).
             issues.extend(_knowledge_step_issues(s, kbs, knowledge_off))
         if stype == "loop":
             body = s.get("loop_step_ids") or []

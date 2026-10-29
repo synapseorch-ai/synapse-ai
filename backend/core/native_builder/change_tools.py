@@ -496,7 +496,7 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
 async def check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     """Every fact about the planner's change, decided here; see the module's docstring. `draft` is the planner's
     finish (E2's object); the person and their role are the run's, read now, never an argument."""
-    from core.builder_actions import _NotOffered, _offer
+    from core.builder_actions import _FeatureOff, _NotOffered, _offer, feature_switch
     from core.product_tools import areas, registry
     from core.product_tools.approved import digest
 
@@ -646,6 +646,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             try:
                 card = await _offer(op.name, C.act_arguments(op, target["id"] if target.get("id") else
                                                              target.get("name", ""), fields))
+            except _FeatureOff as off:
+                # What is off and where, with its switch as a card for one who may press it (F1203).
+                said, switch = await feature_switch(off)
+                if switch is not None:
+                    events.append(switch)
+                item.update(status="noop", say=said)
+                continue
             except _NotOffered as why:
                 item.update(status="noop", say=str(why))
                 continue
