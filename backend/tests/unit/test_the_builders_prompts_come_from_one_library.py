@@ -83,7 +83,9 @@ from core.native_builder import prompt_lint, seed
 #: F1253: the planner and the change planner ask every question at once in one form, a plan carries none, and an
 #: address of theirs is never guessed (planner.json, change_planner.json, plan_steps' tool line); with F1252,
 #: 6dd38c6f…; on fix-forward 15's tree with F1256, 5005cdff….
-BUNDLE_SHA256 = "5005cdff4189a85fe9ada39eed51da741898c4864dc35c6235ae3e74245c54d5"
+#: F1257: the plan researcher and the researcher read search_help, and research_rules says what this product does is
+#: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20….
+BUNDLE_SHA256 = "99033f20ecf32643ae403181b36c8272df6411c1ce086d3d973702f1c5d9eb2d"
 
 
 def _sha(definitions) -> str:
