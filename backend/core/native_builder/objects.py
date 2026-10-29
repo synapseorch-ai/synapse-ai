@@ -282,6 +282,9 @@ class Plan(PlanDraft):
     part_words: list[str] = Field(default_factory=list)
     #: What is missing or off, besides a missing tool or a connection to make, each with where it is put right.
     off: list[str] = Field(default_factory=list)
+    #: What this plan changed from the one the person last saw: a step added or removed, its tool, a shown input
+    #: (F1245, `build_plan.since_last`). Set by `check_build`.
+    since_last: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":

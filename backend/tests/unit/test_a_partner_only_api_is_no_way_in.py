@@ -29,7 +29,8 @@ def _fresh_evidence():
 async def _report(provider: str, how: str, needs: str, detail: str = "", page: str = BOOKING) -> dict:
     await br._read_host(page)
     card = await br.report_findings({"goal": "Book hotels", "options": [
-        {"provider": provider, "how": how, "detail": detail, "needs": needs, "sources": [page]}]}, None, [])
+        {"provider": provider, "how": how, "detail": detail, "needs": needs, "sources": [page],
+         "own_domains": [br._registrable_domain(br._host(page))]}]}, None, [])  # the domain it read (F1244)
     [option] = card["options"]
     return option
 
@@ -77,7 +78,7 @@ async def test_a_partner_gate_drops_the_spec():
     await br._read_host(BOOKING)
     option = await br.report_findings({"options": [{
         "provider": "Booking.com", "how": "api", "needs": "Approved partners only.", "sources": [BOOKING],
-        "api": {"base_url": "https://distribution-xml.booking.com", "auth": "basic", "docs": BOOKING,
+        "own_domains": ["booking.com"], "api": {"base_url": "https://distribution-xml.booking.com", "auth": "basic", "docs": BOOKING,
                 "calls": [{"name": "book_room", "method": "POST", "path": "/book"}]}}]}, None, [])
     [option] = option["options"]
     assert option["how"] == "partner" and "api" not in option

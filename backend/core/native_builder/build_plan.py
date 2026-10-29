@@ -1204,6 +1204,60 @@ def changes_of(plan: O.Plan, state: dict) -> list[str]:
     return lines
 
 
+def plan_before_of(state: dict, prior: dict) -> dict | None:
+    """The plan the person last saw, which a re-plan is held against (F1245): this run's last card, the newest they
+    saw; else the one a revision was asked of (`plan_before`: the card on "Change something", or the parked plan
+    CAP3's F1241 carries into the next turn). None when there is none: a first plan, or a question in between."""
+    if prior.get("outcome") in ("review", "same") and isinstance(prior.get("plan"), dict):
+        return prior["plan"]
+    before = _obj(state.get(PLAN_BEFORE_KEY))
+    if isinstance(before, dict) and isinstance(before.get("plan"), dict):
+        return before["plan"]
+    return None
+
+
+def _revising(state: dict) -> dict:
+    """Back to the planner with the card it revises kept as `plan_before` (F1245), its draft's digest and its run:
+    what the next plan changed from it is said on the next card."""
+    checked = checked_in(state)
+    if isinstance(checked.get("plan"), dict):
+        run_id, _ = _run()
+        state[PLAN_BEFORE_KEY] = {"plan": checked["plan"], "draft": checked.get("draft"), "run_id": run_id}
+    return {"outcome": "revise"}
+
+
+def since_last(plan: O.Plan, before: dict | None) -> list[str]:
+    """What a re-plan changed from the plan the person last saw, in code's words (F1245: turn 6's re-plan swapped the
+    site it scrapes, unseen): a step added or removed, the tool a step calls, an input the step shows
+    (`parts_words.shown_inputs`). A step is matched by its id, else by its name. Empty with no plan before."""
+    from core.native_builder.parts_words import shown_inputs
+
+    if not isinstance(before, dict) or not before.get("steps"):
+        return []
+    old = [s for s in before.get("steps") or [] if isinstance(s, dict) and s.get("type") != "end"]
+    by_id = {s.get("id"): s for s in old}
+    by_name = {str(s.get("name") or "").casefold(): s for s in old}
+    lines, matched = [], set()
+    for s in (x for x in plan.steps if x.type != "end"):
+        was = by_id.get(s.id) or by_name.get(s.name.casefold())
+        if was is None:
+            lines.append(f'Added the step "{s.name}"')
+            continue
+        matched.add(id(was))
+        if s.type == "tool" and was.get("tool") != s.tool:
+            lines.append(f'"{s.name}" now uses `{s.tool}`, not `{was.get("tool")}`')
+        then = shown_inputs((was.get("config") or {}).get("tool_arguments"))
+        now = shown_inputs((s.config or {}).get("tool_arguments"))
+        for key in [*then, *(k for k in now if k not in then)]:
+            if then.get(key) == now.get(key):
+                continue
+            moved = (f"{then[key]} → {now[key]}" if key in then and key in now
+                     else f"now {now[key]}" if key in now else f"{then[key]} is gone")
+            lines.append(f'"{s.name}": {key} {moved}')
+    lines += [f'Removed the step "{s.get("name")}"' for s in old if id(s) not in matched]
+    return lines
+
+
 def _unasked(doc: dict) -> set[str]:
     """The steps a run of `doc` reaches without passing a Human step (`builder_guard.unapproved`'s reading)."""
     from core.builder_tools import step_successors
@@ -1555,6 +1609,8 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     offers += ["change", "stop"]
 
     names = {i: a.get("name") or i for i, a in ws.agents.items()}
+    # What this plan changed from the one the person last saw (F1245), on the card and the panel alike.
+    plan.since_last = since_last(plan, plan_before_of(state, prior))
     review = render(plan, agent_names=names)
     if answer.get("outcome") == "replan":
         # The second review after connecting (F949): why it is asked again, before the plan on the real names.
@@ -1680,7 +1736,7 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
             await registry.invoke("turn_on_feature", current_caller() or Caller(role=Role.OWNER, via="assistant"),
                                   {"feature": on.group("what").lower()})
         except ToolRefusal:
-            return {"outcome": "revise"}
+            return _revising(state)
         return {"outcome": "connected", "turned_on": on.group("what").lower()}
     let = _ALONE.match(answer)
     if let:
@@ -1723,7 +1779,7 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
         # Asked to add an integration the build can't make (bld-01/02/07's every round): the line again, at its own
         # question, with no planner call and no plan drawn again (F1121, P5's read).
         return await _no_tool_unless_here(no_tool, checked, server_module)
-    return {"outcome": "revise"}
+    return _revising(state)
 
 
 async def _no_tool_unless_here(no_tool: list[str], checked: dict, server_module: Any) -> dict:

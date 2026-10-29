@@ -66,7 +66,7 @@ async def test_a_report_passes_through_once_and_keeps_its_verdicts(world):
     reported_events: list[dict] = []
     world["findings"] = await br.report_findings({"goal": "Labels", "options": [
         {"provider": "Mailchimp", "how": "api", "needs": "A Mailchimp account",
-         "sources": ["https://mailchimp.com/developer/"]}]}, None, reported_events)
+         "sources": ["https://mailchimp.com/developer/"], "own_domains": ["mailchimp.com"]}]}, None, reported_events)
     assert [(o["provider"], o["how"]) for o in world["findings"]["options"]] == [("Shippo", "mcp"), ("Mailchimp", "api")]
     events: list[dict] = []
     done = await lookup.finish_findings({}, None, events)

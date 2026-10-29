@@ -70,7 +70,7 @@ class TestTheVerdictsSurviveAMove:
                     {"provider": "Mailchimp", "how": "mcp", "detail": "their own server",
                      "sources": ["https://mailchimp.com/developer/"]},
                     {"provider": "Mailchimp", "how": "api", "detail": "REST",
-                     "sources": ["https://mailchimp.com/developer/"]}]}, None, [])
+                     "sources": ["https://mailchimp.com/developer/"], "own_domains": ["mailchimp.com"]}]}, None, [])
             assert [o["how"] for o in out["options"]] == ["mcp", "api"]
             assert "research" not in (moved.step_progress.get(engine_mod.ACTIVE_TIME_KEY) or {}), "spent by the report"
         finally:

@@ -466,7 +466,7 @@ AGENT_KNOWLEDGE_PROPERTY: dict = {
     "items": {"type": "string"},
     "description": (
         "Knowledge base ids it answers from (from list_knowledge_bases; at most 10, active ones, while Knowledge is "
-        "on): it is offered search_knowledge and read_knowledge over them. Omit for none."
+        "on): it can then search and read those bases. Omit for none."
     ),
 }
 

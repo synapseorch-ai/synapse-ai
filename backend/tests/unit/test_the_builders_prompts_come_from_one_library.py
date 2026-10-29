@@ -73,7 +73,11 @@ from core.native_builder import prompt_lint, seed
 #: prompt changes), 16182ae3….
 #: F1247: the two approval routers' keys declared as the bool their If/Else steps write, cbc03e50… alone; with F1241
 #: (fix-forward 14), ab529469….
-BUNDLE_SHA256 = "ab52946932b56d5da70bb2c4a534ee8e4d72d8e48039d9f33a21fb947f117c72"
+#: F1243: every answer goes through check_answer and is said by a print; the reporter's rule 4 never writes a plan or
+#: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
+#: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
+#: branch; on fix-forward 14's tree, 4c222b83….
+BUNDLE_SHA256 = "4c222b83f951094dbbee953f4c44d9549643722d276b77ad2269bfe892fe36b1"
 
 
 def _sha(definitions) -> str:

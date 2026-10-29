@@ -335,6 +335,10 @@ FINDINGS_SCHEMA = {
                             "detail": {"type": "string", "description": "One sentence: what it does here"},
                             "needs": {"type": "string", "description": "An account, a key, partner approval…"},
                             "sources": {"type": "array", "items": {"type": "string"}, "description": "URLs read"},
+                            "own_domains": {"type": "array", "items": {"type": "string"}, "description": (
+                                "The provider's own domains, as its own docs show them, e.g. x.com for X, or "
+                                "hubspot.com and hubapi.com for HubSpot. Only a domain whose page you read here "
+                                "counts; a key goes only to a host on one of them.")},
                             "api": API_SPEC_SCHEMA,
                         },
                         "required": ["provider", "how"],
@@ -403,6 +407,28 @@ def _server_domains(server: dict) -> set[str]:
     return {d for d in out if "." in d}
 
 
+def _read_domains(named: Any, read_hosts: list[str]) -> set[str]:
+    """The domains in `named` (the research's `own_domains`) that this run read a page on (F1244): a fetched page,
+    never a search result or an address the model wrote. A shared host's suffix (`myshopify.com`, `amazonaws.com`) is
+    no one's own: each tenant on it is its own site (`core.sites`)."""
+    from core.sites import SHARED_HOST_SUFFIXES, WHOLE_HOST_SUFFIXES
+
+    read = {_registrable_domain(h) for h in read_hosts}
+    out = set()
+    for value in named if isinstance(named, list) else []:
+        text = str(value or "").strip().lower()
+        domain = _registrable_domain(_host(text if "//" in text else f"https://{text}"))
+        if domain in read and domain not in SHARED_HOST_SUFFIXES and domain not in WHOLE_HOST_SUFFIXES:
+            out.add(domain)
+    return out
+
+
+def _names(provider: str) -> list[str]:
+    """Each name a provider is written with: "Twitter / X", "Brevo (formerly Sendinblue)" are two each (F1244)."""
+    parts = re.split(r"\s*(?:/|\(|\)|,|;|\bformerly\b|\baka\b|\bor\b)\s*", (provider or "").lower())
+    return [p for p in ("".join(re.findall(r"[a-z0-9]+", part)) for part in parts) if p]
+
+
 def _providers_own_page(provider: str, host: str, anchors: set[str] | list[str] | None = None) -> bool:
     """A page is the provider's own when its host is on the provider's own domain.
 
@@ -421,6 +447,9 @@ def _providers_own_page(provider: str, host: str, anchors: set[str] | list[str] 
         return _registrable_domain(host) in {_registrable_domain(a) for a in anchors}
     if not _common_ending(host):
         return False
+    # Each written name too, a short one (X) only as the whole name: x.com, never x-anything (F1244).
+    if "".join(re.findall(r"[a-z0-9]+", _registrable_name(host).lower())) in _names(provider):
+        return True
     name = _slug(_registrable_name(host))
     slug, words = _slug(provider), _words(provider)
     if not name:
@@ -597,16 +626,25 @@ async def report_findings(args: dict, server_module: Any, events: list[dict]) ->
         provider = str(raw["provider"]).strip()[:80]
         # A verdict about a provider rests on its own site: "USPS: no public way in" read off EasyPost's page was
         # wrong (BWA1's browser pass; USPS has developers.usps.com).
-        own_pages = [s for s in sources
-                     if _providers_own_page(provider, _host(s), (seen.get("own_domains") or {}).get(_slug(provider)))]
+        # Its own domains are the ones the research names and read (F1244, Naveen: no table, no name rule), and the
+        # Registry's anchors; a verdict rests on a page there.
+        own = {*((seen.get("own_domains") or {}).get(_slug(provider)) or []),
+               *_read_domains(raw.get("own_domains"), seen["read_hosts"])}
+        own_pages = [s for s in sources if _registrable_domain(_host(s)) in own]
+        if how in ("api", "none") and not own and _slug(provider) not in seen.setdefault("asked_own", []) and \
+                _slug(provider) not in _decided(seen):
+            # Once, so a model that left them out says them rather than being demoted to `unclear` unsaid.
+            seen["asked_own"].append(_slug(provider))
+            await _keep(_record()[1])
+            return {"error": f"{provider}: say its own_domains, the provider's own domains whose pages you read "
+                             "here (e.g. x.com), so a key goes only to its own host; or say how: unclear."}
         if (how == "mcp" and _slug(provider) not in seen["own_mcp"]) or (how in ("api", "none") and not own_pages):
             how = "unclear"
         if how == "mcp":
             # Its own server, as the Registry listed it: the verdict's source.
             sources = [seen["own_mcp"][_slug(provider)], *[x for x in sources if x != seen["own_mcp"][_slug(provider)]]]
-        # The provider's own domains, by code (the hand-off's A3): its Registry anchors and the own pages read.
-        own_domains = sorted({*((seen.get("own_domains") or {}).get(_slug(provider)) or []),
-                              *(_registrable_domain(_host(s)) for s in own_pages)})
+        # The provider's own domains (the hand-off's A3): its Registry anchors and those it named and read.
+        own_domains = sorted(own)
         detail = str(raw.get("detail") or "")
         option = {"provider": provider, "how": how, "detail": detail[:300], "needs": str(raw.get("needs") or "")[:200],
                   "sources": sources[:5], "own_domains": own_domains}
@@ -654,6 +692,12 @@ LOOKED_KEY = "looked"
 #: The pages the look-up read, by address: their extracts, for `read_web_page` to hand the Researcher without reading
 #: them again. Only here, in the record a report clears: never in a step's output, an event or the run's history.
 PAGES_KEY = "pages"
+
+
+def _decided(seen: dict) -> set[str]:
+    """The providers whose verdict the look-up found (an app in the catalogue, its own server): no page decides them."""
+    return {_slug(v["found"]["provider"]) for v in (seen.get(LOOKED_KEY) or {}).values()
+            if isinstance(v, dict) and isinstance(v.get("found"), dict)}
 
 
 def _with_looked_up(seen: dict, options: list[dict]) -> list[dict]:

@@ -20,6 +20,8 @@ the same list verbatim is a no-op and gets blocked, which is the guard the
 old server's ever-changing thoughtNumber defeated.
 """
 
+import uuid
+
 TASK_TOOL_NAME = "update_tasks"
 
 # One release of grace: saved agents and shipped bundles that name the old
@@ -170,29 +172,62 @@ def summarize_tasks(tasks: list[dict]) -> str:
     return f"{len(tasks)} task{'s' if len(tasks) != 1 else ''} — " + ", ".join(parts)
 
 
-def merge_branch_tasks(current: list[dict], before: list[dict], after: list[dict]) -> list[dict]:
-    """The run's list after one agent, running beside others, rewrote its own.
+#: The runs of a step going on now in this process, by (run, step), each by its own key (F1249). A step can run twice at
+#: once (the same step in two branches of a Parallel), and each keeps its own list; any other entry of the step in the
+#: run's list is an earlier run's, finished, and is replaced.
+_LIVE: dict[tuple[str, str], set[str]] = {}
 
-    The tool is whole-list-write, so an agent's new list replaced the run's.
-    Agent steps used to take turns, each starting from the list the one before
-    it left, so nothing was lost. Two branches of one Parallel now run at once
-    (F255): each started from the same list, and whichever wrote last wiped the
-    other's plan from the run. So the tasks this agent dropped from `before`
-    (its previous list) are dropped, its own tasks take the place and status it
-    gave them, and everything else in the run's list stays. Tasks are matched by
-    their text, since there are no task ids.
-    """
-    def key(task: dict) -> str:
-        return str(task.get("content") or "").strip()
 
-    dropped = {key(t) for t in before} - {key(t) for t in after}
-    mine = {key(t): t for t in after}
-    merged, seen = [], set()
-    for task in current:
-        k = key(task)
-        if k in dropped or k in seen:
+def _untagged(task: dict) -> dict:
+    return {k: v for k, v in task.items() if k not in ("step_id", "run_of")}
+
+
+def begin_step_tasks(run_id: str, step_id: str, run_tasks: list[dict] | None, *, resuming: bool
+                     ) -> tuple[str, list[dict]]:
+    """This run of a workflow's agent step: its key, and the list it starts with — its own, never the run's (F1249).
+
+    Every step was seeded with the run's whole list, so the step after a scraper started holding the scraper's plan,
+    and its end-of-step check ("Finish them and mark them completed") had it spend its turns on tasks that were not
+    its own (Naveen's write_posts, 10-29: 2 of 3 turns). A run of a step that starts afresh starts with none, and that
+    is every Loop iteration, retry and second visit as well: item 2 is a run of the step of its own, and item 1's
+    finished list would put the same leftovers one level down (8a: each run of the step is its own). One that resumes
+    where it stopped (a crash, a person's answer) goes on as the step's latest run, with the list it had. The run's
+    entries carry their step and run (`step_id`, `run_of`); the model never sees them. `end_step_tasks` after."""
+    mine = [t for t in run_tasks or [] if isinstance(t, dict) and t.get("step_id") == step_id]
+    key = (mine[-1].get("run_of") if resuming and mine else None) or uuid.uuid4().hex[:12]
+    _LIVE.setdefault((run_id, step_id), set()).add(key)
+    return key, [_untagged(t) for t in mine if t.get("run_of") == key] if resuming else []
+
+
+def end_step_tasks(run_id: str, step_id: str, key: str) -> None:
+    """This run of the step is over: its entries are an earlier run's to the step's next."""
+    live = _LIVE.get((run_id, step_id))
+    if live is not None:
+        live.discard(key)
+        if not live:
+            _LIVE.pop((run_id, step_id), None)
+
+
+def with_step_tasks(run_tasks: list[dict] | None, run_id: str, step_id: str, key: str,
+                    tasks: list[dict]) -> list[dict]:
+    """The run's list after one run of a step rewrote its own (F1249): that run's entries, and the step's earlier
+    finished runs', replaced where they stood, each tagged; every other step's, and another run of this step going on
+    at the same time, kept as they are. So branches running at once never touch each other's (F255, F523), and the
+    run's list stays the whole run's view (the run page, the API's `tasks`). A list written before steps were tagged
+    is left in the view and is no step's."""
+    live = _LIVE.get((run_id, step_id), set())
+    mine = [{**_untagged(dict(t)), "step_id": step_id, "run_of": key} for t in (tasks or [])[:MAX_TASKS]]
+
+    def replaced(t: dict) -> bool:
+        return t.get("step_id") == step_id and (t.get("run_of") == key or t.get("run_of") not in live)
+
+    out: list[dict] = []
+    placed = False
+    for t in run_tasks or []:
+        if isinstance(t, dict) and replaced(t):
+            if not placed:
+                out += mine
+                placed = True
             continue
-        merged.append(dict(mine.get(k, task)))
-        seen.add(k)
-    merged += [dict(t) for t in after if key(t) not in seen]
-    return merged[:MAX_TASKS]
+        out.append(dict(t))
+    return out if placed else out + mine

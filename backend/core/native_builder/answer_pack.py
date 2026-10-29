@@ -17,6 +17,7 @@ conversation unless asked again (SAI2's review), and never for what the product'
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from core.product_tools.roles import Role
@@ -283,6 +284,52 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
     return {"needs": needs, "pack": pack}
 
 
+# ── an answer never asks for a yes (F1243) ────────────────────────────────────────────────────────────────────────
+
+#: A sentence that asks the person for a yes: only the build route's plan card takes one, so an answer that asks for one
+#: has nothing behind it (TRI1's turn 3: "Just say **approve**", and the "yes proceed" after it started a new build).
+_ASKS_A_YES = re.compile(
+    r"(?i)\b(?:say|reply|type|respond(?:\s+with)?|tell\s+me)\s+[\"“'*`]*\s*"
+    r"(?:approve[sd]?|yes|go\s+ahead|build\s+it|confirm|ok(?:ay)?|proceed)\b"
+    r"|\*\*\s*approve\s*\*\*")
+#: Where a yes goes instead, said once after an answer that asked for one. Fixed words: the same answer, the same text.
+NO_YES_HERE = ("Nothing here is waiting for your yes: to have it built or changed, ask for it, and a plan comes up for "
+               "you to check and approve.")
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def no_yes_offered(text: str) -> str:
+    """`text` without any whole sentence that asks for a yes, and then where a yes goes (F1243). An answer about
+    approvals that asks for nothing ("a Human step stops for your approval", "press “Approve” on the card") is kept
+    as it is."""
+    cut = False
+    lines = []
+    for line in str(text or "").split("\n"):
+        kept = [x for x in _SENTENCE_END.split(line) if not _ASKS_A_YES.search(x)]
+        cut |= len(kept) < len(_SENTENCE_END.split(line))
+        if kept or not line.strip():
+            lines.append(" ".join(kept))
+    if not cut:
+        return text
+    return "\n".join(lines).rstrip() + "\n\n" + NO_YES_HERE
+
+
+async def check_answer(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """After every answer (talk, help, workspace): the run's answer with no yes asked for that nothing can take."""
+    from core.native_builder.change_tools import _run
+
+    _, run = _run()
+    said = (run.shared_state.get("summary") if run is not None else "") or ""
+    return {"object": "answer_checked", "text": no_yes_offered(str(said))}
+
+
+CHECK_SCHEMA = {"type": "function", "function": {
+    "name": "check_answer",
+    "description": "Synapse AI's own step: the answer, with no yes asked for that nothing can take. No arguments.",
+    "parameters": {"type": "object", "properties": {}},
+}}
+
+
 SCHEMA = {"type": "function", "function": {
     "name": "answer_pack",
     "description": "Synapse AI's own step: what the answer needs to know, built in code. Takes no arguments.",
@@ -294,6 +341,7 @@ def _register() -> None:
     from core.builder_tools import register_builder_tool
 
     register_builder_tool(SCHEMA, answer_pack)
+    register_builder_tool(CHECK_SCHEMA, check_answer)
 
 
 _register()
