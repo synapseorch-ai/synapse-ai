@@ -1961,13 +1961,13 @@ async def _picks_refused(lists: list[list[str]], stored: list[list[str]]) -> dic
 
 
 async def _refuse_browser_steps(steps: list, before: list | None = None, *, wired: bool = False,
-                                schema: dict | None = None) -> dict | None:
+                                schema: dict | None = None, agents: dict | None = None) -> dict | None:
     """Steps' browser parts as the editor's save checks them (F1146, F1140, F1167), and what a model gets wrong that
     the editor's pickers never let a person: a recording's inputs left unfilled, sends that aren't its steps (F1189),
     a `{state.…}` input the run never has (F1232). `before` is the workflow's steps as saved, whose sessions and
     recordings stay. `wired`: `steps` is the whole workflow, so its inputs are read in order (`input_problems`);
-    else the steps go into `before` mid-build. `schema` is its declared state. Sessions named by site become ids
-    here, in `steps`."""
+    else the steps go into `before` mid-build. `schema` is its declared state; `agents`, those not saved yet, by id
+    (a plan's own, F1233). Sessions named by site become ids here, in `steps`."""
     from core.browser import recordings, save_checks
     from core.browser.picks import PickRefused
     from core.orchestration.save_rules import browser_step_problems
@@ -1980,7 +1980,7 @@ async def _refuse_browser_steps(steps: list, before: list | None = None, *, wire
         return None
     if browsers and (refused := await _browser_refused("step")) is not None:
         return refused
-    agents = {}
+    agents = dict(agents or {})
     for s in browsers:
         if s.get("agent_id") and s["agent_id"] not in agents:
             agents[s["agent_id"]] = await get_agent(s["agent_id"])
@@ -2002,6 +2002,8 @@ async def _refuse_browser_steps(steps: list, before: list | None = None, *, wire
             continue  # gone since this workflow named it: the run says so (F1146)
     whole = steps if wired else list({s.get("id"): s for s in [*(before or []), *steps] if isinstance(s, dict)}.values())
     said += save_checks.input_problems(whole, schema, whole=wired, of={s.get("id") for s in browsers})
+    if wired:
+        said += save_checks.loop_problems(steps)
     if said:
         return {"error": "Refusing to save: " + " ".join(said)}
     had = {b.get("id"): b.get("browser_sessions") or [] for b in before or [] if isinstance(b, dict)}

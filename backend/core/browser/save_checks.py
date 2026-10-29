@@ -192,6 +192,26 @@ def input_problems(steps: list[dict], schema: dict | None = None, *, whole: bool
     return found
 
 
+def loop_problems(steps: list[dict]) -> list[str]:
+    """A Browser step in a for-each Loop's body whose inputs read nothing of the item, nor anything the body writes,
+    would replay the same thing for every item (F1233)."""
+    by_id = {s["id"]: s for s in steps if isinstance(s, dict) and s.get("id")}
+    found = []
+    for loop in by_id.values():
+        if loop.get("type") != "loop" or not loop.get("loop_over"):
+            continue
+        body = [by_id[b] for b in loop.get("loop_step_ids") or [] if b in by_id]
+        each = {loop.get("loop_item_key") or "loop_item", loop.get("loop_index_key") or "loop_index",
+                *(b.get("output_key") for b in body if b.get("output_key"))}
+        for step in body:
+            given = " ".join(map(str, (step.get("recording_inputs") or {}).values()))
+            if step.get("type") == "browser" and given.strip() and not set(_state_keys(given)) & each:
+                found.append(f"Browser step '{step['id']}' is in Loop '{loop['id']}' but reads nothing of its item, "
+                             "so it would replay the same thing for every item: fill an input with "
+                             f"{{state.{loop.get('loop_item_key') or 'loop_item'}}}.")
+    return found
+
+
 async def resolve_sessions(values: list[Any], *, caller: Any = None) -> list[str]:
     """The sessions a model named, as ids. An id (no dot in it) stays as given, for the pick rule to check; a site, or
     an address on one, is the person's own session for it, else the one shared with them. None, or more than one
