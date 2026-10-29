@@ -277,6 +277,10 @@ async def classify_request(args: dict, server_module: Any, events: list[dict]) -
     if run is not None:
         # The role door (`step_may_change`) and the build route read the legacy intent.
         run.shared_state["intent"] = intent_of(routed)
+        # The previous request's questions are this run's only if this message continues it (F1226).
+        from core.native_builder.change_tools import adopt_carry
+
+        adopt_carry(run.shared_state, request.continues)
     if routed.also and routed.also.strip():
         await turn_facts.keep(run_id, _caller().user_id, also=routed.also.strip())
         events.append(also_notice(routed.also.strip()))

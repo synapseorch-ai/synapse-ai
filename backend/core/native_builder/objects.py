@@ -228,6 +228,12 @@ class Request(_Written):
     providers: list[str] = Field(default_factory=list, description="Outside services the message names")
     also: str | None = Field(None, description="A second request in the same message, in its words, if any")
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")
+    #: Whether this message goes on with the previous one's request (F1226): the questions it asked carry only when
+    #: true. Left out or unsure starts afresh.
+    continues: bool | None = Field(
+        None, description="True only when this message goes on with the request the person's previous message made "
+                          "(answers it, says it again in other words, or adds to it); false when it asks for "
+                          "something else; leave out when unsure")
     #: What the answer reads (F976). Left out, code decides alone: a model that says nothing has not said "none".
     needs: Literal[NEEDS] | None = Field(  # type: ignore[valid-type]
         None, description="What an answer needs: none (talk, ideas, thanks), workspace (what exists or happened "

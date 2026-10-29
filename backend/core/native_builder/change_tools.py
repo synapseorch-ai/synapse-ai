@@ -273,6 +273,22 @@ def _with_answers(state: dict) -> list[dict]:
     return asked
 
 
+#: Where the route stages what the previous run's request would carry, until classify says whether this message
+#: continues it (`adopt_carry`).
+CARRY_KEY = "request_carry"
+
+
+def adopt_carry(state: dict, continues: bool | None) -> bool:
+    """The staged carry becomes the run's when classify said this message continues the previous request; anything
+    else (false, unsure, not said) starts afresh: one question asked again costs less than another request's carried
+    (8a's review of the FF14 check, 10-29: "second ask" was carried as the first's). Returns whether it carried."""
+    staged = state.pop(CARRY_KEY, None)
+    if continues is not True or not isinstance(staged, dict) or not staged:
+        return False
+    state.update(staged)
+    return True
+
+
 # ── the request's questions: one seam for every question put to the person (F1226) ──────────────────────────────
 # `ask_person` uses these, and so does a question code asks itself (F1210's dates): each is counted and never repeated.
 def asked_before(state: dict, about: str, subject: str, question: str) -> dict | None:
@@ -301,7 +317,10 @@ def carry_request(previous: dict | None, history: list[dict] | None = None) -> d
     * `ASKED_KEY`: the questions `ask_person` put, with their answers, never asked again;
     * `ROUNDS_KEY`: how many questions the request has shown so far, the cap's count;
     * the build check's own `asked` (`CHECKED_KEY`), each entry whole: the planner reads every question with its
-      answer, and a question code asked itself is known by its entry (F1210's dates, by `means`)."""
+      answer, and a question code asked itself is known by its entry (F1210's dates, by `means`).
+
+    The route stages this as `CARRY_KEY`; it is the run's only when classify says the new message continues the
+    request (`adopt_carry`)."""
     from core.native_builder.build_plan import CHECKED_KEY, checked_in
     from core.orchestration.run_writes import WRITES_KEY
 

@@ -41,7 +41,8 @@ async def test_the_second_run_does_not_ask_again(client, builder, fake_llm):
     assert asked and "competitor_pricing" in str(asked[-1].get("prompt")), "turn one asks about the knowledge base"
 
     fake_llm.reset()
-    fake_llm.script([route("create"), tool_call("ask_person", **ASK), tool_call("submit_plan", **PLAN)])
+    # Classify reads the conversation and says this message continues the request (F1226: only then it carries).
+    fake_llm.script([route("create", continues=True), tool_call("ask_person", **ASK), tool_call("submit_plan", **PLAN)])
     second = await stream(client, "/api/builder/chat",
                           {"message": "I need a weekly workflow that keeps the prices in a knowledge base", **conv})
     said = json.dumps([e for e in second if e["type"] == "tool_result"])
