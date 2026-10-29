@@ -1248,11 +1248,14 @@ def since_last(plan: O.Plan, before: dict | None) -> list[str]:
             lines.append(f'"{s.name}" now uses `{s.tool}`, not `{was.get("tool")}`')
         then = shown_inputs((was.get("config") or {}).get("tool_arguments"))
         now = shown_inputs((s.config or {}).get("tool_arguments"))
+        # Each value as code: a plan card never makes an outside address clickable (8a, 10-30), here the wrong site.
+        def code(value: str) -> str:
+            return f"`{value.replace('`', '')}`"
         for key in [*then, *(k for k in now if k not in then)]:
             if then.get(key) == now.get(key):
                 continue
-            moved = (f"{then[key]} → {now[key]}" if key in then and key in now
-                     else f"now {now[key]}" if key in now else f"{then[key]} is gone")
+            moved = (f"{code(then[key])} → {code(now[key])}" if key in then and key in now
+                     else f"now {code(now[key])}" if key in now else f"{code(then[key])} is gone")
             lines.append(f'"{s.name}": {key} {moved}')
     lines += [f'Removed the step "{s.get("name")}"' for s in old if id(s) not in matched]
     return lines
