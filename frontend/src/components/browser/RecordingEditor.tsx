@@ -4,7 +4,9 @@
  * steps; each step with its picture and its sentence (a rename shown instead). A typed value is an input or fixed;
  * the person's own sign-in, card or code reads as theirs and has nothing to change. Rename, Details, Delete and
  * Re-record from here on a step. Each change is a PATCH from the version the page has, so a change made elsewhere
- * meanwhile is said, with Reload, rather than overwritten. Versions are listed; Delete recording asks first.
+ * meanwhile is said, with Reload, rather than overwritten. Versions are listed; Delete recording asks first. A fix
+ * waiting (an agent's for a step, or a re-record's) is listed above the steps, to approve into a new version or to
+ * discard (F1192). Pictures are asked for only when the API says this person may see them (`pictures`).
  * Synced to cloud: routes are the host's, and the page's frame is the product's (`frame`).
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -15,9 +17,9 @@ import { Button, buttonStyles, ConfirmDialog, ErrorNote, Input, Menu, MenuItem, 
 import { BrowserPane } from './BrowserPane';
 import type { BrowserHost } from './model';
 import {
-  carryOn, changeRecording, deleteRecording, fieldOf, getRecording, inputName, listVersions, openRecordBrowser,
+  carryOn, changeRecording, decideEdit, deleteRecording, fieldOf, getRecording, inputName, listVersions, openRecordBrowser,
   outputsOf, proposedInputs, stepCount, stepWords, stopRecording,
-  type Change, type RecordBrowser, type Recording, type RecordingStep, type RecordingVersion, type RecordingsHost,
+  type Change, type PendingEdit, type RecordBrowser, type Recording, type RecordingStep, type RecordingVersion, type RecordingsHost,
   type ReplayStop,
 } from './recordings';
 import { SessionPicker } from './SessionPicker';
@@ -52,6 +54,8 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
   const [deleting, setDeleting] = useState<RecordingStep | null>(null);
   const [deletingAll, setDeletingAll] = useState(false);
   const [redoFrom, setRedoFrom] = useState<RecordingStep | null>(null);
+  const [deciding, setDeciding] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState<PendingEdit | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -86,6 +90,26 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
     }
     setProblem('stale' in done ? { words: done.stale, stale: true } : { words: done.failed, stale: false });
     return false;
+  };
+
+  // A waiting fix approved or discarded (F1192): the recording as the API now has it; a fix someone else decided
+  // meanwhile is said in its words, and the page reads the recording again.
+  const decide = async (edit: PendingEdit, action: 'approve' | 'discard') => {
+    if (!doc) return;
+    setDeciding(edit.edit_id);
+    const done = await decideEdit(host, doc.id, edit.edit_id, action);
+    setDeciding(null);
+    setDiscarding(null);
+    if ('doc' in done) {
+      setDoc(done.doc);
+      setProblem(null);
+      setNotice(action === 'approve' ? `The fix is in: this is version ${done.doc.version}.` : 'The fix was discarded.');
+    } else if ('gone' in done) {
+      await load();
+      setProblem({ words: done.gone, stale: false });
+    } else {
+      setProblem({ words: done.failed, stale: false });
+    }
   };
 
   const back = { href: host.libraryHref, label: 'Recordings' };
@@ -199,9 +223,15 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
           </section>
         </div>
 
+        {doc.pending_edits.length > 0 && (
+          <FixesWaiting host={host} doc={doc} deciding={deciding}
+                        onApprove={edit => void decide(edit, 'approve')} onDiscard={setDiscarding} />
+        )}
+
         <ol aria-label="Steps" className="divide-y divide-border rounded-md border border-border">
           {doc.steps.map(step => (
             <StepRow key={step.id} host={host} recordingId={doc.id} step={step} busy={saving}
+                     pictures={doc.pictures !== false}
                      onRename={title => save({ steps: replace(step, { title: title || undefined }) })}
                      onInput={() => toInput(step)} onFixed={value => toFixed(step, value)}
                      onDelete={() => setDeleting(step)} onRedo={() => setRedoFrom(step)} />
@@ -237,6 +267,15 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
           confirmLabel="Delete"
         />
         <ConfirmDialog
+          open={discarding !== null}
+          onClose={() => setDiscarding(null)}
+          onConfirm={() => discarding && decide(discarding, 'discard')}
+          busy={deciding !== null}
+          title="Discard this fix?"
+          description={<>The recording stays as it is. A fix can’t be brought back once discarded.</>}
+          confirmLabel="Discard fix"
+        />
+        <ConfirmDialog
           open={deletingAll}
           onClose={() => setDeletingAll(false)}
           onConfirm={removeAll}
@@ -255,11 +294,77 @@ export function RecordingEditor({ host, sessionsHost, browserHost, id, frame, on
   });
 }
 
-function StepRow({ host, recordingId, step, busy, onRename, onInput, onFixed, onDelete, onRedo }: {
+/**
+ * The fixes waiting on a recording (F1192), oldest first: which step each replaces (a re-record's, that step and every
+ * one after), its proposed steps (their pictures when this person may see them), who proposed it, from which run and
+ * when; Approve fix and Discard fix for a person who may change recordings, a line saying who can for anyone else.
+ */
+function FixesWaiting({ host, doc, deciding, onApprove, onDiscard }: {
+  host: RecordingsHost;
+  doc: Recording;
+  deciding: string | null;
+  onApprove: (edit: PendingEdit) => void;
+  onDiscard: (edit: PendingEdit) => void;
+}) {
+  const count = doc.pending_edits.length;
+  const mayChange = host.canChange !== false;
+  return (
+    <section aria-label="Fixes waiting" className="space-y-2 rounded-md border border-warning/50 bg-warning/5 px-4 py-3">
+      <h2 className="text-sm font-medium text-text">{count === 1 ? 'A fix is waiting' : `${count} fixes are waiting`}</h2>
+      <p className="text-sm text-text-muted">
+        {mayChange
+          ? 'Nothing changes until you approve it. Approving makes it the recording’s next version; the one before stays in Versions.'
+          : 'Nothing changes until a Builder approves it.'}
+      </p>
+      <ul className="divide-y divide-border rounded-md border border-border bg-surface">
+        {doc.pending_edits.map(edit => {
+          const at = doc.steps.find(s => s.id === edit.step_id);
+          const replaces = at
+            ? `Replaces step ${at.n}${edit.rest ? ' and every step after' : ''}: ${stepWords(at)}`
+            : 'Replaces a step that is no longer in the recording';
+          const who = edit.by_name || edit.by;
+          return (
+            <li key={edit.edit_id} className="space-y-2 px-3 py-2.5">
+              <p className="text-sm text-text [overflow-wrap:anywhere]">{replaces}</p>
+              <div aria-label="Proposed steps" className="space-y-1.5">
+                {edit.steps.map(step => (
+                  <div key={step.id} className="flex flex-wrap items-center gap-3">
+                    {doc.pictures !== false && step.after_shot ? (
+                      <img src={host.shotUrl(doc.id, step.after_shot)} alt={`After the fix's step ${step.n}`} loading="lazy"
+                           className="h-14 w-24 shrink-0 rounded border border-border bg-surface-2 object-cover object-top" />
+                    ) : null}
+                    <span className="min-w-0 grow basis-48 text-sm text-text [overflow-wrap:anywhere]">{stepWords(step)}</span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-text-muted">
+                {[who ? `Proposed by ${who}` : 'Proposed', edit.run_id ? <>from run <span translate="no">{edit.run_id}</span></> : null,
+                  edit.at ? lastUsed(edit.at).replace(/^Last used /, '') : null]
+                  .filter(Boolean).map((part, i) => <span key={i}>{i > 0 ? ' · ' : ''}{part}</span>)}
+              </p>
+              {mayChange ? (
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" loading={deciding === edit.edit_id} disabled={deciding !== null} onClick={() => onApprove(edit)}>Approve fix</Button>
+                  <Button size="sm" variant="secondary" disabled={deciding !== null} onClick={() => onDiscard(edit)}>Discard fix</Button>
+                </div>
+              ) : (
+                <p className="text-xs text-text-muted">A Builder can approve or discard it.</p>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function StepRow({ host, recordingId, step, busy, pictures, onRename, onInput, onFixed, onDelete, onRedo }: {
   host: RecordingsHost;
   recordingId: string;
   step: RecordingStep;
   busy: boolean;
+  /** The API says this person may see the recording's pictures: else none is asked for. */
+  pictures: boolean;
   onRename: (title: string) => Promise<boolean>;
   onInput: () => void;
   onFixed: (value: string) => void;
@@ -284,7 +389,7 @@ function StepRow({ host, recordingId, step, busy, onRename, onInput, onFixed, on
 
   return (
     <li className="flex flex-wrap gap-3 px-4 py-3">
-      {step.after_shot && !pictureGone ? (
+      {pictures && step.after_shot && !pictureGone ? (
         // A picture this person may not see (cloud: its maker's and Builders', 403) leaves the step's line alone.
         <img src={host.shotUrl(recordingId, step.after_shot)} alt={`After step ${step.n}`} loading="lazy"
              onError={() => setPictureGone(true)}
