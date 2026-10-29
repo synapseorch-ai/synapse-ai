@@ -1080,7 +1080,8 @@ async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dic
             issues.append(said)
         if not save_rules.browser_step_problems(doc, agents):  # its own sentences are the save rule's, said above
             before = ((await get_orchestration(doc["id"])) or {}).get("steps") if doc.get("id") else None
-            if (refused := await _refuse_browser_steps(doc["steps"], before)) is not None:
+            if (refused := await _refuse_browser_steps(doc["steps"], before, wired=True,
+                                                       schema=doc.get("state_schema"))) is not None:
                 issues.append(refused["error"])
         if ws.kbs is not None:
             for s in doc["steps"]:

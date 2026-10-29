@@ -18,7 +18,10 @@ call unless a page changed. Each by id, with its inputs and its steps (each step
 {recordings}
 - **browser**: replays one of these recordings. Its `config` is `{{"recording_id": "rec_…", "recording_inputs": \
 {{"<input>": "{{state.key}}"}}}}`: every input the recording lists, filled with a value or a `{{state.key}}` \
-placeholder. Optional in it: `may_send_steps` (ids of the recording's steps that may send on their own; a run is never \
+placeholder. What the person gives when the run starts (the order number in "when I give you an order number", or a \
+schedule's message) is the run's own input, `{{{{state.user_input}}}}`: fill the input with it, never a human step that \
+asks again for what the run is given. An earlier step's output is `{{{{state.<step id>}}}}`, and inside a Loop's body \
+the item is `{{{{state.loop_item}}}}`; a key nothing writes before the step is refused. Optional in it: `may_send_steps` (ids of the recording's steps that may send on their own; a run is never \
 watched, so any other send waits for the person: leave it out unless they asked for it), `on_miss` (`"pause"`, the \
 default, hands the person the wheel when a page changed; `"agent"`, with the step's `agent` naming one of this \
 workspace's Browser agents by id, has that agent find the way), `browser_sessions` (sites it starts signed in to, \

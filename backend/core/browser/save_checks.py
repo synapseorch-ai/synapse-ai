@@ -118,6 +118,80 @@ def recording_problems(step: dict, doc: dict) -> list[str]:
     return found
 
 
+#: The run's own input: the message, or a schedule's prompt, it starts with.
+RUN_INPUT = "user_input"
+
+
+def _before(sid: str, by_id: dict[str, dict]) -> set[str]:
+    """The steps that run before `sid`: those it is reached from, and a Loop body's earlier steps."""
+    from core.builder_tools import step_successors
+    into: dict[str, set[str]] = {}
+    for s in by_id.values():
+        for nxt in step_successors(s, by_id):
+            into.setdefault(nxt, set()).add(s["id"])
+        body = [b for b in s.get("loop_step_ids") or [] if b in by_id]
+        for i, b in enumerate(body):
+            into.setdefault(b, set()).update(body[:i])
+    seen, todo = set(), [sid]
+    while todo:
+        for prev in into.get(todo.pop(), ()):
+            if prev not in seen:
+                seen.add(prev)
+                todo.append(prev)
+    return seen - {sid}
+
+
+def run_keys(sid: str, steps: list[dict], schema: dict | None, *, whole: bool) -> tuple[set[str], set[str]]:
+    """What step `sid` may read from the run's state, and what is written only after it. `whole`: `steps` is the whole
+    workflow, wired, so a step's output counts once written before `sid`, and a Loop's item inside its body; else (a
+    door that adds or patches a step mid-build) every step's output and every Loop's item count."""
+    from core.orchestration.branch_keys import ENGINE_KEYS
+    by_id = {s["id"]: s for s in steps if isinstance(s, dict) and s.get("id")}
+    before = _before(sid, by_id) if whole else set(by_id)
+    has, later = {*ENGINE_KEYS, *(schema or {})}, set()
+    for s in by_id.values():
+        if s["id"] != sid and (key := s.get("output_key")):
+            (has if s["id"] in before else later).add(key)
+        if s.get("type") == "loop" and (not whole or sid in (s.get("loop_step_ids") or [])):
+            has |= {s.get("loop_item_key") or "loop_item", s.get("loop_index_key") or "loop_index"}
+    return has, later - has
+
+
+def _state_keys(text: str) -> list[str]:
+    """The state keys a template reads, in either form (`{state.x}`, `{{ state.x.y }}`)."""
+    from core.orchestration.context import _TASK_REF
+    keys = []
+    for m in _TASK_REF.finditer(text):
+        path = m.group(1).strip() if m.group(1) is not None else f"state.{m.group(2)}"
+        head, _, rest = path.partition(".")
+        if head == "state" and rest:
+            keys.append(rest.split(".")[0])
+    return list(dict.fromkeys(keys))
+
+
+def input_problems(steps: list[dict], schema: dict | None = None, *, whole: bool = True,
+                   of: set[str] | None = None) -> list[str]:
+    """Each Browser step's `{state.…}` inputs (those in `of`, else all) against what the run has (`run_keys`), in
+    sentences naming what is missing and what there is: a key nothing has written reads empty, and the run stops at
+    the step (F1232)."""
+    from core.orchestration.branch_keys import ENGINE_KEYS
+    found = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("type") != "browser" or of is not None and step.get("id") not in of:
+            continue
+        sid = step.get("id") or "?"
+        has, later = run_keys(sid, steps, schema, whole=whole)
+        read = _state_keys(" ".join(str(v or "") for v in (step.get("recording_inputs") or {}).values()))
+        if not (missing := [k for k in read if k not in has]):
+            continue
+        why = "is written only after it" if all(k in later for k in missing) else "nothing in the run writes"
+        others = ", ".join(f"{{state.{k}}}" for k in sorted(has - ENGINE_KEYS))
+        found.append(f"Browser step '{sid}' reads {', '.join(f'{{state.{k}}}' for k in missing)}, which {why}. It "
+                     f"can read the run's own input, {{state.{RUN_INPUT}}} (what the person gives when it starts)"
+                     + (f", or {others}" if others else "") + ".")
+    return found
+
+
 async def resolve_sessions(values: list[Any], *, caller: Any = None) -> list[str]:
     """The sessions a model named, as ids. An id (no dot in it) stays as given, for the pick rule to check; a site, or
     an address on one, is the person's own session for it, else the one shared with them. None, or more than one
