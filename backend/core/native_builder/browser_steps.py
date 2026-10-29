@@ -8,6 +8,10 @@ builder door checks a Browser step (`builder_tools._refuse_browser_steps`, F1189
 """
 from __future__ import annotations
 
+from core.log import get_logger
+
+_log = get_logger(__name__)
+
 #: The most recordings the planner is shown, and the most steps of each.
 MAX_RECORDINGS = 20
 MAX_STEPS = 25
@@ -41,6 +45,10 @@ AGENTS = """\
 NO_AGENTS = """\
 - No Browser agent here: where the person wants one to find the way when a page changed, the plan makes one in its \
 `agents`, type `browser`, and names it as the step's `agent`; otherwise the step keeps `on_miss` `"pause"`."""
+#: The agents could not be read: none is named, none is made in their place.
+AGENTS_UNREAD = """\
+- This workspace's agents could not be read just now, so none is named or made here: the step keeps `on_miss` \
+`"pause"`."""
 
 
 def _line(doc: dict) -> str:
@@ -58,8 +66,9 @@ async def _agents() -> str:
     from core.store.resources import load_agents
     try:
         found = [a for a in await load_agents() if a.get("type") == "browser"][:MAX_RECORDINGS]
-    except Exception:
-        found = []
+    except Exception as exc:  # noqa: BLE001 — said, never read as "none here": a store that cannot list them
+        _log.warning("browser_steps: agents not listed: %s", exc)
+        return AGENTS_UNREAD
     if not found:
         return NO_AGENTS
     return AGENTS.format(listed=", ".join(f"`{a['id']}` \"{a.get('name') or ''}\"" for a in found))
@@ -71,7 +80,8 @@ async def palette() -> str:
     from core.browser import recordings
     try:
         docs = (await recordings.all_recordings())[:MAX_RECORDINGS]
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — no recording can be offered; the log says why
+        _log.warning("browser_steps: recordings not listed: %s", exc)
         return ""
     if not docs:
         return ""

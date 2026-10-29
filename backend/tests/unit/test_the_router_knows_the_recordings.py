@@ -196,3 +196,21 @@ class TestASharedNameIsAskedOnce:
         out = await _check(run, [op])
         assert out["outcome"] not in ("ask", "steps"), out
         assert len(run.shared_state[change_tools.ASKED_KEY]) == 1
+
+
+async def test_a_plan_without_the_browser_reads_no_recordings_in_the_same_shape(rec):
+    """Cloud's Free has no recordings library (0098): the topic answers its shape with the host's sentence, never an
+    error (cloud's TestEveryReaderInOneShape)."""
+    from core import builder_tools
+    from core.builder_readers import read_workspace, shape_problems
+
+    async def check(kind):
+        return "Recordings come with Solo and up." if kind == "recording" else None
+
+    builder_tools.set_browser_check(check)
+    try:
+        read = await read_workspace({"topic": "recordings"}, None, [])
+    finally:
+        builder_tools.set_browser_check(None)
+    assert read["items"] == [] and read["note"] == "Recordings come with Solo and up." and "error" not in read
+    assert shape_problems("recordings", {k: v for k, v in read.items() if k != "topic"}) == []

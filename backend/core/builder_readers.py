@@ -279,8 +279,12 @@ async def _knowledge(args: dict) -> dict:
 
 
 async def _recordings(args: dict) -> dict:
+    """The recordings, or none with the host's sentence where its plan has no Browser (its `set_browser_check`)."""
     from core.browser import recordings
+    from core.builder_tools import _browser_refused
 
+    if (refused := await _browser_refused("recording")) is not None:
+        return {"items": [], "note": refused["error"]}
     out = [{"name": d.get("name") or d["id"], "id": d["id"], "sites": list(d.get("sites") or []),
             "inputs": recordings.input_names(d), "steps": len(d.get("steps") or [])}
            for d in await recordings.all_recordings()]

@@ -136,3 +136,16 @@ class TestTheLoop:
     async def test_a_browser_step_that_reads_nothing_of_the_item_is_sent_back(self, world):
         out = await _submit(_plan(_LISTED, _loop(), _browser(world, "HP-2211"), settings=_TYPED))
         assert "every item" in json.dumps(out), out
+
+
+async def test_agents_that_cannot_be_read_are_said_and_logged_never_none_here(world, monkeypatch, caplog):
+    from core.store import resources
+
+    async def broken():
+        raise RuntimeError("store down")
+
+    monkeypatch.setattr(resources, "load_agents", broken)
+    with caplog.at_level("WARNING"):
+        text = await palette()
+    assert "could not be read" in text and "No Browser agent here" not in text
+    assert "agents not listed" in caplog.text
