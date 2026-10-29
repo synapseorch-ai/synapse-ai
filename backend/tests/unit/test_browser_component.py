@@ -696,7 +696,8 @@ async def test_a_turn_with_no_browser_turn_is_saved_as_before(path, fake_llm, fa
     question, answer = await _saved(sid, agent["id"])
     assert question == {"role": "user", "content": "Weather?"}
     answer.pop("timestamp", None)
-    expected = {"role": "assistant", "content": "It is sunny."}
+    # What the turn thought (U60) is kept beside the answer on both paths; the fake model's thought is its answer.
+    expected = {"role": "assistant", "content": "It is sunny.", "thoughts": ["It is sunny."]}
     if path == "in_process":
         expected["tools"] = []
     assert answer == expected
