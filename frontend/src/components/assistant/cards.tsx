@@ -235,6 +235,13 @@ export function PlanCard({
                             <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>
                         </div>
                     ) : <Markdown className="text-sm leading-relaxed text-text-muted">{plan.overview}</Markdown>)}
+                    {plan.changed && (
+                        // What a re-plan changed from the plan last shown (F1245): a swapped site is seen before the yes.
+                        <div className="flex flex-col gap-0.5">
+                            <span className="text-xs font-medium text-text">Changed from the last plan</span>
+                            <Markdown className="text-[13px] leading-relaxed text-text-muted">{plan.changed}</Markdown>
+                        </div>
+                    )}
                     {plan.kind === 'build' && <span className="-mb-2 text-xs font-medium text-text">What it will do</span>}
                     <Steps plan={plan} />
                     {plan.parts && <Markdown className="text-[13px] leading-relaxed text-text-muted">{plan.parts}</Markdown>}

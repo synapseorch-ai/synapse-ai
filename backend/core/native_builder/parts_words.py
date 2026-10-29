@@ -194,8 +194,45 @@ def _agent_step(s: Step, ctx: _Ctx) -> str:
     return "done by " + (agent_words(a, ctx.titles) if a else f'the agent "{s.agent}"')
 
 
+#: An input whose key names where a tool acts (F1245): its value is shown with the step.
+_WHERE_KEY = re.compile(r"(?i)(?:^|_)(?:url|uri|link|host|domain|site|path|file|folder|target|to|channel|repo|"
+                        r"endpoint|address|email)s?(?:$|_)")
+#: An input whose key reads as a secret, by its name: never shown, whatever it holds.
+_SECRET_KEY = re.compile(r"(?i)key|secret|token|passw|credential|bearer|cookie|(?:^|_)auth")
+#: A value that says where by itself: a URL, a host, a path or an address.
+_WHERE_VALUE = re.compile(r"(?i)^(?:[a-z][a-z0-9+.-]*://\S+|www\.\S+|[\w-]+(?:\.[\w-]+)*\.[a-z]{2,}(?:/\S*)?|"
+                          r"~?/[\w./-]+|[\w.+-]+@[\w-]+(?:\.[\w-]+)+)$")
+_FROM_THE_RUN = re.compile(r"^\{\{?\s*(?:state|input|global)\.[^{}]+\}\}?$")
+
+
+def shown_inputs(arguments: Any) -> dict[str, str]:
+    """A tool step's set inputs that say where it acts, by key (F1245: a re-plan swapped synapseorch.com for
+    synapseorchestrator.com and the card said only "uses `scrape_url`"): a URL, host, path, address or target, by its
+    key or its value, a value from the run said as that. Never one whose key or value reads as a secret, and never
+    long text: that is the step's own business."""
+    from core.native_builder.export import CREDENTIAL_MARK
+    from core.secret_scrub import holds_credential
+
+    out: dict[str, str] = {}
+    for key, value in (arguments.items() if isinstance(arguments, dict) else ()):
+        key = str(key)
+        if _SECRET_KEY.search(key) or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            continue
+        text = str(value).strip()
+        if not text or len(text) > 120 or holds_credential(text) or CREDENTIAL_MARK in text:
+            continue
+        if _FROM_THE_RUN.match(text):
+            if _WHERE_KEY.search(key):
+                out[key] = "from the run"
+        elif _WHERE_KEY.search(key) or _WHERE_VALUE.match(text):
+            out[key] = text
+    return out
+
+
 def _tool_step(s: Step, ctx: _Ctx) -> str:
     said = ctx.titles.get(s.tool or "") or title_of(s.tool or "")
+    shown = shown_inputs((s.config or {}).get("tool_arguments"))
+    said += f" ({'; '.join(f'{k}: {v}' for k, v in shown.items())})" if shown else ""
     return said + ("; a model fills in its inputs" if s.id in ctx.fills else "")  # F967's words
 
 
@@ -340,13 +377,16 @@ def missing_words(plan: Plan) -> list[str]:
 
 
 def summary(plan: Plan) -> str:
-    """The build's last message (Naveen 10-29): each part in short, then everything missing or off. Never a result."""
+    """The build's last message (Naveen 10-29): each part in short, then everything missing or off, then what it did
+    not carry over. Never a result."""
     lines = [f'- **{s.name}**: {plan.step_words[s.id]}' for s in _all_steps(plan) if plan.step_words.get(s.id)]
     lines += [f"- {w[:1].upper()}{w[1:]}" for w in plan.part_words]
     out = "\n\n**What it does**\n" + "\n".join(lines) if lines else ""
     off = [*missing_words(plan), *plan.off]
     if off:
         out += "\n\n**Missing or off**\n" + "\n".join(f"- {w[:1].upper()}{w[1:]}" for w in off)
+    if plan.not_carried_over:  # as the card says it (F1246): what a pasted program had that this does not
+        out += "\n\n**Not carried over**\n" + "\n".join(f"- {w[:1].upper()}{w[1:]}" for w in plan.not_carried_over)
     return out
 
 
