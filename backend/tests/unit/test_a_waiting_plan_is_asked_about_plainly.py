@@ -77,7 +77,7 @@ class TestTheDoor:
     def test_the_at_plan_step_names_the_plan_and_finishes_on_its_call(self):
         step, plain = STEPS["step_classify_at_plan"], STEPS["step_classify"]
         assert step["finish_tools"] == ["classify_at_plan"] and plain["finish_tools"] == ["classify_request"]
-        assert "{state.turn.plan_waiting}" in step["prompt_template"]
+        assert "{{ state.turn.plan_waiting }}" in step["prompt_template"], "the one form (F1252)"
         assert "Does this message change or add to the waiting plan (true)" in step["prompt_template"]
         assert step["next_step_id"] == plain["next_step_id"] == "step_classify_route"
         assert (step["output_key"], step["model_role"], step["finish_fallback"]) == \
