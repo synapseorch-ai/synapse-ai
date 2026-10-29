@@ -212,3 +212,16 @@ class TestTheSearch:
         assert H._docs is None, "nothing read before a search"
         H.search_docs("schedule")
         assert H._docs, "read once, on the first search"
+
+
+class TestTheResearchersReadIt:
+    """What this product does is product knowledge, never the web (8a, 10-30): both researchers read search_help."""
+
+    @pytest.mark.parametrize("role", ["plan_researcher", "researcher"])
+    def test_each_has_it_and_its_rule(self, role):
+        from core.native_builder import seed
+
+        agent = next(a for a in seed.bundled_definitions()["agents"] if a.get("system_role") == role)
+        assert "search_help" in agent["tools"]
+        prompt = " ".join(agent["system_prompt"].split())
+        assert "is in `search_help`: its own help and docs pages. Read it there, never on the web." in prompt
