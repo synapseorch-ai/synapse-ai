@@ -349,23 +349,19 @@ def summary(plan: Plan) -> str:
     return out
 
 
-async def workflow_words(orch_id: str, server_module: Any) -> str:
-    """A saved workflow in these words, for a later turn that talks about it (F1228: brief 2 said the workflow it had
-    just built "can look up order status"): its steps and its own parts, and what is missing or off, schedules read
-    as they are saved. "" for a workflow that is not there."""
-    from core.builder_tools import _visible_orchestration
+async def workflow_said(orch: dict, server_module: Any) -> dict[str, list[str]] | None:
+    """A saved workflow in these words, line by line: its numbered steps, its own parts, and what is missing or off,
+    schedules read as they are saved. Never its configs or prompts: read_workspace's `workflow` topic answers these
+    (F1237), as a later turn's pack does (`workflow_words`). None for a workflow the reader cannot take."""
     from core.native_builder.compile import plan_from_workflow
     from core.routes.agents import load_user_agents
     from core.store import schedules
 
-    orch = await _visible_orchestration(orch_id)
-    if not isinstance(orch, dict) or not orch.get("steps"):
-        return ""
     try:
         plan = plan_from_workflow(orch)
     except Exception as exc:  # noqa: BLE001 — a workflow the reader cannot take is left unsaid, never guessed
-        _log.warning("workflow %s not read for its words: %s", orch_id, exc)
-        return ""
+        _log.warning("workflow %s not read for its words: %s", orch.get("id"), exc)
+        return None
     agents = {a["id"]: a for a in await load_user_agents() if a.get("id")}
     steps, parts, off = describe(plan, titles=await tool_titles(server_module), agents=agents,
                                  kb_names=await kb_names())
@@ -374,7 +370,21 @@ async def workflow_words(orch_id: str, server_module: Any) -> str:
         if sched.get("target_id") == orch.get("id") and not sched.get("enabled"):
             off.append(f'its schedule "{sched.get("name") or sched.get("id")}" is paused: turn it on under Schedules')
     lines = [f"{n}. {s.name}: {steps[s.id]}" for n, s in enumerate(_all_steps(plan), 1) if steps.get(s.id)]
-    lines += [f"- {w}" for w in parts]
+    return {"steps": lines, "parts": parts, "off": off}
+
+
+async def workflow_words(orch_id: str, server_module: Any) -> str:
+    """A saved workflow in these words, for a later turn that talks about it (F1228: brief 2 said the workflow it had
+    just built "can look up order status"). "" for a workflow that is not there."""
+    from core.builder_tools import _visible_orchestration
+
+    orch = await _visible_orchestration(orch_id)
+    if not isinstance(orch, dict) or not orch.get("steps"):
+        return ""
+    said = await workflow_said(orch, server_module)
+    if said is None:
+        return ""
+    lines = [*said["steps"], *(f"- {w}" for w in said["parts"])]
     text = f'The workflow "{orch.get("name") or orch_id}" ({orch.get("id")}), step by step:\n' + "\n".join(lines)
-    return text + ("\nMissing or off:\n" + "\n".join(f"- {w}" for w in off) if off else "")
+    return text + ("\nMissing or off:\n" + "\n".join(f"- {w}" for w in said["off"]) if said["off"] else "")
 
