@@ -438,6 +438,16 @@ AGENT_BROWSER_PROPERTY: dict = {
     },
 }
 
+#: An agent's memory (`core.agent_memory`), as the agent editor's Memory switch sets it (F1199).
+AGENT_MEMORY_PROPERTY: dict = {
+    "type": "boolean",
+    "description": (
+        "true: the agent keeps what it learns across conversations and runs (remember, search_memory) and reads its "
+        "memory's index every turn. For an agent that must recall people, preferences or past results; omit for "
+        "one that starts fresh each time (the default)."
+    ),
+}
+
 STATE_SCHEMA_JSON_DESCRIPTION = (
     "JSON-encoded state-schema object mapping each state key to "
     "{type, default, description}. Allowed types: str, int, float, bool, list, dict. "
@@ -607,6 +617,7 @@ BUILDER_TOOL_SCHEMAS = [
                         },
                     },
                     "browser": AGENT_BROWSER_PROPERTY,
+                    "memory": AGENT_MEMORY_PROPERTY,
                     "tool_policy": {
                         "type": "object",
                         "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
@@ -632,7 +643,7 @@ BUILDER_TOOL_SCHEMAS = [
                 "properties": {
                     "agents": {
                         "type": "array",
-                        "description": "Array of agent specs to create. Each item must include name, description, type, tools, system_prompt. Optional: role, model, repos, db_configs.",
+                        "description": "Array of agent specs to create. Each item must include name, description, type, tools, system_prompt. Optional: role, model, repos, db_configs, memory.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -683,6 +694,7 @@ BUILDER_TOOL_SCHEMAS = [
                                     },
                                 },
                                 "browser": AGENT_BROWSER_PROPERTY,
+                                "memory": AGENT_MEMORY_PROPERTY,
                                 "tool_policy": {
                                     "type": "object",
                                     "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
@@ -707,7 +719,7 @@ BUILDER_TOOL_SCHEMAS = [
                     "agent_id": {"type": "string"},
                     "fields": {
                         "type": "object",
-                        "description": "Fields to update (name, description, tools, system_prompt, model, etc.; "
+                        "description": "Fields to update (name, description, tools, system_prompt, model, memory, etc.; "
                                        "for a Team agent, delegate_agent_ids and team: how its members work, as "
                                        "create_agent takes it; for a Browser agent, browser: the settings to "
                                        "change, kept where not given)",
@@ -1744,6 +1756,32 @@ def set_room_check(check: Any) -> None:
     _room_check = check
 
 
+#: Whether agents may have memory turned on: async `check(adding, agent_id | None) -> reason | None` (cloud's
+#: memory allowance; `agent_id` the one being edited, left out of the count). Asked only when a save turns memory
+#: on; an agent that already has it keeps it, as the host's agent route keeps it (F1199). None: OSS, always.
+_memory_check: Any = None
+
+
+def set_memory_check(check: Any) -> None:
+    """Install the host's memory allowance. ``None`` removes it."""
+    global _memory_check
+    _memory_check = check
+
+
+def _memory_wrong(value: Any) -> dict | None:
+    """An agent's `memory` as the agent editor saves it (F1199): true or false."""
+    from core.agent_memory import memory_refusal
+    return {"error": wrong} if (wrong := memory_refusal(value)) is not None else None
+
+
+async def _memory_room(adding: int, agent_id: str | None = None) -> dict | None:
+    """Room in the host's allowance for `adding` agents with memory newly on."""
+    if adding < 1 or _memory_check is None:
+        return None
+    reason = await _memory_check(adding, agent_id)
+    return {"error": reason, "refused": "plan_limit"} if reason else None
+
+
 async def _refused(kind: str, adding: int) -> dict | None:
     if _room_check is None:
         return None
@@ -2204,12 +2242,16 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 return refused
         if (too_long := _long_agent_name(args.get("name"))) is not None:
             return {"error": too_long}
+        if (wrong := _memory_wrong(args.get("memory"))) is not None:
+            return wrong
         from core import builder_guard  # F489: never a tool nothing provides
         if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
             return phantom
         if args.get("tools"):  # saved as a run calls them (F1035): `web_scraper.scrape_url` → `scrape_url`
             args = {**args, "tools": await builder_guard.canonical_names(args["tools"], server_module)}
         if (refusal := await _refused("agent", 1)) is not None:
+            return refusal
+        if (refusal := await _memory_room(1 if args.get("memory") is True else 0)) is not None:
             return refusal
         agents = await load_user_agents()
         existing_ids = {a.get("id") for a in agents}
@@ -2241,6 +2283,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             agent["browser"] = browser
         if (policy := _agent_policy(args.get("tool_policy"))):
             agent["tool_policy"] = policy
+        if args.get("memory") is not None:
+            agent["memory"] = args["memory"]
         await save_agent(agent)
         _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
@@ -2284,6 +2328,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (too_long := _long_agent_name(spec["name"])) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": too_long})
                     continue
+                if (wrong := _memory_wrong(spec.get("memory"))) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), **wrong})
+                    continue
                 from core import builder_guard  # F489: never a tool nothing provides
                 if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
@@ -2317,6 +2364,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     agent["browser"] = browser
                 if (policy := _agent_policy(spec.get("tool_policy"))):
                     agent["tool_policy"] = policy
+                if spec.get("memory") is not None:
+                    agent["memory"] = spec["memory"]
                 documents.append(agent)
                 created.append({
                     "role": spec.get("role"),
@@ -2325,6 +2374,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     "type": agent["type"],
                     "repos": agent["repos"],
                 })
+        # The host's memory allowance, for the batch at once: each alone could fit where all together do not.
+        if (refusal := await _memory_room(sum(d.get("memory") is True for d in documents))) is not None:
+            return refusal
         for document in documents:
             await save_agent(document)
             _emit(events, "agent", "created", document["id"], document["name"], document)
@@ -2362,6 +2414,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             fields["tools"] = await builder_guard.canonical_names(fields.get("tools") or [], server_module)  # F1035
         if "tool_policy" in fields:
             fields["tool_policy"] = _agent_policy(fields["tool_policy"])
+        if "memory" in fields:
+            if (wrong := _memory_wrong(fields["memory"])) is not None:
+                return wrong
+            turning_on = fields["memory"] is True and agent.get("memory") is not True
+            if (refusal := await _memory_room(1 if turning_on else 0, args["agent_id"])) is not None:
+                return refusal
         if fields.get("team") is not None:
             # A Team's "How members work" (TEAM1a): checked as the agent editor's save checks it, and only on a
             # Team agent (TEAM1e).
