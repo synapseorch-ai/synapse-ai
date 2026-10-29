@@ -12834,6 +12834,65 @@ async def check_brwagent(browser) -> str:
 
 
 @check
+async def check_brwclickfit(browser) -> str:
+    """The person's click lands where they pressed on the page, whatever the pane's shape (BRW2, F1197; MEDIA1 10-30).
+    The frame is drawn whole inside the page's box (object-contain), so a pane that isn't 16:10 has bars beside or
+    above the picture; a click used to be scaled across the whole box and missed by up to ~70 px near the edges. Now
+    it is placed through the picture as drawn, and a press in a bar sends nothing. Checked at a wide pane (bars at the
+    sides) and a tall one (bars above and below): corners and centre to within 3 page px."""
+    bad: list[str] = []
+    for size in ((1600, 900), (1600, 1300)):
+        ctx, page = await _brw_page(browser, f"uismoke-brw-fit-{size[1]}", width=size)
+        try:
+            await _brw_push(page, "post", _frame({"type": "browser_session", "session_id": "bsF",
+                                                  "owner": f"chat:uismoke-brw-fit-{size[1]}"}, "f-1"))
+            pane = _pane(page)
+            await pane.wait_for(timeout=8_000)
+            await _stream_open(page, "frames:bsF")
+            await _brw_push(page, "frames:bsF", _brw_frame())
+            screen = pane.get_by_role("application", name=re.compile("The page"))
+            await screen.wait_for(timeout=5_000)
+            await screen.click()
+            await page.get_by_role("dialog", name=re.compile("driving")).get_by_role("button", name="Take over").click()
+            await _brw_push(page, "frames:bsF", _brw_frame(wheel="person"))
+            await asyncio.sleep(0.6)
+            # The image's content box (its border left out), and the picture as drawn in it: 1280×800, contained.
+            box = await screen.locator("img").evaluate("""i => { const r = i.getBoundingClientRect();
+                return {x: r.left + i.clientLeft, y: r.top + i.clientTop, w: i.clientWidth, h: i.clientHeight}; }""")
+            scale = min(box["w"] / 1280, box["h"] / 800)
+            dw, dh = 1280 * scale, 800 * scale
+            ox, oy = box["x"] + (box["w"] - dw) / 2, box["y"] + (box["h"] - dh) / 2
+            if abs(box["w"] / box["h"] - 1.6) < 0.02:
+                bad.append(f"at {size} the page's box is 16:10 ({box}), so this check proves nothing there")
+            for fx, fy in ((0.03, 0.04), (0.5, 0.5), (0.97, 0.96)):
+                before = len(await _brw_calls(page, "input"))
+                await page.mouse.click(ox + fx * dw, oy + fy * dh)
+                await asyncio.sleep(0.4)
+                clicks = [c["body"] for c in (await _brw_calls(page, "input"))[before:]
+                          if c["body"] and c["body"].get("type") == "mouse" and c["body"].get("event") == "click"]
+                want = (round(fx * 1280), round(fy * 800))
+                if not clicks or abs(clicks[0]["x"] - want[0]) > 3 or abs(clicks[0]["y"] - want[1]) > 3:
+                    bad.append(f"at {size} a press at page {want} reached it as {clicks[:1]}")
+            # A press in a bar is off the page: nothing is sent.
+            bar = ((box["x"] + (ox - box["x"]) / 2, box["y"] + box["h"] / 2) if ox - box["x"] > 6
+                   else (box["x"] + box["w"] / 2, box["y"] + (oy - box["y"]) / 2) if oy - box["y"] > 6 else None)
+            if bar is None:
+                bad.append(f"at {size} the picture fills its box ({box}): no bar to press")
+            else:
+                before = len(await _brw_calls(page, "input"))
+                await page.mouse.click(*bar)
+                await asyncio.sleep(0.4)
+                if len(await _brw_calls(page, "input")) != before:
+                    bad.append(f"at {size} a press in the bar beside the picture was sent to the page")
+        finally:
+            await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return ("the person's presses land where they were made on the picture at a wide and a tall pane, corners and "
+            "centre to 3 px, and a press in a bar sends nothing")
+
+
+@check
 async def check_brwwheel(browser) -> str:
     """The person takes the wheel, drives the page, and hands it back with a note (BRW2, F1076; DESIGN §2.4).
 
