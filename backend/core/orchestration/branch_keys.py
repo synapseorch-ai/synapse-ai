@@ -86,7 +86,7 @@ def same_key_branches(orch: dict) -> list[str]:
     return found
 
 
-#: The fields a step reads shared state through: `{state.x}` in a template,
+#: The fields a step reads shared state through: `{{ state.x }}` in a template,
 #: `state.x`, `state["x"]` or `state.get("x")` in an expression or a transform.
 _READ_FIELDS = ("prompt_template", "evaluator_prompt", "print_content", "transform_code",
                 "if_condition", "switch_expression", "loop_over", "loop_while_condition",
@@ -139,7 +139,7 @@ def sibling_reads(parallel: dict, by_id: dict[str, dict]) -> dict[int, list[str]
 
 
 #: What every Loop writes as it goes, whatever its keys are called — a body's
-#: template can read them (`{state._loop_current_iteration}`).
+#: template can read them (`{{ state._loop_current_iteration }}`).
 LOOP_MARKERS = ("_loop_current_iteration", "_loop_total")
 
 
@@ -199,8 +199,6 @@ def loop_key_conflicts(parallel: dict, by_id: dict[str, dict]) -> dict[int, list
 #: agent's conversation (`run_orchestrator_agent`).
 ENGINE_KEYS = frozenset({"user_input", "user_query", "history"})
 
-#: A state reference in a model's prompt, either form; the top-level key.
-_PROMPT_REF = re.compile(r"\{\{\s*state\.([A-Za-z_]\w*)|\{state\.(\w+)\}")
 
 
 def _prompt_reads(step: dict) -> set[str]:
@@ -211,7 +209,10 @@ def _prompt_reads(step: dict) -> set[str]:
         texts.append(step.get("prompt_template") or "")
     if step.get("type") == "retrieve" and isinstance(step.get("retrieve"), dict):
         texts.append(str(step["retrieve"].get("query") or ""))
-    return {next(g for g in m.groups() if g) for text in texts for m in _PROMPT_REF.finditer(text)}
+    from core.templating import STATE_REF, one_form
+
+    # The one form (F1252); a definition not yet saved may still hold the older one, read as it will be saved.
+    return {m.group(1).split(".")[0] for text in texts for m in STATE_REF.finditer(one_form(text))}
 
 
 def _own_writes(step: dict) -> set[str]:
@@ -287,13 +288,13 @@ def unset_reads(orch: dict) -> list[str]:
         for key in sorted(_prompt_reads(step) - ENGINE_KEYS - declared):
             if key not in written:
                 sentences.append(
-                    f"Step '{step['id']}' reads {{state.{key}}}, which no step writes, so it always reads "
+                    f"Step '{step['id']}' reads {{{{ state.{key} }}}}, which no step writes, so it always reads "
                     f"empty. Write it in an earlier step, or give it a default in the state schema.")
                 continue
             if key not in walks:
                 walks[key] = _first_unwritten(key, orch.get("entry_step_id"), by_id)
             if step["id"] in walks[key]:
                 sentences.append(
-                    f"Step '{step['id']}' reads {{state.{key}}} before any step writes it, so its first pass "
+                    f"Step '{step['id']}' reads {{{{ state.{key} }}}} before any step writes it, so its first pass "
                     f"reads it empty. Give '{key}' a default in the state schema if it should read something.")
     return sentences

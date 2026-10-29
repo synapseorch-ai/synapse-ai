@@ -17,6 +17,7 @@ from core import expressions as _expressions
 from core import turn_limit
 from core.task_list import begin_step_tasks, end_step_tasks, with_step_tasks
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
+from core.templating import STATE_REF
 
 from core.log import get_logger
 from core.tool_scope import call_kwargs_for
@@ -2642,8 +2643,6 @@ def render_state_refs(text: str, state: dict) -> str:
                 break
         return str(val) if val is not None else match.group(0)
 
-    from core.templating import STATE_REF
-
     return STATE_REF.sub(_resolve, text)
 
 
@@ -2652,8 +2651,8 @@ class MissingStateRef(ValueError):
     must never receive a literal `{{state.x}}`."""
 
 
-#: `{{ state.a.b }}` or the older `{state.a.b}`, standing alone or inside text.
-_ARG_REF = re.compile(r"\{\{\s*state\.([\w.\-]+)\s*\}\}|\{state\.([\w.]+)\}")
+#: `{{ state.a.b }}`, standing alone or inside text: the one form (`templating.STATE_REF`, F1252).
+_ARG_REF = STATE_REF
 
 
 def _state_value(state: dict, path: str) -> Any:
@@ -2682,7 +2681,7 @@ def tool_argument_refs(value: Any) -> list[str]:
     elif isinstance(value, list):
         parts = [tool_argument_refs(v) for v in value]
     elif isinstance(value, str):
-        parts = [[m.group(1) or m.group(2) for m in _ARG_REF.finditer(value)]]
+        parts = [[m.group(1) for m in _ARG_REF.finditer(value)]]
     else:
         parts = []
     for refs in parts:
@@ -2720,7 +2719,7 @@ def render_code(code: str, state: dict) -> str:
     found: list[str] = []
 
     def marker(m: re.Match) -> str:
-        path = m.group(1) or m.group(2)
+        path = m.group(1)
         if path not in found:
             found.append(path)
         return f"__synapse_ref_{found.index(path)}__"
@@ -2833,10 +2832,10 @@ def render_tool_arguments(value: Any, state: dict, *, code_tool: bool = False) -
         return value
     whole = _ARG_REF.fullmatch(value.strip())
     if whole:
-        return _state_value(state, whole.group(1) or whole.group(2))
+        return _state_value(state, whole.group(1))
     from core.templating import _text
 
-    return _ARG_REF.sub(lambda m: _text(_state_value(state, m.group(1) or m.group(2))), value)
+    return _ARG_REF.sub(lambda m: _text(_state_value(state, m.group(1))), value)
 
 
 def _typed_object(value: Any) -> dict | None:
@@ -3390,7 +3389,7 @@ class SwitchStepExecutor:
 
 class PrintStepExecutor:
     """Store user-defined text/markdown into shared state.
-    Supports {state.key} and {state.key.nested} interpolation.
+    Supports {{ state.key }} and {{ state.key.nested }} interpolation.
     No LLM call — pure template rendering."""
 
     async def execute(
