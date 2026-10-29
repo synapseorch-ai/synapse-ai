@@ -5137,6 +5137,8 @@ GREETING = """() => {
     label: name ? name.textContent + (line ? ' · ' + line.textContent : '') : null,
     toModels: [...document.querySelectorAll('main a')]
       .filter((a) => a.getAttribute('href') === '/settings/models').length,
+    // An agent's line opens the first-run model step instead (ONB2); a workflow's keeps Settings → Models.
+    connect: document.querySelectorAll('main [data-connect-model]').length,
   };
 }"""
 
@@ -5149,7 +5151,8 @@ async def check_chatnotready(browser) -> str:
     A fresh install's default model is Ollama's; with nothing listening the
     page said "Ready" and answered the first message with httpx's own text —
     "Local Agent Error: Server error '500 …' … developer.mozilla.org …" — cut
-    off by a one-line banner, and nothing pointed at Settings → Models.
+    off by a one-line banner, and nothing pointed at Settings → Models. Since ONB2 (Naveen 2026-10-20) an agent's
+    line offers "Connect a model", which opens the first-run model step, where Settings → Models' cards are.
     """
     problem = "Ollama is not reachable at http://127.0.0.1:11434."
     ctx, page = await _chat_page(browser, "uismoke-firstrun",
@@ -5160,8 +5163,13 @@ async def check_chatnotready(browser) -> str:
             raise AssertionError(f"with no model able to answer the greeting reads {greeting['label']!r}")
         if not await _on_screen(page, problem):
             raise AssertionError("the greeting does not say what is wrong")
-        if not greeting["toModels"]:
-            raise AssertionError("the greeting does not point at Settings → Models")
+        if not greeting["connect"]:
+            raise AssertionError("the greeting does not offer Connect a model")
+        await page.locator("main [data-connect-model]").click()
+        dialog = page.get_by_test_id("model-setup")
+        await dialog.wait_for(timeout=5_000)
+        await page.keyboard.press("Escape")
+        await dialog.wait_for(state="hidden", timeout=5_000)
 
         box = page.locator("main textarea").last
         await box.fill("hello")
@@ -5185,9 +5193,9 @@ async def check_chatnotready(browser) -> str:
         greeting = await page.evaluate(GREETING)
     finally:
         await ctx.close()
-    if not (greeting["label"] or "").rstrip().endswith("Ready") or greeting["toModels"]:
+    if not (greeting["label"] or "").rstrip().endswith("Ready") or greeting["toModels"] or greeting["connect"]:
         raise AssertionError(f"a model that can answer reads {greeting}")
-    return "not ready says why and links to Settings → Models; a model failure does too; ready says Ready"
+    return "not ready says why and opens the model step; a model failure links to Settings → Models; ready says Ready"
 
 
 @check
