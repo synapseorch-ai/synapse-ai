@@ -132,11 +132,12 @@ async def append_turn(session_id: str, agent_id: str, messages: list[dict]) -> N
 
     A secret variable's value — an answer that echoes one, a call's arguments — is
     kept by name: the conversation is read back by members and by the API (F854).
+    And a card's number is kept masked (F1184, `for_storage`).
     """
-    from core.secret_scrub import scrub_secrets_in
+    from core.secret_scrub import for_storage
     from core.store.models import ChatSessionDB
 
-    messages = scrub_secrets_in(list(messages))
+    messages = for_storage(list(messages))
 
     async def write() -> None:
         async with _writing(session_id, agent_id) as s:
@@ -248,6 +249,9 @@ async def mark_last_answer(session_id: str, agent_id: str, *, question: str, **f
     belongs to an earlier question, which must not be marked. False when the
     tail is not that question's answer.
     """
+    from core.secret_scrub import for_storage
+
+    fields = for_storage(fields)  # kept as a turn is (F1184)
     async with _writing(session_id, agent_id) as s:
         row = await _row(s, session_id, agent_id, for_update=True)
         if row is None:
@@ -295,6 +299,9 @@ async def cut_answer(session_id: str, agent_id: str, *, chat_turn: str, heard: s
     """The answer a fleet job saved for `chat_turn`, as the caller heard it (F486): cut at `heard` as
     `cut_last_answer` cuts, marked interrupted, with `fields` noted. Found by its turn, never by being last: the
     job of the turn after it may have saved first. False when no answer carries that turn."""
+    from core.secret_scrub import for_storage
+
+    fields = for_storage(fields)  # kept as a turn is (F1184)
     async with _writing(session_id, agent_id) as s:
         row = await _row(s, session_id, agent_id, for_update=True)
         if row is None:
@@ -318,8 +325,15 @@ async def set_pending_approval(session_id: str, agent_id: str, pending: dict | N
     from. Pass None to clear it — which must happen whether the person allows
     the call or refuses it, or the next turn re-opens a question already
     answered.
+
+    The question it keeps is kept as a turn is (F1184, `for_storage`): it is drawn on a reopened page and becomes
+    the saved question. The snapshot is the turn in flight, already kept by name (F854), and is left as it is.
     """
+    from core.secret_scrub import for_storage
     from core.store.models import ChatSessionDB
+
+    if pending is not None and isinstance(pending.get("message"), str):
+        pending = {**pending, "message": for_storage(pending["message"])}
 
     async def write() -> None:
         async with _writing(session_id, agent_id) as s:

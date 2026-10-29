@@ -1260,10 +1260,21 @@ async def run_agent_chat_job(
         meter = turn_usage.start() if report_usage else None
         # A team's answers given in another process, read just before it pauses (TEAM1c).
         held = held_reader.set(lambda questions: _take_held_answers(redis, session_id, questions))
+        # The secrets the loop held, in its own task (`variables.load`): this job's saves after it hold them too, so
+        # what it keeps is kept as an in-process turn is (F1184). In memory only.
+        from core.secret_scrub import held_secrets, hold_secrets
+        turn_held: dict[str, str] = {}
+
+        async def _consume_holding():
+            try:
+                await _consume()
+            finally:
+                turn_held.update(held_secrets())
         try:
-            cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume, chat_turn=chat_turn)
+            cancelled = await _run_chat_turn_cancellably(redis, session_id, _consume_holding, chat_turn=chat_turn)
         finally:
             held_reader.reset(held)
+            hold_secrets(turn_held)
             if meter is not None:
                 turn_usage.stop(meter)
         if meter is not None:
@@ -1958,8 +1969,11 @@ async def _upsert_chat_session(
     if isinstance(messages, TurnRows):
         await _append_chat_session(session_factory, session_id, agent_id, status, messages)
         return
+    from core.secret_scrub import for_storage
     from core.store import upsert
     from core.store.models import ChatSessionDB
+
+    messages = for_storage(list(messages))  # kept as an in-process turn is (F1184)
 
     now = datetime.now(timezone.utc)
     async with session_factory() as session:
@@ -1988,7 +2002,10 @@ async def _append_chat_session(session_factory, session_id: str, agent_id: str |
     from sqlalchemy.exc import IntegrityError
     from core.store.models import ChatSessionDB
 
-    new = list(turn[turn.stored:])
+    from core.secret_scrub import for_storage
+
+    # Kept as an in-process turn is (F1184); what was kept already comes back the same.
+    new = for_storage(list(turn[turn.stored:]))
     agent = agent_id or "default"
 
     async def write() -> None:
@@ -2005,7 +2022,7 @@ async def _append_chat_session(session_factory, session_id: str, agent_id: str |
                 # No row (a first turn, or one deleted while it ran): the turn's whole view, as before.
                 session.add(ChatSessionDB(
                     tenant_id=get_tenant(), session_id=session_id, agent_id=agent, status=status,
-                    messages=list(turn), last_message_at=now, worker_id=_worker_id,
+                    messages=for_storage(list(turn)), last_message_at=now, worker_id=_worker_id,
                 ))
             else:
                 if new:

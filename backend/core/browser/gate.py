@@ -152,6 +152,9 @@ SENSITIVE_AUTOCOMPLETE = ("cc-", "one-time-code", "current-password", "new-passw
 CARD_WORDS = "Card details go in the browser; you'll be asked there."
 
 _CARD_RUN = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
+#: The same run standing as a number of its own: digits with letters or `_` around them are an id (a session's, a
+#: run's), which a stored copy keeps (F1184).
+_CARD_WORD = re.compile(r"(?<!\w)(?:\d[ -]?){12,18}\d(?!\w)")
 
 
 def _is_card(run: str) -> bool:
@@ -173,8 +176,9 @@ def looks_like_card(text: str) -> bool:
 
 
 def without_cards(text: str) -> str:
-    """`text` with every payment card's number in it replaced (F1183): words kept for the model to read again."""
-    return _CARD_RUN.sub(lambda m: "[card number]" if _is_card(m.group(0)) else m.group(0), text or "")
+    """`text` with every payment card's number in it replaced (F1183): words kept for the model to read again. A
+    number inside an id is not one (F1184)."""
+    return _CARD_WORD.sub(lambda m: "[card number]" if _is_card(m.group(0)) else m.group(0), text or "")
 
 
 def strings_in(value) -> list[str]:

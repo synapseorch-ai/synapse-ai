@@ -50,6 +50,27 @@ class TestAChatTurn:
         assert _left_behind(tmp_path) == [], _left_behind(tmp_path)
 
 
+    async def test_a_secret_the_person_types_is_logged_and_kept_by_name_only(
+            self, canary_secret, fake_llm, tmp_path):
+        """The canary in the person's own message, not only the prompt (F1184): the agent log's banner is written
+        as the turn starts, so the variables are read, and the secret held, before it."""
+        from core.models import ChatRequest
+        from core.react_engine import run_react_loop
+
+        agent = S.make_agent(id="agent_canary_typed", name="Billing", tools=["all"], skip_default_tools=True,
+                             system_prompt="You bill in {{ global.REGION }}.")
+        await S.seed_agents([agent])
+        fake_llm.set_default("Done.")
+
+        events = [e async for e in run_react_loop(
+            ChatRequest(message=f"my key is {CANARY}, use it", session_id="chat_canary_typed",
+                        agent_id=agent["id"]), _server())]
+
+        assert CANARY in json.dumps(fake_llm.calls[0], default=str), "the model reads the message as sent"
+        assert CANARY not in json.dumps(events, default=str)
+        assert _left_behind(tmp_path) == [], _left_behind(tmp_path)
+
+
 class TestAWorkflowRun:
     async def test_a_step_prompt_with_the_secret_is_shown_and_stored_by_name_only(
             self, canary_secret, fake_llm, tmp_path):
