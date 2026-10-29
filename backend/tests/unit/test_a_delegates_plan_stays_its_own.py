@@ -67,7 +67,10 @@ async def test_the_run_keeps_the_leads_plan(fake_llm):
     assert await _tasks("run_f536") == [t["content"] for t in LEAD_PLAN]
 
 
-async def test_the_next_step_is_seeded_with_the_leads_plan(fake_llm):
+async def test_the_next_step_is_seeded_with_neither_plan(fake_llm):
+    """F536 kept the delegate's plan out of the next step; F1249 keeps the lead's out too: a step starts with its own
+    list, and the step after the lead is not the lead (it held the lead's open task as its own; Naveen's write_posts,
+    10-29)."""
     await _seed()
     orch = S.make_orchestration(id="orch_f536b", entry_step_id="s1", steps=[
         {"id": "s1", "name": "Lead", "type": "agent", "agent_id": LEAD, "next_step_id": "s2"},
@@ -83,8 +86,9 @@ async def test_the_next_step_is_seeded_with_the_leads_plan(fake_llm):
     ])
     await _run(orch, "run_f536b")
     told = fake_llm.calls[-1]["prompt_msg"]
-    assert "lead: write the summary" in told
+    assert "lead: write the summary" not in told
     assert "helper: look things up" not in told
+    assert await _tasks("run_f536b") == ["lead: split the work", "lead: write the summary"], "the run's view keeps it"
 
 
 async def test_beside_other_branches_the_leads_tasks_stay(monkeypatch):
