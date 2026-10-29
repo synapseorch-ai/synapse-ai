@@ -154,21 +154,27 @@ CARD_WORDS = "Card details go in the browser; you'll be asked there."
 _CARD_RUN = re.compile(r"(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)")
 
 
+def _is_card(run: str) -> bool:
+    digits = [int(c) for c in run if c.isdigit()]
+    if not 13 <= len(digits) <= 19:
+        return False
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2:
+            d *= 2
+            d -= 9 if d > 9 else 0
+        total += d
+    return total % 10 == 0
+
+
 def looks_like_card(text: str) -> bool:
     """A 13–19 digit run (spaces or dashes allowed) that passes the Luhn check: a payment card's number."""
-    for match in _CARD_RUN.finditer(text or ""):
-        digits = [int(c) for c in match.group(0) if c.isdigit()]
-        if not 13 <= len(digits) <= 19:
-            continue
-        total = 0
-        for i, d in enumerate(reversed(digits)):
-            if i % 2:
-                d *= 2
-                d -= 9 if d > 9 else 0
-            total += d
-        if total % 10 == 0:
-            return True
-    return False
+    return any(_is_card(match.group(0)) for match in _CARD_RUN.finditer(text or ""))
+
+
+def without_cards(text: str) -> str:
+    """`text` with every payment card's number in it replaced (F1183): words kept for the model to read again."""
+    return _CARD_RUN.sub(lambda m: "[card number]" if _is_card(m.group(0)) else m.group(0), text or "")
 
 
 def strings_in(value) -> list[str]:

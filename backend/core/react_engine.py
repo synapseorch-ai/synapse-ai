@@ -2054,6 +2054,34 @@ async def run_agent_step(
         except Exception as mem_err:
             _log.warning(f"Session save failed (non-fatal): {mem_err}")
 
+    async def _save_parked_turn(person_turn: dict) -> None:
+        """A turn that stopped on the person's turn in the browser keeps its question, its calls and what the turn
+        is for (F1183), as the fleet's chat job keeps it: the hand-back starts a turn of its own, which reads it.
+        Same guard as every other save here, so the fleet's own save is the only one there."""
+        if is_orchestrator or not persist_turn or _workflow_step or not save_turn:
+            return
+        from core.session import parked_browser_turn
+        said, record = parked_browser_turn(session_id=person_turn.get("session_id"),
+                                           reason=person_turn.get("reason", ""),
+                                           banner_kind=person_turn.get("kind"), said=final_response)
+        try:
+            await _save_conversation_turn(
+                session_id=session_id,
+                agent_id=agent_id_for_session,
+                user=user_message,
+                assistant=said,
+                tools=tools_used_summary,
+                calls=_turn_calls,
+                images=image_notes(images),
+                reasoning=_turn_reasoning,
+                thoughts=_turn_thoughts,
+                helpers=_turn_helpers,
+                automated=automated,
+                browser_turn=record,
+            )
+        except Exception as mem_err:
+            _log.warning(f"Session save failed (non-fatal): {mem_err}")
+
     _policy = _tool_policy.resolve_policy(active_agent, current_settings)
     if _visitor is not None and _visitor.approvals != "park":
         # Nobody on a public surface can answer an approval card (F280). A phone
@@ -3831,6 +3859,10 @@ async def run_agent_step(
                         _person_turn = await session.take_handover(
                             _browser_owner, agent_key=getattr(_chat_turn, "agent_key", None))
                         if _person_turn:
+                            # The call that handed over is the turn's last; kept before the park is said, since the
+                            # chat route stops reading at it (F1183).
+                            _close_call()
+                            await _save_parked_turn(_person_turn)
                             if progress_events:
                                 yield {"type": "_step_progress", **_snapshot(turn + 1)}
                             _turn_field = {"name": "browser_turn", "type": "browser_turn",

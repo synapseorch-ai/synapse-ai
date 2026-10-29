@@ -38,7 +38,7 @@ import { OSS_BROWSER_HOST } from '@/lib/browserHost';
 import { OSS_SESSIONS_HOST } from '@/lib/sessionsHost';
 import {
   BrowserActionLine, BrowserPane, BrowserTurnCard, PANE_SHARE, PaneHandle, actionOf, browserTurnOf, isBrowserEvent,
-  parseShare, useChatPicks,
+  parkedBrowserTurn, parseShare, useChatPicks,
   type BrowserAction, type BrowserEvent, type BrowserSessionEvent, type FrameMemory,
 } from '@/components/browser';
 import { readWithStallTimeout } from '@/lib/sse';
@@ -423,6 +423,9 @@ type SessionTurn = {
   images?: { type: string }[];
   /** A question this turn asked and nobody answered: the card, and why it was not run (F247). */
   approval?: ParkedApproval & { outcome: 'expired'; why: string };
+  /** The person's turn in the browser this turn stopped on (F1183): its card, drawn where it was asked. `worded`
+   *  when the agent said something first; else the saved answer is only what the turn is for, and the card says it. */
+  browser_turn?: { session_id?: string; reason?: string; banner_kind?: string; worded?: boolean; answered?: boolean };
   /** What the turn's model reasoned (`llm_reasoning`) and thought (`llm_thought`), in order —
    *  the Thinking and Reasoning panels a reopened answer draws again (U60). Absent on older turns. */
   reasoning?: string[];
@@ -910,6 +913,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   // For a stream that started on an earlier render: who is driving the browser it opens (BRW2).
   const agentNameRef = useRef(agentName);
   agentNameRef.current = agentName;
+  // The browser a reopened chat's parked turn is on (F1182): shown once the agent's name is known.
+  const [reopenedBrowser, setReopenedBrowser] = useState<string | null>(null);
   // Whether the name came from the active agent. The workspace's own name, from
   // settings, is only the fallback when no agent is active: both requests set
   // the name, and when /api/status answered first the page said "Synapse" in
@@ -1109,7 +1114,18 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
   const onChangeRef = useRef(onChange);
   const onBusyRef = useRef(onBusy);
   const onOpenChatRef = useRef(onOpenChat);
-  useEffect(() => { onChangeRef.current = onChange; onBusyRef.current = onBusy; onOpenChatRef.current = onOpenChat; });
+  const onBrowserRef = useRef(onBrowser);
+  useEffect(() => {
+    onChangeRef.current = onChange; onBusyRef.current = onBusy; onOpenChatRef.current = onOpenChat;
+    onBrowserRef.current = onBrowser;
+  });
+  // A reopened chat's browser goes in the pane under its agent's name, not the page's "Loading..." before the agent
+  // is read (F1182): the conversation can come back first. Once.
+  useEffect(() => {
+    if (!reopenedBrowser || agentName === 'Loading...') return;
+    onBrowserRef.current({ type: 'browser_session', session_id: reopenedBrowser, owner: '' }, agentName);
+    setReopenedBrowser(null);
+  }, [reopenedBrowser, agentName]);
   // The tab's title is the conversation's first question, as History's row is.
   const firstQuestion = messages.find(m => m.role === 'user' && !m.data?.automated)?.content ?? '';
   useEffect(() => {
@@ -1209,8 +1225,10 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       setOpenFailed(false);
       const turns: SessionTurn[] = data.turns || [];
       const parked: ParkedApproval | null = data.pending_approval ?? null;
+      // The person's turn in the browser it stopped on (F1182): its card, and its browser in the pane.
+      const browserTurn = parkedBrowserTurn(data.pending_browser_turn);
       const running: RunningTurn | null = data.running ?? null;
-      if (turns.length === 0 && !parked && !running) return null;
+      if (turns.length === 0 && !parked && !browserTurn && !running) return null;
 
       const restored: Message[] = [];
       for (const t of turns) {
@@ -1238,8 +1256,12 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           continue;
         }
         const notRun = (t.calls ?? []).filter(c => c.refused).map(c => ({ tool: c.tool, reason: c.reason ?? '' }));
-        restored.push({
-          role: 'assistant', content: t.assistant,
+        // A turn that stopped on the person's turn in the browser (F1183): what it did, then its card. Its saved
+        // answer, when the agent said nothing first, is the card's own words, so only the calls are drawn above it.
+        const keptTurn = parkedBrowserTurn(t.browser_turn);
+        const quiet = !!keptTurn && !t.browser_turn?.worded;
+        if (!quiet || (t.calls?.length ?? 0) > 0) restored.push({
+          role: 'assistant', content: quiet ? '' : t.assistant,
           ...(t.calls && t.calls.length > 0 ? { data: { calls: t.calls } } : {}),
           // Its panels, as live (U60): the last thought goes when it only
           // repeats the answer, which it usually does.
@@ -1257,7 +1279,23 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           // Its team, each member as one line that opens (TEAM1b).
           ...(teamFromTurn(t) ? { team: teamFromTurn(t) as TeamState } : {}),
         });
+        if (keptTurn) {
+          restored.push({
+            role: 'assistant', content: keptTurn.reason, msgType: 'human_input_required',
+            data: {
+              kind: 'browser_turn', session_id: keptTurn.session_id, banner_kind: keptTurn.banner_kind, kept: true,
+              // Handed back, when the server recorded it; the live page's note is not kept.
+              ...(typeof t.browser_turn?.answered === 'boolean' ? { answered: t.browser_turn.answered } : {}),
+              // The last turn's card that nothing waits on any more: its browser is gone (F1183).
+              ...(t === turns[turns.length - 1] && keptTurn.session_id !== browserTurn?.session_id
+                ? { closed: true } : {}),
+            },
+          });
+        }
       }
+      // The waiting turn's card is the last saved turn's when that turn keeps it (F1183); drawn here only otherwise.
+      const lastKept = turns.length > 0 ? parkedBrowserTurn(turns[turns.length - 1].browser_turn) : null;
+      const cardDrawn = !!browserTurn && lastKept?.session_id === browserTurn.session_id;
       if (parked) {
         restored.push({ role: 'user', content: parked.message });
         restored.push({
@@ -1273,9 +1311,17 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           },
         });
       }
+      if (browserTurn && !cardDrawn) {
+        // As the live turn drew it: Done hands the browser back and reads the follow-up turn.
+        restored.push({
+          role: 'assistant', content: browserTurn.reason, msgType: 'human_input_required',
+          data: { kind: 'browser_turn', session_id: browserTurn.session_id, banner_kind: browserTurn.banner_kind },
+        });
+      }
       if (running) restored.push({ role: 'user', content: running.message,
                                    ...(running.automated ? { data: { automated: running.automated } } : {}) });
       setMessages(restored);
+      setReopenedBrowser(browserTurn?.session_id ?? null);
       setTurnOutcome(null);
       setSessionId(sid);
       if (agentId) setCurrentAgentId(agentId);
@@ -2979,15 +3025,27 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       ? browserTurnOf(msg.data?.fields) : null;
     if (msg.msgType === 'human_input_required' && (msg.data?.kind === 'browser_turn' || runTurn)) {
       const sid = String(runTurn?.session_id ?? msg.data?.session_id ?? '');
-      const answered = messages.slice(idx + 1).some(m => m.role === 'user' || m.data?.handedBack);
+      // Handed back (the note the hand-back left, or a kept turn's recorded answer), else what became of it: the
+      // person wrote instead, or a reopened chat's browser is gone. Only a card still asked is answerable (F1183).
+      const after = messages.slice(idx + 1);
+      const nextUser = after.findIndex(m => m.role === 'user');
+      const note = after.findIndex(m => m.data?.handedBack);
+      const marked: boolean | undefined = msg.data?.answered;
+      const answered = marked === true || (note !== -1 && (nextUser === -1 || note < nextUser))
+        // A kept turn with no recorded answer reads as before: any later message answered it.
+        || (marked === undefined && !!msg.data?.kept && nextUser !== -1);
+      const ended: 'moved_on' | 'closed' | undefined = answered ? undefined
+        : msg.data?.closed ? 'closed' : nextUser !== -1 ? 'moved_on' : undefined;
+      const asked = !!sid && !answered && !ended;
       return (
         <AgentTurn key={idx} avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><User className="h-4 w-4" aria-hidden /></AgentAvatar>}>
           <BrowserTurnCard
             reason={String(runTurn?.reason || msg.data?.reason || msg.content)}
             kind={runTurn?.banner_kind ?? msg.data?.banner_kind}
             answered={answered}
-            onOpen={sid ? () => onShowBrowser(sid, agentName) : undefined}
-            onDone={sid ? async () => {
+            ended={ended}
+            onOpen={asked ? () => onShowBrowser(sid, agentName) : undefined}
+            onDone={asked ? async () => {
               const ok = await OSS_BROWSER_HOST.handBack!(sid);
               if (!ok) return false;
               // A chat's turn goes on in a follow-up turn, read here; a workflow's run goes on in its own step.
@@ -3524,8 +3582,9 @@ type TabBrowser = {
 function foldBrowser(had: TabBrowser | undefined, event: BrowserEvent, agentName: string): TabBrowser | undefined {
   const fresh = (sessionId: string): TabBrowser => ({ sessionId, agentName, actions: [], shown: true, closed: false });
   if (event.type === 'browser_session') {
-    return had?.sessionId === event.session_id ? had
-      : { ...fresh(event.session_id), signedIn: { sessions: event.sessions, skipped: event.skipped } };
+    // The same browser keeps the person's close; its agent's name is the newest known.
+    if (had?.sessionId === event.session_id) return had.agentName === agentName ? had : { ...had, agentName };
+    return { ...fresh(event.session_id), signedIn: { sessions: event.sessions, skipped: event.skipped } };
   }
   const action = actionOf(event);
   const base = had?.sessionId === action.session_id ? had : fresh(action.session_id);

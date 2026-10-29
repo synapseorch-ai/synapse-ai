@@ -161,7 +161,8 @@ async def get_session_history(session_id: str, agent_id: str | None = Query(defa
     A turn is saved when it ends, so a conversation reopened mid-turn is told
     about it here (`running`, readable at `/chat/{id}/events`), and one waiting
     on a tool call gets its question back (`pending_approval`, the card without
-    the loop's snapshot).
+    the loop's snapshot), and one waiting on the person's turn in the browser
+    gets that card back (`pending_browser_turn`, F1182).
     """
     from core.chat_approval import public_view
     from core.store import sessions as store
@@ -174,7 +175,21 @@ async def get_session_history(session_id: str, agent_id: str | None = Query(defa
         "session_id": session_id, "agent_id": agent_id, "turns": turns,
         "running": turn.summary() if turn else None,
         "pending_approval": public_view(pending),
+        "pending_browser_turn": await _parked_browser_turn(session_id, agent_id),
     }
+
+
+async def _parked_browser_turn(session_id: str, agent_id: str | None) -> dict | None:
+    """The person's turn in the browser this conversation stopped on (F1099), as the live card's own fields
+    (`human_input_required`, `kind: browser_turn`): only the agent it is parked on, and read, not taken — Done or a
+    hand-back answers it. A closed browser has none."""
+    from core.browser import client as browser_client
+
+    parked = await browser_client.tools.peek_parked(browser_client.owner_for(session_id, None))
+    if not parked or (parked.get("agent_key") or "default") != (agent_id or "default"):
+        return None
+    turn = {"session_id": parked.get("session_id"), "reason": str(parked.get("reason") or "")}
+    return {**turn, "banner_kind": parked["kind"]} if parked.get("kind") else turn
 
 
 @router.get("/api/sessions/{session_id}/snapshot")
