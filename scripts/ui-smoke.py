@@ -12395,6 +12395,27 @@ def _brw_frame(url: str = "https://stock.example.com/items", wheel: str = "agent
     return _frame({"jpeg_b64": BRW_JPEG, "w": 1280, "h": 800, "url": url, "wheel": wheel})
 
 
+async def _brw_full_frame(page, wheel: str = "agent") -> str:
+    """A frame as big as the page it shows (1280×800), drawn on a canvas in the page. BRW_JPEG is 16×10, so it is
+    drawn 16×10: a press on it can't be placed finer than ~80 page px, and nothing stretches it into a letterbox. A
+    real frame is the page's size; where a press lands is checked on one (F1197)."""
+    jpeg = await page.evaluate("""() => { const c = document.createElement('canvas'); c.width = 1280; c.height = 800;
+        const x = c.getContext('2d'); x.fillStyle = '#d0d4dc'; x.fillRect(0, 0, 1280, 800);
+        x.fillStyle = '#5b6b8c'; x.fillRect(0, 0, 640, 400);
+        return c.toDataURL('image/jpeg', 0.6).split(',')[1]; }""")
+    return _frame({"jpeg_b64": jpeg, "w": 1280, "h": 800, "url": "https://stock.example.com/items", "wheel": wheel})
+
+
+async def _brw_drawn(screen) -> dict:
+    """Where a full frame is drawn in the page's picture box, in client px: object-contain's fit, centred, inside the
+    image's border. `box` is that content box."""
+    box = await screen.locator("img").evaluate("""i => { const r = i.getBoundingClientRect();
+        return {x: r.left + i.clientLeft, y: r.top + i.clientTop, w: i.clientWidth, h: i.clientHeight}; }""")
+    scale = min(box["w"] / 1280, box["h"] / 800)
+    dw, dh = 1280 * scale, 800 * scale
+    return {"x": box["x"] + (box["w"] - dw) / 2, "y": box["y"] + (box["h"] - dh) / 2, "w": dw, "h": dh, "box": box}
+
+
 async def _brw_push(page, stream: str, frames: str) -> None:
     await page.evaluate(f"() => window.__streams[{json.dumps(stream)}].push({json.dumps(frames)})")
 
@@ -12849,19 +12870,16 @@ async def check_brwclickfit(browser) -> str:
             pane = _pane(page)
             await pane.wait_for(timeout=8_000)
             await _stream_open(page, "frames:bsF")
-            await _brw_push(page, "frames:bsF", _brw_frame())
+            await _brw_push(page, "frames:bsF", await _brw_full_frame(page))
             screen = pane.get_by_role("application", name=re.compile("The page"))
             await screen.wait_for(timeout=5_000)
             await screen.click()
             await page.get_by_role("dialog", name=re.compile("driving")).get_by_role("button", name="Take over").click()
-            await _brw_push(page, "frames:bsF", _brw_frame(wheel="person"))
+            await _brw_push(page, "frames:bsF", await _brw_full_frame(page, wheel="person"))
             await asyncio.sleep(0.6)
             # The image's content box (its border left out), and the picture as drawn in it: 1280×800, contained.
-            box = await screen.locator("img").evaluate("""i => { const r = i.getBoundingClientRect();
-                return {x: r.left + i.clientLeft, y: r.top + i.clientTop, w: i.clientWidth, h: i.clientHeight}; }""")
-            scale = min(box["w"] / 1280, box["h"] / 800)
-            dw, dh = 1280 * scale, 800 * scale
-            ox, oy = box["x"] + (box["w"] - dw) / 2, box["y"] + (box["h"] - dh) / 2
+            drawn = await _brw_drawn(screen)
+            box, ox, oy, dw, dh = drawn["box"], drawn["x"], drawn["y"], drawn["w"], drawn["h"]
             if abs(box["w"] / box["h"] - 1.6) < 0.02:
                 bad.append(f"at {size} the page's box is 16:10 ({box}), so this check proves nothing there")
             for fx, fy in ((0.03, 0.04), (0.5, 0.5), (0.97, 0.96)):
@@ -12908,7 +12926,7 @@ async def check_brwwheel(browser) -> str:
         pane = _pane(page)
         await pane.wait_for(timeout=8_000)
         await _stream_open(page, "frames:bsW")
-        await _brw_push(page, "frames:bsW", _brw_frame())
+        await _brw_push(page, "frames:bsW", await _brw_full_frame(page))
         screen = pane.get_by_role("application", name=re.compile("The page"))
         await screen.wait_for(timeout=5_000)
 
@@ -12923,12 +12941,13 @@ async def check_brwwheel(browser) -> str:
             await nudge.get_by_role("button", name="Take over").click()
         if not await _wait(page, "() => window.__browserCalls.some(c => c.url.endsWith('/api/browser/bsW/wheel/take') && c.method === 'POST')"):
             bad.append("Take over did not take the wheel")
-        await _brw_push(page, "frames:bsW", _brw_frame(wheel="person"))
+        await _brw_push(page, "frames:bsW", await _brw_full_frame(page, wheel="person"))
         if not await pane.get_by_text(re.compile("You[’']re driving")).count():
             bad.append("the pane does not say the person is driving")
 
-        box = await screen.locator("img").bounding_box()
-        await page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 4)
+        # A quarter down the picture as drawn (a full frame, F1197), not the img's box with its border and bars.
+        drawn = await _brw_drawn(screen)
+        await page.mouse.click(drawn["x"] + drawn["w"] / 2, drawn["y"] + drawn["h"] / 4)
         await page.keyboard.type("abc")
         await page.keyboard.press("Enter")
         await asyncio.sleep(0.8)
