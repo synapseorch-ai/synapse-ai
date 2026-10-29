@@ -34,8 +34,10 @@ from core.tool_call_shapes import calls_in, is_pseudo_format, leading_objects, p
 from core.tools import ALL_TOOLS_TOKEN_BUDGET, aggregate_all_tools, build_system_prompt, build_volatile_tail, DEFAULT_TOOLS_BY_TYPE
 from core import tool_policy as _tool_policy
 from core import chat_approval as _chat_approval
+from core import turn_limit as _turn_limit
 from core import visitor as _visitor_mod
 import anyio as _anyio
+import itertools as _itertools
 import re as _re
 from datetime import timedelta
 
@@ -48,6 +50,20 @@ _log = get_logger(__name__)
 NO_TOOLS_SENTENCE = "Sorry, I couldn't put that into words; could you say it another way?"
 
 MAX_TURNS = 30
+
+
+def _call_usd(model: str | None, result) -> float:
+    """What one model call cost: what a gateway charged when it says, else the rate card's price. Never raises."""
+    try:
+        if getattr(result, "charged_microusd", None) is not None and int(result.charged_microusd) >= 0:
+            return int(result.charged_microusd) / 1_000_000
+        from core.usage_tracker import calculate_cost
+
+        return float(calculate_cost(model or "", int(result.input_tokens or 0), int(result.output_tokens or 0),
+                                    cache_read_tokens=int(result.cache_read_tokens or 0),
+                                    cache_write_tokens=int(result.cache_write_tokens or 0)))
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1127,6 +1143,8 @@ async def run_agent_step(
     team_seat=None,                       # core.team.Seat: this turn is a member's, working for its team's lead (TEAM1a)
     step_limits=None,                     # core.team.StepLimits: a workflow step's time and the run's cap, for its team (TEAM1e)
     finish_tools=None,                    # [name]: the turn ends when one is called and succeeds; its result is the output (E2)
+    person_present: bool | None = None,   # a person is in this turn (F1219): None = a chat turn that can ask one
+    run_cap=None,                         # core.orchestration.run_cap.RunCap: the run's cost cap, for going on past the limit
 ):
     """Lower-level single-agent ReAct execution.
 
@@ -1662,6 +1680,11 @@ async def run_agent_step(
     # and a loop's iterations read each other through it. Not `persist_turn`:
     # F279 reads that as "not a delegate", and a workflow step still asks.
     _workflow_step = str(source or "").startswith("orchestration")
+    # At the turn limit (F1219): whether this turn can stop to ask a person, and whether one is in it — a workflow's
+    # step only when its run says so (Synapse AI's panel); a chat turn that can ask, that nobody's follow-up started.
+    _can_ask = bool(progress_events and _chat_approval.approvals_answerable())
+    _person_in_turn = (bool(person_present) if person_present is not None else
+                       (not _workflow_step and source == "chat" and _can_ask and team_seat is None and not automated))
 
     async def _persons_words() -> list[str]:
         """The person's own words, read only when a Browser agent quotes them to press a button that acts for
@@ -1875,6 +1898,21 @@ async def run_agent_step(
     # (F286): the delegate's own resume state, handed to it when the lead
     # replays that `delegate_to_agent` call. Used once.
     _delegate_resume = (resume_state or {}).get("delegate") or None
+    # Past the turn limit (F1219): its own limit is what one more round gives; how often it went on and what the turn
+    # has spent carry over a pause. A person's answer to "keep going?" is a decision about turns, never a call to run.
+    _turns_each = int(max_turns)
+    _turn_extensions = int((resume_state or {}).get("turn_extensions") or 0)
+    _turn_spent_usd = float((resume_state or {}).get("turn_spent_usd") or 0.0)
+    _turns_given = int((resume_state or {}).get("turns_given") or 0)
+    if _turns_given > max_turns:
+        max_turns = _turns_given
+    if _pending_call and _pending_call.get("tool") == _turn_limit.KIND:
+        _at = int((resume_state or {}).get("turn") or max_turns)
+        if _pending_call.get("approved"):
+            max_turns, _turn_extensions = _at + _turns_each, _turn_extensions + 1  # [Keep going]: N more
+        else:
+            max_turns = _at + 1  # [Answer with what you have]: one more turn, its answer turn
+        _pending_call = None
 
     def _snapshot(next_turn: int) -> dict:
         """Everything needed to carry this loop on after a pause or a process
@@ -1901,6 +1939,10 @@ async def run_agent_step(
             # the turn from outside it (a stop, the fleet's chat job).
             "calls": [{**c, "result": str(c.get("result") or "")[:2_000]}
                       for c in _turn_calls[-20:]],
+            # Past its turn limit (F1219): the turns it has now, how often it went on, and what it has spent.
+            "turns_given": max_turns,
+            "turn_extensions": _turn_extensions,
+            "turn_spent_usd": round(_turn_spent_usd, 6),
         }
         if not _workflow_step:
             # A chat turn's panels, for a pause's resume to save them
@@ -2266,7 +2308,49 @@ async def run_agent_step(
         yield {"type": "status", "message": _left_note}
 
     async with httpx.AsyncClient() as client, _team_mod.guard(_team):
-        for turn in range(start_turn, max_turns):
+        for turn in _itertools.count(start_turn):
+            if turn >= max_turns:
+                # At its limit, its answer turn not finished (F1219): ask, go on or stop, as `turn_limit` says.
+                _how = _turn_limit.mode(active_agent, current_settings, person=_person_in_turn)
+                if (_how == "ask" and not _can_ask) or _team is not None:
+                    # Nobody can answer here (a messaging channel's turn), or a team's lead, whose members' questions
+                    # park the turn their own way (TEAM1c): ended as before.
+                    _how = "stop"
+                if _how == "continue":
+                    from core.orchestration import run_cap as _run_cap_mod
+
+                    _why_not = _turn_limit.refusal(
+                        extensions=_turn_extensions, spent_usd=_turn_spent_usd, capped=run_cap is not None,
+                        cap_reason=await _run_cap_mod.stop_reason(run_id, "agent", run_cap) if run_id else None)
+                    if _why_not is None:
+                        max_turns += _turns_each
+                        _turn_extensions += 1
+                        if (_answering_from or {}).get("why") == "turns":
+                            _answering_from = None
+                        current_context_text += f"\nSystem: you may go on: {_turns_each} more turns.\n"
+                        yield {"type": "turn_limit_extended", "turns": _turns_each, "extensions": _turn_extensions}
+                    else:
+                        yield {"type": "status", "message": f"Stopped at its turn limit: {_why_not}."}
+                        _ran_out = True
+                        break
+                elif _how == "ask":
+                    _log.warning(f"⏸ turn limit {max_turns} reached — asking whether to keep going")
+                    yield {"type": "_step_progress", **_snapshot(turn)}
+                    yield {
+                        "type": "human_input_required",
+                        "kind": "tool_approval",
+                        "turn_limit": {"turns": turn, "more": _turns_each},
+                        "prompt": _turn_limit.asking_words(turn),
+                        "tool_name": _turn_limit.KIND,
+                        "tool_args": {},
+                        "category": _turn_limit.KIND,
+                        "approval_id": f"{_turn_limit.KIND}:{turn}",
+                        "fields": [{"name": "approve", "type": "boolean", "label": "Keep going"}],
+                    }
+                    return
+                else:
+                    _ran_out = True
+                    break
             _log.info(f"\n{'#'*60}\n### TURN {turn + 1}/{max_turns} ###\n{'#'*60}\n")
 
             # A cooperative cancel point between turns. The orchestration
@@ -2615,6 +2699,7 @@ async def run_agent_step(
                     _llm_result = LLMResult("", *llm_err.usage, "max_tokens", (), llm_err.reasoning)
                 _llm_duration = round(time.time() - _llm_start, 1)
             llm_output = _llm_result.text
+            _turn_spent_usd += _call_usd(current_model, _llm_result)  # for going on past the limit (F1219)
             _log.debug(f"🤖 LLM Response ({_llm_duration}s): {llm_output[:500]}{'...(truncated)' if len(llm_output) > 500 else ''}")
 
             # ── A response that hit the token ceiling is not an answer ───────
@@ -2705,10 +2790,10 @@ async def run_agent_step(
                 for _e in _unstream("tool_call"):
                     yield _e
                 if _answering_from.get("why") == "turns":
-                    # Its last turn, and it called a tool anyway (F1219): out of turns, said as it always was.
+                    # Its last turn, and it called a tool anyway (F1219): the call is not made, and the limit's
+                    # check at the next turn asks, goes on or stops (`turn_limit`).
                     tool_calls = []
-                    _ran_out = True
-                    break
+                    continue
                 _repeat_stop = _answering_from
                 tool_calls = []
                 yield {"type": "repeat_stopped", **_repeat_stop, "turn": turn + 1}
@@ -3965,8 +4050,6 @@ async def run_agent_step(
                 # needed to continue this loop after a process death. Consumed
                 # (persisted + swallowed) by AgentStepExecutor — never reaches SSE.
                 yield {"type": "_step_progress", **_snapshot(turn + 1)}
-        else:
-            _ran_out = True
 
     if _team is not None:
         # What its members did as the team ended (their records, the closed list): the

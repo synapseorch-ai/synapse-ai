@@ -327,7 +327,11 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # which plans from them instead of researching again.
     found = previous_findings(previous)
 
+    from core import turn_limit
+
     initial_state = {
+        # A person watches this run in Synapse AI's panel: at a step's turn limit it is asked (F1219).
+        turn_limit.ATTENDED_KEY: True,
         "user_message": message,
         "chat_history": _format_history(request.history),
         "selected_agent_ids": list(request.selected_agent_ids or []),

@@ -14,6 +14,7 @@ import anyio
 
 from core.config import HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core import expressions as _expressions
+from core import turn_limit
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
@@ -348,6 +349,10 @@ class AgentStepExecutor:
                 model_override=step.model,
                 resume_state=resume_state,
                 progress_events=True,
+                # At its turn limit (F1219): a person is in the run only when its starter said so (Synapse AI's panel),
+                # and going on is held by the run's own cost cap.
+                person_present=bool((run.shared_state or {}).get(turn_limit.ATTENDED_KEY)),
+                run_cap=getattr(engine, "run_cap", None),
                 initial_tasks=[dict(t) for t in (run.tasks or [])],
                 preresolved=resolved,
                 global_variables=getattr(engine, "global_variables", None),
@@ -463,6 +468,8 @@ class AgentStepExecutor:
                         # a resume must not forget it.
                         "memory_tainted": event.get("memory_tainted"),
                         "attempt": resume_attempt,
+                        # Past its turn limit (F1219): the turns it has, how often it went on, what it spent.
+                        **{k: event[k] for k in ("turns_given", "turn_extensions", "turn_spent_usd") if k in event},
                     }
                     # A delegate's question the step is about to pause on (F286):
                     # kept with the lead's snapshot, as chat parks it.
