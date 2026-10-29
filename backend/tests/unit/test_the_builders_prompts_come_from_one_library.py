@@ -55,7 +55,9 @@ from core.native_builder import prompt_lint, seed
 #: unchanged), 1d2a272d…; with F1121's question on what still can't be built (`step_plan_same`, and the `same` and
 #: `no_tool` cases that reach it), 90b30a42…; with F1153's effort check after the role door (`step_effort`, its route
 #: and `step_effort_offered`, with its four state keys and the press's route), 787b2662….
-BUNDLE_SHA256 = "787b2662d32b466c55a4af6798d97b69f81c4bd1b792b9880ef9ebb44325ed4a"
+#: F1198: one new thing may be a Python tool (the change planner's `python_tool`), which the maker makes and proves,
+#: finishing on its passing test, 4ddde80f….
+BUNDLE_SHA256 = "4ddde80f543c3a0fead48f5e088a2e75821dcd5f4d8ce178ea97f8eac1a970f4"
 
 
 def _sha(definitions) -> str:
