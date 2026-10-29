@@ -793,9 +793,9 @@ def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     ident, row = same
     whose = " (this conversation built it)" if state.get(LAST_BUILT_KEY) == ident else ""
     return [f"title: a workflow called \"{row.get('name')}\" is already in this workspace{whose}, id {ident}. Never "
-            "save a second of the same name: when the person means that one, this is a change to it (say so and stop "
-            "with the plan's questions, so their next message updates it); if they may want two, ask once which, and "
-            "give a second one a name of its own"]
+            "save a second of the same name: when the person means that one, this is a change to it (plan it as kind "
+            "update of that one); if they may want two, ask once which with ask_person, and give a second one a name "
+            "of its own"]
 
 
 def _api_names(plan: O.Plan, state: dict) -> list[str]:
@@ -1344,7 +1344,10 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
     if run is not None:
         run.shared_state.pop(_SENDBACK_KEY, None)
     draft = O.PlanDraft.model_validate(_obj(args) or {})
-    return {"finish": "submit_plan", **draft.model_dump(exclude_none=True)}
+    # A plan carries no question (F1253): one written anyway goes on to the check, which asks it before any plan.
+    questions = [q.strip() for q in (_obj(args) or {}).get("questions") or [] if isinstance(q, str) and q.strip()]
+    return {"finish": "submit_plan", **draft.model_dump(exclude_none=True), **({"questions": questions}
+                                                                               if questions else {})}
 
 
 register_builder_tool(SUBMIT, submit_plan)
@@ -1428,7 +1431,16 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What earlier passes found is carried through a question round, so the lookup and the Connect cards are not
     # repeated, and every question with its answer reaches the planner, not only the last (SAI2's review, 22).
     asked = list(prior.get("asked") or [])
-    if prior.get("outcome") == "ask" and (answered := (_obj(state.get("human_response")) or {}).get("answer")):
+    reply = _obj(state.get("human_response")) or {}
+    reply = reply if isinstance(reply, dict) else {}
+    filled = reply.get("form") if isinstance(reply.get("form"), dict) else {}
+    if prior.get("outcome") == "ask" and prior.get("form") and filled:
+        # A form's answers, each with its own question (F1253): what the planner reads, and what is never asked again.
+        from core.native_builder.change_tools import form_answer
+
+        asked += [{"question": f.get("label") or "", "answer": form_answer(filled.get(f.get("name")))}
+                  for f in prior["form"] if isinstance(f, dict)]
+    elif prior.get("outcome") == "ask" and (answered := reply.get("answer")):
         entry = {"question": prior.get("question") or "", "answer": str(answered)}
         if prior.get("asking_periods"):
             # Code's own question (F1210): the answer is a rule each run works out from its own date. It lives in
@@ -1446,6 +1458,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
         # clock (F1210): a planner picked one of two weeks without saying so.
         return {**base, "outcome": "ask", "question": q.text, "asking_periods": q.dump()}
+    if finish == "ask_person" and isinstance(draft.get("form"), list) and draft["form"]:
+        from core.native_builder.change_tools import FORM_LEAD, form_text
+
+        return {**base, "outcome": "ask", "question": form_text(draft.get("question") or FORM_LEAD, draft["form"]),
+                "form": draft["form"]}
     if finish == "ask_person":
         from core.native_builder.change_tools import asked_text
 
@@ -1492,6 +1509,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
                 else "That plan has no steps to build."}
     if plan.room:
         return {**base, "outcome": "said", "say": plan.room}
+    asking, unsaid_said = await _asked_first(base, draft, ws, state)
+    if asking is not None:
+        return asking
     if waiting := [m for m in plan.mcp_servers if not m.connected]:
         # The person's own MCP server, by its URL (F1225): its tools are known only once it is connected, so its card
         # comes before any plan, and its "Connected …" plans again on them (Naveen, 10-29; the exception to F949).
@@ -1571,6 +1591,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         said.append("It can't be saved as it is: " + " ".join(found.errors[:3]))
     said += [f"{why}." for why in found.blocks.values()]
     said += found.notes
+    said += unsaid_said
     # A reused agent's blocked tools, said too (SAI2's nit on point 1): on the card under "Blocked here", and here.
     said += [f"{render_gate(g)}." for g in plan.gates if g.decision == "deny" and g.tool not in found.blocks]
     buildable = not (no_way or connect or found.errors or found.blocks)
@@ -1647,6 +1668,65 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         out["outcome"], out["review"] = "same", out["same_say"]
     await _card(out)
     return out
+
+
+#: The form's line when code asks about addresses it was not given (F1253).
+UNSAID_LEAD = "Before I show you the plan, check what I filled in that you haven't told me:"
+#: What the run was given, by state key: the person's words and answers, what is open, the workspace's own profile,
+#: what research read, a pasted export and the recordings. Never a model's own reading of the message (`request`,
+#: `turn`), and never the plan or its check, which hold the guess itself.
+GIVEN_KEYS = ("user_message", "chat_history", "org_profile", "plan_context", "existing_orch", "plan_findings",
+              "plan_research", "plan_lookup", "findings", "prior_findings", "export_source", "knowledge_steps",
+              "browser_steps", "current_page", "human_response", "review_feedback", "connect_answer", "plan_answer",
+              "change_clarify", "change_heard")
+
+
+async def _given(state: dict, ws: Workspace, asked: list[dict]) -> list[Any]:
+    """Everything the run was given that an address may come from (F1253): its state's (`GIVEN_KEYS`), the answers
+    to the request's questions (the seam's, and the check's `asked`), and the workspace (its agents, workflows, tools
+    and connected servers' URLs)."""
+    from core.native_builder.change_tools import _with_answers
+    from core.store.resources import load_mcp_servers
+
+    try:
+        servers = [s.get("url") for s in await load_mcp_servers() if isinstance(s, dict) and s.get("url")]
+    except Exception as exc:  # noqa: BLE001 — no servers read is no server's host given, never a failed build
+        _log.warning("the build's MCP servers were not read: %s", exc)
+        servers = []
+    answers = [a.get("answer") for a in _with_answers(state) if a.get("answer")]
+    answers += [a.get("answer") for a in asked if isinstance(a, dict) and a.get("answer")]
+    return [*(state.get(k) for k in GIVEN_KEYS), *answers, list(ws.agents.values()), list(ws.workflows.values()),
+            ws.tools, servers]
+
+
+async def _asked_first(base: dict, draft: dict, ws: Workspace, state: dict) -> tuple[dict | None, list[str]]:
+    """What only the person can say, asked before any plan, research or Connect card (F1253), in one form, one round
+    of the request's seam (F1226): each address the plan uses that the run was never given, the planner's value
+    filled in, and a question the plan carries anyway. Returns the ask, or None and, once the request has asked
+    enough, the review's words for each address it goes on with."""
+    from core.native_builder import addresses
+    from core.native_builder.change_tools import (FORM_LEAD, FORM_MAX, QUESTIONS, asked_before, form_text,
+                                                  note_question, questions_asked)
+
+    _, run = _run()
+    unsaid = [a for a in addresses.unsaid(draft, await _given(state, ws, base.get("asked") or []))
+              if asked_before(state, "what", a.subject, a.label()) is None]
+    questions = [q for q in draft.get("questions") or [] if isinstance(q, str) and q.strip()
+                 and asked_before(state, "what", "", q) is None]
+    if not (unsaid or questions):
+        return None, []
+    if questions_asked(state, run) >= QUESTIONS:
+        return None, [a.said() for a in unsaid]
+    form = []
+    for a in unsaid[:FORM_MAX]:
+        form.append({"name": f"q{len(form) + 1}", "type": addresses.FIELD_TYPE[a.kind], "label": a.label(),
+                     "value": a.value})
+        note_question(state, "what", a.subject, a.label(), field=form[-1]["name"])
+    for q in questions[:max(0, FORM_MAX - len(form))]:
+        form.append({"name": f"q{len(form) + 1}", "type": "string", "label": q.strip()})
+        note_question(state, "what", "", q.strip(), field=form[-1]["name"])
+    lead = UNSAID_LEAD if unsaid else FORM_LEAD
+    return {**base, "outcome": "ask", "question": form_text(lead, form), "form": form}, []
 
 
 async def _connect_first(base: dict, plan: O.Plan, waiting: list[O.McpServerPart], events: list[dict]) -> dict:

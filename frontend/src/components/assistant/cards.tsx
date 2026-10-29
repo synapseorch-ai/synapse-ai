@@ -23,13 +23,15 @@ import { AlertTriangle, Check, ChevronDown, ChevronUp, Search } from 'lucide-rea
 import * as React from 'react';
 
 import { EstimateLine, useRunEstimate, type EstimateLoader } from '@/components/orchestration/estimate';
+import { HumanFieldsForm } from '@/components/orchestration/HumanFieldsForm';
+import { humanAnswer, initialHumanValues, type HumanValues } from '@/components/orchestration/humanFields';
 import { Button, Markdown } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
 import {
-    aloneWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan, splitQuestion,
-    featureName, strongerWords, turnOnWords, withoutWords,
-    type Plan, type PlanStep,
+    aloneWords, askedLead, askedWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan,
+    splitQuestion, featureName, strongerWords, turnOnWords, withoutWords,
+    type AskedField, type Plan, type PlanStep,
 } from './plan';
 
 /**
@@ -110,11 +112,32 @@ function Frame({ open, children, label }: { open: boolean; children: React.React
  * an answer: a conversation brought back by a reload replays the questions
  * already answered (F214). `onStop` belongs on the open question — the composer
  * below is for the answer, so the other way out lives here.
+ *
+ * A question with a `form` (F1253) is answered in its fields while it is open, the planner's guesses filled in, in
+ * one go; the composer still answers all of it in words. Answered, it reads as it was asked.
  */
-export function QuestionCard({ content, open, onStop }: { content: string; open: boolean; onStop?: () => void }) {
+export function QuestionCard({ content, open, onStop, form, onAnswer, busy = false, formId = 'asked' }: {
+    content: string;
+    open: boolean;
+    onStop?: () => void;
+    form?: AskedField[] | null;
+    onAnswer?: (text: string, answer: Record<string, string | number | boolean | null>) => void;
+    busy?: boolean;
+    /** Unique per question on the page, for the fields' ids. */
+    formId?: string;
+}) {
     const [expanded, setExpanded] = React.useState(false);
     const isLong = content.length > QUESTION_FOLD;
     const visible = isLong && !expanded ? `${content.slice(0, QUESTION_FOLD)}…` : content;
+    if (open && form?.length && onAnswer) {
+        return (
+            <Frame open label="Needs your answer">
+                <Header open />
+                <AskedForm lead={askedLead(content)} fields={form} busy={busy} onAnswer={onAnswer} onStop={onStop}
+                    formId={formId} />
+            </Frame>
+        );
+    }
     return (
         <Frame open={open} label={open ? 'Needs your answer' : 'Asked'}>
             <Header open={open} />
@@ -128,6 +151,42 @@ export function QuestionCard({ content, open, onStop }: { content: string; open:
                 </div>
             )}
         </Frame>
+    );
+}
+
+/** The fields of a form question (F1253), each starting at the planner's guess, sent with one press. */
+function AskedForm({ lead, fields, busy, onAnswer, onStop, formId }: {
+    lead: string;
+    fields: AskedField[];
+    busy: boolean;
+    onAnswer: (text: string, answer: Record<string, string | number | boolean | null>) => void;
+    onStop?: () => void;
+    formId: string;
+}) {
+    const [values, setValues] = React.useState<HumanValues>(() => ({
+        ...initialHumanValues(fields),
+        ...Object.fromEntries(fields.filter((f) => typeof f.value === 'string').map((f) => [f.name, f.value as string])),
+    }));
+    const submit = (event: React.FormEvent) => {
+        event.preventDefault();
+        const answer = humanAnswer(fields, values);
+        onAnswer(askedWords(fields, answer), answer);
+    };
+    return (
+        <form onSubmit={submit} aria-label="Your answers" className="flex flex-col gap-3">
+            {lead && <Markdown className="text-sm leading-relaxed">{lead}</Markdown>}
+            <HumanFieldsForm fields={fields} values={values} onChange={setValues} idPrefix={`${formId}-field`} />
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border pt-2.5">
+                {onStop && (
+                    <Button type="button" variant="ghost" size="sm" onClick={onStop} className="text-danger hover:bg-danger-subtle hover:text-danger">
+                        Stop instead
+                    </Button>
+                )}
+                <Button type="submit" size="sm" disabled={busy}>
+                    Continue
+                </Button>
+            </div>
+        </form>
     );
 }
 
