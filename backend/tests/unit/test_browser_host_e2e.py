@@ -10,6 +10,7 @@ Chromium or npx is missing.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -292,7 +293,11 @@ async def codrive_host():
     yield http, int(line[1]), int(line[2])
     await http.close()
     proc.terminate()
-    await proc.wait()
+    try:  # a component stuck in a page call must not hold the suite: it is killed after a while
+        await asyncio.wait_for(proc.wait(), timeout=15)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
 
 
 async def _tool(http, control, sid, name, args, press=None):
@@ -745,6 +750,106 @@ async def test_a_task_the_person_does_is_recorded_and_their_password_is_not(reco
     assert steps[3]["after_shot"] in done["shots"], "the results page, after leaving the login page, is pictured"
     assert not steps[1]["after_shot"] and not steps[2]["after_shot"]
     assert (await _view(http, viewer, sid, "/record/stop", {}))[0] == 409
+    await _post(http, control, "/close", {"session_id": sid})
+
+
+@pytest.fixture
+async def far_site():
+    """MEDIA1's dry run as a page (F1196): what the person clicks after the first click sits at the page's right and
+    bottom, where a page left drawn smaller than its viewport would put something else, or nothing. The dates Save
+    sends are kept."""
+    saved: list[str] = []
+
+    async def orders(_):
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0;width:1280px;height:800px'>"
+            "<a id='hp' href='/order' style='position:absolute;left:1100px;top:700px;width:120px;height:30px;"
+            "display:block'>HP-2211</a></body></html>"))
+
+    async def order(_):
+        await asyncio.sleep(0.4)  # a real site's next page takes a while: the first step's picture meets it loading
+        return web.Response(content_type="text/html", text=(
+            "<html><body style='margin:0;height:800px'>"
+            "<div id='bar' style='position:absolute;left:0;top:0;width:100%;height:40px;background:#0b6e4f'></div>"
+            "<form method='get' action='/saved'>"
+            "<label for='delivery_date' style='position:absolute;left:950px;top:440px'>Delivery date</label>"
+            "<input id='delivery_date' name='d' style='position:absolute;left:950px;top:480px;width:200px;height:30px'>"
+            "<button id='save' style='position:absolute;left:950px;top:560px;width:200px;height:40px'>Save delivery date"
+            "</button></form></body></html>"))
+
+    async def done(request):
+        saved.append(request.query.get("d", ""))
+        return web.Response(content_type="text/html", text="<h1>Saved</h1>")
+
+    app = web.Application()
+    app.router.add_get("/", orders)
+    app.router.add_get("/order", order)
+    app.router.add_get("/saved", done)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    tcp = web.TCPSite(runner, "127.0.0.1", 0)
+    await tcp.start()
+    yield tcp._server.sockets[0].getsockname()[1], saved
+    await runner.cleanup()
+
+
+async def test_every_step_after_the_first_click_is_recorded_where_the_person_saw_it(far_site, codrive_host):
+    """F1196: the first step's picture scaled the page itself (CDP `clip.scale`), so from then on it was drawn and
+    clicked at 80%: the date typed and Save were lost, and the recording kept two steps. Each step's picture is made
+    smaller off the page; the page stays at its viewport, and every step is kept."""
+    import io
+
+    from PIL import Image
+
+    port, saved = far_site
+    http, control, viewer = codrive_host
+    sid = (await _post(http, control, "/session", {"owner": "record:r3", "mode": "co_drive",
+                                                   "person_only": True}))["session_id"]
+    frames: list[dict] = []
+
+    async def pane():  # the person's pane, open while they record, as in MEDIA1's take: the screencast runs
+        pending = b""
+        async with http.get(f"http://127.0.0.1:{viewer}/frames", params={"session_id": sid}) as resp:
+            async for chunk in resp.content.iter_any():
+                *events, pending = (pending + chunk).split(b"\n\n")
+                frames.extend(json.loads(e[6:]) for e in events if e.startswith(b'data: {"jpeg_b64"'))
+
+    watching = asyncio.ensure_future(pane())
+    try:
+        await asyncio.sleep(0.3)
+        assert (await _view(http, viewer, sid, "/record/start", {}))[0] == 200
+        await _view(http, viewer, sid, "/input", {"type": "nav", "url": f"http://localhost:{port}/"})
+        await asyncio.sleep(0.5)
+        # Each reply comes at once: a click's picture that met its next page loading once held it a minute, the page
+        # drawn and clicked at 80% the while.
+        for body, pause in (({"type": "mouse", "event": "click", "x": 1150, "y": 712}, 0.8),
+                            ({"type": "mouse", "event": "click", "x": 1050, "y": 495}, 0),
+                            ({"type": "text", "text": "2026-11-06"}, 0),
+                            ({"type": "mouse", "event": "click", "x": 1050, "y": 580}, 0.8)):
+            status, _ = await asyncio.wait_for(_view(http, viewer, sid, "/input", body), timeout=10)
+            assert status == 200, body
+            await asyncio.sleep(pause)
+        on_order = [f for f in frames if "/order" in (f.get("url") or "")]
+        late = on_order[-1] if on_order else None
+        status, done = await _view(http, viewer, sid, "/record/stop", {})
+    finally:
+        watching.cancel()
+    assert status == 200
+    steps = done["steps"]
+    assert [s["action"] for s in steps] == ["open", "click", "type", "click"], steps
+    assert steps[1]["line"] == "Click HP-2211"
+    assert steps[2]["value"] == {"fixed": "2026-11-06"} and steps[2]["target"]["label"] == "Delivery date"
+    assert steps[3]["line"] == "Click Save delivery date"
+    assert saved == ["2026-11-06"], "the person's date reached the site"
+    for step in steps[1:2] + steps[3:]:
+        with Image.open(io.BytesIO(base64.b64decode(done["shots"][step["after_shot"]]))) as picture:
+            assert picture.width == 1024, picture.size
+            low, high = picture.convert("L").getextrema()
+            assert high - low > 30, f"step {step['n']}'s picture is blank"
+    assert late is not None, "the pane got frames while the person recorded"
+    with Image.open(io.BytesIO(base64.b64decode(late["jpeg_b64"]))) as frame:
+        r, g, b = frame.convert("RGB").getpixel((frame.width - 8, 20))
+        assert g > r + 40 and g > b, f"the page's full-width bar reaches the pane's right edge, not 80% of it: {(r, g, b)}"
     await _post(http, control, "/close", {"session_id": sid})
 
 
