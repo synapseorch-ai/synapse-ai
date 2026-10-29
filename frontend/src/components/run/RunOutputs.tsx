@@ -11,7 +11,7 @@ import { useState } from 'react';
 import { Badge, Button, Modal } from '@/components/ui';
 import type { Orchestration } from '@/types/orchestration';
 
-import { isLive, REMOVED_NOTE, type RunRecord } from './model';
+import { isLive, isSavedFile, REMOVED_NOTE, savedFileLine, type RunRecord } from './model';
 import { OutputValue } from './StepDetail';
 
 type Output = { key: string; value: unknown; from: string; description?: string; result: boolean };
@@ -44,7 +44,7 @@ export function outputsOf(run: RunRecord, workflow: Orchestration | null): Outpu
 }
 
 function preview(value: unknown): string {
-    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    const text = isSavedFile(value) ? savedFileLine(value) : typeof value === 'string' ? value : JSON.stringify(value);
     const flat = text.replace(/\s+/g, ' ').trim();
     return flat.length > 140 ? `${flat.slice(0, 140)}…` : flat;
 }
@@ -86,7 +86,9 @@ export function RunOutputs({ run, workflow }: { run: RunRecord; workflow: Orches
                         variant="secondary"
                         onClick={() => {
                             if (!opened) return;
-                            navigator.clipboard.writeText(typeof opened.value === 'string' ? opened.value : JSON.stringify(opened.value, null, 2));
+                            // A saved file copies its key: the content is the file, opened from the Vault.
+                            const v = opened.value;
+                            navigator.clipboard.writeText(isSavedFile(v) ? v.$vault : typeof v === 'string' ? v : JSON.stringify(v, null, 2));
                         }}
                     >
                         Copy
