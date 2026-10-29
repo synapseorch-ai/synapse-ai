@@ -2,7 +2,9 @@
 Vault management REST API.
 
 Handles CRUD operations on the user-managed vault directory (data/vault/ minus the
-auto-generated tool_outputs/ subfolder).  Only .json, .md, .txt, .csv and .tsv files may be created.
+auto-generated tool_outputs/ subfolder).  Only .json, .md, .txt, .csv and .tsv files may be created; any text
+file may be edited, except inside the engine's own folders (F1207).  Every file can be fetched as it is
+(`/api/vault/raw`): a raster image to show in the page, anything else to download.
 
 When the blob store has no filesystem — S3 — every operation goes through it, by key,
 with the tenant applied inside the store (`core.storage`).  A store with a directory
@@ -13,11 +15,14 @@ import json
 import os
 import shutil
 import unicodedata
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from posixpath import normpath
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 
@@ -40,6 +45,23 @@ _ENGINE_OWNED = {"tool_outputs", "playwright", "compaction_archives"}
 #: What a person may create and edit here: text, with the plain-data tables Knowledge reads (its `csv` format),
 #: as cloud's vault takes `csv` (F1202).
 _ALLOWED_EXTENSIONS = {".json", ".md", ".txt", ".csv", ".tsv"}
+
+#: The largest text the editor opens or saves (F1207): a longer log or table is downloaded instead.
+MAX_TEXT_BYTES = 5 * 1024 * 1024
+
+#: What `/api/vault/raw` shows in the page, with the type it is served as (F1207). Raster images only, and only in
+#: an <img>: an SVG or an HTML file is a document that would run script on this origin, so it downloads, as does a
+#: PDF (the browser's viewer refuses a sandboxed one) and everything else.
+_INLINE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+                 ".gif": "image/gif"}
+
+#: Every raw answer: never sniffed into another type, and a document opened from it runs nothing and loads nothing.
+_RAW_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Security-Policy": "default-src 'none'; img-src 'self'; sandbox",
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cache-Control": "private, no-store",
+}
 
 # S3 key prefix for user vault files (relative to the bucket prefix)
 _S3_VAULT_REL = "vault"
@@ -159,10 +181,11 @@ def _s3_key_for(rel: str) -> str:
     return _S3_VAULT_REL
 
 
-def _s3_build_tree(keys: list[str]) -> list[dict]:
+def _s3_build_tree(keys: list[str], stats: dict | None = None) -> list[dict]:
     """
     Convert a flat list of S3 relative keys (e.g. ['vault/a.md', 'vault/sub/b.json'])
-    into the same nested tree structure the frontend expects.
+    into the same nested tree structure the frontend expects. `stats` (key → `BlobStat`)
+    gives each file its size and modified time.
     """
     # Filter to only vault/ keys and strip the vault/ prefix
     prefix = _S3_VAULT_REL + "/"
@@ -199,11 +222,15 @@ def _s3_build_tree(keys: list[str]) -> list[dict]:
         for f in files:
             rel_path = node[f]
             suffix = Path(f).suffix.lower()
+            stat = (stats or {}).get(_s3_key_for(rel_path))
             items.append({
                 "name": f,
                 "path": rel_path,
                 "type": "file",
                 "ext": suffix,
+                "size": stat.size if stat else None,
+                "modified": stat.modified_at.isoformat() if stat and stat.modified_at else None,
+                "read_only": _in_engine_folder(rel_path),
             })
         return items
 
@@ -236,6 +263,17 @@ def _resolve(rel: str) -> Path:
     return resolved
 
 
+def _in_engine_folder(rel: str) -> bool:
+    """A file inside one of `_ENGINE_OWNED`: runs write it, so a person reads it and may delete it, but never
+    edits it (F1207, Naveen 10-29)."""
+    parts = PurePosixPath(rel).parts
+    return len(parts) > 1 and parts[0] in _ENGINE_OWNED
+
+
+def _when(seconds: float | None) -> str | None:
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat() if seconds is not None else None
+
+
 def _is_engine_owned_dir(path: Path) -> bool:
     """True for `<vault>/tool_outputs` itself, not for anything inside it."""
     root = _vault_root().resolve()
@@ -265,11 +303,15 @@ def _build_tree(directory: Path, root: Path) -> list[dict]:
                 "children": _build_tree(entry, root),
             })
         elif entry.is_file():
+            info = entry.stat()
             items.append({
                 "name": entry.name,
                 "path": rel_path,
                 "type": "file",
                 "ext": entry.suffix.lower(),
+                "size": info.st_size,
+                "modified": _when(info.st_mtime),
+                "read_only": _in_engine_folder(Path(rel_path).as_posix()),
             })
     return items
 
@@ -283,8 +325,8 @@ async def get_vault_tree(source: str = Query("auto")):
     """Return the full directory tree beneath the user vault root."""
     s3 = _get_storage(source)
     if s3:
-        keys = s3.list(_S3_VAULT_REL + "/")
-        return {"tree": _s3_build_tree(keys), "source": "s3"}
+        stats = {s.key: s for s in s3.list_stats(_S3_VAULT_REL + "/")}
+        return {"tree": _s3_build_tree(list(stats), stats), "source": "s3"}
     root = _vault_root()
     return {"tree": _build_tree(root, root), "source": "local"}
 
@@ -332,6 +374,40 @@ async def search_vault_files(q: str = Query(default="", description="Search quer
     return {"files": results}
 
 
+def _refuse_too_long(size: int) -> None:
+    if size > MAX_TEXT_BYTES:
+        raise HTTPException(status_code=413, detail=f"This file is {size / 1048576:.1f} MB, more than the "
+                                                    f"{MAX_TEXT_BYTES // 1048576} MB the editor opens: download it.")
+
+
+def _disposition(name: str, inline: bool) -> str:
+    return f"{'inline' if inline else 'attachment'}; filename*=UTF-8''{quote(name, safe='')}"
+
+
+@router.get("/api/vault/raw")
+async def get_vault_raw(path: str = Query(..., description="Relative path to vault file"),
+                        source: str = Query("auto"), download: bool = Query(False)):
+    """A vault file as it is (F1207): a raster image as itself, to show in an <img>, and anything else (or any
+    file, with `download`) as an attachment. Never a document that runs: see `_INLINE_TYPES`, `_RAW_HEADERS`."""
+    rel = _safe_rel(path)
+    if not rel:
+        raise HTTPException(status_code=404, detail="File not found")
+    name = PurePosixPath(rel).name
+    shown = None if download else _INLINE_TYPES.get(PurePosixPath(name).suffix.lower())
+    media = shown or "application/octet-stream"
+    headers = {**_RAW_HEADERS, "Content-Disposition": _disposition(name, shown is not None)}
+    s3 = _get_storage(source)
+    if s3:
+        chunks = s3.iter_bytes(_s3_key_for(rel))
+        if chunks is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return StreamingResponse(chunks, media_type=media, headers=headers)
+    p = _resolve(rel)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(p, media_type=media, headers=headers)
+
+
 @router.get("/api/vault/file")
 async def get_vault_file(path: str = Query(..., description="Relative path to vault file"), source: str = Query("auto")):
     """Return the content of a vault file."""
@@ -341,20 +417,28 @@ async def get_vault_file(path: str = Query(..., description="Relative path to va
     ext = Path(name).suffix.lower()
 
     if s3:
+        stat = s3.stat(_s3_key_for(rel)) if rel else None
+        if stat is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        _refuse_too_long(stat.size)
         try:
             content = s3.get(_s3_key_for(rel))
         except ValueError:
             raise HTTPException(status_code=415, detail="Not a text file")
         if content is None:
             raise HTTPException(status_code=404, detail="File not found")
-        return {"path": rel, "name": name, "ext": ext, "content": content}
+        return {"path": rel, "name": name, "ext": ext, "content": content, "size": stat.size,
+                "read_only": _in_engine_folder(rel)}
 
     p = _resolve(path)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="File not found")
+    size = p.stat().st_size
+    _refuse_too_long(size)
     try:
         content = p.read_text(encoding="utf-8")
-        return {"path": path, "name": p.name, "ext": p.suffix.lower(), "content": content}
+        return {"path": path, "name": p.name, "ext": p.suffix.lower(), "content": content, "size": size,
+                "read_only": _in_engine_folder(_rel_of(p))}
     except UnicodeDecodeError:
         # The object-store branch's answer too (F323): a PDF or an image is a file the
         # editor cannot open, not a server error.
@@ -415,6 +499,30 @@ async def create_vault_file(req: CreateFileRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+_ENGINE_FILE = "Runs write the files in this folder, so they open read-only here. Copy one out to change it."
+
+
+def _refuse_edit(rel: str, content: str) -> None:
+    """What the editor may not save (F1207): a file in the engine's folders, one of the download-only kinds, text
+    that is not UTF-8 or carries a NUL, or more than `MAX_TEXT_BYTES`."""
+    from core.vault import binary_kind
+
+    if not rel:
+        raise HTTPException(status_code=404, detail="File not found")
+    if _in_engine_folder(rel):
+        raise HTTPException(status_code=403, detail=_ENGINE_FILE)
+    if binary_kind(rel) or PurePosixPath(rel).suffix.lower() in _INLINE_TYPES:
+        raise HTTPException(status_code=400, detail="Cannot edit this file type")
+    try:
+        size = len(content.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail="The text is not valid UTF-8.")
+    if "\x00" in content:
+        raise HTTPException(status_code=400, detail="The text carries a NUL character, so it is not a text file.")
+    if size > MAX_TEXT_BYTES:
+        raise HTTPException(status_code=413, detail=f"A file saved here is at most {MAX_TEXT_BYTES // 1048576} MB.")
+
+
 class UpdateFileRequest(BaseModel):
     path: str
     content: str
@@ -423,14 +531,16 @@ class UpdateFileRequest(BaseModel):
 
 @router.put("/api/vault/file")
 async def update_vault_file(req: UpdateFileRequest):
-    """Update the content of an existing vault file."""
+    """Update the content of an existing vault file: any text file (F1207), outside the engine's folders."""
     rel = _safe_rel(req.path)
-    suffix = Path(req.path).suffix.lower()
+    _refuse_edit(rel, req.content)
 
     s3 = _get_storage(req.source)
     if s3:
-        if suffix not in _ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail="Cannot edit this file type")
+        try:
+            s3.get(_s3_key_for(rel))
+        except ValueError:  # bytes, not text: never replaced by the editor's text
+            raise HTTPException(status_code=415, detail="Not a text file")
         s3.put(_s3_key_for(rel), req.content)
         await _changed(rel, "write", source=req.source, content=req.content)
         return {"status": "ok", "path": rel}
@@ -438,8 +548,12 @@ async def update_vault_file(req: UpdateFileRequest):
     p = _resolve(req.path)
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="File not found")
-    if p.suffix.lower() not in _ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Cannot edit this file type")
+    if _in_engine_folder(_rel_of(p)):  # through a link, too
+        raise HTTPException(status_code=403, detail=_ENGINE_FILE)
+    try:
+        p.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=415, detail="Not a text file")
     try:
         p.write_text(req.content, encoding="utf-8")
         await _changed(_rel_of(p), "write", source=req.source, content=req.content)
