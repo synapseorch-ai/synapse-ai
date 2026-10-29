@@ -156,6 +156,41 @@ def scrub_secrets_in(value: Any) -> Any:
     return value
 
 
+#: Keys whose values are ids, times and cursors, never anyone's words: the card mask leaves them alone (F1184).
+_NOT_WORDS = frozenset({"chat_turn", "timestamp", "cursor", "id", "turn"})
+
+
+def _words_under(key: Any) -> bool:
+    return not (isinstance(key, str) and (key in _NOT_WORDS or key.endswith("_id") or key.endswith("_ids")))
+
+
+def for_storage(value: Any, held: dict[str, str] | None = None) -> Any:
+    """A chat turn as it is kept (F1184): every string with the held secrets named (F854's mark), and every number
+    that passes the engine's card test masked, as `gate.without_cards` masks it — except ids, times and cursors. The
+    model reads the turn as it was sent; this is the stored copy only. Stable: what is kept already comes back the
+    same. `held` is for a caller whose secrets were held in another task (the fleet's chat job holds what its loop's
+    task held); without it, this task's."""
+    from core.browser.gate import without_cards
+
+    pairs = (tuple(sorted(((k, v) for k, v in held.items() if isinstance(v, str) and len(v) >= SECRET_MIN),
+                          key=lambda kv: -len(kv[1])))
+             if held is not None else _HELD.get())
+
+    def kept(item: Any, key: Any = None) -> Any:
+        if isinstance(item, str):
+            for name, secret in pairs:
+                if secret in item:
+                    item = item.replace(secret, secret_mark(name))
+            return without_cards(item) if _words_under(key) else item
+        if isinstance(item, dict):
+            return {k: kept(v, k) for k, v in item.items()}
+        if isinstance(item, (list, tuple)):
+            return type(item)(kept(v, key) for v in item)
+        return item
+
+    return kept(value)
+
+
 def reveal_secrets(text: str, values: dict[str, Any]) -> str:
     """The inverse, for the engine's own use only: a scrubbed checkpoint's text with each
     secret's current value put back, so a resumed turn reads what it was given."""
