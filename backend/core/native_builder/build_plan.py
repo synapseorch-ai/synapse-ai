@@ -29,6 +29,7 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
+from core import feature_census
 from core.native_builder import objects as O, one_writer, own_api, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
@@ -278,6 +279,8 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
                    "(F1203)."),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
+        # What is done on a screen, not from here (F1256): asked for, it is said with the screen, never imitated.
+        "not_here": feature_census.not_here(),
         # What a new agent's switches may name (F1223): connected MCP servers, and the sites with a kept session.
         "servers": sorted(_servers(server_module)),
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).

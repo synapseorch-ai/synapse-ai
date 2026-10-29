@@ -17,6 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from core import feature_census
 from core.builder_tools import register_builder_tool
 
 _HELP_FILE = Path(__file__).parent / "native_builder" / "help_topics.json"
@@ -126,35 +127,10 @@ async def search_help(args: dict, server_module: Any, events: list[dict]) -> dic
     return {"topics": found}
 
 
-#: What the self-hosted product does and does not do. A host replaces it (`set_capabilities`).
-SELF_HOSTED_CAPABILITIES = """\
-What this product does:
-- Workflows: steps in order or in parallel — agents, single model calls, routing, loops, a person's answer or
-  approval (in the app, by email or on a chat channel), tools, data extraction, knowledge retrieval — run by hand,
-  on a schedule, from a webhook or the API.
-- Agents: a model, a system prompt and the tools it may use (built-in tools, custom HTTP or Python tools, apps
-  through MCP servers), with skills, memory and knowledge bases.
-- Chat channels (Telegram, Discord, Slack, Teams, WhatsApp), a website widget, and a phone line that answers
-  incoming calls on a Twilio number.
-- Approvals: any step or tool call can wait for a person before it acts.
-
-What it does not do, and the nearest thing that does:
-- It does not build native mobile or desktop apps. Nearest: an agent on the website widget or a chat channel, or a
-  workflow behind an API.
-- It does not place a phone call on request. Its phone line answers incoming calls. Nearest: a message on a chat
-  channel or an email.
-- It does not drive printers or other devices, or reach into someone else's computer. Nearest: prepare the document
-  and send it (email, chat) for the person to print. A self-hosted install can read the folders on this machine that
-  Settings allows.
-- It cannot guarantee what others decide (search rankings, prices, approvals). Nearest: draft, research, watch and
-  report.
-- It never takes card numbers or passwords in chat, and does not store card data. Payments and bookings go through
-  the provider's own checkout or a payment link; a service connects through its sign-in or a key on a secure screen.
-- It cannot use a service that offers no API or app it can connect to (some booking systems are partner-only).
-  Nearest: a workflow that researches the options and asks the person to book.
-- Runs are not free: they cost what the models they use charge. Nearest: caps per run, smaller models for simple
-  steps.
-"""
+#: What the self-hosted product does and does not do. A host replaces it (`set_capabilities`). Made from the feature
+#: census (F1256): every screen's reach or its "not from here yet", and the product's general limits. Never kept by
+#: hand: it left out Evals, Boards and Skills.
+SELF_HOSTED_CAPABILITIES = feature_census.capabilities_text()
 
 CAPABILITIES_SCHEMA = {
     "type": "function",

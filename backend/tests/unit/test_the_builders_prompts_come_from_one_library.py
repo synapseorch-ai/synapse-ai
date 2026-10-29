@@ -77,7 +77,9 @@ from core.native_builder import prompt_lint, seed
 #: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
 #: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
 #: branch; on fix-forward 14's tree, 4c222b83….
-BUNDLE_SHA256 = "4c222b83f951094dbbee953f4c44d9549643722d276b77ad2269bfe892fe36b1"
+#: F1256: the planner's rule 8 (what the pack's `not_here` lists is done on its screen, never built from workflow
+#: parts; `cannot`, naming the screen), fb32ab63….
+BUNDLE_SHA256 = "fb32ab6341ca0b1802562fe3b4d20a3024242efe8b8bb4473d0adfb7fd3968a5"
 
 
 def _sha(definitions) -> str:
