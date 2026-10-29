@@ -35,8 +35,10 @@ search runs `knowledge.set_knowledge_searcher`'s.
 """
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable
 
 from mcp import types
@@ -57,6 +59,18 @@ Bind = Callable[[Any], contextlib.AbstractAsyncContextManager]
 ServerModule = Callable[[], contextlib.AbstractAsyncContextManager]
 Permits = Callable[[Any, str], bool]
 CallerOf = Callable[[Any], Caller]
+
+
+def _icon(theme: str) -> types.Icon:
+    # `theme` is the spec's (2025-11-25); the SDK's Icon has no field for it yet and passes it through as an extra.
+    data = (Path(__file__).parent / "icons" / f"mark-{theme}-48.png").read_bytes()
+    return types.Icon(src="data:image/png;base64," + base64.b64encode(data).decode(), mimeType="image/png",
+                      sizes=["48x48"], theme=theme)
+
+
+#: Our mark, as `initialize` gives it (F1215): an AI tool that draws a server's icon draws this one, by theme. The
+#: dark theme's comes first, a white tile that shows on any background, for a tool that reads no theme. See icons/.
+ICONS = [_icon("dark"), _icon("light")]
 
 #: The most text one tool result carries. `get_orchestration` and a run's state
 #: have no bound of their own, and a client model reads every character.
@@ -234,7 +248,7 @@ def _offers_workflows(caller: Caller) -> bool:
 def build_server(authorize: Authorize = authorize_api_key, bind: Bind = bind_settings,
                  name: str = "synapse", server_module: ServerModule = this_process,
                  permits: Permits = permit_all, caller_of: CallerOf = caller_from) -> Server:
-    server: Server = Server(name, version=synapse_version(), instructions=INSTRUCTIONS)
+    server: Server = Server(name, version=synapse_version(), instructions=INSTRUCTIONS, icons=ICONS)
 
     async def _principal() -> Any | None:
         try:
