@@ -4496,6 +4496,10 @@ async def run_react_loop(request, server_module, should_stop=None, *,
         return
 
     # --- Standard single-agent ReAct loop ---
+    # The tenant's variables, read before anything is logged: a secret among them is held for this task first, so a
+    # person's message that carries one is logged by name (F854, F1184). Handed on, so they are read once.
+    from core import variables as _turn_variables
+    _turn_globals = await _turn_variables.load()
     from core.agent_logger import AgentLogger
     _agent_log = AgentLogger(
         agent_id=active_agent.get("id", "default"),
@@ -4550,6 +4554,7 @@ async def run_react_loop(request, server_module, should_stop=None, *,
             board_scope=board_scope,
             # A pressed "Try again on a stronger model" (F1018): that one turn on the model the server picked.
             model_override=getattr(request, "_model_override", None),
+            global_variables=_turn_globals,
         ):
             if event.get("type") == "human_input_required":
                 _parked = True
