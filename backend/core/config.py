@@ -285,6 +285,8 @@ _DEFAULTS = {
         "boards_max_shared": 0,
         # Teams (TEAM1a, D283): the most members at once, whatever an agent asks for. Equal to core/team.py DEFAULTS.
         "team_at_once_ceiling": 10,
+        # At an agent's turn limit (F1219): "" = ask in a chat, stop in a run nobody watches (core/turn_limit.py).
+        "turn_limit_mode": "",
         # A `cohere.`, `voyage.` or `jina.` rerank model's own key (B2a, D163).
         "cohere_key": "",
         "voyage_key": "",

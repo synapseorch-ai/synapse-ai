@@ -93,5 +93,7 @@ async def test_a_reported_research_starts_the_next_one_afresh(pages):
 def test_the_research_steps_end_in_fewer_turns():
     steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
     # SAI2-P5: the research route's Researcher is step_lookup_research; step_research is code's look-up.
+    # HOT3 (Naveen 10-29): the bound is the tools' budget above, so the turns are only a backstop. They have room for
+    # one provider's whole budget (about 39 calls) and its report, at one call a turn, and stay bounded.
     for sid in ("step_lookup_research", "step_plan_research"):
-        assert 12 <= steps[sid]["max_turns"] <= 14, (sid, steps[sid]["max_turns"])
+        assert 40 <= steps[sid]["max_turns"] <= 60, (sid, steps[sid]["max_turns"])

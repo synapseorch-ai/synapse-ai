@@ -58,7 +58,10 @@ from core.native_builder import prompt_lint, seed
 #: palette in the planner's prompt (`{state.browser_steps}` beside `knowledge_steps`, and its state key), 4acc59e4….
 #: F1198: one new thing may be a Python tool (the change planner's `python_tool`), which the maker makes and proves,
 #: finishing on its passing test, 4ddde80f…; with F1193's palette (fix-forward 13), 05eecc81….
-BUNDLE_SHA256 = "05eecc81f4a3d147765dba4cebf8485646820add87e3675708da54efdcfcd3fb"
+#: F1219's turn limits
+#: (Naveen's table with HOT3: 60 turns in 1200 s for the steps that read and plan, 40 in 600 s for the rest, the quick
+#: classify step at 2; no prompt changes), 2fcbfc0f… alone; with F1193 and F1198 (fix-forward 13), ff332d9b….
+BUNDLE_SHA256 = "ff332d9b853c548e1235c90592d31d40ef948cb7303256e46b6fb9be21b13111"
 
 
 def _sha(definitions) -> str:

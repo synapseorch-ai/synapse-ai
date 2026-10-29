@@ -196,6 +196,9 @@ class Agent(BaseModel):
     helper_model: str | None = None
     provider: str | None = None  # auto-detected from model name
     max_turns: int | None = None  # per-agent turn limit override (None = use global default of 30)
+    # What it does at that limit when its answer turn did not finish (F1219, core/turn_limit.py): None = the
+    # workspace's `turn_limit_mode`.
+    turn_limit_mode: Literal["ask", "continue", "stop"] | None = None
     # "off" | "low" | "medium" | "high"; None = inherit the workspace setting.
     # Only reaches models with a native reasoning channel (see core/reasoning.py);
     # everything else keeps the [REASONING] prompt convention and ignores it.
@@ -406,6 +409,9 @@ class Settings(BaseModel):
     # Teams (TEAM1a, D283, Q2a): the most members a Team agent may have working at once, whatever it asks for.
     # Read by core/team.py; cloud's provider overlays the plan's.
     team_at_once_ceiling: int = 10
+    # What an agent does at its turn limit when its answer turn did not finish (F1219, core/turn_limit.py): "" = ask
+    # in a chat a person is in, stop in a run nobody watches; an agent's own `turn_limit_mode` beats it.
+    turn_limit_mode: Literal["", "ask", "continue", "stop"] = ""
     cohere_key: str = ""  # a `cohere.` rerank model's key
     voyage_key: str = ""  # a `voyage.` rerank model's key
     jina_key: str = ""  # a `jina.` rerank model's key
