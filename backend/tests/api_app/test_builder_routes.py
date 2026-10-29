@@ -256,13 +256,15 @@ class TestSeeHowImBuilt:
         # 76 with the effort check before a build: the check, its route, and the offer said (F1153).
         # 78 with every answer checked so none asks for a yes nothing can take (F1243): Check The Answer and the print
         # that says it, Say The Answer.
-        assert legend["step_count"] == 78
+        # 80 with the classify at a waiting plan (F1241's follow-up): the door that asks whether a plan waits, and the
+        # classify whose call must say whether the message changes it.
+        assert legend["step_count"] == 80
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
         assert {a["role"] for a in legend["agents"]} == {
             "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher", "plan_researcher",
-            "classifier", "talker",
+            "classifier", "classifier_at_plan", "talker",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
         # has nothing to approve. The change route's which-one question is the fourth (SAI2-P2); the wait for a made
@@ -295,8 +297,8 @@ class TestSeeHowImBuilt:
         result = (await client.post("/api/builder/duplicate")).json()
         assert result["status"] == "created"
         # P3b: the build's own researcher (an E2 finish on report_findings); SAI2-P4: the front door's classifier and
-        # talk's agent.
-        assert len(result["agent_ids"]) == 10
+        # talk's agent; F1241's follow-up: the classifier at a waiting plan.
+        assert len(result["agent_ids"]) == 11
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
