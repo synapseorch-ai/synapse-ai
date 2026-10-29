@@ -193,18 +193,40 @@ async def submit_change(args: dict, server_module: Any, events: list[dict]) -> d
         return {"error": "Send undo_of alone (its ops are built from the change it undoes), or ops alone; then the "
                          "rest as another change."}
     found: list[str] = []
+    _, run = _run()
+    kinds = run.shared_state.setdefault(_KINDS_KEY, {}) if run is not None else {}
     for n, op in enumerate(ops, 1):
         if not isinstance(op, dict):
             found.append(f"op {n} is not an object")
             continue
         fields = op.get("fields") if isinstance(op.get("fields"), dict) else {}
         found += [f"op {n}: {line}" for line in C.issues(str(op.get("op") or ""), op.get("target") or {}, fields)]
+        if op.get("op") == "create" and (switched := _kind_switch(kinds, op.get("target") or {})):
+            found.append(f"op {n}: {switched}")
     found += [f"op {n}: {SAYS_ASKS}" for n, op in enumerate(ops, 1)
               if isinstance(op, dict) and asks_for_a_secret(_text(op.get("says")), strict=False)]
     if found:
         return {"error": "Fix these and call submit_change again: " + "; ".join(found)}
     change = Change.model_validate({"ops": ops, "undo_of": undo_of or None})
     return {"finish": "submit_change", **change.model_dump(exclude_none=True)}
+
+
+#: The kind each new thing of this step's change was first submitted as, by name (F1242), engine-private.
+_KINDS_KEY = "_change_kinds"
+
+
+def _kind_switch(kinds: dict, target: dict) -> str | None:
+    """A new workflow sent again as something else is refused (F1242: prod's was refused as a workflow, sent again as
+    an agent, and one agent was made of a two-agent workflow). A new workflow is the build's; any other kind may be
+    corrected. Records the first kind each name was submitted as."""
+    name, kind = _text(target.get("name")).lower(), target.get("kind")
+    if not name or not kind:
+        return None
+    first = kinds.setdefault(name, kind)
+    if first in C.BUILDS and kind != first:
+        return (f"{_quoted(target.get('name'))} was a new {first} in your last call, and a new {first} is a build, "
+                f"made by the build route: send it as create with target.kind {first}, never as a {kind}")
+    return None
 
 
 #: A question that asks the person for a secret (chg-09: a key asked in chat was typed there and kept): a key, a
@@ -278,14 +300,56 @@ def _with_answers(state: dict) -> list[dict]:
 CARRY_KEY = "request_carry"
 
 
+#: A plan left waiting at its review (F1241, TRI1's class 1): the panel sets it aside when the person types something
+#: other than its yes, and the next turn started from the chat alone. It is staged with the carry under this key and,
+#: when classify says the message continues the request, changed through its own review, as the card's Change
+#: something is. Not adopted, it is parked on the run (`PARKED_PLAN_KEY`) for the turn after.
+WAITING_PLAN = "waiting_plan"
+PARKED_PLAN_KEY = "plan_parked"
+PLAN_REVIEW_STEP = "step_human_review"
+#: Where the run goes with it: the review's answer, as if typed at the card.
+REVISE_ROUTE = "step_review_research"
+TAKEN_AS_A_CHANGE = "I've taken that as a change to the plan above."
+STILL_WAITING = "Your plan above is still waiting. If this was meant as a change to it, say so."
+
+
+def _plan_keys() -> tuple[str, ...]:
+    """What of a run is its plan: the draft, the check's card, the findings, the workflow it changes, the agents'
+    instructions, and which workflow is open."""
+    from core.native_builder.build_plan import CHECKED_KEY, DRAFT_KEY, EXISTING_KEY, FINDINGS_KEY, PROMPTS_KEY
+
+    return (DRAFT_KEY, CHECKED_KEY, FINDINGS_KEY, EXISTING_KEY, PROMPTS_KEY, "intent", "current_orchestration_id",
+            "current_orchestration_name", "current_orchestration_source")
+
+
+def staged_plan(state: dict) -> dict | None:
+    """The waiting plan the route staged for this run, if there is one (`{"run_id", "state"}`)."""
+    staged = state.get(CARRY_KEY)
+    plan = staged.get(WAITING_PLAN) if isinstance(staged, dict) else None
+    return plan if isinstance(plan, dict) and plan.get("state") else None
+
+
 def adopt_carry(state: dict, continues: bool | None) -> bool:
     """The staged carry becomes the run's when classify said this message continues the previous request; anything
     else (false, unsure, not said) starts afresh: one question asked again costs less than another request's carried
-    (8a's review of the FF14 check, 10-29: "second ask" was carried as the first's). Returns whether it carried."""
+    (8a's review of the FF14 check, 10-29: "second ask" was carried as the first's). Returns whether it carried.
+
+    A waiting plan in it (F1241) comes back whole, with this message as the person's reply to it and the card it
+    was (`PLAN_BEFORE_KEY`, which "Changed from the last plan" reads); not adopted, it is parked."""
+    from core.native_builder.build_plan import CHECKED_KEY, PLAN_BEFORE_KEY, checked_in
+
     staged = state.pop(CARRY_KEY, None)
-    if continues is not True or not isinstance(staged, dict) or not staged:
+    plan = staged.pop(WAITING_PLAN, None) if isinstance(staged, dict) else None
+    if continues is not True or not isinstance(staged, dict) or not (staged or plan):
+        if isinstance(plan, dict) and plan.get("state"):
+            state[PARKED_PLAN_KEY] = plan
         return False
     state.update(staged)
+    if isinstance(plan, dict) and plan.get("state"):
+        state.update(plan["state"])
+        card = checked_in({CHECKED_KEY: plan["state"].get(CHECKED_KEY)}) or {}
+        state[PLAN_BEFORE_KEY] = {"plan": card.get("plan"), "draft": card.get("draft"), "run_id": plan.get("run_id")}
+        state["review_feedback"] = {"feedback": str(state.get("user_message") or "")}
     return True
 
 
@@ -308,7 +372,7 @@ def note_question(state: dict, about: str, subject: str, question: str) -> None:
     state[ASKED_KEY] = [*_with_answers(state), {"about": about, "subject": subject, "question": question}]
 
 
-def carry_request(previous: dict | None, history: list[dict] | None = None) -> dict:
+def carry_request(previous: dict | None, history: list[dict] | None = None, run_id: str = "") -> dict:
     """What a new run of a conversation starts with from its request so far (F1226), as initial state, from the
     newest run (`previous`, its state; `history`, its step history) unless that run saved something: a saved build,
     change or card ends the request, and the next one asks afresh. Stage 1's brief 6 asked "has the knowledge base been
@@ -319,8 +383,11 @@ def carry_request(previous: dict | None, history: list[dict] | None = None) -> d
     * the build check's own `asked` (`CHECKED_KEY`), each entry whole: the planner reads every question with its
       answer, and a question code asked itself is known by its entry (F1210's dates, by `means`).
 
+    * `WAITING_PLAN` (F1241): the plan, when that run stopped waiting at its review (or parked one it did not take
+      up), so a message that continues the request changes it rather than starting over.
+
     The route stages this as `CARRY_KEY`; it is the run's only when classify says the new message continues the
-    request (`adopt_carry`)."""
+    request (`adopt_carry`). `run_id` is that run's."""
     from core.native_builder.build_plan import CHECKED_KEY, checked_in
     from core.orchestration.run_writes import WRITES_KEY
 
@@ -331,6 +398,11 @@ def carry_request(previous: dict | None, history: list[dict] | None = None) -> d
                            ROUNDS_KEY: int(previous.get(ROUNDS_KEY) or 0) + shown}
     if asked := (checked_in(previous) or {}).get("asked"):
         out[CHECKED_KEY] = {"asked": [dict(a) for a in asked if isinstance(a, dict)]}
+    last = next((h for h in reversed(history or []) if isinstance(h, dict) and h.get("step_id")), {})
+    if last.get("step_id") == PLAN_REVIEW_STEP and (checked_in(previous) or {}).get("outcome") == "review":
+        out[WAITING_PLAN] = {"run_id": run_id, "state": {k: previous[k] for k in _plan_keys() if k in previous}}
+    elif isinstance(parked := previous.get(PARKED_PLAN_KEY), dict) and parked.get("state"):
+        out[WAITING_PLAN] = parked
     return out
 
 
@@ -705,6 +777,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         return {**base, "outcome": "said", "ops": handoffs,
                 "say": f"Those are {len(handoffs)} separate requests ({asked}). Ask me for them one at a time, and "
                        "I'll take each in turn."}
+    builds = [o for o in ops if o.get("op") == "create" and (o.get("target") or {}).get("kind") in C.BUILDS]
+    if builds and len(ops) > 1:
+        # The build takes the rest of the run, so the others would be dropped: say them as separate requests.
+        return {**base, "outcome": "said", "ops": ops,
+                "say": f"Making the workflow {_quoted((builds[0].get('target') or {}).get('name') or '')} is a build "
+                       "of its own. Ask me for it on its own, then for the rest, and I'll take each in turn."}
+    if builds:
+        return _to_a_new_workflow(base, ops)
     if len(ops) == 1 and ops[0].get("op") == "create":
         return await _a_new_thing(base, ops[0])
     if handoffs and len(handoffs) == len(ops):
@@ -1038,8 +1118,9 @@ NO_RECORDING = ("No recording is called {name}. A person records one in the app 
 
 
 def _to_a_new_workflow(base: dict, ops: list[dict], **facts: Any) -> dict:
-    """The run goes on as a new build (F1231): its plan room makes the workflow whose Browser step replays the
-    recording, from the person's message; nothing open or last built is it."""
+    """The run goes on as a new build: its plan room makes the workflow from the person's message, one whose Browser
+    step replays the recording (F1231) or the one a change asked to create (F1242); nothing open or last built
+    is it."""
     _routed("create", current_orchestration_id="", current_orchestration_name="", current_orchestration_source="")
     return {**base, "outcome": "steps", "ops": ops, **facts}
 

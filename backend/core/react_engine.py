@@ -3024,7 +3024,13 @@ async def run_agent_step(
                 _finished = _finished or _finish_result(_finish_pending, tools_used_summary)
                 _finish_pending = None
                 if _finished is not None:
-                    break  # the step finished (E2): the reply's later calls are not made
+                    # The step finished (E2): the reply's later calls are not made, and say so (F1242: a maker that
+                    # called create_agent twice made one, and nothing said the second).
+                    _finished["not_made"] = [
+                        {"tool": _offered_name(c.get("tool", ""), tool_schema_map),
+                         "arguments": c.get("arguments") if isinstance(c.get("arguments"), dict) else {}}
+                        for c in tool_calls[_call_index:]]
+                    break
                 tool_name = _offered_name(tool_call.get("tool", ""), tool_schema_map)
                 if not isinstance(tool_name, str) or not tool_name.strip():
                     continue

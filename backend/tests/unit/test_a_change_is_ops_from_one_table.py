@@ -82,7 +82,8 @@ def test_a_field_an_op_does_not_take_is_refused_by_name():
     ("update_workflow", {"kind": "workflow", "id": "w1"}, {"max_run_credits": -1}, "a number above 0"),
     ("create_schedule", {"kind": "schedule", "name": "Mondays"}, {"runs": {"kind": "board", "id": "b"},
                                                                     "prompt": "go"}, "`runs` is"),
-    ("create", {"kind": "workflow", "name": "x"}, {"what": "a workflow"}, "makes a new agent"),
+    # A new workflow is the build's, handed to it (F1242), so a kind nothing makes is the refused one.
+    ("create", {"kind": "board", "name": "x"}, {"what": "a board"}, "makes a new agent"),
     ("fly", {"kind": "agent", "id": "a1"}, {}, "is not an op"),
 ])
 def test_what_is_wrong_is_said_for_a_retry(op, target, fields, words):
@@ -94,6 +95,7 @@ def test_a_well_formed_op_has_no_issues():
     assert C.issues("set_tool_policy", {"kind": "agent", "name": "Support bot"},
                     {"open_world": "confirm", "tools": {"send_email": "deny"}}) == []
     assert C.issues("create", {"kind": "tool", "name": "Mailchimp"}, {"what": "an HTTP tool for Mailchimp"}) == []
+    assert C.issues("create", {"kind": "workflow", "name": "Weekly post"}, {"what": "a workflow"}) == []
 
 
 # ── what a write calls ──────────────────────────────────────────────────────────────────────────────────────────
