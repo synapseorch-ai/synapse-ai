@@ -29,19 +29,22 @@ def test_the_model_s_enum_is_the_table():
 
 
 def test_an_undo_s_re_create_is_code_s_only():
-    assert {n for n, op in C.OPS.items() if op.internal} == {"restore_agent", "restore_workflow", "restore_tool"}
+    # F1198 (BLD1): a deleted Python tool's re-create, its own.
+    assert {n for n, op in C.OPS.items() if op.internal} == {"restore_agent", "restore_workflow", "restore_tool",
+                                                              "restore_python_tool"}
     assert C.issues("restore_agent", {"kind": "agent", "name": "x"}, {}) == [
         f"`restore_agent` is not an op. The ops are: {', '.join(C.PLANNER_OPS)}."]
 
 
 @pytest.mark.parametrize("tool", ["create_agent", "create_agents", "create_skill", "create_http_tool",
-                                  "import_openapi"])
+                                  "import_openapi", "create_python_tool"])
 def test_making_something_new_is_handed_over_not_an_op(tool):
     """No op a model may propose reaches a create tool: only an undo's re-create, which code builds from what a
     change deleted (F797), may call one."""
     assert tool not in C.OPS
     assert tool not in {C.OPS[n].tool for n in C.PLANNER_OPS}
-    assert {op.name for op in C.OPS.values() if op.tool == tool} <= {"restore_agent", "restore_tool"}
+    assert {op.name for op in C.OPS.values() if op.tool == tool} <= {"restore_agent", "restore_tool",
+                                                                      "restore_python_tool"}
     assert C.OPS["create"].kind == "handoff"
 
 
@@ -149,6 +152,7 @@ def _samples():
                            "system_prompt": "s", "model": "m"}),
         ("restore_workflow", {"name": "N", "steps_json": "[]", "entry_step_id": "s1", "max_run_credits": 2}),
         ("restore_tool", {"name": "N", "description": "d", "url": "https://x.example/api", "method": "GET"}),
+        ("restore_python_tool", {"name": "N", "description": "d", "code": "print(1)\n"}),
     ]
 
 

@@ -295,6 +295,24 @@ async def test_a_deleted_http_tool_comes_back_without_its_headers(client):
     assert back["url"] == "https://us1.api.mailchimp.com/3.0/lists" and not back.get("headers")
 
 
+async def test_a_deleted_python_tool_comes_back_with_its_code(client):
+    """F1198: a Python tool's undo made nothing ("was not an HTTP tool"). It comes back through `create_python_tool`
+    with its code and schema; the variables a person gave it to read are theirs to give again, and the review says so."""
+    from core.store.resources import load_tools, save_tool
+
+    code = "import json\nprint(json.dumps({'ok': True}))\n"
+    await save_tool({"name": "region_totals", "description": "Totals", "tool_type": "python", "code": code,
+                     "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}},
+                     "globals": ["SHEET_KEY"]})
+    first, _, done = await _change({"ops": [{"op": "delete_tool", "target": {"kind": "tool", "name": "region_totals"}}]})
+    assert done["applied"] == ["delete_tool"]
+    _, checked, undone = await _change({"undo_of": first.run_id})
+    assert "add them again in its editor" in checked["review"] and undone["applied"] == ["restore_python_tool"], undone
+    [back] = [t for t in await load_tools() if t["name"] == "region_totals"]
+    assert back["tool_type"] == "python" and back["code"] == code and back["globals"] == []
+    assert back["inputSchema"]["properties"] == {"path": {"type": "string"}}
+
+
 async def test_a_deleted_tool_comes_back_in_its_own_group(client):
     """A tool's `group` is its group's id (`grp_support`); `create_http_tool` takes a group's name. The undo brings it
     back into the group it was in, not a new one named after the old id (the branch review's finding 8)."""

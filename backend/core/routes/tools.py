@@ -153,6 +153,7 @@ async def create_custom_tool(tool: dict, request: Request = None):  # type: igno
 
     # The row's stamp is handed out with the tool, never stored in it (F891).
     tool.pop("updated_at", None)
+    await _refuse_python_problems([tool])
     name = str(tool.get("name") or "")
     # F891: the editor says what it read, while the name is the one it opened (a rename is a new tool, as before).
     seen = if_match(request)
@@ -164,6 +165,15 @@ async def create_custom_tool(tool: dict, request: Request = None):  # type: igno
         await _upsert_custom_tools([tool])
     return {"status": "success", "tool": {**tool, "updated_at": (await row_stamps("tools", [name])).get(name)},
             **({"note": note} if note else {})}
+
+
+async def _refuse_python_problems(tools: list[dict]) -> None:
+    """A Python tool saved as the builder's are (F1198, `core.python_tool`): code, that parses. On save only."""
+    from core import python_tool
+
+    for t in tools:
+        if t.get("tool_type") == "python" and (why := await python_tool.refusal(t)):
+            raise HTTPException(status_code=422, detail=f"`{t.get('name')}`: {why}" if len(tools) > 1 else why)
 
 
 async def _keep_lock(tool: dict) -> str | None:
@@ -195,6 +205,7 @@ async def create_custom_tools_bulk(payload: dict):
     for t in tools:
         if not isinstance(t, dict) or not t.get("name"):
             raise HTTPException(status_code=400, detail="Each tool must be an object with a 'name'.")
+    await _refuse_python_problems(tools)
     # An import is the person's act, but its file may be someone else's: a lock it moves is said on its result.
     notes = [f"`{t['name']}`: {note}" for t in tools if (note := await _keep_lock(t))]
     await _upsert_custom_tools(tools)

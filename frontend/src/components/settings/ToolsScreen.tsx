@@ -93,7 +93,8 @@ export function ToolsScreen() {
                     setRefused({ problem, payload, message: successMessage });
                     return;
                 }
-                show("Failed to save tool", "danger");
+                // The save's own words, as a Python tool whose code does not parse is told (F1198).
+                show(typeof err?.detail === "string" ? err.detail : "Failed to save tool", "danger");
                 return;
             }
             setRefused(null);

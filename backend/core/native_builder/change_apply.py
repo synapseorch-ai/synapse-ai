@@ -250,7 +250,7 @@ def _no_effect(label: str, off: dict) -> str:
 
 #: What a made thing's `resource_saved` kind is, by the kind the review approved (an OpenAPI import makes tools).
 _MADE = {"agent": ("agent", "agent"), "skill": ("skill", "skill"), "tool": ("tool", "HTTP tool"),
-         "openapi": ("tool", "OpenAPI import")}
+         "openapi": ("tool", "OpenAPI import"), "python_tool": ("tool", "Python tool")}
 _NOUNS = {"agent": "agent", "skill": "skill", "tool": "tool", "orchestration": "workflow", "schedule": "schedule"}
 
 

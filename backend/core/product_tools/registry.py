@@ -54,6 +54,9 @@ class ProductTool:
     #: It replaces or stops what is there (an overwrite, a cancel) without being a delete: marked destructive, so a
     #: client asks its person, but no token.
     destructive: bool = False
+    #: Its person sees it before it is done, though it can be undone: previewed, then done with a token, as an
+    #: irreversible act is (F1198: a Python tool, code that will run with the internet).
+    confirmed: bool = False
     #: Calling it twice with the same arguments does no more than once.
     idempotent: bool = False
     #: It reaches outside the workspace (the web, a third party's API).
@@ -87,8 +90,8 @@ class ProductTool:
         if self.kind == "read":
             if self.scope != "read":
                 raise ValueError(f"{self.name}: a read needs the read scope, nothing more")
-            if self.irreversible or self.destructive:
-                raise ValueError(f"{self.name}: a read cannot be irreversible or destructive")
+            if self.irreversible or self.destructive or self.confirmed:
+                raise ValueError(f"{self.name}: a read cannot be irreversible, destructive or confirmed")
         if self.kind == "act" and self.min_role > Role.BUILDER and not self.app_only:
             raise ValueError(
                 f"{self.name}: an act needing more than builder must be app_only (acts off the app are capped at "
@@ -138,7 +141,8 @@ class ProductTool:
 
     def needs_token(self, policy: ConfirmPolicy) -> bool:
         # Under `approved_review` an act needs one unless the review covers the call, which `invoke` decides.
-        return self.kind == "act" and (policy in ("every_act", "approved_review") or self.irreversible)
+        return self.kind == "act" and (policy in ("every_act", "approved_review") or self.irreversible
+                                       or self.confirmed)
 
 
 _TOOLS: dict[str, ProductTool] = {}

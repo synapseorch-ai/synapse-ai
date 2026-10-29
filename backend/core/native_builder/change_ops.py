@@ -26,7 +26,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi")
+                "approval", "card", "openapi", "python_tool")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -112,7 +112,7 @@ _WRITES = (
 )
 
 #: What `create` hands to today's create path.
-CREATES = ("agent", "skill", "tool", "openapi")
+CREATES = ("agent", "skill", "tool", "openapi", "python_tool")
 
 _HANDOFFS = (
     Op("edit_steps", "handoff", "workflow", fields=("what",), required=("what",), verb="Change the steps of"),
@@ -133,6 +133,9 @@ _RESTORES = (
     Op("restore_tool", "create", "tool", "create_http_tool",
        ("name", "description", "url", "method", "input_schema_json", "body_template", "group"),
        ("name", "description", "url"), verb="Bring back", internal=True),
+    Op("restore_python_tool", "create", "tool", "create_python_tool",
+       ("name", "description", "code", "input_schema_json", "group"), ("name", "description", "code"),
+       verb="Bring back", internal=True),
 )
 
 OPS: dict[str, Op] = {op.name: op for op in (*_ACTS, *_WRITES, *_HANDOFFS, *_RESTORES)}

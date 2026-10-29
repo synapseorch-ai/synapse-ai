@@ -56,7 +56,9 @@ from core.native_builder import prompt_lint, seed
 #: `no_tool` cases that reach it), 90b30a42…; with F1153's effort check after the role door (`step_effort`, its route
 #: and `step_effort_offered`, with its four state keys and the press's route), 787b2662…; with F1193's Browser step
 #: palette in the planner's prompt (`{state.browser_steps}` beside `knowledge_steps`, and its state key), 4acc59e4….
-BUNDLE_SHA256 = "4acc59e4b9f23f65a7ede2e95cb7728055af24432abfd266f1467e6190e90223"
+#: F1198: one new thing may be a Python tool (the change planner's `python_tool`), which the maker makes and proves,
+#: finishing on its passing test, 4ddde80f…; with F1193's palette (fix-forward 13), 05eecc81….
+BUNDLE_SHA256 = "05eecc81f4a3d147765dba4cebf8485646820add87e3675708da54efdcfcd3fb"
 
 
 def _sha(definitions) -> str:

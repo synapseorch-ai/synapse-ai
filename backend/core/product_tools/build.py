@@ -64,6 +64,8 @@ ACTS: dict[str, str] = {
     "set_orchestration_meta": "orchestration.updated",
     "deploy_orchestration": "orchestration.deployed",
     "create_http_tool": "tool.created",
+    "create_python_tool": "tool.created",
+    "test_python_tool": "tool.tested",
     "import_openapi": "tool.created",
     "create_skill": "skill.created",
     "update_skill": "skill.updated",
@@ -79,11 +81,16 @@ OVERWRITES: frozenset[str] = frozenset({
     "update_orchestration",
     "remove_step",
     "create_http_tool",
+    "create_python_tool",
     "create_skill",
 })
 
+#: Acts the person sees before they are done, with a token, though they can be undone (F1198, Naveen 10-29): a Python
+#: tool is code that will run with the internet, so its preview shows the code.
+CONFIRMED: frozenset[str] = frozenset({"create_python_tool"})
+
 #: Acts that reach outside the workspace.
-OPEN_WORLD: frozenset[str] = frozenset({"import_openapi"})
+OPEN_WORLD: frozenset[str] = frozenset({"import_openapi", "test_python_tool"})
 
 #: Deletes: what each removes, its id argument, and the host's audit action.
 DELETES: dict[str, tuple[str, str, str]] = {
@@ -283,7 +290,8 @@ def entries() -> list[ProductTool]:
         ProductTool(name=n, description=by_name[n].get("description", ""), input_schema=schema(n),
                     handler=_handler(n), kind="act", area="build", min_role=Role.BUILDER, scope="build",
                     destructive=n in OVERWRITES, open_world=n in OPEN_WORLD, audit_action=action,
-                    target=_target(action), offered=_offered(n))
+                    target=_target(action), offered=_offered(n), confirmed=n in CONFIRMED,
+                    preview=_PREVIEWS.get(n))
         for n, action in ACTS.items()
     ]
     tools += [
@@ -294,6 +302,26 @@ def entries() -> list[ProductTool]:
         for n, (_, _, action) in DELETES.items()
     ]
     return tools
+
+
+async def _preview_python_tool(caller: Any, args: dict[str, Any]) -> dict:
+    """What `create_python_tool` would save, its code whole, or its refusal now in the editor's words (F1198)."""
+    from core.builder_tools import python_tool_draft
+
+    tool, before, refused = await python_tool_draft(args)
+    if refused:
+        raise ToolRefusal(str(refused["error"]))
+    return {
+        "will_create": {"type": "tool", "name": tool["name"], "tool_type": "python", "code": tool["code"],
+                        "input_schema": tool["inputSchema"]},
+        "replaces": before is not None,
+        "reads_variables": tool["globals"],
+        "note": "Its code runs in the sandbox with the internet and the Vault read-only, whenever an agent calls it. "
+                "It reads no workspace variable until a person adds one in its editor.",
+    }
+
+
+_PREVIEWS = {"create_python_tool": _preview_python_tool}
 
 
 def _preview(name: str):

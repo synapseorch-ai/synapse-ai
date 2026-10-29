@@ -106,6 +106,16 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
             keep["state_schema_json"] = json.dumps(before["state_schema"])
         return {"op": "restore_workflow", "target": {"kind": "workflow", "name": before.get("name")},
                 "fields": keep, "says": "undo: a new copy, without its run history"}, None
+    if name == "delete_tool" and before.get("tool_type") == "python":
+        # Its code as it was (F1198); the variables a person gave it to read are theirs to give again.
+        keep = {"name": before.get("name"), "description": before.get("description") or before.get("name"),
+                "code": before.get("code") or "", "group": before.get("group_name")}
+        if before.get("inputSchema"):
+            keep["input_schema_json"] = json.dumps(before["inputSchema"])
+        says = "undo: a new copy" + (", without the variables it read: add them again in its editor"
+                                     if before.get("globals") else "")
+        return {"op": "restore_python_tool", "target": {"kind": "tool", "name": before.get("name")},
+                "fields": keep, "says": says}, None
     if name == "delete_tool":
         if before.get("tool_type") != "http":
             return None, f"{label} was not an HTTP tool, so it can't be made again from here."
