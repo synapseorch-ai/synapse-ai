@@ -121,7 +121,9 @@ async def test_a_simple_agent_gets_the_lowest_cost_model_that_fits_with_why_on_t
     assert checked["outcome"] == "review", checked
     assert _pick(checked)["model"] == "synapse.text-only"
     assert "- **Warning writer**" in checked["review"]
-    assert "model: synapse.text-only (the lowest-cost model that fits)" in checked["review"]
+    # One step, simple, no tools: a narrow job, the one the cheapest fit is for (F1251, replacing F966's rule).
+    assert "model: synapse.text-only (the lowest-cost model that fits a narrow job, from the platform's models)" \
+        in checked["review"]
 
 
 async def test_an_agent_with_tools_never_gets_a_model_that_calls_none():
@@ -132,7 +134,8 @@ async def test_an_agent_with_tools_never_gets_a_model_that_calls_none():
 async def test_reasoning_gets_the_strongest_within_the_ceiling_never_above_it():
     _, checked = await _check(_draft(_writer(needs="reasoning", why="careful legal wording")))
     assert _pick(checked)["model"] == "synapse.claude-sonnet"
-    assert "a stronger model, for reasoning; careful legal wording" in checked["review"]
+    assert ("model: synapse.claude-sonnet (a stronger model, for reasoning, from the platform's models: one that "
+            "reasons carefully; careful legal wording)") in checked["review"]
 
 
 async def test_the_planner_never_writes_a_model_id():

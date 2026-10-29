@@ -2347,6 +2347,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return wrong
         if (wrong := await agent_knowledge.refusal(args.get("knowledge"))) is not None:
             return {"error": wrong}
+        from core.native_builder.models_menu import model_refusal  # F1250: a model this workspace can call
+        wrong, model = await model_refusal(args.get("model"), has_tools=bool(args.get("tools")))
+        if wrong is not None:
+            return {"error": wrong}
+        args = {**args, "model": model}
         from core import builder_guard  # F489: never a tool nothing provides
         if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
             return phantom
@@ -2444,6 +2449,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (wrong := await agent_knowledge.refusal(spec.get("knowledge"))) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": wrong})
                     continue
+                from core.native_builder.models_menu import model_refusal  # F1250
+                wrong, model = await model_refusal(spec.get("model"), has_tools=bool(spec.get("tools")))
+                if wrong is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": wrong})
+                    continue
+                spec = {**spec, "model": model}
                 from core import builder_guard  # F489: never a tool nothing provides
                 if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
@@ -2524,6 +2535,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             fields["browser"], refused = await _agent_browser(kind, fields["browser"], agent)
             if refused:
                 return refused
+        if "model" in fields:
+            from core.native_builder.models_menu import model_refusal  # F1250: only a model it did not have is asked
+            wrong, fields["model"] = await model_refusal(fields["model"], agent.get("model"),
+                                                         has_tools=bool(fields.get("tools", agent.get("tools"))))
+            if wrong is not None:
+                return {"error": wrong}
         if "tools" in fields:
             from core import builder_guard  # F489: never a tool nothing provides
             if (phantom := await builder_guard.unknown(fields.get("tools") or [], server_module)) is not None:
