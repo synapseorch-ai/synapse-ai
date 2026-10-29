@@ -28,7 +28,7 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
-from core.native_builder import objects as O, one_writer
+from core.native_builder import objects as O, one_writer, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -1283,10 +1283,23 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # repeated, and every question with its answer reaches the planner, not only the last (SAI2's review, 22).
     asked = list(prior.get("asked") or [])
     if prior.get("outcome") == "ask" and (answered := (_obj(state.get("human_response")) or {}).get("answer")):
-        asked.append({"question": prior.get("question") or "", "answer": str(answered)})
+        entry = {"question": prior.get("question") or "", "answer": str(answered)}
+        if prior.get("asking_periods"):
+            # Code's own question (F1210): the answer is a rule each run works out from its own date. It lives in
+            # `asked` alone, so whatever carries the questions asked carries it, and it is never asked again.
+            entry["means"] = periods.meanings(prior["asking_periods"], str(answered), state.get("person_timezone"))
+        asked.append(entry)
+    periods_said = [rule for a in asked if isinstance(a, dict) for rule in a.get("means") or []]
     base: dict[str, Any] = {"object": "plan", "plan": None, "review": "", "offers": [], "question": "", "say": "",
                             "issues": [], "checks": int(prior.get("checks") or 0) + 1, "asked": asked,
-                            "research": prior.get("research") or [], "offered": prior.get("offered") or []}
+                            "research": prior.get("research") or [], "offered": prior.get("offered") or [],
+                            "periods": periods_said}
+    if finish in ("submit_plan", "ask_person") and not periods_said and not prior.get("asking_periods") and (
+            q := periods.question(f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}",
+                                  state.get("person_timezone"))):
+        # A period the person did not pin down is asked once, before any plan is shown, with its dates on their
+        # clock (F1210): a planner picked one of two weeks without saying so.
+        return {**base, "outcome": "ask", "question": q.text, "asking_periods": q.dump()}
     if finish == "ask_person":
         from core.native_builder.change_tools import asked_text
 
@@ -1454,6 +1467,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         review += "\n## Can't be saved yet\n" + "\n".join(f"- {e}" for e in found.errors) + "\n"
     if board_notes:
         review += "\n## Boards\n" + "\n".join(f"- {n}" for n in board_notes) + "\n"
+    if periods_said:
+        # What each period means, as the person said (F1210): every run works it out from its own date.
+        review += "\n## Dates\n" + "\n".join(f"- {p.split('; never write')[0]}." for p in periods_said) + "\n"
     if after_yes:
         # What it asks after the yes, one card per provider (F949): never beside the plan.
         review += "\n## After your yes\n" + "\n".join(f"- {n}" for n in after_yes) + "\n"
