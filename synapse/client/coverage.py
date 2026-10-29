@@ -141,6 +141,7 @@ NOT_BY_THE_CLI: dict[str, str] = {
     "create_http_tool": "`tools call create_http_tool`",
     "import_openapi": "`tools call import_openapi`",
     "delete_custom_tool": "`tools call delete_custom_tool` (previewed, then --yes)",
+    "give_board_access": "`tools call give_board_access`",
     "list_skills": "`tools call list_skills`",
     "get_skill": "`tools call get_skill`",
     "create_skill": "`tools call create_skill`",

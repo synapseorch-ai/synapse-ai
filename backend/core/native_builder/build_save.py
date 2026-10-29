@@ -126,7 +126,7 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
                                 "system_prompt": prompts.get(agent["name"]) or agent.get("description") or ""}
         # The model code picked (F966), which the card showed and the yes covers.
-        args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy", "model") if agent.get(k)}
+        args |= {k: agent[k] for k in ("delegate_agent_ids", "team", "tool_policy", "model", "boards") if agent.get(k)}
         calls.append({"tool": "create_agent", "args": args, "makes": agent["id"], "kind": "agent",
                       "name": agent["name"]})
     for inner in inner_order(compiled)[0]:  # each before any workflow of the build that runs it (SAI2's review, 2)
@@ -141,9 +141,15 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
         calls.append({"tool": "set_orchestration_meta", "args": {"orch_id": main["id"], **meta}, "makes": None,
                       "kind": "meta", "name": main["name"]})
     for board in compiled.boards:
-        calls.append({"tool": "create_board", "args": {"name": board["name"],
-                                                       "description": board.get("description") or ""},
-                      "makes": None, "kind": "board", "name": board["name"]})
+        # The board the person asked for (F1214): a shared board, made unless one of that name is here, and this
+        # workflow given it to work, through the access list the Boards screen edits. Its new agents post there.
+        if not board.get("existing"):
+            calls.append({"tool": "create_board", "args": {"name": board["name"],
+                                                           "description": board.get("description") or ""},
+                          "makes": None, "kind": "board", "name": board["name"]})
+        calls.append({"tool": "give_board_access", "args": {"board": board["name"], "kind": "workflow",
+                                                            "id": main["id"], "access": "work"},
+                      "makes": None, "kind": "board_access", "name": board["name"]})
     if compiled.schedule:
         calls.append({"tool": "create_schedule",
                       "args": {k: v for k, v in compiled.schedule.items() if k in _SCHEDULE_ARGS and v is not None},
@@ -411,6 +417,15 @@ async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict
                 _emit(events, "schedule", "deleted", real, name, reason=reason)
             elif kind == "board":
                 await board_store.delete_board(real)
+            elif kind == "board_access":
+                # Only the entry this pass gave: the rest of the list stays, and an entry it replaced comes back.
+                given = json.loads(real)
+                rows = [(a.principal_kind, a.principal_id, a.access)
+                        for a in await board_store.list_access(given["board"])
+                        if (a.principal_kind, a.principal_id) != (given["kind"], given["id"])]
+                if given.get("was"):
+                    rows.append((given["kind"], given["id"], given["was"]))
+                await board_store.set_access(given["board"], rows)
             elif kind == "tool":
                 from core.store.resources import delete_tool_named
 
@@ -577,6 +592,10 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                 made[call["makes"]] = real
             if real and call["kind"] in ("agent", "orchestration", "schedule", "board", "tool"):
                 done.append(("updated" if call.get("update") else call["kind"], real, call["name"]))
+            if real and call["kind"] == "board_access":
+                given = _filled(call["args"], made)
+                done.append(("board_access", json.dumps({"board": real, "kind": given["kind"], "id": given["id"],
+                                                         "was": parsed.get("was")}), call["name"]))
             calls_done.append(n)
             await _keep(run, approval.id, made, done, calls_done)
     if failure:

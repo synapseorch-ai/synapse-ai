@@ -91,6 +91,18 @@ class AgentBoards(BaseModel):
     own: bool = True
 
 
+def boards_refusal(value: Any) -> str | None:
+    """Why `value` is not an agent's Boards section, read by the same model the agent editor's save reads (F1214):
+    None when it is one."""
+    if value is None:
+        return None
+    try:
+        AgentBoards.model_validate(value, strict=True)
+    except Exception:  # noqa: BLE001 — pydantic's own words name the field
+        return "'boards' must be an object like {\"own\": false}: whether the agent posts to its workflow's own board."
+    return None
+
+
 class AgentTeam(BaseModel):
     """How a Team agent's members work (TEAM1a, D283, Q1). Stored on a `delegate` agent; absent, or
     `one_at_a_time`, is today's delegate (D204). `team`: in parallel, up to `at_once` at a time (capped by

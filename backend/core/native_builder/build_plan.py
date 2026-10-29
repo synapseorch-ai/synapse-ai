@@ -256,10 +256,13 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
         "workflows": [{"id": i, "name": w.get("name")} for i, w in ws.workflows.items()],
         "boards": ("On: every agent step in a workflow has board_list, board_read, board_add, board_update and "
                    "board_claim on its workflow's own board; name them in that agent's tools, never as a Tool step. "
-                   "It posts there, not to a shared board."
+                   "It posts there, not to a shared board. When the person asks for a board, put one in the plan's "
+                   "boards, named as they said (or for what it holds): it is this workflow's own board under that "
+                   "name, where its cards go (F1214)."
                    if ws.boards_on else
                    "Off in this workspace. Where the request needs a board, still give that agent its board tools as "
-                   "if on: the review says Boards are off and offers to turn them on (F1203)."),
+                   "if on, and its board in boards: the review says Boards are off and offers to turn them on "
+                   "(F1203)."),
         **({"shared_boards": ws.shared_boards} if ws.shared_boards else {}),
         "code_steps": ws.code_steps,
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
@@ -461,7 +464,8 @@ def features_needed(plan: O.Plan, ws: Workspace) -> list[str]:
 
     steps = [*plan.steps, *(s for w in plan.inner_workflows for s in w.steps)]
     out = []
-    if not ws.boards_on and any(t in TOOL_NAMES for t in O.tool_names(plan)):
+    # A board the plan names counts too (F1214): it is the workflow's own, and Boards must be on for it.
+    if not ws.boards_on and (any(t in TOOL_NAMES for t in O.tool_names(plan)) or plan.boards):
         out.append("boards")
     if ws.kbs is None and any(s.type in ("retrieve", "ingest") for s in steps):
         out.append("knowledge")
@@ -632,11 +636,10 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
     # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
-    if plan.boards:
-        # A workflow's agents post to its own board; a shared board a plan made would have no access for it, as no
-        # product tool gives a workflow a shared board yet (SAI2's review, 20).
-        errors.append("boards: a plan makes no shared board; the workflow's agents post to its own board while "
-                      "Boards are on")
+    if len(plan.boards) > 1:
+        # A workflow's agents post to its own board (no product tool gives a workflow a shared board yet; SAI2's
+        # review, 20): the one board a plan names is that board, under the person's name for it (F1214).
+        errors.append("boards: a build has one board, the workflow's own; name only the one the person asked for")
     if state.get("intent") == "update" and plan.kind == "create" and _base(state) is not None:
         errors.append("kind: the person asked to change the workflow open here: write kind update, with edits by its "
                       "step ids")
@@ -1270,17 +1273,20 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     if plan.kind == "update" and (held := one_writer.asked(await one_writer.holds_now(), _orch_id(plan, state) or "",
                                                            events)):
         return {**base, "outcome": "said", "say": held}  # one chat writes a workflow at a time (TABS2, F1063)
-    # A shared board the plan names is not made again, and nothing here posts to it: say so plainly, on the card and
-    # after the save, so no one reads the build as posting there (SAI2's review, F866's second half).
+    # The board the person asked for is a shared board this workflow is given to work (F1214): the one the plan names,
+    # or the one already here its steps name. One already here is not made again; its new agents post there.
     shared = {b.lower(): b for b in ws.shared_boards}
-    named = [b for b in plan.boards if b.name.lower() in shared]
-    plan.boards = [b for b in plan.boards if b.name.lower() not in shared]
     text = " ".join([plan.title, plan.summary, *(f"{s.name} {s.does} {s.prompt or ''}" for s in plan.steps)]).lower()
-    named_boards = list(dict.fromkeys([*(shared[b.name.lower()] for b in named),
-                                       *(name for low, name in shared.items() if low in text)]))
-    board_notes = [f'Its agents post to this workflow\'s own board, not to "{name}": letting a workflow post to a '
-                   "shared board is set on that board's access on the Boards screen, which I can't do yet."
-                   for name in named_boards]
+    mentioned = [name for low, name in shared.items() if low in text]
+    if not plan.boards and len(mentioned) == 1:
+        plan.boards = [O.BoardPart(name=mentioned[0])]
+    for b in plan.boards:
+        b.existing = b.name.lower() in shared
+        b.name = shared.get(b.name.lower(), b.name)
+    board_notes = [f'Its cards go on the shared board "{b.name}" (on the Boards screen)'
+                   + (", which this workflow is given to work" if b.existing else ", made with it, for it to work")
+                   + ". Its new agents post there; an agent already here posts there when its instructions name it."
+                   for b in plan.boards]
     findings = _obj(state.get(FINDINGS_KEY))
     looked = isinstance(findings, dict) and bool(findings.get("options"))
     # What code could name instead is the planner's, never research's (F950, F1043).
