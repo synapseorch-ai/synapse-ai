@@ -69,7 +69,9 @@ from core.native_builder import prompt_lint, seed
 #: F1231: the change planner's rule 10 (a recording's request is the use_recording op) and `recordings` among its
 #: read_workspace topics; the state key a name both a recording and a workflow is kept under, b266d656….
 #: F1225: the planner's read_api_spec (the person's own API spec, among its tools; no prompt changes), 3d11ab71….
-BUNDLE_SHA256 = "3d11ab71ff74f05131fc515e35cd2b2431059483eb1fdba68614dd3fa90a8b64"
+#: F1241: the router's route to a waiting plan's review (`step_review_research` among step_classify_route's cases; no
+#: prompt changes), 16182ae3….
+BUNDLE_SHA256 = "16182ae3532cde35953c829268f90c8380d80597e86e829836e3804c712c4554"
 
 
 def _sha(definitions) -> str:

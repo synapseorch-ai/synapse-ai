@@ -306,6 +306,19 @@ async def classify_request(args: dict, server_module: Any, events: list[dict]) -
     message = str(state.get("user_message") or "")
     inventory = await _inventory()
     routed = override(request, message=message, state=state, inventory=inventory, connectable=await _connectable())
+    from core.native_builder import change_tools as CT
+
+    waiting = CT.staged_plan(state) if run is not None and routed.kind in ("build", "change") else None
+    if waiting and request.continues is True and routed.route != "step_not_yours" and _may("build", state):
+        # A plan waits at its review and this message continues the request (F1241, F1242): it is that plan's
+        # reply, through the review the card's Change something takes; never the change route, which cannot make a
+        # workflow nobody saved. Only on the model's own yes: a wrong carry would change a waiting plan.
+        routed = routed.model_copy(update={"kind": "build", "route": CT.REVISE_ROUTE, "overridden_by": "waiting_plan"})
+        events.append({"type": "builder_notice", "reason": "plan_change", "final": False,
+                       "message": CT.TAKEN_AS_A_CHANGE})
+    elif waiting and request.continues is None:
+        events.append({"type": "builder_notice", "reason": "plan_waiting", "final": False,
+                       "message": CT.STILL_WAITING})
     if run is not None:
         # The role door (`step_may_change`) and the build route read the legacy intent.
         run.shared_state["intent"] = intent_of(routed)
@@ -314,10 +327,9 @@ async def classify_request(args: dict, server_module: Any, events: list[dict]) -
             named = _named(_words(message), inventory).get("recording") or []
             workflows = {_words(w) for w in inventory.get("workflow") or []}
             run.shared_state[BOTH_KEY] = next((r for r in named if _words(r) in workflows), "")
-        # The previous request's questions are this run's only if this message continues it (F1226).
-        from core.native_builder.change_tools import adopt_carry
-
-        adopt_carry(run.shared_state, request.continues)
+        # The previous request's questions, and a plan waiting at its review, are this run's only if this message
+        # continues it (F1226, F1241).
+        CT.adopt_carry(run.shared_state, request.continues)
     if routed.also and routed.also.strip():
         await turn_facts.keep(run_id, _caller().user_id, also=routed.also.strip())
         events.append(also_notice(routed.also.strip()))

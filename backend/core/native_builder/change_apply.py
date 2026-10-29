@@ -19,8 +19,8 @@ from typing import Any
 
 from core.builder_tools import register_builder_tool
 from core.native_builder import change_ops as C, one_writer
-from core.native_builder.change_tools import (CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, candidates, read,
-                                              reviewed_of)
+from core.native_builder.change_tools import (_NEW, CHANGED, SET_ASIDE, _caller, _card, _quoted, _run, _text,
+                                              candidates, read, reviewed_of)
 from core.product_tools.errors import AlreadySpent, ToolRefusal
 
 #: The run-state keys the route reads: the check's answer and the review's.
@@ -258,9 +258,41 @@ def _plain(name: str) -> str:
     return "".join(c for c in str(name or "").lower() if c.isalnum())
 
 
+def not_made(state: dict, step_id: str = "step_make_new") -> list[dict]:
+    """What the maker's reply called after its finish, which the engine did not make (F1242): one item each,
+    `{"tool", "kind", "name", "why"}`, `kind` the review's (agent, skill, tool, openapi, python_tool) or None for a
+    call that makes nothing. The yes covers the one thing the review showed, so a second is never made here."""
+    from core.orchestration.steps import NOT_MADE_PREFIX
+
+    kinds = {tool: kind for kind, (_, tool) in _NEW.items()}
+    out = []
+    for call in state.get(f"{NOT_MADE_PREFIX}{step_id}") or []:
+        args = call.get("arguments") if isinstance(call.get("arguments"), dict) else {}
+        out.append({"tool": call.get("tool"), "kind": kinds.get(call.get("tool")),
+                    "name": _text(args.get("name") or args.get("title") or ""), "why": "skipped_after_finish"})
+    return out
+
+
+def _unmade_lines(state: dict, checked: dict) -> list[str]:
+    """The make-new reply's lines for what was not made (F1242, F1246): each new thing the maker called for past the
+    one approved, then each op the review did not take, in its own words (its `say`)."""
+    lines = []
+    for item in not_made(state):
+        if item["kind"] is None:
+            continue
+        said = _NEW[item["kind"]][0]
+        what = f"the {said} {_quoted(item['name'])}" if item["name"] else f"another {said}"
+        lines.append(f"It didn't also make {what}: one thing is made for each yes. Ask for it next.")
+    lines += [str(op["say"]).strip() for op in checked.get("ops") or []
+              if isinstance(op, dict) and op.get("status") != "ready" and str(op.get("say") or "").strip()]
+    return lines
+
+
 async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict:
     """After the maker (MCP2's note 5): what the run made, from its own writes, held to the one new thing the person
-    approved. Another name, another kind, or nothing made is said in plain words; the card says how it ended."""
+    approved. Another name, another kind, or nothing made is said in plain words, and so is whatever was not made:
+    a second thing the maker called for past the yes, and the review's ops it did not take (F1242, F1246); the card
+    says how it ended."""
     from core.orchestration.run_writes import WRITES_KEY
 
     run_id, run = _run()
@@ -285,6 +317,7 @@ async def check_made(args: dict, server_module: Any, events: list[dict]) -> dict
         note = f"The {said} {_quoted(name)} you approved was not made; made instead: {others}."
     else:
         note = f"The {said} {_quoted(name)} you approved was not made."
+    note = " ".join([note, *_unmade_lines(state, checked)]).strip()
     # `changed` is the approved thing made; another name or kind, or nothing, is set aside with what was made kept.
     await _card(checked, stage=CHANGED if as_approved else SET_ASIDE,
                 data={"change": checked, "made": [{"kind": w.get("kind"), "id": w.get("id"), "name": w.get("name")}

@@ -120,6 +120,9 @@ _WRITES = (
 
 #: What `create` hands to today's create path.
 CREATES = ("agent", "skill", "tool", "openapi", "python_tool")
+#: What `create` hands to the build route instead (F1242): a new workflow is a build, never refused here (prod 10-29:
+#: refused, the model sent it again as an agent, and one agent was made of a two-agent workflow).
+BUILDS = ("workflow",)
 
 _HANDOFFS = (
     Op("edit_steps", "handoff", "workflow", fields=("what",), required=("what",), verb="Change the steps of"),
@@ -217,8 +220,8 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
     found: list[str] = []
     kind = (target or {}).get("kind")
     if op.name == "create":
-        if kind not in CREATES:
-            found.append(f"`create` makes a new {', '.join(CREATES)}: target.kind is one of those")
+        if kind not in CREATES + BUILDS:
+            found.append(f"`create` makes a new {', '.join(CREATES + BUILDS)}: target.kind is one of those")
     elif kind != op.target:
         found.append(f"`{op.name}` is about a {op.target}: target.kind is {op.target}")
     if not any(isinstance((target or {}).get(k), str) and target[k].strip() for k in ("id", "name")):
