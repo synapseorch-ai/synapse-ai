@@ -425,7 +425,7 @@ type SessionTurn = {
   approval?: ParkedApproval & { outcome: 'expired'; why: string };
   /** The person's turn in the browser this turn stopped on (F1183): its card, drawn where it was asked. `worded`
    *  when the agent said something first; else the saved answer is only what the turn is for, and the card says it. */
-  browser_turn?: { session_id?: string; reason?: string; banner_kind?: string; worded?: boolean };
+  browser_turn?: { session_id?: string; reason?: string; banner_kind?: string; worded?: boolean; answered?: boolean };
   /** What the turn's model reasoned (`llm_reasoning`) and thought (`llm_thought`), in order —
    *  the Thinking and Reasoning panels a reopened answer draws again (U60). Absent on older turns. */
   reasoning?: string[];
@@ -1282,7 +1282,14 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
         if (keptTurn) {
           restored.push({
             role: 'assistant', content: keptTurn.reason, msgType: 'human_input_required',
-            data: { kind: 'browser_turn', session_id: keptTurn.session_id, banner_kind: keptTurn.banner_kind },
+            data: {
+              kind: 'browser_turn', session_id: keptTurn.session_id, banner_kind: keptTurn.banner_kind, kept: true,
+              // Handed back, when the server recorded it; the live page's note is not kept.
+              ...(typeof t.browser_turn?.answered === 'boolean' ? { answered: t.browser_turn.answered } : {}),
+              // The last turn's card that nothing waits on any more: its browser is gone (F1183).
+              ...(t === turns[turns.length - 1] && keptTurn.session_id !== browserTurn?.session_id
+                ? { closed: true } : {}),
+            },
           });
         }
       }
@@ -3018,15 +3025,27 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
       ? browserTurnOf(msg.data?.fields) : null;
     if (msg.msgType === 'human_input_required' && (msg.data?.kind === 'browser_turn' || runTurn)) {
       const sid = String(runTurn?.session_id ?? msg.data?.session_id ?? '');
-      const answered = messages.slice(idx + 1).some(m => m.role === 'user' || m.data?.handedBack);
+      // Handed back (the note the hand-back left, or a kept turn's recorded answer), else what became of it: the
+      // person wrote instead, or a reopened chat's browser is gone. Only a card still asked is answerable (F1183).
+      const after = messages.slice(idx + 1);
+      const nextUser = after.findIndex(m => m.role === 'user');
+      const note = after.findIndex(m => m.data?.handedBack);
+      const marked: boolean | undefined = msg.data?.answered;
+      const answered = marked === true || (note !== -1 && (nextUser === -1 || note < nextUser))
+        // A kept turn with no recorded answer reads as before: any later message answered it.
+        || (marked === undefined && !!msg.data?.kept && nextUser !== -1);
+      const ended: 'moved_on' | 'closed' | undefined = answered ? undefined
+        : msg.data?.closed ? 'closed' : nextUser !== -1 ? 'moved_on' : undefined;
+      const asked = !!sid && !answered && !ended;
       return (
         <AgentTurn key={idx} avatar={<AgentAvatar className="bg-person-subtle text-person-ink"><User className="h-4 w-4" aria-hidden /></AgentAvatar>}>
           <BrowserTurnCard
             reason={String(runTurn?.reason || msg.data?.reason || msg.content)}
             kind={runTurn?.banner_kind ?? msg.data?.banner_kind}
             answered={answered}
-            onOpen={sid ? () => onShowBrowser(sid, agentName) : undefined}
-            onDone={sid ? async () => {
+            ended={ended}
+            onOpen={asked ? () => onShowBrowser(sid, agentName) : undefined}
+            onDone={asked ? async () => {
               const ok = await OSS_BROWSER_HOST.handBack!(sid);
               if (!ok) return false;
               // A chat's turn goes on in a follow-up turn, read here; a workflow's run goes on in its own step.

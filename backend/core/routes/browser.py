@@ -10,6 +10,7 @@ holds it, and its id is never guessable.
 from __future__ import annotations
 
 import json
+import logging
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Request, UploadFile
@@ -17,6 +18,8 @@ from pydantic import BaseModel
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from core.browser import client as browser_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -137,6 +140,12 @@ async def _resume(owner: str, said: str, note: str, request: Request) -> tuple[d
         agent_key = parked.get("agent_key") or "default"
         follow = ChatRequest(message=said, session_id=ident, agent_id=None if agent_key == "default" else agent_key)
         follow._app_chat = True
+        # The kept turn it answers says so, for a reopened chat (F1183).
+        from core.store import sessions as _sessions
+        try:
+            await _sessions.mark_browser_turn(ident, parked.get("session_id") or "", answered=True)
+        except Exception as exc:  # the follow-up turn still goes on; only the reopened card's wording is at stake
+            logger.warning("browser turn %s not marked handed back: %s", parked.get("session_id"), exc)
         _start(follow, expand_mentions=False)
         return {"kind": "chat", "session_id": ident}, kept
     return None, kept

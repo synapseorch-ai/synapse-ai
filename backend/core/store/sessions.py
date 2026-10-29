@@ -263,6 +263,34 @@ async def mark_last_answer(session_id: str, agent_id: str, *, question: str, **f
         return True
 
 
+async def mark_browser_turn(session_id: str, browser_session_id: str, **fields) -> bool:
+    """Note `fields` on the kept turn that stopped on the person's turn in `browser_session_id` (F1183): handed back.
+
+    Whichever agent's row of the conversation keeps it — a browser's id is its own — and only the newest such turn.
+    False when none does (a turn parked before turns were kept, or one already gone).
+    """
+    from core.store import session
+    from core.store.models import ChatSessionDB
+
+    if not browser_session_id:
+        return False
+    async with session() as s:
+        agents = (await s.execute(select(ChatSessionDB.agent_id).where(
+            ChatSessionDB.tenant_id == get_tenant(), ChatSessionDB.session_id == session_id))).scalars().all()
+    for agent_id in agents:
+        async with _writing(session_id, agent_id) as s:
+            row = await _row(s, session_id, agent_id, for_update=True)
+            messages = list((row.messages if row is not None else None) or [])
+            for i in range(len(messages) - 1, -1, -1):
+                turn = messages[i].get("browser_turn") if isinstance(messages[i], dict) else None
+                if isinstance(turn, dict) and turn.get("session_id") == browser_session_id:
+                    # Reassigned, not mutated (see append_turn).
+                    messages[i] = {**messages[i], "browser_turn": {**turn, **fields}}
+                    row.messages = messages
+                    return True
+    return False
+
+
 async def cut_answer(session_id: str, agent_id: str, *, chat_turn: str, heard: str, **fields) -> bool:
     """The answer a fleet job saved for `chat_turn`, as the caller heard it (F486): cut at `heard` as
     `cut_last_answer` cuts, marked interrupted, with `fields` noted. Found by its turn, never by being last: the

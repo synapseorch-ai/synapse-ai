@@ -479,7 +479,9 @@ def parked_browser_turn(*, session_id: str | None, reason: str, banner_kind: str
 
     clean = scrub_secrets(scrub_credentials(without_cards(str(reason or "")))[0])
     worded = bool((said or "").strip())
-    record: dict = {"session_id": session_id, "reason": clean, "worded": worded}
+    # `answered` turns True when the person hands the browser back (`store.mark_browser_turn`): a reopened chat then
+    # tells a turn handed back from one moved past.
+    record: dict = {"session_id": session_id, "reason": clean, "worded": worded, "answered": False}
     if banner_kind:
         record["banner_kind"] = banner_kind
     return (said if worded else BROWSER_TURN_ANSWER.format(reason=clean)), record
