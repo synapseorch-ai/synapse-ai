@@ -95,6 +95,9 @@ PRIVATE_STATE_PREFIXES = (
     "_run_writes", "_run_failures", "_run_stopped",
     # Synapse AI's approved review and its send-backs (`review.REVIEW_KEY`, `build_plan._SENDBACK_KEY`).
     "_approved_review", "_plan_sendbacks",
+    # Whether a person watches the run, which decides what a step does at its turn limit (`turn_limit.ATTENDED_KEY`,
+    # F1219): the engine's, set by its starter, never a run's input or a client's to read.
+    "_attended",
 )
 
 
