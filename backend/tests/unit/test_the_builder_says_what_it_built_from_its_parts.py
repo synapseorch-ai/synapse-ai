@@ -84,7 +84,8 @@ class TestBrief4TheBoardSaysTheCardsItHolds:
                                    "nothing else"]
         assert plan.step_words["post"] == ('done by the agent "sales_board_poster", with tools: adds cards to a '
                                            "board, as tasks and notes")
-        assert plan.step_words["read_sales_csv"] == "read a file from the vault by its path"
+        # The file it reads is shown (F1245).
+        assert plan.step_words["read_sales_csv"] == "read a file from the vault by its path (path: sales.csv)"
         said = " ".join([*plan.step_words.values(), *plan.part_words, *plan.off])
         assert "chart" not in said and "vault_read" not in said, "code's words: no promise, no raw id"
 
@@ -96,12 +97,14 @@ class TestBrief4TheBoardSaysTheCardsItHolds:
                 'cards to a board, as tasks and notes — asks it to: "Posts the sales analysis results to the board '
                 'as a chart card with regions on the axis."') in text
         # A tool step's own words are its tool's: the planner's line for it is not said at all.
-        assert "1. **Read Sales CSV** (tool): read a file from the vault by its path — uses `vault_read`" in text
+        assert ("1. **Read Sales CSV** (tool): read a file from the vault by its path (path: sales.csv) — uses "
+                "`vault_read`") in text
         assert "Reads the sales data CSV file" not in text
 
     def test_the_last_message_says_each_part_and_never_a_result(self):
         text = PW.summary(_said(_plan(SALES), POSTER))
-        assert text.startswith("\n\n**What it does**\n- **Read Sales CSV**: read a file from the vault by its path")
+        assert text.startswith("\n\n**What it does**\n- **Read Sales CSV**: read a file from the vault by its path "
+                               "(path: sales.csv)\n")
         assert '- The board "Sales Analysis" (made with it): it holds tasks and notes, nothing else' in text
         assert "chart" not in text and "Missing or off" not in text
 
@@ -231,7 +234,7 @@ class TestTheLastWordAndLaterTurnsReadTheParts:
     def test_the_build_prints_its_parts_after_what_it_wrote(self):
         steps = {s["id"]: s for s in json.loads((NB / "orchestration.json").read_text("utf-8"))["steps"]}
         assert steps["step_build_done"]["print_content"] == (
-            "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}")
+            "{{ state.run_changes }}{{ state.build_saved.effect }}{{ state.build_saved.does }}")
 
     def test_a_stopped_build_says_no_parts(self):
         from core.native_builder.build_save import _stopped

@@ -66,7 +66,7 @@ async def test_a_report_passes_through_once_and_keeps_its_verdicts(world):
     reported_events: list[dict] = []
     world["findings"] = await br.report_findings({"goal": "Labels", "options": [
         {"provider": "Mailchimp", "how": "api", "needs": "A Mailchimp account",
-         "sources": ["https://mailchimp.com/developer/"]}]}, None, reported_events)
+         "sources": ["https://mailchimp.com/developer/"], "own_domains": ["mailchimp.com"]}]}, None, reported_events)
     assert [(o["provider"], o["how"]) for o in world["findings"]["options"]] == [("Shippo", "mcp"), ("Mailchimp", "api")]
     events: list[dict] = []
     done = await lookup.finish_findings({}, None, events)
@@ -137,13 +137,13 @@ def test_the_route_is_code_then_the_researcher_then_code():
                                                           "research": "step_lookup_research"}
     research = steps["step_lookup_research"]
     assert research["finish_tools"] == ["report_findings"] and research["finish_fallback"] == {"status": "no_report"}
-    assert "{state.lookup.left}" in research["prompt_template"]
+    assert "{{ state.lookup.left }}" in research["prompt_template"]
     assert research["next_step_id"] == research["on_exhausted_step_id"] == "step_findings"
     card = steps["step_findings"]
     assert (card["forced_tool"], card["tool_arguments"], card["next_step_id"]) == (
         "finish_findings", {}, "step_findings_said")
     said = steps["step_findings_said"]
-    assert (said["type"], said["print_content"], said["output_key"]) == ("print", "{state.findings.said}", "summary")
+    assert (said["type"], said["print_content"], said["output_key"]) == ("print", "{{ state.findings.said }}", "summary")
 
 
 @pytest.mark.parametrize("value, branch", [

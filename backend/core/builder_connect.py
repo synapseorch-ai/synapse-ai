@@ -166,8 +166,16 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
                 return {"error": "Each tool on this card must be one the build made, and made already."}
             if not header or any(c.isspace() for c in header):
                 return {"error": "Name the header that carries the key, e.g. X-Api-Key or Authorization."}
-            card["tool"] = {"id": names[0], "name": (args.get("provider") or names[0]).strip()[:60],
+            # Where the key goes, said before it is entered, and a host that doesn't look like the provider's own
+            # warned on (F1244: the research names its domains; code's name rule is a warning there, not a gate).
+            from core.builder_research import _providers_own_page
+
+            sends_to = sorted({_key_host(tools[n].get("base_lock")) for n in names} - {""})
+            provider = (args.get("provider") or "").strip()
+            card["tool"] = {"id": names[0], "name": (provider or names[0])[:60],
                             "header": header, "scheme": str(args.get("scheme") or ""), "tools": names,
+                            "sends_to": sends_to,
+                            "unsure": [h for h in sends_to if provider and not _providers_own_page(provider, h)],
                             "host_params": [{"name": str(p.get("name")), "says": str(p.get("says") or "")[:160]}
                                             for p in args.get("host_params") or [] if isinstance(p, dict)]}
             events.append(card)
@@ -176,7 +184,8 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
             return {"error": f"No custom tool named '{tool_name}'. Create it first, then ask for its key here."}
         if not header or any(c.isspace() for c in header):
             return {"error": "Name the header that carries the key, e.g. X-Api-Key or Authorization."}
-        card["tool"] = {"id": tools[tool_name].get("id") or tool_name, "name": tool_name, "header": header}
+        card["tool"] = {"id": tools[tool_name].get("id") or tool_name, "name": tool_name, "header": header,
+                        "sends_to": [h for h in [_key_host(tools[tool_name].get("url"))] if h], "unsure": []}
 
     elif kind == "settings":
         screen = (args.get("screen") or "").strip().lower()
@@ -192,6 +201,16 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
     return {"status": "card_shown", "id": card["id"],
             "say": "Tell the person the card above is where the connection happens, and to press Connect there. "
                    "Do not ask for the key, token or password in the chat."}
+
+
+def _key_host(url: Any) -> str:
+    """The host a tool's key is sent to, as the card says it: its URL's host, without a placeholder label it starts
+    with (`{dc}.api.mailchimp.com`, or `__dc__.` as a made tool keeps it, → `api.mailchimp.com`), which the person's
+    own value fills."""
+    host = (urlparse(str(url or "")).hostname or "") if "//" in str(url or "") else ""
+    labels = host.split(".")
+    placeholder = bool(labels) and (labels[0].startswith("{") or labels[0].startswith("__") and labels[0].endswith("__"))
+    return ".".join(labels[1:] if placeholder else labels)
 
 
 register_builder_tool(SCHEMA, prepare_connection)

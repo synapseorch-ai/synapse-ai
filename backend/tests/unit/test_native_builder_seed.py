@@ -367,7 +367,7 @@ class TestTheBuilderKnowsItsTarget:
     The server resolves it — the page someone is on, or a name in the message —
     and the seed decides who reads it. New keys reach a step through
     `input_keys` only: a step skips a key the run's state does not have, while a
-    `{state.key}` placeholder renders literally, and a run paused on the previous
+    `{{ state.key }}` placeholder renders literally, and a run paused on the previous
     release has none of these keys.
     """
 
@@ -432,7 +432,7 @@ class TestTheSummaryHasSomethingToName:
 
     def test_it_prints_the_runs_own_record_not_a_models_recollection(self):
         summarize = self._summarize()
-        assert summarize["type"] == "print" and summarize["print_content"] == "{state.run_changes}"
+        assert summarize["type"] == "print" and summarize["print_content"] == "{{ state.run_changes }}"
         assert summarize["output_key"] == "summary"
 
     def test_it_names_what_was_built_by_its_own_name(self):
@@ -600,7 +600,7 @@ class TestWhatWasAskedForIsBuilt:
         # made, when it runs (UTC), and that it waits, paused, for a person to turn it on.
         from core.orchestration import run_writes
 
-        assert self._step("step_summarize")["print_content"] == "{state.run_changes}"
+        assert self._step("step_summarize")["print_content"] == "{{ state.run_changes }}"
         state: dict = {}
         run_writes.record(state, {"type": "resource_saved", "kind": "schedule", "action": "created", "id": "s1",
                                   "name": "Friday report", "resource": {"enabled": False,
@@ -611,7 +611,7 @@ class TestWhatWasAskedForIsBuilt:
         # The build's own ending says the same record, with what reading it back found after it.
         # F1228: then what each part does and what is missing or off, from the plan's parts in code.
         assert self._step("step_build_done")["print_content"] == (
-            "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}")
+            "{{ state.run_changes }}{{ state.build_saved.effect }}{{ state.build_saved.does }}")
 
 
 class TestAFullPlanAndAStoppedBuild:
@@ -643,7 +643,7 @@ class TestAFullPlanAndAStoppedBuild:
         assert room["if_true_step_id"] == "step_plan_context"
         full = steps[room["if_false_step_id"]]
         assert full["type"] == "print" and full["output_key"] == "final_orch"
-        assert "{state.plan_room.reason}" in full["print_content"]
+        assert "{{ state.plan_room.reason }}" in full["print_content"]
         assert full["next_step_id"] == "step_summarize"
         schema = bundled_definitions()["orchestration"]["state_schema"]
         assert schema["plan_room"]["type"] == "dict"

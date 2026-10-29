@@ -117,6 +117,8 @@ export interface Plan {
     parts?: string | null;
     /** What is missing or off besides a missing tool, each with where it is put right (F1228). */
     off?: string | null;
+    /** What this plan changed from the one the person last saw (F1245). */
+    changed?: string | null;
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -625,6 +627,8 @@ export interface PlanObjectView {
         part_words?: string[];
         /** What is missing or off, besides a missing tool or a connection to make (F1228). Set by code. */
         off?: string[];
+        /** What it changed from the plan the person last saw: a step, a tool, a shown input (F1245). Set by code. */
+        since_last?: string[];
     };
     /** What the card offers (decision 2, Naveen 10-23): no `build` while a tool has no way in. */
     offers: string[];
@@ -713,6 +717,7 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
             }),
         parts: bullets(view.plan.part_words),
         off: bullets(view.plan.off),
+        changed: bullets(view.plan.since_last),
         agentInstructions: Object.entries(view.prompts ?? {})
             .filter(([, text]) => text.trim())
             .map(([name, text]) => ({ name, instructions: text.trim() })),

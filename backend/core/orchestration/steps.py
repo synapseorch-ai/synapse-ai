@@ -15,6 +15,7 @@ import anyio
 from core.config import HTTP_TOOL_TIMEOUT, mcp_call_timeout
 from core import expressions as _expressions
 from core import turn_limit
+from core.task_list import begin_step_tasks, end_step_tasks, with_step_tasks
 from core.models_orchestration import StepConfig, StepType, OrchestrationRun
 
 from core.log import get_logger
@@ -322,14 +323,6 @@ class AgentStepExecutor:
         no_answer: dict | None = None
         _log_status = "completed"
         execution_events: list[dict] = []
-        # This step's own list as it last wrote it: beside other branches, its
-        # rewrites replace its own tasks in the run's list, not everyone's.
-        # Empty until it writes (F523): it was the run's list when the step
-        # started, and a branch that started after others had written — a fifth
-        # beside four — took their tasks for its own and removed them with its
-        # first write. A branch may drop only what it wrote; a sibling's or an
-        # earlier step's task it can mark cancelled, not remove by leaving out.
-        own_tasks: list[dict] = []
         # A board claim is this step's (BOARD1a): released when the step ends, kept while it waits for a person.
         board_holder = f"{run.run_id}/{step.id}"
         parked = False
@@ -337,6 +330,8 @@ class AgentStepExecutor:
         counts_tasks = (target_agent or {}).get("type") == "delegate"
         # A Team agent works inside the step's time and the run's cap (TEAM1e).
         limits = await team_step_limits(engine, run, step, target_agent, resumed=resume_state is not None)
+        # This run of the step and the list it starts with (F1249): its own, never the run's.
+        tasks_key, own_tasks = begin_step_tasks(run.run_id, step.id, run.tasks, resuming=resume_state is not None)
         try:
             async for event in run_agent_step(
                 message=prompt,
@@ -356,7 +351,8 @@ class AgentStepExecutor:
                 # and going on is held by the run's own cost cap.
                 person_present=bool((run.shared_state or {}).get(turn_limit.ATTENDED_KEY)),
                 run_cap=getattr(engine, "run_cap", None),
-                initial_tasks=[dict(t) for t in (run.tasks or [])],
+                # Its own list, never the run's (F1249): none on a fresh start, its own on a resume.
+                initial_tasks=own_tasks,
                 preresolved=resolved,
                 global_variables=getattr(engine, "global_variables", None),
                 # The step's own words, without what its placeholders brought in (V2-CONTRACT "Final buttons").
@@ -404,13 +400,8 @@ class AgentStepExecutor:
                     # replaced the run's plan with the delegate's, seeded the next
                     # step with it, and beside other branches dropped the lead's
                     # tasks from the run as if the lead had removed them.
-                    new_tasks = [dict(t) for t in (event.get("tasks") or [])]
-                    if IN_CONCURRENT_BRANCH.get():
-                        from core.task_list import merge_branch_tasks
-                        run.tasks = merge_branch_tasks(run.tasks or [], own_tasks, new_tasks)
-                    else:
-                        run.tasks = new_tasks
-                    own_tasks = new_tasks
+                    # Its own entries in the run's list, each step's kept apart (F1249), branches included.
+                    run.tasks = with_step_tasks(run.tasks, run.run_id, step.id, tasks_key, event.get("tasks") or [])
                     try:
                         await SharedState(run).checkpoint(columns=("tasks",))
                     except Exception as ckpt_err:
@@ -523,6 +514,7 @@ class AgentStepExecutor:
             _log_status = "error"
             raise
         finally:
+            end_step_tasks(run.run_id, step.id, tasks_key)
             agent_log.run_end(_log_status)
             agent_log.close()
             if not parked:
@@ -2629,7 +2621,8 @@ class LoopStepExecutor:
 
 
 def render_state_refs(text: str, state: dict) -> str:
-    """`{state.key}` and `{state.key.nested.path}` in text, from shared state.
+    """`{{ state.key }}` and `{{ state.key.nested.path }}` in text, from shared state: the one form (`STATE_REF`,
+    F1252), which a step's templates are written in as the step is read.
 
     A reference that resolves to nothing is left as written, so a typo shows
     rather than vanishing. A human step's prompt and a Print's content read
@@ -2649,7 +2642,9 @@ def render_state_refs(text: str, state: dict) -> str:
                 break
         return str(val) if val is not None else match.group(0)
 
-    return re.sub(r"\{state\.([\w.]+)\}", _resolve, text)
+    from core.templating import STATE_REF
+
+    return STATE_REF.sub(_resolve, text)
 
 
 class MissingStateRef(ValueError):

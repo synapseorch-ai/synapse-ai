@@ -141,7 +141,7 @@ def test_the_line_is_its_own_question_and_never_redraws_the_plan():
     assert steps["step_plan_route"]["switch_cases"]["same"] == "step_plan_same"
     assert steps["step_plan_answer_route"]["switch_cases"]["no_tool"] == "step_plan_same"
     same = steps["step_plan_same"]
-    assert same["type"] == "human" and same["human_prompt"] == "{state.plan_checked.same_say}"
+    assert same["type"] == "human" and same["human_prompt"] == "{{ state.plan_checked.same_say }}"
     assert same["input_keys"] == ["plan_answer"], "never plan_checked: the panel would draw the plan card again"
     assert (same["output_key"], same["next_step_id"]) == ("review_feedback", "step_plan_answer")
     assert same["human_fields"] == steps["step_human_review"]["human_fields"]

@@ -59,6 +59,7 @@
         "plan_room": {"type": "dict", "default": {}, "description": "How many orchestrations the plan has room for (-1: no limit) and the sentence refusing one when it has none — set by the embedder (F154)"},
         "final_orch": {"type": "str", "default": "", "description": "The saver's closing reply — DONE, or DONE with the reason it stopped"},
         "summary": {"type": "str", "default": "", "description": "Friendly completion message generated after the orchestration is saved"},
+        "answer_checked": {"type": "dict", "default": {}, "description": "The answer, with no yes asked for that nothing can take (F1243): its `text`"},
         "org_profile": {"type": "str", "default": "", "description": "What this workspace is for — audience, profession and goals, from onboarding"},
         "_model_override": {"type": "str", "default": "", "description": "The model every LLM-backed step of this run uses (set by the caller)"},
         "manage_review": {"type": "dict", "default": {}, "description": "The user's approval of, or changes to, the management plan — the answer card's fields, e.g. {\"feedback\": \"approve\"}"},
@@ -177,7 +178,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "print_content": "{state.turn.say}",
+            "print_content": "{{ state.turn.say }}",
             "next_step_id": "step_end",
             "max_iterations": 3,
             "position_x": -450,
@@ -188,7 +189,7 @@
             "name": "What Was Asked",
             "type": "agent",
             "agent_id": "agent_native_builder_classifier",
-            "prompt_template": "The message:\n{state.user_message}\n\nThe conversation so far:\n{state.chat_history}\n\nThe context says which workflow the message is about, as the server checked it: `current_orchestration_name` and `current_orchestration_source`, empty when there is none. `viewing` means it is open on their screen, so 'this' and 'it' mean it. `named` means the message names it. `picked` means the previous turn asked which one and this message chose it: the request is the previous user message in the conversation. `built` means this conversation built or changed it last, so 'this' and 'it' mean it: 'run it' runs it, and more detail is a change to it. `ambiguous` means more than one fits.\n\nCall `classify_request` once.",
+            "prompt_template": "The message:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\nThe context says which workflow the message is about, as the server checked it: `current_orchestration_name` and `current_orchestration_source`, empty when there is none. `viewing` means it is open on their screen, so 'this' and 'it' mean it. `named` means the message names it. `picked` means the previous turn asked which one and this message chose it: the request is the previous user message in the conversation. `built` means this conversation built or changed it last, so 'this' and 'it' mean it: 'run it' runs it, and more detail is a change to it. `ambiguous` means more than one fits.\n\nCall `classify_request` once.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -349,7 +350,7 @@
             "name": "Talk",
             "type": "agent",
             "agent_id": "agent_native_builder_talker",
-            "prompt_template": "Reply to the person as Synapse AI, the assistant inside this product. This turn needs nothing read from the workspace: it is talk, an idea to think through, an opinion, thanks, or a question about what you can do. Answer from what is below and from the conversation. Never say you looked something up, and never describe what the workspace holds.\n\nWhat they said:\n{state.user_message}\n\nThe conversation so far:\n{state.chat_history}\n\n{state.answer_pack.pack}\n\nReply in their language, briefly and warmly. When they want something done, say what to ask you for. Name no industry, product or customer that the workspace's description above does not name.",
+            "prompt_template": "Reply to the person as Synapse AI, the assistant inside this product. This turn needs nothing read from the workspace: it is talk, an idea to think through, an opinion, thanks, or a question about what you can do. Answer from what is below and from the conversation. Never say you looked something up, and never describe what the workspace holds.\n\nWhat they said:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\n{{ state.answer_pack.pack }}\n\nReply in their language, briefly and warmly. When they want something done, say what to ask you for. Name no industry, product or customer that the workspace's description above does not name.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -369,7 +370,7 @@
             "max_turns": 40,
             "timeout_seconds": 600,
             "allowed_tools": [],
-            "next_step_id": "step_end",
+            "next_step_id": "step_answer_checked",
             "max_iterations": 3,
             "pass_images": true,
             "position_x": 300,
@@ -380,7 +381,7 @@
             "name": "Answer From the Help",
             "type": "agent",
             "agent_id": "agent_native_builder_reporter",
-            "prompt_template": "The person asked how this product works: a screen, a setting, its API, MCP or a feature. Answer from the help and the list of what the product can do below, naming only the screens the help names. Call `search_help` again in other words only when they do not cover it. Something that needs a key or a sign-in goes on a Connect card (`prepare_connection`), never in the chat.\n\nWhat they asked:\n{state.user_message}\n\nThe conversation so far:\n{state.chat_history}\n\n{state.answer_pack.pack}",
+            "prompt_template": "The person asked how this product works: a screen, a setting, its API, MCP or a feature. Answer from the help and the list of what the product can do below, naming only the screens the help names. Call `search_help` again in other words only when they do not cover it. Something that needs a key or a sign-in goes on a Connect card (`prepare_connection`), never in the chat.\n\nWhat they asked:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\n{{ state.answer_pack.pack }}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -406,7 +407,7 @@
                 "product_capabilities",
                 "prepare_connection"
             ],
-            "next_step_id": "step_end",
+            "next_step_id": "step_answer_checked",
             "max_iterations": 3,
             "pass_images": true,
             "position_x": 1500,
@@ -417,7 +418,7 @@
             "name": "Answer the Question",
             "type": "agent",
             "agent_id": "agent_native_builder_reporter",
-            "prompt_template": "The person asked about this workspace: what exists, how it is set up, or what has happened. Look before you answer: read it with `read_workspace` and the skill and tool lists, never from the conversation. If they asked for one thing a button does (run a workflow or a schedule now, turn a schedule on or off, answer or approve what waits, allow or refuse a tool call, stop a run), put the card up with `prepare_action` and say what pressing it does; never say it is done. Offer only what the list below says this person may ask for.\n\nWhat they asked:\n{state.user_message}\n\nThe conversation so far:\n{state.chat_history}\n\n{state.answer_pack.pack}\n\nIf the context has `current_page`, that is what the user has open on screen — 'this' and 'it' mean it. If `current_orchestration_source` is `ambiguous`, or they asked to change an orchestration and `current_orchestration_id` is empty, do not guess and do not change anything. When `current_orchestration_matches` lists the candidates, show them as a numbered list in exactly that order and ask them to reply with the number or the full name — their reply is matched against that list. Otherwise say which workflows exist (`read_workspace`, topic `workflows`) and ask for the full name, or to open it and ask from there.",
+            "prompt_template": "The person asked about this workspace: what exists, how it is set up, or what has happened. Look before you answer: read it with `read_workspace` and the skill and tool lists, never from the conversation. If they asked for one thing a button does (run a workflow or a schedule now, turn a schedule on or off, answer or approve what waits, allow or refuse a tool call, stop a run), put the card up with `prepare_action` and say what pressing it does; never say it is done. Offer only what the list below says this person may ask for.\n\nWhat they asked:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\n{{ state.answer_pack.pack }}\n\nIf the context has `current_page`, that is what the user has open on screen — 'this' and 'it' mean it. If `current_orchestration_source` is `ambiguous`, or they asked to change an orchestration and `current_orchestration_id` is empty, do not guess and do not change anything. When `current_orchestration_matches` lists the candidates, show them as a numbered list in exactly that order and ask them to reply with the number or the full name — their reply is matched against that list. Otherwise say which workflows exist (`read_workspace`, topic `workflows`) and ask for the full name, or to open it and ask from there.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -455,11 +456,77 @@
                 "prepare_action",
                 "prepare_connection"
             ],
-            "next_step_id": "step_end",
+            "next_step_id": "step_answer_checked",
             "max_iterations": 3,
             "pass_images": true,
             "position_x": 1500,
             "position_y": 750
+        },
+        {
+            "id": "step_answer_checked",
+            "name": "Check The Answer",
+            "type": "tool",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": "check_answer",
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 5,
+            "position_x": 1800,
+            "position_y": 750,
+            "input_keys": [
+                "summary"
+            ],
+            "output_key": "answer_checked",
+            "tool_arguments": {},
+            "next_step_id": "step_answer_said"
+        },
+        {
+            "id": "step_answer_said",
+            "name": "Say The Answer",
+            "type": "print",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 5,
+            "position_x": 2100,
+            "position_y": 750,
+            "input_keys": [
+                "answer_checked"
+            ],
+            "output_key": "summary",
+            "print_content": "{{ state.answer_checked.text }}",
+            "next_step_id": "step_end"
         },
         {
             "id": "step_may_change",
@@ -636,7 +703,7 @@
                 "effort"
             ],
             "output_key": "summary",
-            "print_content": "{state.effort.say}",
+            "print_content": "{{ state.effort.say }}",
             "next_step_id": "step_end"
         },
         {
@@ -664,7 +731,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "print_content": "Not done: building and changing workflows, agents, tools, skills and schedules needs the builder role, and you are a {state.asker_role} in this workspace. I can still answer questions about it, and put up a card for anything your role can do, like answering what waits on you. Someone with the builder role can make this change.",
+            "print_content": "Not done: building and changing workflows, agents, tools, skills and schedules needs the builder role, and you are a {{ state.asker_role }} in this workspace. I can still answer questions about it, and put up a card for anything your role can do, like answering what waits on you. Someone with the builder role can make this change.",
             "next_step_id": "step_end",
             "max_iterations": 3,
             "position_x": -300,
@@ -730,7 +797,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "print_content": "STOPPED: {state.plan_room.reason}",
+            "print_content": "STOPPED: {{ state.plan_room.reason }}",
             "next_step_id": "step_summarize",
             "max_iterations": 3,
             "position_x": 150,
@@ -891,7 +958,7 @@
             "finish_tools": [
                 "report_findings"
             ],
-            "prompt_template": "The plan for this build calls tools that nothing in this workspace provides yet: {state.plan_checked.research}. Code has already looked each one up in this product's Apps catalogue, the MCP Registry and the provider's own developer page: what it found is added to your report by code, and what it could not settle is below, each with what it found (`note`) and the page it read, if any (`page`: read_web_page gives you that page again at no cost). Find out who provides each one still to settle and how it would connect here, and report the options with report_findings. Do not plan or build: the plan is redrafted from your report.\n\nStill to settle:\n{state.plan_lookup.left}\n\nWhat the build is for:\n{state.plan_draft.summary}\n\nWhat they asked:\n{state.user_message}\n\nWorkspace profile (what this organisation does, where):\n{state.org_profile}",
+            "prompt_template": "The plan for this build calls tools that nothing in this workspace provides yet: {{ state.plan_checked.research }}. Code has already looked each one up in this product's Apps catalogue, the MCP Registry and the provider's own developer page: what it found is added to your report by code, and what it could not settle is below, each with what it found (`note`) and the page it read, if any (`page`: read_web_page gives you that page again at no cost). Find out who provides each one still to settle and how it would connect here, and report the options with report_findings. Do not plan or build: the plan is redrafted from your report.\n\nStill to settle:\n{{ state.plan_lookup.left }}\n\nWhat the build is for:\n{{ state.plan_draft.summary }}\n\nWhat they asked:\n{{ state.user_message }}\n\nWorkspace profile (what this organisation does, where):\n{{ state.org_profile }}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -991,7 +1058,7 @@
             "name": "Plan the Build",
             "type": "agent",
             "agent_id": "agent_native_builder_planner",
-            "prompt_template": "Workspace profile (what this organisation does):\n{state.org_profile}\n\nThe person's message:\n{state.user_message}\n{{ state.plan_context.request }}\n\nThe conversation so far:\n{state.chat_history}\n\nWhat this workspace has, and on a change the open workflow as a plan:\n{state.plan_context}\n{state.knowledge_steps}{state.browser_steps}{state.export_guide}{state.export_source}\nWho provides the tools nothing here provides, as looked up (empty unless it was):\n{state.plan_findings}\n\nOn a later pass, what happened before (empty on the first):\n- your last plan: {state.plan_draft}\n- what the check said of it: {{ state.plan_checked.say }}\n- your questions and their answers so far: {{ state.plan_checked.asked }}\n- your last question and its answer: {{ state.plan_checked.question }} {{ state.human_response.answer }}\n- their reply to the plan: {{ state.review_feedback.feedback }}\n\nPlan it, then finish with one call.",
+            "prompt_template": "Workspace profile (what this organisation does):\n{{ state.org_profile }}\n\nThe person's message:\n{{ state.user_message }}\n{{ state.plan_context.request }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\nWhat this workspace has, and on a change the open workflow as a plan:\n{{ state.plan_context }}\n{{ state.knowledge_steps }}{{ state.browser_steps }}{{ state.export_guide }}{{ state.export_source }}\nWho provides the tools nothing here provides, as looked up (empty unless it was):\n{{ state.plan_findings }}\n\nOn a later pass, what happened before (empty on the first):\n- your last plan: {{ state.plan_draft }}\n- what the check said of it: {{ state.plan_checked.say }}\n- your questions and their answers so far: {{ state.plan_checked.asked }}\n- your last question and its answer: {{ state.plan_checked.question }} {{ state.human_response.answer }}\n- their reply to the plan: {{ state.review_feedback.feedback }}\n\nPlan it, then finish with one call.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -1094,7 +1161,7 @@
                 "plan_checked"
             ],
             "output_key": "summary",
-            "print_content": "{state.plan_checked.say}",
+            "print_content": "{{ state.plan_checked.say }}",
             "next_step_id": "step_end"
         },
         {
@@ -1127,7 +1194,7 @@
                 "plan_checked"
             ],
             "output_key": "summary",
-            "print_content": "I could not check that plan: {state.plan_checked.error}",
+            "print_content": "I could not check that plan: {{ state.plan_checked.error }}",
             "next_step_id": "step_end"
         },
         {
@@ -1241,7 +1308,7 @@
             "name": "Write the Agents' Instructions",
             "type": "agent",
             "agent_id": "agent_native_builder_prompt_writer",
-            "prompt_template": "The plan the person is about to see:\n{state.plan_checked.plan.title}: {state.plan_checked.plan.summary}\n\nIts steps:\n{state.plan_checked.plan.steps}\n\nThe new agents it makes, with their purpose and tools:\n{state.plan_checked.plan.agents}\n{state.export_source}\nWrite each one's instructions, then finish with one call.",
+            "prompt_template": "The plan the person is about to see:\n{{ state.plan_checked.plan.title }}: {{ state.plan_checked.plan.summary }}\n\nIts steps:\n{{ state.plan_checked.plan.steps }}\n\nThe new agents it makes, with their purpose and tools:\n{{ state.plan_checked.plan.agents }}\n{{ state.export_source }}\nWrite each one's instructions, then finish with one call.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -1370,7 +1437,7 @@
                 "plan_approval"
             ],
             "output_key": "summary",
-            "print_content": "{state.plan_approval.error}",
+            "print_content": "{{ state.plan_approval.error }}",
             "next_step_id": "step_end"
         },
         {
@@ -1463,7 +1530,7 @@
             "loop_count": 3,
             "loop_step_ids": [],
             "transform_code": null,
-            "human_prompt": "{state.tools_made.say}",
+            "human_prompt": "{{ state.tools_made.say }}",
             "human_fields": [
                 {
                     "name": "feedback",
@@ -1603,7 +1670,7 @@
             "name": "Stopped Before Saving",
             "type": "print",
             "agent_id": null,
-            "prompt_template": "{state.plan_answer.say}",
+            "prompt_template": "{{ state.plan_answer.say }}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -1694,7 +1761,7 @@
                 "build_saved"
             ],
             "output_key": "summary",
-            "print_content": "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}",
+            "print_content": "{{ state.run_changes }}{{ state.build_saved.effect }}{{ state.build_saved.does }}",
             "next_step_id": "step_end"
         },
         {
@@ -1712,7 +1779,7 @@
             "loop_count": 3,
             "loop_step_ids": [],
             "transform_code": null,
-            "human_prompt": "{state.plan_checked.question}",
+            "human_prompt": "{{ state.plan_checked.question }}",
             "human_fields": [
                 {
                     "name": "answer",
@@ -1750,7 +1817,7 @@
             "loop_count": 3,
             "loop_step_ids": [],
             "transform_code": null,
-            "human_prompt": "{state.plan_checked.same_say}",
+            "human_prompt": "{{ state.plan_checked.same_say }}",
             "human_fields": [
                 {
                     "name": "feedback",
@@ -1789,7 +1856,7 @@
             "loop_count": 3,
             "loop_step_ids": [],
             "transform_code": null,
-            "human_prompt": "{state.plan_checked.lead}\n\n---\n\n{state.plan_checked.review}\n\n{state.plan_checked.say}",
+            "human_prompt": "{{ state.plan_checked.lead }}\n\n---\n\n{{ state.plan_checked.review }}\n\n{{ state.plan_checked.say }}",
             "human_fields": [
                 {
                     "name": "feedback",
@@ -1919,7 +1986,7 @@
             "name": "Plan the Change",
             "type": "agent",
             "agent_id": "agent_native_builder_change_planner",
-            "prompt_template": "The person asked:\n{state.user_message}\n\nConversation so far:\n{state.chat_history}\n\nWorkspace profile (what this organisation does):\n{state.org_profile}\n\nThe last change you made for them, and a which-one question still waiting (empty when there is none):\n{state.change_context}\n\nOn a second pass, what happened on the first (empty otherwise):\n- what was asked of them: {{ state.change_checked.question }}\n- their answer: {{ state.change_clarify.answer }}\n- the change they were shown: {{ state.change_checked.review }}\n- their reply to it: {{ state.manage_review.feedback }}\n- what else was said: {{ state.change_checked.say }}\n\nRead what you need, then finish with one call.",
+            "prompt_template": "The person asked:\n{{ state.user_message }}\n\nConversation so far:\n{{ state.chat_history }}\n\nWorkspace profile (what this organisation does):\n{{ state.org_profile }}\n\nThe last change you made for them, and a which-one question still waiting (empty when there is none):\n{{ state.change_context }}\n\nOn a second pass, what happened on the first (empty otherwise):\n- what was asked of them: {{ state.change_checked.question }}\n- their answer: {{ state.change_clarify.answer }}\n- the change they were shown: {{ state.change_checked.review }}\n- their reply to it: {{ state.manage_review.feedback }}\n- what else was said: {{ state.change_checked.say }}\n\nRead what you need, then finish with one call.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -2048,7 +2115,7 @@
             "loop_count": 3,
             "loop_step_ids": [],
             "transform_code": null,
-            "human_prompt": "{state.change_checked.question}",
+            "human_prompt": "{{ state.change_checked.question }}",
             "human_fields": [
                 {
                     "name": "answer",
@@ -2101,7 +2168,7 @@
                 "change_checked"
             ],
             "output_key": "summary",
-            "print_content": "{state.change_checked.say}",
+            "print_content": "{{ state.change_checked.say }}",
             "next_step_id": "step_end"
         },
         {
@@ -2119,7 +2186,7 @@
             "loop_count": 3,
             "loop_step_ids": [],
             "transform_code": null,
-            "human_prompt": "Here is what I would do. Reply **approve** (or 'ok' / 'yes' / 'go ahead') and I will do it, or tell me what to change.\n\n---\n\n{state.change_checked.review}\n\n{state.change_checked.say}",
+            "human_prompt": "Here is what I would do. Reply **approve** (or 'ok' / 'yes' / 'go ahead') and I will do it, or tell me what to change.\n\n---\n\n{{ state.change_checked.review }}\n\n{{ state.change_checked.say }}",
             "human_fields": [
                 {
                     "name": "feedback",
@@ -2271,7 +2338,7 @@
             "position_y": 400,
             "input_keys": [],
             "output_key": "summary",
-            "print_content": "{state.run_changes}{state.change_applied.effect}",
+            "print_content": "{{ state.run_changes }}{{ state.change_applied.effect }}",
             "next_step_id": "step_end"
         },
         {
@@ -2370,7 +2437,7 @@
             "position_y": 700,
             "input_keys": [],
             "output_key": "summary",
-            "print_content": "{state.run_changes}",
+            "print_content": "{{ state.run_changes }}",
             "next_step_id": "step_end"
         },
         {
@@ -2414,7 +2481,7 @@
             "name": "Make the New Thing",
             "type": "agent",
             "agent_id": "agent_native_builder_maker",
-            "prompt_template": "What the person approved making:\n{{ state.change_checked.review }}\n\nIn their words:\n{state.user_message}\n\nConversation so far:\n{state.chat_history}\n\nMake it now, with one call.",
+            "prompt_template": "What the person approved making:\n{{ state.change_checked.review }}\n\nIn their words:\n{{ state.user_message }}\n\nConversation so far:\n{{ state.chat_history }}\n\nMake it now, with one call.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -2508,7 +2575,7 @@
             "position_y": 850,
             "input_keys": [],
             "output_key": "summary",
-            "print_content": "{state.run_changes}{state.change_made_check.note}",
+            "print_content": "{{ state.run_changes }}{{ state.change_made_check.note }}",
             "next_step_id": "step_end"
         },
         {
@@ -2619,7 +2686,7 @@
             "name": "Research a Provider",
             "type": "agent",
             "agent_id": "agent_native_builder_researcher",
-            "prompt_template": "The person wants something done that this workspace has no app or tool for yet. Code has already looked up the providers listed below in this product's Apps catalogue, the MCP Registry and each one's own developer page: each comes with what it found (`note`) and the page it read, if any (`page`: read_web_page gives you that page again at no cost). If none is listed, first name the two or three best-known providers for the job and call `look_up_providers` once with all of them: it does the same look-up in code. Then find out how each provider still unsettled would connect here, and report the options with report_findings.\n\nStill to settle:\n{state.lookup.left}\n\nWhat they asked:\n{state.user_message}\n\nConversation so far:\n{state.chat_history}\n\nWorkspace profile (what this organisation does, where):\n{state.org_profile}",
+            "prompt_template": "The person wants something done that this workspace has no app or tool for yet. Code has already looked up the providers listed below in this product's Apps catalogue, the MCP Registry and each one's own developer page: each comes with what it found (`note`) and the page it read, if any (`page`: read_web_page gives you that page again at no cost). If none is listed, first name the two or three best-known providers for the job and call `look_up_providers` once with all of them: it does the same look-up in code. Then find out how each provider still unsettled would connect here, and report the options with report_findings.\n\nStill to settle:\n{{ state.lookup.left }}\n\nWhat they asked:\n{{ state.user_message }}\n\nConversation so far:\n{{ state.chat_history }}\n\nWorkspace profile (what this organisation does, where):\n{{ state.org_profile }}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -2719,7 +2786,7 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "print_content": "{state.findings.said}",
+            "print_content": "{{ state.findings.said }}",
             "next_step_id": "step_end",
             "max_iterations": 3,
             "position_x": 450,
@@ -2731,7 +2798,7 @@
             "type": "print",
             "agent_id": null,
             "prompt_template": null,
-            "print_content": "{state.run_changes}",
+            "print_content": "{{ state.run_changes }}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,

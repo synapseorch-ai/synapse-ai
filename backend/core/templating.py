@@ -29,6 +29,16 @@ from typing import Any
 
 REF = re.compile(r"\{\{\s*([A-Za-z_][\w.\-]*)\s*\}\}")
 
+#: A reference to the run's state, in the one form every renderer reads (F1252, Naveen 10-30): `{{ state.a.b }}`,
+#: spaced or not. Group 1 is the path after `state.`.
+STATE_REF = re.compile(r"\{\{\s*state\.([\w][\w.\-]*)\s*\}\}")
+#: The older single-brace form, `{state.a.b}`, standing on its own (never the inside of a `{{ … }}`): what `one_form`
+#: rewrites, and nothing else reads.
+_OLD_STATE_REF = re.compile(r"(?<!\{)\{state\.([\w][\w.]*)\}(?!\})")
+#: A step's fields that are templates over state, as text, or as text inside a mapping (F1252).
+TEMPLATE_FIELDS = ("prompt_template", "evaluator_prompt", "print_content", "human_prompt")
+TEMPLATE_MAPPINGS = ("tool_arguments", "recording_inputs", "retrieve", "ingest")
+
 #: The namespaces a reference may start with. Anything else is a bare name.
 NAMESPACES = ("global", "state", "args")
 
@@ -127,6 +137,46 @@ def render(text: str, context: dict[str, Any], *, bare: str | None = None) -> st
         return _text(value) if found else match.group(0)
 
     return REF.sub(_sub, text)
+
+
+def one_form(text: str) -> str:
+    """`text` with every older `{state.a.b}` written `{{ state.a.b }}` (F1252). Twice is once: a `{{ … }}`, JSON
+    (`{"state": …}`) and every other brace are left as they are."""
+    if not isinstance(text, str) or "{state." not in text:
+        return text
+    return _OLD_STATE_REF.sub(lambda m: "{{ state." + m.group(1) + " }}", text)
+
+
+def _one_form_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return one_form(value)
+    if isinstance(value, dict):
+        return {k: _one_form_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_one_form_value(v) for v in value]
+    return value
+
+
+def one_form_step(step: Any) -> Any:
+    """A step (as stored) with its templates in the one form (`one_form`): its text templates and the text inside its
+    template mappings. Its code (`transform_code`) and its conditions are expressions, never templates: untouched."""
+    if not isinstance(step, dict):
+        return step
+    out = dict(step)
+    for key in TEMPLATE_FIELDS:
+        if isinstance(out.get(key), str):
+            out[key] = one_form(out[key])
+    for key in TEMPLATE_MAPPINGS:
+        if isinstance(out.get(key), (dict, list)):
+            out[key] = _one_form_value(out[key])
+    return out
+
+
+def one_form_definition(doc: Any) -> Any:
+    """A workflow definition (as stored, imported or exported) with every step's templates in the one form."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
+        return doc
+    return {**doc, "steps": [one_form_step(s) for s in doc["steps"]]}
 
 
 def references(text: str) -> list[str]:

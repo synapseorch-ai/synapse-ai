@@ -1147,7 +1147,7 @@ async def run_agent_step(
     # ── mid-node crash recovery (used by AgentStepExecutor) ───────────────────
     resume_state: dict | None = None,     # prior interrupted attempt's loop state; continues mid-step
     progress_events: bool = False,        # yield _step_progress after each completed tool turn
-    initial_tasks: list | None = None,    # the run's task list (seeds update_tasks; see core/task_list.py)
+    initial_tasks: list | None = None,    # this step's own task list (seeds update_tasks; F1249, core/task_list.py)
     # ── per-run resolution cache (used by the orchestration engine) ───────────
     preresolved=None,                     # core.orchestration.resolved.ResolvedAgent; skips the store reads
     global_variables: dict | None = None, # the tenant's variables, when the caller already holds them

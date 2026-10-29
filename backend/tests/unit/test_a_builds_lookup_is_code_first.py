@@ -57,8 +57,8 @@ def test_everything_found_is_reported_with_codes_finals_and_re_planned():
 
 def test_the_researcher_reads_only_what_is_left_and_still_what_the_plan_is_for():
     template = _steps()["step_plan_research"]["prompt_template"]
-    assert "{state.plan_lookup.left}" in template
-    assert "{state.plan_checked.research}" in template and "{state.plan_draft.summary}" in template
+    assert "{{ state.plan_lookup.left }}" in template
+    assert "{{ state.plan_checked.research }}" in template and "{{ state.plan_draft.summary }}" in template
     assert "read_web_page" in template, "the page code read is served again at no cost"
 
 

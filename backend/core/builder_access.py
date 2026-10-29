@@ -37,6 +37,8 @@ READS: frozenset[str] = frozenset({
     "read_plan_context", "read_plan_answer", "look_up_providers",
     # The planner's read of the person's own API spec (F1225): it fetches the spec, and changes nothing.
     "read_api_spec",
+    # An answer's own check (F1243): it reads the run's answer and changes nothing.
+    "check_answer",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,
