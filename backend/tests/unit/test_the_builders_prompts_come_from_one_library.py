@@ -63,7 +63,8 @@ from core.native_builder import prompt_lint, seed
 #: classify step at 2; no prompt changes), 2fcbfc0f… alone; with F1193 and F1198 (fix-forward 13), ff332d9b….
 #: F1228: the build's last message adds what each part does (`{state.build_saved.does}`), and the change planner's
 #: rule 9 (never say what an existing workflow does), f86194bc….
-BUNDLE_SHA256 = "f86194bcaf644c6a74b7d03930ce825539db5892e2ff6b449b25d486902bae48"
+#: F1229's `built` target (the classify step's words and the state key that carries the last build), bcf13e4a….
+BUNDLE_SHA256 = "2ab1a04e33c4c94e2d7e51ac6bf1dfab3b6917fc5f37066e269d54d78a03ade7"
 
 
 def _sha(definitions) -> str:
