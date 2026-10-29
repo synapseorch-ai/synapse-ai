@@ -180,6 +180,13 @@ async def _menu_lines() -> list[str]:
     return lines[:24]
 
 
+def narrow(a: O.NewAgent, steps: int) -> bool:
+    """A small agent with a narrow goal and little work (Naveen, 10-30): the one job the cheapest model that fits gets
+    (F1251). One step at most, a simple need, two tools at most, and none of the editor's switches."""
+    return (steps <= 1 and a.type == "agent" and a.needs == "simple" and len(a.tools) <= 2 and not a.long_inputs
+            and not (a.memory or a.knowledge or a.browser or a.servers))
+
+
 async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.ModelPick], list[str], str]:
     """Each new agent's model, picked in code from the models this workspace can call (F966): from what it needs, or
     from the person's own wish, never from an id the planner wrote. Returns the picks; what no model here can do (said
@@ -196,12 +203,15 @@ async def pick_models(plan: O.Plan, stronger: list[str]) -> tuple[dict[str, O.Mo
     names = {e.id: e.name for e in menu}
     picks: dict[str, O.ModelPick] = {}
     issues: list[str] = []
+    default = MM.workspace_model()
+    uses = [s.agent for s in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)] if s.agent]
     for a in plan.agents:
         # A team's lead hands work to its members through a tool call.
         has_tools = bool(a.tools) or a.type == "team"
         wish = (a.model_wish or "").strip()
         got = (MM.resolve_wish(wish, a.needs, has_tools=has_tools, menu=menu) if wish
-               else MM.pick(a.needs, has_tools=has_tools, menu=menu))
+               else MM.pick(a.needs, has_tools=has_tools, menu=menu, narrow=narrow(a, uses.count(a.name)),
+                            long_inputs=a.long_inputs, default=default))
         if got is None:
             continue
         if isinstance(got, MM.Ask):

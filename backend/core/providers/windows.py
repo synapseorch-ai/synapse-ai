@@ -1,0 +1,21 @@
+"""Each model's input window, in tokens: the one source the model pick (F1251) and a run's context budget (D339) read.
+
+A host states its own models' windows over this (cloud: its platform rows, through `models_menu.set_model_facts`'s
+`window`). None is "not known": the pick never rules a model out for it, and D339 budgets a default.
+"""
+from __future__ import annotations
+
+#: Known input windows: `(id prefix, tokens)`, matched against a model's id and each id its provider's prefix leaves
+#: (`us.anthropic.claude-haiku-4-5` is also `claude-haiku-4-5`); the longest prefix that matches wins. The rows are
+#: D339's (TRI1), each from its provider's docs.
+WINDOWS: tuple[tuple[str, int], ...] = ()
+
+
+def window_tokens(model_id: str) -> int | None:
+    """`model_id`'s input window in tokens, or None when it is not known."""
+    model_id = (model_id or "").strip().lower()
+    if not model_id:
+        return None
+    ids = [model_id, *(model_id[n + 1:] for n, c in enumerate(model_id) if c in "./")]
+    found = [(len(prefix), tokens) for prefix, tokens in WINDOWS for i in ids if i.startswith(prefix.lower())]
+    return max(found)[1] if found else None
