@@ -129,6 +129,15 @@ NOT_BY_THE_CLI: dict[str, str] = {
     "POST /api/v2/orchestrations/runs/{run_id}/resume": "`runs answer`",
     "GET /api/v2/workers": "fleet operations, for an operator: `synapse api GET /api/v2/workers`",
     "GET /api/v2/queue/stats": "fleet operations, for an operator: `synapse api GET /api/v2/queue/stats`",
+    # Evals (F1255): the Evals screen's rubrics, golden sets and suite runs; `tools call` reaches each.
+    "list_rubrics": "`tools call list_rubrics`",
+    "save_rubric": "`tools call save_rubric`",
+    "attach_rubric": "`tools call attach_rubric`",
+    "propose_eval_cases": "`tools call propose_eval_cases` (proposes; nothing is saved)",
+    "save_eval_cases": "`tools call save_eval_cases`",
+    "start_eval_suite": "`tools call start_eval_suite` (previewed with its cost, then --yes)",
+    "cancel_eval_suite": "`tools call cancel_eval_suite`",
+    "read_eval_scores": "`tools call read_eval_scores`",
     # The browser's library (BRW-API, F1188): read and tidied from outside; made only in the app.
     "list_recordings": "`tools call list_recordings`",
     "get_recording": "`tools call get_recording`",
