@@ -42,6 +42,9 @@ ACTIONS: dict[str, str] = {
                            "or site)",
     "knowledge_add_note": "add a note to a knowledge base (`knowledge_base`, `title`, `text`)",
     "knowledge_retry_document": "index a failed document again (`doc_id`)",
+    "knowledge_rename": "rename a knowledge base or say what it holds (`knowledge_base`; `name`, `text`)",
+    "knowledge_rebuild": "start a knowledge base's failed or paused rebuild again (`knowledge_base`)",
+    "knowledge_delete_base": "delete a knowledge base; its Vault folder stays (`knowledge_base`)",
     "knowledge_delete_document": "delete a document from its knowledge base (`doc_id`)",
     "board_add_card": "add a card to a board (`board`, `title`, `text`)",
     "board_update_card": "close a card as done or failed, or reopen it (`card_id`, `status`, `result`)",
@@ -362,6 +365,31 @@ async def _knowledge(action: str, args: dict) -> dict:
         button = await _button("Add", "add_knowledge_file", {"knowledge_base": kb.id, "path": path})
         return _card(f'Add "{path.rsplit("/", 1)[-1]}" to "{kb.name}"',
                      detail=f"{path}. Indexing it uses your embedding model.", buttons=[button])
+    if action in ("knowledge_rename", "knowledge_rebuild", "knowledge_delete_base"):
+        # Each tool's own checks come first: a name taken, nothing to change, what uses it (F1218).
+        kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
+        if action == "knowledge_rename":
+            call = {"knowledge_base": kb.id,
+                    **({"name": str(args["name"]).strip()} if str(args.get("name") or "").strip() else {}),
+                    **({"description": str(args["text"]).strip()} if str(args.get("text") or "").strip() else {})}
+            await _resolved(knowledge._changed(kb, call))
+            what = f' to "{call["name"]}"' if call.get("name") else ""
+            return _card(f'Change "{kb.name}"{what}', detail=call.get("description", ""),
+                         buttons=[await _button("Save", "update_knowledge_base", call)])
+        if action == "knowledge_rebuild":
+            return _card(f'Rebuild "{kb.name}"', detail="Its index is built again beside the one answering now, "
+                                                        "with its embedding model; nothing happens when it is current.",
+                         buttons=[await _button("Rebuild", "retry_knowledge_rebuild", {"knowledge_base": kb.id})])
+        from core.knowledge import bases
+
+        uses = await bases.used_by(kb.id)
+        users = [f'the workflow "{w["name"]}"' for w in uses["workflows"]] + [f'the agent "{a["name"]}"'
+                                                                             for a in uses["agents"]]
+        detail = f"Its index and documents go; {kb.folder} and its files stay in the Vault. This cannot be undone."
+        if users:
+            detail += " Used by " + ", ".join(dict.fromkeys(users)) + ": they stop finding anything in it."
+        return _card(f'Delete the knowledge base "{kb.name}"', danger=True, detail=detail,
+                     buttons=[await _button("Delete it", "delete_knowledge_base", {"knowledge_base": kb.id})])
     if action in ("knowledge_add_pages", "knowledge_add_note"):
         kb = await _resolved(knowledge._base(str(args.get("knowledge_base") or "")))
         if action == "knowledge_add_pages":

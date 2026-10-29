@@ -249,3 +249,89 @@ class TestAHostsOwnWay:
         finally:
             knowledge.set_knowledge_host(None)
         assert "The Vault is full" in res.text and "Price list" not in await _bases()
+
+
+class TestEveryKnowledgeAct:
+    """F1218 (BLD1; Naveen 10-29): every Knowledge screen act reaches Synapse AI and MCP — list its documents, rename
+    a base or say what it holds, retry its rebuild, delete it (previewed with what uses it) — through the screen's own
+    functions (`bases.apply_update`, `bases.forget`), so the routes and the tools do one thing."""
+
+    async def _base(self, client, name="Price list"):
+        _, [card] = await _prepare({"action": "knowledge_create", "name": name})
+        await _press(client, card)
+        return (await _bases())[name]
+
+    async def test_its_documents_are_listed(self, on):
+        from core.product_tools import areas, registry
+        from core.product_tools.caller import Caller
+
+        await self._base(on)
+        write_vault("reports/prices.csv", "item,price\nTea,3\n")
+        _, [card] = await _prepare({"action": "knowledge_add_file", "knowledge_base": "Price list",
+                                    "path": "reports/prices.csv"})
+        await _press(on, card)
+        areas.ensure_loaded()
+        listed = await registry.invoke("list_knowledge_documents", Caller(role=Role.VIEWER, via="mcp"),
+                                       {"knowledge_base": "Price list"})
+        assert [d["path"] for d in listed["documents"]] == ["knowledge/price-list/prices.csv"]
+
+    async def test_a_rename_is_a_card_and_a_taken_name_is_not(self, on):
+        await self._base(on)
+        await self._base(on, "Contracts")
+        _, [card] = await _prepare({"action": "knowledge_rename", "knowledge_base": "Price list",
+                                    "name": "Prices 2026", "text": "This year's prices"})
+        assert card["title"] == 'Change "Price list" to "Prices 2026"'
+        await _press(on, card)
+        kb = (await _bases())["Prices 2026"]
+        assert kb.description == "This year's prices" and kb.folder == "knowledge/price-list"
+        taken, cards = await _prepare({"action": "knowledge_rename", "knowledge_base": "Prices 2026",
+                                       "name": "contracts"})
+        assert cards == [] and 'already called "contracts"' in taken["error"]
+        nothing, cards = await _prepare({"action": "knowledge_rename", "knowledge_base": "Prices 2026"})
+        assert cards == [] and "Say what changes" in nothing["error"]
+
+    async def test_a_rebuild_is_retried_as_the_screen_retries_it(self, on):
+        await self._base(on)
+        _, [card] = await _prepare({"action": "knowledge_rebuild", "knowledge_base": "Price list"})
+        result = await _press(on, card)
+        assert result["knowledge_base"] == "Price list" and "rebuild_started" in result
+
+    async def test_a_delete_names_what_uses_it_and_keeps_the_folder(self, on):
+        from _fakes import seed as S
+
+        kb = await self._base(on)
+        write_vault("knowledge/price-list/old.md", "# Old prices")
+        await S.seed_agents([S.make_agent(id="agent_px", name="Price desk", tools=[], knowledge=[kb.id])])
+        await S.seed_orchestrations([S.make_orchestration(
+            id="orch_px", name="Quote a price", entry_step_id="find",
+            steps=[{"id": "find", "name": "Find it", "type": "retrieve",
+                    "retrieve": {"kb_ids": [kb.id], "query": "{state.user_input}"}, "output_key": "found",
+                    "next_step_id": None}])])
+        _, [card] = await _prepare({"action": "knowledge_delete_base", "knowledge_base": "Price list"})
+        assert card["danger"] and 'the workflow "Quote a price"' in card["detail"]
+        assert 'the agent "Price desk"' in card["detail"] and "knowledge/price-list" in card["detail"]
+        await _press(on, card)
+        assert "Price list" not in await _bases()
+        assert get_blob_store().get("vault/knowledge/price-list/old.md") == "# Old prices"
+
+    async def test_over_mcp_a_delete_is_previewed_then_confirmed(self, on):
+        from core.product_tools import areas, registry
+        from core.product_tools.caller import Caller
+
+        await self._base(on)
+        areas.ensure_loaded()
+        builder = Caller(role=Role.BUILDER, via="mcp", user_id="u1")
+        first = await registry.invoke("delete_knowledge_base", builder, {"knowledge_base": "Price list"})
+        assert first["status"] == "needs_confirmation" and first["preview"]["used_by"] == {"workflows": [],
+                                                                                            "agents": []}
+        assert "Price list" in await _bases()
+        await registry.invoke("delete_knowledge_base", builder, {"knowledge_base": "Price list",
+                                                                 "confirm_token": first["confirm_token"]})
+        assert "Price list" not in await _bases()
+
+    async def test_the_routes_edit_and_delete_through_the_same_functions(self, on):
+        kb = await self._base(on)
+        resp = await on.patch(f"/api/knowledge/bases/{kb.id}", json={"revision": kb.revision, "name": "Renamed"})
+        assert resp.status_code == 200, resp.text
+        assert (await on.delete(f"/api/knowledge/bases/{kb.id}")).status_code == 202
+        assert "Renamed" not in await _bases()

@@ -93,7 +93,7 @@ SUBMIT = {"type": "function", "function": {
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
-        "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
+        "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
         "board_update_card {status, result}; board_comment {text}; board_create {text}; edit_steps and create "
         "{what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),

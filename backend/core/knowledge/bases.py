@@ -175,6 +175,62 @@ async def make_base(body: KnowledgeBaseCreate) -> KnowledgeBase:
     return kb
 
 
+async def apply_update(kb_id: str, body: KnowledgeBaseUpdate) -> tuple[KnowledgeBase, KnowledgeBase, bool]:
+    """An edit as the Knowledge screen saves one (F1218): from the revision it started at, then what follows from it
+    — a new folder moves the documents, a base back on is reconciled, a source changed is crawled or dropped, a raised
+    budget resumes, a change to how the index is built rebuilds it beside the serving one. (before, after, whether a
+    rebuild started.) The route and the builder's tools edit a base here."""
+    from core.knowledge import budgets, costs, dispatch, snapshots, sync
+
+    costs.check_settings(embedding=body.embedding, rerank=body.rerank,
+                         enrichment=body.enrichment)  # only the blocks the edit sends
+    before, after = await update_base(kb_id, body)
+    if after.folder != before.folder:
+        await sync.rehome(before, after)
+    elif after.status == "active" and before.status != "active":
+        await dispatch.enqueue(after.id, "reindex", "reconcile")
+    if after.web.sources != before.web.sources:  # S1: a removed source's pages go; an added one is crawled
+        from core.knowledge import web
+
+        await web.sources_changed(before, after)
+    if budgets.cap_raised(before, after):  # what the budget paused is queued again (B2b)
+        await budgets.resume(after, reason="budget_raised")
+    started = await snapshots.after_save(before, after)
+    if not started:  # V1: a search setting changed with no rebuild; a switch re-runs on its own event
+        from core.knowledge import evals_auto
+
+        await evals_auto.settings_changed(before, after)
+    return before, after, started
+
+
+async def forget(kb_id: str) -> None:
+    """A base forgotten as the Knowledge screen forgets one (F1218): its index, documents, snapshots and question sets
+    go; its Vault folder and files stay."""
+    from core.knowledge import evals
+    from core.knowledge.jobs import drop_base
+
+    await require_base(kb_id)
+    await drop_base(kb_id)
+    await evals.forget_base(kb_id)  # V1: its question sets and runs go with it
+
+
+async def used_by(kb_id: str) -> dict[str, list[dict[str, Any]]]:
+    """What searches or fills a base (F1218, as `recordings.used_by` names a recording's): workflow steps (a Retrieve
+    step that searches it, an Ingest step that fills it) and agents that answer from it."""
+    from core.store.resources import load_agents, load_orchestrations
+
+    def names(step: dict) -> bool:
+        retrieve, ingest = step.get("retrieve") or {}, step.get("ingest") or {}
+        return kb_id in (retrieve.get("kb_ids") or []) or ingest.get("kb_id") == kb_id
+
+    workflows = [{"id": flow.get("id"), "name": flow.get("name"), "step": s.get("id")}
+                 for flow in await load_orchestrations() if not (flow or {}).get("system")
+                 for s in (flow or {}).get("steps") or [] if isinstance(s, dict) and names(s)]
+    agents = [{"id": a.get("id"), "name": a.get("name")} for a in await load_agents()
+              if kb_id in ((a or {}).get("knowledge") or [])]
+    return {"workflows": workflows, "agents": agents}
+
+
 async def update_base(kb_id: str, patch: KnowledgeBaseUpdate) -> tuple[KnowledgeBase, KnowledgeBase]:
     """Apply `patch`; returns (before, after). `StaleRevision` when `patch.revision` is not the stored one, and
     `ValueError` for a patch that turns `extract_metadata` on (F348; a base that has it may send it back)."""

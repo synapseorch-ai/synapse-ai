@@ -81,6 +81,9 @@ TOOLS: dict[str, str] = {
     "add_knowledge_pages": "knowledge add-url",
     "add_knowledge_note": "knowledge add-note",
     "retry_knowledge_document": "knowledge docs retry",
+    "list_knowledge_documents": "knowledge docs list",
+    "update_knowledge_base": "knowledge bases update",
+    "delete_knowledge_base": "knowledge bases delete",
     "delete_knowledge_document": "knowledge docs delete",
     # Only through MCP's door.
     "answer_tool_approval": "schedules approve",
@@ -142,6 +145,7 @@ NOT_BY_THE_CLI: dict[str, str] = {
     "list_custom_tools": "`tools call list_custom_tools`",
     "create_http_tool": "`tools call create_http_tool`",
     "import_openapi": "`tools call import_openapi`",
+    "retry_knowledge_rebuild": "`tools call retry_knowledge_rebuild`",
     "delete_custom_tool": "`tools call delete_custom_tool` (previewed, then --yes)",
     "list_skills": "`tools call list_skills`",
     "get_skill": "`tools call get_skill`",
