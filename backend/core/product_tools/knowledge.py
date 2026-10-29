@@ -3,18 +3,51 @@ person does to a knowledge base (ASSIST1, D291, F684): add public web pages to i
 document, a builder's acts as on the Knowledge screen. And, since F1200 (BLD1), make one as that screen makes one
 (`bases.make_base`: on a Vault folder, its index the default's until a person changes it there), and add a file the
 person already has in the Vault, by an upload's rules (`ingest.add_vault_file`). A host whose Knowledge routes do more
-(cloud's storage and quota) registers its own handlers for these names.
+(cloud's storage and quota) makes and fills a base its own way through `set_knowledge_host`, on every door (a card,
+MCP, the builder): a path that skipped its Vault reserve would pass its quota.
 
 Its code is `core.mcp_server.knowledge`, with the `set_knowledge_searcher` seam cloud installs; the caller's
 credential is handed on, as before, so a search's trace names the key that asked.
 """
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Awaitable, Callable
 
 from core.product_tools.errors import ToolRefusal
 from core.product_tools.registry import ProductTool
 from core.product_tools.roles import Role
+
+
+@dataclass(frozen=True)
+class KnowledgeHost:
+    """What a host does its own way when a knowledge base is made or filled (F1200's cloud twin, 8a 10-29). Each
+    raises `ToolRefusal` in its own words (a quota, a role), or a Knowledge error the tools answer as the routes do."""
+
+    #: `(caller, KnowledgeBaseCreate) -> KnowledgeBase`, already checked (`_new_base`): the base made and queued.
+    create_base: Callable[[Any, Any], Awaitable[Any]]
+    #: `(caller, KnowledgeBase, vault path) -> [document rows]`: the file copied into the base and queued.
+    add_vault_file: Callable[[Any, Any, str], Awaitable[list]]
+
+
+async def _oss_create_base(caller: Any, body: Any) -> Any:
+    from core.knowledge import bases
+    return await bases.make_base(body)
+
+
+async def _oss_add_vault_file(caller: Any, kb: Any, source: str) -> list:
+    from core.knowledge import ingest
+    return await ingest.add_vault_file(kb, source)
+
+
+_HOST = KnowledgeHost(create_base=_oss_create_base, add_vault_file=_oss_add_vault_file)
+_host = _HOST
+
+
+def set_knowledge_host(host: KnowledgeHost | None) -> None:
+    """Install the host's way of making and filling a base. ``None`` puts this engine's back."""
+    global _host
+    _host = host or _HOST
 
 
 async def _search(caller: Any, args: dict[str, Any]) -> str:
@@ -131,12 +164,11 @@ async def _preview_create_base(caller: Any, args: dict[str, Any]) -> dict:
 
 
 async def _create_base(caller: Any, args: dict[str, Any]) -> dict:
-    from core.knowledge import bases
     from core.knowledge.errors import KnowledgePathError
 
     body = await _new_base(args)
     try:
-        kb = await bases.make_base(body)
+        kb = await _host.create_base(caller, body)
     except (KnowledgePathError, ValueError) as exc:  # the route's 422s, in its words
         raise ToolRefusal(str(exc)) from None
     return {"knowledge_base": kb.name, "id": kb.id, "folder": kb.folder, "status": kb.status,
@@ -161,7 +193,7 @@ async def _add_file(caller: Any, args: dict[str, Any]) -> dict:
 
     kb = await _base(str(args.get("knowledge_base") or ""))
     try:
-        rows = await ingest.add_vault_file(kb, str(args.get("path") or "").strip().lstrip("/"))
+        rows = await _host.add_vault_file(caller, kb, str(args.get("path") or "").strip().lstrip("/"))
     except (ingest.UploadError, ingest.NotFound) as exc:  # the upload's 413/415, a file that is not there
         raise ToolRefusal(str(exc)) from None
     return {"knowledge_base": kb.name, "documents": [documents.to_out(r).model_dump(mode="json") for r in rows]}

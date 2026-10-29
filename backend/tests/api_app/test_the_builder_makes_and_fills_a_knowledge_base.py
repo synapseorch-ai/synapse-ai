@@ -203,3 +203,49 @@ class TestAskedInWords:
                                                                                "name": "price list"},
                                         "fields": {"path": "reports/prices.csv"}}])
         assert card["title"] == 'Add "prices.csv" to "Price list"'
+
+
+class TestAHostsOwnWay:
+    """The cloud twin's seam (8a 10-29): a host makes and fills a base its own way on every door (its Vault reserve,
+    its store), never past it. The checks before (name, folder, type, size) are still the engine's."""
+
+    async def test_the_host_makes_and_fills_it(self, on):
+        from core.product_tools import knowledge
+
+        made, added = [], []
+
+        async def create_base(caller, body):
+            made.append(body.name)
+            return await knowledge._oss_create_base(caller, body)
+
+        async def add_vault_file(caller, kb, source):
+            added.append((kb.name, source))
+            return await knowledge._oss_add_vault_file(caller, kb, source)
+
+        knowledge.set_knowledge_host(knowledge.KnowledgeHost(create_base=create_base, add_vault_file=add_vault_file))
+        try:
+            _, [card] = await _prepare({"action": "knowledge_create", "name": "Price list"})
+            await _press(on, card)
+            write_vault("reports/prices.csv", "item,price\nTea,3\n")
+            _, [card] = await _prepare({"action": "knowledge_add_file", "knowledge_base": "Price list",
+                                        "path": "reports/prices.csv"})
+            await _press(on, card)
+        finally:
+            knowledge.set_knowledge_host(None)
+        assert made == ["Price list"] and added == [("Price list", "reports/prices.csv")]
+
+    async def test_a_hosts_refusal_is_said_and_nothing_is_made(self, on):
+        from core.product_tools import knowledge
+        from core.product_tools.errors import ToolRefusal
+
+        async def full(caller, body):
+            raise ToolRefusal("The Vault is full: 5 GB of 5 GB. Remove files or move up a plan.")
+
+        knowledge.set_knowledge_host(knowledge.KnowledgeHost(create_base=full,
+                                                             add_vault_file=knowledge._oss_add_vault_file))
+        try:
+            _, [card] = await _prepare({"action": "knowledge_create", "name": "Price list"})
+            res = await on.post("/api/assistant/act", json=card["buttons"][0])
+        finally:
+            knowledge.set_knowledge_host(None)
+        assert "The Vault is full" in res.text and "Price list" not in await _bases()
