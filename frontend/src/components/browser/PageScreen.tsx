@@ -5,6 +5,7 @@ import { useRef } from 'react';
 import { cn } from '@/lib/cn';
 
 import type { BrowserFrame, BrowserInput } from './model';
+import { pagePoint } from './pagePoint';
 
 /** Keys that are not text: sent as keys, never typed into the page's field as characters. */
 const KEYS = new Set([
@@ -20,8 +21,8 @@ function modifiers(e: { shiftKey: boolean; ctrlKey: boolean; altKey: boolean; me
 
 /**
  * The page itself: the newest frame, and, while the person holds the wheel, their clicks, scrolls, keys and typing
- * sent to it (DESIGN §2.3). A click is placed where it was made on the page, scaled from the frame to the page's own
- * size. Typing goes through a hidden field that has the focus, so a phone brings up its keyboard on a tap and its
+ * sent to it (DESIGN §2.3). A click is placed where it was made on the page: through the picture as drawn inside its
+ * letterboxed box, scaled to the page's own size (F1197); a press in a bar beside the picture sends nothing. Typing goes through a hidden field that has the focus, so a phone brings up its keyboard on a tap and its
  * words arrive as text. While the agent drives, a press on the page asks first (`onPressWhileWatching`).
  */
 export function PageScreen({ frame, closed, driving, alt, send, onPressWhileWatching }: {
@@ -39,11 +40,13 @@ export function PageScreen({ frame, closed, driving, alt, send, onPressWhileWatc
     { dx: 0, dy: 0, x: 0, y: 0, timer: null });
 
   const at = (clientX: number, clientY: number) => {
-    const r = img.current?.getBoundingClientRect();
-    if (!r || !r.width || !r.height) return null;
-    const x = ((clientX - r.left) / r.width) * (frame.w || r.width);
-    const y = ((clientY - r.top) / r.height) * (frame.h || r.height);
-    return { x: Math.round(x), y: Math.round(y) };
+    const el = img.current;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    // The content box: object-contain draws inside the border, not across it.
+    const box = { left: r.left + el.clientLeft, top: r.top + el.clientTop, width: el.clientWidth, height: el.clientHeight };
+    const picture = { width: el.naturalWidth || frame.w, height: el.naturalHeight || frame.h };
+    return pagePoint(box, picture, { width: frame.w, height: frame.h }, { x: clientX, y: clientY });
   };
 
   const press = (e: React.PointerEvent) => {

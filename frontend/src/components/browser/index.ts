@@ -41,6 +41,7 @@ export {
 } from './sessions';
 export { Filmstrip } from './Filmstrip';
 export { PANE_SHARE, PaneHandle, parseShare } from './PaneHandle';
+export { pagePoint, type Box as PageBox } from './pagePoint';
 export { useBrowserFrames, useKeptLog, type FrameMemory, type FramesState } from './useBrowserFrames';
 export {
   actionCount,
