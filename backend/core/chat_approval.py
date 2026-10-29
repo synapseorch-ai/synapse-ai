@@ -75,6 +75,9 @@ def parked_payload(event: dict, *, message: str, progress: dict | None,
     if event.get("questions"):
         # A team's members, each asking on its own (TEAM1c, Q6): the fields above are the first question's.
         payload["questions"] = [dict(q) for q in event["questions"]]
+    if isinstance(event.get("turn_limit"), dict):
+        # At its turn limit (F1219, F1234): how many turns it used and how many more Keep going gives, as the loop said.
+        payload["turn_limit"] = dict(event["turn_limit"])
     return payload
 
 
@@ -157,6 +160,7 @@ def public_view(pending: dict | None) -> dict[str, Any] | None:
         "approval_id": pending.get("approval_id"),
         "message": pending.get("message") or "",
         "prompt": approval_prompt(pending.get("tool_name"), pending.get("category")),
+        **({"turn_limit": dict(pending["turn_limit"])} if isinstance(pending.get("turn_limit"), dict) else {}),
         # Every question it asks, each answered by its own id (TEAM1c); a member's names its lane.
         "questions": [{**q, "prompt": approval_prompt(q.get("tool_name"), q.get("category"))}
                       for q in questions_of(pending)],
