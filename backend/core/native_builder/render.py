@@ -78,6 +78,29 @@ def gate_words(gate: Gate) -> str:
     return f"{who} asks you before `{gate.tool}`, each time{_SET_BY[gate.set_by]}"
 
 
+def missing_session_line(site: str) -> str:
+    """A browser agent's site with no kept session yet (F1223): the card's line, and the build's own words for it
+    (F1228's missing or off)."""
+    return (f"No kept session for {site} yet: sign in to it under Agents › Browser › Sessions, then pick it in this "
+            "agent's Browser settings. It is built without it until then")
+
+
+def knowledge_part_line(part: Any) -> str:
+    """A knowledge base the plan makes or uses (F1224), as the card and the build's parts both say it."""
+    from core.product_tools.knowledge import _folder_for
+
+    added = [f for f in part.files if f not in part.files_missing]
+    line = (f"“{part.name}”: already here, used as it is" if part.existing
+            else f"“{part.name}”: made with it, in the Vault folder {_folder_for(part.name)}")
+    return line + ("; it is given " + ", ".join(f"`{f}`" for f in added) if added else "")
+
+
+def missing_file_line(base: str, file: str) -> str:
+    """A file a knowledge base was to be given that is not in the Vault (F1224): the card's line and the build's."""
+    return (f"`{file}` is not in the Vault: add it there, then to “{base}” on the Knowledge screen. It is built "
+            "without it")
+
+
 def switch_lines(a: Any) -> list[str]:
     """A new agent's switches as the agent editor shows them (F1223), one line each: what the card says it gets."""
     out = []
@@ -95,26 +118,16 @@ def switch_lines(a: Any) -> list[str]:
         signed = [s for s in browser.sessions if s not in browser.sessions_missing]
         if signed:
             out.append("Starts signed in on " + ", ".join(signed))
-        for site in browser.sessions_missing:
-            out.append(f"No kept session for {site} yet: sign in to it under Agents › Browser › Sessions, then pick "
-                       f"it in this agent's Browser settings. It is built without it until then")
+        out += [missing_session_line(site) for site in browser.sessions_missing]
     return out
 
 
 def knowledge_lines(plan: Any) -> list[str]:
     """Each knowledge base the plan makes or uses (F1224), one line each, and each file it could not find."""
-    from core.product_tools.knowledge import _folder_for
-
     out = []
     for part in getattr(plan, "knowledge", None) or []:
-        added = [f for f in part.files if f not in part.files_missing]
-        line = (f"“{part.name}”: already here, used as it is" if part.existing
-                else f"“{part.name}”: made with it, in the Vault folder {_folder_for(part.name)}")
-        if added:
-            line += "; it is given " + ", ".join(f"`{f}`" for f in added)
-        out.append(line)
-        out += [f"`{f}` is not in the Vault: add it there, then to “{part.name}” on the Knowledge screen. It is built "
-                "without it" for f in part.files_missing]
+        out.append(knowledge_part_line(part))
+        out += [missing_file_line(part.name, f) for f in part.files_missing]
     return out
 
 
@@ -139,7 +152,8 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
                     "update_step": f"Change **{e.step_id}**", "remove_step": f"Remove **{e.step_id}**",
                     "set_meta": "Change the workflow's details"}[e.op]
             lines.append(f"{len(lines) + 1}. {what}")
-        own = getattr(plan, "part_words", []) or []
+        # A part the card says in its own section below (a knowledge base) is said there, once (F1228).
+        own = [w for w in getattr(plan, "part_words", []) or [] if w not in knowledge_lines(plan)]
         parts.append("## Steps\n" + "\n".join(lines) + ("\n\n" + _bullets(own) if own else ""))
     for w in plan.inner_workflows:
         steps = [_step_line(i, s, names, inner, words=words)
@@ -206,7 +220,11 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
 
     from core.native_builder.parts_words import missing_words
 
-    missing = missing_words(plan) + list(getattr(plan, "off", []) or [])
+    # What the card already said under an agent or a knowledge base is not said again (F1228): the panel, which has
+    # neither section, shows each in its own "Missing or off".
+    shown = [*knowledge_lines(plan), *(line for a in plan.agents for line in switch_lines(a))]
+    missing = missing_words(plan) + [o for o in getattr(plan, "off", []) or []
+                                     if o not in shown and not any(o.endswith(f": {s}") for s in shown)]
     if missing:
         parts.append("## Missing here\n" + _bullets(missing))
     if plan.room:

@@ -50,6 +50,10 @@ SALES = {"kind": "create", "title": "Sales Analysis by Region", "summary": (
     {"id": "post", "type": "agent", "name": "Post Sales Analysis to Board", "agent": "agent_poster",
      "does": "Posts the sales analysis results to the board as a chart card with regions on the axis."}],
     "reuse_agents": ["agent_poster"], "boards": [{"name": "Sales Analysis"}]}
+NO_SESSION = ("No kept session for portal.localhost yet: sign in to it under Agents › Browser › Sessions, then pick it "
+              "in this agent's Browser settings. It is built without it until then")
+MISSING_FILE = ("`help/b.md` is not in the Vault: add it there, then to “Help docs” on the Knowledge screen. It is built "
+                "without it")
 POSTER = {"agent_poster": {"id": "agent_poster", "name": "sales_board_poster", "tools": ["board_add"]}}
 
 #: Brief 2: help docs and an orders API, built as two agents with no tools at all.
@@ -127,8 +131,8 @@ class TestBrief5ASiteWithNoKeptSignInSaysWhereToSignIn:
         portal = {"agent_portal": {"id": "agent_portal", "name": "portal_agent", "tools": ["browser_navigate"],
                                    "browser": {"sites": ["portal.localhost"], "sessions": []}}}
         plan = _said(_plan(REFUND), portal)
-        assert plan.step_words["check"] == ('done by the agent "portal_agent", with tools: browser navigate; browses '
-                                            "portal.localhost")
+        assert plan.step_words["check"] == ('done by the agent "portal_agent", with tools: browser navigate; Browser: '
+                                            "portal.localhost; reads only")
         assert plan.step_words["approve"] == 'stops and asks you: "Approve this refund?"'
 
     def test_bld1s_kept_session_mark_says_where_to_sign_in(self):
@@ -137,14 +141,25 @@ class TestBrief5ASiteWithNoKeptSignInSaysWhereToSignIn:
                  "browser": {"sites": ["portal.localhost"], "sessions": ["portal.localhost"],
                              "sessions_missing": ["portal.localhost"], "mode": "co_drive"}}
         plan = _said(_plan(REFUND), {"agent_portal": agent})
-        assert plan.off == ['"portal_agent" has no kept sign-in for portal.localhost: sign in to portal.localhost '
-                            "under Agents › Browser › Sessions"]
-        assert "signed in on portal.localhost" in plan.step_words["check"]
+        # BLD1's own line (render.missing_session_line), the agent named before it: off the card, "this agent"
+        # needs its name.
+        assert plan.off == [f'"portal_agent": {NO_SESSION}']
+        assert plan.step_words["check"] == ('done by the agent "portal_agent", Browser: portal.localhost; types and '
+                                            "sends with you watching")
+        assert "No kept session" not in plan.step_words["check"], "said once, as missing or off"
+
+    def test_the_card_says_a_missing_session_once(self):
+        new = {"name": "portal_agent", "purpose": "checks the portal", "type": "browser",
+               "browser": {"sites": ["portal.localhost"], "sessions": ["portal.localhost"],
+                           "sessions_missing": ["portal.localhost"]}}
+        plan = _said(_plan({**REFUND, "agents": [*REFUND.get("agents", []), new]}))
+        assert f'"portal_agent": {NO_SESSION}' in plan.off
+        assert render(plan).count(NO_SESSION) == 1
 
 
 class _Bld1Plan(O.Plan):
-    """A Plan with BLD1's own parts (F1224, F1225), as its fields are named (BLD1 to GUIDE1, 10-29)."""
-    knowledge: list[dict] = []
+    """A Plan with BLD1's F1225 parts, as its fields are named (BLD1 to GUIDE1, 10-29); F1224's `knowledge` is the
+    Plan's own (4153e43a)."""
     apis: list[dict] = []
     mcp_servers: list[dict] = []
 
@@ -153,27 +168,42 @@ class TestBld1sPartsAreRows:
     def test_an_agents_switches_are_said(self):
         a = PW.agent_parts({"name": "Clerk", "tools": ["vault_read"], "memory": True, "knowledge": ["kb_1"],
                             "servers": ["Tracker"]}, kb_names={"kb_1": "Help docs"})
+        # BLD1's own lines (render.switch_lines, F1223), the card's and these words alike.
         assert PW.agent_words(a, TITLES) == (
-            'the agent "Clerk", with tools: read a file from the vault by its path; remembers what it learns '
-            'between runs; answers from the knowledge base "Help docs"; uses the tools of "Tracker", as they are now')
+            'the agent "Clerk", with tools: read a file from the vault by its path; Memory: on — it keeps what it '
+            "learns across runs and conversations; Knowledge: answers from “Help docs”; MCP server Tracker: its tools "
+            "as of now; tools it adds later are not added")
 
     def test_the_plans_knowledge_apis_and_apps_are_parts_and_what_is_off(self):
         plan = _Bld1Plan.model_validate({**_plan(SUPPORT).model_dump(), "knowledge": [
-            {"name": "Help docs", "files": ["help/a.md", "help/b.md"], "files_missing": ["help/b.md"]}],
+            {"name": "Help docs", "purpose": "answers", "files": ["help/a.md", "help/b.md"],
+             "files_missing": ["help/b.md"]}],
             "apis": [{"name": "Orders", "spec": "http://x/openapi.json", "tools": ["get_order"], "problem": None},
                      {"name": "Billing", "spec": "billing.yaml", "problem": "its spec did not read as OpenAPI"}],
             "mcp_servers": [{"name": "Tracker", "url": "https://t.example/mcp", "connected": False}]})
         _said(plan)
-        assert plan.part_words == ['the knowledge base "Help docs" (made with it from 2 files in your Vault)',
+        # BLD1's own lines (render.knowledge_lines, F1224).
+        assert plan.part_words == ["“Help docs”: made with it, in the Vault folder knowledge/help-docs; it is given "
+                                   "`help/a.md`",
                                    'the API "Orders", its tools: get_order', 'the API "Billing"',
                                    'the app "Tracker" at https://t.example/mcp']
-        assert plan.off[-3:] == ['the knowledge base "Help docs" is missing help/b.md in your Vault',
+        assert plan.off[-3:] == [MISSING_FILE,
                                  'the API "Billing": its spec did not read as OpenAPI',
                                  'the app "Tracker" is not connected: connect it under Apps']
 
+    def test_the_card_says_a_knowledge_base_and_its_missing_file_once(self):
+        plan = _said(O.Plan.model_validate({**_plan(SUPPORT).model_dump(), "knowledge": [
+            {"name": "Help docs", "purpose": "answers", "files": ["help/a.md", "help/b.md"],
+             "files_missing": ["help/b.md"]}]}))
+        assert MISSING_FILE in plan.off
+        card = render(plan)
+        assert card.count(MISSING_FILE) == 1
+        assert card.count("“Help docs”: made with it") == 1
+
     def test_a_plan_without_them_says_none(self):
         plan = _said(_plan(SALES), POSTER)
-        assert not any("knowledge base" in w or "API" in w for w in [*plan.part_words, *plan.off])
+        assert not any("knowledge base" in w or "API" in w or "Vault" in w or "Knowledge:" in w
+                       for w in [*plan.part_words, *plan.off])
 
 
 class TestEveryPartHasItsRow:

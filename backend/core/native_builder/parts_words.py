@@ -25,6 +25,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from core.native_builder.objects import Plan, Step
@@ -122,6 +123,7 @@ class AgentParts:
     sessions_missing: list[str] = field(default_factory=list)
     servers: list[str] = field(default_factory=list)
     browser: bool = False
+    mode: str = "read_only"
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -141,7 +143,8 @@ def agent_parts(agent: Any, *, kb_names: dict[str, str] | None = None) -> AgentP
         sessions=[str(s) for s in _get(browser, "sessions", None) or []],
         sessions_missing=[str(s) for s in _get(browser, "sessions_missing", None) or []],
         servers=[str(s) for s in _get(agent, "servers", None) or []],
-        browser=browser is not None or _get(agent, "type") == "browser")
+        browser=browser is not None or _get(agent, "type") == "browser",
+        mode=str(_get(browser, "mode", "read_only") or "read_only"))
 
 
 def _tools_words(a: AgentParts, titles: dict[str, str]) -> str:
@@ -153,21 +156,21 @@ def _tools_words(a: AgentParts, titles: dict[str, str]) -> str:
     return "with tools: " + "; ".join(titles.get(t) or title_of(t) for t in own)
 
 
-#: An agent's own parts, each its words or "" (F1223's switches among them).
-_AGENT_PARTS: list[Callable[[AgentParts, dict[str, str]], str]] = [
-    _tools_words,
-    lambda a, _t: "remembers what it learns between runs" if a.memory else "",
-    lambda a, _t: f"answers from the knowledge base{'s' if len(a.knowledge) > 1 else ''} {_quoted(a.knowledge)}"
-    if a.knowledge else "",
-    lambda a, _t: (f"browses {_plain(a.sites) if a.sites else 'any public site'}"
-                   + (f", signed in on {_plain(a.sessions)}" if a.sessions else "")) if a.browser else "",
-    lambda a, _t: f"uses the tools of {_quoted(a.servers)}, as they are now" if a.servers else "",
-]
+def switches(a: AgentParts) -> list[str]:
+    """An agent's switches in the card's own words (BLD1's `render.switch_lines`, F1223), for a new agent and one
+    already here alike; a site with no kept session is said once, as what is missing or off (`_off_sessions`)."""
+    from core.native_builder.render import missing_session_line, switch_lines
+
+    browser = SimpleNamespace(sites=a.sites, sessions=a.sessions, mode=a.mode, sessions_missing=a.sessions_missing)
+    shim = SimpleNamespace(memory=a.memory, knowledge=a.knowledge, servers=a.servers,
+                           type="browser" if a.browser else a.type, browser=browser if a.browser else None)
+    missing = {missing_session_line(site) for site in a.sessions_missing}
+    return [line for line in switch_lines(shim) if line not in missing]
 
 
 def agent_words(a: AgentParts, titles: dict[str, str]) -> str:
-    """An agent by its parts: 'the agent "Poster", with tools: …; remembers …'."""
-    said = [w for w in (row(a, titles) for row in _AGENT_PARTS) if w]
+    """An agent by its parts: 'the agent "Poster", with tools: …; Memory: on — …'."""
+    said = [w for w in (_tools_words(a, titles), *switches(a)) if w]
     head = f'the {"team" if a.type == "team" else "agent"} "{a.name}"'
     return head + (", " + "; ".join(said) if said else ", with no tools")
 
@@ -235,13 +238,9 @@ def _boards(plan: Plan, _ctx: _Ctx) -> list[str]:
 
 
 def _knowledge(plan: Plan, _ctx: _Ctx) -> list[str]:
-    out = []
-    for k in getattr(plan, "knowledge", None) or []:  # F1224
-        files = _get(k, "files", None) or []
-        made = "already here" if _get(k, "existing") else "made with it" + (
-            f" from {len(files)} file{'s' if len(files) != 1 else ''} in your Vault" if files else "")
-        out.append(f'the knowledge base "{_get(k, "name")}" ({made})')
-    return out
+    from core.native_builder.render import knowledge_part_line
+
+    return [knowledge_part_line(k) for k in getattr(plan, "knowledge", None) or []]  # F1224, as the card says it
 
 
 def _apis(plan: Plan, _ctx: _Ctx) -> list[str]:
@@ -279,19 +278,16 @@ def _off_no_tools(plan: Plan, ctx: _Ctx) -> list[str]:
 
 
 def _off_sessions(plan: Plan, ctx: _Ctx) -> list[str]:
-    seen, out = set(), []
-    for a in ctx.agents.values():  # F1223: saved without them, it signs in with them once they are kept
-        for site in a.sessions_missing:
-            if site not in seen:
-                seen.add(site)
-                out.append(f'"{a.name}" has no kept sign-in for {site}: sign in to {site} under Agents › Browser › '
-                           "Sessions")
-    return out
+    """F1223's line for each site, the agent named before it: off the card's agent, "this agent" needs its name."""
+    from core.native_builder.render import missing_session_line
+
+    return [f'"{a.name}": {missing_session_line(site)}' for a in ctx.agents.values() for site in a.sessions_missing]
 
 
 def _off_knowledge(plan: Plan, _ctx: _Ctx) -> list[str]:
-    return [f'the knowledge base "{_get(k, "name")}" is missing {_plain(_get(k, "files_missing"))} in your Vault'
-            for k in getattr(plan, "knowledge", None) or [] if _get(k, "files_missing")]  # F1224
+    from core.native_builder.render import missing_file_line
+
+    return [missing_file_line(k.name, f) for k in getattr(plan, "knowledge", None) or [] for f in k.files_missing]
 
 
 def _off_apis(plan: Plan, _ctx: _Ctx) -> list[str]:
