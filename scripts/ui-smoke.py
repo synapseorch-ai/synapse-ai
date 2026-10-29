@@ -13252,8 +13252,17 @@ async def check_brwreopen(browser) -> str:
     await ctx.add_init_script(BROWSER_STUB)
     await _brw_shots(ctx)
 
+    # The tab's first status read opens the conversation (`initAgent`); the reads that name the agent (settings, and
+    # the status read after it) answer after the conversation has come back.
+    status_reads: list[str] = []
+
     async def named_late(route):
-        await asyncio.sleep(2.5)
+        if route.request.url.endswith("/api/status"):
+            status_reads.append(route.request.url)
+            if len(status_reads) == 1:
+                await route.continue_()
+                return
+        await asyncio.sleep(6.0)
         await route.continue_()
 
     for read in ("**/api/settings", "**/api/status"):
@@ -13272,11 +13281,11 @@ async def check_brwreopen(browser) -> str:
         if "Your turn: sign in again" not in await card.inner_text():
             bad.append("the reopened card lost its banner")
         try:
-            await _pane(page).wait_for(timeout=8_000)
+            await _pane(page).wait_for(timeout=12_000)
         except Exception:
             bad.append("the reopened chat did not show its browser")
         else:
-            await asyncio.sleep(3.0)  # past the agent's name
+            await asyncio.sleep(7.0)  # past the agent's name
             if "Loading" in await _pane(page).inner_text():
                 bad.append("the reopened browser's pane names the agent 'Loading...'")
         await card.get_by_role("button", name="Done").click()
