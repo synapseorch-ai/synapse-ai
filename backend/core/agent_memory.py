@@ -52,6 +52,15 @@ MAX_SESSION_FILE_CHARS = 40_000   # one session's trace keeps its newest part (F
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 
+#: Why an agent's `memory` that is not true or false is refused: cloud's agent route's words (F1199).
+MEMORY_NOT_BOOLEAN = "'memory' must be true or false."
+
+
+def memory_refusal(value: object) -> str | None:
+    """Whether an agent document's `memory` may be saved: true, false or absent, nothing else (F1199). The engine
+    reads it with `bool()`, so a stored "false" would be on; cloud's census counts only a JSON true."""
+    return None if value is None or isinstance(value, bool) else MEMORY_NOT_BOOLEAN
+
 
 def normalize_name(raw: str) -> str:
     name = re.sub(r"[^a-z0-9._-]+", "-", str(raw or "").strip().lower()).strip("-")
