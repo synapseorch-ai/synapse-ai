@@ -1691,7 +1691,7 @@
                 "build_saved"
             ],
             "output_key": "summary",
-            "print_content": "{state.run_changes}{state.build_saved.effect}",
+            "print_content": "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}",
             "next_step_id": "step_end"
         },
         {

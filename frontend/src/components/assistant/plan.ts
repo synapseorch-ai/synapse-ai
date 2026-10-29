@@ -113,6 +113,10 @@ export interface Plan {
     noModel?: boolean;
     /** The stronger models the card offers (`stronger:<agent>`), each with its price (F966). */
     stronger?: { agent: string; label: string }[];
+    /** The plan's own parts in code's words (F1228): its boards, knowledge bases, APIs, apps and schedule. */
+    parts?: string | null;
+    /** What is missing or off besides a missing tool, each with where it is put right (F1228). */
+    off?: string | null;
 }
 
 // ── Step types ───────────────────────────────────────────────────────────────
@@ -615,6 +619,12 @@ export interface PlanObjectView {
         gates?: PlanGate[];
         inner_workflows?: { title?: string; steps?: PlanObjectStep[] }[];
         tools?: { name: string; status: string; provider?: string | null; via?: string }[];
+        /** What each step does, by its id, in code's words from its parts (F1228). Set by code. */
+        step_words?: Record<string, string>;
+        /** The plan's own parts in those words (F1228). Set by code. */
+        part_words?: string[];
+        /** What is missing or off, besides a missing tool or a connection to make (F1228). Set by code. */
+        off?: string[];
     };
     /** What the card offers (decision 2, Naveen 10-23): no `build` while a tool has no way in. */
     offers: string[];
@@ -645,6 +655,9 @@ function bullets(items: string[] | undefined, code = false): string | null {
  * asks first, what is missing and why, the open questions, and the answers it offers. A field with nothing in it is
  * never drawn (no "(cron expression: )"). The words stay the fallback for an older run (F443).
  */
+/** Steps whose `does` is what a model in it is asked to do (render.py's `_ASKED`). */
+const ASKED = new Set(['agent', 'llm', 'evaluator']);
+
 export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan | null {
     const steps = view.plan.steps.filter((s) => s.type !== 'end');
     if (!steps.length) return null;
@@ -661,11 +674,15 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
             ? changes.map((c, i) => ({ n: i + 1, name: c, type: null, label: '', role: 'logic' as const }))
             : steps.map((s, i) => {
                 const step = stepOf(i + 1, s.name, known(s.type));
-                const detail = [
-                    s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '',
-                    s.tool ? `uses ${s.tool}` : '',
-                    view.plan.model_fills?.includes(s.id) ? 'a model fills in its inputs' : '',
-                ].filter(Boolean).join(' — ');
+                // What a step does is its parts', in code's words (F1228); the planner's words are only what a model
+                // in it is asked to do. A plan from before them reads as it did.
+                const said = view.plan.step_words?.[s.id]?.trim();
+                const does = s.does && s.does.trim() !== s.name.trim() ? s.does.trim() : '';
+                const detail = (said
+                    ? [said, does && ASKED.has(s.type) ? `asks it to: "${does}"` : '']
+                    : [does, s.tool ? `uses ${s.tool}` : '',
+                        view.plan.model_fills?.includes(s.id) ? 'a model fills in its inputs' : '']
+                ).filter(Boolean).join(' — ');
                 const model = s.agent ? view.plan.models?.[s.agent]?.model : undefined;
                 return { ...step, ...(detail ? { detail } : {}), ...(model ? { model } : {}) };
             }),
@@ -694,6 +711,8 @@ export function planFromPlanObject(view: PlanObjectView, prompt: string): Plan |
                 const p = view.plan.models![agent];
                 return { agent, label: `Use ${p.stronger} for ${agent}${p.stronger_price ? ` (${p.stronger_price})` : ''}` };
             }),
+        parts: bullets(view.plan.part_words),
+        off: bullets(view.plan.off),
         agentInstructions: Object.entries(view.prompts ?? {})
             .filter(([, text]) => text.trim())
             .map(([name, text]) => ({ name, instructions: text.trim() })),
@@ -750,13 +769,14 @@ export function readPlan(prompt: string, kind: 'build' | 'change'): Plan | null 
 
     const open = find(list, /open questions?/)?.text.trim() ?? '';
     const left = find(list, /^not carried over\b/)?.text.trim() ?? '';
-    const needs = find(list, /^missing here\b/)?.text.trim() ?? '';
+    const needs = find(list, /^(?:missing here|missing or off)\b/)?.text.trim() ?? '';
     const asks = find(list, /^asks you first\b/)?.text.trim() ?? '';
     const alone = find(list, /^acts without asking\b/)?.text.trim() ?? '';
     return {
         kind,
         body,
-        overview: firstParagraph(find(list, /^overview\b/)?.text ?? preamble),
+        // "You asked for" since F1228; "Overview" before it.
+        overview: firstParagraph(find(list, /^(?:overview|you asked for)\b/)?.text ?? preamble),
         steps,
         schedule: scheduleOf(find(list, /^schedule\b/)?.text),
         newAgents: newAgentsOf(withChildren(list, find(list, /^agents?\b/))),

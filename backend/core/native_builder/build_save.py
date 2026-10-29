@@ -276,7 +276,7 @@ async def _moved_since_read(state: dict) -> str | None:
 
 def _stopped(events: list[dict], reason: str) -> dict:
     events.append({"type": "build_stopped", "reason": reason})
-    return {"outcome": "stopped", "reason": reason, "effect": ""}
+    return {"outcome": "stopped", "reason": reason, "effect": "", "does": ""}
 
 
 async def _models_moved(plan: O.Plan, checked: dict) -> list[str]:
@@ -622,8 +622,12 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
         _log.warning("build save of run %s not marked saved: %s", run_id, exc)
     left = [c for c in calls if c.get("makes")]
     notes = "".join(f" {n}" for n in checked.get("notes") or [])  # what the card said it does not do, said again
+    from core.native_builder.parts_words import summary
+
+    # What it does, part by part, and what is missing or off: the plan's own words as code read it at the save
+    # (F1228), never a model's account of what it built.
     return {"outcome": "saved", "made": {c["name"]: made[c["makes"]] for c in left if c["makes"] in made},
-            "effect": await _read_back(calls, made) + notes}
+            "effect": await _read_back(calls, made) + notes, "does": summary(now)}
 
 
 async def _connect_cards(plan: O.Plan, names: list[str], events: list[dict]) -> tuple[list[str], str]:

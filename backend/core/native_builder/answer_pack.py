@@ -5,7 +5,8 @@ on `request.needs`, which classify set and code checked (F979):
 
 * every pack: the workspace's name and its own description (or that it has none, so the reply never guesses the
   business), the asker's name and role, the reply's language and that it is written to them (F986), what the product
-  can do, and what the last turn did;
+  can do, and what the last turn did; and each workflow the last turns built or the message names, by its parts in
+  code's words, with the one rule for saying what it does (F1228);
 * **help:** the product's help hits, found in code (`builder_help.search`; no quick call);
 * **workspace:** the acts and changes this asker's role may ask for, and only those, plus the things the message
   names, with their ids.
@@ -120,8 +121,16 @@ def _hit_lines(hits: list[dict]) -> list[str]:
     return out
 
 
+#: How an answer may say what a workflow does (F1228): only by its parts, as code says them.
+WORKFLOW_RULE = ("What these workflows do, in code's words from their parts. Say what one does only from these lines; "
+                 "never that it can do, did or will do more than they say, never what a run of it will find or give, "
+                 "and never that it does exactly what was asked. Say what is missing or off when it bears on the "
+                 "question.")
+
+
 def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: str, asker_role: Role, last: str,
-               capabilities: str, help_hits: list[dict], named: list[dict], connect: str = "") -> str:
+               capabilities: str, help_hits: list[dict], named: list[dict], connect: str = "",
+               workflows: list[str] | None = None) -> str:
     """The pack's text, section by section."""
     needs = routed.get("needs") or "none"
     described = describe_workspace(workspace_name, "" if profile.strip().startswith(_NOT_RECORDED) else profile)
@@ -141,6 +150,8 @@ def build_pack(*, routed: dict, workspace_name: str, profile: str, asker_name: s
     parts.append(_reply_line(routed.get("language")))
     if last:
         parts.append(f"What the last turn did: {last}")
+    if workflows:
+        parts.append(WORKFLOW_RULE + "\n\n" + "\n\n".join(workflows))
     if connect:
         parts.append(connect)
     parts.append(capabilities.strip())
@@ -223,6 +234,22 @@ async def _connect_card(routed: dict, message: str, run_id: str, session_id: str
     return ""
 
 
+async def _workflows_said(turn: dict, named: list[dict], server_module: Any) -> list[str]:
+    """Each workflow the last turns built or changed and each the message names, in code's words (F1228)."""
+    from core.native_builder.parts_words import workflow_words
+
+    ids = [str(i) for i in turn.get("built") or [] if i]
+    ids += [str(n["id"]) for n in named if n.get("kind") == "workflow" and n.get("id")]
+    out = []
+    for orch_id in list(dict.fromkeys(ids))[:4]:
+        try:
+            if said := await workflow_words(orch_id, server_module):
+                out.append(said)
+        except Exception as exc:  # noqa: BLE001 — a workflow it cannot say is left out, and the rule still holds
+            _log.warning("answer pack: workflow %s not said: %s", orch_id, exc)
+    return out
+
+
 async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dict:
     """The answering step's context, built in code from `request.needs`."""
     from core import builder_help
@@ -244,13 +271,15 @@ async def answer_pack(args: dict, server_module: Any, events: list[dict]) -> dic
                                       events)
     except Exception as exc:  # noqa: BLE001 — the answer goes on without the card, which it never promises
         _log.warning("answer pack: no connect card: %s", exc)
+    named = await _named_things(message)
     pack = build_pack(
         routed=routed, workspace_name=str(state.get("workspace_name") or ""),
         profile=str(state.get("org_profile") or ""), asker_name=str(state.get("asker_name") or ""),
         asker_role=_caller().role, last=str(turn.get("last") or ""),
         capabilities=builder_help._capabilities or builder_help.SELF_HOSTED_CAPABILITIES,
         help_hits=builder_help.search(message) if needs == "help" else [],
-        named=await _named_things(message) if needs == "workspace" else [], connect=connect)
+        named=named if needs == "workspace" else [], connect=connect,
+        workflows=await _workflows_said(turn, named, server_module))
     return {"needs": needs, "pack": pack}
 
 

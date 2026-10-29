@@ -13,6 +13,7 @@ A model writes language and judgement once, into one of these; code does everyth
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -24,6 +25,8 @@ from core.native_builder import change_ops as _change_ops
 
 #: The engine's step types, as a Plan names them.
 STEP_TYPES = tuple(t.value for t in StepType)
+
+_log = logging.getLogger(__name__)
 
 _FIVE_FIELDS = re.compile(r"^\S+ \S+ \S+ \S+ \S+$")
 
@@ -226,6 +229,12 @@ class Plan(PlanDraft):
     model_fills: list[str] = Field(default_factory=list)
     #: Each knowledge base its new agents answer from, by name → id (F1223). Set by `examine`.
     knowledge_ids: dict[str, str] = Field(default_factory=dict)
+    #: What each step does, by its id, in code's words from its parts (F1228, `parts_words`). Set by `fill`.
+    step_words: dict[str, str] = Field(default_factory=dict)
+    #: The plan's own parts in those words: its boards, knowledge bases, APIs, apps and schedule. Set by `fill`.
+    part_words: list[str] = Field(default_factory=list)
+    #: What is missing or off, besides a missing tool or a connection to make, each with where it is put right.
+    off: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":
@@ -676,6 +685,20 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
 
     out.calls_no_model = calls_no_model(out)
     out.model_fills = [s.id for s in out.steps if fills_in(s)]
+
+    # What each part does and what is missing or off, in code's words (F1228): the card's, and the build's last word.
+    from core.native_builder import parts_words
+
+    try:
+        if agents is None:
+            from core.routes.agents import load_user_agents
+
+            agents = {a["id"]: a for a in await load_user_agents() if a.get("id")}
+        out.step_words, out.part_words, out.off = parts_words.describe(
+            out, titles=await parts_words.tool_titles(server_module), agents=agents,
+            kb_names=await parts_words.kb_names())
+    except Exception as exc:  # noqa: BLE001 — words it cannot read leave the card as it was; the check goes on
+        _log.warning("the plan's parts were not said: %s", exc)
 
     out.room = None
     if _room_check is not None:

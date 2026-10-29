@@ -2,8 +2,10 @@
 
 The card renders from the Plan object in P3; this text is what every other reader gets — channels, v1, MCP, an old
 client — and what the panel's `plan.ts` parser still reads for a release (paused runs finish on their own definition,
-F443). So its sections are the card's, under the headings that parser looks for: Overview, Steps, Agents, Schedule,
-Asks you first, Acts without asking, Missing here, Not carried over, Open questions. **A section with nothing to say
+F443). So its sections are the card's, under the headings that parser looks for: You asked for, Steps, Agents, Schedule,
+Asks you first, Acts without asking, Missing here, Not carried over, Open questions. F1228: the planner's summary is
+the request ("You asked for", which was "Overview"); what each step does, and what is missing or off, is code's
+(`parts_words`). **A section with nothing to say
 is left out** — never "(cron expression: )", never "None".
 """
 from __future__ import annotations
@@ -20,17 +22,28 @@ _TYPE_WORDS = {"agent": "agent", "llm": "llm", "tool": "tool", "evaluator": "eva
                "end": "end", "retrieve": "retrieve", "ingest": "ingest", "workflow": "workflow"}
 
 
+#: Steps whose `does` is an instruction a model is given: the card quotes it as what the step is asked to do.
+_ASKED = {"agent", "llm", "evaluator"}
+
+
 def _step_line(n: int, step: Step, agent_names: dict[str, str], inner: set[str],
-               fills: AbstractSet[str] = frozenset()) -> str:
+               fills: AbstractSet[str] = frozenset(), words: dict[str, str] | None = None) -> str:
     line = f"{n}. **{step.name}** ({_TYPE_WORDS.get(step.type, step.type)})"
-    if step.does and step.does.strip() and step.does.strip() != step.name.strip():
-        line += f": {step.does.strip()}"
+    does = (step.does or "").strip()
+    said = (words or {}).get(step.id)
+    if said:
+        # What the step does is its parts' (F1228); the planner's words are only what a model in it is asked.
+        line += f": {said}"
+        if step.type in _ASKED and does and does != step.name.strip():
+            line += f' — asks it to: "{does}"'
+    elif does and does != step.name.strip():
+        line += f": {does}"
     extras = []
     if step.tool:
         extras.append(f"uses `{step.tool}`")
-    if step.id in fills:
+    if step.id in fills and not said:
         extras.append("a model fills in its inputs")  # none set on the step (F967)
-    if step.agent:
+    if step.agent and not said:
         extras.append(f"agent: {agent_names.get(step.agent, step.agent)}")
     if step.workflow:
         extras.append(f"runs the workflow {step.workflow}" + (" (made with this one)" if step.workflow in inner else ""))
@@ -94,22 +107,26 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     inner = {w.title for w in plan.inner_workflows}
     parts: list[str] = []
 
+    # The planner's words are the request, never what it built (F1228): what it does is the parts' below.
     overview = (plan.summary or "").strip()
     if overview:
-        parts.append(f"## Overview\n{overview}")
+        parts.append(f"## You asked for\n{overview}")
 
+    words = getattr(plan, "step_words", {}) or {}
     if plan.steps or plan.edits:
         fills = set(getattr(plan, "model_fills", []))
-        lines = [_step_line(i, s, names, inner, fills)
+        lines = [_step_line(i, s, names, inner, fills, words)
                  for i, s in enumerate((s for s in plan.steps if s.type != "end"), 1)]
         for e in plan.edits:
             what = {"add_step": f"Add **{e.step.name if e.step else '?'}** after {e.after}",
                     "update_step": f"Change **{e.step_id}**", "remove_step": f"Remove **{e.step_id}**",
                     "set_meta": "Change the workflow's details"}[e.op]
             lines.append(f"{len(lines) + 1}. {what}")
-        parts.append("## Steps\n" + "\n".join(lines))
+        own = getattr(plan, "part_words", []) or []
+        parts.append("## Steps\n" + "\n".join(lines) + ("\n\n" + _bullets(own) if own else ""))
     for w in plan.inner_workflows:
-        steps = [_step_line(i, s, names, inner) for i, s in enumerate((s for s in w.steps if s.type != "end"), 1)]
+        steps = [_step_line(i, s, names, inner, words=words)
+                 for i, s in enumerate((s for s in w.steps if s.type != "end"), 1)]
         parts.append(f"## Inner workflow: {w.title}\n{w.does.strip()}\n" + "\n".join(steps))
 
     agent_lines = []
@@ -167,8 +184,9 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     if plan.approvals.acts_without_asking:
         parts.append("## Acts without asking\n" + _bullets(plan.approvals.acts_without_asking, code=True))
 
-    missing = [f"`{n}`: nothing here provides it yet" for n in plan.missing]
-    missing += [f"{c}: connect it first" for c in plan.connections_needed]
+    from core.native_builder.parts_words import missing_words
+
+    missing = missing_words(plan) + list(getattr(plan, "off", []) or [])
     if missing:
         parts.append("## Missing here\n" + _bullets(missing))
     if plan.room:

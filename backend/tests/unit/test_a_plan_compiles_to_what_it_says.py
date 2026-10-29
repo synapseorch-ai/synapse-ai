@@ -322,7 +322,7 @@ class TestTheCardsText:
         plan.missing = ["read_sheet"]
         plan.connections_needed = ["Google Sheets"]
         text = render(plan)
-        for heading in ("## Overview", "## Steps", "## Agents", "### New agents to create", "## Schedule",
+        for heading in ("## You asked for", "## Steps", "## Agents", "### New agents to create", "## Schedule",
                         "## Asks you first", "## Missing here", "## Open questions"):
             assert heading in text
         assert "## Acts without asking" not in text and "## Not carried over" not in text
@@ -336,7 +336,7 @@ class TestTheCardsText:
             "schedule": {"cron": "", "says": ""}})
         text = render(plan)
         assert "cron expression" not in text and "None" not in text and "()" not in text
-        assert "## Schedule" not in text and "## Overview" not in text
+        assert "## Schedule" not in text and "## You asked for" not in text and "## Overview" not in text
 
     def test_a_nested_plans_inner_workflow_is_its_own_section(self):
         text = render(O.Plan.from_draft(SW1["E1"]))
