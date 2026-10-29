@@ -489,6 +489,8 @@ type ParkedApproval = {
   approval_id: string;
   message: string;
   prompt: string;
+  /** At its turn limit (F1219): how many more turns Keep going gives. */
+  turn_limit?: { turns?: number; more?: number };
   /** Every question it asks: one, or a team's members' (TEAM1c). The fields above are the first's. */
   questions?: TeamQuestion[];
 };
@@ -1343,7 +1345,7 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
           role: 'assistant', content: parked.prompt, msgType: 'human_input_required',
           data: {
             kind: 'tool_approval', tool_name: parked.tool_name, tool_args: parked.tool_args,
-            category: parked.category, approval_id: parked.approval_id,
+            category: parked.category, approval_id: parked.approval_id, turn_limit: parked.turn_limit,
             // A team's: whose question the first is, and every one, each answered by its own id (TEAM1c).
             ...(parked.questions?.[0]?.member_id ? {
               question_id: parked.questions[0].question_id, member_id: parked.questions[0].member_id,
@@ -2711,6 +2713,8 @@ function ChatConversation({ tab, onChange, onBusy, onOpenAgent, onOpenChat, onBr
             tool_args: data.tool_args,
             category: data.category,
             approval_id: data.approval_id,
+            // At its turn limit (F1219, F1234): how many more turns Keep going gives, from the loop's own event.
+            turn_limit: data.turn_limit,
             // A team member's (TEAM1c): which member asked, and every question the turn paused on.
             delegate_from: data.delegate_from,
             delegate_agent_name: data.delegate_agent_name,
