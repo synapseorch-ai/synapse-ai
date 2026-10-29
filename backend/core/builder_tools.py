@@ -463,6 +463,16 @@ BROWSER_STEP_PROPERTIES: dict = {
 }
 
 #: A Browser agent's settings (`core.models.AgentBrowser`), as the agent tools take them.
+#: An agent's Boards section, as the agent editor's Boards switch saves it (F1214): `{"own": false}` keeps it off its
+#: workflow's own board, so its cards go to the shared board its workflow is given.
+AGENT_BOARDS_PROPERTY: dict = {
+    "type": "object",
+    "description": "Whether the agent posts to the board of the workflow it runs in: {\"own\": false} for an agent "
+                   "whose workflow was given a shared board to post to. Omit to keep the default (on).",
+    "properties": {"own": {"type": "boolean"}},
+}
+
+
 AGENT_BROWSER_PROPERTY: dict = {
     "type": "object",
     "description": (
@@ -664,6 +674,7 @@ BUILDER_TOOL_SCHEMAS = [
                     },
                     "browser": AGENT_BROWSER_PROPERTY,
                     "memory": AGENT_MEMORY_PROPERTY,
+                    "boards": AGENT_BOARDS_PROPERTY,
                     "tool_policy": {
                         "type": "object",
                         "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
@@ -741,6 +752,7 @@ BUILDER_TOOL_SCHEMAS = [
                                 },
                                 "browser": AGENT_BROWSER_PROPERTY,
                                 "memory": AGENT_MEMORY_PROPERTY,
+                                "boards": AGENT_BOARDS_PROPERTY,
                                 "tool_policy": {
                                     "type": "object",
                                     "description": "When the agent must ask a person before a tool runs: {\"tool:<name>\": \"confirm\"} for each tool that books, pays, sends, posts or deletes. The plan's 'Asks you first' list says which. Omit for none.",
@@ -1842,6 +1854,14 @@ import contextvars as _contextvars
 _room_check: Any = None
 
 
+def _boards_wrong(value: Any) -> dict | None:
+    """An agent's Boards section the agent editor would refuse, as the builder says it (F1214)."""
+    from core.models import boards_refusal
+
+    said = boards_refusal(value)
+    return {"error": said} if said else None
+
+
 def set_room_check(check: Any) -> None:
     """Install the plan-room check. ``None`` removes it."""
     global _room_check
@@ -2336,6 +2356,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             return {"error": too_long}
         if (wrong := _memory_wrong(args.get("memory"))) is not None:
             return wrong
+        if (wrong := _boards_wrong(args.get("boards"))) is not None:
+            return wrong
         from core import builder_guard  # F489: never a tool nothing provides
         if (phantom := await builder_guard.unknown(args.get("tools") or [], server_module)) is not None:
             return phantom
@@ -2377,6 +2399,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             agent["tool_policy"] = policy
         if args.get("memory") is not None:
             agent["memory"] = args["memory"]
+        if args.get("boards") is not None:
+            agent["boards"] = dict(args["boards"])
         await save_agent(agent)
         _emit(events, "agent", "created", agent["id"], agent["name"], agent)
         return {"status": "created", "agent": agent}
@@ -2423,6 +2447,9 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                 if (wrong := _memory_wrong(spec.get("memory"))) is not None:
                     errors.append({"index": i, "role": spec.get("role"), **wrong})
                     continue
+                if (wrong := _boards_wrong(spec.get("boards"))) is not None:
+                    errors.append({"index": i, "role": spec.get("role"), "error": wrong["error"]})
+                    continue
                 from core import builder_guard  # F489: never a tool nothing provides
                 if (phantom := await builder_guard.unknown(spec.get("tools") or [], server_module)) is not None:
                     errors.append({"index": i, "role": spec.get("role"), "error": phantom["error"]})
@@ -2458,6 +2485,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     agent["tool_policy"] = policy
                 if spec.get("memory") is not None:
                     agent["memory"] = spec["memory"]
+                if spec.get("boards") is not None:
+                    agent["boards"] = dict(spec["boards"])
                 documents.append(agent)
                 created.append({
                     "role": spec.get("role"),

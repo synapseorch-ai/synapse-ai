@@ -189,6 +189,32 @@ async def _create(caller: Any, args: dict) -> dict:
         raise _refusing(exc) from None
 
 
+async def _give_access(caller: Any, args: dict) -> dict:
+    """One entry on a shared board's access list, the rest kept: what the Boards screen's access editor saves, through
+    the same service (F1214, CAP3), so the same rules hold — a shared board, a principal of this workspace, `add` or
+    `work`, a principal's cap of shared boards — and the same role, a builder's write (cloud's route asks the same).
+    A build gives its workflow the board the person asked for this way: its agents' cards go there."""
+    from core.boards import service
+    from core.store import boards as store
+
+    await _on()
+    board = await _board_named(str(args.get("board") or ""))
+    if board.get("scope") != "shared":
+        raise ToolRefusal("Only a shared board has an access list: a workflow's or a schedule's own board is its own.")
+    kind, principal = str(args.get("kind") or ""), str(args.get("id") or "")
+    listed = await store.list_access(board["id"])
+    was = next((a.access for a in listed if (a.principal_kind, a.principal_id) == (kind, principal)), None)
+    kept = [{"kind": a.principal_kind, "id": a.principal_id, "access": a.access}
+            for a in listed if (a.principal_kind, a.principal_id) != (kind, principal)]
+    try:
+        saved = await service.set_access(board["id"], [*kept, {"kind": kind, "id": principal,
+                                                                "access": str(args.get("access") or "")}],
+                                         directory=await _host.directory(), by=await _person(caller))
+    except store.BoardError as exc:
+        raise _refusing(exc) from None
+    return {"board": board.get("name"), "id": board["id"], "access": saved, "was": was}
+
+
 async def _delete(caller: Any, args: dict) -> dict:
     from core.boards import service
     from core.store import boards as store
@@ -248,6 +274,15 @@ def entries() -> list[ProductTool]:
                     input_schema={"type": "object", "properties": {
                         "name": {"type": "string"}, "description": {"type": "string"}}, "required": ["name"]},
                     handler=_create, audit_action="board.created",
+                    target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
+        ProductTool(name="give_board_access",
+                    description="Let an agent, a workflow or a schedule add cards to a shared board ('add') or work "
+                                "its cards ('work'), as the board's access list on the Boards screen does.",
+                    input_schema={"type": "object", "properties": {
+                        **_BOARD, "kind": {"type": "string", "enum": ["agent", "workflow", "schedule"]},
+                        "id": {"type": "string"}, "access": {"type": "string", "enum": ["add", "work"]}},
+                        "required": ["board", "kind", "id", "access"]},
+                    handler=_give_access, audit_action="board.access.given",
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
         ProductTool(name="delete_board", description="Delete a shared board with its cards and history.",
                     input_schema={"type": "object", "properties": dict(_BOARD), "required": ["board"]},

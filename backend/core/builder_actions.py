@@ -447,6 +447,11 @@ async def _board(action: str, args: dict) -> dict:
         name = str(args.get("name") or "").strip()
         if not name:
             raise _NotOffered("Say what the board is called.")
+        # A shared board of that name is there already (F1214): a build gives its workflow that one; none is made twice.
+        there = next((b for b in await store.list_boards("shared") if b.name.casefold() == name.casefold()), None)
+        if there is not None:
+            raise _NotOffered(f'There is a shared board called "{there.name}" already: nothing new is made. A '
+                              "workflow is given it to post to on the board's access list.")
         text = str(args.get("text") or "").strip()
         return _card(f'Make a shared board "{name}"', detail=text[:300],
                      buttons=[await _button("Make it", "create_board", {"name": name, "description": text})])

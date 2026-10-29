@@ -111,6 +111,8 @@ class Caps(_Written):
 class BoardPart(_Written):
     name: str
     purpose: str = ""
+    #: A shared board already here (code sets it, F1214): given to the workflow, never made again.
+    existing: bool = False
 
 
 class Edit(_Written):

@@ -246,8 +246,12 @@ async def test_board_tools_are_an_agents_while_boards_are_on(client, boards):
     assert "Boards are switched off in this workspace: turn them on in Settings › General › Boards, or build " \
            "without the board." in out["say"]
     assert [t["status"] for t in out["plan"]["tools"]] == ["present", "present"]  # never looked up as a provider
+    # F1214 with F1203, on purpose: the board a plan names is the workflow's own, under that name; while Boards are
+    # off it stays, and the review offers the switch, or building without it.
     sent, _ = await _call("submit_plan", _plan(CHECK, boards=[{"name": "Shipment delays"}]), run)
-    assert "a plan makes no shared board" in sent["error"]
+    assert "error" not in sent, sent
+    out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, boards=[{"name": "Shipment delays"}])})
+    assert "build" not in out["offers"] and {"turn_on:boards", "without:boards"} <= set(out["offers"])
 
 
 async def test_an_update_applies_its_edits_to_the_workflow_as_it_is(client):
@@ -363,10 +367,10 @@ def test_the_cards_build_without_words_are_what_the_answer_reads():
         assert offer in cards, offer
 
 
-async def test_a_shared_board_the_plan_names_is_said_to_be_out_of_reach_and_never_made_again(client, boards):
-    """SAI2's review: Dana's "let me approve it before it goes on the Shipment delays board". The agent posts to its
-    workflow's own board; giving a workflow a shared board's access has no tool yet, so the card says so plainly and
-    no second "Shipment delays" is made."""
+async def test_a_shared_board_the_plan_names_is_given_to_the_workflow_and_never_made_again(client, boards):
+    """SAI2's review: Dana's "let me approve it before it goes on the Shipment delays board". Changed on purpose
+    (F1214, Naveen 10-29): a workflow is given a shared board's access now, so the board is the plan's, given and never
+    made again, and the card says its cards go there."""
     from core.store.boards import create_shared_board
 
     await boards(True)
@@ -375,9 +379,9 @@ async def test_a_shared_board_the_plan_names_is_said_to_be_out_of_reach_and_neve
     post = {"id": "post", "type": "agent", "name": "Post it", "does": "Posts the warning on the Shipment delays board",
             "agent": "agent_desk"}
     out, _ = await _check(run, {"finish": "submit_plan", **_plan(CHECK, post)})
-    assert out["plan"]["boards"] == []
-    assert 'not to "Shipment delays"' in out["say"] and "## Boards" in out["review"]
-    assert out["notes"] and "can't do yet" in out["notes"][0]
+    assert out["plan"]["boards"] == [{"name": "Shipment delays", "purpose": "", "existing": True}]
+    assert 'on the shared board "Shipment delays"' in out["say"] and "## Boards" in out["review"]
+    assert out["notes"] and "given to work" in out["notes"][0]
 
 
 async def test_a_plan_holding_a_key_is_sent_back(client):

@@ -252,8 +252,9 @@ class TestOnlyTheApplyStepCanDestroy:
         assert steps["step_make_tools"]["forced_tool"] == "save_build"
         import inspect
         source = inspect.getsource(build_save.save_calls) + inspect.getsource(build_save._tool_call)
+        # The board the person asked for is a shared board its workflow is given to work (F1214): changed on purpose.
         made = {"create_agent", "create_orchestration", "update_orchestration", "set_orchestration_meta",
-                "create_board", "create_schedule", "create_http_tool"}
+                "create_board", "give_board_access", "create_schedule", "create_http_tool"}
         assert {t for t in made if f'"{t}"' in source} == made and "delete" not in source
 
     def test_nothing_inherits_the_default_tool_set_by_accident(self):

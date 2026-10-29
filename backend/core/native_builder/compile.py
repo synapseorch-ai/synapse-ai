@@ -251,6 +251,9 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
             "provider": None, "max_turns": None,
             "delegate_agent_ids": [agent_ids.get(m, m) for m in new.members] if new.type == "team" else [],
         }
+        if plan.boards:
+            # Its workflow is given the board the person asked for (F1214): its cards go there, not to its own.
+            agent["boards"] = {"own": False}
         if new.type == "team":
             from core.models import AgentTeam
 
@@ -301,7 +304,7 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
             validate_timing(ScheduleCreate.model_validate(schedule).model_dump())
         except (ScheduleInvalid, ValueError) as e:
             issues.append(f"The schedule cannot run: {e}")
-    boards = [{"name": b.name, "description": b.purpose,
+    boards = [{"name": b.name, "description": b.purpose, "existing": b.existing,
                "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]} for b in plan.boards]
     return Compiled(orchestration=orch, agents=agents, inner=inner, schedule=schedule, boards=boards,
                     issues=issues, warnings=warned)
