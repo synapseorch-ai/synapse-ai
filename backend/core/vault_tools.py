@@ -18,6 +18,8 @@ import json
 import mcp.types as types
 from mcp.server import Server
 
+from core.tool_result import as_result, failed
+
 #: How many keys one `list_files` call will return.
 #:
 #: A vault with ten thousand objects would otherwise put ten thousand keys into
@@ -105,7 +107,8 @@ def _listing(prefix: str) -> tuple[list[str] | None, str | None]:
 
 
 def _err(message: str) -> list[types.TextContent]:
-    return [types.TextContent(type="text", text=json.dumps({"error": message}))]
+    # A failure, said the MCP way where a server answers (F1208): content its callers read, and `isError`.
+    return failed(json.dumps({"error": message}))
 
 
 def _ok(payload: dict) -> list[types.TextContent]:
@@ -301,6 +304,6 @@ def build_server() -> Server:
 
     @server.call_tool()
     async def _call_tool(name: str, arguments: dict) -> list[types.TextContent]:
-        return await call(name, arguments)
+        return as_result(await call(name, arguments))
 
     return server

@@ -30,6 +30,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from core.file_roots import within
+from core.tool_result import as_result, failed
 
 server = Server("sandbox")
 
@@ -63,7 +64,8 @@ def _ok(data: dict) -> list[TextContent]:
 
 
 def _err(msg: str) -> list[TextContent]:
-    return [TextContent(type="text", text=json.dumps({"error": msg}))]
+    # A failure, said the MCP way where `call_tool` answers (F1208): content its callers read, and `isError`.
+    return failed(json.dumps({"error": msg}))
 
 
 def _safe_path(relative: str) -> Path | None:
@@ -268,6 +270,8 @@ async def list_tools() -> list[Tool]:
                 "Additional packages can be installed via the 'packages' parameter. "
                 "Vault files are mounted read-only at /data — e.g. vault path "
                 "'reports/q1.json' is available at '/data/reports/q1.json'. "
+                "Write scratch files under /tmp: they are gone when the call ends, so a result to keep is "
+                "printed, or saved to the vault with vault_write. "
                 "Use for calculations, data processing, or testing logic safely."
             ),
             inputSchema={
@@ -335,6 +339,11 @@ async def list_tools() -> list[Tool]:
 # ── tool dispatch ────────────────────────────────────────────────────────
 
 @server.call_tool()
+async def answer_tool(name: str, arguments: dict):
+    """What MCP is answered: a failure with `isError` (F1208). `call_tool` keeps its content for direct callers."""
+    return as_result(await call_tool(name, arguments))
+
+
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     # The tenant, the store and this tenant's settings are established by
     # `bootstrap()`, which now runs alongside the handshake rather than ahead
@@ -561,11 +570,14 @@ async def _handle_execute(args: dict) -> list[TextContent]:
     if result.timed_out:
         return _err(f"Execution timed out after {timeout}s")
 
-    return _ok({
+    out = _ok({
         "exit_code": result.exit_code,
         "stdout": result.stdout,
         "stderr": result.stderr,
     })
+    # A script that failed is a failed call (F1208): the same content, and `isError`, so a Tool step fails on it
+    # and an agent still reads what happened.
+    return failed(out[0].text) if result.exit_code != 0 else out
 
 
 # ── main ─────────────────────────────────────────────────────────────────
