@@ -62,8 +62,12 @@ class TestWhatAMessageNames:
     def test_a_typed_kind_adds_its_feature(self):
         assert [s.id for s in FT.named_in("make it better", also=["evals"])] == ["evals"]
 
-    def test_what_a_plan_is_made_of_is_never_a_feature_and_each_is_a_census_row(self):
-        assert FT.PLAN_ITSELF <= {s.id for s in feature_census.CENSUS}
+    def test_what_a_plan_is_made_of_is_never_a_feature_and_the_census_says_which(self):
+        """The census row's own `plan_part`, so a host's census says it for its own rows too."""
+        assert {s.id for s in feature_census.CENSUS if s.plan_part} == {
+            "orchestrations", "agents", "custom_tools", "runs", "logs"}
+        row = feature_census.Screen("flows", "Flows", "/flows", names=("flow",), plan_part=True)
+        assert FT.named_in("a flow for me", census=(row,)) == [] and FT.named_in("x", also=["flows"], census=(row,))
 
 
 class TestThePack:
@@ -88,7 +92,7 @@ class TestThePack:
             next(s.label for s in feature_census.CENSUS if s.id == "knowledge")]
 
     async def test_a_reached_screen_keeps_its_imitation_as_use_the_real_tools(self, client):
-        reached = [s for s in feature_census.CENSUS if s.imitation and s.does and s.id not in FT.PLAN_ITSELF]
+        reached = [s for s in feature_census.CENSUS if s.imitation and s.does and not s.plan_part]
         if not reached:
             pytest.skip("no reached screen has an imitation in this census")
         pack = await _pack(f"Set up {reached[0].label} for me")
