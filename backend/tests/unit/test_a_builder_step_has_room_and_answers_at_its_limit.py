@@ -23,7 +23,7 @@ from tests.unit.test_an_agent_step_with_no_answer_fails import _agent_step, _ent
 
 SEED = Path(__file__).resolve().parents[2] / "core" / "native_builder" / "orchestration.json"
 #: The steps that read the workspace, research, plan or change: 60 turns in 1200 s (Naveen's table, 10-29, with HOT3).
-READS_AND_PLANS = {"step_answer_workspace", "step_plan_research", "step_lookup_research", "step_plan", "step_change",
+READS_AND_PLANS = {"step_answer_workspace", "step_plan_research", "step_lookup_research", "step_plan",
                    "step_make_new"}
 #: A quick step is one call: its agent holds only its finish tools, so more turns would offer the same call again.
 #: Its own pin keeps it at 2 (`test_the_builders_quick_steps_take_their_own_model`).

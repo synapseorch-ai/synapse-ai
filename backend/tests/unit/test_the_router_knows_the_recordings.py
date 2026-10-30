@@ -142,7 +142,7 @@ class TestTheChangeRoute:
         from core.builder_readers import read_workspace, shape_problems
         from core.native_builder.seed import bundled_definitions
 
-        planner = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_change_planner")
+        planner = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_planner")
         assert "read_workspace" in planner["tools"] and "use_recording" in planner["system_prompt"]
         read = await read_workspace({"topic": "recordings"}, None, [])
         assert [i["name"] for i in read["items"]] == ["Confirm a delivery"]

@@ -146,6 +146,14 @@ CANNOT = {"type": "function", "function": {
     }, "required": ["why", "nearest"]},
 }}
 
+SAY = {"type": "function", "function": {
+    "name": "say",
+    "description": ("Finish when the ask needs nothing made or changed: a question answered from what you read, or a "
+                    "plain reply. `text` is the reply itself, in a few sentences. Never an offer to build or change "
+                    "something: for that, submit a plan or a change."),
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
+}}
+
 FINISH_TOOLS = ("submit_change", "ask_person", "cannot")
 
 
@@ -557,6 +565,17 @@ async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
         # Said to the person as it is: a key is never a reason to stop, nor something to ask for (F1093).
         return {"error": CANNOT_FOR_A_KEY}
     return {"finish": "cannot", "why": why, "nearest": nearest}
+
+
+async def say(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """The one planner's finish when the ask needs nothing made or changed (D340 D0): the reply. It is said through
+    the answer route's own check (`answer_pack.check_answer`), so no yes is offered that nothing can take (F1243)."""
+    text = _text(args.get("text"))
+    if not text:
+        return {"error": "say needs the reply itself as text."}
+    if asks_for_a_secret(text):
+        return {"error": CANNOT_FOR_A_KEY}  # a reply never asks for a key either (F1093)
+    return {"finish": "say", "text": text}
 
 
 # ── what exists ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1328,7 +1347,7 @@ async def _card(checked: dict, *, stage: str, data: dict | None = None, title: s
         _log.warning("change card for run %s not written: %s", run_id, exc)
 
 
-for _schema, _handler in ((SUBMIT, submit_change), (ASK, ask_person), (CANNOT, cannot)):
+for _schema, _handler in ((SUBMIT, submit_change), (ASK, ask_person), (CANNOT, cannot), (SAY, say)):
     register_builder_tool(_schema, _handler)
 
 CHECK = {"type": "function", "function": {

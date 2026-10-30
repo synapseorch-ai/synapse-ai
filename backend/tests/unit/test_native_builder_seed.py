@@ -38,7 +38,7 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "change_planner", "classifier", "classifier_at_plan", "maker", "orchestrator", "plan_researcher",
+            "classifier", "classifier_at_plan", "maker", "orchestrator", "plan_researcher",
             "planner", "prompt_writer", "reporter", "researcher", "talker",
         ]
 
@@ -332,7 +332,7 @@ class TestAParseFailureGoesSomewhereSafe:
         from core.native_builder import bundled_definitions
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
         assert steps["step_approval_route"]["if_false_step_id"] == "step_plan_answer"
-        assert steps["step_manage_route"]["if_false_step_id"] == "step_change"
+        assert steps["step_manage_route"]["if_false_step_id"] == "step_plan"
         # A no is read in code (SAI2-P3): an answer that cannot be read goes back to the planner, never on.
         answered = steps["step_plan_answer_route"]
         assert answered["type"] == "switch" and answered["switch_default_step_id"] == "step_plan_context"
@@ -387,14 +387,14 @@ class TestTheBuilderKnowsItsTarget:
             "current_orchestration_source", "current_orchestration_matches",
         } <= keys
 
-    def test_the_answer_and_the_change_planner_see_the_page(self):
+    def test_the_answer_and_the_planner_see_the_page(self):
         steps = self._steps()
         # The answer that reads the workspace (SAI2-P4); the help's answer sees the page too.
         assert {"current_page", "current_orchestration_source", "current_orchestration_matches"} <= set(
             steps["step_answer_workspace"]["input_keys"]
         )
         assert "current_page" in steps["step_answer_help"]["input_keys"]
-        assert "current_page" in steps["step_change"]["input_keys"]
+        assert "current_page" in steps["step_plan"]["input_keys"]
 
     def test_an_unclear_change_is_answered_not_built(self):
         """Two matches, or a name that is not the open one, leaves the id empty —

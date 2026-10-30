@@ -236,7 +236,7 @@ async def test_prepare_action_is_a_card_and_the_reporter_holds_it():
     assert builder_access.KINDS["prepare_action"] == "card"
     agents = {a["id"]: a for a in bundled_definitions()["agents"]}
     assert "prepare_action" in agents["agent_native_builder_reporter"]["tools"]
-    assert "prepare_action" not in agents["agent_native_builder_change_planner"]["tools"]
+    assert "prepare_action" not in agents["agent_native_builder_planner"]["tools"]
     assert builder_access.KINDS["check_change"] == "card"
 
 

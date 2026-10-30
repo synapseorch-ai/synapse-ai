@@ -262,8 +262,10 @@ class TestTheLastWordAndLaterTurnsReadTheParts:
                                               {"kind": "orchestration", "action": "created", "id": "orch_b"}]})]
         assert built_in(earlier) == ["orch_b", "orch_a"]
 
-    def test_the_change_planner_never_says_what_a_workflow_does(self):
-        prompt = json.loads((NB / "agents" / "change_planner.json").read_text("utf-8"))["system_prompt"]
+    def test_the_planner_never_says_what_a_workflow_does(self):
+        # The change planner's rule 9, kept under the one planner's # Changing (D340 D0).
+        prompt = json.loads((NB / "agents" / "planner.json").read_text("utf-8"))["system_prompt"]
+        prompt = prompt.split("# Changing", 1)[1]
         assert "Never say what an existing workflow does" in prompt
         assert "that it does what they described" in prompt
 

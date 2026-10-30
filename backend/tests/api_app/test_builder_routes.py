@@ -263,7 +263,7 @@ class TestSeeHowImBuilt:
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
         assert {a["role"] for a in legend["agents"]} == {
-            "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher", "plan_researcher",
+            "planner", "prompt_writer", "maker", "reporter", "researcher", "plan_researcher",
             "classifier", "classifier_at_plan", "talker",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
@@ -354,7 +354,7 @@ class TestAQuestionGetsAnAnswer:
         # No plan, no approval, no operator.
         assert "Approve the Change" not in steps
         assert "Apply the Change" not in steps
-        assert "Plan the Change" not in steps
+        assert "Plan It" not in steps and "Check the Change" not in steps
         assert not [e for e in events if e["type"] == "human_input_required"]
 
     async def test_the_answer_is_the_summary_the_panel_renders(self, client, builder, fake_llm):
@@ -406,7 +406,7 @@ class TestAChangeThatChangesNothingHasNothingToApprove:
         events = await stream(client, "/api/builder/chat", {"message": "rename Nobody to Somebody"})
 
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-        assert "Plan the Change" in steps and "Check the Change" in steps
+        assert "Plan It" in steps and "Check the Change" in steps and "Check the Plan" not in steps
         assert "Approve the Change" not in steps
         assert "Apply the Change" not in steps
         assert not [e for e in events if e["type"] == "human_input_required"]
@@ -493,7 +493,7 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
 
         # The assertion is worthless unless the agent step actually ran.
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-        assert "Plan the Change" in steps, steps
+        assert "Plan It" in steps, steps
         assert len(fake_llm.calls) == 2
         assert not fake_llm.calls[1].get("images")
 

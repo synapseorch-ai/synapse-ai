@@ -81,7 +81,10 @@ REVIEWED = [
 
 def test_the_split_is_code_between_the_planner_and_its_review():
     steps = _steps()
-    assert steps["step_change"]["next_step_id"] == "step_check_change"
+    # The one planner's change goes through its finish switch to the change check (D340 D0), still code.
+    assert steps["step_plan"]["next_step_id"] == "step_plan_finish"
+    route = steps["step_plan_finish"]
+    assert route["type"] == "switch" and route["switch_cases"]["submit_change"] == "step_check_change"
     check = steps["step_check_change"]
     assert check["type"] == "tool" and check["forced_tool"] == "check_change"
     assert check["tool_arguments"] == {"draft": "{{ state.change_draft }}"}  # set: no model reads the draft
@@ -147,7 +150,7 @@ def test_the_cards_side_never_reaches_a_write():
 
 
 def test_the_planner_plans_a_schedule_on_or_off_as_a_button():
-    prompt = _agents()["agent_native_builder_change_planner"]["system_prompt"]
+    prompt = _agents()["agent_native_builder_planner"]["system_prompt"].split("# Changing", 1)[1]
     button = prompt.split("Button acts", 1)[1].split("\n", 1)[0]
     assert "turn a schedule on or off" in button and "they get a card to press" in button
 
@@ -188,11 +191,11 @@ def test_a_change_that_goes_round_too_often_ends_in_words():
     no summary ("'Plan the Change' gave up after 5 attempts"). It goes to a Print that says nothing was changed and
     how to start again (the branch review's finding 12)."""
     steps = _steps()
-    planner = steps["step_change"]
+    planner = steps["step_plan"]
     assert planner["max_iterations"] >= 5
     spent = steps[planner["on_exhausted_step_id"]]
     assert spent["type"] == "print" and spent["output_key"] == "summary" and spent["next_step_id"] == "step_end"
-    assert "Nothing was changed" in spent["print_content"] and "{state." not in spent["print_content"]
+    assert "Nothing was built or changed" in spent["print_content"] and "{state." not in spent["print_content"]
 
 
 def test_a_new_thing_is_made_only_after_the_yes_and_only_with_the_four_create_tools():
