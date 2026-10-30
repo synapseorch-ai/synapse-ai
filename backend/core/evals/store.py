@@ -30,6 +30,8 @@ from typing import Optional
 
 RUBRICS = "rubrics"
 SUITES = "eval_suites"
+#: Each sampled workflow's count of finished runs (D340 F): `{"id": orch_id, "count": n}`.
+JUDGE_COUNTS = "eval_judge_counts"
 
 #: The fields that decide what a score *means*. A change to any of them mints a
 #: new version — see the module docstring.
@@ -290,3 +292,18 @@ async def delete_suite(suite_id: str) -> bool:
         return False
     await collections.save(SUITES, remaining)
     return True
+
+
+async def next_run_number(orch_id: str) -> int:
+    """This finished run's number among its workflow's, for a judge sample (D340 F): 1, 2, 3… A count per workflow,
+    kept in the store, read and written once: never a listing of its runs, which an hourly workflow has thousands of."""
+    from core.store import collections
+
+    data = list(await collections.load(JUDGE_COUNTS) or [])
+    row = next((r for r in data if isinstance(r, dict) and r.get("id") == orch_id), None)
+    if row is None:
+        row = {"id": orch_id, "count": 0}
+        data.append(row)
+    row["count"] = int(row.get("count") or 0) + 1
+    await collections.save(JUDGE_COUNTS, data)
+    return row["count"]

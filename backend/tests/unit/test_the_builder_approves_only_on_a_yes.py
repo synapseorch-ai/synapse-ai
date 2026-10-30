@@ -19,7 +19,7 @@ GATES = {
     # SAI2-P3: a yes goes straight to the approval (the agents' instructions were on the card); anything else is
     # read in code (build without, connected, or back to the planner with what the person said).
     "step_approval_route": ("review_feedback", "step_plan_approve", "step_plan_answer"),
-    "step_manage_route": ("manage_review", "step_after_yes", "step_change"),
+    "step_manage_route": ("manage_review", "step_after_yes", "step_plan"),
 }
 
 YES = ["approve", "Approve", " approve ", "approved", "ok", "OK!", "okay", "yes", "Yes.", "looks good",

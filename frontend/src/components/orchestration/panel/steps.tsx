@@ -1581,7 +1581,7 @@ function BrowserStepSection({ step, update, agents, browserRecordings, browserSe
                 <fieldset className="grid gap-2">
                     <legend className="text-sm font-medium text-text">Inputs</legend>
                     {inputs.map((name) => (
-                        <Field key={name} label={labelOf(name)} hint={`What it types for {${name}}, from the run: {state.key} or text.`}>
+                        <Field key={name} label={labelOf(name)} hint={`What it types for {${name}}, from the run: {{ state.key }} or text.`}>
                             <Input
                                 value={step.recording_inputs?.[name] ?? ''}
                                 onChange={(e) => update({ recording_inputs: { ...(step.recording_inputs ?? {}), [name]: e.target.value } })}

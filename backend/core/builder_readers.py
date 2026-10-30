@@ -23,28 +23,40 @@ from core.builder_tools import register_builder_tool
 Reader = Callable[[dict], Awaitable[dict]]
 
 TOPICS: dict[str, str] = {
-    "schedules": "every schedule: on or paused, when it runs, what it starts, when it last ran and how that went",
+    "schedules": "every schedule: on or paused, when it runs, what it starts, what it does with a time it missed "
+                 "(run_immediately or skip), when it last ran and how that went",
     "runs": "recent workflow runs, newest first, with why each failed one failed (status=failed for only those)",
     "channels": "connected chat channels (Slack, Telegram, Discord…): on or off, and which agents answer",
     "phone": "phone numbers: the number, on or off, and the agent that answers",
     "widgets": "website widgets: the agent that answers, the sites allowed, on or off",
     "tool_policy": "whether agents must ask before destructive, open-world or undeclared tools, by default and per agent",
     "knowledge": "knowledge bases, or that Knowledge is switched off",
+    "evals": "evals: each workflow a rubric scores, its golden sets and its latest scores and regressions; with "
+             "`name`, that workflow's eval in full (its rubric, recent scores, golden sets and their last runs)",
     "usage": "what each workflow's runs used over the last `days` days (runs, credits, model dollars)",
     "plan": "the plan this workspace is on and the credits and model money left",
     "models": "the default model, the builder's models, and which providers have a key (never the key)",
+    "variables": "the workspace's variables by name, each with the `{{ global.x }}` that uses it in a step (never "
+                 "its value)",
+    "settings": "the workspace settings Synapse AI may change (settings_set), each with its value now and its screen; "
+                "the others (keys, billing, members…) are changed on their screens",
+    "savings": "where the workspace could spend less over the last `days` days (default 30): each suggestion with "
+               "code's rule, its estimate a month (none when it can't be priced) and the op that makes it. 'Cut my "
+               "costs', 'why is it expensive'",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
     # What happened, not only what is set up (ASSIST1, D291).
     "today": "what happened over the last `days` days (default 1, today): runs by status, each failure and why, "
              "what waits on a person, schedules that ran, cost",
     "run": "one run step by step, with the start of what each step wrote: `run_id`, or `name` for that workflow's "
-           "latest run. 'Did it finish', 'what did it do', 'why did it fail'",
+           "latest run, or neither for the latest run that failed. 'Did it finish', 'what did it do', 'why did it "
+           "fail': a failed or stopped run carries `failure`, code's reading of it (the step, its error, its class "
+           "and what it means, the ops that fix it, whether it can resume)",
     # What a workflow is made of, not what it did (F1237): the builder's own words for its steps, never its configs.
     "workflow": "one workflow's steps, by `name` (or its id): what each step does, its own parts, and what is "
                 "missing or off. 'What does it do', 'what are its steps'",
-    "waiting": "what waits on a person: workflow runs asking a question and tool calls an agent stopped on, each "
-               "with what answers it",
+    "waiting": "what waits on a person: workflow runs asking a question, tool calls an agent stopped on, and fixes "
+               "a run kept on a recording, each with what answers it",
     "agent_activity": "what the agent `name` has been doing: its recent conversations (last question and answer) "
                       "and the workflows that use it, with how each one's last run went",
     "boards": "the boards and how many cards are open on each; with `name`, that board's open cards (their ids, who "
@@ -58,7 +70,7 @@ TOPICS: dict[str, str] = {
 #: shape as the self-hosted one; `shape_problems` names any drift, and both hosts' tests hold their readers to it.
 SHAPES: dict[str, dict[str, list[str]]] = {
     "schedules": {"keys": ["items", "note"],
-                  "item": ["name", "on", "runs", "starts", "last_run_at", "next_run_at", "last_run"]},
+                  "item": ["name", "on", "runs", "starts", "if_missed", "last_run_at", "next_run_at", "last_run"]},
     "runs": {"keys": ["items", "note"],
              "item": ["workflow", "status", "started_at", "ended_at", "error", "waiting_for_a_person", "run_id"]},
     "channels": {"keys": ["items", "note"], "item": ["name", "platform", "on", "status", "agents"]},
@@ -66,6 +78,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "widgets": {"keys": ["items", "note"], "item": ["name", "agent", "allowed_sites", "on", "messages_per_day"]},
     "tool_policy": {"keys": ["default", "agents_with_their_own", "note"]},
     "knowledge": {"keys": ["items", "note"], "item": ["name", "description", "status"]},
+    "evals": {"keys": ["items?", "note?", "workflow?", "rubric?", "scores?", "regressions?", "agreement?",
+                       "golden_sets?"], "item": ["workflow", "rubric", "golden_sets", "last_score", "regressions"]},
     # Where the host charges credits, they come beside the model dollars (F843).
     "usage": {"keys": ["items", "window", "note"], "item": ["workflow", "runs", "model_dollars", "credits?"]},
     # Self-hosted has no plan: no items, and a note saying so.
@@ -78,7 +92,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "today": {"keys": ["window", "runs", "failed", "waiting_for_a_person", "running", "schedules_that_ran",
                        "model_dollars", "credits?", "note"]},
     "run": {"keys": ["run_id", "status", "workflow", "started_at", "ended_at", "steps", "response", "shared_state",
-                     "error?", "model_dollars", "credits?"]},
+                     "error?", "failure?", "model_dollars", "credits?"]},
     "workflow": {"keys": ["workflow", "id", "steps", "parts", "missing_or_off"]},
     # A run's question and a tool's approval carry their own keys, each with the tool that answers it.
     "waiting": {"keys": ["items", "total", "next_cursor"]},
@@ -86,7 +100,10 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     # The boards (a page of them), or with `name` one board's cards.
     "boards": {"keys": ["items?", "total?", "next_cursor?", "board?", "id?", "open?", "recently_closed?"],
                "item": ["board", "id", "kind", "open", "being_worked_on"]},
-    "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps"]},
+    "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps", "fixes_waiting"]},
+    "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
+    "settings": {"keys": ["items", "note"], "item": ["name", "label", "value", "where"]},
+    "savings": {"keys": ["items", "window", "note"], "item": ["kind", "saves_usd_month", "rule", "op"]},
 }
 
 #: What each topic shows and where to look instead, said with every answer that has nothing (F1237): on an error it
@@ -106,6 +123,8 @@ ELSEWHERE: dict[str, str] = {
                    "`agents`.",
     "knowledge": "This shows knowledge bases, or that Knowledge is off. What a workflow's steps search is in topic "
                  "`workflow` with its name.",
+    "evals": "This shows evals: rubrics scoring workflows, golden sets and scores. A workflow's steps are topic "
+             "`workflow` with its name; what its runs did, `runs`.",
     "usage": "This shows what each workflow's runs used. The runs themselves are topic `runs`; the plan and what is "
              "left of it, `plan`.",
     "plan": "This shows the plan and what is left of it. What runs used is topic `usage`.",
@@ -126,6 +145,12 @@ ELSEWHERE: dict[str, str] = {
               "its name.",
     "recordings": "This shows browser recordings a person made in the app. Which workflow replays one is in topic "
                   "`workflow` with its name.",
+    "variables": "This lists the workspace's variables by name. Which workflow's steps use one is in topic "
+                 "`workflow` with its name.",
+    "settings": "This lists the settings Synapse AI may change. The models and which providers have a key are topic "
+                "`models`; when agents must ask before a tool, `tool_policy`.",
+    "savings": "This shows where the workspace could spend less. What each workflow's runs used is topic `usage`; "
+               "the plan and what is left of it, `plan`.",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -233,6 +258,8 @@ async def _schedules(args: dict) -> dict:
         out.append({
             "name": s.get("name"), "on": bool(s.get("enabled")), "runs": _when(s),
             "starts": f'{s.get("target_type")} "{target or s.get("target_id")}"',
+            # What it does with a time it missed (F1267), as the Schedules screen sets it.
+            "if_missed": s.get("missed_run_policy") or "skip",
             "last_run_at": s.get("last_run_at"), "next_run_at": s.get("next_run_at"),
             "last_run": ({"status": last.get("status"), "error": last.get("error"), "started_at": last.get("started_at")}
                          if last else None),
@@ -329,11 +356,51 @@ async def _recordings(args: dict) -> dict:
     if (refused := await _browser_refused("recording")) is not None:
         return {"items": [], "note": refused["error"]}
     out = [{"name": d.get("name") or d["id"], "id": d["id"], "sites": list(d.get("sites") or []),
-            "inputs": recordings.input_names(d), "steps": len(d.get("steps") or [])}
+            "inputs": recordings.input_names(d), "steps": len(d.get("steps") or []),
+            "fixes_waiting": len(d.get("pending_edits") or [])}
            for d in await recordings.all_recordings()]
     return {"items": _named(out, args.get("name")),
             "note": "" if out else "There are no recordings yet: a person records one in the app (Recordings › "
                                    "Record a task)."}
+
+
+async def _variables(args: dict) -> dict:
+    """The variables by name, never by value (F1271): a plan uses one as `{{ global.x }}` and needs nothing of what
+    it holds. Adding or changing one is the Variables screen's."""
+    from core import variables
+
+    out = [{"name": v["key"], "reference": v["reference"]} for v in variables.named(await variables.load())]
+    return {"items": _named(out, args.get("name")),
+            "note": "Names only: a value is never shown, and a run fills it in where its reference is. Adding or "
+                    "changing a variable is done in Settings › Variables." if out else
+                    "There are no variables yet: a person adds them in Settings › Variables."}
+
+
+async def _settings(args: dict) -> dict:
+    """The settings on Synapse AI's list, as they read now (F1264), never a key: the rest are their screens'."""
+    from core import settings_allow
+    from core.product_tools import settings
+
+    now = await settings.current()
+    out = [{"name": n, "label": a.label, "value": settings_allow.shown(n, now.get(n)), "where": a.where}
+           for n, a in settings_allow.allowed().items()]
+    return {"items": _named(out, args.get("name")),
+            "note": "Each changes through settings_set, with the person's yes and undo. Keys, API keys, billing and "
+                    "the plan, members and roles, the MCP server and import or export are not Synapse AI's: say "
+                    "where they are done, e.g. API keys at /settings/api_keys, a provider's key at /settings/models."}
+
+
+async def _savings(args: dict) -> dict:
+    """Code's suggestions for spending less (F1261), each with its rule, its estimate and its op."""
+    from core import savings
+
+    got = await savings.find(int(args.get("days") or savings.MONTH_DAYS))
+    items = got["items"]
+    if (args.get("name") or "").strip():
+        needle = args["name"].strip().lower()
+        items = [i for i in items if needle in str(i.get("agent") or i.get("schedule") or i.get("kind")).lower()]
+    return {**got, "items": items} if items else {**got, "items": [], "note": "Nothing here costs more than it "
+                                                                              "needs to, by code's rules."}
 
 
 async def _usage(args: dict) -> dict:
@@ -432,7 +499,34 @@ async def _agent_activity(args: dict) -> dict:
 
 
 async def _waiting(args: dict) -> dict:
-    return await _product_read("list_waiting", {"limit": args.get("limit") or 25})
+    got = await _product_read("list_waiting", {"limit": args.get("limit") or 25})
+    if "error" in got:
+        return got
+    fixes = await _recording_fixes()
+    return {**got, "items": [*(got.get("items") or []), *fixes], "total": int(got.get("total") or 0) + len(fixes)}
+
+
+async def _recording_fixes() -> list[dict]:
+    """Each fix a run kept on a recording, waiting for a person to use or drop it (F1270), with what answers it;
+    none where the host's plan has no Browser."""
+    from core.browser import recordings
+    from core.builder_tools import _browser_refused
+    from core.product_tools.browser import edit_words
+    from core.product_tools.errors import ToolRefusal
+
+    if await _browser_refused("recording") is not None:
+        return []
+    out = []
+    for doc in await recordings.all_recordings():
+        for edit in doc.get("pending_edits") or []:
+            try:
+                said = edit_words(doc, edit)
+            except ToolRefusal:
+                continue
+            out.append({"kind": "recording_fix", "recording": said["recording"], "edit_id": edit.get("edit_id"),
+                        "from_step": said["from_step"], "before": said["before"], "after": said["after"],
+                        "answer_with": ["recording_approve_edit", "recording_discard_edit"]})
+    return out
 
 
 async def _boards(args: dict) -> dict:
@@ -448,6 +542,12 @@ async def _run(args: dict) -> dict:
     run_id = (args.get("run_id") or "").strip()
     flows = {o.get("id"): o.get("name") for o in await load_orchestrations()
              if not o.get("system") and o.get("is_active") is not False}
+    if not run_id and not (args.get("name") or "").strip():
+        # "Why did it fail?" with nothing named: the latest failed run of a workflow here (F1260).
+        failed = [r for r in await list_runs(limit=50, status="failed") if r.get("orchestration_id") in flows]
+        if not failed:
+            return {"error": "No workflow here has a failed run."}
+        run_id = failed[0]["run_id"]
     if not run_id:
         wanted = [i for i, n in flows.items() if (args.get("name") or "").strip().lower() in str(n or "").lower()]
         if not (args.get("name") or "").strip() or not wanted:
@@ -465,8 +565,15 @@ async def _run(args: dict) -> dict:
 
     row = next(iter(r for r in await list_runs(limit=500) if r.get("run_id") == run_id), {})
     paid = run_cost.total(list((await run_cost.costs([row])).values())) if row else {"model_dollars": 0.0}
-    return {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),
-            "started_at": row.get("started_at"), "ended_at": row.get("ended_at"), **paid}
+    out = {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),
+           "started_at": row.get("started_at"), "ended_at": row.get("ended_at"), **paid}
+    if view.get("status") in ("failed", "cancelled"):
+        from core.orchestration.triage import failure
+
+        # Code's reading of why, in bounded reads (F1260): the planner states the cause from it, never a guess.
+        if (block := await failure(run_id)) is not None:
+            out["failure"] = block
+    return out
 
 
 async def _workflow(args: dict) -> dict:
@@ -502,12 +609,44 @@ async def _workflow(args: dict) -> dict:
             "missing_or_off": [scrub_secrets(x) for x in said["off"]]}
 
 
+async def _evals(args: dict) -> dict:
+    """Evals (F1255): with `name`, one workflow's eval in full, through the product tool's own read; else each
+    workflow a rubric scores or a golden set tests, with its latest score and how many regressions it has had."""
+    from core.evals import service
+    from core.product_tools import evals as E
+    from core.product_tools.errors import ToolRefusal
+
+    if str(args.get("name") or "").strip():
+        try:
+            return await E._read_scores(None, {"workflow": args["name"]})
+        except ToolRefusal as exc:
+            return {"items": [], "note": str(exc)}
+    from core.builder_tools import _is_visible
+    from core.routes.orchestrations import load_orchestrations
+
+    rubrics = {r["id"]: r.get("name") for r in await service.list_rubrics()}
+    sets = await service.list_suites()
+    items = []
+    for o in [o for o in await load_orchestrations() if _is_visible(o)]:
+        mine = [s for s in sets if s.get("orchestration_id") == o["id"]]
+        if not o.get("rubric_id") and not mine:
+            continue
+        trend = await service.trend(o["id"], 50)
+        last = trend["scores"][-1]["score"] if trend["scores"] else None
+        items.append({"workflow": o.get("name"), "rubric": rubrics.get(o.get("rubric_id") or "") or None,
+                      "golden_sets": [f'{s.get("name")} ({len(s.get("cases") or [])} cases)' for s in mine],
+                      "last_score": last, "regressions": len(trend["regressions"])})
+    return {"items": items} if items else {"items": [], "note": "No workflow here is scored by a rubric or tested by "
+                                                                "a golden set yet."}
+
+
 _SELF_HOSTED: dict[str, Reader] = {
     "schedules": _schedules, "runs": _runs, "channels": _channels, "phone": _phone, "widgets": _widgets,
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
-    "boards": _boards, "recordings": _recordings,
+    "boards": _boards, "recordings": _recordings, "variables": _variables, "settings": _settings,
+    "savings": _savings, "evals": _evals,
 }
 
 

@@ -96,7 +96,7 @@ async def submit_prompts(args: dict, server_module: Any, events: list[dict]) -> 
 
 _CAPS = ("max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd")
 _SCHEDULE_ARGS = ("name", "description", "target_type", "target_id", "prompt", "schedule_type", "cron_expression",
-                  "interval_value", "interval_unit", "timezone")
+                  "interval_value", "interval_unit", "timezone", "missed_run_policy")
 
 
 def _workflow_call(tool: str, doc: dict, *, update: bool = False) -> dict:
@@ -130,6 +130,11 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
                           "makes": kb["id"], "kind": "knowledge_base", "name": kb["name"]})
         calls += [{"tool": "add_knowledge_file", "args": {"knowledge_base": kb["name"], "path": path},
                    "makes": None, "kind": "knowledge_file", "name": f"{kb['name']}: {path}"} for path in kb["files"]]
+        if kb.get("urls"):
+            # Its web pages (D340 F), through the tool the Knowledge screen's "Add pages" is behind.
+            calls.append({"tool": "add_knowledge_pages", "args": {"knowledge_base": kb["name"], "urls": kb["urls"],
+                                                                  "kind": kb["kind"]},
+                          "makes": None, "kind": "knowledge_pages", "name": f"{kb['name']}: pages"})
     for agent in sorted(compiled.agents, key=lambda a: a.get("type") == "delegate"):  # members before their team
         args: dict[str, Any] = {"name": agent["name"], "description": agent.get("description") or "",
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
@@ -150,6 +155,8 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
     if meta:
         calls.append({"tool": "set_orchestration_meta", "args": {"orch_id": main["id"], **meta}, "makes": None,
                       "kind": "meta", "name": main["name"]})
+    if plan.eval is not None:
+        calls += _eval_calls(plan, main)
     for board in compiled.boards:
         # The board the person asked for (F1214): a shared board, made unless one of that name is here, and this
         # workflow given it to work, through the access list the Boards screen edits. Its new agents post there.
@@ -164,6 +171,33 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
         calls.append({"tool": "create_schedule",
                       "args": {k: v for k, v in compiled.schedule.items() if k in _SCHEDULE_ARGS and v is not None},
                       "makes": None, "kind": "schedule", "name": compiled.schedule["name"]})
+    return calls
+
+
+#: The rubric a build's eval makes, as its later calls name it before it is made (F1255).
+EVAL_RUBRIC = f"{MADE}rubric:eval"
+
+
+def _eval_calls(plan: O.Plan, main: dict) -> list[dict]:
+    """A plan's eval, made after its workflow through the Evals screen's own tools (F1255, D340 F): the rubric, then
+    the golden set of the cases the card listed, and the rubric attached last, so a stop never leaves the workflow
+    scored by a rubric that was removed."""
+    from core.native_builder.build_plan import rubric_of
+
+    part, workflow = plan.eval, main["id"]
+    # An update keeps the rubric its workflow is scored by unless the ask was about how it is judged (D340 F).
+    calls = [] if part.keeps else [{"tool": "save_rubric", "args": rubric_of(part), "makes": EVAL_RUBRIC,
+                                    "kind": "rubric", "name": part.name}]
+    if part.cases:
+        calls.append({"tool": "save_eval_cases", "args": {
+            "workflow": workflow, "name": f"{main['name']} golden set",
+            "cases": [c.model_dump() for c in part.cases]}, "makes": None, "kind": "eval_suite",
+            "name": f"{main['name']} golden set"})
+    if not part.keeps:
+        calls.append({"tool": "attach_rubric", "args": {"workflow": workflow, "rubric": EVAL_RUBRIC,
+                                                        **({"judge_every": part.judge_every}
+                                                           if part.judge_every != 1 else {})},
+                      "makes": None, "kind": "rubric_attach", "name": part.name})
     return calls
 
 
@@ -402,7 +436,8 @@ def _id_of(call: dict, result: Any) -> str | None:
     parsed = _obj(result)
     if not isinstance(parsed, dict):
         return None
-    nested = parsed.get("agent" if call["kind"] == "agent" else "orchestration")
+    nested = parsed.get({"agent": "agent", "rubric": "rubric", "eval_suite": "golden_set"}.get(call["kind"],
+                                                                                               "orchestration"))
     for record in (nested, parsed):
         if isinstance(record, dict) and record.get("id"):
             return str(record["id"])
@@ -454,6 +489,12 @@ async def _undo(done: list[tuple[str, str, str]], state: dict, events: list[dict
 
                 await (K._host.delete_base or K._oss_delete_base)(caller, real)
                 _emit(events, "knowledge_base", "deleted", real, name, reason=reason)
+            elif kind in ("rubric", "eval_suite"):
+                # As the Evals screen's Delete does (F1255): a golden set's past runs stay; it has none yet.
+                from core.product_tools import evals
+
+                await evals.remove(caller, kind, real)
+                _emit(events, kind, "deleted", real, name, reason=reason)
             elif kind == "tool":
                 from core.store.resources import delete_tool_named
 
@@ -618,7 +659,8 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
                     failure = f"{call['name']}: it was not made"
                     break
                 made[call["makes"]] = real
-            if real and call["kind"] in ("agent", "orchestration", "schedule", "board", "tool", "knowledge_base"):
+            if real and call["kind"] in ("agent", "orchestration", "schedule", "board", "tool", "knowledge_base",
+                                         "rubric", "eval_suite"):
                 done.append(("updated" if call.get("update") else call["kind"], real, call["name"]))
             if real and call["kind"] == "board_access":
                 given = _filled(call["args"], made)

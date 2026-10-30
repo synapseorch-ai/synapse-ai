@@ -193,7 +193,10 @@ def test_the_builder_checks_between_the_plan_and_the_review():
 
     orch = bundled_definitions()["orchestration"]
     steps = {s["id"]: s for s in orch["steps"]}
-    assert steps["step_plan"]["next_step_id"] == "step_check_plan"
+    # The one planner's plan reaches the check through its finish switch, in code (D340 D0).
+    assert steps["step_plan"]["next_step_id"] == "step_plan_finish"
+    finish = steps["step_plan_finish"]
+    assert finish["switch_default_step_id"] == "step_check_plan" and "submit_plan" not in finish["switch_cases"]
     assert steps["step_check_plan"]["output_key"] == "plan_checked"
     assert steps["step_check_plan"]["next_step_id"] == "step_plan_route"
     assert steps["step_plan_route"]["switch_cases"]["review"] == "step_human_review"

@@ -89,10 +89,23 @@ from core.native_builder import prompt_lint, seed
 #: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
 #: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
 #: same through the converter before), ac29e4a5….
+#: F1255: classify's typed `feature` (evals; its line in the library's classify_kinds, D340's one field for every
+#: feature), and the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c…
+#: on its branch; on fix-forward 16's tree, 23bea1ae….
+#: D340 D0: one planner makes and changes — the change planner and its step fold into `step_plan` (both toolsets, five
+#: finishes with `say`, instructions in sections that keep each rule's number, the change planner's finish fallback),
+#: gather runs both context readers for every act, and `step_plan_finish` routes each finish to the check that was
+#: there (a question or a "can't" on a change to the change check), 2d1b2d39… on fix-forward 16's 45d6d0b3; with
+#: F1255's rule 11 and topic `evals` under the one planner's # Changing, 20f244e4…; the change context's rounds
+#: are the planner's (8, then the one 'built or changed' end), d3ac6152….
+#: D340 D2: the planner researches while it plans — a `research_questions` finish (product, public, business) to
+#: code's answers first (`step_research_answer`), the researcher for what is left (`step_research_find`, its answers
+#: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863….
 #: F1257: the plan researcher and the researcher read search_help, and research_rules says what this product does is
 #: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20…; merged with v2.0 ce37b8be (the classify
 #: at a waiting plan above), b0a8a77c….
-BUNDLE_SHA256 = "b0a8a77c526beef56548588b4997ebcbf21bb521cc26b10c1fe6728fed5f5fe3"
+#: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c….
+BUNDLE_SHA256 = "eac4c85cfab374094b228bf22903a9ad148ff8f285e8b68d7e4079dc00508d92"
 
 
 def _sha(definitions) -> str:

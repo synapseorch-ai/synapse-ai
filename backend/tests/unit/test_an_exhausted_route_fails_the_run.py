@@ -271,7 +271,9 @@ class TestTheBuildersOwnCycles:
         assert await driver.answer("run_brev5", {"feedback": "change it again", "next": "review"}) == "completed"
         run = await _run("run_brev5")
         assert run.step_history[-1]["step_id"] in ("step_plan_rounds", "step_end")
-        assert "went back and forth on this plan" in str(run.shared_state.get("summary"))
+        # One words for a build or a change since D340 D0's one planner.
+        assert "Nothing was built or changed: we went back and forth on this several times" in str(
+            run.shared_state.get("summary"))
 
 
 class TestTheBundledFlows:

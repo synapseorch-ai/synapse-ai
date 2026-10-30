@@ -23,11 +23,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from core import settings_allow
+
 Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool", "feature", "recording")
+                "approval", "card", "openapi", "python_tool", "feature", "recording", "settings")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -68,6 +70,7 @@ _ACTS = (
     Op("answer_run", "act", "run", verb="Answer"),
     Op("answer_tool_call", "act", "approval", verb="Answer"),
     Op("cancel_run", "act", "run", verb="Stop"),
+    Op("resume_run", "act", "run", verb="Resume"),
     Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
     Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),
@@ -85,9 +88,26 @@ _ACTS = (
     Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
     Op("feature_on", "act", "feature", verb="Turn on"),
+    # Evals (F1255): a workflow's rubric, its golden set's cases, a run of the set, and stopping it, each a card.
+    Op("eval_rubric", "act", "workflow", fields=("name", "criteria", "floor", "rubric"), any_of=True,
+       verb="Score"),
+    Op("eval_cases", "act", "workflow", fields=("cases", "count", "steer", "golden_set"), any_of=True,
+       verb="Add test cases to"),
+    Op("eval_run", "act", "workflow", fields=("golden_set",), verb="Run the eval of"),
+    Op("eval_cancel", "act", "workflow", fields=("golden_set",), verb="Stop the eval of"),
+    # Recordings (F1270): a kept fix used or dropped, a new name, or the recording gone, each a card.
+    Op("recording_approve_edit", "act", "recording", fields=("edit_id",), required=("edit_id",),
+       verb="Use the kept fix in"),
+    Op("recording_discard_edit", "act", "recording", fields=("edit_id",), required=("edit_id",),
+       verb="Drop the kept fix in"),
+    Op("recording_rename", "act", "recording", fields=("name",), required=("name",), verb="Rename"),
+    Op("recording_delete", "act", "recording", verb="Delete"),
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
+#: What a schedule does with a time it missed (the machine was off, the fleet was down), as the Schedules screen sets
+#: it (F1267): run it once as soon as it can, or skip it.
+MISSED = ("run_immediately", "skip")
 
 _WRITES = (
     Op("rename_workflow", "write", "workflow", "set_orchestration_meta", ("name",), ("name",), verb="Rename"),
@@ -95,12 +115,15 @@ _WRITES = (
        ("description", "max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd"), any_of=True,
        verb="Change the settings of"),
     Op("delete_workflow", "delete", "workflow", "delete_orchestration", verb="Delete"),
-    Op("set_schedule", "write", "schedule", "update_schedule", (*_SCHEDULE_TIME, "prompt", "description"),
-       any_of=True, verb="Change"),
+    Op("set_schedule", "write", "schedule", "update_schedule",
+       (*_SCHEDULE_TIME, "prompt", "description", "missed_run_policy"), any_of=True, verb="Change"),
+    # What it starts, another workflow or agent (F1267): the same schedule, its id, history and time kept.
+    Op("retarget_schedule", "write", "schedule", "update_schedule", ("runs",), ("runs",),
+       verb="Change what runs on"),
     Op("rename_schedule", "write", "schedule", "update_schedule", ("name",), ("name",), verb="Rename"),
     Op("delete_schedule", "delete", "schedule", "delete_schedule", verb="Delete"),
     Op("create_schedule", "create", "schedule", "create_schedule",
-       ("runs", "prompt", *_SCHEDULE_TIME, "description"), ("runs", "prompt"), verb="Make"),
+       ("runs", "prompt", *_SCHEDULE_TIME, "description", "missed_run_policy"), ("runs", "prompt"), verb="Make"),
     # A model's id, or what the agent needs, or the person's own words for one (F966): code fills the id.
     Op("set_agent_model", "write", "agent", "update_agent", ("model", "needs", "wish"), any_of=True,
        verb="Change the model of"),
@@ -116,6 +139,10 @@ _WRITES = (
     Op("delete_agent", "delete", "agent", "delete_agent", verb="Delete"),
     Op("update_skill", "write", "skill", "update_skill", ("description", "body"), any_of=True, verb="Change"),
     Op("delete_tool", "delete", "tool", "delete_custom_tool", verb="Delete"),
+    # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
+    # anything off the list is refused by name, with where it is done (`settings_allow`).
+    Op("settings_set", "write", "settings", "set_settings", tuple(settings_allow.ALLOWED), any_of=True,
+       verb="Change"),
 )
 
 #: What `create` hands to today's create path.
@@ -164,7 +191,7 @@ MAKES_TARGET = frozenset({"board_create", "knowledge_create"})
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
-            "feature": "feature"}
+            "feature": "feature", "recording": "recording"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────
@@ -185,6 +212,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         ok = (isinstance(value, dict) and value.get("kind") in ("workflow", "agent")
               and any(isinstance(value.get(k), str) and value[k].strip() for k in ("id", "name")))
         return None if ok else "`runs` is {kind: workflow | agent, id or name} of what the schedule starts"
+    if key == "missed_run_policy":
+        return None if value in MISSED else f"`missed_run_policy` is {' or '.join(MISSED)}"
     if key == "schedule_type":
         return None if value in ("cron", "interval") else "`schedule_type` is cron or interval"
     if key == "timezone":
@@ -206,6 +235,19 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if value in NEEDS else f"`needs` is one of {', '.join(NEEDS)}"
     if key == "status":
         return None if value in ("open", "done", "failed") else "`status` is open, done or failed"
+    if key == "criteria":
+        ok = isinstance(value, list) and value and all(
+            isinstance(c, dict) and isinstance(c.get("name"), str) and c["name"].strip() for c in value)
+        return None if ok else "`criteria` is a list of {name, weight, guidance}"
+    if key == "cases":
+        ok = isinstance(value, list) and value and all(
+            isinstance(c, dict) and isinstance(c.get("input"), str) and c["input"].strip() for c in value)
+        return None if ok else "`cases` is a list of {name, input, notes}, each with its input"
+    if key == "count":
+        return None if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 10 else \
+            "`count` is a whole number from 1 to 10"
+    if key == "floor":
+        return None if isinstance(value, (int, float)) and not isinstance(value, bool) else "`floor` is a number"
     if key == "kind":
         return None if value in ("page", "sitemap", "site") else "`kind` is page, sitemap or site"
     return None if isinstance(value, str) and value.strip() else f"`{key}` is text"
@@ -227,6 +269,8 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
     if not any(isinstance((target or {}).get(k), str) and target[k].strip() for k in ("id", "name")):
         found.append(f"`{op.name}` needs its target's id (or its name)")
     unknown = [k for k in fields if k not in op.fields]
+    if op.name == "settings_set":
+        return found + _settings_issues(fields)
     if unknown:
         takes = f"it takes {', '.join(op.fields)}" if op.fields else "it takes no fields"
         found.append(f"`{op.name}` cannot set {', '.join(unknown)}: {takes}")
@@ -243,6 +287,17 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
     if not found and not op.internal:
         found += [f"`{op.name}`: {why}" for why in _saved_as(op, fields)]
     return found
+
+
+def _settings_issues(fields: dict[str, Any]) -> list[str]:
+    """A settings change's: each name on the list here (the host's narrowing too), each value by its own check. An
+    empty value is a value here (a model left to the default), so every one is checked, never skipped."""
+    if not fields:
+        return ["`settings_set` needs at least one setting, by its name, with its new value"]
+    here = settings_allow.allowed()
+    return [f"`settings_set`: {settings_allow.refusal(k)}" if k not in here else
+            f"`settings_set`: {why}" for k, v in fields.items()
+            if k not in here or (why := settings_allow.value_issue(k, v)) is not None]
 
 
 def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
@@ -306,6 +361,11 @@ def _schedule_time(fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _starts(runs: dict[str, Any]) -> dict[str, Any]:
+    """What a schedule's `runs` is stored as."""
+    return {"target_type": "orchestration" if runs["kind"] == "workflow" else "agent", "target_id": runs["id"]}
+
+
 def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dict[str, Any] | None:
     """What the target must read afterwards, field by field; None for a delete (it must be gone)."""
     live = live or {}
@@ -317,12 +377,13 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
     if name in ("update_workflow", "update_skill"):
         return {k: fields[k] for k in op.fields if k in fields}
     if name == "set_schedule":
-        return {**_schedule_time(fields), **{k: fields[k] for k in ("prompt", "description") if k in fields}}
+        return {**_schedule_time(fields),
+                **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
+    if name == "retarget_schedule":
+        return _starts(fields["runs"])
     if name == "create_schedule":
-        runs = fields["runs"]
-        return {"target_type": "orchestration" if runs["kind"] == "workflow" else "agent",
-                "target_id": runs["id"], "prompt": fields["prompt"], **_schedule_time(fields),
-                **({"description": fields["description"]} if fields.get("description") else {})}
+        return {**_starts(fields["runs"]), "prompt": fields["prompt"], **_schedule_time(fields),
+                **{k: fields[k] for k in ("description", "missed_run_policy") if fields.get(k)}}
     if name == "set_agent_model":
         return {"model": str(fields["model"]).strip()}
     if name == "set_agent_tools":
@@ -333,6 +394,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"system_prompt": fields["system_prompt"]}
     if name == "set_tool_policy":
         return {"tool_policy": _policy(live, fields)}
+    if name == "settings_set":
+        return dict(fields)
     if op.internal:
         return {"name": fields["name"]}
     raise ValueError(f"{name} leaves nothing to check")
@@ -360,6 +423,8 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"agent_id": target_id, "fields": after}
     if op.target == "skill":
         return op.tool, {"name": target_id, **after}
+    if op.target == "settings":
+        return op.tool, {"changes": after}
     raise ValueError(f"{op.name} has no call")
 
 

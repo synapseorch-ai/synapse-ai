@@ -498,18 +498,15 @@ class TestSchedules:
         assert heard[1][2] == created["next_run_at"]
 
 
-class TestVariablesArePreviewedNotDisclosed:
-    async def test_values_are_truncated_and_the_reference_is_given(self, server):
+class TestVariablesAreNamedNotDisclosed:
+    async def test_no_value_is_given_only_the_reference(self, server):
+        """Names only (F1271): the 40-character preview showed a token's start."""
         from core import variables
         await variables.save({"API_TOKEN": "sk-" + "x" * 200})
 
         listed = await call("list_variables", {}, server)
-        assert listed == [{
-            "key": "API_TOKEN",
-            "preview": ("sk-" + "x" * 200)[:40],
-            "reference": "{{ global.API_TOKEN }}",
-        }]
-        assert len(listed[0]["preview"]) == 40
+        assert listed == [{"key": "API_TOKEN", "reference": "{{ global.API_TOKEN }}"}]
+        assert "sk-" not in json.dumps(listed)
 
 
 class TestDeletesRefuseWithoutConfirmation:

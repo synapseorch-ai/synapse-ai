@@ -18,8 +18,10 @@ from core.models_orchestration import Orchestration, OrchestrationRun
 from core.native_builder.seed import bundled_definitions
 from core.orchestration.engine import OrchestrationEngine
 
-#: Where each route went before the gate.
-BEFORE = {"create": "step_plan_room", "update": "step_fetch_existing", "manage": "step_change_context"}
+#: Classify's route for each, by its own names (unchanged: Naveen kept the classifier's labels, D340 D0).
+ROUTED = {"create": "step_plan_room", "update": "step_fetch_existing", "manage": "step_change_context"}
+#: Where each route went before the gate (a change, since D340 D0, to gather and the one planner).
+BEFORE = {"create": "step_plan_room", "update": "step_fetch_existing", "manage": "step_plan_context"}
 
 
 class _Server:
@@ -49,7 +51,7 @@ def test_the_routes_that_change_things_go_through_the_gate(engine):
     through the door; an answer, research and the refusal never do. Code checks the role before it too
     (`classify.override`)."""
     routes = engine.step_map["step_classify_route"].switch_cases
-    for entry in BEFORE.values():
+    for entry in ROUTED.values():
         assert routes[entry] == "step_may_change", entry
     for entry in ("step_answer", "step_research", "step_not_yours"):
         assert routes[entry] != "step_may_change", entry
@@ -84,7 +86,7 @@ async def test_an_approver_reaches_the_change_route_and_only_it(engine):
     a workflow's steps stays the builder's."""
     approver = {"may_change": False, "may_act": True}
     assert await _next(engine, "step_may_change", {"intent": "manage", **approver}) == "step_change_route"
-    assert await _next(engine, "step_change_route", {"intent": "manage", **approver}) == "step_change_context"
+    assert await _next(engine, "step_change_route", {"intent": "manage", **approver}) == "step_plan_context"
     for label in ("create", "update"):
         assert await _next(engine, "step_may_change", {"intent": label, **approver}) == "step_not_yours"
 

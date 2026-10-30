@@ -385,6 +385,11 @@ class RunBackend(Protocol):
         """Allow or refuse the tool call a conversation or a scheduled run waits on; the resumed turn's reply,
         or where it is when the wait runs out."""
 
+    # Optional (F1260): a backend without it answers that a run is resumed from its page.
+    async def resume(self, run_id: str) -> dict:
+        """Resume a failed or stopped run from the step it stopped at, as the run page's Replay does:
+        `{"run_id", "status": "resuming"}`."""
+
 
 class InProcessRuns:
     """The open-source backend: the engine runs in this process, as v1's routes run it."""
@@ -454,6 +459,17 @@ class InProcessRuns:
     async def list(self, *, limit: int, status: str | None, orchestration_id: str | None) -> list[dict]:
         from core.orchestration.run_view import list_runs
         return await list_runs(limit=limit, status=status, orchestration_id=orchestration_id)
+
+    async def resume(self, run_id: str) -> dict:
+        """The run page's Replay (`orchestration.replay`, F1260): its refusals, its worker or this process."""
+        import core.server as _server
+        from core.orchestration import replay
+
+        try:
+            await replay.resume(_server.app.state, run_id, _server)
+        except replay.NotResumable as why:
+            raise ToolRefusal(str(why)) from None
+        return {"run_id": run_id, "status": "resuming"}
 
     async def chat(self, *, message: str, agent: str | None, session_id: str | None, wait: float) -> dict:
         """One chat turn, as `/api/v1/chat` runs it."""

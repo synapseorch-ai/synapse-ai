@@ -17,7 +17,7 @@ from core.models_orchestration import Orchestration, OrchestrationRun, StepConfi
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
-from .run_error import failure_reason, model_failure_of, reason_of, run_error, set_run_error
+from .run_error import failure_reason, model_failure_of, reason_of, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
 from .step_usage import exact_window, step_scope
 from .state import SharedState
@@ -2194,6 +2194,15 @@ class OrchestrationEngine:
         # about attachments: `shared_state` is the run's own data and a private
         # key in it is read by everything that renders a run.
         suite_run_id = getattr(self, "eval_suite_run_id", None)
+        every = max(1, int(getattr(self.orch, "judge_every", 1) or 1))
+        if suite_run_id is None and every > 1:
+            # A sample (D340 F): the first finished run, so a new eval has a score at once, then one in `every`; a
+            # golden set's run always is.
+            from core.evals import store as evals_store
+
+            number = await evals_store.next_run_number(self.orch.id)
+            if number != 1 and number % every:
+                return
         await scoring.score_run(run, self.orch, load_settings(), suite_run_id=suite_run_id)
 
     async def _write_memory_summaries(self, run: OrchestrationRun) -> None:
@@ -2324,13 +2333,9 @@ class OrchestrationEngine:
 
         if run.status == "failed":
             # The run's own reason first — one that failed outside any step has
-            # no history entry to carry it (F257) — then its newest step error.
-            last_error = run_error(run)
-            for h in reversed(run.step_history):
-                if last_error:
-                    break
-                if h.get("error"):
-                    last_error = h["error"]
+            # no history entry to carry it (F257) — then its newest step error:
+            # the one reader's, so a key a provider quoted is never said (REACH1).
+            last_error = failure_reason(run.status, run.step_history, run.step_progress)
             return f"Orchestration failed. Error: {last_error or 'Unknown error'}"
 
         if run.status == "paused":
