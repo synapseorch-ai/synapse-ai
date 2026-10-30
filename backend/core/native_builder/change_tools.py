@@ -88,8 +88,9 @@ SUBMIT = {"type": "function", "function": {
         "Finish with the change to make: one op per thing to do. Nothing happens yet: code checks each op, puts up "
         "a card for each button act, and shows the person the rest to approve. Fields per op: rename_* {name}; "
         "update_workflow {description, max_total_turns, timeout_minutes, max_run_credits, max_run_usd}; "
-        "set_schedule {cron_expression | interval_value + interval_unit, prompt, description}; create_schedule "
-        "{runs: {kind: workflow | agent, id}, prompt, cron_expression | interval_value + interval_unit}; "
+        "set_schedule {cron_expression | interval_value + interval_unit, prompt, description, missed_run_policy: "
+        "run_immediately | skip}; create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression | "
+        "interval_value + interval_unit, missed_run_policy}; retarget_schedule {runs: {kind: workflow | agent, id}}; "
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
@@ -634,7 +635,10 @@ async def read(kind: str, target_id: str) -> dict | None:
     if kind == "schedule":
         from core.store import schedules
 
-        return await schedules.get(target_id)
+        found = await schedules.get(target_id)
+        # One saved before the policy was asked reads as the screen shows it, skip (F1267): the no-op check, the
+        # before-image an undo puts back and the effect check all need its value.
+        return None if found is None else {"missed_run_policy": "skip", **found}
     if kind == "skill":
         from core import skills
 
@@ -681,7 +685,7 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
         detail = ""
     else:
         shown = dict(want if want is not None else {k: v for k, v in fields.items() if k != "runs"})
-        if op.name == "create_schedule":
+        if op.name in ("create_schedule", "retarget_schedule"):
             runs = fields["runs"]
             shown = {"starts": _quoted(runs.get("name") or runs["id"]),
                      **{k: v for k, v in shown.items() if k not in ("target_type", "target_id")}}
@@ -827,6 +831,25 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
     return clean
 
 
+async def _runs_found(chosen: dict | None, n: int, item: dict, picks: list[dict]) -> bool:
+    """A schedule's `runs` made the one workflow or agent it names, by id, as its target is (a new schedule's, and a
+    retarget's, F1267); False when it is refused or picked between, with the item saying so."""
+    runs = dict(item["fields"]["runs"])
+    if _answers(chosen, n, "runs", runs["kind"], runs):
+        runs["id"] = chosen["id"]
+    found = resolve(await candidates(runs["kind"]) or [], runs)
+    if len(found) != 1:
+        item.update(status="refused" if not found else "pick",
+                    say=f"No {runs['kind']} is called {_quoted(runs.get('name') or runs.get('id'))}." if not found
+                    else "")
+        if found:
+            picks.append({"op": n, "field": "runs", "kind": runs["kind"],
+                          "wanted": runs.get("name") or runs.get("id"), "options": found[:8]})
+        return False
+    item["fields"]["runs"] = {"kind": runs["kind"], "id": found[0]["id"], "name": found[0]["name"]}
+    return True
+
+
 async def check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     """Every fact about the planner's change, decided here; see the module's docstring. `draft` is the planner's
     finish (E2's object); the person and their role are the run's, read now, never an argument."""
@@ -917,20 +940,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                               "for it on its own once this is done.".replace("  ", " "))
             continue
         if op.kind == "create":
-            if op.name == "create_schedule":
-                runs = dict(fields["runs"])
-                if _answers(chosen, n, "runs", runs["kind"], runs):
-                    runs["id"] = chosen["id"]
-                found = resolve(await candidates(runs["kind"]) or [], runs)
-                if len(found) != 1:
-                    item.update(status="refused" if not found else "pick",
-                                say=f"No {runs['kind']} is called {_quoted(runs.get('name') or runs.get('id'))}."
-                                if not found else "")
-                    if found:
-                        picks.append({"op": n, "field": "runs", "kind": runs["kind"],
-                                      "wanted": runs.get("name") or runs.get("id"), "options": found[:8]})
-                    continue
-                fields["runs"] = {"kind": runs["kind"], "id": found[0]["id"], "name": found[0]["name"]}
+            if op.name == "create_schedule" and not await _runs_found(chosen, n, item, picks):
+                continue
             # Whatever is made needs a name nothing has: an undo's re-create checks nothing took it since (F797).
             name = _text(target.get("name")) or _text(fields.get("name"))
             if any(i["name"].lower() == name.lower() for i in await candidates(op.target) or []):
@@ -960,6 +971,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 target.update(id=found[0]["id"], name=found[0]["name"])
             else:
                 target.setdefault("name", target.get("id") or "")
+            if op.name == "retarget_schedule" and not await _runs_found(chosen, n, item, picks):
+                continue
         item["status"] = "resolved"
 
     if picks:

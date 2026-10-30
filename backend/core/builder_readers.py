@@ -23,7 +23,8 @@ from core.builder_tools import register_builder_tool
 Reader = Callable[[dict], Awaitable[dict]]
 
 TOPICS: dict[str, str] = {
-    "schedules": "every schedule: on or paused, when it runs, what it starts, when it last ran and how that went",
+    "schedules": "every schedule: on or paused, when it runs, what it starts, what it does with a time it missed "
+                 "(run_immediately or skip), when it last ran and how that went",
     "runs": "recent workflow runs, newest first, with why each failed one failed (status=failed for only those)",
     "channels": "connected chat channels (Slack, Telegram, Discord…): on or off, and which agents answer",
     "phone": "phone numbers: the number, on or off, and the agent that answers",
@@ -60,7 +61,7 @@ TOPICS: dict[str, str] = {
 #: shape as the self-hosted one; `shape_problems` names any drift, and both hosts' tests hold their readers to it.
 SHAPES: dict[str, dict[str, list[str]]] = {
     "schedules": {"keys": ["items", "note"],
-                  "item": ["name", "on", "runs", "starts", "last_run_at", "next_run_at", "last_run"]},
+                  "item": ["name", "on", "runs", "starts", "if_missed", "last_run_at", "next_run_at", "last_run"]},
     "runs": {"keys": ["items", "note"],
              "item": ["workflow", "status", "started_at", "ended_at", "error", "waiting_for_a_person", "run_id"]},
     "channels": {"keys": ["items", "note"], "item": ["name", "platform", "on", "status", "agents"]},
@@ -238,6 +239,8 @@ async def _schedules(args: dict) -> dict:
         out.append({
             "name": s.get("name"), "on": bool(s.get("enabled")), "runs": _when(s),
             "starts": f'{s.get("target_type")} "{target or s.get("target_id")}"',
+            # What it does with a time it missed (F1267), as the Schedules screen sets it.
+            "if_missed": s.get("missed_run_policy") or "skip",
             "last_run_at": s.get("last_run_at"), "next_run_at": s.get("next_run_at"),
             "last_run": ({"status": last.get("status"), "error": last.get("error"), "started_at": last.get("started_at")}
                          if last else None),

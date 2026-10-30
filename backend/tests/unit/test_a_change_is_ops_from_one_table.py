@@ -146,6 +146,8 @@ def _samples():
         ("delete_workflow", {}), ("set_schedule", {"interval_value": 2, "interval_unit": "hours"}),
         ("rename_schedule", {"name": "N"}), ("delete_schedule", {}),
         ("create_schedule", {"runs": {"kind": "agent", "id": "a1"}, "prompt": "p", "cron_expression": "0 9 * * *"}),
+        ("set_schedule", {"missed_run_policy": "run_immediately"}),
+        ("retarget_schedule", {"runs": {"kind": "workflow", "id": "w1"}}),
         ("set_agent_model", {"model": "m"}), ("set_agent_tools", {"add": ["x"]}),
         ("set_agent_skills", {"add": ["x"]}), ("set_agent_instructions", {"system_prompt": "s"}),
         ("rename_agent", {"name": "N"}), ("set_tool_policy", {"open_world": "deny"}), ("delete_agent", {}),
@@ -239,7 +241,7 @@ _EVERY = {"name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND 
           "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
           "destructive": "confirm", "open_world": "deny", "undeclared": "allow", "max_total_turns": 7,
           "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "body": "THE SKILL'S TEXT",
-          "needs": "reasoning", "wish": "A MODEL WISH"}
+          "needs": "reasoning", "wish": "A MODEL WISH", "missed_run_policy": "run_immediately"}
 
 
 def _every_field(op_name):

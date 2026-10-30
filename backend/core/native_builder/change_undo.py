@@ -77,6 +77,13 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
             else:
                 rules[key] = decision
         return {"op": name, "target": _target(applied), "fields": rules, "says": "undo: its old tool policy"}, None
+    if name == "retarget_schedule":
+        if not before.get("target_id"):
+            return None, f"{label} started nothing before, so there is nothing to point it back at."
+        runs = {"kind": "workflow" if before.get("target_type") == "orchestration" else "agent",
+                "id": before["target_id"]}
+        return {"op": name, "target": _target(applied), "fields": {"runs": runs},
+                "says": "undo: what it started before"}, None
     if name == "create_schedule":
         return {"op": "delete_schedule", "target": _target(applied), "fields": {},
                 "says": "undo: the schedule it made"}, None
@@ -85,8 +92,10 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
                 "id": before.get("target_id")}
         # Its time as the op table says a time is, its timezone with it (F948): no list of its own to fall behind.
         time = {k: before[k] for k in C._SCHEDULE_TIME if before.get(k) is not None}
+        # And what it does with a time it missed (F1267): a copy that skipped what the old one ran was not the same.
+        missed = {"missed_run_policy": before["missed_run_policy"]} if before.get("missed_run_policy") else {}
         return {"op": "create_schedule", "target": {"kind": "schedule", "name": before.get("name")},
-                "fields": {"runs": runs, "prompt": before.get("prompt") or "", **time},
+                "fields": {"runs": runs, "prompt": before.get("prompt") or "", **time, **missed},
                 "says": "undo: it comes back as a new copy, paused"}, None
     if name == "delete_agent":
         if before.get("type") not in _AGENT_TYPES:

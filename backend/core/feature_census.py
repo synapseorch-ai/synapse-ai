@@ -47,7 +47,8 @@ CENSUS: tuple[Screen, ...] = (
     _s("orchestrations", "Workflows", "/workflows", "builds, changes, checks, runs and deletes workflows",
        ("create_orchestration", "update_orchestration", "add_single_step", "update_step", "remove_step",
         "validate_orchestration", "run_orchestration", "delete_orchestration", "read_workspace:workflow")),
-    _s("schedules", "Schedules", "/schedules", "makes, changes, pauses, runs now and deletes schedules",
+    _s("schedules", "Schedules", "/schedules", "makes, changes, pauses, runs now and deletes schedules, sets what one "
+       "does with a time it missed and points one at another workflow or agent",
        ("create_schedule", "update_schedule", "set_schedule_enabled", "trigger_schedule", "delete_schedule")),
     _s("templates", "Templates", "/templates", cant="browsing and importing the ready-made template packs"),
     _s("agents", "Agents", "/agents", "makes, changes and deletes agents, talks to one, and says what one has done",

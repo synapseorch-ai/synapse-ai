@@ -1595,6 +1595,8 @@ BUILDER_TOOL_SCHEMAS = [
                     "timezone": {"type": "string", "description": (
                         "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
                         "one the person named, else their own. Leave it out for UTC")},
+                    "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
+                        "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
                 },
                 "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
             },
@@ -1642,6 +1644,8 @@ BUILDER_TOOL_SCHEMAS = [
                     "timezone": {"type": "string", "description": (
                         "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
                         "one the person named, else their own. Leave it out for UTC")},
+                    "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
+                        "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
                 },
                 "required": ["schedule_id"],
             },

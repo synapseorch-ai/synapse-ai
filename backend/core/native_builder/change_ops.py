@@ -88,6 +88,9 @@ _ACTS = (
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
+#: What a schedule does with a time it missed (the machine was off, the fleet was down), as the Schedules screen sets
+#: it (F1267): run it once as soon as it can, or skip it.
+MISSED = ("run_immediately", "skip")
 
 _WRITES = (
     Op("rename_workflow", "write", "workflow", "set_orchestration_meta", ("name",), ("name",), verb="Rename"),
@@ -95,12 +98,15 @@ _WRITES = (
        ("description", "max_total_turns", "timeout_minutes", "max_run_credits", "max_run_usd"), any_of=True,
        verb="Change the settings of"),
     Op("delete_workflow", "delete", "workflow", "delete_orchestration", verb="Delete"),
-    Op("set_schedule", "write", "schedule", "update_schedule", (*_SCHEDULE_TIME, "prompt", "description"),
-       any_of=True, verb="Change"),
+    Op("set_schedule", "write", "schedule", "update_schedule",
+       (*_SCHEDULE_TIME, "prompt", "description", "missed_run_policy"), any_of=True, verb="Change"),
+    # What it starts, another workflow or agent (F1267): the same schedule, its id, history and time kept.
+    Op("retarget_schedule", "write", "schedule", "update_schedule", ("runs",), ("runs",),
+       verb="Change what runs on"),
     Op("rename_schedule", "write", "schedule", "update_schedule", ("name",), ("name",), verb="Rename"),
     Op("delete_schedule", "delete", "schedule", "delete_schedule", verb="Delete"),
     Op("create_schedule", "create", "schedule", "create_schedule",
-       ("runs", "prompt", *_SCHEDULE_TIME, "description"), ("runs", "prompt"), verb="Make"),
+       ("runs", "prompt", *_SCHEDULE_TIME, "description", "missed_run_policy"), ("runs", "prompt"), verb="Make"),
     # A model's id, or what the agent needs, or the person's own words for one (F966): code fills the id.
     Op("set_agent_model", "write", "agent", "update_agent", ("model", "needs", "wish"), any_of=True,
        verb="Change the model of"),
@@ -185,6 +191,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         ok = (isinstance(value, dict) and value.get("kind") in ("workflow", "agent")
               and any(isinstance(value.get(k), str) and value[k].strip() for k in ("id", "name")))
         return None if ok else "`runs` is {kind: workflow | agent, id or name} of what the schedule starts"
+    if key == "missed_run_policy":
+        return None if value in MISSED else f"`missed_run_policy` is {' or '.join(MISSED)}"
     if key == "schedule_type":
         return None if value in ("cron", "interval") else "`schedule_type` is cron or interval"
     if key == "timezone":
@@ -306,6 +314,11 @@ def _schedule_time(fields: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _starts(runs: dict[str, Any]) -> dict[str, Any]:
+    """What a schedule's `runs` is stored as."""
+    return {"target_type": "orchestration" if runs["kind"] == "workflow" else "agent", "target_id": runs["id"]}
+
+
 def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dict[str, Any] | None:
     """What the target must read afterwards, field by field; None for a delete (it must be gone)."""
     live = live or {}
@@ -317,12 +330,13 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
     if name in ("update_workflow", "update_skill"):
         return {k: fields[k] for k in op.fields if k in fields}
     if name == "set_schedule":
-        return {**_schedule_time(fields), **{k: fields[k] for k in ("prompt", "description") if k in fields}}
+        return {**_schedule_time(fields),
+                **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
+    if name == "retarget_schedule":
+        return _starts(fields["runs"])
     if name == "create_schedule":
-        runs = fields["runs"]
-        return {"target_type": "orchestration" if runs["kind"] == "workflow" else "agent",
-                "target_id": runs["id"], "prompt": fields["prompt"], **_schedule_time(fields),
-                **({"description": fields["description"]} if fields.get("description") else {})}
+        return {**_starts(fields["runs"]), "prompt": fields["prompt"], **_schedule_time(fields),
+                **{k: fields[k] for k in ("description", "missed_run_policy") if fields.get(k)}}
     if name == "set_agent_model":
         return {"model": str(fields["model"]).strip()}
     if name == "set_agent_tools":
