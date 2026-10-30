@@ -63,6 +63,8 @@ WRITES: frozenset[str] = frozenset({
     # Reads the answer at a build's wait for a connection, and removes the tools that build made on "stop" or "build
     # without" (F946): a write, of the build's own unsaved tools only.
     "read_connect_answer",
+    # The settings a reviewed change sets (F1264's settings_set): a write here; the tool itself still asks an admin.
+    "set_settings",
 })
 
 KINDS: dict[str, str] = {**{n: "read" for n in READS}, **{n: "card" for n in CARDS}, **{n: "write" for n in WRITES}}

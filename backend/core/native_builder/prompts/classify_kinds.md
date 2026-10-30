@@ -9,3 +9,4 @@
 - `providers`: the outside services the message names, as it writes them. Empty when it names none.
 - `also`: a second, separate request in the same message, in its words. Empty otherwise.
 - `language`: the language the message is written in, e.g. en, hi.
+- `feature`: `evals` when the ask is to measure or read how well a workflow does: an eval, a rubric that scores its runs, golden test cases, running them, or its scores and regressions. Then `kind` is `change`, even when the message says 'create' or 'build': Evals does it, never a new workflow. Leave it out otherwise.

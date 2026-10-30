@@ -339,6 +339,11 @@ class Orchestration(BaseModel):
     #: rubric was deleted — reads the same as unset rather than failing a run.
     rubric_id: str = ""
 
+    #: Judge one finished run in this many (D340 F, Naveen 10-30): 1 judges every run; a workflow a schedule runs
+    #: often may be judged on a sample, since each judged run is one more model call. Golden-set runs are always
+    #: judged. Counted per workflow in the evals store, so a restart keeps the count.
+    judge_every: int = 1
+
     #: The state key whose value is what a run of this orchestration made (F249):
     #: its chat answer as an agent, v1's `response`, what the judge scores, and
     #: what a parent gets back when this runs nested. Empty means the last step

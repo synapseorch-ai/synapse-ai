@@ -97,8 +97,9 @@ SUBMIT = {"type": "function", "function": {
         "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
         "board_update_card {status, result}; board_comment {text}; board_create {text}; recording_approve_edit and "
         "recording_discard_edit {edit_id}; recording_rename {name}; settings_set (target {kind: settings, id: "
-        "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; edit_steps, "
-        "create and "
+        "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; eval_rubric {name, "
+        "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
+        "{count, steer}; eval_run and eval_cancel {golden_set}; edit_steps, create and "
         "use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -1014,7 +1015,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if items is not None:
                 found = resolve(items, target)
                 if not found:
-                    item.update(status="refused", say=await _not_found(op.target, target))
+                    said = None
+                    if op.name.startswith("eval_"):
+                        # Evals score a workflow's runs: an agent named is said, with the workflows using it (F1255).
+                        from core.builder_actions import agent_eval_words
+
+                        said = await agent_eval_words(target.get("name") or target.get("id") or "")
+                    item.update(status="refused", say=said or await _not_found(op.target, target))
                     continue
                 if len(found) > 1:
                     item["status"] = "pick"

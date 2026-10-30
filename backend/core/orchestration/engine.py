@@ -2194,6 +2194,15 @@ class OrchestrationEngine:
         # about attachments: `shared_state` is the run's own data and a private
         # key in it is read by everything that renders a run.
         suite_run_id = getattr(self, "eval_suite_run_id", None)
+        every = max(1, int(getattr(self.orch, "judge_every", 1) or 1))
+        if suite_run_id is None and every > 1:
+            # A sample (D340 F): the first finished run, so a new eval has a score at once, then one in `every`; a
+            # golden set's run always is.
+            from core.evals import store as evals_store
+
+            number = await evals_store.next_run_number(self.orch.id)
+            if number != 1 and number % every:
+                return
         await scoring.score_run(run, self.orch, load_settings(), suite_run_id=suite_run_id)
 
     async def _write_memory_summaries(self, run: OrchestrationRun) -> None:

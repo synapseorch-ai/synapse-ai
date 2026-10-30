@@ -53,6 +53,12 @@ ACTIONS: dict[str, str] = {
     "board_create": "make a shared board (`name`, `text`: what it is for)",
     "board_delete": "delete a shared board (`board`)",
     "feature_on": "turn on Boards or Knowledge for this workspace (`feature`: boards or knowledge), when one is off",
+    "eval_rubric": "score a workflow's runs by a rubric (`workflow`; `name`, `criteria`: [{name, weight, guidance}], "
+                   "`floor`; or `rubric`: one that is here, to attach)",
+    "eval_cases": "add test cases to a workflow's golden set (`workflow`; `cases`: [{name, input, notes}] as the person "
+                  "gave them, or `count` and `steer` to have cases proposed; `golden_set` to add to one)",
+    "eval_run": "run a workflow's golden set, each case a run scored by its rubric (`workflow`, `golden_set`)",
+    "eval_cancel": "stop a golden set's run after the case in flight (`workflow`, `golden_set`)",
     # Recordings (F1270): a kept fix (topic `waiting` lists them), a new name, or the recording gone.
     "recording_approve_edit": "use a kept fix in its recording (`recording`, `edit_id`: from topic `waiting`)",
     "recording_discard_edit": "drop a kept fix, leaving the recording as it is (`recording`, `edit_id`)",
@@ -92,6 +98,15 @@ SCHEMA = {
                 "status": {"type": "string", "enum": ["open", "done", "failed"]},
                 "result": {"type": "string", "description": "board_update_card: what came of it."},
                 "feature": {"type": "string", "enum": ["boards", "knowledge"]},
+                "criteria": {"type": "array", "items": {"type": "object"},
+                             "description": "eval_rubric: [{name, weight, guidance}]: what a good result is."},
+                "floor": {"type": "number", "description": "eval_rubric: a score below it is a regression."},
+                "rubric": {"type": "string", "description": "eval_rubric: a rubric here to attach, by name."},
+                "cases": {"type": "array", "items": {"type": "object"},
+                          "description": "eval_cases: [{name, input, notes}], as the person gave them."},
+                "count": {"type": "integer", "description": "eval_cases: how many to propose, 1 to 10."},
+                "steer": {"type": "string", "description": "eval_cases: what proposed cases should cover."},
+                "golden_set": {"type": "string", "description": "The golden set's name; omit for the workflow's one."},
                 "recording": {"type": "string", "description": "The recording's name or id."},
                 "edit_id": {"type": "string", "description": "A kept fix's id, from topic `waiting`."},
                 "name": {"type": "string"},
@@ -329,6 +344,8 @@ async def _offer(action: str, args: dict) -> dict:
         if not await features.is_on("knowledge"):
             raise _FeatureOff("knowledge")
         return await _knowledge(action, args)
+    if action.startswith("eval_"):
+        return await _evals(action, args)
     if action.startswith("board_"):
         from core import features
         if not await features.is_on("boards"):
@@ -440,6 +457,89 @@ async def _knowledge(action: str, args: dict) -> dict:
                      detail="Its Vault file goes too. This cannot be undone.",
                      buttons=[await _button("Delete it", "delete_knowledge_document", {"doc_id": row.id})])
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _eval_workflow(wanted: str) -> dict:
+    """The workflow an eval is about. Evals score a workflow's runs, so an agent named instead is said, with the
+    workflows that use it to pick from (Naveen, 10-30); with none, a one-step workflow running it is offered."""
+    from core.product_tools import evals as E
+
+    try:
+        return await E._workflow(wanted)
+    except ToolRefusal as missing:
+        said = await agent_eval_words(wanted)
+        raise _NotOffered(said or str(missing)) from None
+
+
+async def agent_eval_words(wanted: str) -> str | None:
+    """What to say when an eval names an agent, not a workflow; None when no agent is called that."""
+    from core.builder_tools import _is_visible
+    from core.routes.agents import load_user_agents
+    from core.routes.orchestrations import load_orchestrations
+
+    wanted = str(wanted or "").strip().casefold()
+    agent = next((a for a in await load_user_agents() if not a.get("system")
+                  and wanted in (str(a.get("id") or "").casefold(), str(a.get("name") or "").casefold())), None)
+    if agent is None:
+        return None
+    using = [o.get("name") for o in await load_orchestrations() if _is_visible(o)
+             and any(s.get("agent_id") == agent["id"] for s in o.get("steps") or [])]
+    head = f'Evals score a workflow\'s runs, not an agent on its own: "{agent.get("name")}" is an agent.'
+    if using:
+        return head + " Workflows that use it: " + ", ".join(f'"{n}"' for n in using[:8]) + ". Ask which one."
+    return head + (" No workflow uses it yet: offer to make a one-step workflow that runs it (the op create), and "
+                   "its eval goes on that one.")
+
+
+async def _evals(action: str, args: dict) -> dict:
+    """Evals' acts (F1255), each a card whose button is the Evals screen's own tool, previewed there."""
+    from core.product_tools import evals as E
+
+    flow = await _eval_workflow(str(args.get("workflow") or ""))
+    name = flow.get("name") or flow["id"]
+    if action == "eval_rubric":
+        if str(args.get("rubric") or "").strip() and not args.get("criteria"):
+            rubric = await _resolved(E._rubric(str(args["rubric"])))
+            call = {"workflow": flow["id"], "rubric": rubric["id"]}
+            return _card(f'Score "{name}" with the rubric "{rubric.get("name")}"',
+                         detail=E._criteria_words(rubric) + ". Each run that finishes is judged: one more model call "
+                                                           "per run.",
+                         buttons=[await _button("Attach it", "attach_rubric", call)])
+        call = {"name": str(args.get("name") or "").strip() or f"{name} quality",
+                "criteria": list(args.get("criteria") or []), "workflow": flow["id"],
+                **({"floor": args["floor"]} if args.get("floor") is not None else {})}
+        preview = await _resolved(E._preview_save_rubric(_caller(), call))
+        replaces = ""
+        if flow.get("rubric_id"):
+            old = next((r for r in await E.service.list_rubrics() if r.get("id") == flow["rubric_id"]), None)
+            replaces = f' It replaces "{(old or {}).get("name") or flow["rubric_id"]}": the score trend starts again.'
+        return _card(f'Score "{name}" with the rubric "{call["name"]}"',
+                     detail=f'{preview["criteria"]}. Each run that finishes is judged: one more model call per run.'
+                            + replaces, buttons=[await _button("Save and attach", "save_rubric", call)])
+    if action == "eval_cases":
+        cases = [c for c in args.get("cases") or [] if isinstance(c, dict)]
+        if not cases:
+            # Proposed now, a model call, and shown in full: only the press saves them (Naveen, 10-30).
+            got = await _resolved(E._propose_cases(_caller(), {"workflow": flow["id"],
+                                                               "count": int(args.get("count") or 5),
+                                                               "steer": str(args.get("steer") or "")}))
+            cases = [{k: c.get(k) or "" for k in ("name", "input", "notes")} for c in got["cases"]]
+        call = {"workflow": flow["id"], "cases": cases,
+                **({"golden_set": str(args["golden_set"])} if str(args.get("golden_set") or "").strip() else {})}
+        preview = await _resolved(E._preview_save_cases(_caller(), call))
+        return _card(f'Add {len(cases)} test case{"s" if len(cases) != 1 else ""} to "{name}"\'s golden set',
+                     detail="\n".join(preview["cases"]), buttons=[await _button("Save these", "save_eval_cases",
+                                                                               call)])
+    call = {"workflow": flow["id"],
+            **({"golden_set": str(args["golden_set"])} if str(args.get("golden_set") or "").strip() else {})}
+    if action == "eval_run":
+        preview = await _resolved(E._preview_run_set(_caller(), call))
+        return _card(f'Run the eval of "{name}"', detail=f'{preview["runs"]}: {preview["costs"]}.',
+                     buttons=[await _button("Run it", "start_eval_suite", call)])
+    suite = await _resolved(E._set(call))
+    return _card(f'Stop the eval of "{name}"', danger=True,
+                 detail=f'"{suite.get("name")}" stops after the case running now; the runs already done stay.',
+                 buttons=[await _button("Stop it", "cancel_eval_suite", call)])
 
 
 async def _recording(action: str, args: dict) -> dict:

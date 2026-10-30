@@ -292,12 +292,19 @@ def _mcp_servers(plan: Plan, _ctx: _Ctx) -> list[str]:
     return [mcp_server_line(m) for m in getattr(plan, "mcp_servers", None) or [] if m.connected]  # F1225
 
 
+def _eval(plan: Plan, _ctx: _Ctx) -> list[str]:
+    from core.native_builder.render import eval_part_line
+
+    part = getattr(plan, "eval", None)
+    return [eval_part_line(part)] if part is not None else []  # F1255, as the card says it
+
+
 def _schedule(plan: Plan, _ctx: _Ctx) -> list[str]:
     return [f"runs {plan.schedule.says.strip()}, by its schedule"] if plan.schedule and (
         plan.schedule.says or "").strip() else []
 
 
-_PLAN_PARTS: list[Callable[[Plan, _Ctx], list[str]]] = [_boards, _knowledge, _apis, _mcp_servers, _schedule]
+_PLAN_PARTS: list[Callable[[Plan, _Ctx], list[str]]] = [_boards, _knowledge, _apis, _mcp_servers, _eval, _schedule]
 
 
 # ── what is missing or off ───────────────────────────────────────────────────────────────────────────────────────

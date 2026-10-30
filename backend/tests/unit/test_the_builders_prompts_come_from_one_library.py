@@ -89,11 +89,15 @@ from core.native_builder import prompt_lint, seed
 #: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
 #: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
 #: same through the converter before), ac29e4a5….
+#: F1255: classify's typed `feature` (evals; its line in the library's classify_kinds, D340's one field for every
+#: feature), and the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c…
+#: on its branch; on fix-forward 16's tree, 23bea1ae….
 #: D340 D0: one planner makes and changes — the change planner and its step fold into `step_plan` (both toolsets, five
 #: finishes with `say`, instructions in sections that keep each rule's number, the change planner's finish fallback),
 #: gather runs both context readers for every act, and `step_plan_finish` routes each finish to the check that was
-#: there (a question or a "can't" on a change to the change check), 2d1b2d39….
-BUNDLE_SHA256 = "2d1b2d39f37451cd565b185d9a4a45656ae3e0b7b7fd1abdbe2ec79e27029bf0"
+#: there (a question or a "can't" on a change to the change check), 2d1b2d39… on fix-forward 16's 45d6d0b3; with
+#: F1255's rule 11 and topic `evals` under the one planner's # Changing, 20f244e4….
+BUNDLE_SHA256 = "20f244e46749a6a8e41ef443bfde9ef3c538e35798c8d753f8726fe47b60d639"
 
 
 def _sha(definitions) -> str:

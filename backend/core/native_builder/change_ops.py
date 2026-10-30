@@ -88,6 +88,13 @@ _ACTS = (
     Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
     Op("feature_on", "act", "feature", verb="Turn on"),
+    # Evals (F1255): a workflow's rubric, its golden set's cases, a run of the set, and stopping it, each a card.
+    Op("eval_rubric", "act", "workflow", fields=("name", "criteria", "floor", "rubric"), any_of=True,
+       verb="Score"),
+    Op("eval_cases", "act", "workflow", fields=("cases", "count", "steer", "golden_set"), any_of=True,
+       verb="Add test cases to"),
+    Op("eval_run", "act", "workflow", fields=("golden_set",), verb="Run the eval of"),
+    Op("eval_cancel", "act", "workflow", fields=("golden_set",), verb="Stop the eval of"),
     # Recordings (F1270): a kept fix used or dropped, a new name, or the recording gone, each a card.
     Op("recording_approve_edit", "act", "recording", fields=("edit_id",), required=("edit_id",),
        verb="Use the kept fix in"),
@@ -228,6 +235,19 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if value in NEEDS else f"`needs` is one of {', '.join(NEEDS)}"
     if key == "status":
         return None if value in ("open", "done", "failed") else "`status` is open, done or failed"
+    if key == "criteria":
+        ok = isinstance(value, list) and value and all(
+            isinstance(c, dict) and isinstance(c.get("name"), str) and c["name"].strip() for c in value)
+        return None if ok else "`criteria` is a list of {name, weight, guidance}"
+    if key == "cases":
+        ok = isinstance(value, list) and value and all(
+            isinstance(c, dict) and isinstance(c.get("input"), str) and c["input"].strip() for c in value)
+        return None if ok else "`cases` is a list of {name, input, notes}, each with its input"
+    if key == "count":
+        return None if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 10 else \
+            "`count` is a whole number from 1 to 10"
+    if key == "floor":
+        return None if isinstance(value, (int, float)) and not isinstance(value, bool) else "`floor` is a number"
     if key == "kind":
         return None if value in ("page", "sitemap", "site") else "`kind` is page, sitemap or site"
     return None if isinstance(value, str) and value.strip() else f"`{key}` is text"

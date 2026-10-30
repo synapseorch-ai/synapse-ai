@@ -116,7 +116,15 @@ class ModelPick(BaseModel):
 
 
 class Schedule(_Written):
-    cron: str = Field(description="Five-field cron, e.g. 0 7 * * *")
+    #: How it is timed, by the same names and values as the Schedules screen and the change ops (F1267; D340 F).
+    schedule_type: Literal["cron", "interval"] = Field("cron", description="cron: at set times; interval: every so "
+                                                                           "often, counted from when it was made")
+    cron: str = Field("", description="cron: five-field cron, e.g. 0 7 * * *")
+    interval_value: int | None = Field(None, description="interval: how many units between runs, e.g. 15")
+    interval_unit: Literal["minutes", "hours", "days"] | None = Field(None, description="interval: minutes, hours or "
+                                                                                         "days")
+    missed_run_policy: str = Field("skip", description="A time it missed (the machine was off): skip, or "
+                                                       "run_immediately to run it once as soon as it can")
     timezone: str | None = Field(None, description="Only a timezone the person named, as a name like "
                                                    "America/New_York: the cron is read on it. Left out, the schedule "
                                                    "runs on the person's own clock")
@@ -155,6 +163,13 @@ class KnowledgePart(_Written):
     existing: bool = False
     #: Paths of `files` not in the Vault (code sets it): said on the card, never added.
     files_missing: list[str] = Field(default_factory=list)
+    urls: list[str] = Field(default_factory=list, description="Public web pages it is filled from (D340 F): pages, or "
+                                                              "one sitemap's URL, or one site's start URL")
+    kind: Literal["page", "sitemap", "site"] = Field("page", description="page: each URL is one page; sitemap: the "
+                                                                         "pages a sitemap lists; site: a crawl from "
+                                                                         "the URL")
+    #: The most pages a sitemap or a site brings (code sets it): Knowledge's own crawl limit.
+    pages_cap: int = 0
 
 
 class ApiPart(_Written):
@@ -177,6 +192,45 @@ class McpServerPart(_Written):
     url: str = Field(description="Its http or https URL, as the person gave it")
     #: Connected here, by that URL (code sets it): its tools are in the workspace's `servers`.
     connected: bool = False
+
+
+class EvalCriterion(_Written):
+    name: str
+    weight: float = 1.0
+    guidance: str = Field("", description="What a good result does, for the judge")
+
+
+class EvalCase(_Written):
+    name: str = ""
+    input: str = Field(description="What a run starts with, as a person would give it")
+    notes: str = Field("", description="What a good result does with it, for the person reading the scores")
+
+
+class EvalPart(_Written):
+    """The workflow's eval, made with it (F1255, D340 F): a rubric a judge scores each finished run by, and a golden
+    set of test inputs a person runs to see whether a later change made it worse. Its cases are saved only as the
+    card shows them, on the yes (Naveen, 10-30)."""
+
+    name: str = Field(description="The rubric's name, e.g. Post quality")
+    criteria: list[EvalCriterion] = Field(description="What a good result is, each with its weight, from what the "
+                                                      "workflow is for")
+    scale_max: float = Field(10.0, description="The top of the score scale (0 to it)")
+    floor: float | None = Field(None, description="A score below it is a regression")
+    cases: list[EvalCase] = Field(default_factory=list, description="When the workflow takes an input: 3 to 10 test "
+                                                                     "inputs (a typical one, an edge case, a hard one); "
+                                                                     "none when it takes no input")
+    replace_rubric: bool = Field(False, description="An update of a workflow scored by a rubric already: true only "
+                                                    "when the ask is about how it is judged; else its rubric is kept")
+    judge_every: int = Field(1, description="Judge its first finished run, then 1 run in this many: 1 for a workflow "
+                                            "run now and then; more for one a schedule runs often, as each judged "
+                                            "run is one more model call (up to 100)")
+    #: The rubric an updated workflow is scored by now, by name (code sets these): kept, or replaced by this one.
+    keeps: str = ""
+    replaces: str = ""
+    #: The model that judges each finished run (code sets it): the rubric's, else the workspace's judge or default.
+    judge: str = ""
+    #: What one judged run costs, in the card's words ("about $0.002"), from the judge's rate card (code sets it).
+    judge_cost: str = ""
 
 
 class Edit(_Written):
@@ -213,6 +267,8 @@ class PlanDraft(_Written):
     mcp_servers: list[McpServerPart] = Field(default_factory=list, description=(
         "A remote MCP server the person gave by URL that is not in `servers` yet: plan no step on its tools; it is "
         "connected first, and you plan again on its tools"))
+    eval: EvalPart | None = Field(None, description="Its eval: a rubric its runs are scored by and golden test "
+                                                    "cases, made with it")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")
     settings: dict[str, Any] | None = Field(None, description="Optional workflow settings by their engine names: "
@@ -311,6 +367,11 @@ class Request(_Written):
     """The quick model's classify (`classify_request`): four labels, and what code needs to override one."""
 
     kind: Literal["answer", "change", "build", "research"]
+    #: The product feature the ask is about, typed (D340: one field for every feature, a census row's id), never read
+    #: from words: `evals` goes to Evals' own ops, never a build (F1255). D0 maps it onto its act route.
+    feature: Literal["evals"] | None = Field(
+        None, description="evals when the ask is to measure or read how well a workflow does: an eval, a rubric "
+                          "scoring its runs, golden test cases, running them, or its scores. Else leave out")
     providers: list[str] = Field(default_factory=list, description="Outside services the message names")
     also: str | None = Field(None, description="A second request in the same message, in its words, if any")
     language: str | None = Field(None, description="The language the person wrote in, e.g. en, hi")
@@ -562,9 +623,28 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
     for name in tool_names(plan):
         if name not in inventory.tools:
             notes.append(f"missing tool: {name}")
-    if plan.schedule and not _FIVE_FIELDS.match(plan.schedule.cron.strip()):
-        errors.append(f"schedule.cron: '{plan.schedule.cron}' is not five fields")
+    if plan.schedule:
+        errors += schedule_issues(plan.schedule)
     return errors, sorted(set(notes))
+
+
+def schedule_issues(schedule: Schedule) -> list[str]:
+    """A plan's schedule held to the Schedules screen's own fields, through the change route's one check of them
+    (`change_ops._field_issue` on create_schedule, F1267): its type, its cron or interval, what it does with a missed
+    time."""
+    from core.native_builder import change_ops as C
+
+    op, errors = C.OPS["create_schedule"], []
+    if schedule.schedule_type == "cron":
+        if not _FIVE_FIELDS.match(schedule.cron.strip()):
+            errors.append(f"schedule.cron: '{schedule.cron}' is not five fields")
+    else:
+        for key in ("interval_value", "interval_unit"):
+            if (said := C._field_issue(op, key, getattr(schedule, key))) is not None:
+                errors.append(f"schedule.{key}: {said}")
+    if (said := C._field_issue(op, "missed_run_policy", schedule.missed_run_policy)) is not None:
+        errors.append(f"schedule.missed_run_policy: {said}")
+    return errors
 
 
 async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str, dict] | None,
@@ -778,4 +858,9 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
         out.room = ((await builder_tools._memory_room(adding)) or {}).get("error")
     if out.room is None and any(a.type == "browser" for a in out.agents):
         out.room = ((await builder_tools._browser_refused("agent")) or {}).get("error")
+    if out.room is None and out.eval is not None:
+        # A host's plan counts its rubrics and golden sets (cloud: Solo 3, Growth 25; F1255).
+        from core.product_tools import evals
+
+        out.room = await evals.room(1, 1 if out.eval.cases else 0)
     return out
