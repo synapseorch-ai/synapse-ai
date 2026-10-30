@@ -2354,6 +2354,9 @@ async def run_agent_step(
     # retry, a cut-off reply) takes back what it showed with `answer_reset`.
     _answer_filter = None
     _answer_turn = 0
+    # What earlier calls of this turn showed and kept: the pieces of an answer cut at the output limit (F1273). They
+    # stay on the screen, the next call streams the rest after them, and a take-back takes them back too.
+    _kept_shown = ""
 
     def _answer_events(ops) -> list[dict]:
         out = []
@@ -2365,10 +2368,14 @@ async def run_agent_step(
         return out
 
     def _unstream(reason: str) -> list[dict]:
-        """Take back what this call showed, if it showed anything; it was not the answer."""
-        if _answer_filter is None or not _answer_filter.shown:
+        """Take back what this turn showed that is not the answer: this call's text, and the cut pieces kept before
+        it (F1273), if anything was shown."""
+        nonlocal _kept_shown
+        if not (_answer_filter is not None and _answer_filter.shown) and not _kept_shown:
             return []
-        _answer_filter.restart()
+        if _answer_filter is not None:
+            _answer_filter.restart()
+        _kept_shown = ""
         return [{"type": "answer_reset", "turn": _answer_turn, "reason": reason}]
 
     # A cap someone set that thinking raises does not bind the answer: said once,
@@ -2818,8 +2825,16 @@ async def run_agent_step(
                         "finished. Continue from exactly where you stopped. If you were writing a tool "
                         "call, emit the whole call again as valid JSON.\n"
                     )
-                    for _e in _unstream("truncated"):
-                        yield _e
+                    if _cut_is_words and _answer_filter is not None:
+                        # A cut answer's start is kept (F1273), so it stays shown: what the filter held goes out,
+                        # and the next call streams the rest after it. Nothing is taken back.
+                        for _e in _answer_events(_answer_filter.close()):
+                            yield _e
+                        _kept_shown += _answer_filter.shown
+                        _answer_filter = None
+                    else:
+                        for _e in _unstream("truncated"):
+                            yield _e
                     yield {"type": "truncated_output", "turn": turn + 1,
                            "retry": _truncation_retries, "chars": len(llm_output)}
                     continue
@@ -4302,7 +4317,7 @@ async def run_agent_step(
         # spoke or showed it need not say `response` again. An answer the loop
         # put in place of the model's (the repeat guard, running out of turns)
         # never streamed; what did stream is taken back first.
-        _shown = _answer_filter.shown.strip() if _answer_filter is not None else ""
+        _shown = (_kept_shown + (_answer_filter.shown if _answer_filter is not None else "")).strip()
         final_event["streamed"] = bool(_shown) and _shown == final_response.strip()
         if _shown and not final_event["streamed"]:
             for _e in _unstream("replaced"):

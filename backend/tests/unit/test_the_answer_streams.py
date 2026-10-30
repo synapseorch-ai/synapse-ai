@@ -119,11 +119,11 @@ async def test_a_retried_call_restarts_the_stream(fake_llm):
     assert _final(events)["streamed"] is True
 
 
-async def test_a_reply_cut_at_the_limit_is_taken_back(fake_llm, monkeypatch):
+def _cut_then(monkeypatch, *texts_and_stops):
     import core.react_engine as re_mod
     from core.llm_providers import LLMResult
 
-    replies = iter([LLMResult("The first half", stop_reason="max_tokens"), LLMResult("All of it.")])
+    replies = iter([LLMResult(text, stop_reason=stop) for text, stop in texts_and_stops])
 
     async def model(*a, **k):
         from core import model_wait
@@ -132,9 +132,29 @@ async def test_a_reply_cut_at_the_limit_is_taken_back(fake_llm, monkeypatch):
         return result
 
     monkeypatch.setattr(re_mod, "llm_generate_response", model)
+
+
+async def test_a_reply_cut_at_the_limit_keeps_its_start_on_the_screen(fake_llm, monkeypatch):
+    """F1273: the start of an answer cut at the output limit is kept, so it is never taken back — the rest streams
+    after it, what was shown is the answer word for word, and its start appears once (it used to vanish, then
+    reappear whole as a `replaced`)."""
+    _cut_then(monkeypatch, ("The first half, ", "max_tokens"), ("and the rest.", "end_turn"))
     events = await _step(fake_llm, [])
-    assert [e["reason"] for e in events if e["type"] == "answer_reset"] == ["truncated"]
-    assert _streamed(events) == "All of it."
+    final = [e for e in events if e["type"] == "final"][-1]
+    assert [e for e in events if e["type"] == "answer_reset"] == []
+    assert _streamed(events) == final["response"] == "The first half, and the rest."
+    assert _streamed(events).count("The first half") == 1
+    assert final.get("streamed") is True
+
+
+async def test_a_cut_tool_call_is_never_shown_as_the_answer(fake_llm, monkeypatch):
+    """A cut reply that was a tool call is still dropped: the model sends the whole call again, and only the
+    answer that follows is shown."""
+    _cut_then(monkeypatch, ('{"tool": "lookup", "arguments": {"q": "x', "max_tokens"), ("The answer.", "end_turn"))
+    events = await _step(fake_llm, [])
+    final = [e for e in events if e["type"] == "final"][-1]
+    assert final["response"] == "The answer."
+    assert _streamed(events) == "The answer." and '"tool"' not in _streamed(events)
 
 
 async def test_a_model_failure_after_text_takes_it_back(fake_llm, monkeypatch):
