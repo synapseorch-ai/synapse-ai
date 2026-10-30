@@ -108,8 +108,10 @@ from core.native_builder import prompt_lint, seed
 #: at a waiting plan above), b0a8a77c….
 #: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c….
 #: Merged (F1257 with TRI1's named sites, ac03b94b) for D340 D3: 9558556c….
-#: D340 D3: the planner's own check of a draft, `check_draft`, among its tools, 0733c955….
-BUNDLE_SHA256 = "0733c955aae098076ff1ebf635d44327a561296a06eb942731bfc54b1e6b6263"
+#: D340 D3: the planner's own check of a draft, `check_draft`, among its tools, 0733c955…; with the planner's
+#: "# Structure" (a fetch or one known call is a Tool step, reshaping a transform or extract_json, an agent only for
+#: judgement, a team or a browser agent for its kind of work, `check_draft` before submitting), 7417a4bf….
+BUNDLE_SHA256 = "7417a4bf3885c3a75625dccd987b30c13bc01f9194129653dce6106145b9d57f"
 
 
 def _sha(definitions) -> str:
