@@ -33,6 +33,8 @@ TOPICS: dict[str, str] = {
     "usage": "what each workflow's runs used over the last `days` days (runs, credits, model dollars)",
     "plan": "the plan this workspace is on and the credits and model money left",
     "models": "the default model, the builder's models, and which providers have a key (never the key)",
+    "variables": "the workspace's variables by name, each with the `{{ global.x }}` that uses it in a step (never "
+                 "its value)",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
     # What happened, not only what is set up (ASSIST1, D291).
@@ -87,6 +89,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "boards": {"keys": ["items?", "total?", "next_cursor?", "board?", "id?", "open?", "recently_closed?"],
                "item": ["board", "id", "kind", "open", "being_worked_on"]},
     "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps"]},
+    "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
 }
 
 #: What each topic shows and where to look instead, said with every answer that has nothing (F1237): on an error it
@@ -126,6 +129,8 @@ ELSEWHERE: dict[str, str] = {
               "its name.",
     "recordings": "This shows browser recordings a person made in the app. Which workflow replays one is in topic "
                   "`workflow` with its name.",
+    "variables": "This lists the workspace's variables by name. Which workflow's steps use one is in topic "
+                 "`workflow` with its name.",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -336,6 +341,18 @@ async def _recordings(args: dict) -> dict:
                                    "Record a task)."}
 
 
+async def _variables(args: dict) -> dict:
+    """The variables by name, never by value (F1271): a plan uses one as `{{ global.x }}` and needs nothing of what
+    it holds. Adding or changing one is the Variables screen's."""
+    from core import variables
+
+    out = [{"name": v["key"], "reference": v["reference"]} for v in variables.named(await variables.load())]
+    return {"items": _named(out, args.get("name")),
+            "note": "Names only: a value is never shown, and a run fills it in where its reference is. Adding or "
+                    "changing a variable is done in Settings › Variables." if out else
+                    "There are no variables yet: a person adds them in Settings › Variables."}
+
+
 async def _usage(args: dict) -> dict:
     from core.orchestration.run_view import list_runs
 
@@ -507,7 +524,7 @@ _SELF_HOSTED: dict[str, Reader] = {
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
-    "boards": _boards, "recordings": _recordings,
+    "boards": _boards, "recordings": _recordings, "variables": _variables,
 }
 
 
