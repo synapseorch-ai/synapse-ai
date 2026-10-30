@@ -45,13 +45,14 @@ class TestThereIsOnePlanner:
         planners = [s for s in bundle["steps"].values() if s.get("agent_id") == "agent_native_builder_planner"]
         assert [s["id"] for s in planners] == ["step_plan"]
 
-    def test_it_holds_both_planners_tools_and_five_finishes(self, bundle):
+    def test_it_holds_both_planners_tools_and_six_finishes(self, bundle):
         agent = bundle["agents"]["agent_native_builder_planner"]
         for tool in ("read_workspace", "read_api_spec", "list_agents", "get_agent", "list_orchestrations",
                      "get_orchestration", "list_schedules", "list_custom_tools", "list_skills",
                      "product_capabilities"):
             assert tool in agent["tools"], tool
-        finishes = ["submit_plan", "submit_change", "say", "ask_person", "cannot"]
+        # D2 adds `research_questions`: the planner asks, code and the researcher answer — still no web on it.
+        finishes = ["submit_plan", "submit_change", "say", "research_questions", "ask_person", "cannot"]
         assert bundle["steps"]["step_plan"]["finish_tools"] == finishes
         assert all(f in agent["tools"] for f in finishes)
         assert not any(t in agent["tools"] for t in ("search_the_web", "read_web_page")), "no web on the planner"
