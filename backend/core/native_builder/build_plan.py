@@ -30,7 +30,7 @@ from typing import Any
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core import feature_census
-from core.native_builder import boards_rule, objects as O, one_writer, own_api, periods
+from core.native_builder import boards_rule, imitation, objects as O, one_writer, own_api, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -1079,21 +1079,8 @@ def model_work(name: str) -> bool:
 
 
 def imitates_eval(plan: O.Plan, ws: Workspace) -> str | None:
-    """Why a plan is Evals made by hand, or None (F1255; TRI1's triage part 3, run …1897e): a Workflow step running a
-    workflow that is here, a model step reading what it wrote, and no tool step or other workflow step. Narrow on
-    purpose: running one and then fetching or sending something is a workflow. Pure: the plan and the workspace only."""
-    steps = [s for s in plan.steps if s.type != "end"]
-    runs = [s for s in steps if s.type == "workflow"]
-    if not runs or any(s.workflow not in ws.workflows for s in runs) or any(s.type == "tool" for s in steps):
-        return None
-    reads = [s for s in steps if s.type in ("agent", "llm")
-             and any(re.search(rf"state\.{re.escape(r.id)}\b", json.dumps(s.model_dump(), default=str)) for r in runs)]
-    if not reads:
-        return None
-    name = ws.workflows[runs[0].workflow].get("name") or runs[0].workflow
-    return (f'That is an eval of "{name}": Evals scores its runs by a rubric, from its next run on, and runs its golden '
-            f'test cases when you ask. Ask me to add an eval to "{name}" and I will set its rubric and test cases there, '
-            "rather than build a workflow that judges it.")
+    """Why a plan is Evals made by hand, or None (F1255): the imitation checker's Evals row (F1257 step 3)."""
+    return next((f["say"] for f in imitation.check_draft(plan, ws) if f["screen"] == "evals"), None)
 
 
 #: The tools a build's eval is saved through (`build_save._eval_calls`): without them here, no eval is offered.
@@ -1697,9 +1684,9 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         return {**base, "outcome": "said", "say": "I could not make a plan that holds together: "
                                                   + "; ".join(found.errors[:3])}
     base["without"] = without
-    if plan.kind == "create" and (copied := imitates_eval(plan, ws)):
-        # A workflow that runs one here and has a model judge what it wrote is Evals, made by hand (F1255).
-        return {**base, "outcome": "said", "say": copied}
+    if plan.kind == "create" and (copied := imitation.check_draft(plan, ws)):
+        # A screen rebuilt by hand, said from its census row (F1257 step 3): first, Evals (F1255).
+        return {**base, "outcome": "said", "say": copied[0]["say"]}
     if not [s for s in plan.steps if s.type != "end"]:
         left = ", ".join(f"`{t}`" for t in without)
         return {**base, "outcome": "said", "say": f"Without {left} there is nothing left to build." if without
