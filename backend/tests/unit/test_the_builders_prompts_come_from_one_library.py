@@ -100,8 +100,10 @@ from core.native_builder import prompt_lint, seed
 #: are the planner's (8, then the one 'built or changed' end), d3ac6152….
 #: D340 D2: the planner researches while it plans — a `research_questions` finish (product, public, business) to
 #: code's answers first (`step_research_answer`), the researcher for what is left (`step_research_find`, its answers
-#: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863….
-BUNDLE_SHA256 = "c7c5586378c2ce2e33a0dfb8c14fa7d4cd6f3cf601fa4a64ad54af3eb16e4a79"
+#: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863…;
+#: with the sites a message names in the pack, kept a conversation in `named_pages`, and the planner told the person's
+#: word comes before what was read or found (Naveen 10-31), e4e744c8….
+BUNDLE_SHA256 = "e4e744c8113960956bc37946e03b6a8fedfbbab6a6d9677ce5c53b6996e7464b"
 
 
 def _sha(definitions) -> str:

@@ -334,6 +334,7 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
     # The findings card the previous turn ended in, if it did (F766): its "go ahead and build it" goes to the build,
     # which plans from them instead of researching again.
     found = previous_findings(previous)
+    from core.native_builder import named_sites
     from core.native_builder.change_tools import CARRY_KEY, carry_request
     from core.native_builder.target import LAST_BUILT_KEY, last_built
 
@@ -367,6 +368,9 @@ async def prepare_builder_run(request: BuilderChatRequest, server_module, *, pan
         ),
         LAST_BUILT_KEY: last_built(previous),
         "prior_findings": found,
+        # The sites this conversation has read (D340 D2): each is read once a conversation, so a re-plan or the next
+        # turn never fetches it again and a page that changes mid-conversation never changes the plan.
+        named_sites.PAGES_KEY: named_sites.carried(previous),
         # The questions this conversation's request asked in its earlier runs (F1226), and a plan left waiting at its
         # review (F1241), staged: classify decides whether this message continues that request (`adopt_carry`).
         CARRY_KEY: carry_request(previous, previous_steps, previous_id),
