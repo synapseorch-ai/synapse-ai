@@ -42,6 +42,8 @@ READS: frozenset[str] = frozenset({
     # The planner's research answered (D340 D2): code reads the help and a page the question names through the
     # guarded read, and keeps the researcher's answers, into the run's own state only.
     "answer_research", "settle_research",
+    # The planner's own check of a draft (D340 D3): examine's rules, written nowhere.
+    "check_draft",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,

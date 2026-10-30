@@ -93,8 +93,9 @@ PRIVATE_STATE_PREFIXES = (
     "_human_channel_id",
     # A build's record of what it wrote, what failed and why it stopped (`run_writes`); its words are `run_changes`.
     "_run_writes", "_run_failures", "_run_stopped",
-    # Synapse AI's approved review and its send-backs (`review.REVIEW_KEY`, `build_plan._SENDBACK_KEY`).
-    "_approved_review", "_plan_sendbacks",
+    # Synapse AI's approved review and its send-backs (`review.REVIEW_KEY`, `build_plan._SENDBACK_KEY`), and the
+    # structure findings a build has said already (`build_plan._STRUCTURE_SAID_KEY`, D340 D3).
+    "_approved_review", "_plan_sendbacks", "_plan_structure_said",
     # Whether a person watches the run, which decides what a step does at its turn limit (`turn_limit.ATTENDED_KEY`,
     # F1219): the engine's, set by its starter, never a run's input or a client's to read.
     "_attended",

@@ -16,6 +16,7 @@
         "list_custom_tools",
         "list_skills",
         "product_capabilities",
+        "check_draft",
         "submit_plan",
         "submit_change",
         "say",
