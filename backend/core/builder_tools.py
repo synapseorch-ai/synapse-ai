@@ -3255,10 +3255,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
                     kept.append({"id": orch["id"], "name": orch.get("name"), "reason": " and ".join(reasons)})
                     continue
                 await _delete_orch(orch["id"])
-                # Why, in the validator's words (F867): the person cannot fix what they are not told.
+                # Why, in the validator's words (F867): the person cannot fix what they are not told. One never
+                # checked says so too: every removal a build makes carries its reason (F1281).
                 said = orch.get("building_issues") or []
                 _emit(events, "orchestration", "deleted", orch["id"], orch.get("name"),
-                      reason=("it never passed validation: " + "; ".join(said)) if said else None)
+                      reason="it never passed validation" + (": " + "; ".join(said) if said else ""))
                 removed.append(orch["id"])
                 removed_names.append(orch.get("name") or orch["id"])
         if run is not None:
