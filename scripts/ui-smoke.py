@@ -15103,8 +15103,10 @@ async def check_cantlink(browser) -> str:
     ctx, page = await _open_builder(browser)
     bad: list[str] = []
     try:
-        await page.evaluate("(c) => { window.__stub.push({type: 'assistant_message', content: c});"
-                            " window.__stub.push({type: 'done'}); }", CANT_REPLY)
+        # The panel's reply is a finished run's summary (builderEvents' orchestration_complete).
+        await page.evaluate("([id, c]) => { window.__stub.push({type: 'orchestration_start', run_id: id});"
+                            " window.__stub.push({type: 'orchestration_complete', run_id: id,"
+                            " final_state: {summary: c}}); }", [RUN_ID, CANT_REPLY])
         panel = page.locator('[data-testid="assistant-panel"]')
         screen = panel.get_by_role("link", name="Evals", exact=True)
         await screen.wait_for(timeout=10_000)
