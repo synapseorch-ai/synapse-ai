@@ -85,6 +85,13 @@ _ACTS = (
     Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
     Op("feature_on", "act", "feature", verb="Turn on"),
+    # Recordings (F1270): a kept fix used or dropped, a new name, or the recording gone, each a card.
+    Op("recording_approve_edit", "act", "recording", fields=("edit_id",), required=("edit_id",),
+       verb="Use the kept fix in"),
+    Op("recording_discard_edit", "act", "recording", fields=("edit_id",), required=("edit_id",),
+       verb="Drop the kept fix in"),
+    Op("recording_rename", "act", "recording", fields=("name",), required=("name",), verb="Rename"),
+    Op("recording_delete", "act", "recording", verb="Delete"),
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
@@ -170,7 +177,7 @@ MAKES_TARGET = frozenset({"board_create", "knowledge_create"})
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
-            "feature": "feature"}
+            "feature": "feature", "recording": "recording"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────

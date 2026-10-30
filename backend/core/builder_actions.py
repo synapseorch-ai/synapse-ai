@@ -52,6 +52,11 @@ ACTIONS: dict[str, str] = {
     "board_create": "make a shared board (`name`, `text`: what it is for)",
     "board_delete": "delete a shared board (`board`)",
     "feature_on": "turn on Boards or Knowledge for this workspace (`feature`: boards or knowledge), when one is off",
+    # Recordings (F1270): a kept fix (topic `waiting` lists them), a new name, or the recording gone.
+    "recording_approve_edit": "use a kept fix in its recording (`recording`, `edit_id`: from topic `waiting`)",
+    "recording_discard_edit": "drop a kept fix, leaving the recording as it is (`recording`, `edit_id`)",
+    "recording_rename": "rename a recording (`recording`, `name`)",
+    "recording_delete": "delete a recording and its pictures (`recording`)",
 }
 
 SCHEMA = {
@@ -86,6 +91,8 @@ SCHEMA = {
                 "status": {"type": "string", "enum": ["open", "done", "failed"]},
                 "result": {"type": "string", "description": "board_update_card: what came of it."},
                 "feature": {"type": "string", "enum": ["boards", "knowledge"]},
+                "recording": {"type": "string", "description": "The recording's name or id."},
+                "edit_id": {"type": "string", "description": "A kept fix's id, from topic `waiting`."},
                 "name": {"type": "string"},
                 "title": {"type": "string"},
                 "text": {"type": "string"},
@@ -317,6 +324,8 @@ async def _offer(action: str, args: dict) -> dict:
         if not await features.is_on("boards"):
             raise _FeatureOff("boards")
         return await _board(action, args)
+    if action.startswith("recording_"):
+        return await _recording(action, args)
 
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
 
@@ -421,6 +430,43 @@ async def _knowledge(action: str, args: dict) -> dict:
                      detail="Its Vault file goes too. This cannot be undone.",
                      buttons=[await _button("Delete it", "delete_knowledge_document", {"doc_id": row.id})])
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _recording(action: str, args: dict) -> dict:
+    """A recording's acts (F1270), each a card whose button is the product tool the Recordings screen's own code is
+    behind; a plan without Browser is said in its host's words first."""
+    from core.browser import recordings
+    from core.builder_tools import _browser_refused
+    from core.product_tools import browser
+
+    if (refused := await _browser_refused("recording")) is not None:
+        raise _NotOffered(refused["error"])
+    docs = [{"id": d["id"], "name": d.get("name") or d["id"]} for d in await recordings.all_recordings()]
+    doc = _pick(docs, str(args.get("recording") or ""), "recording", "Topic `recordings` lists them.")
+    name = doc["name"]
+    if action == "recording_rename":
+        call = {"recording_id": doc["id"], "name": str(args.get("name") or "").strip()}
+        said = await _resolved(browser._preview_rename(_caller(), call))
+        return _card(f'Rename the recording "{name}" to "{said["to"]}"',
+                     buttons=[await _button("Rename", "rename_recording", call)])
+    if action == "recording_delete":
+        said = await _resolved(browser._preview_delete(_caller(), {"recording_id": doc["id"]}))
+        users = [f'the workflow "{w["name"]}"' for w in said["used_by"]["workflows"]] + [
+            f'the agent "{a["name"]}"' for a in said["used_by"]["agents"]]
+        detail = said["note"] + (" Used by " + ", ".join(dict.fromkeys(users)) + "." if users else "")
+        return _card(f'Delete the recording "{name}"', danger=True, detail=detail,
+                     buttons=[await _button("Delete it", "delete_recording", {"recording_id": doc["id"]})])
+    call = {"recording_id": doc["id"], "edit_id": str(args.get("edit_id") or "").strip()}
+    approve = action == "recording_approve_edit"
+    said = await _resolved((browser._preview_approve if approve else browser._preview_discard)(_caller(), call))
+    where = f'step {said["from_step"]}' + (" and every step after it" if said["rest"] else "")
+    detail = "\n".join([f"Now, from {where}:", *(f"- {line}" for line in said["before"]),
+                        "The fix:", *(f"- {line}" for line in said["after"]), said["note"]])
+    if approve:
+        return _card(f'Use the kept fix in "{name}"', detail=detail,
+                     buttons=[await _button("Use the fix", "approve_recording_edit", call)])
+    return _card(f'Drop the kept fix in "{name}"', detail=detail,
+                 buttons=[await _button("Drop it", "discard_recording_edit", call)])
 
 
 async def _board(action: str, args: dict) -> dict:

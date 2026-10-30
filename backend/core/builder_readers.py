@@ -46,8 +46,8 @@ TOPICS: dict[str, str] = {
     # What a workflow is made of, not what it did (F1237): the builder's own words for its steps, never its configs.
     "workflow": "one workflow's steps, by `name` (or its id): what each step does, its own parts, and what is "
                 "missing or off. 'What does it do', 'what are its steps'",
-    "waiting": "what waits on a person: workflow runs asking a question and tool calls an agent stopped on, each "
-               "with what answers it",
+    "waiting": "what waits on a person: workflow runs asking a question, tool calls an agent stopped on, and fixes "
+               "a run kept on a recording, each with what answers it",
     "agent_activity": "what the agent `name` has been doing: its recent conversations (last question and answer) "
                       "and the workflows that use it, with how each one's last run went",
     "boards": "the boards and how many cards are open on each; with `name`, that board's open cards (their ids, who "
@@ -89,7 +89,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     # The boards (a page of them), or with `name` one board's cards.
     "boards": {"keys": ["items?", "total?", "next_cursor?", "board?", "id?", "open?", "recently_closed?"],
                "item": ["board", "id", "kind", "open", "being_worked_on"]},
-    "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps"]},
+    "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps", "fixes_waiting"]},
     "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
 }
 
@@ -337,7 +337,8 @@ async def _recordings(args: dict) -> dict:
     if (refused := await _browser_refused("recording")) is not None:
         return {"items": [], "note": refused["error"]}
     out = [{"name": d.get("name") or d["id"], "id": d["id"], "sites": list(d.get("sites") or []),
-            "inputs": recordings.input_names(d), "steps": len(d.get("steps") or [])}
+            "inputs": recordings.input_names(d), "steps": len(d.get("steps") or []),
+            "fixes_waiting": len(d.get("pending_edits") or [])}
            for d in await recordings.all_recordings()]
     return {"items": _named(out, args.get("name")),
             "note": "" if out else "There are no recordings yet: a person records one in the app (Recordings › "
@@ -452,7 +453,34 @@ async def _agent_activity(args: dict) -> dict:
 
 
 async def _waiting(args: dict) -> dict:
-    return await _product_read("list_waiting", {"limit": args.get("limit") or 25})
+    got = await _product_read("list_waiting", {"limit": args.get("limit") or 25})
+    if "error" in got:
+        return got
+    fixes = await _recording_fixes()
+    return {**got, "items": [*(got.get("items") or []), *fixes], "total": int(got.get("total") or 0) + len(fixes)}
+
+
+async def _recording_fixes() -> list[dict]:
+    """Each fix a run kept on a recording, waiting for a person to use or drop it (F1270), with what answers it;
+    none where the host's plan has no Browser."""
+    from core.browser import recordings
+    from core.builder_tools import _browser_refused
+    from core.product_tools.browser import edit_words
+    from core.product_tools.errors import ToolRefusal
+
+    if await _browser_refused("recording") is not None:
+        return []
+    out = []
+    for doc in await recordings.all_recordings():
+        for edit in doc.get("pending_edits") or []:
+            try:
+                said = edit_words(doc, edit)
+            except ToolRefusal:
+                continue
+            out.append({"kind": "recording_fix", "recording": said["recording"], "edit_id": edit.get("edit_id"),
+                        "from_step": said["from_step"], "before": said["before"], "after": said["after"],
+                        "answer_with": ["recording_approve_edit", "recording_discard_edit"]})
+    return out
 
 
 async def _boards(args: dict) -> dict:

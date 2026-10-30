@@ -55,8 +55,10 @@ CENSUS: tuple[Screen, ...] = (
        ("create_agent", "update_agent", "delete_agent", "chat_with_agent", "read_workspace:agent_activity")),
     _s("skills", "Skills", "/skills", "writes skills and gives them to agents",
        ("create_skill", "update_skill", "attach_skills", "list_skills")),
-    _s("browser", "Browser", "/browser", "lists the kept sign-ins and recorded tasks, and deletes a recording",
-       ("list_browser_sessions", "list_recordings", "get_recording", "delete_recording"),
+    _s("browser", "Browser", "/browser", "lists the kept sign-ins and recorded tasks, uses or drops a fix a run kept "
+       "on a recording, renames and deletes a recording",
+       ("list_browser_sessions", "list_recordings", "get_recording", "delete_recording", "approve_recording_edit",
+        "discard_recording_edit", "rename_recording"),
        cant="signing in to a site or recording a task, which a person does in the app's browser"),
     _s("vault", "Vault", "/vault", cant="browsing, uploading and organising the Vault's files"),
     _s("knowledge", "Knowledge", "/knowledge", "makes knowledge bases, adds files, pages and notes, and searches them",
