@@ -17,8 +17,8 @@ Two kinds of builder tool are not served:
 
 * **`finish_build`** cleans up after the builder run it is called from, and an
   MCP call is not one — it would do nothing.
-* **`list_variables`** answers with the first 40 characters of each value, and
-  those are often tokens.
+* **`list_variables`** names the variables for the builder's own plans (F1271);
+  it stays in the app, beside the screen where they are made.
 
 `list_recent_runs` and `get_run_summary` are left out because the run tools in
 `runs.py` answer the same questions with more.

@@ -36,26 +36,32 @@ def _s(id: str, label: str, href: str, does: str = "", tools: tuple[str, ...] = 
 CENSUS: tuple[Screen, ...] = (
     _s("dashboard", "Home", "/dashboard", "says what happened today and what waits on the person",
        ("read_workspace:today", "read_workspace:waiting", "summarise_activity", "list_waiting")),
-    _s("runs", "Runs", "/runs", "lists runs, reads one step by step, answers a run's question, stops one",
-       ("list_runs", "get_run", "read_workspace:run", "answer_run", "cancel_run")),
-    _s("logs", "Logs", "/logs", "reads what a run or an agent did",
+    _s("runs", "Runs", "/runs", "lists runs, reads one step by step, answers a run's question, stops one, says why "
+       "one failed and resumes it once fixed",
+       ("list_runs", "get_run", "read_workspace:run", "answer_run", "cancel_run", "resume_run")),
+    _s("logs", "Logs", "/logs", "reads what a run or an agent did, and why a run failed: its step, its error, the "
+       "class of failure and the change that fixes it",
        ("read_workspace:run", "read_workspace:agent_activity", "agent_activity")),
     _s("evals", "Evals", "/evals",
        cant="writing a rubric, making golden test cases, running an eval suite and reading eval scores"),
-    _s("usage", "Usage", "/usage", "says what workflows and models have cost, and what the plan has left",
-       ("get_usage", "read_workspace:usage", "read_workspace:plan")),
+    _s("usage", "Usage", "/usage", "says what workflows and models have cost, what the plan has left, and where it "
+       "could cost less, each saving with its estimate as a change to make",
+       ("get_usage", "read_workspace:usage", "read_workspace:plan", "read_workspace:savings")),
     _s("orchestrations", "Workflows", "/workflows", "builds, changes, checks, runs and deletes workflows",
        ("create_orchestration", "update_orchestration", "add_single_step", "update_step", "remove_step",
         "validate_orchestration", "run_orchestration", "delete_orchestration", "read_workspace:workflow")),
-    _s("schedules", "Schedules", "/schedules", "makes, changes, pauses, runs now and deletes schedules",
+    _s("schedules", "Schedules", "/schedules", "makes, changes, pauses, runs now and deletes schedules, sets what one "
+       "does with a time it missed and points one at another workflow or agent",
        ("create_schedule", "update_schedule", "set_schedule_enabled", "trigger_schedule", "delete_schedule")),
     _s("templates", "Templates", "/templates", cant="browsing and importing the ready-made template packs"),
     _s("agents", "Agents", "/agents", "makes, changes and deletes agents, talks to one, and says what one has done",
        ("create_agent", "update_agent", "delete_agent", "chat_with_agent", "read_workspace:agent_activity")),
     _s("skills", "Skills", "/skills", "writes skills and gives them to agents",
        ("create_skill", "update_skill", "attach_skills", "list_skills")),
-    _s("browser", "Browser", "/browser", "lists the kept sign-ins and recorded tasks, and deletes a recording",
-       ("list_browser_sessions", "list_recordings", "get_recording", "delete_recording"),
+    _s("browser", "Browser", "/browser", "lists the kept sign-ins and recorded tasks, uses or drops a fix a run kept "
+       "on a recording, renames and deletes a recording",
+       ("list_browser_sessions", "list_recordings", "get_recording", "delete_recording", "approve_recording_edit",
+        "discard_recording_edit", "rename_recording"),
        cant="signing in to a site or recording a task, which a person does in the app's browser"),
     _s("vault", "Vault", "/vault", cant="browsing, uploading and organising the Vault's files"),
     _s("knowledge", "Knowledge", "/knowledge", "makes knowledge bases, adds files, pages and notes, and searches them",
@@ -77,13 +83,20 @@ CENSUS: tuple[Screen, ...] = (
     _s("widgets", "Widgets", "/widgets", "says which website widgets are on and which agent answers",
        ("read_workspace:widgets",), cant="making or changing a website widget"),
     # Settings
-    _s("general", "General", "/settings/general", "turns Boards or Knowledge on, and says the tool policy",
-       ("turn_on_feature", "read_workspace:tool_policy"), cant="the workspace's other general settings"),
-    _s("models", "Models", "/settings/models", "says the default and builder models and which providers have a key",
-       ("read_workspace:models",), cant="adding a provider key or changing the default model"),
+    _s("general", "General", "/settings/general", "changes the general settings on Synapse AI's list (compaction, "
+       "caching, large responses, turn limits, the tool policy, features and this install's limits), each with the "
+       "person's yes and undo",
+       ("turn_on_feature", "set_settings", "read_workspace:settings", "read_workspace:tool_policy"),
+       cant="the settings off its list: how agents reach this machine and its databases, signing in, and running at "
+            "scale"),
+    _s("models", "Models", "/settings/models", "says which providers have a key, and changes the default, builder, "
+       "quick and judge models, reasoning effort and the longest answer, with the person's yes and undo",
+       ("read_workspace:models", "set_settings", "read_workspace:settings"),
+       cant="adding a provider key or a provider's address"),
     _s("personal_details", "Personal details", "/settings/personal_details", cant="the person's own details"),
-    _s("variables", "Variables", "/settings/variables", "lists the workspace's variables", ("list_variables",),
-       cant="adding or changing a variable"),
+    _s("variables", "Variables", "/settings/variables",
+       "names the workspace's variables for a step's `{{ global.x }}`, never a value",
+       ("list_variables", "read_workspace:variables"), cant="adding or changing a variable"),
     _s("memory", "Memory", "/settings/memory", cant="seeing or clearing what agents remember"),
     _s("workspace", "Integrations", "/settings/workspace", cant="connecting the workspace's integrations"),
     _s("repos", "Repos", "/settings/repos", "lists the repositories agents may use", ("list_repos",),
