@@ -131,6 +131,21 @@ class TestF693ABuildIsAudited:
         assert res.isError
         assert audited == []
 
+    async def test_an_older_agent_is_still_changed_and_a_value_the_editor_refuses_is_not(self, mcp_app, api_key,
+                                                                                            seed_agent):
+        """F1259: update_agent holds what it sets to the agent editor's own model, never what it leaves alone."""
+        from core.store.resources import get_agent
+
+        older = await seed_agent(name="Older", turn_limit_mode="sometimes")  # saved before the rule
+        async with mcp_session(mcp_app, api_key) as s:
+            res = await s.call_tool("update_agent", {"agent_id": older["id"], "fields": {"description": "Newer"}})
+            assert not res.isError, res.content[0].text
+            refused = await s.call_tool("update_agent", {"agent_id": older["id"],
+                                                         "fields": {"turn_limit_mode": "never"}})
+        assert refused.isError and "turn_limit_mode" in refused.content[0].text
+        saved = await get_agent(older["id"])
+        assert (saved["description"], saved["turn_limit_mode"]) == ("Newer", "sometimes")
+
     async def test_a_builder_tools_refusal_reads_in_its_own_words_once(self, mcp_app, api_key):
         """The builder's {"error": ...} came back wrapped again in a second {"error": ...} (found by ASSIST1)."""
         async with mcp_session(mcp_app, api_key) as s:

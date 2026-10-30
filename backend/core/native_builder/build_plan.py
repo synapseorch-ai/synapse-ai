@@ -625,6 +625,75 @@ async def _agent_switches(plan: O.Plan, ws: Workspace, server_module: Any) -> li
         elif a.browser is not None:
             a.browser.sessions_missing = await save_checks.sessions_missing(a.browser.sessions,
                                                                             caller=_acting_caller())
+        errors += await _settings_issues(plan, a)
+    return errors
+
+
+#: How `plan.refs` keys each kind of thing a new agent names (F1259), as `compile` reads them.
+_REF_KINDS = {"repos": "repo", "db_configs": "db", "workflow": "workflow", "recordings": "recording"}
+
+
+async def _settings_issues(plan: O.Plan, a: O.NewAgent) -> list[str]:
+    """The rest of a new agent's settings (F1259, `agent_census`), held to what the agent editor lets a person pick:
+    each on the kind of agent that has it, and each thing it names one that is here; what it names is kept as ids in
+    `plan.refs` for the compile."""
+    from core.routes.db_configs import load_db_configs
+    from core.routes.repos import load_repos
+    from core.store.resources import load_orchestrations
+
+    errors: list[str] = []
+    kinds = {"team": ("team",), "repos": ("code",), "db_configs": ("code",), "workflow": ("orchestrator",)}
+    for field, allowed in kinds.items():
+        if getattr(a, field) and a.type not in allowed:
+            errors.append(f"agent {a.name}: {field}: only a {' or '.join(allowed)} agent has it; make it that type or "
+                          "leave it out")
+    if a.type == "team":
+        # Each member is an agent this plan makes or one that is here (TRI1): never a name nothing answers to.
+        from core.store.resources import load_agents
+
+        made = {n.name.lower() for n in plan.agents if n.name != a.name}
+        here = {str(x.get("name") or "").lower(): x["id"] for x in await load_agents() if not x.get("system")}
+        here_ids = set(here.values())
+        for member in a.members:
+            if member in here_ids or member.lower() in made:
+                continue
+            if member.lower() in here:
+                plan.refs[f"agent:{member}"] = here[member.lower()]
+                continue
+            errors.append(f"agent {a.name}: members: '{member}' is no agent here and none this plan makes")
+    if a.type == "orchestrator" and not a.workflow:
+        errors.append(f"agent {a.name}: an orchestrator agent runs one workflow: name it in `workflow`")
+    if a.skills:
+        from core import skills as library
+
+        have = {skill["name"].lower(): skill["name"] for skill in await library.list_skills()}
+        for name in a.skills:
+            if name.lower() not in have:
+                errors.append(f"agent {a.name}: skills: there is no skill '{name}' here")
+        a.skills = [have[n.lower()] for n in a.skills if n.lower() in have]
+
+    async def named(kind: str, wanted: list[str], rows: list[dict], label: str) -> None:
+        by = {str(r.get("name") or "").lower(): r["id"] for r in rows if r.get("id")}
+        ids = {r["id"] for r in rows if r.get("id")}
+        for name in wanted:
+            found = name if name in ids else by.get(name.strip().lower())
+            if found is None:
+                errors.append(f"agent {a.name}: {kind}: there is no {label} '{name}' here"
+                              + (f"; there are {', '.join(sorted(r['name'] for r in rows if r.get('name'))[:10])}"
+                                 if rows else ""))
+            else:
+                plan.refs[f"{_REF_KINDS[kind]}:{name}"] = found
+
+    if a.repos:
+        await named("repos", a.repos, await load_repos(), "repository")
+    if a.db_configs:
+        await named("db_configs", a.db_configs, await load_db_configs(), "database")
+    if a.workflow:
+        await named("workflow", [a.workflow], await load_orchestrations(), "workflow")
+    if a.browser is not None and a.browser.recordings:
+        from core.browser import recordings
+
+        await named("recordings", a.browser.recordings, await recordings.all_recordings(), "recording")
     return errors
 
 
@@ -1322,6 +1391,12 @@ async def dry_issues(plan: O.Plan, server_module: Any, ws: Workspace, state: dic
     await validate(compiled, plan, server_module, existing, own_steps=_changed_steps(plan, state, compiled))
     issues = compiled.all_issues() + inner_order(compiled)[1]
     agents = existing | {a["id"]: a for a in compiled.agents}
+    from core.native_builder.agent_census import editor_problem
+
+    for a in compiled.agents:
+        # Each new agent as the agent editor's own model takes it (F1259): what a person couldn't save, a plan can't.
+        if (said := editor_problem(a)) is not None:
+            issues.append(f"agent {a.get('name')}: {said}")
     for doc in [compiled.orchestration, *(i.orchestration for i in compiled.inner)]:
         if (refused := _refuse_ungated_transform(doc["steps"])) is not None:
             issues.append(refused["error"])

@@ -258,15 +258,22 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
     agents: list[dict[str, Any]] = []
     for new in plan.agents:
         agent_ids[new.name] = mint("agent", length=10)
+    refs = getattr(plan, "refs", {}) or {}
     for new in plan.agents:
         agent: dict[str, Any] = {
             "id": agent_ids[new.name], "name": new.name, "description": new.purpose, "avatar": "default",
-            "type": {"team": "delegate", "browser": "browser"}.get(new.type, "conversational"), "tools": list(new.tools),
-            "repos": [], "db_configs": [], "system_prompt": "", "orchestration_id": None,
+            "type": {"team": "delegate", "browser": "browser", "code": "code",
+                     "orchestrator": "orchestrator"}.get(new.type, "conversational"),
+            "tools": list(dict.fromkeys([*new.tools, *(["spawn_subtask"] if new.helpers else [])])),
+            "repos": [refs[f"repo:{r}"] for r in new.repos if f"repo:{r}" in refs],
+            "db_configs": [refs[f"db:{d}"] for d in new.db_configs if f"db:{d}" in refs],
+            "system_prompt": "",
+            "orchestration_id": refs.get(f"workflow:{new.workflow}") if new.workflow else None,
             # Code's pick (F966); with none, the workspace's default, as before.
             "model": picked.model if (picked := getattr(plan, "models", {}).get(new.name)) else None,
-            "provider": None, "max_turns": None,
-            "delegate_agent_ids": [agent_ids.get(m, m) for m in new.members] if new.type == "team" else [],
+            "provider": None, "max_turns": new.max_turns,
+            "delegate_agent_ids": [agent_ids.get(m) or refs.get(f"agent:{m}", m) for m in new.members]
+            if new.type == "team" else [],
         }
         if plan.boards:
             # Its workflow is given the board the person asked for (F1214): its cards go there, not to its own.
@@ -274,15 +281,32 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
         # The agent editor's switches (F1223), as its save takes them: a kept session missing here is left out.
         if new.memory:
             agent["memory"] = True
+        # The rest of the editor's settings (F1259, `agent_census`), each only when the plan sets it.
+        if new.skills:
+            agent["skills"] = list(new.skills)
+        if not new.planning:
+            agent["planning"] = False
+        if new.skip_default_tools:
+            agent["skip_default_tools"] = True
+        for key in ("turn_limit_mode", "reasoning_effort", "max_output_tokens"):
+            if getattr(new, key) is not None:
+                agent[key] = getattr(new, key)
+        if new.boards_own is not None and "boards" not in agent:
+            agent["boards"] = {"own": new.boards_own}
         if answers_from := [kb_ids[n] for n in new.knowledge if n in kb_ids]:
             agent["knowledge"] = answers_from
         if new.type == "browser" and new.browser is not None:
             agent["browser"] = {"sites": list(new.browser.sites), "mode": new.browser.mode,
-                                "sessions": [s for s in new.browser.sessions if s not in new.browser.sessions_missing]}
+                                "sessions": [s for s in new.browser.sessions if s not in new.browser.sessions_missing],
+                                "recordings": [refs[f"recording:{r}"] for r in new.browser.recordings
+                                               if f"recording:{r}" in refs],
+                                **({"action_budget": new.browser.action_budget}
+                                   if new.browser.action_budget is not None else {})}
         if new.type == "team":
             from core.models import AgentTeam
 
-            agent["team"] = AgentTeam(mode="team").model_dump()
+            part = new.team.model_dump(exclude_none=True) if new.team is not None else {"mode": "team"}
+            agent["team"] = AgentTeam(**part).model_dump()
         if confirm := {f"tool:{t}": "confirm" for t in new.tools if t in asks}:
             agent["tool_policy"] = confirm
         agents.append(agent)

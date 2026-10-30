@@ -92,7 +92,14 @@ SUBMIT = {"type": "function", "function": {
         "run_immediately | skip}; create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression | "
         "interval_value + interval_unit, missed_run_policy}; retarget_schedule {runs: {kind: workflow | agent, id}}; "
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
-        "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
+        "set_agent_instructions {system_prompt}; set_agent_settings {description, memory, knowledge: [base names], "
+        "boards_own, planning, skip_default_tools, helpers, max_turns, turn_limit_mode: ask | continue | stop, "
+        "reasoning_effort: off | low | medium | high, max_output_tokens}; set_agent_team (a team agent) {add / "
+        "remove: [agent names], mode: one_at_a_time | team, at_once, task_budget, spend_limit_usd | "
+        "clear_spend_limit}; set_agent_browser (a browser agent) {sites, sessions: [sites], recordings: [names], "
+        "action_budget, mode: read_only | co_drive (letting it type and send: on its own)}; set_agent_code (a code "
+        "agent) {repos, db_configs: [names]}; edit_agent_memory {content} and delete_agent_memory, each naming the "
+        "item by its id from read_workspace agent_memory; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
         "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
         "board_update_card {status, result}; board_comment {text}; board_create {text}; recording_approve_edit and "
@@ -622,6 +629,8 @@ async def candidates(kind: str) -> list[dict] | None:
         return await _documents()
     if kind == "knowledge_base":
         return await _bases()
+    if kind == "memory":
+        return await _memory_items()
     if kind == "recording":
         from core.browser import recordings
 
@@ -701,6 +710,8 @@ async def read(kind: str, target_id: str) -> dict | None:
         return await _document_now(target_id)
     if kind == "knowledge_base":
         return await _base_now(target_id)
+    if kind == "memory":
+        return await _memory_now(target_id)
     return None
 
 
@@ -757,6 +768,181 @@ async def _settings_line(target: dict, live: dict, want: dict) -> str:
     if "budget_monthly_usd" in want:
         lines.append(f"  monthly budget: {_usd(live.get('budget_monthly_usd'))} → {_usd(want['budget_monthly_usd'])}")
     return "\n".join(lines)
+
+
+# ── an agent's memory and settings (F1259) ────────────────────────────────────────────────────────────────────────
+
+async def _memory_items() -> list[dict]:
+    """Every agent's memory items, each by `<agent id>/<item>` and named "<agent>: <item>", as a change names one."""
+    from core.product_tools.agent_memory import items
+    from core.store.resources import load_agents
+
+    out: list[dict] = []
+    for agent in await load_agents():
+        if not agent.get("system"):
+            out += [{"id": i["id"], "name": f"{agent.get('name') or agent['id']}: {i['name']}", "detail": i["summary"]}
+                    for i in await items(agent)]
+    return out
+
+
+async def _memory_now(item_id: str) -> dict | None:
+    """One memory item, whole, as the Memory screen opens it."""
+    from core import agent_memory
+    from core.store.resources import get_agent
+
+    agent_id, _, name = item_id.partition("/")
+    agent = await get_agent(agent_id) if agent_id and name else None
+    if agent is None or agent.get("system"):
+        return None
+    content = agent_memory.read_file(agent_id, "items", name)
+    return None if content is None else {"id": item_id, "name": name, "agent": agent.get("name") or agent_id,
+                                         "content": content}
+
+
+#: Which kind of agent has each section's settings, as the agent editor shows that section only on it.
+#: Each section's agent type, as the agent keeps it, and the section in the person's words.
+_SECTION_KIND = {"set_agent_team": ("delegate", "team"), "set_agent_browser": ("browser", "browser"),
+                 "set_agent_code": ("code", "code access")}
+#: An agent's type in the person's words, where the kept one differs (a team is kept as `delegate`).
+_KIND_WORD = {"delegate": "team"}
+
+#: The settings that name other things, each as the agent keeps it (by id), and what one is called to the person.
+_NAMED = {"knowledge": "knowledge base", "add": "agent", "remove": "agent", "repos": "repository",
+          "db_configs": "database", "recordings": "recording"}
+
+
+async def _rows(key: str, live: dict) -> list[dict]:
+    """The things a setting may name, as {id, name}: what the agent editor's own pickers list."""
+    if key == "knowledge":
+        from core.knowledge import bases
+        from core.knowledge.config import knowledge_enabled
+
+        return [{"id": kb.id, "name": kb.name} for kb in await bases.list_bases()] if knowledge_enabled() else []
+    if key in ("add", "remove"):
+        here = await candidates("agent") or []
+        # One taken out may be gone since: it is still the agent's to drop.
+        return here + [{"id": i, "name": i} for i in live.get("delegate_agent_ids") or []
+                       if i not in {r["id"] for r in here}]
+    if key in ("repos", "db_configs"):
+        from core.routes.db_configs import load_db_configs
+        from core.routes.repos import load_repos
+
+        rows = await (load_repos() if key == "repos" else load_db_configs())
+        return [{"id": r["id"], "name": r.get("name") or r["id"]} for r in rows if r.get("id")]
+    if key == "recordings":
+        return await candidates("recording") or []
+    if key == "sessions":
+        from core import site_sessions
+        from core.builder_tools import _acting_caller
+
+        return [{"id": r["id"], "name": f"the {r.get('site')} session"} for r in await site_sessions.listed(
+            _acting_caller()) if r.get("id")]
+    return []
+
+
+async def _agent_refs(op: C.Op, fields: dict, live: dict) -> str | None:
+    """An agent op's names made the ids the agent keeps (F1259): its knowledge bases, members, repositories,
+    databases and recordings by name, its sessions by site, as the editor's pickers and save take them; and each
+    section only on the kind of agent that has it. The refusal, in the person's words, or None."""
+    from core.browser import save_checks
+    from core.browser.picks import PickRefused
+    from core.builder_tools import _acting_caller
+
+    name = _quoted(live.get("name") or live.get("id") or "")
+    if op.name in _SECTION_KIND:
+        kind, section = _SECTION_KIND[op.name]
+        if (have := live.get("type") or "conversational") != kind:
+            return (f"Only a {_KIND_WORD.get(kind, kind)} agent has {section} settings, and {name} is a "
+                    f"{_KIND_WORD.get(have, have)} agent: a different kind of agent is a new one, made by a build.")
+    for key, label in _NAMED.items():
+        if not fields.get(key) or (key in ("add", "remove") and op.name != "set_agent_team"):
+            continue
+        rows = await _rows(key, live)
+        known, by_name = {r["id"] for r in rows}, {r["name"].lower(): r["id"] for r in rows}
+        got = [v if v in known else by_name.get(str(v).strip().lower()) for v in fields[key]]
+        if missing := [v for v, i in zip(fields[key], got) if i is None]:
+            listed = ", ".join(sorted(r["name"] for r in rows)[:10])
+            return (f"No {label} is called {', '.join(_quoted(str(m)) for m in missing)}"
+                    + (f": there are {listed}." if listed else "."))
+        fields[key] = list(dict.fromkeys(got))
+    if live.get("id") in (fields.get("add") or []):
+        return f"{name} can't be a member of its own team."
+    if fields.get("sessions"):
+        try:
+            fields["sessions"] = await save_checks.resolve_sessions(fields["sessions"], caller=_acting_caller())
+        except PickRefused as refused:
+            return str(refused)
+    return None
+
+
+async def _agent_problem(op: C.Op, live: dict, want: dict) -> str | None:
+    """What the agent editor's save would refuse in the agent this op leaves (F1259): its own model's check of the
+    whole agent, and the knowledge bases it answers from as the editor holds them."""
+    from core import agent_knowledge
+    from core.native_builder.agent_census import editor_problem
+
+    if "knowledge" in want and (wrong := await agent_knowledge.refusal(want["knowledge"], live.get("knowledge"))):
+        return wrong
+    return editor_problem({**live, **want}, only=set(want))
+
+
+def _setting_value(value: Any, names: dict[str, str]) -> str:
+    if value is None or value == []:
+        return "not set" if value is None else "none"
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    if isinstance(value, list):
+        return ", ".join(names.get(str(v), str(v)) for v in value)
+    return str(value)
+
+
+async def _agent_lines(op: C.Op, target: dict, live: dict, want: dict) -> str:
+    """The review's lines for an agent's settings (F1259): each one that changes, before → after, things it names by
+    their names; and what letting a browser agent type and send means."""
+    from core.models import AgentBrowser, AgentTeam
+
+    names: dict[str, str] = {}
+    for key in ("knowledge", "add", "repos", "db_configs", "recordings", "sessions"):
+        try:
+            names.update({r["id"]: r["name"] for r in await _rows(key, live)})
+        except Exception as exc:  # noqa: BLE001 — an id the review can't name is shown as itself
+            _log.warning("agent review: %s not named: %s", key, exc)
+    shown = {"delegate_agent_ids": "members", "db_configs": "databases", "repos": "repositories",
+             "system_prompt": "instructions", "skip_default_tools": "leave out the default tools",
+             "tools": "tools", "max_turns": "turn limit", "turn_limit_mode": "at the turn limit",
+             "max_output_tokens": "longest answer (tokens)", "reasoning_effort": "reasoning"}
+    # A part the agent has never saved reads as the editor shows it: its defaults.
+    parts = {"team": AgentTeam, "browser": AgentBrowser}
+    lines = [f"{op.verb} the agent {_quoted(target['name'])}:"]
+    for key, after in want.items():
+        before = live.get(key)
+        if key in parts:
+            before = {**parts[key]().model_dump(), **(before or {})}
+        if isinstance(after, dict):
+            for sub, value in after.items():
+                was = (before or {}).get(sub) if isinstance(before, dict) else None
+                if not C._same(value, was):
+                    lines.append(f"  {key} {sub.replace('_', ' ')}: {_setting_value(was, names)} → "
+                                 f"{_setting_value(value, names)}")
+        elif not C._same(after, before):
+            lines.append(f"  {shown.get(key, key.replace('_', ' '))}: {_setting_value(before, names)} → "
+                         f"{_setting_value(after, names)}")
+    browser = want.get("browser") or {}
+    if browser.get("mode") == "co_drive" and (live.get("browser") or {}).get("mode") != "co_drive":
+        where = ", ".join(browser.get("sites") or []) or "any public site"
+        lines.append(f"    {_quoted(target['name'])} may then type and send on {where}, with you watching.")
+    return "\n".join(lines)
+
+
+def _memory_line(op: C.Op, target: dict, live: dict | None, want: dict | None) -> str:
+    """The review's line for one memory item (F1259): which agent's, and its text before and after."""
+    agent, _, item = target["name"].rpartition(": ")
+    what = f"the memory item {_quoted(item or target['name'])} of the agent {_quoted(agent)}"
+    if op.kind == "delete":
+        return f"Delete {what}, which reads {_quoted(_text((live or {}).get('content'))[:200])}"
+    if op.internal:
+        return f"Bring back {what}, as it was before it was deleted"
+    return f"Change {what}, kept under its name —{_before_after(str((live or {}).get('content') or ''), want['content'])}"
 
 
 #: The most documents a change can name, across the bases (F1258).
@@ -823,6 +1009,13 @@ def _edit_refusal(target: dict, fields: dict, live: dict) -> str | None:
 
 def _edit_line(target: dict, before: str, after: str, base: str) -> str:
     """The review's line for a document's edit (F1258): the section as it stands and as it will be, the rest kept."""
+    where = f" in {_quoted(base)}" if base else ""
+    return (f"Change {_quoted(target['name'])}{where}, kept under its own name and folder and indexed again —"
+            f"{_before_after(before, after)}")
+
+
+def _before_after(before: str, after: str) -> str:
+    """A text's changed part as it stands and as it will be, marked, with a little of what is kept around it."""
     start = 0
     while start < min(len(before), len(after)) and before[start] == after[start]:
         start += 1
@@ -843,9 +1036,7 @@ def _edit_line(target: dict, before: str, after: str, base: str) -> str:
             middle = middle[:597] + "…"
         return " ".join(f"{lead}[{middle}]{tail}".split())
 
-    where = f" in {_quoted(base)}" if base else ""
-    return (f"Change {_quoted(target['name'])}{where}, kept under its own name and folder and indexed again —"
-            f"\n  before: {part(before)}\n  after: {part(after)}")
+    return f"\n  before: {part(before)}\n  after: {part(after)}"
 
 
 # ── the check ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1308,6 +1499,16 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if refusal:
                 item.update(status="refused", say=refusal)
                 continue
+        if op.name in C.AGENT_SECTIONS and (said := await _agent_refs(op, fields, live)):
+            item.update(status="refused", say=said)
+            continue
+        if op.target == "memory" and op.kind != "delete":
+            from core.agent_memory import MAX_MEMORY_CHARS
+
+            if len(_text(fields.get("content"))) > MAX_MEMORY_CHARS:
+                item.update(status="refused", say=f"A memory item holds at most {MAX_MEMORY_CHARS} characters: "
+                                                  "say it shorter, or split it into two.")
+                continue
         if (op.name in ("set_schedule", "create_schedule") and fields.get("cron_expression")
                 and not fields.get("timezone") and not (live or {}).get("timezone")):
             # A time the person says is on the schedule's own clock, or, when it has none, on theirs (F948).
@@ -1317,6 +1518,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             item.update(status="refused", say=said)
             continue
         want = C.expected(op, fields, live)
+        if (op.name in C.AGENT_SECTIONS or op.name == "set_agent_fields") and \
+                (said := await _agent_problem(op, live, want)):
+            item.update(status="refused", say=said)
+            continue
         if op.kind == "delete":
             used, refusal = await _used_by(op, target["id"])
             if refusal:
@@ -1337,6 +1542,10 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             line = await _settings_line(target, live, want)
         if op.name == "knowledge_edit_document":
             line = _edit_line(target, live["text"], want["text"], live.get("knowledge_base") or "")
+        if op.name in C.AGENT_SECTIONS or op.name == "set_agent_fields":
+            line = await _agent_lines(op, target, live, want)
+        if op.target == "memory":
+            line = _memory_line(op, target, live, want)
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":
@@ -1349,6 +1558,12 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if item["op"] == "knowledge_settings" and (item.get("expected") or {}).get("visitor_access") is True:
                 item.update(status="refused", say=f"Opening the knowledge base {_quoted(item['target']['name'])} to "
                                                   "visitors is a change of its own: ask for it by itself.")
+        # Letting a browser agent type and send is a change of its own, never on one card with another (Naveen 10-31).
+        for item in ready:
+            if ((item.get("expected") or {}).get("browser") or {}).get("mode") == "co_drive" and \
+                    ((item.get("before") or {}).get("browser") or {}).get("mode") != "co_drive":
+                item.update(status="refused", say=f"Letting the agent {_quoted(item['target']['name'])} type and send "
+                                                  "is a change of its own: ask for it by itself.")
         ready = [i for i in checked if i["status"] == "ready"]
     asked = next((i for i in checked if i["status"] == "ask_model"), None)
     if asked is not None:
