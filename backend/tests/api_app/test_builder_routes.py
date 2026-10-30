@@ -257,8 +257,11 @@ class TestSeeHowImBuilt:
         # 78 with every answer checked so none asks for a yes nothing can take (F1243): Check The Answer and the print
         # that says it, Say The Answer.
         # 80 with the classify at a waiting plan (F1241's follow-up): the door that asks whether a plan waits, and the
-        # classify whose call must say whether the message changes it.
-        assert legend["step_count"] == 80
+        # classify whose call must say whether the message changes it. Still 80 with one planner (D340 D0): the change
+        # planner and its rounds end out, the finish's route and the reply said in.
+        # 85 with the planner's research (D340 D2): code's answers, their route, the researcher on what is left, its
+        # answers kept, and the one-form ask of the person.
+        assert legend["step_count"] == 85
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])

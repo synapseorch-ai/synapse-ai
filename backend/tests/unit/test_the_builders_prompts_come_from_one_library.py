@@ -98,7 +98,10 @@ from core.native_builder import prompt_lint, seed
 #: there (a question or a "can't" on a change to the change check), 2d1b2d39… on fix-forward 16's 45d6d0b3; with
 #: F1255's rule 11 and topic `evals` under the one planner's # Changing, 20f244e4…; the change context's rounds
 #: are the planner's (8, then the one 'built or changed' end), d3ac6152….
-BUNDLE_SHA256 = "d3ac61524d6fcf8313a7d4533ba113d93db1f8508aaca8bf81437229e990c480"
+#: D340 D2: the planner researches while it plans — a `research_questions` finish (product, public, business) to
+#: code's answers first (`step_research_answer`), the researcher for what is left (`step_research_find`, its answers
+#: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863….
+BUNDLE_SHA256 = "c7c5586378c2ce2e33a0dfb8c14fa7d4cd6f3cf601fa4a64ad54af3eb16e4a79"
 
 
 def _sha(definitions) -> str:
