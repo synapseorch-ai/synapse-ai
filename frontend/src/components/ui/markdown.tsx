@@ -41,7 +41,7 @@ import { cn } from "@/lib/cn";
 const IN_APP = /^\/(?![\/\\])/;
 
 /** Whether `href` is one of this app's own paths (see `IN_APP`); cloud's vitest tries it. */
-export function inAppHref(href: string | undefined): boolean {
+export function inAppHref(href: string | undefined): href is string {
   return !!href && IN_APP.test(href);
 }
 
