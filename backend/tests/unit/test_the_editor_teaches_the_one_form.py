@@ -13,14 +13,30 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[3] / "frontend" / "src"
 STEPS = SRC / "components" / "orchestration" / "panel" / "steps.tsx"
 
-# A single-line string literal: '…', "…" or `…`.
-LITERAL = re.compile(r"'(?:[^'\\\n]|\\.)*'|\"(?:[^\"\\\n]|\\.)*\"|`(?:[^`\\]|\\.)*`")
-OLD_FORM = re.compile(r"(?<!\{)\{state\.[A-Za-z_][\w.]*\}(?!\})")
+# Not `${state.x}`: that is a template literal's own interpolation, code, never text.
+OLD_FORM = re.compile(r"(?<![{$])\{state\.[A-Za-z_][\w.]*\}(?!\})")
 
 
-def _code_lines(text: str) -> str:
-    """The file without its comment lines (`//`, `/*`, ` *`), where the older form is named on purpose."""
-    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith(("//", "/*", "*")))
+def _code_lines(text: str) -> list[str]:
+    """The file's lines but its comment lines (`//`, `/*`, ` *`), where the older form is named on purpose."""
+    return [l for l in text.splitlines() if not l.lstrip().startswith(("//", "/*", "*"))]
+
+
+def _in_a_string(line: str, at: int) -> bool:
+    """Whether `at` is inside a '…', "…" or `…` opened on this line: a bare JSX `{state.x}` is code, the same
+    words inside quotes are text a person reads. Read line by line, so one stray quote never shifts a whole file."""
+    quote, i = None, 0
+    while i < at:
+        c = line[i]
+        if quote and c == "\\":
+            i += 2
+            continue
+        if quote and c == quote:
+            quote = None
+        elif not quote and c in "'\"`":
+            quote = c
+        i += 1
+    return quote is not None
 
 
 def test_the_browser_steps_input_hint_names_the_one_form():
@@ -35,7 +51,7 @@ def test_no_string_the_frontend_shows_teaches_the_older_form():
     for path in sorted(SRC.rglob("*")):
         if path.suffix not in (".ts", ".tsx"):
             continue
-        for literal in LITERAL.findall(_code_lines(path.read_text("utf-8"))):
-            if OLD_FORM.search(literal):
-                found.append(f"{path.relative_to(SRC)}: {literal[:80]}")
+        for line in _code_lines(path.read_text("utf-8")):
+            if any(_in_a_string(line, m.start()) for m in OLD_FORM.finditer(line)):
+                found.append(f"{path.relative_to(SRC)}: {line.strip()[:100]}")
     assert not found, "strings teach `{state.x}`, not `{{ state.x }}`:\n" + "\n".join(found)
