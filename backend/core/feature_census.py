@@ -44,8 +44,9 @@ CENSUS: tuple[Screen, ...] = (
        ("read_workspace:run", "read_workspace:agent_activity", "agent_activity")),
     _s("evals", "Evals", "/evals",
        cant="writing a rubric, making golden test cases, running an eval suite and reading eval scores"),
-    _s("usage", "Usage", "/usage", "says what workflows and models have cost, and what the plan has left",
-       ("get_usage", "read_workspace:usage", "read_workspace:plan")),
+    _s("usage", "Usage", "/usage", "says what workflows and models have cost, what the plan has left, and where it "
+       "could cost less, each saving with its estimate as a change to make",
+       ("get_usage", "read_workspace:usage", "read_workspace:plan", "read_workspace:savings")),
     _s("orchestrations", "Workflows", "/workflows", "builds, changes, checks, runs and deletes workflows",
        ("create_orchestration", "update_orchestration", "add_single_step", "update_step", "remove_step",
         "validate_orchestration", "run_orchestration", "delete_orchestration", "read_workspace:workflow")),

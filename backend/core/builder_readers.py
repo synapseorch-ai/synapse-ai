@@ -38,6 +38,9 @@ TOPICS: dict[str, str] = {
                  "its value)",
     "settings": "the workspace settings Synapse AI may change (settings_set), each with its value now and its screen; "
                 "the others (keys, billing, members…) are changed on their screens",
+    "savings": "where the workspace could spend less over the last `days` days (default 30): each suggestion with "
+               "code's rule, its estimate a month (none when it can't be priced) and the op that makes it. 'Cut my "
+               "costs', 'why is it expensive'",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
     # What happened, not only what is set up (ASSIST1, D291).
@@ -96,6 +99,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps", "fixes_waiting"]},
     "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
     "settings": {"keys": ["items", "note"], "item": ["name", "label", "value", "where"]},
+    "savings": {"keys": ["items", "window", "note"], "item": ["kind", "saves_usd_month", "rule", "op"]},
 }
 
 #: What each topic shows and where to look instead, said with every answer that has nothing (F1237): on an error it
@@ -139,6 +143,8 @@ ELSEWHERE: dict[str, str] = {
                  "`workflow` with its name.",
     "settings": "This lists the settings Synapse AI may change. The models and which providers have a key are topic "
                 "`models`; when agents must ask before a tool, `tool_policy`.",
+    "savings": "This shows where the workspace could spend less. What each workflow's runs used is topic `usage`; "
+               "the plan and what is left of it, `plan`.",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -378,6 +384,19 @@ async def _settings(args: dict) -> dict:
                     "where they are done, e.g. API keys at /settings/api_keys, a provider's key at /settings/models."}
 
 
+async def _savings(args: dict) -> dict:
+    """Code's suggestions for spending less (F1261), each with its rule, its estimate and its op."""
+    from core import savings
+
+    got = await savings.find(int(args.get("days") or savings.MONTH_DAYS))
+    items = got["items"]
+    if (args.get("name") or "").strip():
+        needle = args["name"].strip().lower()
+        items = [i for i in items if needle in str(i.get("agent") or i.get("schedule") or i.get("kind")).lower()]
+    return {**got, "items": items} if items else {**got, "items": [], "note": "Nothing here costs more than it "
+                                                                              "needs to, by code's rules."}
+
+
 async def _usage(args: dict) -> dict:
     from core.orchestration.run_view import list_runs
 
@@ -590,6 +609,7 @@ _SELF_HOSTED: dict[str, Reader] = {
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
     "boards": _boards, "recordings": _recordings, "variables": _variables, "settings": _settings,
+    "savings": _savings,
 }
 
 
