@@ -263,7 +263,7 @@ class TestSeeHowImBuilt:
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
         assert {a["role"] for a in legend["agents"]} == {
-            "planner", "prompt_writer", "change_planner", "maker", "reporter", "researcher", "plan_researcher",
+            "planner", "prompt_writer", "maker", "reporter", "researcher", "plan_researcher",
             "classifier", "classifier_at_plan", "talker",
         }
         # The answer path adds a step and a sub-agent but no gate: a question
@@ -298,7 +298,7 @@ class TestSeeHowImBuilt:
         assert result["status"] == "created"
         # P3b: the build's own researcher (an E2 finish on report_findings); SAI2-P4: the front door's classifier and
         # talk's agent; F1241's follow-up: the classifier at a waiting plan.
-        assert len(result["agent_ids"]) == 11
+        assert len(result["agent_ids"]) == 10
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
@@ -354,7 +354,7 @@ class TestAQuestionGetsAnAnswer:
         # No plan, no approval, no operator.
         assert "Approve the Change" not in steps
         assert "Apply the Change" not in steps
-        assert "Plan the Change" not in steps
+        assert "Plan It" not in steps and "Check the Change" not in steps
         assert not [e for e in events if e["type"] == "human_input_required"]
 
     async def test_the_answer_is_the_summary_the_panel_renders(self, client, builder, fake_llm):
@@ -406,7 +406,7 @@ class TestAChangeThatChangesNothingHasNothingToApprove:
         events = await stream(client, "/api/builder/chat", {"message": "rename Nobody to Somebody"})
 
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-        assert "Plan the Change" in steps and "Check the Change" in steps
+        assert "Plan It" in steps and "Check the Change" in steps and "Check the Plan" not in steps
         assert "Approve the Change" not in steps
         assert "Apply the Change" not in steps
         assert not [e for e in events if e["type"] == "human_input_required"]
@@ -479,8 +479,9 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
         """The negative half, driven through an *agent* step.
 
         `pass_images` is only read by the agent executor, so the step this goes
-        through must be an agent step without it: the change planner
-        (`step_change`, SAI2-P2) is one.
+        through must be an agent step without it: the classifier is one, and the
+        run's first model call. The one planner asks for them (D340 D0: the
+        change planner, which did not, is folded into it), so it is given them.
         """
         fake_llm.script([
             route("manage"),
@@ -493,9 +494,10 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
 
         # The assertion is worthless unless the agent step actually ran.
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
-        assert "Plan the Change" in steps, steps
+        assert "Plan It" in steps, steps
         assert len(fake_llm.calls) == 2
-        assert not fake_llm.calls[1].get("images")
+        assert not fake_llm.calls[0].get("images"), "the classifier did not ask"
+        assert fake_llm.calls[1].get("images"), "the one planner asks (pass_images)"
 
     async def test_no_image_bytes_reach_the_browser(self, client, builder, fake_llm):
         fake_llm.script([route("answer"), "A cat."])

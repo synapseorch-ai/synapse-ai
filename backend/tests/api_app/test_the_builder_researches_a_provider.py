@@ -369,7 +369,7 @@ async def test_a_plan_answered_find_who_can_is_researched_and_builds_nothing(cli
     after = await stream(client, "/api/builder/resume", {"run_id": run_id, "response": {"feedback": "find who can"}})
     steps = [e.get("step_name") for e in after if e["type"] == "step_start"]
     # The lookup, then back to the plan with what it found: the build goes on (SAI2's review, 25).
-    assert steps.index("Find Who Provides It") < steps.index("Plan the Build"), steps
+    assert steps.index("Find Who Provides It") < steps.index("Plan It"), steps
     assert "Route: Approved or Revise" not in steps and "Research a Provider" not in steps, steps
     assert next(e for e in after if e["type"] == "human_input_required")["orch_step_id"] == "step_human_review"
     assert [e["options"][0]["provider"] for e in after if e["type"] == "research_findings"] == ["Shippo"]

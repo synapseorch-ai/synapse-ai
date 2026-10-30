@@ -245,7 +245,9 @@ def test_the_definition_checks_the_effort_after_the_role_door_on_the_build_route
     steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
     door = steps["step_change_route"]
     assert door["switch_cases"]["create"] == door["switch_cases"]["update"] == "step_effort"
-    assert door["switch_cases"]["manage"] == "step_change_context", "the change route stays on the usual model"
+    # A change goes straight to gather and the one planner (D340 D0): no effort check, the usual model.
+    assert door["switch_cases"]["manage"] == "step_plan_context", "the change route stays on the usual model"
+    assert steps["step_plan_context"]["forced_tool"] == "read_plan_context"
     assert steps["step_effort"]["forced_tool"] == "effort_check" and steps["step_effort"]["output_key"] == "effort"
     assert steps["step_effort_route"]["switch_cases"] == {
         "offer": "step_effort_offered", "step_plan_room": "step_plan_room", "step_fetch_existing": "step_fetch_existing"}

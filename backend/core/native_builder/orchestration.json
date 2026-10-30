@@ -677,7 +677,7 @@
             "switch_cases": {
                 "create": "step_effort",
                 "update": "step_effort",
-                "manage": "step_change_context"
+                "manage": "step_plan_context"
             },
             "switch_default_step_id": "step_effort",
             "max_iterations": 3,
@@ -1132,15 +1132,15 @@
             ],
             "output_key": "plan_context",
             "tool_arguments": {},
-            "next_step_id": "step_plan",
+            "next_step_id": "step_change_context",
             "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan",
-            "name": "Plan the Build",
+            "name": "Plan It",
             "type": "agent",
             "agent_id": "agent_native_builder_planner",
-            "prompt_template": "Workspace profile (what this organisation does):\n{{ state.org_profile }}\n\nThe person's message:\n{{ state.user_message }}\n{{ state.plan_context.request }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\nWhat this workspace has, and on a change the open workflow as a plan:\n{{ state.plan_context }}\n{{ state.knowledge_steps }}{{ state.browser_steps }}{{ state.export_guide }}{{ state.export_source }}\nWho provides the tools nothing here provides, as looked up (empty unless it was):\n{{ state.plan_findings }}\n\nOn a later pass, what happened before (empty on the first):\n- your last plan: {{ state.plan_draft }}\n- what the check said of it: {{ state.plan_checked.say }}\n- your questions and their answers so far: {{ state.plan_checked.asked }}\n- your last question and its answer: {{ state.plan_checked.question }} {{ state.human_response.answer }}\n- their reply to the plan: {{ state.review_feedback.feedback }}\n\nPlan it, then finish with one call.",
+            "prompt_template": "Workspace profile (what this organisation does):\n{{ state.org_profile }}\n\nThe person's message:\n{{ state.user_message }}\n{{ state.plan_context.request }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\nWhat this workspace has, and on a change to a workflow the open one as a plan:\n{{ state.plan_context }}\n{{ state.knowledge_steps }}{{ state.browser_steps }}{{ state.export_guide }}{{ state.export_source }}\nThe last change you made for them, and a which-one question still waiting (empty when there is none):\n{{ state.change_context }}\n\nWho provides the tools nothing here provides, as looked up (empty unless it was):\n{{ state.plan_findings }}\n\nOn a later pass, what happened before (empty on the first):\n- your last finish: {{ state.plan_draft }}\n- what the check said of a plan: {{ state.plan_checked.say }}\n- your questions and their answers so far: {{ state.plan_checked.asked }}\n- your last question and its answer: {{ state.plan_checked.question }} {{ state.human_response.answer }}\n- their reply to the plan: {{ state.review_feedback.feedback }}\n- the change they were shown: {{ state.change_checked.review }}\n- a question about it and their answer: {{ state.change_checked.question }} {{ state.change_clarify.answer }}\n- their reply to the change: {{ state.manage_review.feedback }}\n- what else the check said of a change: {{ state.change_checked.say }}\n\nWork out what the ask needs, then finish with one call.",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -1163,14 +1163,95 @@
             "position_y": 0,
             "on_exhausted_step_id": "step_plan_rounds",
             "pass_images": true,
-            "input_keys": [],
+            "input_keys": [
+                "current_page",
+                "current_orchestration_id",
+                "current_orchestration_name"
+            ],
             "output_key": "plan_draft",
             "finish_tools": [
                 "submit_plan",
+                "submit_change",
+                "say",
                 "ask_person",
                 "cannot"
             ],
-            "next_step_id": "step_check_plan"
+            "finish_fallback": {
+                "finish": "cannot"
+            },
+            "next_step_id": "step_plan_finish"
+        },
+        {
+            "id": "step_plan_finish",
+            "name": "Route on the Finish",
+            "type": "switch",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 8,
+            "position_x": 800,
+            "position_y": 0,
+            "input_keys": [
+                "plan_draft",
+                "intent"
+            ],
+            "switch_expression": "state.plan_draft.fallback and \"fallback\" or (state.intent == \"manage\" and state.plan_draft.finish in [\"ask_person\", \"cannot\"] and \"on_change\") or state.plan_draft.finish or \"submit_plan\"",
+            "switch_cases": {
+                "submit_change": "step_check_change",
+                "say": "step_say",
+                "fallback": "step_check_change",
+                "on_change": "step_check_change"
+            },
+            "switch_default_step_id": "step_check_plan"
+        },
+        {
+            "id": "step_say",
+            "name": "Say the Reply",
+            "type": "print",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 8,
+            "position_x": 800,
+            "position_y": 200,
+            "print_content": "{{ state.plan_draft.text }}",
+            "input_keys": [
+                "plan_draft"
+            ],
+            "output_key": "summary",
+            "next_step_id": "step_answer_checked"
         },
         {
             "id": "step_plan_route",
@@ -1307,7 +1388,7 @@
             "position_y": -300,
             "input_keys": [],
             "output_key": "summary",
-            "print_content": "Nothing was built: we went back and forth on this plan several times without settling it, so I stopped here. Tell me again in one message what you want built, and I'll start fresh.",
+            "print_content": "Nothing was built or changed: we went back and forth on this several times without settling it, so I stopped here. Tell me again in one message what you want, and I'll start fresh.",
             "next_step_id": "step_end"
         },
         {
@@ -2055,56 +2136,14 @@
             "max_turns": 1,
             "timeout_seconds": 60,
             "allowed_tools": null,
-            "max_iterations": 5,
+            "max_iterations": 8,
+            "on_exhausted_step_id": "step_plan_rounds",
             "position_x": 1050,
             "position_y": 400,
             "input_keys": [],
             "output_key": "change_context",
             "tool_arguments": {},
-            "next_step_id": "step_change"
-        },
-        {
-            "id": "step_change",
-            "name": "Plan the Change",
-            "type": "agent",
-            "agent_id": "agent_native_builder_change_planner",
-            "prompt_template": "The person asked:\n{{ state.user_message }}\n\nConversation so far:\n{{ state.chat_history }}\n\nWorkspace profile (what this organisation does):\n{{ state.org_profile }}\n\nThe last change you made for them, and a which-one question still waiting (empty when there is none):\n{{ state.change_context }}\n\nOn a second pass, what happened on the first (empty otherwise):\n- what was asked of them: {{ state.change_checked.question }}\n- their answer: {{ state.change_clarify.answer }}\n- the change they were shown: {{ state.change_checked.review }}\n- their reply to it: {{ state.manage_review.feedback }}\n- what else was said: {{ state.change_checked.say }}\n\nRead what you need, then finish with one call.",
-            "route_map": {},
-            "route_descriptions": {},
-            "evaluator_prompt": null,
-            "model": null,
-            "parallel_branches": [],
-            "merge_strategy": "list",
-            "loop_count": 3,
-            "loop_step_ids": [],
-            "transform_code": null,
-            "human_prompt": null,
-            "human_fields": [],
-            "human_channel_id": null,
-            "human_timeout_seconds": 3600,
-            "forced_tool": null,
-            "max_turns": 60,
-            "timeout_seconds": 1200,
-            "allowed_tools": null,
-            "max_iterations": 5,
-            "on_exhausted_step_id": "step_change_rounds",
-            "position_x": 1200,
-            "position_y": 400,
-            "input_keys": [
-                "current_page",
-                "current_orchestration_id",
-                "current_orchestration_name"
-            ],
-            "output_key": "change_draft",
-            "finish_tools": [
-                "submit_change",
-                "ask_person",
-                "cannot"
-            ],
-            "finish_fallback": {
-                "finish": "cannot"
-            },
-            "next_step_id": "step_check_change"
+            "next_step_id": "step_plan"
         },
         {
             "id": "step_check_change",
@@ -2133,11 +2172,11 @@
             "position_x": 1350,
             "position_y": 400,
             "input_keys": [
-                "change_draft"
+                "plan_draft"
             ],
             "output_key": "change_checked",
             "tool_arguments": {
-                "draft": "{{ state.change_draft }}"
+                "draft": "{{ state.plan_draft }}"
             },
             "next_step_id": "step_check_route"
         },
@@ -2218,7 +2257,7 @@
                 "change_checked"
             ],
             "output_key": "change_clarify",
-            "next_step_id": "step_change"
+            "next_step_id": "step_plan"
         },
         {
             "id": "step_change_said",
@@ -2320,7 +2359,7 @@
             "allowed_tools": null,
             "if_condition": "str(state.manage_review.feedback).strip().lower().strip(\" .!\") in (\"approve\", \"approved\", \"ok\", \"okay\", \"yes\", \"looks good\", \"lgtm\", \"go ahead\", \"build it\", \"proceed\", \"sounds good\", \"do it\", \"\ud83d\udc4d\")",
             "if_true_step_id": "step_after_yes",
-            "if_false_step_id": "step_change",
+            "if_false_step_id": "step_plan",
             "next_step_id": null,
             "max_iterations": 5,
             "position_x": 1800,
@@ -2658,37 +2697,6 @@
             "input_keys": [],
             "output_key": "summary",
             "print_content": "{{ state.run_changes }}{{ state.change_made_check.note }}",
-            "next_step_id": "step_end"
-        },
-        {
-            "id": "step_change_rounds",
-            "name": "Stop After Too Many Rounds",
-            "type": "print",
-            "agent_id": null,
-            "prompt_template": "",
-            "route_map": {},
-            "route_descriptions": {},
-            "evaluator_prompt": null,
-            "model": null,
-            "parallel_branches": [],
-            "merge_strategy": "list",
-            "loop_count": 3,
-            "loop_step_ids": [],
-            "transform_code": null,
-            "human_prompt": null,
-            "human_fields": [],
-            "human_channel_id": null,
-            "human_timeout_seconds": 3600,
-            "forced_tool": null,
-            "max_turns": 1,
-            "timeout_seconds": 60,
-            "allowed_tools": null,
-            "max_iterations": 5,
-            "position_x": 1050,
-            "position_y": 550,
-            "input_keys": [],
-            "output_key": "summary",
-            "print_content": "Nothing was changed: we went back and forth on this change five times without settling it, so I stopped here. Tell me again in one message what you want changed, and I'll start fresh.",
             "next_step_id": "step_end"
         },
         {

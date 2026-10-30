@@ -92,7 +92,13 @@ from core.native_builder import prompt_lint, seed
 #: F1255: classify's typed `feature` (evals; its line in the library's classify_kinds, D340's one field for every
 #: feature), and the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c…
 #: on its branch; on fix-forward 16's tree, 23bea1ae….
-BUNDLE_SHA256 = "23bea1ae16abdc088e0b97121621f0c4c235643764fe1937dcc5dd7c7dbc6847"
+#: D340 D0: one planner makes and changes — the change planner and its step fold into `step_plan` (both toolsets, five
+#: finishes with `say`, instructions in sections that keep each rule's number, the change planner's finish fallback),
+#: gather runs both context readers for every act, and `step_plan_finish` routes each finish to the check that was
+#: there (a question or a "can't" on a change to the change check), 2d1b2d39… on fix-forward 16's 45d6d0b3; with
+#: F1255's rule 11 and topic `evals` under the one planner's # Changing, 20f244e4…; the change context's rounds
+#: are the planner's (8, then the one 'built or changed' end), d3ac6152….
+BUNDLE_SHA256 = "d3ac61524d6fcf8313a7d4533ba113d93db1f8508aaca8bf81437229e990c480"
 
 
 def _sha(definitions) -> str:

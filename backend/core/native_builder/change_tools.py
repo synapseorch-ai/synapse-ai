@@ -41,7 +41,7 @@ WAITING, CHANGED, SET_ASIDE = "waiting", "changed", "set_aside"
 
 #: What the person is told when the change planner ended in words, not with a finish (F958). Neutral: code knows only
 #: that no change came of it, not why (a request outside the ops, or a model that answered in words anyway).
-FALLBACK_CANNOT = "I couldn't turn that into a change I can make here. Say it another way, or do it on its own page."
+FALLBACK_CANNOT = "I couldn't turn that into something I can make or change here. Say it another way, or do it on its own page."
 
 #: A change whose new value holds a key (or the door's mark where one was taken out of the person's message).
 KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. Add it on its own settings screen, "
@@ -149,6 +149,14 @@ CANNOT = {"type": "function", "function": {
         "why": {"type": "string"},
         "nearest": {"type": "string"},
     }, "required": ["why", "nearest"]},
+}}
+
+SAY = {"type": "function", "function": {
+    "name": "say",
+    "description": ("Finish when the ask needs nothing made or changed: a question answered from what you read, or a "
+                    "plain reply. `text` is the reply itself, in a few sentences. Never an offer to build or change "
+                    "something: for that, submit a plan or a change."),
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
 }}
 
 FINISH_TOOLS = ("submit_change", "ask_person", "cannot")
@@ -562,6 +570,17 @@ async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
         # Said to the person as it is: a key is never a reason to stop, nor something to ask for (F1093).
         return {"error": CANNOT_FOR_A_KEY}
     return {"finish": "cannot", "why": why, "nearest": nearest}
+
+
+async def say(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """The one planner's finish when the ask needs nothing made or changed (D340 D0): the reply. It is said through
+    the answer route's own check (`answer_pack.check_answer`), so no yes is offered that nothing can take (F1243)."""
+    text = _text(args.get("text"))
+    if not text:
+        return {"error": "say needs the reply itself as text."}
+    if asks_for_a_secret(text):
+        return {"error": CANNOT_FOR_A_KEY}  # a reply never asks for a key either (F1093)
+    return {"finish": "say", "text": text}
 
 
 # ── what exists ───────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1376,7 +1395,7 @@ async def _card(checked: dict, *, stage: str, data: dict | None = None, title: s
         _log.warning("change card for run %s not written: %s", run_id, exc)
 
 
-for _schema, _handler in ((SUBMIT, submit_change), (ASK, ask_person), (CANNOT, cannot)):
+for _schema, _handler in ((SUBMIT, submit_change), (ASK, ask_person), (CANNOT, cannot), (SAY, say)):
     register_builder_tool(_schema, _handler)
 
 CHECK = {"type": "function", "function": {

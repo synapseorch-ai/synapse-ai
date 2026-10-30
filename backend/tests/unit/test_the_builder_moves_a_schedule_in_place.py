@@ -77,5 +77,5 @@ def test_a_new_time_is_a_change_op_that_moves_it_and_the_planner_is_told_so():
     defs = bundled_definitions()
     op = change_ops.OPS["set_schedule"]
     assert op.tool == "update_schedule" and op.is_write and "cron_expression" in op.fields
-    planner = next(a for a in defs["agents"] if a["system_role"] == "change_planner")
+    planner = next(a for a in defs["agents"] if a["system_role"] == "planner")
     assert "change it with set_schedule; never delete it and make a new one" in planner["system_prompt"]
