@@ -172,4 +172,7 @@ NOT_BY_THE_CLI: dict[str, str] = {
     "list_repos": "`tools call list_repos`",
     "list_db_configs": "`tools call list_db_configs`",
     "edit_knowledge_document": "`tools call edit_knowledge_document`",
+    "list_agent_memory": "`tools call list_agent_memory`",
+    "edit_agent_memory_item": "`tools call edit_agent_memory_item`",
+    "delete_agent_memory_item": "`tools call delete_agent_memory_item` (previewed, then --yes)",
 }

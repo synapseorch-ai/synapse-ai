@@ -70,6 +70,19 @@ class TestAgents:
         assert code == errors.ERROR
         assert "Uses it" in err
 
+    async def test_an_older_agent_still_saves_and_a_value_the_editor_refuses_is_not(self, synapse, seed_agent):
+        """F1259: update_agent refuses what the agent editor's own model refuses, in the fields it sets only."""
+        from core.store.resources import get_agent
+
+        older = await seed_agent(name="Older", turn_limit_mode="sometimes")  # saved before the rule
+        code, _, err = await synapse("agents", "update", older["id"], "--prompt", "You answer briefly.")
+        assert code == 0, err
+        assert (await get_agent(older["id"]))["system_prompt"] == "You answer briefly."
+
+        code, _, err = await synapse("agents", "update", older["id"], "--set", "turn_limit_mode=never")
+        assert code == errors.ERROR and "turn_limit_mode" in err, err
+        assert (await get_agent(older["id"]))["turn_limit_mode"] == "sometimes"
+
     async def test_a_team_names_its_members(self, synapse):
         from _fakes import seed as S
         from core.store.resources import get_agent

@@ -27,7 +27,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool", "feature", "recording")
+                "approval", "card", "openapi", "python_tool", "feature", "recording", "memory")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -58,6 +58,17 @@ class Op:
     @property
     def is_write(self) -> bool:
         return self.kind in ("write", "delete", "create")
+
+
+#: The agent editor's plain settings a change sets (F1259): `set_agent_settings`'s fields.
+AGENT_SETTINGS = ("description", "memory", "knowledge", "boards_own", "planning", "skip_default_tools", "helpers",
+                  "max_turns", "turn_limit_mode", "reasoning_effort", "max_output_tokens")
+#: The ops that set one section of the agent editor each (F1259).
+AGENT_SECTIONS = ("set_agent_settings", "set_agent_team", "set_agent_browser", "set_agent_code")
+#: A team's: members added or taken out, and how they work.
+TEAM_SETTINGS = ("add", "remove", "mode", "at_once", "task_budget", "spend_limit_usd", "clear_spend_limit")
+#: A browser agent's: where it may go, the sessions it starts with, how it works, its recordings and actions.
+BROWSER_SETTINGS = ("sites", "sessions", "mode", "recordings", "action_budget")
 
 
 _ACTS = (
@@ -115,6 +126,17 @@ _WRITES = (
        verb="Change the tool policy of"),
     Op("delete_agent", "delete", "agent", "delete_agent", verb="Delete"),
     Op("update_skill", "write", "skill", "update_skill", ("description", "body"), any_of=True, verb="Change"),
+    # The rest of an agent's settings, one op per section of the agent editor (F1259, `agent_census`; Naveen 10-31).
+    Op("set_agent_settings", "write", "agent", "update_agent", AGENT_SETTINGS, any_of=True,
+       verb="Change the settings of"),
+    Op("set_agent_team", "write", "agent", "update_agent", TEAM_SETTINGS, any_of=True, verb="Change the team of"),
+    Op("set_agent_browser", "write", "agent", "update_agent", BROWSER_SETTINGS, any_of=True,
+       verb="Change the browser of"),
+    Op("set_agent_code", "write", "agent", "update_agent", ("repos", "db_configs"), any_of=True,
+       verb="Change the code access of"),
+    # An agent's memory items, through the Memory screen's own doors (F1259): one corrected, one deleted.
+    Op("edit_agent_memory", "write", "memory", "edit_agent_memory_item", ("content",), ("content",), verb="Change"),
+    Op("delete_agent_memory", "delete", "memory", "delete_agent_memory_item", verb="Delete"),
     # One passage of a note or a text file, as it stands, and its new text; or a short note's whole text (F1258).
     Op("knowledge_edit_document", "write", "document", "edit_knowledge_document", ("find", "replace", "text"),
        any_of=True, verb="Change"),
@@ -137,6 +159,14 @@ _HANDOFFS = (
 #: kept, never a model, so they are no second way to make a new agent, workflow or tool. Each comes back as a new
 #: copy, which the review says.
 _RESTORES = (
+    # An undo of an agent's settings, team, browser or code access (F1259): its fields as they were, from the card.
+    Op("set_agent_fields", "write", "agent", "update_agent",
+       ("description", "memory", "knowledge", "boards", "planning", "skip_default_tools", "tools", "max_turns",
+        "turn_limit_mode", "reasoning_effort", "max_output_tokens", "delegate_agent_ids", "team", "browser", "repos",
+        "db_configs"), any_of=True, verb="Put back", internal=True),
+    # An undo of a memory item's delete (F1259): written back through the Memory screen's own door, under its name.
+    Op("restore_agent_memory", "create", "memory", "edit_agent_memory_item", ("item", "content"), ("item", "content"),
+       verb="Bring back", internal=True),
     Op("restore_agent", "create", "agent", "create_agent",
        ("name", "description", "type", "tools", "system_prompt", "model", "delegate_agent_ids", "tool_policy"),
        ("name", "description", "type", "tools", "system_prompt"), verb="Bring back", internal=True),
@@ -176,7 +206,44 @@ def _is_list_of_text(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
 
 
+def _agent_field_issue(op: Op, key: str, value: Any) -> str | None | bool:
+    """An agent setting's own rule (F1259), by the editor's own values; False when `key` is not one of them."""
+    from core.models import MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS
+
+    def whole(low: int, high: int) -> str | None:
+        ok = isinstance(value, int) and not isinstance(value, bool) and low <= value <= high
+        return None if ok else f"`{key}` is a whole number from {low} to {high}"
+
+    if key == "mode" and op.name == "set_agent_team":
+        return None if value in ("one_at_a_time", "team") else "`mode` is one_at_a_time or team"
+    if key == "mode" and op.name == "set_agent_browser":
+        return None if value in ("read_only", "co_drive") else "`mode` is read_only or co_drive"
+    if key in ("memory", "boards_own", "planning", "skip_default_tools", "helpers", "clear_spend_limit"):
+        return None if isinstance(value, bool) else f"`{key}` is true or false"
+    if key in ("knowledge", "sites", "sessions", "recordings", "repos", "db_configs"):
+        return None if _is_list_of_text(value) else f"`{key}` is a list of names"
+    if key == "max_turns":
+        return whole(1, 200)  # the agent editor's own bounds, as each below
+    if key in ("at_once", "task_budget"):
+        return whole(1, 50)
+    if key == "action_budget":
+        return whole(1, 200)
+    if key == "max_output_tokens":
+        return whole(MIN_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS)
+    if key == "turn_limit_mode":
+        return None if value in ("ask", "continue", "stop") else "`turn_limit_mode` is ask, continue or stop"
+    if key == "reasoning_effort":
+        return None if value in ("off", "low", "medium", "high") else "`reasoning_effort` is off, low, medium or high"
+    if key == "spend_limit_usd":
+        return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else \
+            "`spend_limit_usd` is a number of dollars above 0"
+    return False
+
+
 def _field_issue(op: Op, key: str, value: Any) -> str | None:
+    if op.target == "agent" and op.name.startswith("set_agent_") and \
+            (said := _agent_field_issue(op, key, value)) is not False:
+        return said
     if key in ("add", "remove", "urls"):
         return None if _is_list_of_text(value) else f"`{key}` is a list of names"
     if key in POLICY_CATEGORIES:
@@ -245,6 +312,14 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
         if key in fields and fields[key] not in (None, "", [], {}):
             if (why := _field_issue(op, key, fields[key])) is not None:
                 found.append(f"`{op.name}`: {why}")
+    if op.name == "set_agent_browser" and not found and fields.get("mode") == "co_drive" and \
+            len([k for k, v in fields.items() if v is not None]) > 1:
+        # Letting a browser agent type and send is a change of its own, never bundled (Naveen 10-31).
+        found.append("`set_agent_browser`: letting it type and send (co_drive) is a change of its own; send the other "
+                     "settings as another op")
+    if op.name == "set_agent_team" and not found and fields.get("clear_spend_limit") and \
+            fields.get("spend_limit_usd") is not None:
+        found.append("`set_agent_team` sets a spend limit or clears it, not both")
     if op.name == "knowledge_edit_document" and not found:
         whole, passage = fields.get("text") not in (None, ""), fields.get("find") not in (None, "")
         if whole == passage or (passage and not isinstance(fields.get("replace"), str)):
@@ -326,6 +401,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"name": str(fields["name"]).strip()}
     if name in ("update_workflow", "update_skill"):
         return {k: fields[k] for k in op.fields if k in fields}
+    if name in AGENT_SECTIONS or name in ("set_agent_fields", "edit_agent_memory", "restore_agent_memory"):
+        return _agent_expected(name, fields, live)
     if name == "knowledge_edit_document":
         if fields.get("text") not in (None, ""):
             return {"text": fields["text"]}
@@ -352,16 +429,55 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
     raise ValueError(f"{name} leaves nothing to check")
 
 
+def _agent_expected(name: str, fields: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
+    """What an agent (or one of its memory items) reads after an F1259 op: each as the agent document holds it. Names
+    are ids by now: `check_change` resolves them first."""
+    from core.models import AgentBrowser, AgentTeam
+
+    given = {k: v for k, v in fields.items() if v is not None}
+    if name == "set_agent_fields":
+        return dict(fields)  # its before-image, a field that was unset among them
+    if name in ("edit_agent_memory", "restore_agent_memory"):
+        return {"content": str(fields.get("content") or "").strip()}
+    if name == "set_agent_code":
+        return given
+    if name == "set_agent_settings":
+        out = {k: v for k, v in given.items() if k not in ("boards_own", "helpers")}
+        if "boards_own" in given:
+            out["boards"] = {**(live.get("boards") or {}), "own": given["boards_own"]}
+        if "helpers" in given:
+            out["tools"] = _merged(list(live.get("tools") or []), ["spawn_subtask"] if given["helpers"] else None,
+                                   None if given["helpers"] else ["spawn_subtask"])
+        return out
+    if name == "set_agent_team":
+        out: dict[str, Any] = {}
+        if "add" in given or "remove" in given:
+            out["delegate_agent_ids"] = _merged(list(live.get("delegate_agent_ids") or []), given.get("add"),
+                                                given.get("remove"))
+        way = {k: given[k] for k in ("mode", "at_once", "task_budget", "spend_limit_usd") if k in given}
+        if given.get("clear_spend_limit"):
+            way["spend_limit_usd"] = None
+        if way:
+            out["team"] = {**AgentTeam().model_dump(), **(live.get("team") or {}), **way}
+        return out
+    return {"browser": {**AgentBrowser().model_dump(), **(live.get("browser") or {}), **given}}
+
+
 def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | None,
          *, name: str = "") -> tuple[str, dict[str, Any]]:
     """The one registry call a write makes: its tool and exact arguments (what an approved review covers)."""
     assert op.tool is not None, f"{op.name} calls no tool"
     after = expected(op, fields, live)
     if op.kind == "delete":
-        key = {"workflow": "orch_id", "agent": "agent_id", "schedule": "schedule_id", "tool": "name"}[op.target]
+        key = {"workflow": "orch_id", "agent": "agent_id", "schedule": "schedule_id", "tool": "name",
+               "memory": "item"}[op.target]
         return op.tool, {key: target_id}
+    if op.name == "set_agent_fields":
+        return op.tool, {"agent_id": target_id, "fields": after}
     if op.internal:
         return op.tool, {k: v for k, v in fields.items() if k in op.fields and v is not None}
+    if op.target == "memory":
+        return op.tool, {"item": target_id, "content": after["content"]}
     if op.target == "workflow":
         return op.tool, {"orch_id": target_id, **after}
     if op.name == "create_schedule":
