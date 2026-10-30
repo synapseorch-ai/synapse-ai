@@ -36,9 +36,11 @@ def _s(id: str, label: str, href: str, does: str = "", tools: tuple[str, ...] = 
 CENSUS: tuple[Screen, ...] = (
     _s("dashboard", "Home", "/dashboard", "says what happened today and what waits on the person",
        ("read_workspace:today", "read_workspace:waiting", "summarise_activity", "list_waiting")),
-    _s("runs", "Runs", "/runs", "lists runs, reads one step by step, answers a run's question, stops one",
-       ("list_runs", "get_run", "read_workspace:run", "answer_run", "cancel_run")),
-    _s("logs", "Logs", "/logs", "reads what a run or an agent did",
+    _s("runs", "Runs", "/runs", "lists runs, reads one step by step, answers a run's question, stops one, says why "
+       "one failed and resumes it once fixed",
+       ("list_runs", "get_run", "read_workspace:run", "answer_run", "cancel_run", "resume_run")),
+    _s("logs", "Logs", "/logs", "reads what a run or an agent did, and why a run failed: its step, its error, the "
+       "class of failure and the change that fixes it",
        ("read_workspace:run", "read_workspace:agent_activity", "agent_activity")),
     _s("evals", "Evals", "/evals",
        cant="writing a rubric, making golden test cases, running an eval suite and reading eval scores"),

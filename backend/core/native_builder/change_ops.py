@@ -68,6 +68,7 @@ _ACTS = (
     Op("answer_run", "act", "run", verb="Answer"),
     Op("answer_tool_call", "act", "approval", verb="Answer"),
     Op("cancel_run", "act", "run", verb="Stop"),
+    Op("resume_run", "act", "run", verb="Resume"),
     Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
     Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),

@@ -36,8 +36,8 @@ ACT_TOOLS = {"run_workflow": "run_orchestration", "run_schedule_now": "trigger_s
              "knowledge_delete_document": "delete_knowledge_document", "board_add_card": "add_board_card",
              "board_update_card": "update_board_card", "board_comment": "comment_on_card",
              "board_create": "create_board", "board_delete": "delete_board", "feature_on": "turn_on_feature",
-             # F1270's recordings (REACH1).
-             "recording_approve_edit": "approve_recording_edit",
+             # F1260's resume and F1270's recordings (REACH1).
+             "resume_run": "resume_run", "recording_approve_edit": "approve_recording_edit",
              "recording_discard_edit": "discard_recording_edit", "recording_rename": "rename_recording",
              "recording_delete": "delete_recording"}
 #: An act whose card answers through the run's own door, not a registry tool (`builder_actions`, answer_run).

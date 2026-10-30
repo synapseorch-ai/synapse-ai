@@ -35,6 +35,7 @@ ACTIONS: dict[str, str] = {
     "answer_run": "answer the question a waiting run asks, or approve it (`run_id`, from topic `waiting`)",
     "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
     "cancel_run": "stop a run that is still going (`run_id`)",
+    "resume_run": "run a failed or stopped run on from the step it stopped at, once what failed is fixed (`run_id`)",
     "knowledge_create": "make a knowledge base (`name`; `text`: what it holds; `folder`: a Vault folder, or leave it "
                         "out for knowledge/<name>)",
     "knowledge_add_file": "add a file from the Vault to a knowledge base (`knowledge_base`, `path`: its Vault path)",
@@ -279,6 +280,15 @@ async def _offer(action: str, args: dict) -> dict:
         return _card(f'Stop the run of "{name}"', danger=True,
                      detail="It stops where it is. What it already did stays done.",
                      buttons=[await _button("Stop it", "cancel_run", {"run_id": view["run_id"]})])
+
+    if action == "resume_run":
+        # The run page's Replay (F1260): its refusals said before the card, a nested run's, one still going.
+        from core.product_tools import runs
+
+        view, name = await _run(args)
+        said = await _resolved(runs._preview_resume(_caller(), {"run_id": view["run_id"]}))
+        return _card(f'Resume the run of "{name}"', detail=f'From the step "{said["from_step"]}". {said["note"]}',
+                     buttons=[await _button("Resume it", "resume_run", {"run_id": view["run_id"]})])
 
     if action == "answer_run":
         view, name = await _run(args)

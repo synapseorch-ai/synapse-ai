@@ -42,7 +42,9 @@ TOPICS: dict[str, str] = {
     "today": "what happened over the last `days` days (default 1, today): runs by status, each failure and why, "
              "what waits on a person, schedules that ran, cost",
     "run": "one run step by step, with the start of what each step wrote: `run_id`, or `name` for that workflow's "
-           "latest run. 'Did it finish', 'what did it do', 'why did it fail'",
+           "latest run, or neither for the latest run that failed. 'Did it finish', 'what did it do', 'why did it "
+           "fail': a failed or stopped run carries `failure`, code's reading of it (the step, its error, its class "
+           "and what it means, the ops that fix it, whether it can resume)",
     # What a workflow is made of, not what it did (F1237): the builder's own words for its steps, never its configs.
     "workflow": "one workflow's steps, by `name` (or its id): what each step does, its own parts, and what is "
                 "missing or off. 'What does it do', 'what are its steps'",
@@ -81,7 +83,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "today": {"keys": ["window", "runs", "failed", "waiting_for_a_person", "running", "schedules_that_ran",
                        "model_dollars", "credits?", "note"]},
     "run": {"keys": ["run_id", "status", "workflow", "started_at", "ended_at", "steps", "response", "shared_state",
-                     "error?", "model_dollars", "credits?"]},
+                     "error?", "failure?", "model_dollars", "credits?"]},
     "workflow": {"keys": ["workflow", "id", "steps", "parts", "missing_or_off"]},
     # A run's question and a tool's approval carry their own keys, each with the tool that answers it.
     "waiting": {"keys": ["items", "total", "next_cursor"]},
@@ -496,6 +498,12 @@ async def _run(args: dict) -> dict:
     run_id = (args.get("run_id") or "").strip()
     flows = {o.get("id"): o.get("name") for o in await load_orchestrations()
              if not o.get("system") and o.get("is_active") is not False}
+    if not run_id and not (args.get("name") or "").strip():
+        # "Why did it fail?" with nothing named: the latest failed run of a workflow here (F1260).
+        failed = [r for r in await list_runs(limit=50, status="failed") if r.get("orchestration_id") in flows]
+        if not failed:
+            return {"error": "No workflow here has a failed run."}
+        run_id = failed[0]["run_id"]
     if not run_id:
         wanted = [i for i, n in flows.items() if (args.get("name") or "").strip().lower() in str(n or "").lower()]
         if not (args.get("name") or "").strip() or not wanted:
@@ -513,8 +521,15 @@ async def _run(args: dict) -> dict:
 
     row = next(iter(r for r in await list_runs(limit=500) if r.get("run_id") == run_id), {})
     paid = run_cost.total(list((await run_cost.costs([row])).values())) if row else {"model_dollars": 0.0}
-    return {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),
-            "started_at": row.get("started_at"), "ended_at": row.get("ended_at"), **paid}
+    out = {**view, "workflow": flows.get(row.get("orchestration_id")) or row.get("orchestration_id"),
+           "started_at": row.get("started_at"), "ended_at": row.get("ended_at"), **paid}
+    if view.get("status") in ("failed", "cancelled"):
+        from core.orchestration.triage import failure
+
+        # Code's reading of why, in bounded reads (F1260): the planner states the cause from it, never a guess.
+        if (block := await failure(run_id)) is not None:
+            out["failure"] = block
+    return out
 
 
 async def _workflow(args: dict) -> dict:
