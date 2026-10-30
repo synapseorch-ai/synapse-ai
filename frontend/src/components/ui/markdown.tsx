@@ -40,6 +40,11 @@ import { cn } from "@/lib/cn";
  */
 const IN_APP = /^\/(?![\/\\])/;
 
+/** Whether `href` is one of this app's own paths (see `IN_APP`); cloud's vitest tries it. */
+export function inAppHref(href: string | undefined): boolean {
+  return !!href && IN_APP.test(href);
+}
+
 const COMPONENTS: Components = {
   // Body copy carries the rhythm; `space-y` on the wrapper cannot, because
   // markdown's blocks are siblings of wildly different heights.
@@ -80,7 +85,7 @@ const COMPONENTS: Components = {
     >
       {children}
     </a>
-  ) : href && IN_APP.test(href) ? (
+  ) : inAppHref(href) ? (
     <NextLink href={href} className="text-accent-ink underline underline-offset-2 hover:text-accent-hover">
       {children}
     </NextLink>

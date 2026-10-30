@@ -37,6 +37,7 @@ def test_anything_else_is_not(href):
 def test_an_in_app_link_is_the_app_s_own_link_and_never_a_new_tab():
     text = MARKDOWN.read_text("utf-8")
     assert re.search(r"""import NextLink from ["']next/link["']""", text)
-    branch = text[text.index("IN_APP.test(href)"):]
+    assert "return !!href && IN_APP.test(href);" in text, "inAppHref is IN_APP's test, and nothing else"
+    branch = text[text.index(": inAppHref(href) ? ("):]
     branch = branch[: branch.index(") : (")]
     assert "<NextLink" in branch and "target=" not in branch and "ExternalLink" not in branch
