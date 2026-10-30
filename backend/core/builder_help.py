@@ -134,9 +134,13 @@ def search(question: str, top: int = 5) -> list[dict]:
 
 def search_docs(question: str, top: int = DOCS_TOP) -> list[dict]:
     """The docs pages for this edition that best answer `question`, best first, each at its best section. A guide
-    outranks a generated API reference page on the same words; empty when none shares a word with it."""
+    outranks a generated API reference page on the same words; empty when none shares a word with it. A feature the
+    question names in its own words ("evaluate … with a rubric" is Evals, by the census row's names) brings the
+    feature's own name along, so its page is found though the question never says it."""
+    from core.native_builder.features import named_in, words_of
     asked = set(_words(question))
     asked |= {_ALSO[w] for w in asked if w in _ALSO}
+    asked |= {w for screen in named_in(question) for name in words_of(screen) for w in _words(name)}
     if not asked:
         return []
     scored = []
