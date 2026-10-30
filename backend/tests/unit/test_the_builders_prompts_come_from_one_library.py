@@ -101,7 +101,9 @@ from core.native_builder import prompt_lint, seed
 #: D340 D2: the planner researches while it plans — a `research_questions` finish (product, public, business) to
 #: code's answers first (`step_research_answer`), the researcher for what is left (`step_research_find`, its answers
 #: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863….
-BUNDLE_SHA256 = "c7c5586378c2ce2e33a0dfb8c14fa7d4cd6f3cf601fa4a64ad54af3eb16e4a79"
+#: F1258: search_knowledge and rule 12 (editing a knowledge base's note or text file), 77c5f233… on its branch;
+#: on fix-forward 16's cdd314f4, under the one planner's # Changing as rule 12, 7f917720….
+BUNDLE_SHA256 = "7f91772011fb9776fccfd74c9e260b0e988a7c177608c14f4a8f9a208f681125"
 
 
 def _sha(definitions) -> str:

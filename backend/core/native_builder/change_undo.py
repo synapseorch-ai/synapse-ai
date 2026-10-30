@@ -47,6 +47,12 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
         if not kept:
             return None, note
         return {"op": name, "target": _target(applied), "fields": kept, "says": "undo: as it was"}, note
+    if name == "knowledge_edit_document":
+        if before.get("text") is None:
+            return None, f"{label}'s old text held a key, so it was not kept and can't be put back."
+        # Its whole text as it was, written back through the same tool, so its index is built again from it too.
+        return {"op": name, "target": _target(applied), "fields": {"text": before["text"]},
+                "says": "undo: its text as it was"}, None
     if name == "set_agent_model":
         if not before.get("model"):
             return None, f"{label} used the workspace's default model before: choose it again in the agent's settings."

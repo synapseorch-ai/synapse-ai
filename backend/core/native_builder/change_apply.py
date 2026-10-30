@@ -201,7 +201,9 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                                 "before": item.get("before"), "fields": item.get("fields"), "already": True})
                 continue
             if op.kind != "delete" and (moved := _moved_since(item.get("before"), now)):
-                failed.append(f"Not done: {label} changed since you approved this ({', '.join(moved)}), so I left "
+                failed.append(f"Not done: {label}'s section changed since I read it, so I left it as it is now. Ask "
+                              "again to change it." if op.target == "document" else
+                              f"Not done: {label} changed since you approved this ({', '.join(moved)}), so I left "
                               "it as it is now. Ask again to change it.")
                 continue
             call = item["call"]

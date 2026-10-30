@@ -138,6 +138,9 @@ _WRITES = (
        verb="Change the tool policy of"),
     Op("delete_agent", "delete", "agent", "delete_agent", verb="Delete"),
     Op("update_skill", "write", "skill", "update_skill", ("description", "body"), any_of=True, verb="Change"),
+    # One passage of a note or a text file, as it stands, and its new text; or a short note's whole text (F1258).
+    Op("knowledge_edit_document", "write", "document", "edit_knowledge_document", ("find", "replace", "text"),
+       any_of=True, verb="Change"),
     Op("delete_tool", "delete", "tool", "delete_custom_tool", verb="Delete"),
     # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
     # anything off the list is refused by name, with where it is done (`settings_allow`).
@@ -250,6 +253,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if isinstance(value, (int, float)) and not isinstance(value, bool) else "`floor` is a number"
     if key == "kind":
         return None if value in ("page", "sitemap", "site") else "`kind` is page, sitemap or site"
+    if key == "replace":  # empty takes the passage out
+        return None if isinstance(value, str) else "`replace` is text"
     return None if isinstance(value, str) and value.strip() else f"`{key}` is text"
 
 
@@ -284,6 +289,11 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
         if key in fields and fields[key] not in (None, "", [], {}):
             if (why := _field_issue(op, key, fields[key])) is not None:
                 found.append(f"`{op.name}`: {why}")
+    if op.name == "knowledge_edit_document" and not found:
+        whole, passage = fields.get("text") not in (None, ""), fields.get("find") not in (None, "")
+        if whole == passage or (passage and not isinstance(fields.get("replace"), str)):
+            found.append("`knowledge_edit_document` takes the passage as it stands (`find`) and its new text "
+                         "(`replace`, empty to take it out), or a short note's whole new text (`text`): one of those")
     if not found and not op.internal:
         found += [f"`{op.name}`: {why}" for why in _saved_as(op, fields)]
     return found
@@ -376,6 +386,10 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"name": str(fields["name"]).strip()}
     if name in ("update_workflow", "update_skill"):
         return {k: fields[k] for k in op.fields if k in fields}
+    if name == "knowledge_edit_document":
+        if fields.get("text") not in (None, ""):
+            return {"text": fields["text"]}
+        return {"text": str(live.get("text") or "").replace(fields["find"], fields.get("replace") or "", 1)}
     if name == "set_schedule":
         return {**_schedule_time(fields),
                 **{k: fields[k] for k in ("prompt", "description", "missed_run_policy") if k in fields}}
@@ -425,6 +439,12 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"name": target_id, **after}
     if op.target == "settings":
         return op.tool, {"changes": after}
+    if op.target == "document":
+        from core.product_tools.knowledge import text_sha256
+
+        # Written only over the text the review was made from (F1258, TRI1): a document changed since is said.
+        return op.tool, {"doc_id": target_id, "text": after["text"],
+                         "was_sha256": text_sha256(str((live or {}).get("text") or ""))}
     raise ValueError(f"{op.name} has no call")
 
 

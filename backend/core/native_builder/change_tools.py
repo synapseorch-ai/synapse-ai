@@ -99,7 +99,8 @@ SUBMIT = {"type": "function", "function": {
         "recording_discard_edit {edit_id}; recording_rename {name}; settings_set (target {kind: settings, id: "
         "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; eval_rubric {name, "
         "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
-        "{count, steer}; eval_run and eval_cancel {golden_set}; edit_steps, create and "
+        "{count, steer}; eval_run and eval_cancel {golden_set}; knowledge_edit_document {find: the passage as it "
+        "stands, replace: its new text} or {text: a short note's whole new text}; edit_steps, create and "
         "use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -616,6 +617,8 @@ async def candidates(kind: str) -> list[dict] | None:
 
         return [{"id": t["name"], "name": t["name"], "detail": t.get("description") or ""}
                 for t in await load_tools() if t.get("name")]
+    if kind == "document":
+        return await _documents()
     if kind == "recording":
         from core.browser import recordings
 
@@ -691,7 +694,98 @@ async def read(kind: str, target_id: str) -> dict | None:
         from core.product_tools import settings
 
         return await settings.current()
+    if kind == "document":
+        return await _document_now(target_id)
     return None
+
+
+#: The most documents a change can name, across the bases (F1258).
+_DOCUMENTS = 500
+
+
+def _document_name(row: Any) -> str:
+    return (row.title or "").strip() or row.path.rsplit("/", 1)[-1]
+
+
+async def _documents() -> list[dict] | None:
+    """Every document of the workspace's active knowledge bases, by its title (or file name), for a change that names
+    one (F1258); none while Knowledge is off."""
+    from core.knowledge import bases, documents
+    from core.knowledge.config import knowledge_enabled
+
+    if not knowledge_enabled():
+        return []
+    out: list[dict] = []
+    for kb in await bases.list_bases():
+        if kb.status != "active":
+            continue
+        for row in await documents.list_for(kb.id, limit=_DOCUMENTS - len(out)):
+            out.append({"id": row.id, "name": _document_name(row), "detail": f"in {_quoted(kb.name)}"})
+        if len(out) >= _DOCUMENTS:
+            break
+    return out
+
+
+async def _document_now(doc_id: str) -> dict | None:
+    """A document as a change reads it: its text when it can be edited here, else why not (F1258)."""
+    from core.knowledge import bases, documents, ingest
+    from core.knowledge.config import knowledge_enabled
+
+    if not knowledge_enabled():
+        return None
+    row = await documents.get(doc_id)
+    if row is None or row.status == "deleting":
+        return None
+    kb = await bases.get_base(row.kb_id)
+    text, why = await ingest.editable_text(row)
+    return {"id": row.id, "name": _document_name(row), "knowledge_base": kb.name if kb else "", "text": text,
+            "why_not": why}
+
+
+def _edit_refusal(target: dict, fields: dict, live: dict) -> str | None:
+    """Why a document's edit can't be made as proposed, in the person's words (F1258), or None: its text can't be
+    edited here, or the passage it changes isn't in it exactly once, or it would leave the document empty."""
+    name = _quoted(target["name"])
+    if live.get("text") is None:
+        return f"I can't change {name}: {live.get('why_not')}."
+    find = fields.get("find")
+    if find not in (None, ""):
+        times = live["text"].count(find)
+        if times == 0:
+            return f"{name} has no passage that reads {_quoted(_text(find)[:120])}: which part should change?"
+        if times > 1:
+            return (f"{_quoted(_text(find)[:120])} is in {name} {times} times: which one should change? Quote a "
+                    "little more of it.")
+    if not (C.expected(C.OPS["knowledge_edit_document"], fields, live) or {}).get("text", "").strip():
+        return f"That would leave {name} empty: to take it out of its knowledge base, delete it instead."
+    return None
+
+
+def _edit_line(target: dict, before: str, after: str, base: str) -> str:
+    """The review's line for a document's edit (F1258): the section as it stands and as it will be, the rest kept."""
+    start = 0
+    while start < min(len(before), len(after)) and before[start] == after[start]:
+        start += 1
+    end = 0
+    while end < min(len(before), len(after)) - start and before[-1 - end] == after[-1 - end]:
+        end += 1
+    # Whole words: the marks go around "30 days", never inside "[3]0".
+    while start > 0 and not before[start - 1].isspace():
+        start -= 1
+    while end > 0 and not before[len(before) - end].isspace():
+        end -= 1
+
+    def part(text: str) -> str:
+        middle = text[start:len(text) - end]
+        lead = ("…" if start > 60 else "") + text[max(0, start - 60):start]
+        tail = text[len(text) - end:len(text) - end + 60] + ("…" if end > 60 else "")
+        if len(middle) > 600:
+            middle = middle[:597] + "…"
+        return " ".join(f"{lead}[{middle}]{tail}".split())
+
+    where = f" in {_quoted(base)}" if base else ""
+    return (f"Change {_quoted(target['name'])}{where}, kept under its own name and folder and indexed again —"
+            f"\n  before: {part(before)}\n  after: {part(after)}")
 
 
 # ── the check ─────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1159,6 +1253,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             # A time the person says is on the schedule's own clock, or, when it has none, on theirs (F948).
             if tz := ((_run()[1].shared_state if _run()[1] else {}) or {}).get("person_timezone"):
                 fields["timezone"] = tz
+        if op.name == "knowledge_edit_document" and (said := _edit_refusal(target, fields, live)):
+            item.update(status="refused", say=said)
+            continue
         want = C.expected(op, fields, live)
         if op.kind == "delete":
             used, refusal = await _used_by(op, target["id"])
@@ -1176,6 +1273,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         line = (_settings_words(live, want, item["says"] if draft.get("undo_of") else "")
                 if op.name == "settings_set" else
                 _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
+        if op.name == "knowledge_edit_document":
+            line = _edit_line(target, live["text"], want["text"], live.get("knowledge_base") or "")
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":
