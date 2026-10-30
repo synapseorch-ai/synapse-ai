@@ -1080,7 +1080,7 @@ def model_work(name: str) -> bool:
 
 def imitates_eval(plan: O.Plan, ws: Workspace) -> str | None:
     """Why a plan is Evals made by hand, or None (F1255): the imitation checker's Evals row (F1257 step 3)."""
-    return next((f["say"] for f in imitation.check_draft(plan, ws) if f["screen"] == "evals"), None)
+    return next((f["say"] for f in imitation.findings(plan, ws) if f["screen"] == "evals"), None)
 
 
 #: The tools a build's eval is saved through (`build_save._eval_calls`): without them here, no eval is offered.
@@ -1684,7 +1684,7 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
         return {**base, "outcome": "said", "say": "I could not make a plan that holds together: "
                                                   + "; ".join(found.errors[:3])}
     base["without"] = without
-    if plan.kind == "create" and (copied := imitation.check_draft(plan, ws)):
+    if plan.kind == "create" and (copied := imitation.findings(plan, ws)):
         # A screen rebuilt by hand, said from its census row (F1257 step 3): first, Evals (F1255).
         return {**base, "outcome": "said", "say": copied[0]["say"]}
     if not [s for s in plan.steps if s.type != "end"]:

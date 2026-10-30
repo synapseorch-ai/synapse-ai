@@ -2,7 +2,7 @@
 
 F1255 (BLD1) found the first one in code: a create plan that runs a workflow here and has a model judge what it wrote is
 Evals made by hand. The census already says what a stand-in for each screen would look like (`imitation`, CAP3's rows),
-so the check is the census's: `imitation.SIGNATURES` holds a code matcher for a row by its id, and `check_draft` reads
+so the check is the census's: `imitation.SIGNATURES` holds a code matcher for a row by its id, and `findings` reads
 every row a matcher has. It is pure (the plan and the workspace only), so a planner can call it on its own draft;
 `check_build` says what it finds where it said F1255's. Evals is the only matcher for now (8a/a0 10-31): the other
 rows reach the planner as their words in the pack, and gain a matcher when a real request shows one.
@@ -57,13 +57,13 @@ class TestTheSignatures:
         assert "evals" in imitation.SIGNATURES
 
     def test_the_check_is_pure(self):
-        assert not inspect.iscoroutinefunction(imitation.check_draft)
-        assert list(inspect.signature(imitation.check_draft).parameters) == ["plan", "ws"]
+        assert not inspect.iscoroutinefunction(imitation.findings)
+        assert list(inspect.signature(imitation.findings).parameters) == ["plan", "ws"]
 
 
 class TestTheCheck:
     async def test_a_plan_that_runs_one_and_judges_it_is_evals_by_its_census_row(self, ws):
-        found = imitation.check_draft(_eval_copy(), ws)
+        found = imitation.findings(_eval_copy(), ws)
         assert [(f["screen"], f["label"], f["href"]) for f in found] == [("evals", "Evals", "/evals")]
         assert found[0]["say"].startswith('That is an eval of "Curiosity post generator": Evals scores its runs')
 
@@ -73,22 +73,22 @@ class TestTheCheck:
                                              "workflow": "orch_posts", "next": "send"},
                                             {"id": "send", "type": "tool", "name": "Send", "does": "Sends it",
                                              "tool": "send_email", "next": "end"}]})
-        assert imitation.check_draft(plan, ws) == []
+        assert imitation.findings(plan, ws) == []
 
     async def test_a_row_with_no_matcher_is_never_found(self, ws, monkeypatch):
         monkeypatch.setattr(imitation, "SIGNATURES", {})
-        assert imitation.check_draft(_eval_copy(), ws) == []
+        assert imitation.findings(_eval_copy(), ws) == []
 
     async def test_a_host_census_without_the_row_finds_nothing(self, ws, monkeypatch):
         # Cloud's census is its own (`feature_census.set_census`): a matcher answers only for a row the host has.
         monkeypatch.setattr(feature_census, "current", lambda: tuple(s for s in feature_census.CENSUS
                                                                       if s.id != "evals"))
-        assert imitation.check_draft(_eval_copy(), ws) == []
+        assert imitation.findings(_eval_copy(), ws) == []
 
     async def test_another_row_s_matcher_says_its_own_row(self, ws, monkeypatch):
         # Every row is read the same way: a matcher for Templates is said from the Templates row.
         monkeypatch.setattr(imitation, "SIGNATURES", {"templates": lambda plan, ws: True})
-        found = imitation.check_draft(_eval_copy(), ws)
+        found = imitation.findings(_eval_copy(), ws)
         assert [(f["screen"], f["href"]) for f in found] == [("templates", "/templates")]
         assert "Templates" in found[0]["say"] and "/templates" in found[0]["say"]
 
@@ -100,4 +100,4 @@ class TestTheBuildCheckSaysIt:
         assert build_plan.imitates_eval(_eval_copy(), ws) is None
 
     def test_check_build_asks_the_checker(self):
-        assert "imitation.check_draft(" in inspect.getsource(build_plan.check_build)
+        assert "imitation.findings(" in inspect.getsource(build_plan.check_build)

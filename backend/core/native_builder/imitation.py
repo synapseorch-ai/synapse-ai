@@ -3,11 +3,12 @@
 "Create an eval for my curiosity post generator" was planned as a workflow that ran the generator and had an agent
 grade it: Evals, made by hand (TRI1's triage part 3). BLD1's F1255 caught that one in code. The census already says
 what a stand-in for each screen looks like (`Screen.imitation`, CAP3's rows); here a row gains a code matcher by its id
-(`SIGNATURES`), and `check_draft` reads every row that has one, in the host's census (cloud's is its own), so a
+(`SIGNATURES`), and `findings` reads every row that has one, in the host's census (cloud's is its own), so a
 screen and its words live in one place.
 
 A matcher answers from the plan and the workspace only: the row's own sentence, True for words built from the row, or
-None. `check_draft` is pure, so a planner can call it on its own draft; `build_plan.check_build` says what it finds.
+None. `findings` is pure, so the planner's own read of its draft (`build_plan.check_draft`, D340 D3) carries it;
+`build_plan.check_build` says what it finds.
 Evals is the only matcher for now (a0, 10-31): the other rows reach the planner as their words in the pack
 (`features`), and gain a matcher when a real request shows one.
 """
@@ -57,7 +58,7 @@ def _said(screen: feature_census.Screen) -> str:
             "here yet. Open it there, rather than build a workflow that stands in for it.")
 
 
-def check_draft(plan: O.Plan, ws: Workspace) -> list[dict[str, str]]:
+def findings(plan: O.Plan, ws: Workspace) -> list[dict[str, str]]:
     """Each screen this plan rebuilds by hand, in the census's order: {screen, label, href, say}. Pure."""
     found = []
     for screen in feature_census.current():
