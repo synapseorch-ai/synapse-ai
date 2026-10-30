@@ -67,6 +67,52 @@ def role_fallback(step: StepConfig, run: OrchestrationRun, model: str) -> str | 
     return fallback if isinstance(fallback, str) and fallback and fallback != model else None
 
 
+def _is_native_builder(engine: "OrchestrationEngine") -> bool:
+    """Whether this is Synapse AI's own run (`orch_native_builder`): its code reads its tool outputs from state."""
+    from core.native_builder.seed import NATIVE_BUILDER_ORCH_ID
+
+    return getattr(getattr(engine, "orch", None), "id", None) == NATIVE_BUILDER_ORCH_ID
+
+
+def _kept(value: Any, run: "OrchestrationRun", step: StepConfig, engine: "OrchestrationEngine") -> Any:
+    """A Tool or code step's output as state keeps it: over the spill line (`vault_threshold`), a file in the vault
+    and a reference to it (D339 P4), which code reads as the value it was. The native builder's own run keeps its
+    values: its code reads its tool outputs straight from state. A write that fails keeps the value, as before."""
+    if value is None or _is_native_builder(engine):
+        return value
+    from core.config import load_settings
+    from core.step_refs import spill
+    from core.vault import VAULT_THRESHOLD
+
+    try:
+        at = int(load_settings().get("vault_threshold") or VAULT_THRESHOLD)
+        return spill(run.run_id, step.id, value, at=at)
+    except Exception as exc:  # noqa: BLE001 — a quota or a store that refused: the value stays in state
+        _log.warning(f"step '{step.id}': its output stays in state, the vault refused it: {exc}")
+        return value
+
+
+def _preview(value: Any, *, whole: bool = False) -> str:
+    """What an event shows of a step's output: an excerpt and the file for a saved one; otherwise its first 500
+    characters, or all of it (`whole`) where the event always carried all of it."""
+    from core.step_refs import for_person, is_ref
+
+    if is_ref(value):
+        return for_person(value)
+    return str(value) if whole else str(value)[:500]
+
+
+def _reading_for(model: str | None, run: "OrchestrationRun"):
+    """While a model step builds its prompt: a saved output inline up to its model's read share (D339 P4)."""
+    from core.config import load_settings
+    from core.context_budget import budget
+    from core.step_refs import reading
+
+    settings = load_settings()
+    chosen = model or run.shared_state.get("_model_override") or settings.get("model") or ""
+    return reading(budget(str(chosen), settings).read_cap)
+
+
 async def on_model_or_fallback(call, model: str, fallback: str | None, used: list) -> str:
     """`call(model)`; when it fails and the step has a `fallback`, `call(fallback)` once (BWA1, 7a).
 
@@ -253,9 +299,10 @@ class AgentStepExecutor:
                 yield ev
             return
 
-        prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
-            step, run, engine, transition
-        )
+        with _reading_for(step.model or (target_agent or {}).get("model"), run):
+            prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+                step, run, engine, transition
+            )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         # Emit prompt for the orchestration logger (filtered out before SSE)
@@ -382,6 +429,9 @@ class AgentStepExecutor:
                 step_limits=limits,
                 # It finishes by calling one of these (E2): its output is that call's result, an object.
                 finish_tools=list(step.finish_tools) or None,
+                # With none, it may save files and finish with one (D339 P4): the output is then the file's reference.
+                # Not in the native builder's own run, whose steps' tools are its bundle's (and E's to measure).
+                output_step=None if step.finish_tools or _is_native_builder(engine) else step.id,
             ):
                 if event.get("type") == "human_input_required":
                     parked = True
@@ -1137,10 +1187,10 @@ class ToolStepExecutor:
                 result = await self._execute_tool(
                     called_tool, tool_args, engine, resource_events, run_id=run.run_id
                 )
-                final_response = result
+                final_response = _kept(result, run, step, engine)
                 if step.output_key:
-                    run.shared_state[step.output_key] = result
-                preview = str(result)[:500] if result else ""
+                    run.shared_state[step.output_key] = final_response
+                preview = _preview(final_response) if result else ""
                 yield {
                     "type": "tool_result",
                     "orch_step_id": step.id,
@@ -1179,11 +1229,16 @@ class ToolStepExecutor:
             # have the model write other arguments, ask again, and — each resume starting the attempts afresh —
             # never end, a paid call and a new question each time.
 
+        from core.step_refs import is_ref
+
+        # A saved output (D339 P4) is said as its excerpt and file wherever the step's answer is words; state keeps
+        # the reference itself.
+        said = _preview(final_response, whole=True) if is_ref(final_response) else final_response
         yield {
             "type": "final",
             "orch_step_id": step.id,
             "step_name": step.name,
-            "response": final_response if final_response is not None
+            "response": said if final_response is not None
                         else f"Tool step '{step.name}' failed after {attempts} attempt(s): {last_error}",
         }
 
@@ -1194,8 +1249,8 @@ class ToolStepExecutor:
         from .context import build_execution_trace, store_execution_memory
         synth_events = [
             {"type": "tool_call", "tool_name": called_tool, "tool_input": last_tool_args},
-            {"type": "tool_result", "result": str(final_response)},
-            {"type": "final", "response": str(final_response)},
+            {"type": "tool_result", "result": str(said)},
+            {"type": "final", "response": str(said)},
         ]
         trace = build_execution_trace(synth_events)
         store_execution_memory(
@@ -2632,15 +2687,23 @@ def render_state_refs(text: str, state: dict) -> str:
     argument's reference does: a builder tool's output is JSON text in state.
     """
     from core.expressions import _json_object
+    from core.step_refs import MissingOutput, for_person, is_ref, resolved
 
     def _resolve(match: re.Match) -> str:
         val = state
-        for part in match.group(1).split("."):
-            if isinstance(val, str):
-                val = _json_object(val)
-            val = val.get(part) if isinstance(val, dict) else None
-            if val is None:
-                break
+        try:
+            for part in match.group(1).split("."):
+                if is_ref(val):
+                    val = resolved(val)  # a saved output, read as what it was (D339 P4)
+                if isinstance(val, str):
+                    val = _json_object(val)
+                val = val.get(part) if isinstance(val, dict) else None
+                if val is None:
+                    break
+        except MissingOutput as exc:
+            return f"({exc})"
+        if is_ref(val):
+            return for_person(val)  # an excerpt and the file, never the whole of it
         return str(val) if val is not None else match.group(0)
 
     return STATE_REF.sub(_resolve, text)
@@ -2943,15 +3006,19 @@ class TransformStepExecutor:
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Transform Code]\n{code}"}
 
         try:
-            result = await self._run(code, run.shared_state, timeout=step.timeout_seconds)
+            from core.step_refs import resolved_state
 
+            # A saved output is the value it was to code (D339 P4): the sandbox is given what each one holds.
+            result = await self._run(code, resolved_state(run.shared_state), timeout=step.timeout_seconds)
+
+            result = _kept(result, run, step, engine)
             if step.output_key and result is not None:
                 run.shared_state[step.output_key] = result
 
             yield {
                 "type": "transform_result",
                 "orch_step_id": step.id,
-                "result": str(result) if result is not None else None,
+                "result": _preview(result, whole=True) if result is not None else None,
             }
         except Exception as e:
             # Raised so the engine fails the run, as it does for every other
@@ -3048,9 +3115,10 @@ class LLMStepExecutor:
         if transition is None:
             from .context import TransitionContext
             transition = TransitionContext(origin_type="entry", execution_number=1)
-        prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
-            step, run, engine, transition
-        )
+        with _reading_for(step.model, run):
+            prompt, system_prompt_extra, system_prompt_prefix, mentions = await build_step_prompt(
+                step, run, engine, transition
+            )
         inputs_snapshot = snapshot_inputs(step, run, engine)
 
         yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": prompt,
@@ -3440,7 +3508,7 @@ class RetrieveStepExecutor:
             workflow_steps.check_enabled("Retrieve", step.name)
             config = workflow_steps.retrieve_config(step.retrieve, step_name=step.name)
             query = _fill_task_template(config.query, run.shared_state,
-                                        getattr(engine, "global_variables", None) or {})
+                                        getattr(engine, "global_variables", None) or {}, as_values=True)
             yield {"type": "_log_prompt", "orch_step_id": step.id, "prompt": f"[Retrieve] {query[:500]}"}
             found = await workflow_steps.retrieve(
                 config, query, step_id=step.id, step_name=step.name,
@@ -3555,7 +3623,7 @@ class BrowserStepExecutor:
         allowed = set(step.may_send_steps or [])
         steps = [{**s, "may_send": s.get("id") in allowed} for s in doc["steps"]]
         variables = getattr(engine, "global_variables", None) or {}
-        inputs = {name: _fill_task_template(str(tpl or ""), run.shared_state, variables)
+        inputs = {name: _fill_task_template(str(tpl or ""), run.shared_state, variables, as_values=True)
                   for name, tpl in (step.recording_inputs or {}).items()}
         missing = [n for n in recs.input_names(doc) if not str(inputs.get(n) or "").strip()]
         if missing and not where:

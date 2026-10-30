@@ -73,6 +73,13 @@ class ExprResult:
     refused: bool = False
 
 
+def _value(val):
+    """A step output saved to the vault is read as what it was (`core.step_refs`, D339 P4)."""
+    from core.step_refs import is_ref, resolved
+
+    return resolved(val) if is_ref(val) else val
+
+
 class DotNavigableState:
     """Shared state, navigable with dots. A missing key is None, not an error.
 
@@ -90,14 +97,14 @@ class DotNavigableState:
         data = object.__getattribute__(self, '_data')
         if name.startswith('_'):
             raise AttributeError(name)
-        val = data.get(name)
+        val = _value(data.get(name))
         if isinstance(val, dict):
             return DotNavigableState(val)
         return val
 
     def __getitem__(self, key):
         data = object.__getattribute__(self, '_data')
-        val = data.get(key)
+        val = _value(data.get(key))
         if isinstance(val, dict):
             return DotNavigableState(val)
         return val

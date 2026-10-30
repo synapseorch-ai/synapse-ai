@@ -27,7 +27,8 @@ READS_AND_PLANS = {"step_answer_workspace", "step_plan_research", "step_lookup_r
                    "step_make_new"}
 #: A quick step is one call: its agent holds only its finish tools, so more turns would offer the same call again.
 #: Its own pin keeps it at 2 (`test_the_builders_quick_steps_take_their_own_model`).
-QUICK = {"step_classify"}
+#: The classify at a waiting plan is the same one call (F1241's follow-up).
+QUICK = {"step_classify", "step_classify_at_plan"}
 
 
 # ── the floors ───────────────────────────────────────────────────────────────────────────────────────────────────

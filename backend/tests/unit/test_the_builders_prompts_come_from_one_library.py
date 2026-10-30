@@ -83,9 +83,16 @@ from core.native_builder import prompt_lint, seed
 #: F1253: the planner and the change planner ask every question at once in one form, a plan carries none, and an
 #: address of theirs is never guessed (planner.json, change_planner.json, plan_steps' tool line); with F1252,
 #: 6dd38c6f…; on fix-forward 15's tree with F1256, 5005cdff….
+#: F1241's follow-up: while a plan waits, classify through `step_classify_door` to `step_classify_at_plan`, whose
+#: classifier's one call requires `continues` and whose prompt names the plan and asks plainly; the classify step's
+#: context and the classifier's kinds move into the library (`classify_context`, `classify_kinds`) unchanged,
+#: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
+#: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
+#: same through the converter before), ac29e4a5….
 #: F1257: the plan researcher and the researcher read search_help, and research_rules says what this product does is
-#: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20….
-BUNDLE_SHA256 = "99033f20ecf32643ae403181b36c8272df6411c1ce086d3d973702f1c5d9eb2d"
+#: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20…; merged with v2.0 ce37b8be (the classify
+#: at a waiting plan above), b0a8a77c….
+BUNDLE_SHA256 = "b0a8a77c526beef56548588b4997ebcbf21bb521cc26b10c1fe6728fed5f5fe3"
 
 
 def _sha(definitions) -> str:
