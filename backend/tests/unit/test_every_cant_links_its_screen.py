@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from core import feature_census
+from core import builder_access, builder_tools, feature_census  # noqa: F401 — the builder's modules, as at boot
 from core.native_builder import change_tools, imitation
 
 ROOT = Path(__file__).resolve().parents[3]
