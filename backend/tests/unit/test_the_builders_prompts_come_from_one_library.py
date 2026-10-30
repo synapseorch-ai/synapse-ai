@@ -96,8 +96,9 @@ from core.native_builder import prompt_lint, seed
 #: finishes with `say`, instructions in sections that keep each rule's number, the change planner's finish fallback),
 #: gather runs both context readers for every act, and `step_plan_finish` routes each finish to the check that was
 #: there (a question or a "can't" on a change to the change check), 2d1b2d39… on fix-forward 16's 45d6d0b3; with
-#: F1255's rule 11 and topic `evals` under the one planner's # Changing, 20f244e4….
-BUNDLE_SHA256 = "20f244e46749a6a8e41ef443bfde9ef3c538e35798c8d753f8726fe47b60d639"
+#: F1255's rule 11 and topic `evals` under the one planner's # Changing, 20f244e4…; the change context's rounds
+#: are the planner's (8, then the one 'built or changed' end), d3ac6152….
+BUNDLE_SHA256 = "d3ac61524d6fcf8313a7d4533ba113d93db1f8508aaca8bf81437229e990c480"
 
 
 def _sha(definitions) -> str:
