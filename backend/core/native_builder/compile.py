@@ -170,7 +170,7 @@ def _item_first(orch: dict[str, Any]) -> None:
     for sid in prompt_lint.loops_not_item_first(orch):
         loop = next(s for s in orch["steps"] if s.get("type") == "loop" and sid in (s.get("loop_step_ids") or []))
         key = loop.get("loop_item_key") or "loop_item"
-        by_id[sid]["prompt_template"] = f"This item: {{state.{key}}}\n\n{by_id[sid]['prompt_template']}"
+        by_id[sid]["prompt_template"] = f"This item: {{{{ state.{key} }}}}\n\n{by_id[sid]['prompt_template']}"
 
 
 def _workflow(title: str, summary: str, steps: list[Step], settings: dict[str, Any] | None, *,

@@ -45,6 +45,8 @@ export interface SendOptions {
     effortOf?: string;
     /** A yes or a no to a step that stopped to ask (F1219's turn limit): sent as `{approve}`, never as words. */
     approve?: boolean;
+    /** A form question's answers by field (F1253), sent beside the words that say them all. */
+    form?: Record<string, string | number | boolean | null>;
 }
 
 /** What a turn takes from the app around the chat, read when it is sent. */
@@ -358,7 +360,8 @@ export class BuilderChat {
                       signal: controller.signal,
                       body: JSON.stringify({
                           run_id: pending.runId,
-                          response: options.approve === undefined ? { [pending.field]: text } : { approve: options.approve },
+                          response: options.approve !== undefined ? { approve: options.approve }
+                              : { [pending.field]: text, ...(options.form ? { form: options.form } : {}) },
                           images,
                       }),
                   })

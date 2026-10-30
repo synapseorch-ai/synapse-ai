@@ -17,7 +17,7 @@ from core.models_orchestration import Orchestration, OrchestrationRun, StepConfi
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
-from .run_error import failure_reason, model_failure_of, reason_of, run_error, set_run_error
+from .run_error import failure_reason, model_failure_of, reason_of, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
 from .step_usage import exact_window, step_scope
 from .state import SharedState
@@ -1262,7 +1262,7 @@ class OrchestrationEngine:
         The same step's key held `yes` or `{"response": "yes"}` by where it was
         answered: OSS chat sent the mapping, the app's modal and a channel reply
         the string — which the fleet's enqueue wrapped — and v1's and v2's
-        resume always wrapped. So `{state.approval}` rendered differently for
+        resume always wrapped. So `{{ state.approval }}` rendered differently for
         the same answer. Decided here, once, rather than at every sender. A
         step that declares fields keeps its mapping, and so does any other dict:
         a caller that chose a shape keeps it.
@@ -2333,13 +2333,9 @@ class OrchestrationEngine:
 
         if run.status == "failed":
             # The run's own reason first — one that failed outside any step has
-            # no history entry to carry it (F257) — then its newest step error.
-            last_error = run_error(run)
-            for h in reversed(run.step_history):
-                if last_error:
-                    break
-                if h.get("error"):
-                    last_error = h["error"]
+            # no history entry to carry it (F257) — then its newest step error:
+            # the one reader's, so a key a provider quoted is never said (REACH1).
+            last_error = failure_reason(run.status, run.step_history, run.step_progress)
             return f"Orchestration failed. Error: {last_error or 'Unknown error'}"
 
         if run.status == "paused":
@@ -2350,7 +2346,10 @@ class OrchestrationEngine:
             return "Orchestration cancelled."
 
         last_output = result_of(run.step_history, run.shared_state, result_key)
+        from core.step_refs import for_person, is_ref
 
+        if is_ref(last_output):
+            return for_person(last_output)  # an output saved to the vault: an excerpt and its file (D339 P4)
         if last_output:
             return str(last_output) if not isinstance(last_output, str) else last_output
 

@@ -38,8 +38,8 @@ class TestTheBundle:
         re-seed matches on the role. A missing one would orphan that agent."""
         roles = [a["system_role"] for a in bundled_definitions()["agents"]]
         assert sorted(roles) == [
-            "change_planner", "classifier", "maker", "orchestrator", "plan_researcher", "planner", "prompt_writer",
-            "reporter", "researcher", "talker",
+            "change_planner", "classifier", "classifier_at_plan", "maker", "orchestrator", "plan_researcher",
+            "planner", "prompt_writer", "reporter", "researcher", "talker",
         ]
 
     def test_the_version_is_stable_and_moves_with_the_content(self):
@@ -146,8 +146,8 @@ class TestSeeding:
         # prompt writer took the analyst's, the agent creator's and both savers' places; 8 with P3b's plan researcher
         # (the build's own, an E2 finish on report_findings; P5 may fold the two researchers into one); 9 with the front
         # door's classifier (SAI2-P4: its one call, an E2 finish on classify_request); 10 with talk's, which holds
-        # no tool.
-        assert len(result["agents_added"]) == 10
+        # no tool; 11 with the classifier at a waiting plan (F1241's follow-up: its one call requires `continues`).
+        assert len(result["agents_added"]) == 11
         assert result["version"] == bundle_version()
 
         from core.store.resources import get_orchestration
@@ -367,7 +367,7 @@ class TestTheBuilderKnowsItsTarget:
     The server resolves it — the page someone is on, or a name in the message —
     and the seed decides who reads it. New keys reach a step through
     `input_keys` only: a step skips a key the run's state does not have, while a
-    `{state.key}` placeholder renders literally, and a run paused on the previous
+    `{{ state.key }}` placeholder renders literally, and a run paused on the previous
     release has none of these keys.
     """
 
@@ -432,7 +432,7 @@ class TestTheSummaryHasSomethingToName:
 
     def test_it_prints_the_runs_own_record_not_a_models_recollection(self):
         summarize = self._summarize()
-        assert summarize["type"] == "print" and summarize["print_content"] == "{state.run_changes}"
+        assert summarize["type"] == "print" and summarize["print_content"] == "{{ state.run_changes }}"
         assert summarize["output_key"] == "summary"
 
     def test_it_names_what_was_built_by_its_own_name(self):
@@ -600,7 +600,7 @@ class TestWhatWasAskedForIsBuilt:
         # made, when it runs (UTC), and that it waits, paused, for a person to turn it on.
         from core.orchestration import run_writes
 
-        assert self._step("step_summarize")["print_content"] == "{state.run_changes}"
+        assert self._step("step_summarize")["print_content"] == "{{ state.run_changes }}"
         state: dict = {}
         run_writes.record(state, {"type": "resource_saved", "kind": "schedule", "action": "created", "id": "s1",
                                   "name": "Friday report", "resource": {"enabled": False,
@@ -611,7 +611,7 @@ class TestWhatWasAskedForIsBuilt:
         # The build's own ending says the same record, with what reading it back found after it.
         # F1228: then what each part does and what is missing or off, from the plan's parts in code.
         assert self._step("step_build_done")["print_content"] == (
-            "{state.run_changes}{state.build_saved.effect}{state.build_saved.does}")
+            "{{ state.run_changes }}{{ state.build_saved.effect }}{{ state.build_saved.does }}")
 
 
 class TestAFullPlanAndAStoppedBuild:
@@ -643,7 +643,7 @@ class TestAFullPlanAndAStoppedBuild:
         assert room["if_true_step_id"] == "step_plan_context"
         full = steps[room["if_false_step_id"]]
         assert full["type"] == "print" and full["output_key"] == "final_orch"
-        assert "{state.plan_room.reason}" in full["print_content"]
+        assert "{{ state.plan_room.reason }}" in full["print_content"]
         assert full["next_step_id"] == "step_summarize"
         schema = bundled_definitions()["orchestration"]["state_schema"]
         assert schema["plan_room"]["type"] == "dict"

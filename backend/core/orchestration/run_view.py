@@ -12,6 +12,7 @@ async def read_run(run_id: str) -> dict | None:
     from core.orchestration.engine import OrchestrationEngine
     from core.orchestration.pauses import asking_step_id
     from core.orchestration.runner import _active_tasks
+    from core.orchestration.run_error import clean_history
     from core.orchestration.state import SharedState
     from core.routes.orchestrations import _public_run_view
 
@@ -40,7 +41,7 @@ async def read_run(run_id: str) -> dict | None:
         "status": run.status,
         "run_id": run_id,
         "shared_state": _public_run_view(run)["shared_state"],
-        "step_history": run.step_history,
+        "step_history": clean_history(run.step_history),
     }
     from core.orchestration.run_error import failure_reason
     error = failure_reason(run.status, run.step_history, run.step_progress)

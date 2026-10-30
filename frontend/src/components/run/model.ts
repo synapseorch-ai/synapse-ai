@@ -797,6 +797,23 @@ export function duration(seconds: number | null | undefined): string {
 }
 
 /** What this step wrote, looked up in the run's shared state. */
+/**
+ * A step's output the engine saved to the Vault and passed on by reference (D339 P4, `core.step_refs`): the file's
+ * key, its size, and the note an agent finished with. Shown as the note and a link to the file, never as JSON.
+ */
+export type SavedFile = { $vault: string; chars?: number; kind?: 'text' | 'json'; text?: string };
+
+export function isSavedFile(value: unknown): value is SavedFile {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+        && typeof (value as Record<string, unknown>).$vault === 'string';
+}
+
+/** One line for a saved file: its note, or what it is. */
+export function savedFileLine(file: SavedFile): string {
+    const size = typeof file.chars === 'number' ? ` · ${file.chars.toLocaleString()} characters` : '';
+    return file.text?.trim() ? `${file.text.trim()} (${file.$vault}${size})` : `A file in the Vault: ${file.$vault}${size}`;
+}
+
 export function outputOf(step: StepExecution, state: Record<string, unknown>): unknown {
     return step.output_key ? state[step.output_key] : undefined;
 }

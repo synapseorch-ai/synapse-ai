@@ -27,7 +27,7 @@ def _stripe_script():
         tool_call("submit_plan", **STRIPE_PLAN),                               # step_plan (the planner's finish)
         tool_call("report_findings", goal="send a payment link", options=[      # the researcher's finish (E2)
             {"provider": "Stripe", "how": "mcp", "needs": "A Stripe account"}]),
-        tool_call("submit_plan", **{**STRIPE_PLAN, "questions": ["Connect Stripe first."]}),  # step_plan again
+        tool_call("submit_plan", **STRIPE_PLAN),  # step_plan again (a plan carries no question since F1253)
     ]
 
 
@@ -58,7 +58,8 @@ async def test_a_build_naming_a_missing_tool_finds_who_provides_it_before_the_re
     replanned = [c for c in fake_llm.calls
                  if "Planner for Synapse AI" in str(c.get("sys_prompt")) + str(c.get("prompt_msg"))][-1]
     said = str(replanned.get("prompt_msg"))
-    assert "'provider': 'Stripe'" in said and "'how': 'unclear'" in said, "the planner reads what the lookup found"
+    # The findings, as the one template form renders an object: JSON (F1252; Python's str() before).
+    assert '"provider": "Stripe"' in said and '"how": "unclear"' in said, "the planner reads what the lookup found"
 
 
 async def test_a_build_whose_tools_all_exist_is_not_researched(client, builder, fake_llm):

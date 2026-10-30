@@ -70,7 +70,7 @@ def test_the_review_asks_for_the_words_the_gate_takes():
     # review's is the definition's.
     from core.native_builder.build_plan import LEAD_BUILD
 
-    assert _steps()["step_human_review"]["human_prompt"].startswith("{state.plan_checked.lead}")
+    assert _steps()["step_human_review"]["human_prompt"].startswith("{{ state.plan_checked.lead }}")
     named = re.findall(r"\*\*(\w+)\*\*|'([^']+)'", LEAD_BUILD)
     words = [a or b for a, b in named]
     assert "approve" in words

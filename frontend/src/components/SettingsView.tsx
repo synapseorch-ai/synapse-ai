@@ -69,6 +69,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
     const [vaultThreshold, setVaultThreshold] = useState(100000);
     const [autoCompactEnabled, setAutoCompactEnabled] = useState(false);
     const [autoCompactThreshold, setAutoCompactThreshold] = useState(50000);
+    // A step compacts at this share of its own model's window (D339 P1); 0 keeps the fixed character limit.
+    const [autoCompactWindowPct, setAutoCompactWindowPct] = useState(50);
     const [allowDbWrite, setAllowDbWrite] = useState(false);
     // Knowledge's switch (F367); null until read, and not saved until then, so a failed read never turns it off.
     const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
@@ -263,6 +265,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
             vault_threshold: vaultThreshold,
             auto_compact_enabled: autoCompactEnabled,
             auto_compact_threshold: autoCompactThreshold,
+            auto_compact_window_pct: autoCompactWindowPct,
             allow_db_write: allowDbWrite,
             tool_policy_defaults: toolPolicyDefaults,
             embed_code: embedCode,
@@ -503,6 +506,7 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                 setVaultThreshold(data.vault_threshold || 100000);
                 setAutoCompactEnabled(data.auto_compact_enabled || false);
                 setAutoCompactThreshold(data.auto_compact_threshold || 50000);
+                setAutoCompactWindowPct(typeof data.auto_compact_window_pct === 'number' ? data.auto_compact_window_pct : 50);
                 setAllowDbWrite(data.allow_db_write || false);
                 setKnowledgeEnabled(!!data.knowledge_enabled);
                 setBoards({
@@ -615,6 +619,8 @@ export const SettingsView = ({ initialTab = 'general', initialSubTab }: { initia
                         setAutoCompactEnabled={setAutoCompactEnabled}
                         autoCompactThreshold={autoCompactThreshold}
                         setAutoCompactThreshold={setAutoCompactThreshold}
+                        autoCompactWindowPct={autoCompactWindowPct}
+                        setAutoCompactWindowPct={setAutoCompactWindowPct}
                         allowDbWrite={allowDbWrite}
                         setAllowDbWrite={setAllowDbWrite}
                         knowledgeEnabled={knowledgeEnabled}

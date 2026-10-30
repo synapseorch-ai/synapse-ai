@@ -8,15 +8,40 @@
  * the `output_key` it wrote; the value is in `shared_state` under that key. So
  * the row and the Shared state section are two views of one document.
  *
- * A string is markdown (plain text renders unchanged); anything else is
+ * A string is markdown (plain text renders unchanged); a step output saved to
+ * the Vault is its note and a link to the file (D339 P4); anything else is
  * pretty-printed JSON. A step's error is shown whole: the card above leads with
  * the plain sentence, and this is where the step's own words are read.
  */
+import Link from 'next/link';
+
 import { Markdown } from '@/components/ui';
 
-import { money, outputOf, REMOVED_NOTE, type StepExecution, type StepUsage } from './model';
+import { useRunHost } from './host';
+import { isSavedFile, money, outputOf, REMOVED_NOTE, type SavedFile, type StepExecution, type StepUsage } from './model';
+
+/** A step's output saved to the Vault (D339 P4): the note it finished with, and the file, which opens in the Vault. */
+function SavedFileValue({ file }: { file: SavedFile }) {
+    const { links } = useRunHost();
+    const href = links.vault ? links.vault(file.$vault) : `/vault?path=${encodeURIComponent(file.$vault)}`;
+    return (
+        <div className="grid gap-2">
+            {file.text?.trim() && <Markdown>{file.text}</Markdown>}
+            <p className="text-sm text-text-muted">
+                Saved to the Vault:{' '}
+                <Link href={href} className="font-code text-xs text-accent underline-offset-2 hover:underline" translate="no">
+                    {file.$vault}
+                </Link>
+                {typeof file.chars === 'number' && (
+                    <span className="tabular-nums text-text-faint"> · {file.chars.toLocaleString()} characters</span>
+                )}
+            </p>
+        </div>
+    );
+}
 
 export function OutputValue({ value }: { value: unknown }) {
+    if (isSavedFile(value)) return <SavedFileValue file={value} />;
     if (typeof value === 'string') {
         return value.trim()
             ? <Markdown>{value}</Markdown>

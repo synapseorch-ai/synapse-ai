@@ -498,18 +498,15 @@ class TestSchedules:
         assert heard[1][2] == created["next_run_at"]
 
 
-class TestVariablesArePreviewedNotDisclosed:
-    async def test_values_are_truncated_and_the_reference_is_given(self, server):
+class TestVariablesAreNamedNotDisclosed:
+    async def test_no_value_is_given_only_the_reference(self, server):
+        """Names only (F1271): the 40-character preview showed a token's start."""
         from core import variables
         await variables.save({"API_TOKEN": "sk-" + "x" * 200})
 
         listed = await call("list_variables", {}, server)
-        assert listed == [{
-            "key": "API_TOKEN",
-            "preview": ("sk-" + "x" * 200)[:40],
-            "reference": "{{ global.API_TOKEN }}",
-        }]
-        assert len(listed[0]["preview"]) == 40
+        assert listed == [{"key": "API_TOKEN", "reference": "{{ global.API_TOKEN }}"}]
+        assert "sk-" not in json.dumps(listed)
 
 
 class TestDeletesRefuseWithoutConfirmation:
@@ -762,7 +759,7 @@ class TestAnUnsafeExpressionIsRefusedAtAuthoringTime:
     async def test_every_expression_field_is_checked(self, server):
         for field, value in (
             ("if_condition", "state.x.__class__"),
-            ("switch_expression", "f'{state.x}'"),
+            ("switch_expression", "f'{{ state.x }}'"),
             ("loop_over", "[x for x in state.items]"),
             ("loop_while_condition", "(lambda: 1)()"),
             ("loop_break_condition", "__import__('os')"),
@@ -1064,7 +1061,7 @@ class TestAReadOfAKeyTheEngineWrites:
     @pytest.mark.parametrize("mode", [{"loop_count": 3}, {"loop_while_condition": "state.go"}],
                              ids=["count", "while"])
     def test_every_loop_writes_its_index(self, mode):
-        # F212: a question in a count loop asked "Iteration {state.loop_index}?"
+        # F212: a question in a count loop asked "Iteration {{ state.loop_index }}?"
         # and the person read the template, because only for-each wrote it.
         issues = self._issues(mode, ["loop_index"])
         assert self._reads(issues, "loop_index") == [], issues
@@ -1109,7 +1106,7 @@ class TestAHumanStepsAnswerHasTheShapeItsKeyDeclares:
     """
 
     @staticmethod
-    def _issues(human, schema, printed="Final Summary: {state.final_summary}"):
+    def _issues(human, schema, printed="Final Summary: {{ state.final_summary }}"):
         from core.builder_tools import _validate_orchestration
         steps = [
             {"id": "step_review", "name": "Review", "type": "human", "human_prompt": "Review it",
@@ -1128,18 +1125,18 @@ class TestAHumanStepsAnswerHasTheShapeItsKeyDeclares:
         issues = self._issues(self.FIELD, {"final_summary": {"type": "str", "default": ""}})
         shape = [i for i in issues if "Human step 'step_review'" in i]
         assert shape, issues
-        assert "mapping" in shape[0] and "{state.final_summary.final_summary}" in shape[0], shape
+        assert "mapping" in shape[0] and "{{ state.final_summary.final_summary }}" in shape[0], shape
         assert "dict" in shape[0], "the repair names the type to declare"
 
     def test_a_print_that_shows_the_mapping_whole_is_flagged(self):
         issues = self._issues(self.FIELD, {"final_summary": {"type": "dict", "default": {}}})
         shown = [i for i in issues if "Print step 'step_print'" in i]
-        assert shown and "{state.final_summary.final_summary}" in shown[0], issues
+        assert shown and "{{ state.final_summary.final_summary }}" in shown[0], issues
         assert not [i for i in issues if "Human step 'step_review'" in i], "dict is the right type"
 
     def test_reading_one_field_with_a_dict_key_is_clean(self):
         issues = self._issues(self.FIELD, {"final_summary": {"type": "dict", "default": {}}},
-                              printed="Final Summary: {state.final_summary.final_summary}")
+                              printed="Final Summary: {{ state.final_summary.final_summary }}")
         assert issues == [], issues
 
     def test_a_no_field_step_holds_text_and_is_not_flagged(self):
@@ -1511,7 +1508,7 @@ class TestANestedBuildKeepsItsInnerWorkflow:
 
     async def _inner(self, server, run: str) -> str:
         return await self._skeleton(server, run, "Vendor check", [
-            {"step_id": "step_check", "name": "Check", "type": "llm", "prompt_template": "Check {state.user_input}",
+            {"step_id": "step_check", "name": "Check", "type": "llm", "prompt_template": "Check {{ state.user_input }}",
              "output_key": "check", "next_step_id": "step_end"},
             {"step_id": "step_end", "name": "End", "type": "end"},
         ])
@@ -1685,7 +1682,7 @@ class TestTheBuildersAnswerNamesWhatFinishBuildRemoved:
         from core.orchestration import run_writes
 
         steps = {s["id"]: s for s in bundled_definitions()["orchestration"]["steps"]}
-        assert steps["step_summarize"]["print_content"] == "{state.run_changes}"
+        assert steps["step_summarize"]["print_content"] == "{{ state.run_changes }}"
         state: dict = {}
         for action in ("created", "deleted"):
             run_writes.record(state, {"type": "resource_saved", "kind": "orchestration", "action": action,

@@ -633,17 +633,20 @@ def _format_context_value(
         <value>
 
     The bare key (no brackets) is used as the header so the heading cannot be
-    visually confused with `{state.<key>}` template placeholders. The Source
+    visually confused with `{{ state.<key> }}` template placeholders. The Source
     line carries provenance (which agent / step produced this value).
     """
+    from core.step_refs import for_prompt, is_ref
+
     # List values from loop/parallel accumulation
     if isinstance(val, list) and val and isinstance(val[0], dict) and "result" in val[0]:
         parts = []
         for entry in val:
             iteration = entry.get("iteration", entry.get("run", ""))
             agent = entry.get("agent", "")
-            result_str = str(entry.get("result", ""))
-            if len(result_str) > max_chars:
+            result = entry.get("result", "")
+            result_str = for_prompt(result, max_chars) if is_ref(result) else str(result)
+            if not is_ref(result) and len(result_str) > max_chars:
                 from .summarizer import smart_truncate
                 result_str = smart_truncate(result_str, max_chars)
             iter_suffix = f" (iteration {iteration})" if iteration else ""
@@ -651,69 +654,64 @@ def _format_context_value(
             parts.append(f"### {key}{iter_suffix}\nSource: {source}\n{result_str}")
         return "\n\n".join(parts)
 
-    val_str = str(val)
-    if len(val_str) > max_chars:
-        from .summarizer import smart_truncate
-        val_str = smart_truncate(val_str, max_chars)
+    if is_ref(val):
+        val_str = for_prompt(val, max_chars)  # a saved output: inline if it fits, else its file (D339 P4)
+    else:
+        val_str = str(val)
+        if len(val_str) > max_chars:
+            from .summarizer import smart_truncate
+            val_str = smart_truncate(val_str, max_chars)
     source = label if label and label != key else "shared state"
     return f"### {key}\nSource: {source}\n{val_str}"
 
 
-#: The step prompt's two reference families in one pattern: `{{ … }}` (group 1,
-#: `templating.REF`) and the older `{state.x}` (group 2). The double-brace
-#: alternative comes first, so an unspaced `{{state.x}}` is a double-brace
-#: reference rather than a `{state.x}` wrapped in braces (F3).
-_TASK_REF = re.compile(rf"{_templating.REF.pattern}|\{{state\.([\w.]+)\}}")
+#: The step prompt's references, `{{ … }}` (`templating.REF`): `{{ state.x }}`, the one form of a reference to state
+#: (F1252: an older `{state.x}` is written so as the step is read), and `{{ global.x }}`.
+_TASK_REF = _templating.REF
 
 
-def _fill_task_template(template: str, shared_state: dict, global_variables: dict) -> str:
-    """`{{ global.x }}`, `{{ state.x }}` and the older `{state.x}` — in one pass.
+def _fill_task_template(template: str, shared_state: dict, global_variables: dict, *,
+                        read_cap: int | None = None, as_values: bool = False) -> str:
+    """`{{ global.x }}` and `{{ state.x }}`, in one pass.
 
-    One pass, because two were a leak (F19): the `{state.x}` pass wrote a state
-    value into the text and `templating.render` then read that value as a
-    template, so a crawled page or a model answer holding `{{ global.KEY }}`
-    reached the next step — and the run log — as the secret. A `re.sub` never
-    scans what it inserted, so a value is a value whichever family put it
-    there: a state value holding `{{ global.KEY }}` or `{state.x}`, or a global
-    value holding either, reaches the model as those words. The semantics are
-    otherwise unchanged: `{state.x}` is `str()` of the value, `{{ … }}` is
-    `templating`'s (JSON for an object), and an unknown `{{ global.x }}` — or a
-    wrong path inside a state key that is set — stays visible.
+    One pass, because two were a leak (F19): a pass that wrote a state value into the text before `templating.render`
+    read it let a crawled page or a model answer holding `{{ global.KEY }}` reach the next step — and the run log —
+    as the secret. A `re.sub` never scans what it inserted, so a value is a value: a state value holding
+    `{{ global.KEY }}`, or a global value holding a reference, reaches the model as those words. An object renders
+    as JSON, and an unknown `{{ global.x }}` — or a wrong path inside a state key that is set — stays visible.
 
-    A state key no step has written yet reads empty, in either form (U74): this
-    is a model's prompt, and on a feedback loop's first pass the writer's
-    `{state.feedback}` reached the model as those words, which it echoed into
-    its draft. A declared default already fills the key (`_init_state`). So a
-    field of a key that holds only its empty default (`""`, `{}`, `[]`) reads
-    empty too: nothing has written it either (SAI2-P2; the change planner's
-    "what happened on the first pass" read as template text on its first). A
-    person's text — a Human or a Print step's — keeps the gap
+    A state key no step has written yet reads empty (U74): this is a model's prompt, and on a feedback loop's first
+    pass the writer's `{{ state.feedback }}` reached the model as those words, which it echoed into its draft. A
+    declared default already fills the key (`_init_state`). So a field of a key that holds only its empty default
+    (`""`, `{}`, `[]`) reads empty too: nothing has written it either (SAI2-P2; the change planner's "what happened on
+    the first pass" read as template text on its first). A person's text — a Human or a Print step's — keeps the gap
     (`steps.render_state_refs`).
+
+    A step output saved to the vault (`core.step_refs`, D339 P4) is inline when it fits `read_cap`, this step's read
+    share (`context_budget`; by default the one its step set, `step_refs.reading`), and otherwise the file and how to
+    read it; a field of one is its value. `as_values` fills in what a saved output holds, whatever its size: text
+    typed into a site or searched for is a value, not a prompt.
     """
+    from core.step_refs import for_prompt, read_cap_now, resolved
+    from core.vault import READ_CAP
+
+    cap = read_cap or read_cap_now() or READ_CAP
+
+    def _ref_text(ref: dict) -> str:
+        if as_values:
+            value = resolved(ref)
+            return value if isinstance(value, str) else _templating._text(value)
+        return for_prompt(ref, cap)
+
     context = {"global": global_variables, "state": shared_state}
 
     def _sub(match: re.Match) -> str:
-        if match.group(1) is not None:
-            parts = match.group(1).split(".")
-            if parts[0] == "state" and len(parts) > 1:
-                top = shared_state.get(parts[1])
-                if top is None or (len(parts) > 2 and top in ("", {}, [])):
-                    return ""
-            return _templating.render(match.group(0), context)
-        # The older single-brace form walks a path too (`{state.review.final_summary}`), as a person's text
-        # (`render_state_refs`) and the `{{ }}` form do: it took one word only, so a path reached the model as
-        # those words even when it was set.
-        head, *path = match.group(2).split(".")
-        value = shared_state.get(head)
-        if value is None or (path and value in ("", {}, [])):
-            return ""
-        if path:
-            found, value = _templating._walk(value, path)
-            if not found:
-                return match.group(0)  # a wrong path inside a key that is set stays visible, as `{{ }}`'s does
-            if value is None:
+        parts = match.group(1).split(".")
+        if parts[0] == "state" and len(parts) > 1:
+            top = shared_state.get(parts[1])
+            if top is None or (len(parts) > 2 and top in ("", {}, [])):
                 return ""
-        return str(value)
+        return _templating.render(match.group(0), context, refs=_ref_text)
 
     return _TASK_REF.sub(_sub, template)
 
@@ -1016,7 +1014,7 @@ def build_origin_aware_context(
     # ------------------------------------------------------------------
     # The step's template — handed in by `build_step_prompt` with its `@[path]`
     # mentions already masked — rendered in one pass (`_fill_task_template`):
-    # `{state.x}`, `{{ state.x }}` and `{{ global.x }}`, the double-brace family
+    # `{{ state.x }}` and `{{ global.x }}`, the double-brace family
     # shared with tools and system prompts (core/templating.py). A step with no
     # template takes the run's input as typed: the input is a value, not a
     # template (D97, as D95 ruled for `@[path]`), so text that an agent, a
@@ -1211,7 +1209,7 @@ async def build_step_prompt(
 
     Three passes, in this order because the order is the safety: the mentions
     in `step.prompt_template` become placeholders; the sync builder renders
-    `{state.x}` and `{{ … }}` around them; the placeholders are swapped for the
+    `{{ … }}` around them; the placeholders are swapped for the
     files. So a file's text never meets the template pass (a file that holds
     `{{ global.KEY }}` reaches the model as those words, not as the secret),
     and a state value or the run's own input that contains `@[x]` is a value,

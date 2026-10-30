@@ -88,15 +88,19 @@ SUBMIT = {"type": "function", "function": {
         "Finish with the change to make: one op per thing to do. Nothing happens yet: code checks each op, puts up "
         "a card for each button act, and shows the person the rest to approve. Fields per op: rename_* {name}; "
         "update_workflow {description, max_total_turns, timeout_minutes, max_run_credits, max_run_usd}; "
-        "set_schedule {cron_expression | interval_value + interval_unit, prompt, description}; create_schedule "
-        "{runs: {kind: workflow | agent, id}, prompt, cron_expression | interval_value + interval_unit}; "
+        "set_schedule {cron_expression | interval_value + interval_unit, prompt, description, missed_run_policy: "
+        "run_immediately | skip}; create_schedule {runs: {kind: workflow | agent, id}, prompt, cron_expression | "
+        "interval_value + interval_unit, missed_run_policy}; retarget_schedule {runs: {kind: workflow | agent, id}}; "
         "set_agent_model {model}; set_agent_tools / set_agent_skills {add: [...], remove: [...]}; "
         "set_agent_instructions {system_prompt}; set_tool_policy {destructive | open_world | undeclared: allow | "
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
         "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
-        "board_update_card {status, result}; board_comment {text}; board_create {text}; eval_rubric {name, "
+        "board_update_card {status, result}; board_comment {text}; board_create {text}; recording_approve_edit and "
+        "recording_discard_edit {edit_id}; recording_rename {name}; settings_set (target {kind: settings, id: "
+        "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; eval_rubric {name, "
         "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
-        "{count, steer}; eval_run and eval_cancel {golden_set}; edit_steps, create and use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
+        "{count, steer}; eval_run and eval_cancel {golden_set}; edit_steps, create and "
+        "use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
         "ops": {"type": "array", "items": _op_schema()},
@@ -105,21 +109,36 @@ SUBMIT = {"type": "function", "function": {
     }},
 }}
 
+_SUBJECT = ("The thing the question is about, in a few words: the knowledge base 'competitor_pricing', the Monday "
+            "schedule. A question already asked about it is not asked again.")
+_OPTIONS = "The choices, when there are a few: here only, never also listed in the question."
 ASK = {"type": "function", "function": {
     "name": "ask_person",
-    "description": ("Finish with one question that only the person can answer: which one they mean, what time, "
-                    "what value, who, or how much. Never ask what reading the workspace or a lookup would tell you, "
-                    "and never for a key or how to connect a service: those come through a Connect card."),
+    "description": ("Finish with what only the person can answer: which one they mean, what time, what value, who, or "
+                    "how much. Several at once go in `questions`, one form they answer in one go, each with your "
+                    "best guess filled in for them; one alone may be `question`. Never ask what reading the "
+                    "workspace or a lookup would tell you, and never for a key or how to connect a service: those "
+                    "come through a Connect card."),
     "parameters": {"type": "object", "properties": {
-        "question": {"type": "string"},
+        "question": {"type": "string", "description": "One question; with `questions`, the line above them."},
         "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
-        "subject": {"type": "string", "description": "The thing the question is about, in a few words: the knowledge "
-                                                    "base 'competitor_pricing', the Monday schedule. A question "
-                                                    "already asked about it is not asked again."},
-        "options": {"type": "array", "items": {"type": "string"}, "description": "The choices, when there are "
-                                                                                 "a few: here only, never also "
-                                                                                 "listed in the question."},
-    }, "required": ["question", "about"]},
+        "subject": {"type": "string", "description": _SUBJECT},
+        "options": {"type": "array", "items": {"type": "string"}, "description": _OPTIONS},
+        "questions": {"type": "array", "maxItems": 6, "description": (
+            "Every question at once, as one form: each a field the person fills in, your guess already in it."),
+            "items": {"type": "object", "properties": {
+                "question": {"type": "string"},
+                "kind": {"type": "string", "enum": ["text", "address", "email", "number", "date", "yes_no",
+                                                    "choice"]},
+                "guess": {"type": "string", "description": (
+                    "Your best guess as the answer itself, filled in for them to keep or change: a value (an address, "
+                    "a day and time, a number, one of the options), never a description of what it could be. Leave "
+                    "it out when you have no such value.")},
+                "options": {"type": "array", "items": {"type": "string"}, "description": _OPTIONS},
+                "about": {"type": "string", "enum": ["which", "when", "what", "who", "how_much"]},
+                "subject": {"type": "string", "description": _SUBJECT},
+            }, "required": ["question"]}},
+    }},
 }}
 
 CANNOT = {"type": "function", "function": {
@@ -250,8 +269,15 @@ WAY_IN_ASKED = ("Never ask the person how to connect a service: who provides a t
 ABOUT = ("which", "when", "what", "who", "how_much")
 #: How many questions one request asks, across its runs, before it goes on with what it has (F1226).
 QUESTIONS = 5
-ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know, and put what is still "
-                "open under the plan's questions.")
+ASKED_ENOUGH = ("You have asked the person {n} questions already: go on with what you know. What you pick is on the "
+                "plan's card for them to check.")
+#: The most questions one form asks (F1253): a form is one round of the request's cap.
+FORM_MAX = 6
+#: A form question's kind, as the field it is (`humanFields.ts`).
+KIND_TYPE = {"text": "string", "address": "string", "email": "email", "number": "number", "date": "date",
+             "yes_no": "boolean", "choice": "choice"}
+#: The form's line when the planner gives none.
+FORM_LEAD = "A few things before I plan it:"
 #: The steps that put a planner's question to the person.
 _ASKING_STEPS = ("step_human_clarify", "step_change_clarify")
 #: The questions this conversation's request has asked, across its runs (F1226): `[{about, subject, question, answer,
@@ -260,7 +286,7 @@ ASKED_KEY = "request_questions"
 #: How many questions the request showed the person in its earlier runs (F1226): the cap counts the request.
 ROUNDS_KEY = "request_rounds"
 ASKED_ALREADY = ("You asked the person this already: \"{question}\" Their answer: {answer}. Don't ask it again: go on "
-                 "with that answer, and put what is still open under the plan's questions.")
+                 "with that answer.")
 
 
 def _question_words(text: Any) -> set[str]:
@@ -277,22 +303,49 @@ def _same_question(earlier: dict, about: str, subject: str, question: str) -> bo
     return bool(a and b) and len(a & b) / len(a | b) >= 0.8
 
 
-def _answer_of(state: dict) -> str | None:
-    """The person's answer to the question a run last put (a build's clarify or a change's), if it has one."""
+def reply_of(state: dict) -> tuple[str | None, dict]:
+    """The person's answer to what a run last asked (a build's clarify or a change's), if it has one: its words, and a
+    form's answers by field (F1253; `{}` for a reply typed in the chat box or a channel)."""
     for key in ("human_response", "change_clarify"):
         value = state.get(key)
         value = json.loads(value) if isinstance(value, str) and value.startswith("{") else value
         said = value.get("answer") if isinstance(value, dict) else value
-        if isinstance(said, str) and said.strip():
-            return said.strip()
-    return None
+        form = value.get("form") if isinstance(value, dict) and isinstance(value.get("form"), dict) else {}
+        if isinstance(said, str) and said.strip() or form:
+            return (said.strip() if isinstance(said, str) and said.strip() else None), form
+    return None, {}
+
+
+def _answer_of(state: dict) -> str | None:
+    """The person's answer to the question a run last put (a build's clarify or a change's), if it has one."""
+    return reply_of(state)[0]
+
+
+def form_answer(value: Any) -> str:
+    """A form field's answer as words: yes or no for a tick box, "(left empty)" for nothing."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    return str(value).strip() if value is not None and str(value).strip() else "(left empty)"
 
 
 def _with_answers(state: dict) -> list[dict]:
-    """The run's questions, the last one given the answer the run holds for it."""
+    """The run's questions, those it last put given the answer the run holds for them: a form's each by its field,
+    or all of them the reply typed instead (F1253); one question alone, as before it."""
     asked = [dict(a) for a in state.get(ASKED_KEY) or [] if isinstance(a, dict)]
-    if asked and not asked[-1].get("answer") and (said := _answer_of(state)):
-        asked[-1]["answer"] = said
+    said, form = reply_of(state)
+    if not (said or form):
+        return asked
+    # The form this run put last: its fields still unanswered, at the end. A carried one is an earlier run's.
+    last = []
+    for a in reversed(asked):
+        if a.get("answer") or not a.get("field") or a.get("carried"):
+            break
+        last.append(a)
+    for a in last or ([asked[-1]] if asked and not asked[-1].get("answer") else []):
+        if a.get("field") in form:
+            a["answer"] = form_answer(form[a["field"]])
+        elif said:
+            a["answer"] = said
     return asked
 
 
@@ -328,6 +381,22 @@ def staged_plan(state: dict) -> dict | None:
     staged = state.get(CARRY_KEY)
     plan = staged.get(WAITING_PLAN) if isinstance(staged, dict) else None
     return plan if isinstance(plan, dict) and plan.get("state") else None
+
+
+def waiting_plan_title(state: dict) -> str:
+    """The title of the plan waiting at its review for this run (`staged_plan`), "" when none waits: the classify
+    names it and asks plainly whether this message changes it (F1241's follow-up)."""
+    from core.native_builder.build_plan import CHECKED_KEY, DRAFT_KEY, _obj
+
+    plan = staged_plan(state)
+    if not plan:
+        return ""
+    held = plan["state"]
+    checked = _obj(held.get(CHECKED_KEY))
+    for raw in ((checked or {}).get("plan") if isinstance(checked, dict) else None, _obj(held.get(DRAFT_KEY))):
+        if isinstance(raw, dict) and str(raw.get("title") or "").strip():
+            return str(raw["title"]).strip()
+    return "the plan above"
 
 
 def adopt_carry(state: dict, continues: bool | None) -> bool:
@@ -368,9 +437,24 @@ def questions_asked(state: dict, run: Any = None) -> int:
         1 for h in (getattr(run, "step_history", None) or []) if h.get("step_id") in _ASKING_STEPS)
 
 
-def note_question(state: dict, about: str, subject: str, question: str) -> None:
-    """Record a question put to the person, so no later run of the request asks it again."""
-    state[ASKED_KEY] = [*_with_answers(state), {"about": about, "subject": subject, "question": question}]
+def note_question(state: dict, about: str, subject: str, question: str, field: str = "") -> None:
+    """Record a question put to the person, so no later run of the request asks it again; `field` is its field in a
+    form (F1253), which its answer comes back by."""
+    state[ASKED_KEY] = [*_with_answers(state), {"about": about, "subject": subject, "question": question,
+                                                 **({"field": field} if field else {})}]
+
+
+def form_text(lead: str, fields: list[dict]) -> str:
+    """A form's words (F1253): its line, then each field numbered, with its choices or the guess filled in. What the
+    run page, a channel and the chat box answer; the panel draws the fields themselves."""
+    def line(f: dict) -> str:
+        options, value, label = f.get("options") or [], f.get("value"), str(f.get("label") or f.get("name") or "")
+        if options:
+            label += " (" + (", ".join(options[:-1]) + " or " + options[-1] if len(options) > 1 else options[0]) + ")"
+        elif value and str(value) not in label:
+            label += f" (my guess: {value})"
+        return label
+    return "\n".join([lead.strip(), *(f"{n}. {line(f)}" for n, f in enumerate(fields, 1))]).strip()
 
 
 def carry_request(previous: dict | None, history: list[dict] | None = None, run_id: str = "") -> dict:
@@ -408,6 +492,9 @@ def carry_request(previous: dict | None, history: list[dict] | None = None, run_
 
 
 async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict:
+    items = [q for q in args.get("questions") or [] if isinstance(q, dict) and _text(q.get("question"))]
+    if items:
+        return _ask_form(_text(args.get("question")) or FORM_LEAD, items[:FORM_MAX])
     question = _text(args.get("question"))
     if not question:
         return {"error": "ask_person needs the question."}
@@ -432,6 +519,39 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     if run is not None:
         note_question(state, about, subject, question)
     return {"finish": "ask_person", "question": question, "about": about, "options": options}
+
+
+def _ask_form(lead: str, items: list[dict]) -> dict:
+    """Several questions as one form (F1253): one round of the request's cap, each question checked and noted as
+    `ask_person`'s one is, and kept with its field, which its answer comes back by."""
+    asked: list[tuple[str, str, str, list[str], dict]] = []
+    for n, item in enumerate(items, 1):
+        question, options = asked_options(_text(item.get("question")), list(item.get("options") or []))
+        options = options[:8]
+        words = " / ".join([lead, question, *options])
+        if _ASKS_SECRET.search(words):
+            return {"error": SECRET_ASKED}
+        way_in = _ASKS_WAY_IN.search(words)
+        if way_in and not (item.get("about") == "which" and way_in.group(0).lower().startswith("http tool")):
+            return {"error": WAY_IN_ASKED}
+        kind = "choice" if options else item.get("kind") if item.get("kind") in KIND_TYPE else "text"
+        field = {"name": f"q{n}", "type": KIND_TYPE[kind], "label": question,
+                 **({"options": options} if options else {}),
+                 **({"value": guess} if (guess := _text(item.get("guess"))) and kind != "yes_no" else {})}
+        asked.append((item.get("about") if item.get("about") in ABOUT else "what", _text(item.get("subject")),
+                      question, options, field))
+    _, run = _run()
+    state = run.shared_state if run is not None else {}
+    for about, subject, question, _, _ in asked:
+        if (same := asked_before(state, about, subject, question)) is not None:
+            return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
+                                                  answer=same.get("answer") or "none yet")}
+    if (n := questions_asked(state, run)) >= QUESTIONS:
+        return {"error": ASKED_ENOUGH.format(n=n)}
+    if run is not None:
+        for about, subject, question, _, field in asked:
+            note_question(state, about, subject, question, field=field["name"])
+    return {"finish": "ask_person", "question": lead, "form": [field for *_, field in asked]}
 
 
 async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -535,7 +655,10 @@ async def read(kind: str, target_id: str) -> dict | None:
     if kind == "schedule":
         from core.store import schedules
 
-        return await schedules.get(target_id)
+        found = await schedules.get(target_id)
+        # One saved before the policy was asked reads as the screen shows it, skip (F1267): the no-op check, the
+        # before-image an undo puts back and the effect check all need its value.
+        return None if found is None else {"missed_run_policy": "skip", **found}
     if kind == "skill":
         from core import skills
 
@@ -544,6 +667,11 @@ async def read(kind: str, target_id: str) -> dict | None:
         from core.store.resources import load_tools
 
         return next((t for t in await load_tools() if t.get("name") == target_id), None)
+    if kind == "settings":
+        # The workspace's one set of settings, whatever it was called (F1264): what Synapse AI may set, as it reads.
+        from core.product_tools import settings
+
+        return await settings.current()
     return None
 
 
@@ -582,7 +710,7 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
         detail = ""
     else:
         shown = dict(want if want is not None else {k: v for k, v in fields.items() if k != "runs"})
-        if op.name == "create_schedule":
+        if op.name in ("create_schedule", "retarget_schedule"):
             runs = fields["runs"]
             shown = {"starts": _quoted(runs.get("name") or runs["id"]),
                      **{k: v for k, v in shown.items() if k not in ("target_type", "target_id")}}
@@ -590,6 +718,16 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
                            for k, v in shown.items())
     detail = "; ".join(p for p in (detail, says) if p)
     return f"{what} — {detail}" if detail else what
+
+
+def _settings_words(live: dict | None, want: dict, says: str) -> str:
+    """A settings change's line: each setting by its label, what it reads now and what it will (F1264)."""
+    from core import settings_allow
+
+    live = live or {}
+    rows = "; ".join(f"{settings_allow.ALLOWED[k].label}: {settings_allow.shown(k, live.get(k))} → "
+                     f"{settings_allow.shown(k, v)}" for k, v in want.items())
+    return "Change the workspace's settings — " + "; ".join(p for p in (rows, says) if p)
 
 
 def _review(ops: list[dict]) -> str:
@@ -728,6 +866,25 @@ def _keep(op: C.Op, record: dict | None, want: dict | None) -> dict | None:
     return clean
 
 
+async def _runs_found(chosen: dict | None, n: int, item: dict, picks: list[dict]) -> bool:
+    """A schedule's `runs` made the one workflow or agent it names, by id, as its target is (a new schedule's, and a
+    retarget's, F1267); False when it is refused or picked between, with the item saying so."""
+    runs = dict(item["fields"]["runs"])
+    if _answers(chosen, n, "runs", runs["kind"], runs):
+        runs["id"] = chosen["id"]
+    found = resolve(await candidates(runs["kind"]) or [], runs)
+    if len(found) != 1:
+        item.update(status="refused" if not found else "pick",
+                    say=f"No {runs['kind']} is called {_quoted(runs.get('name') or runs.get('id'))}." if not found
+                    else "")
+        if found:
+            picks.append({"op": n, "field": "runs", "kind": runs["kind"],
+                          "wanted": runs.get("name") or runs.get("id"), "options": found[:8]})
+        return False
+    item["fields"]["runs"] = {"kind": runs["kind"], "id": found[0]["id"], "name": found[0]["name"]}
+    return True
+
+
 async def check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     """Every fact about the planner's change, decided here; see the module's docstring. `draft` is the planner's
     finish (E2's object); the person and their role are the run's, read now, never an argument."""
@@ -747,6 +904,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
 
     if (which := _recording_or_workflow(base)) is not None:
         return which
+    if finish == "ask_person" and isinstance(draft.get("form"), list) and draft["form"]:
+        return {**base, "outcome": "ask", "question": form_text(draft.get("question") or FORM_LEAD, draft["form"]),
+                "form": draft["form"]}
     if finish == "ask_person":
         return {**base, "outcome": "ask", "question": asked_text(draft.get("question") or "",
                                                                  list(draft.get("options") or []))}
@@ -815,20 +975,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                               "for it on its own once this is done.".replace("  ", " "))
             continue
         if op.kind == "create":
-            if op.name == "create_schedule":
-                runs = dict(fields["runs"])
-                if _answers(chosen, n, "runs", runs["kind"], runs):
-                    runs["id"] = chosen["id"]
-                found = resolve(await candidates(runs["kind"]) or [], runs)
-                if len(found) != 1:
-                    item.update(status="refused" if not found else "pick",
-                                say=f"No {runs['kind']} is called {_quoted(runs.get('name') or runs.get('id'))}."
-                                if not found else "")
-                    if found:
-                        picks.append({"op": n, "field": "runs", "kind": runs["kind"],
-                                      "wanted": runs.get("name") or runs.get("id"), "options": found[:8]})
-                    continue
-                fields["runs"] = {"kind": runs["kind"], "id": found[0]["id"], "name": found[0]["name"]}
+            if op.name == "create_schedule" and not await _runs_found(chosen, n, item, picks):
+                continue
             # Whatever is made needs a name nothing has: an undo's re-create checks nothing took it since (F797).
             name = _text(target.get("name")) or _text(fields.get("name"))
             if any(i["name"].lower() == name.lower() for i in await candidates(op.target) or []):
@@ -864,6 +1012,8 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 target.update(id=found[0]["id"], name=found[0]["name"])
             else:
                 target.setdefault("name", target.get("id") or "")
+            if op.name == "retarget_schedule" and not await _runs_found(chosen, n, item, picks):
+                continue
         item["status"] = "resolved"
 
     if picks:
@@ -972,6 +1122,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 item.update(status="refused", say=refused)
                 continue
             fields["model"] = model
+        if op.name == "settings_set":
+            # The product tool's own checks, before the review rather than after the yes: a model here is one the
+            # workspace can run (F1250), the host's list narrows (cloud's WRITABLE).
+            from core.product_tools import settings
+
+            if found := await settings.issues(fields):
+                item.update(status="refused", say=" ".join(found))
+                continue
         if op.name == "set_agent_skills":
             refusal = await _skill_names(fields)
             if refusal:
@@ -996,7 +1154,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                            "nothing to change.")
             continue
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
-        line = _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want)
+        line = (_settings_words(live, want, item["says"] if draft.get("undo_of") else "")
+                if op.name == "settings_set" else
+                _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":

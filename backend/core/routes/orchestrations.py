@@ -605,11 +605,12 @@ def _public_run_view(run) -> dict:
     `_exec_memory_*` grows with every rerun; nothing outside the engine reads
     either, and the frontend never renders shared_state at all.
     """
-    from core.orchestration.run_error import failure_reason
+    from core.orchestration.run_error import clean_history, failure_reason
 
     doc = run.model_dump(exclude={"definition"})
-    # Why a failed run stopped, read before its engine bookkeeping goes (F257).
+    # Why a failed run stopped, read before its engine bookkeeping goes (F257); each step's error as it is read.
     doc["error"] = failure_reason(run.status, run.step_history, run.step_progress)
+    doc["step_history"] = clean_history(doc.get("step_history"))
     doc.pop("step_progress", None)
     doc["shared_state"] = {
         k: v for k, v in (doc.get("shared_state") or {}).items()
@@ -691,59 +692,23 @@ async def resume_failed_run(run_id: str, request: Request):
     whatever ran it, beside the fleet and outside its limits and its cancel
     signal (F61).
     """
-    server_module = request.app.state.server_module
+    from core.orchestration import replay
 
-    if "__" in run_id:
-        # A nested run is part of its parent's (F251): replayed on its own it
-        # would run as a top-level run nothing reads the result of. Its parent
-        # replays the step, which starts a new one.
-        raise HTTPException(
-            status_code=409,
-            detail="This is a nested run; replay the run that called it, which reruns this step.",
-        )
+    try:
+        # A nested run is its parent's (F251); a worker's run is replayed by a worker (F61); never two pumps for one
+        # run. The one place it is decided (F1260): Synapse AI's resume card comes through the same function.
+        resumed = await replay.resume(request.app.state, run_id, request.app.state.server_module)
+    except replay.NotResumable as why:
+        raise HTTPException(status_code=409, detail=str(why)) from None
 
-    from core.orchestration.answers import worker_run_row
-    worker_run = await worker_run_row(request.app.state, run_id)
-    if worker_run is not None:
-        if worker_run.status not in ("failed", "cancelled"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"The run is {worker_run.status}; only a failed or cancelled run can be replayed.",
-            )
-        if not worker_run.current_step_id:
-            raise HTTPException(
-                status_code=409,
-                detail="This run never reached a step, so there is nothing to resume — start it again.",
-            )
-        redis = request.app.state.redis
-        # Bridge from the stream's tail: it still holds the failed attempt's
-        # `done`, and a bridge that read from the start would stop there.
-        key = f"synapse:run:{run_id}:events"
-        tail = await redis.xrevrange(key, "+", "-", count=1)
-        start = tail[0][0] if tail else "0"
-        start = start.decode() if isinstance(start, bytes) else start
-
-        from core.scale.replay import queue_replay
-        if await queue_replay(redis, request.app.state.arq_redis, run_id) is None:
-            raise HTTPException(status_code=409, detail="A replay of this run is already queued.")
-
+    if resumed.on_a_worker:
         from core.scale import event_bridge
         return StreamingResponse(
-            event_bridge.stream_run_events(redis, run_id, start),
+            event_bridge.stream_run_events(request.app.state.redis, run_id, resumed.bridge_from),
             media_type="text/event-stream",
             headers=_SSE_HEADERS,
         )
-
-    # Two pumps for one run would interleave its journal and duplicate work.
-    active = _active_tasks.get(run_id)
-    if active is not None and not active.done():
-        raise HTTPException(status_code=409, detail="Run is already active")
-
-    from core.orchestration.engine import OrchestrationEngine
-
-    _task, queue = spawn_engine_run(
-        OrchestrationEngine.resume_failed(run_id, server_module), run_id
-    )
+    queue = resumed.queue
 
     async def event_stream():
         # Heartbeats keep the stream warm during long LLM/compaction steps so a

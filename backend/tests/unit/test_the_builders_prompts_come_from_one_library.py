@@ -77,9 +77,22 @@ from core.native_builder import prompt_lint, seed
 #: asks for a yes, ed4e54e8… alone; with F1241 and F1247 (fix-forward 14), 148653dd….
 #: F1244: the research rules' line naming a provider's own domains (`own_domains`, the ones it read), 7b900513… on its
 #: branch; on fix-forward 14's tree, 4c222b83….
-#: F1255: classify's typed `feature` (evals; the classifier's line for it, D340's one field for every feature), and
-#: the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c….
-BUNDLE_SHA256 = "b5d2233cba2d84248638a1a54be5892933bfcb26007bfb08b96f8a6b182efb0a"
+#: F1252: every template over state in the one form, `{{ state.x }}` (Naveen 10-30), c8d173a1….
+#: F1256: the planner's rule 8 (what the pack's `not_here` lists is done on its screen, never built from workflow
+#: parts; `cannot`, naming the screen), fb32ab63… alone; with F1252 (fix-forward 15), 34ca5faa….
+#: F1253: the planner and the change planner ask every question at once in one form, a plan carries none, and an
+#: address of theirs is never guessed (planner.json, change_planner.json, plan_steps' tool line); with F1252,
+#: 6dd38c6f…; on fix-forward 15's tree with F1256, 5005cdff….
+#: F1241's follow-up: while a plan waits, classify through `step_classify_door` to `step_classify_at_plan`, whose
+#: classifier's one call requires `continues` and whose prompt names the plan and asks plainly; the classify step's
+#: context and the classifier's kinds move into the library (`classify_context`, `classify_kinds`) unchanged,
+#: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
+#: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
+#: same through the converter before), ac29e4a5….
+#: F1255: classify's typed `feature` (evals; its line in the library's classify_kinds, D340's one field for every
+#: feature), and the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c…
+#: on its branch; on fix-forward 16's tree, 23bea1ae….
+BUNDLE_SHA256 = "23bea1ae16abdc088e0b97121621f0c4c235643764fe1937dcc5dd7c7dbc6847"
 
 
 def _sha(definitions) -> str:

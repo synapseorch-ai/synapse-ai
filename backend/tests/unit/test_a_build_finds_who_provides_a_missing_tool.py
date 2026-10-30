@@ -97,10 +97,10 @@ def test_the_researcher_reports_and_the_planner_reads_the_findings():
     research, plan = steps["step_plan_research"], steps["step_plan"]
     assert research["type"] == "agent" and research["agent_id"] == "agent_native_builder_plan_researcher"
     assert research["finish_tools"] == ["report_findings"] and research["output_key"] == "plan_findings"
-    assert "{state.plan_checked.research}" in research["prompt_template"]
-    assert "{state.plan_draft.summary}" in research["prompt_template"]  # what the build is for, in the plan's words
+    assert "{{ state.plan_checked.research }}" in research["prompt_template"]
+    assert "{{ state.plan_draft.summary }}" in research["prompt_template"]  # what the build is for, in the plan's words
     assert research["next_step_id"] == "step_plan" and "step_plan_findings" not in steps
-    assert "{state.plan_findings}" in plan["prompt_template"]
+    assert "{{ state.plan_findings }}" in plan["prompt_template"]
     schema = bundled_definitions()["orchestration"]["state_schema"]
     assert schema["plan_findings"]["type"] == "dict"
     agents = {a["id"]: a for a in bundled_definitions()["agents"]}

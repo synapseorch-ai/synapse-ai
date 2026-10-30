@@ -21,6 +21,21 @@ from typing import Any
 RUN_KEY = "__run__"
 
 
+def clean(text: str) -> str:
+    """A run's error as anyone reads it: neither a secret the run held (F854) nor anything shaped like a key or a
+    token (`scrub_credentials`). A provider's error can quote the key it refused, and that key was never held: the
+    held-value scrub alone let it through to the model and the run page (REACH1's triage run, 10-30)."""
+    from core.secret_scrub import scrub_credentials, scrub_secrets
+
+    return scrub_credentials(scrub_secrets(str(text)))[0]
+
+
+def clean_history(history: list | None) -> list:
+    """A run's step history with each entry's error cleaned (a copy): every view that hands it on reads it so."""
+    return [{**e, "error": clean(e["error"])} if isinstance(e, dict) and isinstance(e.get("error"), str) else e
+            for e in history or []]
+
+
 def run_error(run: Any) -> str | None:
     """The reason recorded for the run itself, if any."""
     record = (getattr(run, "step_progress", None) or {}).get(RUN_KEY) or {}
@@ -52,13 +67,12 @@ def reason_of(exc: BaseException, limit: int = 300) -> str:
     run card reads a model's failure by "LLMError:" / "EmptyAnswer:".
     """
     from core.orchestration.read_shapes import Unreadable
-    from core.secret_scrub import scrub_secrets
 
     # A workflow that does not read is said as what to mend, a sentence per step, whole (F1235).
     if isinstance(exc, Unreadable):
-        return scrub_secrets(str(exc))[:max(limit, 1200)]
-    # A tool's rendered URL or header can be in its error: recorded by name (F854).
-    text = scrub_secrets(str(exc))[:limit]
+        return clean(str(exc))[:max(limit, 1200)]
+    # A tool's rendered URL or header can be in its error: recorded by name (F854), and a key it quotes as a mark.
+    text = clean(str(exc))[:limit]
     return text if type(exc) is RuntimeError else f"{type(exc).__name__}: {text}"
 
 
@@ -84,10 +98,11 @@ def failure_reason(status: str | None, step_history: list | None, step_progress:
     """
     if status not in ("failed", "cancelled"):
         return None
+    # Cleaned as it is read, so a run recorded before the write's own scrub reads the same (every reader comes here).
     record = (step_progress or {}).get(RUN_KEY) or {}
     if isinstance(record, dict) and record.get("error"):
-        return str(record["error"])
+        return clean(record["error"])
     for entry in reversed(step_history or []):
         if isinstance(entry, dict) and entry.get("error"):
-            return str(entry["error"])
+            return clean(entry["error"])
     return None

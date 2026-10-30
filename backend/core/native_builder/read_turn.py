@@ -287,6 +287,11 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
     # The workflows the last few turns built or changed, newest first: the pack says what each does, from its parts
     # (F1228), so an answer about one never says what it does from memory.
     out["built"] = built_in(earlier)
+    # A plan waiting at its review (F1241): its title sends this turn's classify through the call that must say
+    # whether the message changes it (`step_classify_door`; F1241's follow-up). "" when none waits.
+    from core.native_builder.change_tools import waiting_plan_title
+
+    out["plan_waiting"] = waiting_plan_title(state)
     return out
 
 

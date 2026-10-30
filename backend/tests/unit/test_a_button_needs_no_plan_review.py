@@ -179,7 +179,7 @@ async def test_a_code_step_that_answers_only_an_error_says_why(engine, state, st
 
 def test_the_failure_print_says_the_run_s_own_record():
     failed = _steps()["step_change_failed"]
-    assert failed["type"] == "print" and failed["print_content"] == "{state.run_changes}"
+    assert failed["type"] == "print" and failed["print_content"] == "{{ state.run_changes }}"
     assert failed["output_key"] == "summary" and failed["next_step_id"] == "step_end"
 
 
@@ -226,5 +226,5 @@ def test_what_the_maker_made_is_checked_then_said():
     check = steps["step_check_made"]
     assert check["type"] == "tool" and check["forced_tool"] == "check_made" and check["tool_arguments"] == {}
     said = steps[check["next_step_id"]]
-    assert said["type"] == "print" and said["print_content"] == "{state.run_changes}{state.change_made_check.note}"
+    assert said["type"] == "print" and said["print_content"] == "{{ state.run_changes }}{{ state.change_made_check.note }}"
     assert said["output_key"] == "summary" and said["next_step_id"] == "step_end"

@@ -261,7 +261,6 @@ class PlanDraft(_Written):
         "connected first, and you plan again on its tools"))
     eval: EvalPart | None = Field(None, description="Its eval: a rubric its runs are scored by and golden test "
                                                     "cases, made with it")
-    questions: list[str] = Field(default_factory=list, description="Only what the person alone knows")
     not_carried_over: list[str] = Field(default_factory=list, description="A pasted export: what it had that the "
                                                                           "plan does not carry over")
     settings: dict[str, Any] | None = Field(None, description="Optional workflow settings by their engine names: "
@@ -333,6 +332,9 @@ class Plan(PlanDraft):
     #: What this plan changed from the one the person last saw: a step added or removed, its tool, a shown input
     #: (F1245, `build_plan.since_last`). Set by `check_build`.
     since_last: list[str] = Field(default_factory=list)
+    #: An older plan's open questions, as its stored card shows them. A plan carries none since F1253: what only the
+    #: person can say is asked before any plan (`ask_person`'s form; `build_plan._asked_first`).
+    questions: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_draft(cls, raw: dict[str, Any] | PlanDraft) -> "Plan":
@@ -383,6 +385,15 @@ class Request(_Written):
         default_factory=list, description="For a heavy build, which: many_steps (more than about 6 distinct actions, "
                                           "or branches and loops together), team (agents working together, a team "
                                           "or a board), nested (a workflow inside a workflow)")
+
+
+class RequestAtPlan(Request):
+    """The classify while a plan waits at its review (F1241's follow-up, 8a 10-30): `continues` is asked plainly and is
+    required, true or false. Probe E found prod's quick model leaves it out every time when it may (0/3 on
+    nova-pro), so F1241's carry never fired; asked as a required field it has to say."""
+
+    continues: bool = Field(  # type: ignore[assignment]
+        description="Does this message change or add to the waiting plan (true), or ask for something else (false)?")
 
 
 #: The route entries code hands a request to: a contract with the routes' owners (EDIT-LEDGER.md).

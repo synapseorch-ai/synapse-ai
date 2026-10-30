@@ -45,13 +45,13 @@ READS: frozenset[str] = frozenset({
 #: and then through the app's own doors under their own role.
 #: The change route's finish tools and its check (SAI2-P2) write only the run's own state, or put up an act's card;
 #: so do the build route's (SAI2-P3).
-#: `read_turn`, `classify_request` and `answer_pack` (SAI2-P4) read the conversation's last turn, type this one and
-#: build the answer's context: they write the run's own state and the turn's card, and put up a pick's act card or a
-#: named provider's Connect card.
+#: `read_turn`, `classify_request` (and `classify_at_plan`, while a plan waits) and `answer_pack` (SAI2-P4) read the
+#: conversation's last turn, type this one and build the answer's context: they write the run's own state and the
+#: turn's card, and put up a pick's act card or a named provider's Connect card.
 CARDS: frozenset[str] = frozenset({"prepare_connection", "report_findings", "prepare_action", "submit_change",
                                    "ask_person", "cannot", "check_change", "check_made", "submit_plan", "check_build",
-                                   "submit_prompts", "read_turn", "classify_request", "answer_pack", "effort_check",
-                                   "finish_findings"})
+                                   "submit_prompts", "read_turn", "classify_request", "classify_at_plan", "answer_pack",
+                                   "effort_check", "finish_findings"})
 
 WRITES: frozenset[str] = frozenset({
     "deploy_orchestration", "create_agent", "create_agents", "update_agent", "create_orchestration",

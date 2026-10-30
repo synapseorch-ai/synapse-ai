@@ -44,6 +44,8 @@ export type RunLinks = {
     knowledge?: string;
     /** Where the model wallet is topped up (cloud). */
     billing?: string;
+    /** Where a Vault file opens (a step's output saved as a file, D339 P4); absent, `/vault?path=`. */
+    vault?: (path: string) => string;
 };
 
 /**

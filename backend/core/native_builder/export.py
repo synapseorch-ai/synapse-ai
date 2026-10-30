@@ -78,7 +78,7 @@ def export_state(message: str) -> dict[str, str]:
 
 
 # What the planner and the prompt writer see below the guide. The planner reads it for *what* to build; the prompt
-# writer copies each agent's instructions from it. The prompts put `{state.export_source}` straight after their last
+# writer copies each agent's instructions from it. The prompts put `{{ state.export_source }}` straight after their last
 # line, so it brings its own blank line and an ordinary build's prompt is unchanged.
 _SOURCE_HEADING = """\
 
@@ -88,7 +88,7 @@ Copy text from it, never code. Every new agent, llm step or evaluator step that 
 name, or the plan says so) gets that Agent's instructions (or the string its instructions function returns) word for \
 word — as the new agent's instructions, or as the step's prompt — however long, and whatever the plan's purpose line \
 says. A value the instructions read at run time ({name} in a Python f-string, ${name} in TypeScript) becomes the \
-words "given in the message", and the step's prompt passes it as {state.<step id>}. The tool names in the code \
+words "given in the message", and the step's prompt passes it as {{ state.<step id> }}. The tool names in the code \
 (file_search, mcp, …) are its own variables, never tools here: give an agent only the tools the plan names. Never \
 copy code from here into a transform step, a tool or a skill, and never write a credential: ‹credential removed› \
 marks one that was taken out: where it stands in instructions you copy, write "the key it held" instead.
@@ -114,7 +114,7 @@ followed by an `extract_json` step, and the condition reads that step's output b
 3. **Instructions are copied word for word.** A new agent's `purpose` says it keeps the export's "<Agent name>" \
 instructions; they are written into it as they are, after the plan is checked. A `llm` or `evaluator` step that \
 replaces an Agent has those instructions as its `prompt`. A value the instructions read at run time ({name}, \
-${name}) becomes the words "given in the message", and the step's prompt passes it as {state.<step id>}.
+${name}) becomes the words "given in the message", and the step's prompt passes it as {{ state.<step id> }}.
 4. **A new agent only for an Agent with tools that exist here.** An Agent without them is an `llm` step; a classifier \
 is the `evaluator` below. Handoffs are one `team` agent whose `members` are the agents it hands to — never a chain of \
 their steps.

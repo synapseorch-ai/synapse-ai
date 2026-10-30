@@ -62,7 +62,7 @@ def _plan(*steps) -> dict:
 
 def _browser(rec: str, **config) -> dict:
     return {"id": "confirm", "type": "browser", "name": "Confirm the date", "does": "Confirms it on the portal",
-            "config": {"recording_id": rec, "recording_inputs": {"order number": "{state.user_input}"}, **config}}
+            "config": {"recording_id": rec, "recording_inputs": {"order number": "{{ state.user_input }}"}, **config}}
 
 
 class TestThePalette:
@@ -80,7 +80,7 @@ class TestThePalette:
         orch = bundled_definitions()["orchestration"]
         assert "browser_steps" in orch["state_schema"]
         plan_step = next(s for s in orch["steps"] if s["id"] == "step_plan")
-        assert "{state.knowledge_steps}{state.browser_steps}" in plan_step["prompt_template"]
+        assert "{{ state.knowledge_steps }}{{ state.browser_steps }}" in plan_step["prompt_template"]
 
 
 class TestTheCompiler:
@@ -89,7 +89,7 @@ class TestTheCompiler:
                                             "agent": "agent_web"}))
         compiled = compile_plan(plan, existing_agents={"agent_web": {"id": "agent_web", "type": "browser"}})
         step = next(s for s in compiled.orchestration["steps"] if s["type"] == "browser")
-        assert step["recording_id"] == world and step["recording_inputs"] == {"order number": "{state.user_input}"}
+        assert step["recording_id"] == world and step["recording_inputs"] == {"order number": "{{ state.user_input }}"}
         assert step["may_send_steps"] == ["s3"] and step["on_miss"] == "agent" and step["agent_id"] == "agent_web"
         assert step["output_key"] == step["id"], "what it reads is under its id, as every result step's"
         back = next(s for s in plan_from_workflow(compiled.orchestration).steps if s.type == "browser")

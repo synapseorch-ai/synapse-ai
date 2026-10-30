@@ -334,6 +334,8 @@ class Settings(BaseModel):
     ollama_base_url: str = ""
     auto_compact_enabled: bool = False
     auto_compact_threshold: int = 100000
+    # The share of a step's model window it compacts at; 0 keeps the fixed thresholds (D339).
+    auto_compact_window_pct: int = Field(default=50, ge=0, le=90)
     allow_db_write: bool = False  # If False, only SELECT/SHOW/DESCRIBE queries allowed
     # The deployment-wide floor for tool policy, in the same shape as an agent's
     # own `tool_policy` and overridden by it per category. Empty means allow

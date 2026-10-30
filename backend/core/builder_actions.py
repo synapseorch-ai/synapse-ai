@@ -35,6 +35,7 @@ ACTIONS: dict[str, str] = {
     "answer_run": "answer the question a waiting run asks, or approve it (`run_id`, from topic `waiting`)",
     "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
     "cancel_run": "stop a run that is still going (`run_id`)",
+    "resume_run": "run a failed or stopped run on from the step it stopped at, once what failed is fixed (`run_id`)",
     "knowledge_create": "make a knowledge base (`name`; `text`: what it holds; `folder`: a Vault folder, or leave it "
                         "out for knowledge/<name>)",
     "knowledge_add_file": "add a file from the Vault to a knowledge base (`knowledge_base`, `path`: its Vault path)",
@@ -58,6 +59,11 @@ ACTIONS: dict[str, str] = {
                   "gave them, or `count` and `steer` to have cases proposed; `golden_set` to add to one)",
     "eval_run": "run a workflow's golden set, each case a run scored by its rubric (`workflow`, `golden_set`)",
     "eval_cancel": "stop a golden set's run after the case in flight (`workflow`, `golden_set`)",
+    # Recordings (F1270): a kept fix (topic `waiting` lists them), a new name, or the recording gone.
+    "recording_approve_edit": "use a kept fix in its recording (`recording`, `edit_id`: from topic `waiting`)",
+    "recording_discard_edit": "drop a kept fix, leaving the recording as it is (`recording`, `edit_id`)",
+    "recording_rename": "rename a recording (`recording`, `name`)",
+    "recording_delete": "delete a recording and its pictures (`recording`)",
 }
 
 SCHEMA = {
@@ -101,6 +107,8 @@ SCHEMA = {
                 "count": {"type": "integer", "description": "eval_cases: how many to propose, 1 to 10."},
                 "steer": {"type": "string", "description": "eval_cases: what proposed cases should cover."},
                 "golden_set": {"type": "string", "description": "The golden set's name; omit for the workflow's one."},
+                "recording": {"type": "string", "description": "The recording's name or id."},
+                "edit_id": {"type": "string", "description": "A kept fix's id, from topic `waiting`."},
                 "name": {"type": "string"},
                 "title": {"type": "string"},
                 "text": {"type": "string"},
@@ -288,6 +296,15 @@ async def _offer(action: str, args: dict) -> dict:
                      detail="It stops where it is. What it already did stays done.",
                      buttons=[await _button("Stop it", "cancel_run", {"run_id": view["run_id"]})])
 
+    if action == "resume_run":
+        # The run page's Replay (F1260): its refusals said before the card, a nested run's, one still going.
+        from core.product_tools import runs
+
+        view, name = await _run(args)
+        said = await _resolved(runs._preview_resume(_caller(), {"run_id": view["run_id"]}))
+        return _card(f'Resume the run of "{name}"', detail=f'From the step "{said["from_step"]}". {said["note"]}',
+                     buttons=[await _button("Resume it", "resume_run", {"run_id": view["run_id"]})])
+
     if action == "answer_run":
         view, name = await _run(args)
         asked = view.get("human_input_required")
@@ -334,6 +351,8 @@ async def _offer(action: str, args: dict) -> dict:
         if not await features.is_on("boards"):
             raise _FeatureOff("boards")
         return await _board(action, args)
+    if action.startswith("recording_"):
+        return await _recording(action, args)
 
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
 
@@ -521,6 +540,43 @@ async def _evals(action: str, args: dict) -> dict:
     return _card(f'Stop the eval of "{name}"', danger=True,
                  detail=f'"{suite.get("name")}" stops after the case running now; the runs already done stay.',
                  buttons=[await _button("Stop it", "cancel_eval_suite", call)])
+
+
+async def _recording(action: str, args: dict) -> dict:
+    """A recording's acts (F1270), each a card whose button is the product tool the Recordings screen's own code is
+    behind; a plan without Browser is said in its host's words first."""
+    from core.browser import recordings
+    from core.builder_tools import _browser_refused
+    from core.product_tools import browser
+
+    if (refused := await _browser_refused("recording")) is not None:
+        raise _NotOffered(refused["error"])
+    docs = [{"id": d["id"], "name": d.get("name") or d["id"]} for d in await recordings.all_recordings()]
+    doc = _pick(docs, str(args.get("recording") or ""), "recording", "Topic `recordings` lists them.")
+    name = doc["name"]
+    if action == "recording_rename":
+        call = {"recording_id": doc["id"], "name": str(args.get("name") or "").strip()}
+        said = await _resolved(browser._preview_rename(_caller(), call))
+        return _card(f'Rename the recording "{name}" to "{said["to"]}"',
+                     buttons=[await _button("Rename", "rename_recording", call)])
+    if action == "recording_delete":
+        said = await _resolved(browser._preview_delete(_caller(), {"recording_id": doc["id"]}))
+        users = [f'the workflow "{w["name"]}"' for w in said["used_by"]["workflows"]] + [
+            f'the agent "{a["name"]}"' for a in said["used_by"]["agents"]]
+        detail = said["note"] + (" Used by " + ", ".join(dict.fromkeys(users)) + "." if users else "")
+        return _card(f'Delete the recording "{name}"', danger=True, detail=detail,
+                     buttons=[await _button("Delete it", "delete_recording", {"recording_id": doc["id"]})])
+    call = {"recording_id": doc["id"], "edit_id": str(args.get("edit_id") or "").strip()}
+    approve = action == "recording_approve_edit"
+    said = await _resolved((browser._preview_approve if approve else browser._preview_discard)(_caller(), call))
+    where = f'step {said["from_step"]}' + (" and every step after it" if said["rest"] else "")
+    detail = "\n".join([f"Now, from {where}:", *(f"- {line}" for line in said["before"]),
+                        "The fix:", *(f"- {line}" for line in said["after"]), said["note"]])
+    if approve:
+        return _card(f'Use the kept fix in "{name}"', detail=detail,
+                     buttons=[await _button("Use the fix", "approve_recording_edit", call)])
+    return _card(f'Drop the kept fix in "{name}"', detail=detail,
+                 buttons=[await _button("Drop it", "discard_recording_edit", call)])
 
 
 async def _board(action: str, args: dict) -> dict:

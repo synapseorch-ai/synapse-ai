@@ -25,9 +25,21 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
+
+from core.step_refs import is_ref, resolved
 
 REF = re.compile(r"\{\{\s*([A-Za-z_][\w.\-]*)\s*\}\}")
+
+#: A reference to the run's state, in the one form every renderer reads (F1252, Naveen 10-30): `{{ state.a.b }}`,
+#: spaced or not. Group 1 is the path after `state.`.
+STATE_REF = re.compile(r"\{\{\s*state\.([\w][\w.\-]*)\s*\}\}")
+#: The older single-brace form, `{state.a.b}`, standing on its own (never the inside of a `{{ … }}`): what `one_form`
+#: rewrites, and nothing else reads.
+_OLD_STATE_REF = re.compile(r"(?<!\{)\{state\.([\w][\w.]*)\}(?!\})")
+#: A step's fields that are templates over state, as text, or as text inside a mapping (F1252).
+TEMPLATE_FIELDS = ("prompt_template", "evaluator_prompt", "print_content", "human_prompt")
+TEMPLATE_MAPPINGS = ("tool_arguments", "recording_inputs", "retrieve", "ingest")
 
 #: The namespaces a reference may start with. Anything else is a bare name.
 NAMESPACES = ("global", "state", "args")
@@ -55,15 +67,20 @@ def loads_within_depth(text: str) -> Any:
     return json.loads(text)
 
 
-def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
+def _walk(root: Any, path: list[str], *, keep_ref: bool = False) -> tuple[bool, Any]:
     """Follow `path` into dicts (and list indexes). `(found, value)`.
 
     A step into text that holds a JSON object reads the object (F801): a builder tool's output is JSON text in
     state, and a prompt names a field of it as a condition or a set argument does. The text is parsed, never
     rendered: nothing in it is read as a template.
+
+    A step output saved to the vault (`core.step_refs`, D339 P4) is read as what it was, on the way and at the end;
+    `keep_ref` leaves the reference itself at the end, for a reader that shows it as a file (a model's prompt).
     """
     cur = root
     for part in path:
+        if is_ref(cur):
+            cur = resolved(cur)
         if isinstance(cur, str) and cur.lstrip().startswith("{"):
             try:
                 parsed = loads_within_depth(cur)
@@ -79,6 +96,8 @@ def _walk(root: Any, path: list[str]) -> tuple[bool, Any]:
             cur = cur[int(part)]
         else:
             return False, None
+    if is_ref(cur) and not keep_ref:
+        cur = resolved(cur)
     return True, cur
 
 
@@ -90,7 +109,8 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None) -> tuple[bool, Any]:
+def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None,
+           keep_ref: bool = False) -> tuple[bool, Any]:
     """Resolve one reference (without braces) against `context`.
 
     `context` maps namespace → mapping. `bare` names the namespace a
@@ -111,22 +131,68 @@ def lookup(reference: str, context: dict[str, Any], *, bare: str | None = None) 
     if len(parts) == 1 and parts[0] == "args" and "args" in context:
         return True, context["args"]
     if parts[0] in context and len(parts) > 1 and parts[0] in NAMESPACES:
-        return _walk(context[parts[0]], parts[1:])
+        return _walk(context[parts[0]], parts[1:], keep_ref=keep_ref)
     if bare is not None and bare in context:
-        return _walk(context[bare], parts)
+        return _walk(context[bare], parts, keep_ref=keep_ref)
     return False, None
 
 
-def render(text: str, context: dict[str, Any], *, bare: str | None = None) -> str:
-    """Substitute every `{{ … }}` in `text` it can resolve; leave the rest."""
+def render(text: str, context: dict[str, Any], *, bare: str | None = None,
+           refs: Callable[[dict], str] | None = None) -> str:
+    """Substitute every `{{ … }}` in `text` it can resolve; leave the rest.
+
+    A step output saved to the vault renders as what it was, unless `refs` is given: then a reference that is the
+    whole value renders as `refs` says (a model's prompt shows the file it does not fit; D339 P4)."""
     if not text or "{{" not in text:
         return text
 
     def _sub(match: re.Match[str]) -> str:
-        found, value = lookup(match.group(1), context, bare=bare)
+        found, value = lookup(match.group(1), context, bare=bare, keep_ref=refs is not None)
+        if found and refs is not None and is_ref(value):
+            return refs(value)
         return _text(value) if found else match.group(0)
 
     return REF.sub(_sub, text)
+
+
+def one_form(text: str) -> str:
+    """`text` with every older `{state.a.b}` written `{{ state.a.b }}` (F1252). Twice is once: a `{{ … }}`, JSON
+    (`{"state": …}`) and every other brace are left as they are."""
+    if not isinstance(text, str) or "{state." not in text:
+        return text
+    return _OLD_STATE_REF.sub(lambda m: "{{ state." + m.group(1) + " }}", text)
+
+
+def _one_form_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return one_form(value)
+    if isinstance(value, dict):
+        return {k: _one_form_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_one_form_value(v) for v in value]
+    return value
+
+
+def one_form_step(step: Any) -> Any:
+    """A step (as stored) with its templates in the one form (`one_form`): its text templates and the text inside its
+    template mappings. Its code (`transform_code`) and its conditions are expressions, never templates: untouched."""
+    if not isinstance(step, dict):
+        return step
+    out = dict(step)
+    for key in TEMPLATE_FIELDS:
+        if isinstance(out.get(key), str):
+            out[key] = one_form(out[key])
+    for key in TEMPLATE_MAPPINGS:
+        if isinstance(out.get(key), (dict, list)):
+            out[key] = _one_form_value(out[key])
+    return out
+
+
+def one_form_definition(doc: Any) -> Any:
+    """A workflow definition (as stored, imported or exported) with every step's templates in the one form."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
+        return doc
+    return {**doc, "steps": [one_form_step(s) for s in doc["steps"]]}
 
 
 def references(text: str) -> list[str]:

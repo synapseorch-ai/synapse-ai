@@ -42,7 +42,7 @@ class StepConfig(BaseModel):
 
     # AGENT / EVALUATOR -- which agent to invoke
     agent_id: str | None = None
-    prompt_template: str | None = None  # Supports {state.key} references
+    prompt_template: str | None = None  # Supports {{ state.key }} references
 
     # EVALUATOR -- outgoing routes as tools for the agent to call
     # Maps decision label → target step_id (None = end orchestration)
@@ -91,7 +91,7 @@ class StepConfig(BaseModel):
     transform_code: str | None = None
 
     # PRINT -- user-defined text/markdown stored to output_key
-    print_content: str | None = None  # Supports {state.key} interpolation
+    print_content: str | None = None  # Supports {{ state.key }} interpolation
 
     # IF_ELSE -- Python condition evaluated against shared state
     if_condition: str | None = None       # e.g. "state.result.flag == True"
@@ -112,7 +112,7 @@ class StepConfig(BaseModel):
 
     # RETRIEVE / INGEST -- Knowledge's two steps (R1). Each holds the contract's
     # own body, `core.knowledge.api_models.RetrieveStepConfig` /
-    # `IngestStepConfig`, as stored: {"kb_ids": [...], "query": "{state.q}", ...}.
+    # `IngestStepConfig`, as stored: {"kb_ids": [...], "query": "{{ state.q }}", ...}.
     # Held to it when the step runs, not here, so the editor saves a step that is
     # still being filled in (as it saves an agent step with no agent yet) and a
     # bad body never stops an orchestration from loading.
@@ -135,6 +135,15 @@ class StepConfig(BaseModel):
     # injected into the prompt as text, and a base64 data URI there would blow
     # the context window and the bill. They ride on the engine instead.
     pass_images: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _templates_in_one_form(cls, data: Any) -> Any:
+        """Every template over state in the one form, `{{ state.x }}` (F1252, Naveen 10-30): an older `{state.x}` in a
+        step's templates is written that way as the step is read, so a workflow saved before keeps working."""
+        from core.templating import one_form_step
+
+        return one_form_step(data)
 
     @model_validator(mode="after")
     def _images_only_where_they_are_read(self):
@@ -193,7 +202,7 @@ class StepConfig(BaseModel):
     forced_tool: str | None = None  # Tool name for TOOL type steps
     #: TOOL -- the arguments, set on the step (E1, SAI2-P1): the tool is called with these and no model is asked.
     #: Values are templates over state: `{{state.x}}` standing alone keeps its type, inside text it is written as
-    #: text (an object as JSON); the older `{state.x}` is read too (`steps.render_tool_arguments`). None, the default,
+    #: text (an object as JSON); an older `{state.x}` is written so as the step is read (F1252). None, the default,
     #: is "ask the model", as every Tool step did before.
     tool_arguments: dict[str, Any] | None = None
 
@@ -210,7 +219,7 @@ class StepConfig(BaseModel):
 
     # BROWSER (F1146; DESIGN §v5.4): a recording replayed by code, no model unless a page changed.
     recording_id: str | None = None
-    #: Its inputs by name, each a template over the run's state ("{state.order}").
+    #: Its inputs by name, each a template over the run's state ("{{ state.order }}").
     recording_inputs: dict[str, str] = {}
     #: Its steps (ids) that may send on their own: a workflow run is never watched, so any other recorded send
     #: is the person's turn (Naveen 2026-10-29).
