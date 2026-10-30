@@ -186,6 +186,8 @@ export interface Orchestration {
     /** The rubric every run is scored against. Empty means "not evaluated",
      *  which is the opt-in: binding one is what consents to the judge's cost. */
     rubric_id?: string;
+    /** Judge its first finished run, then 1 run in this many (D340 F); unset judges every run. */
+    judge_every?: number;
     /** The state key whose value is what a run makes: its answer as an agent,
      *  v1's `response`, what a parent gets back when it runs nested, what the
      *  judge scores. Empty means the last step that produced content — a
