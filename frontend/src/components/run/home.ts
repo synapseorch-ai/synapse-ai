@@ -288,7 +288,7 @@ export type TryKey = 'evals' | 'knowledge' | 'channels';
 export const MORE_TO_TRY: Record<TryKey, { title: string; line: string; href: string }> = {
     evals: {
         title: 'Check your workflows keep doing well',
-        line: 'Say what a good result looks like, and every run gets a score. You hear when quality drops.',
+        line: 'Say what a good result looks like, and each judged run gets a score. You hear when quality drops.',
         href: '/evals',
     },
     knowledge: {

@@ -87,7 +87,7 @@ export const HUB_NAV: NavHubGroup[] = [
                     },
                     {
                         id: 'evals', label: 'Evals', href: '/evals', icon: Target,
-                        blurb: 'Check that your workflows keep doing a good job. Say what a good result looks like, and every run gets a score.',
+                        blurb: 'Check that your workflows keep doing a good job. Say what a good result looks like, and each judged run gets a score: every run, or a sample of a busy workflow\'s.',
                     },
                     {
                         id: 'usage', label: 'Usage', href: '/usage', icon: DollarSign,
