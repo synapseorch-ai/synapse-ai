@@ -387,8 +387,8 @@ class TestAQuestionGetsAnAnswer:
             not t.startswith(("create_", "update_", "delete_", "attach_", "import_", "set_"))
             for t in reporter["tools"]
         ), reporter["tools"]
-        # Variable *values* are previews, and an agent that exists to quote what
-        # it read is the wrong holder of them.
+        # Variables are the builder's to plan with (names only, F1271); an agent
+        # that exists to quote what it read has no use for them.
         assert "list_variables" not in reporter["tools"]
 
 

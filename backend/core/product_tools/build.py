@@ -12,7 +12,7 @@ Which builder tools are served, and which are not, is still a decision per tool:
   app's words when something still uses it; the confirmation token stands in for the builder's `confirm=true`. The
   builder's own delete then checks again, so a use added between preview and confirm still refuses.
 * **`finish_build`** cleans up after the builder run it is called from; a call from outside one does nothing.
-* **`list_variables`** answers with the first characters of each value, which are often tokens.
+* **`list_variables`** is the builder's own: it names the variables for its plans (F1271), and stays in the app.
 * **`list_recent_runs` / `get_run_summary`**: the run entries answer the same with more.
 * **The builder's research and help tools** belong to its own run.
 """

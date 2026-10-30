@@ -1595,6 +1595,8 @@ BUILDER_TOOL_SCHEMAS = [
                     "timezone": {"type": "string", "description": (
                         "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
                         "one the person named, else their own. Leave it out for UTC")},
+                    "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
+                        "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
                 },
                 "required": ["name", "target_type", "target_id", "prompt", "schedule_type"],
             },
@@ -1642,6 +1644,8 @@ BUILDER_TOOL_SCHEMAS = [
                     "timezone": {"type": "string", "description": (
                         "The timezone its cron is read in, as a name like America/New_York or Europe/Amsterdam: the "
                         "one the person named, else their own. Leave it out for UTC")},
+                    "missed_run_policy": {"type": "string", "enum": ["run_immediately", "skip"], "description": (
+                        "A time it missed (the machine was off): run it once as soon as it can, or skip it")},
                 },
                 "required": ["schedule_id"],
             },
@@ -1668,9 +1672,8 @@ BUILDER_TOOL_SCHEMAS = [
         "function": {
             "name": "list_variables",
             "description": (
-                "List the workspace variable keys with a short preview of each value. Values are "
-                "referenced in tool URLs, headers and bodies as {{ global.KEY }}. Previews are "
-                "truncated — never quote a value back to the user."
+                "List the workspace variables by name, each with the reference that uses it in tool URLs, "
+                "headers and bodies ({{ global.KEY }}). A value is never shown: the run fills it in."
             ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
@@ -3716,19 +3719,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
 
     elif tool_name == "list_variables":
         from core import variables
-        from core.secret_scrub import held_secrets
 
-        # Keys and a short preview only. A variable holds things like an API
-        # token; the builder needs to know it exists and how to reference it,
-        # never what it says. A secret previews by name: cut to 40 characters it
-        # no longer matched the value held to scrub, and its start was shown (F854).
-        values = await variables.load()
-        secrets = held_secrets()
-        return [
-            {"key": key, "preview": "‹secret›" if key in secrets else str(value)[:40],
-             "reference": f"{{{{ global.{key} }}}}"}
-            for key, value in sorted(values.items())
-        ]
+        # Names and their references only (F1271; Naveen 10-30, D340). A plan uses a variable as {{ global.x }} and
+        # needs nothing of what it holds: a preview of its first 40 characters showed the start of any token or
+        # address saved as a plain variable (F854 hid only the ones held as secrets).
+        return variables.named(await variables.load())
 
     elif tool_name == "list_recent_runs":
         from core.orchestration.state import SharedState

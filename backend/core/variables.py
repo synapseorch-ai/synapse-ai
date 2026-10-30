@@ -44,6 +44,12 @@ async def load() -> dict[str, Any]:
     return values
 
 
+def named(values: dict[str, Any]) -> list[dict[str, str]]:
+    """Each variable by name, with the reference that uses it, never its value (F1271): what the builder and
+    Synapse AI are told of them."""
+    return [{"key": key, "reference": f"{{{{ global.{key} }}}}"} for key in sorted(values)]
+
+
 def _values(document: Any) -> dict[str, Any]:
     values = document.get("values") if isinstance(document, dict) else None
     return dict(values) if isinstance(values, dict) else {}
