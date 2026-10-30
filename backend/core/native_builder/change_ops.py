@@ -23,11 +23,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from core import settings_allow
+
 Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool", "feature", "recording")
+                "approval", "card", "openapi", "python_tool", "feature", "recording", "settings")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -130,6 +132,10 @@ _WRITES = (
     Op("delete_agent", "delete", "agent", "delete_agent", verb="Delete"),
     Op("update_skill", "write", "skill", "update_skill", ("description", "body"), any_of=True, verb="Change"),
     Op("delete_tool", "delete", "tool", "delete_custom_tool", verb="Delete"),
+    # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
+    # anything off the list is refused by name, with where it is done (`settings_allow`).
+    Op("settings_set", "write", "settings", "set_settings", tuple(settings_allow.ALLOWED), any_of=True,
+       verb="Change"),
 )
 
 #: What `create` hands to today's create path.
@@ -243,6 +249,8 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
     if not any(isinstance((target or {}).get(k), str) and target[k].strip() for k in ("id", "name")):
         found.append(f"`{op.name}` needs its target's id (or its name)")
     unknown = [k for k in fields if k not in op.fields]
+    if op.name == "settings_set":
+        return found + _settings_issues(fields)
     if unknown:
         takes = f"it takes {', '.join(op.fields)}" if op.fields else "it takes no fields"
         found.append(f"`{op.name}` cannot set {', '.join(unknown)}: {takes}")
@@ -259,6 +267,17 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
     if not found and not op.internal:
         found += [f"`{op.name}`: {why}" for why in _saved_as(op, fields)]
     return found
+
+
+def _settings_issues(fields: dict[str, Any]) -> list[str]:
+    """A settings change's: each name on the list here (the host's narrowing too), each value by its own check. An
+    empty value is a value here (a model left to the default), so every one is checked, never skipped."""
+    if not fields:
+        return ["`settings_set` needs at least one setting, by its name, with its new value"]
+    here = settings_allow.allowed()
+    return [f"`settings_set`: {settings_allow.refusal(k)}" if k not in here else
+            f"`settings_set`: {why}" for k, v in fields.items()
+            if k not in here or (why := settings_allow.value_issue(k, v)) is not None]
 
 
 def _saved_as(op: Op, fields: dict[str, Any]) -> list[str]:
@@ -355,6 +374,8 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"system_prompt": fields["system_prompt"]}
     if name == "set_tool_policy":
         return {"tool_policy": _policy(live, fields)}
+    if name == "settings_set":
+        return dict(fields)
     if op.internal:
         return {"name": fields["name"]}
     raise ValueError(f"{name} leaves nothing to check")
@@ -382,6 +403,8 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"agent_id": target_id, "fields": after}
     if op.target == "skill":
         return op.tool, {"name": target_id, **after}
+    if op.target == "settings":
+        return op.tool, {"changes": after}
     raise ValueError(f"{op.name} has no call")
 
 

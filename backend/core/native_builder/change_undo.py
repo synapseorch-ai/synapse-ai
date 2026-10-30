@@ -77,6 +77,12 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
             else:
                 rules[key] = decision
         return {"op": name, "target": _target(applied), "fields": rules, "says": "undo: its old tool policy"}, None
+    if name == "settings_set":
+        # Every setting as it read, an empty one too: "automatic" and "the default model" are values here (F1264).
+        kept = {k: v for k, v in before.items() if k != "_not_kept" and k not in (before.get("_not_kept") or [])}
+        if not kept:
+            return None, "Those settings' old values were not kept, so they can't be put back from here."
+        return {"op": name, "target": _target(applied), "fields": kept, "says": "undo: as they were"}, None
     if name == "retarget_schedule":
         if not before.get("target_id"):
             return None, f"{label} started nothing before, so there is nothing to point it back at."

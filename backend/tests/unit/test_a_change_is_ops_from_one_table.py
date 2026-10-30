@@ -148,6 +148,7 @@ def _samples():
         ("create_schedule", {"runs": {"kind": "agent", "id": "a1"}, "prompt": "p", "cron_expression": "0 9 * * *"}),
         ("set_schedule", {"missed_run_policy": "run_immediately"}),
         ("retarget_schedule", {"runs": {"kind": "workflow", "id": "w1"}}),
+        ("settings_set", {"model": "model-x", "prompt_cache_enabled": False}),
         ("set_agent_model", {"model": "m"}), ("set_agent_tools", {"add": ["x"]}),
         ("set_agent_skills", {"add": ["x"]}), ("set_agent_instructions", {"system_prompt": "s"}),
         ("rename_agent", {"name": "N"}), ("set_tool_policy", {"open_world": "deny"}), ("delete_agent", {}),
@@ -245,6 +246,9 @@ _EVERY = {"name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND 
 
 
 def _every_field(op_name):
+    if op_name == "settings_set":  # each setting is a field of its own (F1264): a few of each kind stand for them
+        return {"model": "model-x", "prompt_cache_enabled": False, "max_output_tokens": 4096,
+                "tool_policy_defaults": {"destructive": "confirm"}}
     return {k: _EVERY[k] for k in C.OPS[op_name].fields}
 
 
@@ -274,7 +278,9 @@ def test_every_write_s_review_line_shows_what_its_call_sets(op):
     tool, args = C.call(o, "t1", fields, AGENT, name="N")
     line = _words(o, {"name": "N", "id": "t1"}, fields, "", C.expected(o, fields, AGENT))
     skip = {"orch_id", "agent_id", "schedule_id", "target_id", "target_type"}
-    sent = {**{k: v for k, v in args.items() if k != "fields"}, **(args.get("fields") or {})}
+    # A write's values ride in `fields` (update_agent) or `changes` (set_settings, F1264): each is checked.
+    sent = {**{k: v for k, v in args.items() if k not in ("fields", "changes")}, **(args.get("fields") or {}),
+            **(args.get("changes") or {})}
     for key, value in sent.items():
         if key in skip or value == "t1":
             continue

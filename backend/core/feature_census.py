@@ -82,10 +82,16 @@ CENSUS: tuple[Screen, ...] = (
     _s("widgets", "Widgets", "/widgets", "says which website widgets are on and which agent answers",
        ("read_workspace:widgets",), cant="making or changing a website widget"),
     # Settings
-    _s("general", "General", "/settings/general", "turns Boards or Knowledge on, and says the tool policy",
-       ("turn_on_feature", "read_workspace:tool_policy"), cant="the workspace's other general settings"),
-    _s("models", "Models", "/settings/models", "says the default and builder models and which providers have a key",
-       ("read_workspace:models",), cant="adding a provider key or changing the default model"),
+    _s("general", "General", "/settings/general", "changes the general settings on Synapse AI's list (compaction, "
+       "caching, large responses, turn limits, the tool policy, features and this install's limits), each with the "
+       "person's yes and undo",
+       ("turn_on_feature", "set_settings", "read_workspace:settings", "read_workspace:tool_policy"),
+       cant="the settings off its list: how agents reach this machine and its databases, signing in, and running at "
+            "scale"),
+    _s("models", "Models", "/settings/models", "says which providers have a key, and changes the default, builder, "
+       "quick and judge models, reasoning effort and the longest answer, with the person's yes and undo",
+       ("read_workspace:models", "set_settings", "read_workspace:settings"),
+       cant="adding a provider key or a provider's address"),
     _s("personal_details", "Personal details", "/settings/personal_details", cant="the person's own details"),
     _s("variables", "Variables", "/settings/variables",
        "names the workspace's variables for a step's `{{ global.x }}`, never a value",

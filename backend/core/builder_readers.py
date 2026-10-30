@@ -36,6 +36,8 @@ TOPICS: dict[str, str] = {
     "models": "the default model, the builder's models, and which providers have a key (never the key)",
     "variables": "the workspace's variables by name, each with the `{{ global.x }}` that uses it in a step (never "
                  "its value)",
+    "settings": "the workspace settings Synapse AI may change (settings_set), each with its value now and its screen; "
+                "the others (keys, billing, members…) are changed on their screens",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
     # What happened, not only what is set up (ASSIST1, D291).
@@ -93,6 +95,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
                "item": ["board", "id", "kind", "open", "being_worked_on"]},
     "recordings": {"keys": ["items", "note"], "item": ["name", "id", "sites", "inputs", "steps", "fixes_waiting"]},
     "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
+    "settings": {"keys": ["items", "note"], "item": ["name", "label", "value", "where"]},
 }
 
 #: What each topic shows and where to look instead, said with every answer that has nothing (F1237): on an error it
@@ -134,6 +137,8 @@ ELSEWHERE: dict[str, str] = {
                   "`workflow` with its name.",
     "variables": "This lists the workspace's variables by name. Which workflow's steps use one is in topic "
                  "`workflow` with its name.",
+    "settings": "This lists the settings Synapse AI may change. The models and which providers have a key are topic "
+                "`models`; when agents must ask before a tool, `tool_policy`.",
 }
 
 _HOST: dict[str, Reader] = {}
@@ -359,6 +364,20 @@ async def _variables(args: dict) -> dict:
                     "There are no variables yet: a person adds them in Settings › Variables."}
 
 
+async def _settings(args: dict) -> dict:
+    """The settings on Synapse AI's list, as they read now (F1264), never a key: the rest are their screens'."""
+    from core import settings_allow
+    from core.product_tools import settings
+
+    now = await settings.current()
+    out = [{"name": n, "label": a.label, "value": settings_allow.shown(n, now.get(n)), "where": a.where}
+           for n, a in settings_allow.allowed().items()]
+    return {"items": _named(out, args.get("name")),
+            "note": "Each changes through settings_set, with the person's yes and undo. Keys, API keys, billing and "
+                    "the plan, members and roles, the MCP server and import or export are not Synapse AI's: say "
+                    "where they are done, e.g. API keys at /settings/api_keys, a provider's key at /settings/models."}
+
+
 async def _usage(args: dict) -> dict:
     from core.orchestration.run_view import list_runs
 
@@ -570,7 +589,7 @@ _SELF_HOSTED: dict[str, Reader] = {
     "tool_policy": _tool_policy, "knowledge": _knowledge, "usage": _usage, "plan": _plan, "models": _models,
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
-    "boards": _boards, "recordings": _recordings, "variables": _variables,
+    "boards": _boards, "recordings": _recordings, "variables": _variables, "settings": _settings,
 }
 
 

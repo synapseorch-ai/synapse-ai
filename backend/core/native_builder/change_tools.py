@@ -96,7 +96,9 @@ SUBMIT = {"type": "function", "function": {
         "confirm | deny | inherit, tools: {name: decision}}; update_skill {description, body}; run_workflow "
         "{message}; knowledge_create {text, folder}; knowledge_add_file {path}; knowledge_rename {name, text}; knowledge_add_pages {urls}; knowledge_add_note {title, text}; board_add_card {title, text}; "
         "board_update_card {status, result}; board_comment {text}; board_create {text}; recording_approve_edit and "
-        "recording_discard_edit {edit_id}; recording_rename {name}; edit_steps, create and "
+        "recording_discard_edit {edit_id}; recording_rename {name}; settings_set (target {kind: settings, id: "
+        "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; edit_steps, "
+        "create and "
         "use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -648,6 +650,11 @@ async def read(kind: str, target_id: str) -> dict | None:
         from core.store.resources import load_tools
 
         return next((t for t in await load_tools() if t.get("name") == target_id), None)
+    if kind == "settings":
+        # The workspace's one set of settings, whatever it was called (F1264): what Synapse AI may set, as it reads.
+        from core.product_tools import settings
+
+        return await settings.current()
     return None
 
 
@@ -694,6 +701,16 @@ def _words(op: C.Op, target: dict, fields: dict, says: str, want: dict | None = 
                            for k, v in shown.items())
     detail = "; ".join(p for p in (detail, says) if p)
     return f"{what} — {detail}" if detail else what
+
+
+def _settings_words(live: dict | None, want: dict, says: str) -> str:
+    """A settings change's line: each setting by its label, what it reads now and what it will (F1264)."""
+    from core import settings_allow
+
+    live = live or {}
+    rows = "; ".join(f"{settings_allow.ALLOWED[k].label}: {settings_allow.shown(k, live.get(k))} → "
+                     f"{settings_allow.shown(k, v)}" for k, v in want.items())
+    return "Change the workspace's settings — " + "; ".join(p for p in (rows, says) if p)
 
 
 def _review(ops: list[dict]) -> str:
@@ -1082,6 +1099,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 item.update(status="refused", say=refused)
                 continue
             fields["model"] = model
+        if op.name == "settings_set":
+            # The product tool's own checks, before the review rather than after the yes: a model here is one the
+            # workspace can run (F1250), the host's list narrows (cloud's WRITABLE).
+            from core.product_tools import settings
+
+            if found := await settings.issues(fields):
+                item.update(status="refused", say=" ".join(found))
+                continue
         if op.name == "set_agent_skills":
             refusal = await _skill_names(fields)
             if refusal:
@@ -1106,7 +1131,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                                            "nothing to change.")
             continue
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
-        line = _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want)
+        line = (_settings_words(live, want, item["says"] if draft.get("undo_of") else "")
+                if op.name == "settings_set" else
+                _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
                     before=_keep(op, live, want), line=f"{line} ({item['why']})" if item.get("why") else line)
         if op.kind != "create":
