@@ -89,7 +89,10 @@ from core.native_builder import prompt_lint, seed
 #: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
 #: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
 #: same through the converter before), ac29e4a5….
-BUNDLE_SHA256 = "ac29e4a5deeefecb3e5f7da8dc16a25e4c8a92c98f60734d5bf57cd080e6b4f0"
+#: F1255: classify's typed `feature` (evals; its line in the library's classify_kinds, D340's one field for every
+#: feature), and the change planner's rule 11 (Evals' ops, an agent never scored alone) with topic `evals`, b5d2233c…
+#: on its branch; on fix-forward 16's tree, 23bea1ae….
+BUNDLE_SHA256 = "23bea1ae16abdc088e0b97121621f0c4c235643764fe1937dcc5dd7c7dbc6847"
 
 
 def _sha(definitions) -> str:

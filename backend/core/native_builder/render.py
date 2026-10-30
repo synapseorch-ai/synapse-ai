@@ -92,7 +92,19 @@ def knowledge_part_line(part: Any) -> str:
     added = [f for f in part.files if f not in part.files_missing]
     line = (f"“{part.name}”: already here, used as it is" if part.existing
             else f"“{part.name}”: made with it, in the Vault folder {_folder_for(part.name)}")
-    return line + ("; it is given " + ", ".join(f"`{f}`" for f in added) if added else "")
+    line += "; it is given " + ", ".join(f"`{f}`" for f in added) if added else ""
+    return line + (f"; {pages_words(part)}" if getattr(part, "urls", None) else "")
+
+
+def pages_words(part: Any) -> str:
+    """What a knowledge base reads from the web (D340 F): the pages, or a sitemap's or a site's up to its cap, read
+    when the build is saved, with its embedding model."""
+    urls = list(part.urls)
+    cap = f", up to {part.pages_cap} pages" if part.pages_cap else ""
+    what = {"page": "it reads " + ", ".join(urls[:10]) + (f" and {len(urls) - 10} more" if len(urls) > 10 else ""),
+            "sitemap": f"it reads the pages {urls[0]} lists{cap}",
+            "site": f"it crawls {urls[0]}{cap}"}[part.kind]
+    return f"{what}, when it is made, with its embedding model"
 
 
 def missing_file_line(base: str, file: str) -> str:
@@ -175,6 +187,42 @@ def connect_first_text(waiting: list[Any]) -> str:
             + f"\n\nOr tell me to plan it without {'it' if len(waiting) == 1 else 'them'}.")
 
 
+def eval_part_line(part: Any) -> str:
+    """A plan's eval (F1255, D340 F), in one line: the card's and the build's parts' words."""
+    cases = len(part.cases)
+    if part.keeps:
+        line = f"its eval: it keeps its rubric “{part.keeps}”, which a judge scores each run that finishes by"
+    else:
+        many = "criterion" if len(part.criteria) == 1 else "criteria"
+        line = (f"its eval: the rubric “{part.name}” ({len(part.criteria)} {many}, scored 0–{part.scale_max:g}), "
+                "which a judge scores each run that finishes by")
+    line += (f", and a golden set of {cases} case{'s' if cases != 1 else ''} to run on Evals" if cases
+             else "; its scores come from its real runs")
+    return line + (f"; it replaces the rubric “{part.replaces}”, so its score trend starts again"
+                   if part.replaces else "")
+
+
+def eval_lines(plan: Any) -> list[str]:
+    """A plan's eval in full (F1255): each criterion with its weight, and every case as it will be saved, since the
+    yes saves exactly these (Naveen, 10-30); and what judging costs, every run (TRI1, D340 F)."""
+    part = getattr(plan, "eval", None)
+    if part is None:
+        return []
+    out = [eval_part_line(part)]
+    if not part.keeps:
+        out += [f"Criterion “{c.name}” (weight {c.weight:g})" + (f": {c.guidance}" if c.guidance else "")
+                for c in part.criteria]
+        if part.floor is not None:
+            out.append(f"A score below {part.floor:g} is a regression")
+    out += [f"Case {i}{f' “{c.name}”' if c.name else ''}: {c.input}" + (f" — {c.notes}" if c.notes else "")
+            for i, c in enumerate(part.cases, 1)]
+    how = ("Every run that finishes is judged" if part.judge_every <= 1 or part.keeps
+           else f"Its first finished run is judged, then 1 run in {part.judge_every}")
+    out.append(f"{how}: one more model call per judged run" + (f", to {part.judge}" if part.judge else "")
+               + (f" ({part.judge_cost} a judged run)" if part.judge_cost else "") + ", on top of the run's own")
+    return out
+
+
 def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
     """The plan card's text. `agent_names` names the workspace's agents a plan reuses (by id)."""
     names = dict(agent_names or {})
@@ -200,7 +248,7 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
                     "set_meta": "Change the workflow's details"}[e.op]
             lines.append(f"{len(lines) + 1}. {what}")
         # A part the card says in its own section below (a knowledge base) is said there, once (F1228).
-        said = [*knowledge_lines(plan), *own_part_lines(plan)]
+        said = [*knowledge_lines(plan), *own_part_lines(plan), *eval_lines(plan)]
         own = [w for w in getattr(plan, "part_words", []) or [] if w not in said]
         parts.append("## Steps\n" + "\n".join(lines) + ("\n\n" + _bullets(own) if own else ""))
     for w in plan.inner_workflows:
@@ -233,14 +281,21 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         parts.append("## Knowledge bases\n" + "\n".join(f"- {line}" for line in lines))
     if lines := own_part_lines(plan):
         parts.append("## Your APIs and MCP servers\n" + "\n".join(f"- {line}" for line in lines))
+    if lines := eval_lines(plan):
+        parts.append("## Eval\n" + "\n".join(f"- {line}" for line in lines))
 
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()
-        detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else "",
+        every = (f"every {plan.schedule.interval_value} {plan.schedule.interval_unit}"
+                 if plan.schedule.schedule_type == "interval" and plan.schedule.interval_value else "")
+        detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else every,
                                        zone_words(plan.schedule.timezone) if plan.schedule.timezone else "") if x)
         text = f"**When:** {when}" + (f" ({detail})" if detail else "")
         if (plan.schedule.input or "").strip():
             text += f"\n**Each run starts with:** {plan.schedule.input.strip()}"
+        text += ("\n**If a time is missed** (the machine was off): "
+                 + ("it runs once as soon as it can" if plan.schedule.missed_run_policy == "run_immediately"
+                    else "it is skipped, and it runs at the next time"))
         text += "\nIt is made paused: turn it on under Schedules once you have checked what each run starts with."
         parts.append(f"## Schedule\n{text}")
 
