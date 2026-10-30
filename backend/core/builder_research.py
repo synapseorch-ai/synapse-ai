@@ -116,6 +116,38 @@ async def _over_backstop(tool: str, provider: str = "") -> bool:
     return spent[key] > BACKSTOP[tool]
 
 
+#: The web calls a plan may make (D340 B; Naveen 10-31): 6 for each research question, so one question can't eat the
+#: budget, and 24 in all, gather's reads of the sites a message names among them, so a fan-out stops. The provider
+#: research's own backstop (`BACKSTOP`) is apart and unchanged.
+WEB_PER_QUESTION, WEB_PER_PLAN = 6, 24
+#: Where they are counted: the run's record beside the research's, but kept past its report, and written through, so a
+#: run that moves to another worker keeps its count.
+WEB_KEY = "builder_web"
+
+
+async def web_call(question: str = "") -> str | None:
+    """One web call on the plan's budget, counted before it is made (a refused or failed one counts too): None when it
+    may go, else the sentence that says why not. `question`: the research question it is for (its own 6)."""
+    from core.builder_tools import _current_run
+    from core.orchestration.engine import ACTIVE_TIME_KEY
+
+    _, run = _record()
+    record = (_LOOSE.setdefault(f"{_current_run.get() or ''}:{WEB_KEY}", {}) if run is None
+              else run.step_progress.setdefault(ACTIVE_TIME_KEY, {}).setdefault(WEB_KEY, {}))
+    if int(record.get("plan") or 0) >= WEB_PER_PLAN:
+        return f"This plan has made its {WEB_PER_PLAN} web calls: go on with what was found."
+    asked = " ".join(str(question or "").casefold().split())[:200]
+    if asked:
+        by = record.setdefault("by_question", {})
+        if int(by.get(asked) or 0) >= WEB_PER_QUESTION:
+            return (f"This question has had its {WEB_PER_QUESTION} web calls: answer it from what was found, or say "
+                    "it is not sure.")
+        by[asked] = int(by.get(asked) or 0) + 1
+    record["plan"] = int(record.get("plan") or 0) + 1
+    await _keep(run)
+    return None
+
+
 def _host(url: str) -> str:
     return (urlsplit(url).hostname or "").lower().removeprefix("www.")
 
