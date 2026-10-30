@@ -264,9 +264,15 @@ async def _changed(kb: Any, args: dict[str, Any]) -> Any:
     from core.knowledge import bases
     from core.knowledge.api_models import KnowledgeBaseUpdate
 
-    fields = {k: str(args[k]).strip() for k in ("name", "description") if args.get(k) is not None}
+    fields: dict[str, Any] = {k: str(args[k]).strip() for k in ("name", "description") if args.get(k) is not None}
+    # Its plain settings, as the Knowledge screen's own model checks them (F1276): its language, whether visitors may
+    # search it, its monthly budget (or none).
+    fields |= {k: args[k] for k in ("language", "visitor_access", "budget_monthly_usd") if args.get(k) is not None}
+    if args.get("clear_budget") is True:
+        fields["clear_budget"] = True
     if not fields:
-        raise ToolRefusal("Say what changes: its name, or what it holds (description).")
+        raise ToolRefusal("Say what changes: its name, what it holds (description), its language, whether visitors "
+                          "may search it, or its monthly budget.")
     if (name := fields.get("name")) and any(b.id != kb.id and b.name.lower() == name.lower()
                                             for b in await bases.list_bases()):
         raise ToolRefusal(f'A knowledge base is already called "{name}": say another name.')
@@ -284,7 +290,9 @@ async def _update_base(caller: Any, args: dict[str, Any]) -> dict:
         _, after, _ = await _host_update(caller, kb.id, await _changed(kb, args))
     except StaleRevision:
         raise ToolRefusal("Someone changed this knowledge base just now; ask again to change it.") from None
-    return {"knowledge_base": after.name, "id": after.id, "description": after.description}
+    return {"knowledge_base": after.name, "id": after.id, "description": after.description,
+            "language": after.language, "visitor_access": after.visitor_access,
+            "budget_monthly_usd": after.budget_monthly_usd}
 
 
 async def _retry_rebuild(caller: Any, args: dict[str, Any]) -> dict:
@@ -402,10 +410,14 @@ def entries() -> list[ProductTool]:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": ["knowledge_base"]},
                     handler=_list_documents),
         ProductTool(name="update_knowledge_base",
-                    description="Rename a knowledge base, or say what it holds (its description). Its folder and "
-                                "index settings are changed on the Knowledge screen.",
+                    description="Rename a knowledge base, say what it holds (its description), or set its language, "
+                                "whether visitors may search it, or its monthly budget (clear_budget: none). A new "
+                                "language indexes it again. Its folder and how its index is built are changed on the "
+                                "Knowledge screen.",
                     input_schema={"type": "object", "properties": {
-                        **_KB, "name": {"type": "string"}, "description": {"type": "string"}},
+                        **_KB, "name": {"type": "string"}, "description": {"type": "string"},
+                        "language": {"type": "string"}, "visitor_access": {"type": "boolean"},
+                        "budget_monthly_usd": {"type": "number", "minimum": 0}, "clear_budget": {"type": "boolean"}},
                         "required": ["knowledge_base"]},
                     handler=_update_base, audit_action="knowledge.base.updated",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("id") or "")), **act),

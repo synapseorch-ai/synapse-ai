@@ -58,6 +58,11 @@ class Op:
         return self.kind == "act"
 
     @property
+    def noun(self) -> str:
+        """The target's kind as the person reads it: "knowledge base", never `knowledge_base`."""
+        return self.target.replace("_", " ")
+
+    @property
     def is_write(self) -> bool:
         return self.kind in ("write", "delete", "create")
 
@@ -141,6 +146,9 @@ _WRITES = (
     # One passage of a note or a text file, as it stands, and its new text; or a short note's whole text (F1258).
     Op("knowledge_edit_document", "write", "document", "edit_knowledge_document", ("find", "replace", "text"),
        any_of=True, verb="Change"),
+    # A base's plain settings, as its screen sets them (F1276): its language, visitors' search, its monthly budget.
+    Op("knowledge_settings", "write", "knowledge_base", "update_knowledge_base",
+       ("language", "visitor_access", "budget_monthly_usd", "clear_budget"), any_of=True, verb="Change the settings of"),
     Op("delete_tool", "delete", "tool", "delete_custom_tool", verb="Delete"),
     # The workspace's settings on Synapse AI's list (F1264; Naveen 10-30), each field a setting by its own name:
     # anything off the list is refused by name, with where it is done (`settings_allow`).
@@ -255,6 +263,15 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if value in ("page", "sitemap", "site") else "`kind` is page, sitemap or site"
     if key == "replace":  # empty takes the passage out
         return None if isinstance(value, str) else "`replace` is text"
+    if key == "language":
+        from core.knowledge.kb_settings import TS_LANGUAGES
+
+        return None if value in TS_LANGUAGES else f"`language` is one of {', '.join(TS_LANGUAGES)}"
+    if key in ("visitor_access", "clear_budget"):
+        return None if isinstance(value, bool) else f"`{key}` is true or false"
+    if key == "budget_monthly_usd":
+        return None if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0 else \
+            "`budget_monthly_usd` is a number of dollars, 0 or more"
     return None if isinstance(value, str) and value.strip() else f"`{key}` is text"
 
 
@@ -289,6 +306,13 @@ def issues(op_name: str, target: dict[str, Any], fields: dict[str, Any], *, inte
         if key in fields and fields[key] not in (None, "", [], {}):
             if (why := _field_issue(op, key, fields[key])) is not None:
                 found.append(f"`{op.name}`: {why}")
+    if op.name == "knowledge_settings" and not found:
+        if fields.get("clear_budget") is not None and fields.get("budget_monthly_usd") is not None:
+            found.append("`knowledge_settings` sets a budget or clears it, not both")
+        if fields.get("visitor_access") is True and len([k for k, v in fields.items() if v is not None]) > 1:
+            # Opening a base to visitors is its own change, never bundled with another (8a, 10-31).
+            found.append("`knowledge_settings`: opening a base to visitors is a change of its own; send the other "
+                         "settings as another op")
     if op.name == "knowledge_edit_document" and not found:
         whole, passage = fields.get("text") not in (None, ""), fields.get("find") not in (None, "")
         if whole == passage or (passage and not isinstance(fields.get("replace"), str)):
@@ -386,6 +410,11 @@ def expected(op: Op, fields: dict[str, Any], live: dict[str, Any] | None) -> dic
         return {"name": str(fields["name"]).strip()}
     if name in ("update_workflow", "update_skill"):
         return {k: fields[k] for k in op.fields if k in fields}
+    if name == "knowledge_settings":
+        out = {k: fields[k] for k in ("language", "visitor_access", "budget_monthly_usd") if fields.get(k) is not None}
+        if fields.get("clear_budget") is True:
+            out["budget_monthly_usd"] = None
+        return out
     if name == "knowledge_edit_document":
         if fields.get("text") not in (None, ""):
             return {"text": fields["text"]}
@@ -439,6 +468,11 @@ def call(op: Op, target_id: str, fields: dict[str, Any], live: dict[str, Any] | 
         return op.tool, {"name": target_id, **after}
     if op.target == "settings":
         return op.tool, {"changes": after}
+    if op.target == "knowledge_base":
+        args = {k: v for k, v in after.items() if v is not None}
+        if "budget_monthly_usd" in after and after["budget_monthly_usd"] is None:
+            args["clear_budget"] = True
+        return op.tool, {"knowledge_base": target_id, **args}
     if op.target == "document":
         from core.product_tools.knowledge import text_sha256
 

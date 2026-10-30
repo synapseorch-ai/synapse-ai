@@ -173,7 +173,7 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
             if item.get("status") != "ready":
                 continue
             op, target = C.OPS[item["op"]], item["target"]
-            label = f"the {op.target} {_quoted(target.get('name') or target.get('id'))}"
+            label = f"the {op.noun} {_quoted(target.get('name') or target.get('id'))}"
             now = None if op.kind == "create" else await read(op.target, target["id"])
             if op.kind == "delete" and now is None:
                 # Gone, as the op asked: this apply ran before (a redelivered job, a resumed step) or someone else
@@ -189,7 +189,7 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                     continue
                 if taken:
                     a = "an" if op.target[0] in "aeiou" else "a"
-                    failed.append(f"Not done: {a} {op.target} called {_quoted(target.get('name'))} was made since you "
+                    failed.append(f"Not done: {a} {op.noun} called {_quoted(target.get('name'))} was made since you "
                                   "approved this, so I made no second one. Ask again to change it.")
                     continue
             if op.kind != "create" and now is None:

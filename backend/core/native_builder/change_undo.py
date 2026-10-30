@@ -47,6 +47,17 @@ def _inverse(applied: dict) -> tuple[dict | None, str | None]:
         if not kept:
             return None, note
         return {"op": name, "target": _target(applied), "fields": kept, "says": "undo: as it was"}, note
+    if name == "knowledge_settings":
+        fields = {k: v for k, v in before.items() if k in ("language", "visitor_access", "budget_monthly_usd")}
+        if "budget_monthly_usd" in fields and fields["budget_monthly_usd"] is None:
+            fields.pop("budget_monthly_usd")
+            fields["clear_budget"] = True
+        note = None
+        if fields.get("visitor_access") is True and len(fields) > 1:
+            # Opening a base to visitors is a change of its own (8a): the rest goes back, and that is said.
+            fields.pop("visitor_access")
+            note = f"{label} was open to visitors before: ask for that again by itself to open it."
+        return {"op": name, "target": _target(applied), "fields": fields, "says": "undo: its settings as they were"}, note
     if name == "knowledge_edit_document":
         if before.get("text") is None:
             return None, f"{label}'s old text held a key, so it was not kept and can't be put back."

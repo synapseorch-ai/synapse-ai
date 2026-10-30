@@ -100,8 +100,9 @@ SUBMIT = {"type": "function", "function": {
         "workspace}) {<setting's name>: <new value>, …}, only the settings topic `settings` lists; eval_rubric {name, "
         "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
         "{count, steer}; eval_run and eval_cancel {golden_set}; knowledge_edit_document {find: the passage as it "
-        "stands, replace: its new text} or {text: a short note's whole new text}; edit_steps, create and "
-        "use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
+        "stands, replace: its new text} or {text: a short note's whole new text}; knowledge_settings {language, "
+        "visitor_access (opening it to visitors, on its own), budget_monthly_usd | clear_budget}; edit_steps, create "
+        "and use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
         "ops": {"type": "array", "items": _op_schema()},
@@ -619,6 +620,8 @@ async def candidates(kind: str) -> list[dict] | None:
                 for t in await load_tools() if t.get("name")]
     if kind == "document":
         return await _documents()
+    if kind == "knowledge_base":
+        return await _bases()
     if kind == "recording":
         from core.browser import recordings
 
@@ -696,7 +699,64 @@ async def read(kind: str, target_id: str) -> dict | None:
         return await settings.current()
     if kind == "document":
         return await _document_now(target_id)
+    if kind == "knowledge_base":
+        return await _base_now(target_id)
     return None
+
+
+async def _bases() -> list[dict] | None:
+    """The workspace's knowledge bases, by name, for a change that names one (F1276); none while Knowledge is off."""
+    from core.knowledge import bases
+    from core.knowledge.config import knowledge_enabled
+
+    if not knowledge_enabled():
+        return []
+    return [{"id": kb.id, "name": kb.name, "detail": kb.description or ""} for kb in await bases.list_bases()]
+
+
+async def _base_now(kb_id: str) -> dict | None:
+    """A base's plain settings as a change reads them (F1276)."""
+    from core.knowledge import bases
+    from core.knowledge.config import knowledge_enabled
+
+    kb = await bases.get_base(kb_id) if knowledge_enabled() else None
+    if kb is None:
+        return None
+    return {"id": kb.id, "name": kb.name, "language": kb.language, "visitor_access": kb.visitor_access,
+            "budget_monthly_usd": kb.budget_monthly_usd}
+
+
+def _usd(value: Any) -> str:
+    return "no budget" if value is None else f"${float(value):,.2f} a month"
+
+
+async def _settings_line(target: dict, live: dict, want: dict) -> str:
+    """The review's lines for a base's settings (F1276): each one before → after, what opening it to visitors means,
+    and what a new language's index costs by the Knowledge screen's own estimate."""
+    name = _quoted(target["name"])
+    lines = [f"Change the settings of the knowledge base {name}:"]
+    if "language" in want:
+        lines.append(f"  language: {live.get('language')} → {want['language']}")
+        try:
+            from core.knowledge import bases, costs
+
+            est = await costs.preview(await bases.require_base(target["id"]), {"language": want["language"]})
+            lines.append(f"    It is indexed again with the new language, beside the index in use, which keeps "
+                         f"answering until the new one is ready: about ${est.total_est_usd:,.2f} for its {est.docs} "
+                         "documents, by the Knowledge screen's estimate.")
+        except Exception as exc:  # noqa: BLE001 — the change is still shown; its price is said to be unknown
+            _log.warning("knowledge_settings: no estimate for %s: %s", target.get("id"), exc)
+            lines.append("    It is indexed again with the new language, beside the index in use; its cost could not "
+                         "be estimated here, so see it on the Knowledge screen first.")
+    if "visitor_access" in want:
+        lines.append(f"  visitors may search it: {'on' if live.get('visitor_access') else 'off'} → "
+                     f"{'on' if want['visitor_access'] else 'off'}")
+        if want["visitor_access"]:
+            lines.append(f"    Visitors of this workspace's widgets and channels, where its knowledge tools are "
+                         f"ticked, will be able to search {name}: everything in it.")
+    if "budget_monthly_usd" in want:
+        lines.append(f"  monthly budget: {_usd(live.get('budget_monthly_usd'))} → {_usd(want['budget_monthly_usd'])}")
+    return "\n".join(lines)
 
 
 #: The most documents a change can name, across the bases (F1258).
@@ -1094,7 +1154,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             name = _text(target.get("name")) or _text(fields.get("name"))
             if any(i["name"].lower() == name.lower() for i in await candidates(op.target) or []):
                 article = "An" if op.target[0] in "aeiou" else "A"
-                item.update(status="refused", say=f"{article} {op.target} is already called {_quoted(name)}: "
+                item.update(status="refused", say=f"{article} {op.noun} is already called {_quoted(name)}: "
                                                   + ("say another name." if not op.internal else
                                                      "so I can't bring the old one back under its name."))
                 continue
@@ -1174,7 +1234,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         tool = registry.get(op.tool)
         if tool is None or not caller.role.can_act_as(tool.min_role):
             need = tool.min_role.label if tool is not None else Role.BUILDER.label
-            item.update(status="refused", say=f"{op.verb} the {op.target} {_quoted(target['name'])} needs the {need} "
+            item.update(status="refused", say=f"{op.verb} the {op.noun} {_quoted(target['name'])} needs the {need} "
                                               f"role; you are a {caller.role.label} in this workspace, so I can't.")
             continue
         here = (op.target, target.get("id") or "")
@@ -1185,7 +1245,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         else:
             live = await read(op.target, target["id"])
         if op.kind != "create" and live is None:
-            item.update(status="refused", say=f"The {op.target} {_quoted(target['name'])} is not there any more.")
+            item.update(status="refused", say=f"The {op.noun} {_quoted(target['name'])} is not there any more.")
             continue
         if op.name in ("rename_workflow", "rename_schedule", "rename_agent"):
             new_name = _text(fields.get("name"))
@@ -1195,13 +1255,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 # "Every night at 3"). An undo's rename back is code's, from the card, so it is not asked for again.
                 # Asked for without its name ("update its name to match"): asked, not dropped (SAI2's review, 2).
                 item.update(status="ask_name" if _RENAME_WORDS & set(words.split()) else "left_out",
-                            say=f"I left out renaming the {op.target} {_quoted(target['name'])} to "
+                            say=f"I left out renaming the {op.noun} {_quoted(target['name'])} to "
                                 f"{_quoted(new_name)}: tell me the new name if you want it.")
                 continue
             if any(i["id"] != target["id"] and i["name"].lower() == new_name.lower()
                    for i in await candidates(op.target) or []):
                 article = "An" if op.target[0] in "aeiou" else "A"
-                item.update(status="refused", say=f"{article} {op.target} is already called {_quoted(new_name)}: "
+                item.update(status="refused", say=f"{article} {op.noun} is already called {_quoted(new_name)}: "
                                                   "say another name.")
                 continue
         if op.name == "set_agent_model":
@@ -1266,13 +1326,15 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             if op.target == "tool" and live.get("group"):
                 live = {**live, "group_name": await _group_name(live["group"])}
         elif op.kind != "create" and not C.differs(live, want):
-            item.update(status="noop", say=f"The {op.target} {_quoted(target['name'])} is already that way: "
+            item.update(status="noop", say=f"The {op.noun} {_quoted(target['name'])} is already that way: "
                                            "nothing to change.")
             continue
         tool_name, call_args = C.call(op, target.get("id", ""), fields, live, name=target.get("name", ""))
         line = (_settings_words(live, want, item["says"] if draft.get("undo_of") else "")
                 if op.name == "settings_set" else
                 _words(op, target, fields, item["says"] if draft.get("undo_of") else "", want))
+        if op.name == "knowledge_settings":
+            line = await _settings_line(target, live, want)
         if op.name == "knowledge_edit_document":
             line = _edit_line(target, live["text"], want["text"], live.get("knowledge_base") or "")
         item.update(status="ready", call={"tool": tool_name, "args": call_args}, expected=want,
@@ -1281,6 +1343,13 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             leaves[here] = None if want is None else {**live, **want}
 
     ready = [i for i in checked if i["status"] == "ready"]
+    if len(ready) > 1:
+        # Opening a base to visitors is a change of its own, never on one card with another (8a, 10-31).
+        for item in ready:
+            if item["op"] == "knowledge_settings" and (item.get("expected") or {}).get("visitor_access") is True:
+                item.update(status="refused", say=f"Opening the knowledge base {_quoted(item['target']['name'])} to "
+                                                  "visitors is a change of its own: ask for it by itself.")
+        ready = [i for i in checked if i["status"] == "ready"]
     asked = next((i for i in checked if i["status"] == "ask_model"), None)
     if asked is not None:
         # Which model a wish means is the person's to say (F966): never a guess.

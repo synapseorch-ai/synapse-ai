@@ -30,7 +30,8 @@ TOPICS: dict[str, str] = {
     "phone": "phone numbers: the number, on or off, and the agent that answers",
     "widgets": "website widgets: the agent that answers, the sites allowed, on or off",
     "tool_policy": "whether agents must ask before destructive, open-world or undeclared tools, by default and per agent",
-    "knowledge": "knowledge bases, or that Knowledge is switched off; with `name` naming one base, its documents "
+    "knowledge": "knowledge bases (each with its language, whether visitors may search it and its monthly budget), "
+                 "or that Knowledge is switched off; with `name` naming one base, its documents "
                  "too, each with its id, what it is (note, file, page) and whether its text can be edited (F1258)",
     "evals": "evals: each workflow a rubric scores, its golden sets and its latest scores and regressions; with "
              "`name`, that workflow's eval in full (its rubric, recent scores, golden sets and their last runs)",
@@ -78,7 +79,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "phone": {"keys": ["items", "note"], "item": ["name", "number", "on", "answered_by", "language"]},
     "widgets": {"keys": ["items", "note"], "item": ["name", "agent", "allowed_sites", "on", "messages_per_day"]},
     "tool_policy": {"keys": ["default", "agents_with_their_own", "note"]},
-    "knowledge": {"keys": ["items", "note", "documents?"], "item": ["name", "description", "status"]},
+    "knowledge": {"keys": ["items", "note", "documents?"],
+                  "item": ["name", "description", "status", "language?", "visitor_access?", "budget_monthly_usd?"]},
     "evals": {"keys": ["items?", "note?", "workflow?", "rubric?", "scores?", "regressions?", "agreement?",
                        "golden_sets?"], "item": ["workflow", "rubric", "golden_sets", "last_score", "regressions"]},
     # Where the host charges credits, they come beside the model dollars (F843).
@@ -345,7 +347,10 @@ async def _knowledge(args: dict) -> dict:
     from core.knowledge.bases import list_bases
 
     listed = await list_bases()
-    out = [{"name": b.name, "description": b.description, "status": getattr(b, "status", None)} for b in listed]
+    # Its plain settings too (F1276), which a change sets.
+    out = [{"name": b.name, "description": b.description, "status": getattr(b, "status", None),
+            "language": b.language, "visitor_access": b.visitor_access, "budget_monthly_usd": b.budget_monthly_usd}
+           for b in listed]
     answer = {"items": _named(out, args.get("name")), "note": "" if out else "There are no knowledge bases yet."}
     named = [b for b in listed if args.get("name") and b.name in {i["name"] for i in answer["items"]}]
     if len(named) == 1:
