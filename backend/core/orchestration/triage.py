@@ -114,10 +114,10 @@ def _tail(text: str, cap: int) -> str:
 
 
 def _clean(text: str) -> str:
-    """Neither a secret this run holds nor anything shaped like a key or token (a provider's error can quote one)."""
-    from core.secret_scrub import scrub_credentials, scrub_secrets
+    """Neither a secret this run holds nor anything shaped like a key or token: the run reader's own (`run_error`)."""
+    from core.orchestration.run_error import clean
 
-    return scrub_credentials(scrub_secrets(text))[0]
+    return clean(text)
 
 
 def _said(value: Any) -> str:

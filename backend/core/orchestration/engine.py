@@ -17,7 +17,7 @@ from core.models_orchestration import Orchestration, OrchestrationRun, StepConfi
 from core.state_types import matches_declared_type, normalize_state_type
 from .human_prompts import HUMAN_CHANNEL_KEY, announce as announce_human_prompt
 from . import run_images
-from .run_error import failure_reason, model_failure_of, reason_of, run_error, set_run_error
+from .run_error import failure_reason, model_failure_of, reason_of, set_run_error
 from .pauses import end_step, innermost_container, pause_chain, progress_key, record_pause, take_tasks
 from .step_usage import exact_window, step_scope
 from .state import SharedState
@@ -2324,13 +2324,9 @@ class OrchestrationEngine:
 
         if run.status == "failed":
             # The run's own reason first — one that failed outside any step has
-            # no history entry to carry it (F257) — then its newest step error.
-            last_error = run_error(run)
-            for h in reversed(run.step_history):
-                if last_error:
-                    break
-                if h.get("error"):
-                    last_error = h["error"]
+            # no history entry to carry it (F257) — then its newest step error:
+            # the one reader's, so a key a provider quoted is never said (REACH1).
+            last_error = failure_reason(run.status, run.step_history, run.step_progress)
             return f"Orchestration failed. Error: {last_error or 'Unknown error'}"
 
         if run.status == "paused":
