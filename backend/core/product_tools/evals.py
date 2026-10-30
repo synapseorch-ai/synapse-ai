@@ -31,8 +31,8 @@ class EvalsHost:
 
     #: `(caller, body, rubric_id | None) -> rubric`.
     save_rubric: Callable[[Any, dict, str | None], Awaitable[dict]] | None = None
-    #: `(caller, orch_id, rubric_id) -> {"orchestration_id", "name", "rubric_id"}`.
-    attach_rubric: Callable[[Any, str, str], Awaitable[dict]] | None = None
+    #: `(caller, orch_id, rubric_id, judge_every | None) -> {"orchestration_id", "name", "rubric_id", "judge_every"}`.
+    attach_rubric: Callable[[Any, str, str, int | None], Awaitable[dict]] | None = None
     #: `(caller, body, suite_id | None) -> suite`.
     save_suite: Callable[[Any, dict, str | None], Awaitable[dict]] | None = None
     #: `(caller, orch, count, steer) -> [case]`: proposed, never saved.
@@ -174,13 +174,20 @@ async def _save_rubric(caller: Any, args: dict) -> dict:
     rubric = await (host(caller, body, rubric_id) if host else _done(service.save_rubric(body, rubric_id)))
     out: dict[str, Any] = {"rubric": rubric}
     if flow is not None:
-        out["attached"] = await _attach(caller, flow["id"], rubric["id"])
+        out["attached"] = await _attach(caller, flow["id"], rubric["id"], args.get("judge_every"))
     return out
 
 
-async def _attach(caller: Any, orch_id: str, rubric_id: str) -> dict:
+async def _attach(caller: Any, orch_id: str, rubric_id: str, judge_every: Any = None) -> dict:
     host = _hosted("attach_rubric")
-    return await (host(caller, orch_id, rubric_id) if host else _done(service.attach_rubric(orch_id, rubric_id)))
+    return await (host(caller, orch_id, rubric_id, judge_every) if host
+                  else _done(service.attach_rubric(orch_id, rubric_id, judge_every)))
+
+
+def sample_words(every: int) -> str:
+    """How often a workflow's runs are judged, in the card's words (D340 F)."""
+    return "each run that finishes is judged" if every <= 1 else \
+        f"its first finished run is judged, then 1 run in {every}"
 
 
 def _criteria_words(rubric: dict) -> str:
@@ -194,15 +201,16 @@ async def _preview_save_rubric(caller: Any, args: dict) -> dict:
     out = {"saves": f'the rubric "{body["name"]}"' + (" (an edit, as a new version)" if rubric_id else ""),
            "criteria": _criteria_words(body)}
     if flow is not None:
-        out["attaches_to"] = (f'the workflow "{flow.get("name")}": each run that finishes is scored by it, a judge '
-                              "call each")
+        every = args.get("judge_every") or flow.get("judge_every") or 1
+        out["attaches_to"] = (f'the workflow "{flow.get("name")}": {sample_words(int(every))} by it, a judge call '
+                              "each")
     return out
 
 
 async def _attach_rubric(caller: Any, args: dict) -> dict:
     flow = await _workflow(args.get("workflow"))
     rubric = await _rubric(args["rubric"]) if str(args.get("rubric") or "").strip() else {"id": ""}
-    return await _attach(caller, flow["id"], rubric["id"])
+    return await _attach(caller, flow["id"], rubric["id"], args.get("judge_every"))
 
 
 async def _preview_attach_rubric(caller: Any, args: dict) -> dict:
@@ -210,8 +218,9 @@ async def _preview_attach_rubric(caller: Any, args: dict) -> dict:
     if not str(args.get("rubric") or "").strip():
         return {"detaches": f'the rubric from "{flow.get("name")}": its runs are no longer scored'}
     rubric = await _rubric(args["rubric"])
+    every = int(args.get("judge_every") or flow.get("judge_every") or 1)
     return {"attaches": f'the rubric "{rubric.get("name")}" to "{flow.get("name")}"',
-            "with_it": "each run that finishes is scored by it, a judge call each"}
+            "with_it": f"{sample_words(every)} by it, a judge call each"}
 
 
 async def _propose_cases(caller: Any, args: dict) -> dict:
@@ -326,6 +335,9 @@ async def _list_rubrics(caller: Any, args: dict) -> dict:
 # ── the entries ───────────────────────────────────────────────────────────────
 
 _WORKFLOW = {"workflow": {"type": "string", "description": "The workflow's name or id."}}
+_EVERY = {"judge_every": {"type": "integer", "minimum": 1, "maximum": 100,
+                          "description": "Judge its first finished run, then 1 run in this many (1: every run). For "
+                                         "a workflow that runs often: each judged run is one more model call."}}
 _SET = {"golden_set": {"type": "string", "description": "The golden set's name or id; omit for the workflow's one."}}
 _CRITERIA = {"type": "array", "maxItems": 20, "items": {"type": "object", "properties": {
     "name": {"type": "string"}, "weight": {"type": "number"},
@@ -352,13 +364,14 @@ def entries() -> list[ProductTool]:
                                                                    "max": {"type": "number"}}},
                         "floor": {"type": "number", "description": "A score below it is a regression."},
                         "drop": {"type": "number", "description": "A fall this far below the baseline is one."},
-                        **_WORKFLOW}, "required": ["name"]},
+                        **_WORKFLOW, **_EVERY}, "required": ["name"]},
                     handler=_save_rubric, preview=_preview_save_rubric, audit_action="rubric.saved",
                     target=lambda a, r: ("rubric", str(((r or {}).get("rubric") or {}).get("id") or "")), **act),
         ProductTool(name="attach_rubric",
                     description="Score a workflow's runs with a rubric (or, with no `rubric`, stop scoring them).",
                     input_schema={"type": "object", "properties": {
-                        **_WORKFLOW, "rubric": {"type": "string", "description": "The rubric's name or id."}},
+                        **_WORKFLOW, **_EVERY,
+                        "rubric": {"type": "string", "description": "The rubric's name or id."}},
                         "required": ["workflow"]},
                     handler=_attach_rubric, preview=_preview_attach_rubric, audit_action="rubric.attached",
                     target=lambda a, r: ("orchestration", str((r or {}).get("orchestration_id") or "")), **act),

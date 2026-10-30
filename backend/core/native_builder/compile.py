@@ -333,7 +333,9 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
                "access": [{"kind": "workflow", "id": orch_id, "access": "work"}]} for b in plan.boards]
     knowledge = [{"name": p.name, "description": p.purpose, "existing": p.existing, "id": kb_ids[p.name],
                   "files": [f for f in dict.fromkeys(f.strip().lstrip("/") for f in p.files if f.strip())
-                            if f not in p.files_missing]} for p in plan.knowledge]
+                            if f not in p.files_missing],
+                  "urls": list(dict.fromkeys(u.strip() for u in p.urls if u.strip())), "kind": p.kind}
+                 for p in plan.knowledge]
     return Compiled(orchestration=orch, agents=agents, inner=inner, schedule=schedule, boards=boards,
                     knowledge=knowledge, issues=issues, warnings=warned)
 

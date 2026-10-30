@@ -18,6 +18,8 @@ from core.evals import store as evals_store
 MAX_BACKFILL = 25
 #: How many cases one proposal writes (the screen's own ceiling).
 MAX_PROPOSED = 10
+#: The sparsest judge sample: one finished run in this many (D340 F).
+MAX_JUDGE_EVERY = 100
 
 
 class EvalsRefused(Exception):
@@ -68,9 +70,10 @@ async def delete_rubric(rubric_id: str) -> None:
         raise EvalsRefused("Rubric not found", 404)
 
 
-async def attach_rubric(orch_id: str, rubric_id: str) -> dict:
+async def attach_rubric(orch_id: str, rubric_id: str, judge_every: int | None = None) -> dict:
     """Score a workflow's runs with a rubric: its `rubric_id`, which the engine judges each finished run by. "" takes
-    it off. Only a workflow a person can open, and only a rubric that is here."""
+    it off. Only a workflow a person can open, and only a rubric that is here. `judge_every` sets its sample: the
+    first finished run, then one in N (D340 F); left out, it stays as it is."""
     from core.builder_tools import _visible_orchestration
     from core.store.resources import save_orchestration
 
@@ -79,8 +82,12 @@ async def attach_rubric(orch_id: str, rubric_id: str) -> dict:
         raise EvalsRefused("Workflow not found", 404)
     if rubric_id:
         await get_rubric(rubric_id)
-    await save_orchestration({**orch, "rubric_id": rubric_id})
-    return {"orchestration_id": orch["id"], "name": orch.get("name"), "rubric_id": rubric_id}
+    if judge_every is not None and (isinstance(judge_every, bool) or not isinstance(judge_every, int)
+                                    or not 1 <= judge_every <= MAX_JUDGE_EVERY):
+        raise EvalsRefused(f"judge_every is a whole number from 1 (every run) to {MAX_JUDGE_EVERY}.", 422)
+    every = judge_every if judge_every is not None else int(orch.get("judge_every") or 1)
+    await save_orchestration({**orch, "rubric_id": rubric_id, "judge_every": every})
+    return {"orchestration_id": orch["id"], "name": orch.get("name"), "rubric_id": rubric_id, "judge_every": every}
 
 
 # ── golden sets ──────────────────────────────────────────────────────────────

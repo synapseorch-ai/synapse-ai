@@ -75,7 +75,7 @@ class TestThePart:
         assert "- A score below 6 is a regression" in card
         assert "- Case 1 “Tides”: Write a post about why tides happen — Opens with a question" in card
         assert "- Case 2: Write a post about owls at night" in card
-        assert "- Every run that finishes is judged: one more model call per run" in card
+        assert "- Every run that finishes is judged: one more model call per judged run" in card
 
     async def test_a_rubric_with_no_criterion_or_too_few_or_many_cases_goes_back(self, client, run):
         found = await _examine(run, _plan(eval={**EVAL, "criteria": []}))
@@ -167,3 +167,22 @@ class TestTheSave:
     def test_a_made_rubric_and_set_are_read_by_their_ids(self):
         assert build_save._id_of({"kind": "rubric", "args": {}}, {"rubric": {"id": "rub_1"}}) == "rub_1"
         assert build_save._id_of({"kind": "eval_suite", "args": {}}, {"golden_set": {"id": "set_1"}}) == "set_1"
+
+
+class TestWhereEvalsAreNotOffered:
+    """A host that withholds Evals' tools (cloud, until its own Evals host: D3ASM) never offers a build's eval that
+    would fail at its save: a structural check on the registry; the card says it as the feature census does."""
+
+    async def test_with_no_evals_tools_the_plan_has_no_eval_part_and_says_where_evals_are(self, client, run):
+        for name in build_plan.EVAL_TOOLS:
+            registry.unregister(name)
+        try:
+            found = await _examine(run, _plan())
+            assert found.errors == [], found.errors
+            assert found.plan.eval is None and build_plan.EVALS_ELSEWHERE in found.notes
+            assert not {"save_rubric", "attach_rubric", "save_eval_cases"} & {
+                c["tool"] for c in save_calls(found.plan, {}, run.shared_state)}
+            assert "## Eval" not in render(found.plan)
+        finally:
+            areas.load()
+        assert build_plan.evals_reachable()

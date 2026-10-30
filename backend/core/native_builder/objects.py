@@ -155,6 +155,13 @@ class KnowledgePart(_Written):
     existing: bool = False
     #: Paths of `files` not in the Vault (code sets it): said on the card, never added.
     files_missing: list[str] = Field(default_factory=list)
+    urls: list[str] = Field(default_factory=list, description="Public web pages it is filled from (D340 F): pages, or "
+                                                              "one sitemap's URL, or one site's start URL")
+    kind: Literal["page", "sitemap", "site"] = Field("page", description="page: each URL is one page; sitemap: the "
+                                                                         "pages a sitemap lists; site: a crawl from "
+                                                                         "the URL")
+    #: The most pages a sitemap or a site brings (code sets it): Knowledge's own crawl limit.
+    pages_cap: int = 0
 
 
 class ApiPart(_Written):
@@ -206,11 +213,16 @@ class EvalPart(_Written):
                                                                      "none when it takes no input")
     replace_rubric: bool = Field(False, description="An update of a workflow scored by a rubric already: true only "
                                                     "when the ask is about how it is judged; else its rubric is kept")
+    judge_every: int = Field(1, description="Judge its first finished run, then 1 run in this many: 1 for a workflow "
+                                            "run now and then; more for one a schedule runs often, as each judged "
+                                            "run is one more model call (up to 100)")
     #: The rubric an updated workflow is scored by now, by name (code sets these): kept, or replaced by this one.
     keeps: str = ""
     replaces: str = ""
     #: The model that judges each finished run (code sets it): the rubric's, else the workspace's judge or default.
     judge: str = ""
+    #: What one judged run costs, in the card's words ("about $0.002"), from the judge's rate card (code sets it).
+    judge_cost: str = ""
 
 
 class Edit(_Written):

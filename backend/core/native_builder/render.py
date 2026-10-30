@@ -92,7 +92,19 @@ def knowledge_part_line(part: Any) -> str:
     added = [f for f in part.files if f not in part.files_missing]
     line = (f"“{part.name}”: already here, used as it is" if part.existing
             else f"“{part.name}”: made with it, in the Vault folder {_folder_for(part.name)}")
-    return line + ("; it is given " + ", ".join(f"`{f}`" for f in added) if added else "")
+    line += "; it is given " + ", ".join(f"`{f}`" for f in added) if added else ""
+    return line + (f"; {pages_words(part)}" if getattr(part, "urls", None) else "")
+
+
+def pages_words(part: Any) -> str:
+    """What a knowledge base reads from the web (D340 F): the pages, or a sitemap's or a site's up to its cap, read
+    when the build is saved, with its embedding model."""
+    urls = list(part.urls)
+    cap = f", up to {part.pages_cap} pages" if part.pages_cap else ""
+    what = {"page": "it reads " + ", ".join(urls[:10]) + (f" and {len(urls) - 10} more" if len(urls) > 10 else ""),
+            "sitemap": f"it reads the pages {urls[0]} lists{cap}",
+            "site": f"it crawls {urls[0]}{cap}"}[part.kind]
+    return f"{what}, when it is made, with its embedding model"
 
 
 def missing_file_line(base: str, file: str) -> str:
@@ -204,8 +216,10 @@ def eval_lines(plan: Any) -> list[str]:
             out.append(f"A score below {part.floor:g} is a regression")
     out += [f"Case {i}{f' “{c.name}”' if c.name else ''}: {c.input}" + (f" — {c.notes}" if c.notes else "")
             for i, c in enumerate(part.cases, 1)]
-    out.append("Every run that finishes is judged: one more model call per run"
-               + (f", to {part.judge}" if part.judge else "") + ", on top of the run's own")
+    how = ("Every run that finishes is judged" if part.judge_every <= 1 or part.keeps
+           else f"Its first finished run is judged, then 1 run in {part.judge_every}")
+    out.append(f"{how}: one more model call per judged run" + (f", to {part.judge}" if part.judge else "")
+               + (f" ({part.judge_cost} a judged run)" if part.judge_cost else "") + ", on top of the run's own")
     return out
 
 

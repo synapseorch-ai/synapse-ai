@@ -130,6 +130,11 @@ def save_calls(plan: O.Plan, prompts: dict[str, str], state: dict) -> list[dict]
                           "makes": kb["id"], "kind": "knowledge_base", "name": kb["name"]})
         calls += [{"tool": "add_knowledge_file", "args": {"knowledge_base": kb["name"], "path": path},
                    "makes": None, "kind": "knowledge_file", "name": f"{kb['name']}: {path}"} for path in kb["files"]]
+        if kb.get("urls"):
+            # Its web pages (D340 F), through the tool the Knowledge screen's "Add pages" is behind.
+            calls.append({"tool": "add_knowledge_pages", "args": {"knowledge_base": kb["name"], "urls": kb["urls"],
+                                                                  "kind": kb["kind"]},
+                          "makes": None, "kind": "knowledge_pages", "name": f"{kb['name']}: pages"})
     for agent in sorted(compiled.agents, key=lambda a: a.get("type") == "delegate"):  # members before their team
         args: dict[str, Any] = {"name": agent["name"], "description": agent.get("description") or "",
                                 "type": agent["type"], "tools": list(agent.get("tools") or []),
@@ -189,8 +194,10 @@ def _eval_calls(plan: O.Plan, main: dict) -> list[dict]:
             "cases": [c.model_dump() for c in part.cases]}, "makes": None, "kind": "eval_suite",
             "name": f"{main['name']} golden set"})
     if not part.keeps:
-        calls.append({"tool": "attach_rubric", "args": {"workflow": workflow, "rubric": EVAL_RUBRIC}, "makes": None,
-                      "kind": "rubric_attach", "name": part.name})
+        calls.append({"tool": "attach_rubric", "args": {"workflow": workflow, "rubric": EVAL_RUBRIC,
+                                                        **({"judge_every": part.judge_every}
+                                                           if part.judge_every != 1 else {})},
+                      "makes": None, "kind": "rubric_attach", "name": part.name})
     return calls
 
 

@@ -300,6 +300,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
     if pack["may_make_agents"] and (models := await _menu_lines()):
         # What a new agent's model can be, so the planner says what each needs, or the person's wish (F966).
         pack["models"] = models
+    if not evals_reachable():
+        # No Evals tools on this host (D3ASM): the planner plans no eval part, which the card would only take out.
+        pack["evals"] = "Not available here: plan no `eval`; the card points to the Evals screen."
     if ws.kbs is not None:
         pack["knowledge_bases"] = [{"id": i, "name": kb.name} for i, kb in ws.kbs.items()
                                    if getattr(kb, "status", "active") == "active"]
@@ -460,7 +463,9 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
     errors += await own_api.server_parts(plan, server_module)
     errors += await _agent_switches(plan, ws, server_module)
-    # Its eval (F1255, D340 F): held to what the Evals screen's forms hold a rubric and a golden set to.
+    # Its eval (F1255, D340 F): only where this host offers Evals' tools (cloud withholds them until its own Evals
+    # host is in: D3ASM), else left out and said, never a save that fails; then held to the Evals forms' own rules.
+    eval_notes = _without_unreachable_eval(plan)
     errors += await _eval_part(plan, base, state)
     # The person's own API (F1225): each operation the plan uses is a tool the build makes, as a read API's is (F944).
     api_errors, own_tools = await own_api.api_parts(plan)
@@ -490,7 +495,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
     needed = features_needed(filled, ws)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
-                    blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}}, notes=room_notes,
+                    blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
+                    notes=[*room_notes, *eval_notes],
                     features=needed)
 
 
@@ -538,7 +544,36 @@ async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
                 ingest.check_file(path, stat.size)
             except ingest.UploadError as why:
                 errors.append(f"knowledge '{part.name}': {path}: {why}")
+        errors += _pages_issues(part)
     return errors
+
+
+def _pages_issues(part: O.KnowledgePart) -> list[str]:
+    """A base's web pages held to what `add_knowledge_pages` takes (D340 F, one place): its own request
+    (`UrlIngestRequest`: http(s), how many in one batch, the kind); a sitemap's or a site's pages capped by Knowledge's
+    crawl limit, which the card says."""
+    part.pages_cap = 0
+    if not part.urls:
+        return []
+    from pydantic import ValidationError
+
+    from core.knowledge.api_models import UrlIngestRequest
+
+    try:
+        UrlIngestRequest(urls=list(part.urls), kind=part.kind)
+    except ValidationError as exc:
+        return [f"knowledge '{part.name}': those pages can't be added: {exc.errors()[0].get('msg')}"]
+    if part.kind != "page":
+        if len(part.urls) != 1:
+            return [f"knowledge '{part.name}': a {part.kind} is one URL, its start"]
+        try:
+            from core.config import load_settings
+            from core.knowledge.config import knowledge_settings
+
+            part.pages_cap = knowledge_settings(load_settings()).crawl_max_pages
+        except Exception:  # noqa: BLE001 — the limit unread: the card says none
+            part.pages_cap = 0
+    return []
 
 
 async def _agent_switches(plan: O.Plan, ws: Workspace, server_module: Any) -> list[str]:
@@ -1049,6 +1084,30 @@ def imitates_eval(plan: O.Plan, ws: Workspace) -> str | None:
             "rather than build a workflow that judges it.")
 
 
+#: The tools a build's eval is saved through (`build_save._eval_calls`): without them here, no eval is offered.
+EVAL_TOOLS = ("save_rubric", "attach_rubric")
+#: What the card says when this host offers no Evals tools, as the feature census says a feature it cannot reach.
+EVALS_ELSEWHERE = ("Its eval is left out: setting a rubric and test cases is not something I can do here yet. Open "
+                   "Evals (/evals) to score this workflow's runs.")
+
+
+def evals_reachable() -> bool:
+    """Whether this host offers the tools a build's eval is saved through: a structural check on the registry, never
+    words (a host withholds an area it has not wired; cloud's evals until its Evals host)."""
+    from core.product_tools import areas, registry
+
+    areas.ensure_loaded()
+    return all(registry.get(name) is not None for name in EVAL_TOOLS)
+
+
+def _without_unreachable_eval(plan: O.Plan) -> list[str]:
+    """A plan's eval taken out where this host cannot save it, with the census's words for the card."""
+    if plan.eval is None or evals_reachable():
+        return []
+    plan.eval = None
+    return [EVALS_ELSEWHERE]
+
+
 async def _eval_part(plan: O.Plan, base: O.Plan | None, state: dict) -> list[str]:
     """A plan's eval held to the Evals screen's own rules (`core.evals.service`) and to TRI1's shape (D340 F): a rubric
     with at least one criterion; 3 to 10 cases when the workflow takes an input (every one is on the card), none when
@@ -1092,13 +1151,34 @@ async def _eval_part(plan: O.Plan, base: O.Plan | None, state: dict) -> list[str
                                 "cases": [c.model_dump() for c in part.cases]}, whole=True)
         except service.EvalsRefused as exc:
             errors.append(f"eval.cases: {exc.detail}")
+    if isinstance(part.judge_every, bool) or not 1 <= part.judge_every <= service.MAX_JUDGE_EVERY:
+        errors.append(f"eval.judge_every: a whole number from 1 (every run) to {service.MAX_JUDGE_EVERY}")
     try:
         from core.config import load_settings
 
         part.judge = str(load_settings().get("judge_model") or "").strip() or workspace_model()
     except Exception:  # noqa: BLE001 — no settings read: the card names none
         part.judge = ""
+    part.judge_cost = await judge_cost_words(part.judge)
     return errors
+
+
+#: A judge call's size, roughly (`judge.build_prompt`: the rubric, the run's output, its steps and state, capped;
+#: a short JSON verdict back): what one judged run costs is priced from these.
+JUDGE_TOKENS_IN, JUDGE_TOKENS_OUT = 4_000, 400
+
+
+async def judge_cost_words(model: str) -> str:
+    """About what one judged run costs on `model`, from the rate card the model menu reads (D340 F); "" unknown."""
+    if not model:
+        return ""
+    from core.native_builder import models_menu as MM
+
+    entry = next((e for e in await MM.menu() if e.id == model), None)
+    if entry is None or entry.price_in is None or entry.price_out is None:
+        return ""
+    dollars = (entry.price_in * JUDGE_TOKENS_IN + entry.price_out * JUDGE_TOKENS_OUT) / 1_000_000
+    return f"about ${dollars:.4f}" if dollars < 0.01 else f"about ${dollars:.2f}"
 
 
 #: How a run's own input is read (F1232: what the person gives when it starts, or its schedule's message).
