@@ -105,7 +105,9 @@ from core.native_builder import prompt_lint, seed
 #: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20…; merged with v2.0 ce37b8be (the classify
 #: at a waiting plan above), b0a8a77c….
 #: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c….
-BUNDLE_SHA256 = "eac4c85cfab374094b228bf22903a9ad148ff8f285e8b68d7e4079dc00508d92"
+#: F1265: a `cannot` names its `screen` (the row's id in not_here), whose link code adds: planner rule 8 and the
+#: `cannot` line, a4b534bd….
+BUNDLE_SHA256 = "a4b534bd3101c45bc54121fa213d6d7e60605e874764f61095136cf50bf23c4c"
 
 
 def _sha(definitions) -> str:

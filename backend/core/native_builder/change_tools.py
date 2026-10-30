@@ -28,6 +28,7 @@ import re
 import unicodedata
 from typing import Any
 
+from core import feature_census
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core.native_builder import change_ops as C, one_writer
@@ -148,6 +149,9 @@ CANNOT = {"type": "function", "function": {
     "parameters": {"type": "object", "properties": {
         "why": {"type": "string"},
         "nearest": {"type": "string"},
+        "screen": {"type": "string", "description": (
+            "The screen where it is done, by its id from not_here or product_capabilities (`screen` `evals`): the "
+            "person gets its link. Name it whenever one of those rows fits; leave it out only when none does.")},
     }, "required": ["why", "nearest"]},
 }}
 
@@ -569,7 +573,22 @@ async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
     if asks_for_a_secret(f"{why}\n{nearest}"):
         # Said to the person as it is: a key is never a reason to stop, nor something to ask for (F1093).
         return {"error": CANNOT_FOR_A_KEY}
-    return {"finish": "cannot", "why": why, "nearest": nearest}
+    screen = _text(args.get("screen"))
+    if not screen:
+        return {"finish": "cannot", "why": why, "nearest": nearest}
+    ids = [s.id for s in feature_census.current()]
+    if screen not in ids:
+        return {"error": f"cannot's screen {screen!r} is no screen here: name one of {', '.join(ids)}, or leave it out "
+                         "when none fits."}
+    return {"finish": "cannot", "why": why, "nearest": nearest, "screen": screen}
+
+
+def cannot_said(draft: dict) -> str:
+    """A `cannot` in words: why, the nearest thing that works, and the link to the screen it names, made from the
+    host's census (F1265). A finish that names no screen gets no link: never one guessed from its words."""
+    said = f"{str(draft.get('why') or '').rstrip('.')}. {draft.get('nearest') or ''}".strip()
+    screen = next((s for s in feature_census.current() if s.id == draft.get("screen")), None)
+    return f"{said} Open {feature_census.link(screen)}." if screen else said
 
 
 async def say(args: dict, server_module: Any, events: list[dict]) -> dict:
@@ -934,8 +953,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         # words, never the model's, which said "Done, it's moved" of a change nobody made.
         return {**base, "outcome": "said", "say": FALLBACK_CANNOT}
     if finish == "cannot":
-        return {**base, "outcome": "said", "say": f"{draft.get('why', '').rstrip('.')}. {draft.get('nearest', '')}"
-                .strip()}
+        return {**base, "outcome": "said", "say": cannot_said(draft)}
     if finish != "submit_change":
         return {**base, "outcome": "said", "say": "I could not work out what to change. Say it again in other words."}
 

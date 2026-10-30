@@ -52,9 +52,9 @@ SIGNATURES: dict[str, Callable[[O.Plan, Any], str | bool | None]] = {
 def _said(screen: feature_census.Screen) -> str:
     """A row's words for a plan that stands in for it: what is done from here there, or that it is the screen's."""
     if screen.does:
-        return (f"That is {screen.label} made by hand: Synapse AI {screen.does} on {screen.label} ({screen.href}). "
+        return (f"That is {screen.label} made by hand: Synapse AI {screen.does} on {feature_census.link(screen)}. "
                 "Ask for that, rather than build a workflow that stands in for it.")
-    return (f"That is {screen.label} made by hand: {screen.cant} is done on {screen.label} ({screen.href}), not from "
+    return (f"That is {screen.label} made by hand: {screen.cant} is done on {feature_census.link(screen)}, not from "
             "here yet. Open it there, rather than build a workflow that stands in for it.")
 
 
