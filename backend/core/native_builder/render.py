@@ -286,11 +286,16 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
 
     if plan.schedule and (plan.schedule.says or "").strip():
         when = plan.schedule.says.strip()
-        detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else "",
+        every = (f"every {plan.schedule.interval_value} {plan.schedule.interval_unit}"
+                 if plan.schedule.schedule_type == "interval" and plan.schedule.interval_value else "")
+        detail = ", ".join(x for x in (f"`{plan.schedule.cron.strip()}`" if plan.schedule.cron.strip() else every,
                                        zone_words(plan.schedule.timezone) if plan.schedule.timezone else "") if x)
         text = f"**When:** {when}" + (f" ({detail})" if detail else "")
         if (plan.schedule.input or "").strip():
             text += f"\n**Each run starts with:** {plan.schedule.input.strip()}"
+        text += ("\n**If a time is missed** (the machine was off): "
+                 + ("it runs once as soon as it can" if plan.schedule.missed_run_policy == "run_immediately"
+                    else "it is skipped, and it runs at the next time"))
         text += "\nIt is made paused: turn it on under Schedules once you have checked what each run starts with."
         parts.append(f"## Schedule\n{text}")
 

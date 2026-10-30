@@ -116,7 +116,15 @@ class ModelPick(BaseModel):
 
 
 class Schedule(_Written):
-    cron: str = Field(description="Five-field cron, e.g. 0 7 * * *")
+    #: How it is timed, by the same names and values as the Schedules screen and the change ops (F1267; D340 F).
+    schedule_type: Literal["cron", "interval"] = Field("cron", description="cron: at set times; interval: every so "
+                                                                           "often, counted from when it was made")
+    cron: str = Field("", description="cron: five-field cron, e.g. 0 7 * * *")
+    interval_value: int | None = Field(None, description="interval: how many units between runs, e.g. 15")
+    interval_unit: Literal["minutes", "hours", "days"] | None = Field(None, description="interval: minutes, hours or "
+                                                                                         "days")
+    missed_run_policy: str = Field("skip", description="A time it missed (the machine was off): skip, or "
+                                                       "run_immediately to run it once as soon as it can")
     timezone: str | None = Field(None, description="Only a timezone the person named, as a name like "
                                                    "America/New_York: the cron is read on it. Left out, the schedule "
                                                    "runs on the person's own clock")
@@ -615,9 +623,28 @@ def check_structure(plan: PlanDraft, inventory: Inventory) -> tuple[list[str], l
     for name in tool_names(plan):
         if name not in inventory.tools:
             notes.append(f"missing tool: {name}")
-    if plan.schedule and not _FIVE_FIELDS.match(plan.schedule.cron.strip()):
-        errors.append(f"schedule.cron: '{plan.schedule.cron}' is not five fields")
+    if plan.schedule:
+        errors += schedule_issues(plan.schedule)
     return errors, sorted(set(notes))
+
+
+def schedule_issues(schedule: Schedule) -> list[str]:
+    """A plan's schedule held to the Schedules screen's own fields, through the change route's one check of them
+    (`change_ops._field_issue` on create_schedule, F1267): its type, its cron or interval, what it does with a missed
+    time."""
+    from core.native_builder import change_ops as C
+
+    op, errors = C.OPS["create_schedule"], []
+    if schedule.schedule_type == "cron":
+        if not _FIVE_FIELDS.match(schedule.cron.strip()):
+            errors.append(f"schedule.cron: '{schedule.cron}' is not five fields")
+    else:
+        for key in ("interval_value", "interval_unit"):
+            if (said := C._field_issue(op, key, getattr(schedule, key))) is not None:
+                errors.append(f"schedule.{key}: {said}")
+    if (said := C._field_issue(op, "missed_run_policy", schedule.missed_run_policy)) is not None:
+        errors.append(f"schedule.missed_run_policy: {said}")
+    return errors
 
 
 async def _gates(plan: Plan, server_module: Any, custom: list, agents: dict[str, dict] | None,

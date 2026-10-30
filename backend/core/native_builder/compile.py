@@ -319,8 +319,12 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
     if plan.schedule:
         schedule = {"name": plan.title, "description": plan.schedule.says, "enabled": False,
                     "target_type": "orchestration", "target_id": orch_id,
-                    "prompt": plan.schedule.input or plan.summary, "schedule_type": "cron",
-                    "cron_expression": plan.schedule.cron.strip(), "missed_run_policy": "skip",
+                    "prompt": plan.schedule.input or plan.summary, "schedule_type": plan.schedule.schedule_type,
+                    **({"cron_expression": plan.schedule.cron.strip()} if plan.schedule.schedule_type == "cron" else
+                       {"interval_value": plan.schedule.interval_value,
+                        "interval_unit": plan.schedule.interval_unit}),
+                    # What it does with a time it missed, as its plan says (D340 F; the screen's two values, F1267).
+                    "missed_run_policy": plan.schedule.missed_run_policy,
                     # Read on the person's clock (F948): the one they named, else their own; none is UTC.
                     "timezone": plan.schedule.timezone or None}
         from core.models_schedule import ScheduleCreate, ScheduleInvalid, validate_timing
