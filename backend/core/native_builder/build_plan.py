@@ -533,9 +533,13 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         return Examined(filled, list(misnamed.values()), missing=list(filled.missing), misnamed=list(misnamed))
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
     needed = features_needed(filled, ws)
-    from core.native_builder import structure
+    from core.native_builder import estimate, structure
 
     shaped = await structure.issues(filled, ws)
+    try:
+        filled.run_cost = (await estimate.of(filled, ws)).words()
+    except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
+        _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
                     notes=[*room_notes, *eval_notes, *structure.as_notes(shaped)],
@@ -1604,7 +1608,7 @@ async def check_draft(args: dict, server_module: Any, events: list[dict]) -> dic
     return {"ok": not (found.errors or found.blocks or copied), "errors": found.errors,
             "missing": found.missing, "misnamed": found.misnamed, "blocks": found.blocks,
             "features_off": found.features, "structure": found.structure,
-            "imitations": [f["say"] for f in copied]}
+            "imitations": [f["say"] for f in copied], "estimate": found.plan.run_cost}
 
 
 register_builder_tool(CHECK_DRAFT, check_draft)
