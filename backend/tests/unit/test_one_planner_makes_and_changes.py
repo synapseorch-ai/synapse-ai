@@ -15,6 +15,7 @@ import types
 
 import pytest
 
+import core.builder_tools  # noqa: F401 — loads the builder's modules in the product's order (change_tools after it)
 from core.expressions import evaluate_expression
 from core.native_builder.seed import bundled_definitions
 
@@ -101,15 +102,31 @@ class TestEveryActReachesIt:
 
 
 class TestEachFinishReachesItsCheck:
-    @pytest.mark.parametrize("finish, step", [
-        ("submit_plan", "step_check_plan"), ("ask_person", "step_check_plan"), ("cannot", "step_check_plan"),
-        ("submit_change", "step_check_change"), ("say", "step_say"),
+    @pytest.mark.parametrize("intent, finish, step", [
+        # The planner's own choice decides a plan or a change, whatever the classifier said (F1242's class).
+        ("create", "submit_plan", "step_check_plan"), ("manage", "submit_plan", "step_check_plan"),
+        ("manage", "submit_change", "step_check_change"), ("create", "submit_change", "step_check_change"),
+        ("create", "say", "step_say"), ("manage", "say", "step_say"),
+        # A question or a "can't" follows the side the run is on, so its answer is kept where that check reads it
+        # (F960's answer across the pauses on a change; F1226's on a plan).
+        ("create", "ask_person", "step_check_plan"), ("update", "cannot", "step_check_plan"),
+        ("manage", "ask_person", "step_check_change"), ("manage", "cannot", "step_check_change"),
     ])
-    def test_the_finish_switch(self, bundle, finish, step):
+    def test_the_finish_switch(self, bundle, intent, finish, step):
         route = bundle["steps"]["step_plan_finish"]
         assert bundle["steps"]["step_plan"]["next_step_id"] == "step_plan_finish"
-        value = evaluate_expression(route["switch_expression"], {"plan_draft": {"finish": finish}}, None).value
+        state = {"plan_draft": {"finish": finish}, "intent": intent}
+        value = evaluate_expression(route["switch_expression"], state, None).value
         assert route["switch_cases"].get(value, route["switch_default_step_id"]) == step
+
+    def test_a_planner_that_never_finishes_says_so_plainly(self, bundle):
+        """The change planner's fallback, now the one planner's: no finish ends in the change check's plain "I couldn't
+        turn that into something I can make or change here", never a failed run (a build's planner had none)."""
+        plan, route = bundle["steps"]["step_plan"], bundle["steps"]["step_plan_finish"]
+        assert plan["finish_fallback"] == {"finish": "cannot"}
+        state = {"plan_draft": {**plan["finish_fallback"], "fallback": True}}
+        value = evaluate_expression(route["switch_expression"], state, None).value
+        assert route["switch_cases"].get(value, route["switch_default_step_id"]) == "step_check_change"
 
     def test_a_finish_that_names_nothing_is_a_plans_check(self, bundle):
         route = bundle["steps"]["step_plan_finish"]

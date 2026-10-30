@@ -170,7 +170,7 @@ async def test_a_change_the_planner_has_no_op_for_is_said_in_our_words(client, b
     said = _summary(events)
     # Neutral: the fallback fires on any reply in words, a weak model's "Sure, renamed it" to a change it could make
     # too, so it claims no reason code does not know (SAI2's review, 3).
-    assert said == "I couldn't turn that into a change I can make here. Say it another way, or do it on its own page."
+    assert said == "I couldn't turn that into something I can make or change here. Say it another way, or do it on its own page."
     assert "ended without calling" not in json.dumps(events)
     assert not [e for e in events if e.get("type") in ("orchestration_error", "step_error")]
 

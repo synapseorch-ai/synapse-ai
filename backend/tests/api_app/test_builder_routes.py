@@ -298,7 +298,7 @@ class TestSeeHowImBuilt:
         assert result["status"] == "created"
         # P3b: the build's own researcher (an E2 finish on report_findings); SAI2-P4: the front door's classifier and
         # talk's agent; F1241's follow-up: the classifier at a waiting plan.
-        assert len(result["agent_ids"]) == 11
+        assert len(result["agent_ids"]) == 10
 
         from core.store.resources import get_orchestration
         copy = await get_orchestration(result["orchestration_id"])
@@ -479,8 +479,9 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
         """The negative half, driven through an *agent* step.
 
         `pass_images` is only read by the agent executor, so the step this goes
-        through must be an agent step without it: the change planner
-        (`step_change`, SAI2-P2) is one.
+        through must be an agent step without it: the classifier is one, and the
+        run's first model call. The one planner asks for them (D340 D0: the
+        change planner, which did not, is folded into it), so it is given them.
         """
         fake_llm.script([
             route("manage"),
@@ -495,7 +496,8 @@ class TestAnAttachmentReachesTheStepAndNothingElse:
         steps = [e.get("step_name") for e in events if e["type"] == "step_start"]
         assert "Plan It" in steps, steps
         assert len(fake_llm.calls) == 2
-        assert not fake_llm.calls[1].get("images")
+        assert not fake_llm.calls[0].get("images"), "the classifier did not ask"
+        assert fake_llm.calls[1].get("images"), "the one planner asks (pass_images)"
 
     async def test_no_image_bytes_reach_the_browser(self, client, builder, fake_llm):
         fake_llm.script([route("answer"), "A cat."])

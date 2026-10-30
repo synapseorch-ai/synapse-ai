@@ -89,7 +89,11 @@ from core.native_builder import prompt_lint, seed
 #: c9ada080… on its branch; on fix-forward 15's tree, `classify_context` in the one form (F1252), 258533db….
 #: The classify at a waiting plan names the plan in the one form, `{{ state.turn.plan_waiting }}` (F1252; it read the
 #: same through the converter before), ac29e4a5….
-BUNDLE_SHA256 = "ac29e4a5deeefecb3e5f7da8dc16a25e4c8a92c98f60734d5bf57cd080e6b4f0"
+#: D340 D0: one planner makes and changes — the change planner and its step fold into `step_plan` (both toolsets, five
+#: finishes with `say`, instructions in sections that keep each rule's number, the change planner's finish fallback),
+#: gather runs both context readers for every act, and `step_plan_finish` routes each finish to the check that was
+#: there (a question or a "can't" on a change to the change check), 2d1b2d39….
+BUNDLE_SHA256 = "2d1b2d39f37451cd565b185d9a4a45656ae3e0b7b7fd1abdbe2ec79e27029bf0"
 
 
 def _sha(definitions) -> str:

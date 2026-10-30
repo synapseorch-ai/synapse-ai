@@ -41,7 +41,7 @@ WAITING, CHANGED, SET_ASIDE = "waiting", "changed", "set_aside"
 
 #: What the person is told when the change planner ended in words, not with a finish (F958). Neutral: code knows only
 #: that no change came of it, not why (a request outside the ops, or a model that answered in words anyway).
-FALLBACK_CANNOT = "I couldn't turn that into a change I can make here. Say it another way, or do it on its own page."
+FALLBACK_CANNOT = "I couldn't turn that into something I can make or change here. Say it another way, or do it on its own page."
 
 #: A change whose new value holds a key (or the door's mark where one was taken out of the person's message).
 KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. Add it on its own settings screen, "

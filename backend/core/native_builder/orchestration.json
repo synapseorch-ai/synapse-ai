@@ -1176,6 +1176,9 @@
                 "ask_person",
                 "cannot"
             ],
+            "finish_fallback": {
+                "finish": "cannot"
+            },
             "next_step_id": "step_plan_finish"
         },
         {
@@ -1205,12 +1208,15 @@
             "position_x": 800,
             "position_y": 0,
             "input_keys": [
-                "plan_draft"
+                "plan_draft",
+                "intent"
             ],
-            "switch_expression": "state.plan_draft.finish or \"submit_plan\"",
+            "switch_expression": "state.plan_draft.fallback and \"fallback\" or (state.intent == \"manage\" and state.plan_draft.finish in [\"ask_person\", \"cannot\"] and \"on_change\") or state.plan_draft.finish or \"submit_plan\"",
             "switch_cases": {
                 "submit_change": "step_check_change",
-                "say": "step_say"
+                "say": "step_say",
+                "fallback": "step_check_change",
+                "on_change": "step_check_change"
             },
             "switch_default_step_id": "step_check_plan"
         },

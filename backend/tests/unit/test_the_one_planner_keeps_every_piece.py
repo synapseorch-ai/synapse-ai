@@ -75,7 +75,9 @@ KEPT_TOOLS = ["prepare_connection", "look_up_providers", "report_findings", "che
 
 @pytest.mark.parametrize("name", KEPT_TOOLS)
 def test_each_tool_is_still_registered(name):
-    import core.builder_connect  # noqa: F401 — each registers its tools at import
+    import core.builder_tools  # noqa: F401 — first, as the product loads it: the modules below register at import
+    import core.builder_connect  # noqa: F401
+    import core.builder_research  # noqa: F401
     import core.native_builder.answer_pack  # noqa: F401
     import core.native_builder.build_plan  # noqa: F401
     import core.native_builder.change_apply  # noqa: F401

@@ -87,7 +87,7 @@ def test_the_split_is_code_between_the_planner_and_its_review():
     assert route["type"] == "switch" and route["switch_cases"]["submit_change"] == "step_check_change"
     check = steps["step_check_change"]
     assert check["type"] == "tool" and check["forced_tool"] == "check_change"
-    assert check["tool_arguments"] == {"draft": "{{ state.change_draft }}"}  # set: no model reads the draft
+    assert check["tool_arguments"] == {"draft": "{{ state.plan_draft }}"}  # set: no model reads the draft
     route = steps["step_check_route"]
     assert route["type"] == "switch" and route["switch_expression"] == 'state.change_checked.outcome or "error"'
     assert route["switch_cases"]["review"] == "step_manage_review"
