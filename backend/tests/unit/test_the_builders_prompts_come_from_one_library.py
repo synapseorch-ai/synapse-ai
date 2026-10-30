@@ -100,12 +100,15 @@ from core.native_builder import prompt_lint, seed
 #: are the planner's (8, then the one 'built or changed' end), d3ac6152….
 #: D340 D2: the planner researches while it plans — a `research_questions` finish (product, public, business) to
 #: code's answers first (`step_research_answer`), the researcher for what is left (`step_research_find`, its answers
-#: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863….
+#: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863…;
+#: with the sites a message names in the pack, kept a conversation in `named_pages`, and the planner told the person's
+#: word comes before what was read or found (Naveen 10-31), e4e744c8….
 #: F1257: the plan researcher and the researcher read search_help, and research_rules says what this product does is
 #: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20…; merged with v2.0 ce37b8be (the classify
 #: at a waiting plan above), b0a8a77c….
 #: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c….
-BUNDLE_SHA256 = "eac4c85cfab374094b228bf22903a9ad148ff8f285e8b68d7e4079dc00508d92"
+#: Merged (F1257 with TRI1's named sites, ac03b94b) for D340 D3: 9558556c….
+BUNDLE_SHA256 = "9558556c69f02ee5c878bfae00da42362824ea791b36fd4d5901a4e96170e14c"
 
 
 def _sha(definitions) -> str:

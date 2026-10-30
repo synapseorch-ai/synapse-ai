@@ -111,8 +111,13 @@ async def _from_page(question: dict) -> dict | None:
     text = " ".join(x for x in (question.get("url"), question["ask"]) if x)
     if not named_sites.named(text):
         return None
-    already = (_state().get("plan_answers") or {}).get("pages") or {}
-    pages = await named_sites.read_named(text, already=already)
+    state = _state()
+    kept = state.get(named_sites.PAGES_KEY)
+    already = {**((state.get("plan_answers") or {}).get("pages") or {}), **(kept if isinstance(kept, dict) else {})}
+    pages = await named_sites.read_named(text, already=named_sites.settled(already))
+    if pages:
+        # Read once a conversation, as gather's are (D340 D2).
+        state[named_sites.PAGES_KEY] = {**already, **pages}
     reached = [p for p in pages.values() if isinstance(p, dict) and p.get("reached")]
     if not reached:
         why = next((p.get("why_not") for p in pages.values() if isinstance(p, dict) and p.get("why_not")), "")

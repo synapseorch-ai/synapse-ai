@@ -254,6 +254,29 @@ def go_ahead_request(state: dict) -> str | None:
             f"is marked missing. (They said only \"{said.strip()}\" after the findings.)")
 
 
+#: What the planner sees of a read site (D340 B): the facts, not the fetch's bookkeeping.
+_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "why_not")
+
+
+async def _named_sites(state: dict) -> list[dict]:
+    """The sites the person's message names, as read (`named_sites.read_named`), each kept in the run's state so this
+    conversation never reads it again (D340 D2). A read that fails is a fact in the list, and one that raises is none:
+    never a pack that fails."""
+    from core.native_builder import named_sites
+
+    kept = state.get(named_sites.PAGES_KEY)
+    already = kept if isinstance(kept, dict) else {}
+    try:
+        pages = await named_sites.read_named(str(state.get("user_message") or ""),
+                                             already=named_sites.settled(already))
+    except Exception as exc:  # noqa: BLE001 — sites unread are a plan without them, as before D340
+        _log.warning("the sites the message names were not read: %s", exc)
+        return []
+    if pages:
+        state[named_sites.PAGES_KEY] = {**already, **pages}
+    return [{k: page[k] for k in _SITE_FIELDS if page.get(k)} for page in pages.values() if isinstance(page, dict)]
+
+
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:
     from core.builder_help import product_capabilities
     from core.native_builder import features
@@ -301,6 +324,9 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
             pack["signed_in_sites"] = sites
     except Exception as exc:  # noqa: BLE001 — no kept sessions read is a pack without them
         _log.warning("the build's kept sessions were not read: %s", exc)
+    # The sites the message names, read through the guarded read once a conversation (D340 B, D2): typed facts, never
+    # the page. Always present, empty when it names none.
+    pack["named_sites"] = await _named_sites(state)
     # A bare "build it" after findings: their goal is the request (F1064); the person's words stay theirs. Always
     # present, empty when there is none, so the planner's template never shows an unfilled reference.
     pack["request"] = go_ahead_request(state) or ""
@@ -1866,7 +1892,9 @@ UNSAID_LEAD = "Before I show you the plan, check what I filled in that you haven
 GIVEN_KEYS = ("user_message", "chat_history", "org_profile", "plan_context", "existing_orch", "plan_findings",
               "plan_research", "plan_lookup", "findings", "prior_findings", "export_source", "knowledge_steps",
               "browser_steps", "current_page", "human_response", "review_feedback", "connect_answer", "plan_answer",
-              "change_clarify", "change_heard")
+              "change_clarify", "change_heard",
+              # What the planner's own research found (D340 D2): an address it read there was given, not guessed.
+              "plan_answers")
 
 
 async def _given(state: dict, ws: Workspace, asked: list[dict]) -> list[Any]:
