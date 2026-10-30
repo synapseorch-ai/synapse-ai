@@ -62,9 +62,11 @@ class TestThereIsOnePlanner:
             assert section in prompt, section
         building, changing = prompt.split("# Building", 1)[1], prompt.split("# Changing", 1)[1]
         assert "8. What the pack's `not_here` lists is done on its screen" in building
-        for n in range(1, 11):
+        for n in range(1, 12):
             assert f"\n{n}. " in changing, f"the change rules keep their numbers: {n}"
         assert "never delete it and make a new one" in changing  # rule 6, as it was
+        assert "11. Evals (topic `evals`) score a workflow's runs" in changing  # F1255's, folded in under its number
+        assert changing.count("recordings, evals)") == 1 and prompt.count("recordings, evals)") == 2
 
     def test_its_template_has_both_contexts_and_both_second_passes(self, bundle):
         template = bundle["steps"]["step_plan"]["prompt_template"]
