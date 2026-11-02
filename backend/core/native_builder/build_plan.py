@@ -30,7 +30,7 @@ from typing import Any
 from core.builder_tools import register_builder_tool
 from core.log import get_logger
 from core import feature_census
-from core.native_builder import boards_rule, imitation, objects as O, one_writer, own_api, periods
+from core.native_builder import boards_rule, charts, imitation, objects as O, one_writer, own_api, periods
 from core.native_builder.change_tools import _caller, _run
 from core.product_tools.approved import PLACEHOLDER
 
@@ -254,6 +254,11 @@ def go_ahead_request(state: dict) -> str | None:
             f"is marked missing. (They said only \"{said.strip()}\" after the findings.)")
 
 
+def _request_words(state: dict) -> str:
+    """The person's request in their words, with a bare go-ahead's goal (as `periods` reads it)."""
+    return f"{state.get('user_message') or ''} {go_ahead_request(state) or ''}"
+
+
 #: What the planner sees of a read site (D340 B): the facts, not the fetch's bookkeeping.
 _SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "why_not")
 
@@ -308,6 +313,8 @@ async def read_plan_context(args: dict, server_module: Any, events: list[dict]) 
         # Each feature the person's message names, looked up before any plan (F1257): what is done there from here or
         # not, what imitating it looks like, and the help and docs on it. None named, no key.
         **({"features": named} if (named := features.features(str(state.get("user_message") or ""))) else {}),
+        # How a chart they ask for lands (F1288): a CSV in the Vault, written by `vault_write`. Not asked, no key.
+        **({"chart": charts.HOW} if charts.asked(_request_words(state)) else {}),
         # What a new agent's switches may name (F1223): connected MCP servers, and the sites with a kept session.
         "servers": sorted(_servers(server_module)),
         # A schedule's times are on this clock unless the person names another; never ask them for it (F948).
@@ -498,6 +505,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         before, _ = O.check_structure(base, ws.inventory())
         errors = [e for e in errors if not ("no step leads to it" in e and e in before)]
     errors += await _rules(plan, ws, state) + asked
+    # A chart they asked for has its route (F1288): something in the plan writes the Vault.
+    errors += charts.issues(plan, ws, _request_words(state))
     errors += await _knowledge_parts(plan, ws)
     # The person's own server first (F1225): a connected one's name is what its agents' `servers` are held to.
     errors += await own_api.server_parts(plan, server_module)
