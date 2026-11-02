@@ -28,6 +28,7 @@ import { humanAnswer, initialHumanValues, type HumanValues } from '@/components/
 import { Button, Markdown } from '@/components/ui';
 import { cn } from '@/lib/cn';
 
+import { ChangeRows } from './ChangeRows';
 import {
     aloneWords, askedLead, askedWords, changeOf, planDefinition, planFromChange, planFromPlanObject, planOf, readPlan,
     splitQuestion, featureName, strongerWords, turnOnWords, withoutWords,
@@ -219,6 +220,7 @@ function Steps({ plan }: { plan: Plan }) {
                             {step.name}
                         </span>
                         {step.detail && <span className="block break-words text-xs text-text-muted">{step.detail}</span>}
+                        {step.rows && <ChangeRows rows={step.rows} className="mt-1.5" />}
                     </span>
                     {step.label ? (
                         <span className={cn('text-right text-xs', step.role === 'person' ? 'font-medium text-person-ink' : 'text-text-faint')}>
