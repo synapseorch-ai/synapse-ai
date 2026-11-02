@@ -70,6 +70,7 @@
         "plan_answers": {"type": "dict", "default": {}, "description": "The answers to the one planner's research questions (D340 D2): code's (help, the guarded read), the researcher's, with their sources; and what is left for the researcher or the person"},
         "research_found": {"type": "dict", "default": {}, "description": "The researcher's report on the planner's questions (report_findings' answers, D340 D2)"},
         "named_pages": {"type": "dict", "default": {}, "description": "The sites this conversation has read, by URL (named_sites, D340 D2): a reached one is not read again; the chat route carries them to the next run"},
+        "specs_read": {"type": "dict", "default": {}, "description": "The person's own API specs this conversation has read, by name (own_api, F1298): its name and where its spec is, never a key; the chat route carries them to the next run"},
         "change_checked": {"type": "str", "default": "", "description": "`check_change`'s answer: each op checked, the cards put up, the exact calls, the review's words and where the route goes (`outcome`)"},
         "change_clarify": {"type": "dict", "default": {}, "description": "The person's answer to the change planner's question or a which-one list"},
         "change_heard": {"type": "list", "default": [], "description": "What the person answered and replied this run, each once: the words a rename's new name must come from (F960)"},

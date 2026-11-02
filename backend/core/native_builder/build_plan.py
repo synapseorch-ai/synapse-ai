@@ -507,6 +507,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     eval_notes = _without_unreachable_eval(plan)
     errors += await _eval_part(plan, base, state)
     # The person's own API (F1225): each operation the plan uses is a tool the build makes, as a read API's is (F944).
+    # A spec this conversation read, for a provider the lookup found, wins over the lookup's endpoints (F1298).
+    errors += await own_api.from_read_specs(plan, state)
     api_errors, own_tools = await own_api.api_parts(plan)
     errors += api_errors
     if plan.schedule:
