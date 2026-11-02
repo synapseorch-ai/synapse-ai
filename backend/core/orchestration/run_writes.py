@@ -32,7 +32,7 @@ STOPPED_KEY = "_run_stopped"
 NOTHING_CHANGED = "Nothing in your workspace changed."
 
 _NOUN = {"orchestration": "workflow", "agent": "agent", "tool": "tool", "skill": "skill", "schedule": "schedule",
-         "mcp_server": "app", "knowledge_base": "knowledge base"}
+         "mcp_server": "app", "knowledge_base": "knowledge base", "document": "document", "memory": "memory item"}
 
 
 def record(state: dict, event: dict) -> None:
@@ -120,6 +120,7 @@ def render(writes: Any, failures: Any = None, stopped: Any = None) -> str:
     groups: dict[tuple[str, str], list[str]] = {}
     schedules: list[str] = []
     removed: list[str] = []
+    settings_changed = False
     for (kind, _), w in net.items():
         name = str(w.get("name") or w.get("id") or kind)
         action = w.get("action")
@@ -132,6 +133,10 @@ def render(writes: Any, failures: Any = None, stopped: Any = None) -> str:
                                  f"you're ready.")
             else:
                 schedules.append(f'{verb} the schedule "{name}"{when}' + (", and it is on." if state == "on" else "."))
+            continue
+        if kind == "settings":
+            # The workspace's own settings (settings_set, F1285): one thing, said as the person reads it.
+            settings_changed = True
             continue
         if action == "deleted" and w.get("was_created"):
             reason = w.get("reason") or "it never passed validation"
@@ -152,7 +157,10 @@ def render(writes: Any, failures: Any = None, stopped: Any = None) -> str:
             else:
                 lines.append(f"{verbs[action]} the {noun}{'s' if len(names) > 1 else ''} {_quoted(names)}.")
     for (kind, action), names in groups.items():  # a kind not listed above, said plainly
-        lines.append(f"{verbs.get(action, action.title())} the {kind} {_quoted(names)}.")
+        noun = _NOUN.get(kind, kind.replace("_", " "))
+        lines.append(f"{verbs.get(action, action.title())} the {noun} {_quoted(names)}.")
+    if settings_changed:
+        lines.append("Changed this workspace's settings.")
     lines += schedules + removed
     if isinstance(stopped, str) and stopped.strip():
         lines.append(stopped.strip())

@@ -162,7 +162,9 @@ export interface ActionSpec {
 
 /** What the builder changed, as the dispatcher reported it. */
 export interface SavedResource {
-    kind: 'agent' | 'orchestration' | 'tool' | 'skill' | 'schedule';
+    // A reviewed change's own write says its target's kind too (F1285): a knowledge note, a memory item, the settings.
+    kind: 'agent' | 'orchestration' | 'tool' | 'skill' | 'schedule' | 'knowledge_base' | 'document' | 'memory'
+        | 'settings' | 'mcp_server';
     action: 'created' | 'updated' | 'deleted';
     id: string | null;
     name: string | null;
@@ -251,8 +253,15 @@ export function refusedAnswer(state: BuilderState): boolean {
  * `resource_saved` is the one event whose whole point is that the panel does
  * not have to guess. Everything else is presentation.
  */
+/** What the person reads for each kind; one the panel doesn't know yet is said by its own name, never a crash. */
+const BANNER_NOUN: Record<string, string> = {
+    orchestration: 'Workflow', knowledge_base: 'Knowledge base', memory: 'Memory item', mcp_server: 'App',
+};
+
 function bannerText(saved: SavedResource): string {
-    const noun = saved.kind === 'orchestration' ? 'Workflow' : saved.kind[0].toUpperCase() + saved.kind.slice(1);
+    if (saved.kind === 'settings') return 'Workspace settings updated';
+    const plain = String(saved.kind ?? 'item').replace(/_/g, ' ');
+    const noun = BANNER_NOUN[saved.kind] ?? plain[0].toUpperCase() + plain.slice(1);
     const count = saved.resource?.count as number | undefined;
     if (saved.kind === 'tool' && typeof count === 'number') {
         return `Imported ${count} tool${count === 1 ? '' : 's'} into ${saved.name}`;
