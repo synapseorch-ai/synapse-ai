@@ -79,6 +79,17 @@ class TestThePlanHasItsRoute:
     async def test_no_chart_asked_for_is_no_rule(self, client):
         assert await _chart_errors(_plan([TOTALS]), _ws("vault_write"), "Total last week's sales by region") == []
 
+    @pytest.mark.parametrize("named", ["tool step", "agent"])
+    async def test_with_no_vault_write_here_naming_it_anyway_is_still_cannot(self, client, named):
+        """Where the Vault's write is off (cloud's fleet, which serves only its reads; an install without the sandbox),
+        a plan that names `vault_write` anyway is told the same, never passed on to fail as a missing tool (79)."""
+        clerk = {"name": "Sales clerk", "purpose": "Totals sales", "tools": ["vault_write"]}
+        step = {"id": "chart", "type": "agent", "name": "Chart it", "does": "Totals and saves the chart",
+                "agent": "Sales clerk", "prompt": "Total and save.", "next": "end"}
+        draft = (_plan([{**TOTALS, "next": "save"}, SAVE]) if named == "tool step" else _plan([step], [clerk]))
+        said = await _chart_errors(draft, _ws("read_file", "list_files"))
+        assert said and "finish with `cannot`" in said[0], said
+
 
 class TestThePackSaysHow:
     async def _pack(self, message: str) -> dict:
