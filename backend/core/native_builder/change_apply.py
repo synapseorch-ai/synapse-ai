@@ -207,6 +207,7 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                               "it as it is now. Ask again to change it.")
                 continue
             call = item["call"]
+            said_before = len(events)
             # One chat writes a workflow at a time (TABS2, F1063): under its lock, a chat whose turn began earlier
             # and still holds it goes first.
             async with one_writer.writing_op(op.name, target.get("id") or "", run_id=run_id,
@@ -233,12 +234,36 @@ async def apply_change(args: dict, server_module: Any, events: list[dict]) -> di
                 continue
             applied.append({"op": op.name, "target": {**target, "id": target_id}, "says": item.get("says", ""),
                             "before": item.get("before"), "fields": item.get("fields")})
+            if not _said_its_write(events, said_before):
+                _say_write(events, op, target, target_id)
     effect = " ".join(failed)
     if applied or failed:
         await _card({**checked, "ops": checked.get("ops") or []}, stage=CHANGED if applied else SET_ASIDE,
                     data={"change": checked, "applied": applied, "failed": failed})
     return {"object": "change_applied", "applied": [a["op"] for a in applied], "failed": failed,
             "effect": (" " + effect) if effect else ""}
+
+
+#: How the run's record names an op's target where the builder's tools name it otherwise (a workflow is an
+#: orchestration there), and what each op kind did.
+_WRITE_KIND = {"workflow": "orchestration"}
+_WRITE_ACTION = {"create": "created", "delete": "deleted"}
+
+
+def _said_its_write(events: list[dict], since: int) -> bool:
+    """Whether the op's call yielded its own `resource_saved` (a workflow's, an agent's, a schedule's, a tool's)."""
+    return any(isinstance(e, dict) and e.get("type") == "resource_saved" for e in events[since:])
+
+
+def _say_write(events: list[dict], op: C.Op, target: dict, target_id: str | None) -> None:
+    """The write of an applied op whose tool said nothing of it (a knowledge note, a memory item, the settings, a
+    skill): one `resource_saved` from here, so the run's record has it and its summary never says "Nothing in your
+    workspace changed" after a change that applied (F1285: prod-04's note was edited and the person was told nothing
+    changed). Every write, create and delete in the table comes through here, so a new op is counted too."""
+    from core.builder_tools import _emit
+
+    _emit(events, _WRITE_KIND.get(op.target, op.target), _WRITE_ACTION.get(op.kind, "updated"), target_id,
+          target.get("name") or target_id)
 
 
 def _no_effect(label: str, off: dict) -> str:
