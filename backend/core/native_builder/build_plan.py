@@ -967,10 +967,13 @@ def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
 
 def _api_names(plan: O.Plan, state: dict) -> list[str]:
     """A tool that names a provider whose API was read, but none of its calls: the plan calls a read API's endpoint by
-    its tool's name, so code makes exactly that call (A7, F944)."""
+    its tool's name, so code makes exactly that call (A7, F944). A tool of an API the plan names in `apis` is that
+    spec's, by the spec's own names (F1225, F1298): never held to the web lookup's."""
     from core.builder_research import _words
+    from core.native_builder.own_api import prefix_of
 
     findings = _obj(state.get(FINDINGS_KEY))
+    own = tuple(prefix_of(p.name) + "_" for p in plan.apis)
     errors = []
     for option in (findings or {}).get("options") or [] if isinstance(findings, dict) else []:
         spec = option.get("api") if isinstance(option.get("api"), dict) else None
@@ -979,6 +982,8 @@ def _api_names(plan: O.Plan, state: dict) -> list[str]:
             continue
         provider = set(_words(str(option.get("provider") or "")))
         for name in O.tool_names(plan):
+            if own and name.startswith(own):
+                continue
             if name not in tools and provider and provider <= set(_words(name.replace("_", " "))):
                 errors.append(f"`{name}`: {option.get('provider')}'s API was read; call it by its tools' names: "
                               + ", ".join(f"`{t}`" for t in tools))
