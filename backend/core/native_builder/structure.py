@@ -17,18 +17,16 @@ A finding is sent back once, then said on the card: never a reason a plan cannot
 """
 from __future__ import annotations
 
-import re
 from typing import TYPE_CHECKING, Any
 
 from core.native_builder import objects as O
+from core.templating import STATE_REF, one_form
 
 if TYPE_CHECKING:
     from core.native_builder.build_plan import Workspace
 
 #: The built-in page reads a workflow's agent can call (the scraper's, `build_plan._BUILT_IN_SCRAPE`).
 PAGE_READS = ("scrape_url", "scrape_structured", "search_page", "extract_links")
-#: A step's read of another's answer, `{{ state.<step id> }}`.
-_STATE_READ = re.compile(r"\{\{\s*state\.([A-Za-z_][A-Za-z0-9_]*)")
 
 
 def _reads(name: str, custom: dict[str, dict]) -> bool:
@@ -80,7 +78,7 @@ def _a_team(plan: O.Plan, ws: Workspace, steps: list[O.Step]) -> str | None:
     for s in steps:
         if s.id not in by:
             continue
-        for read in _STATE_READ.findall(s.prompt or ""):
+        for read in (m.group(1).split(".")[0] for m in STATE_REF.finditer(one_form(s.prompt or ""))):
             if by.get(read) not in (None, by[s.id]):
                 names = " and ".join(f'"{n}"' for n in (by[read], by[s.id]))
                 return (f"structure: agents {names} hand their work to each other through state (step {s.id} reads "
