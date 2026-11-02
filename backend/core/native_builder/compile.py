@@ -218,9 +218,111 @@ def _workflow(title: str, summary: str, steps: list[Step], settings: dict[str, A
             orch[key] = value
         else:
             issues.append(f"a plan cannot set '{key}': it sets {', '.join(SETTINGS)}")
+    _typed_reads(orch, issues)
     _item_first(orch)
     orch["steps"] = _fill_step_defaults(orch["steps"])
     return orch
+
+
+#: What a model step answers: text, which a step reading it as a list or an object needs declared (F1287).
+_MODEL_TYPES = frozenset({"agent", "llm"})
+#: Calls that go through what they are given, as a list does.
+_GOES_THROUGH = frozenset({"len", "sorted", "list", "enumerate", "sum", "max", "min", "reversed"})
+
+
+def _structure_reads(code: str, keys: set[str]) -> dict[str, str]:
+    """What a Transform's code does with each of `keys` it reads out of state: goes through it (`list`: iterated,
+    counted, indexed by a number) or looks a field up in it (`dict`: indexed by a name, `.get`, `.items`). A name
+    assigned from it counts as it, as F1227's reading does."""
+    import ast
+
+    from core.builder_tools import _state_key
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return {}
+    names: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and (key := _state_key(node.value)) in keys:
+            names.update({t.id: key for t in node.targets if isinstance(t, ast.Name)})
+
+    def read(node: Any) -> str | None:
+        key = _state_key(node)
+        if key in keys:
+            return key
+        return names.get(node.id) if isinstance(node, ast.Name) else None
+
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.For, ast.comprehension)) and (key := read(node.iter)):
+            out.setdefault(key, "list")
+        elif isinstance(node, ast.Call) and getattr(node.func, "id", "") in _GOES_THROUGH and node.args \
+                and (key := read(node.args[0])):
+            out.setdefault(key, "list")
+        elif isinstance(node, ast.Subscript) and (key := read(node.value)):
+            if isinstance(node.slice, ast.Constant):
+                out.setdefault(key, "dict" if isinstance(node.slice.value, str) else "list")
+            elif isinstance(node.slice, ast.Slice):
+                out.setdefault(key, "list")
+        elif isinstance(node, ast.Attribute) and node.attr in ("get", "items", "keys", "values") \
+                and (key := read(node.value)):
+            out.setdefault(key, "dict")
+    return out
+
+
+def _typed_reads(orch: dict[str, Any], issues: list[str]) -> None:
+    """Declare each model step's answer as the list or object a later step reads it as (F1287, brief 6).
+
+    A model answers text; the engine parses a key declared `list` or `dict` out of it as `extract_json` does (whole
+    text, a fenced block, matching braces), so a JSON list inside a sentence reaches an Ingest as records. Read as a
+    structure by: a Loop over it, an Ingest of its records, a Transform going through it or looking fields up in it,
+    a condition reading one of its fields. The plan's own declaration is kept; one as text is said, naming the step
+    that reads it. What a Tool, Transform or Extract JSON step wrote is already data."""
+    import re
+
+    from core.state_types import normalize_state_type
+
+    steps = orch.get("steps") or []
+    writers = {s["output_key"]: s["id"] for s in steps if s.get("type") in _MODEL_TYPES and s.get("output_key")}
+    if not writers:
+        return
+    wanted: dict[str, tuple[str, str]] = {}
+
+    def want(key: str, kind: str, reader: str) -> None:
+        if key in writers:
+            wanted.setdefault(key, (kind, reader))
+
+    for s in steps:
+        sid = s.get("id", "")
+        if s.get("type") == "loop" and isinstance(s.get("loop_over"), str):
+            head, _, rest = s["loop_over"].strip().removeprefix("state.").partition(".")
+            want(head, "dict" if rest else "list", sid)
+        if s.get("type") == "ingest" and isinstance(s.get("ingest"), dict):
+            want(str(s["ingest"].get("records_from") or "").strip().removeprefix("state."), "list", sid)
+        if s.get("type") == "transform" and isinstance(s.get("transform_code"), str):
+            for key, kind in _structure_reads(s["transform_code"], set(writers)).items():
+                want(key, kind, sid)
+        for expr in (s.get("if_condition"), s.get("switch_expression")):
+            if isinstance(expr, str):
+                for key in re.findall(r"\bstate\.([A-Za-z_]\w*)(?:\.[A-Za-z_]\w*(?!\s*\()|\[\s*['\"])", expr):
+                    want(key, "dict", sid)
+                for key in re.findall(r"\bstate\.([A-Za-z_]\w*)\[\s*-?\d", expr):
+                    want(key, "list", sid)
+    if not wanted:
+        return
+    schema = dict(orch.get("state_schema") or {})
+    for key, (kind, reader) in wanted.items():
+        if key in schema:
+            entry = schema[key]
+            if normalize_state_type(entry.get("type") if isinstance(entry, dict) else entry) == "str":
+                issues.append(f"Step '{reader}' reads '{key}' as a {kind}, but settings.state_schema declares it "
+                              f"text: step '{writers[key]}' answers it, and the engine parses a model's answer only "
+                              f"for a key declared a list or an object. Declare it {{\"type\": \"{kind}\"}}.")
+            continue
+        schema[key] = {"type": kind, "description": f"The answer of step '{writers[key]}', read as a {kind} by step "
+                                                    f"'{reader}'"}
+    orch["state_schema"] = schema
 
 
 def _plan_targets(step: Step) -> list[str]:
