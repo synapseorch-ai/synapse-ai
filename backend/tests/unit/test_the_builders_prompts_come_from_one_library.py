@@ -129,7 +129,8 @@ from core.native_builder import prompt_lint, seed
 #: message and roughly what it costs, and shows its answer), 2516fd8f….
 #: F1260 (a hosted workspace's): rule 21 (dead jobs retried or discarded, "who changed it", a support request) and
 #: topics dead_jobs and audit in both lists, c6f1a12c….
-BUNDLE_SHA256 = "c6f1a12c282b316d940b5c8da3a4f48687ecda307b33e1b1fce39bcf82527cb4"
+#: Rule 21's support request: its severity asked with ask_person, its run only when it is about one (TRI1), 50276764….
+BUNDLE_SHA256 = "5027676401084264efae2d01eeb70c96c48f411f378dd517029f2d67c577766c"
 
 
 def _sha(definitions) -> str:

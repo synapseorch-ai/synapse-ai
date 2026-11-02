@@ -685,7 +685,10 @@ async def _support(args: dict) -> dict:
     if not subject or not body:
         raise _NotOffered("Say what the request is about (its subject) and what happened.")
     category = args.get("category") if args.get("category") in operations.CATEGORIES else "question"
-    severity = args.get("severity") if args.get("severity") in operations.SEVERITIES else "minor"
+    severity = args.get("severity")
+    if severity not in operations.SEVERITIES:
+        # The card can't be edited: how bad it is is the person's to say, asked, never guessed (D0).
+        raise _NotOffered("Ask them how bad it is: blocking, degraded or minor.")
     run_id = str(args.get("run_id") or "").strip()
     call = {"subject": subject[:200], "body": body, "category": category, "severity": severity,
             **({"run_id": run_id} if run_id else {})}
