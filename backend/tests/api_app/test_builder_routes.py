@@ -261,7 +261,8 @@ class TestSeeHowImBuilt:
         # planner and its rounds end out, the finish's route and the reply said in.
         # 85 with the planner's research (D340 D2): code's answers, their route, the researcher on what is left, its
         # answers kept, and the one-form ask of the person.
-        assert legend["step_count"] == 85
+        # 86 with the research ask's own route (F1296): step_plan_finish counts only the planner's finishes.
+        assert legend["step_count"] == 86
         assert legend["entry_step"] == {"id": "step_turn", "name": "Read the Turn", "type": "tool"}
         assert {r["label"] for r in legend["routes"]} == {"answer", "change", "build", "research"}
         assert all(r["description"] and r["to"] for r in legend["routes"])
