@@ -23,9 +23,10 @@ import type { ActionButton, ActionSpec } from '@/lib/builderEvents';
 
 import { ChangeRows } from './ChangeRows';
 
-/** What a host's act route answered. `spent`: the card cannot be pressed again (done before, expired, not theirs). */
+/** What a host's act route answered. `spent`: the card cannot be pressed again (done before, expired, not theirs).
+ *  `reply`: an agent's answer, for a card that asked it something (F1274). */
 export type ActResult =
-    | { ok: true; runId?: string | null; message?: string; publicKey?: string | null }
+    | { ok: true; runId?: string | null; message?: string; publicKey?: string | null; reply?: string | null }
     | { ok: false; message: string; spent?: boolean };
 
 export interface Actor {
@@ -39,7 +40,7 @@ export interface Actor {
 }
 
 type Phase = { at: 'idle' } | { at: 'working'; label: string }
-    | { at: 'done'; message: string; runId?: string | null; publicKey?: string | null }
+    | { at: 'done'; message: string; runId?: string | null; publicKey?: string | null; reply?: string | null }
     | { at: 'refused'; message: string; spent: boolean };
 
 /** What a pressed button did, in the card's words. */
@@ -59,6 +60,8 @@ function doneLine(button: ActionButton, result: Extract<ActResult, { ok: true }>
             return 'Made. Put this on each page it should show on:';
         case 'rotate_widget_key':
             return 'Done. The old snippet has stopped working; put this one in its place:';
+        case 'chat_with_agent':
+            return 'Its answer:';
         default:
             return 'Done.';
     }
@@ -73,8 +76,12 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
         setPhase({ at: 'working', label: button.label });
         try {
             const result = await actor.press(button);
-            if (result.ok) setPhase({ at: 'done', message: doneLine(button, result), runId: result.runId, publicKey: result.publicKey });
-            else setPhase({ at: 'refused', message: result.message, spent: !!result.spent });
+            if (result.ok) {
+                setPhase({
+                    at: 'done', message: doneLine(button, result), runId: result.runId, publicKey: result.publicKey,
+                    reply: result.reply,
+                });
+            } else setPhase({ at: 'refused', message: result.message, spent: !!result.spent });
         } catch (exc) {
             setPhase({ at: 'refused', message: exc instanceof Error ? exc.message : 'That did not work. Try again.', spent: false });
         }
@@ -160,6 +167,11 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
                         </Link>
                     )}
                 </p>
+            )}
+            {phase.at === 'done' && phase.reply && (
+                <div className="max-h-72 overflow-y-auto rounded-md border-l-2 border-border bg-surface-2 px-3 py-2 text-[13px] text-text [overflow-wrap:anywhere] whitespace-pre-wrap">
+                    {phase.reply}
+                </div>
             )}
             {snippet && (
                 <div className="flex min-w-0 items-start gap-2">

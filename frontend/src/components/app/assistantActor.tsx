@@ -23,12 +23,27 @@ async function press(button: ActionButton): Promise<ActResult> {
             tool: button.tool, arguments: button.arguments, token: button.token, run_id: button.run_id ?? null,
         }),
     });
-    let body: { detail?: unknown; result?: { run_id?: string | null; public_key?: string | null } } = {};
+    let body: {
+        detail?: unknown;
+        result?: { run_id?: string | null; public_key?: string | null; response?: string; status?: string; note?: string };
+    } = {};
     try { body = await res.json(); } catch { /* not JSON */ }
-    if (res.ok) return { ok: true, runId: body.result?.run_id ?? null, publicKey: body.result?.public_key ?? null };
+    if (res.ok) {
+        const result = body.result ?? {};
+        if (button.tool === 'chat_with_agent') return agentAnswer(result);
+        return { ok: true, runId: result.run_id ?? null, publicKey: result.public_key ?? null };
+    }
     const message = typeof body.detail === 'string' && body.detail ? body.detail : `That did not work (${res.status}).`;
     // Done before, expired, or not this person's: the card cannot be pressed again.
     return { ok: false, message, spent: res.status === 403 || res.status === 409 || res.status === 410 };
+}
+
+/** An agent's turn on a card that asked it something (F1274): its answer, or where the turn is now. */
+function agentAnswer(result: { response?: string; status?: string; note?: string }): ActResult {
+    if (result.status === 'completed') return { ok: true, reply: result.response || 'It answered with nothing.' };
+    if (result.status === 'running') return { ok: true, message: result.note || 'It is still working.' };
+    // Waiting on a person: its own tool approval, as ever.
+    return { ok: true, message: [result.response, result.note].filter(Boolean).join(' ') || 'It is waiting for you.' };
 }
 
 /** A waiting run's question, answered with the run page's card. */

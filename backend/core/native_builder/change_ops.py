@@ -95,6 +95,8 @@ _ACTS = (
     Op("answer_tool_call", "act", "approval", verb="Answer"),
     Op("cancel_run", "act", "run", verb="Stop"),
     Op("resume_run", "act", "run", verb="Resume"),
+    # Asking an agent for the person (F1274): a card, its answer shown once pressed.
+    Op("talk_to_agent", "act", "agent", fields=("message",), required=("message",), verb="Ask"),
     Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
     Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),
@@ -258,7 +260,8 @@ MAKES_TARGET = frozenset({"board_create", "knowledge_create", "widget_create", "
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
-            "feature": "feature", "recording": "recording", "widget": "widget", "channel": "channel"}
+            "feature": "feature", "recording": "recording", "widget": "widget", "channel": "channel",
+            "agent": "agent"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────

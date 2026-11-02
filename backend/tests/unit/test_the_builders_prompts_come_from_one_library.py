@@ -122,7 +122,12 @@ from core.native_builder import prompt_lint, seed
 #: ff605079, b67e5ccb….
 #: F1263: rule 14 under # Changing (a chat channel is connected with channel_connect, its token typed on its card,
 #: and changed with the channel_ ops), a9ef3db1… on fix-forward 15; on fix-forward 16's ff605079 with F1262, 25173721….
-BUNDLE_SHA256 = "25173721ef4ea9e6abacf33186a67a14cb1df6681cedc896d6691ad2a7a44741"
+#: REACH1: rules 15–19 under # Changing (triage, savings, settings_set, a schedule's missed runs and target, variables
+#: by name), rule 10's recordings as ops, topics run/variables/settings/savings in both lists; on REACH2's 0af7a248,
+#: 5ad51eef…; with REACH2's topics widgets and channels in both lists (TRI1, 11-02), 963b1a71….
+#: F1274: rule 20 under # Changing (asking an agent for the person is the op talk_to_agent, a card that names it, the
+#: message and roughly what it costs, and shows its answer), 2516fd8f….
+BUNDLE_SHA256 = "2516fd8f46871e38b6d959956a52bba4eefba983eb9b501b1619045705840ee7"
 
 
 def _sha(definitions) -> str:

@@ -36,6 +36,7 @@ ACTIONS: dict[str, str] = {
     "answer_tool_call": "allow or refuse a tool call an agent stopped on (`approval_id`, from topic `waiting`)",
     "cancel_run": "stop a run that is still going (`run_id`)",
     "resume_run": "run a failed or stopped run on from the step it stopped at, once what failed is fixed (`run_id`)",
+    "talk_to_agent": "ask an agent something for the person, the answer shown on the card (`agent`: its name, `message`)",
     "knowledge_create": "make a knowledge base (`name`; `text`: what it holds; `folder`: a Vault folder, or leave it "
                         "out for knowledge/<name>)",
     "knowledge_add_file": "add a file from the Vault to a knowledge base (`knowledge_base`, `path`: its Vault path)",
@@ -131,6 +132,7 @@ SCHEMA = {
                 "steer": {"type": "string", "description": "eval_cases: what proposed cases should cover."},
                 "golden_set": {"type": "string", "description": "The golden set's name; omit for the workflow's one."},
                 "recording": {"type": "string", "description": "The recording's name or id."},
+                "agent": {"type": "string", "description": "talk_to_agent: the agent's name or id."},
                 "edit_id": {"type": "string", "description": "A kept fix's id, from topic `waiting`."},
                 "widget": {"type": "string", "description": "The website widget's name."},
                 "agent": {"type": "string", "description": "widget_create, widget_update: the agent's name."},
@@ -349,6 +351,9 @@ async def _offer(action: str, args: dict) -> dict:
         said = await _resolved(runs._preview_resume(_caller(), {"run_id": view["run_id"]}))
         return _card(f'Resume the run of "{name}"', detail=f'From the step "{said["from_step"]}". {said["note"]}',
                      buttons=[await _button("Resume it", "resume_run", {"run_id": view["run_id"]})])
+
+    if action == "talk_to_agent":
+        return await _talk(args)
 
     if action == "answer_run":
         view, name = await _run(args)
@@ -589,6 +594,43 @@ async def _evals(action: str, args: dict) -> dict:
     return _card(f'Stop the eval of "{name}"', danger=True,
                  detail=f'"{suite.get("name")}" stops after the case running now; the runs already done stay.',
                  buttons=[await _button("Stop it", "cancel_eval_suite", call)])
+
+
+#: What one short reply is taken to read and write, for the card's rough cost: the agent's own instructions and the
+#: message, plus what a turn carries besides (its tools' descriptions, the conversation's start), and an answer.
+_TURN_EXTRA_TOKENS, _ANSWER_TOKENS = 1500, 600
+#: How long the press waits for the answer before it says where it will be.
+TALK_WAIT_SECONDS = 90
+
+
+async def _reply_cost(agent: dict, message: str) -> str:
+    """Roughly what one short reply costs, from the agent's model's listed price; said as not known without one."""
+    from core.native_builder import models_menu as MM
+
+    model = agent.get("model") or MM.workspace_model()
+    entry = next((e for e in await MM.menu() if e.id == model), None)
+    if entry is None or entry.price_in is None or entry.price_out is None:
+        return f"Its model, {model}, has no listed price here, so what a reply costs isn't known."
+    tokens_in = (len(agent.get("system_prompt") or "") + len(message)) // 4 + _TURN_EXTRA_TOKENS
+    usd = (tokens_in * entry.price_in + _ANSWER_TOKENS * entry.price_out) / 1_000_000
+    said = "under $0.01" if usd < 0.01 else f"about ${usd:.2f}"
+    return f"A short reply on {model} costs {said}; each tool it uses adds a model call."
+
+
+async def _talk(args: dict) -> dict:
+    """Ask an agent for the person (F1274): the card names the agent, the message and roughly what a reply costs;
+    the press is the agent's own chat turn (`chat_with_agent`), with its tool approvals as ever, and its answer is
+    shown on the card."""
+    from core.routes.agents import load_user_agents
+
+    agents = [a for a in await load_user_agents() if not a.get("system") and a.get("type") != "builder"]
+    agent = _pick(agents, str(args.get("agent") or ""), "agent", "Topic `agents` lists them.")
+    message = str(args.get("message") or "").strip()
+    if not message:
+        raise _NotOffered("Say what to ask it.")
+    call = {"message": message, "agent": agent["id"], "wait_seconds": TALK_WAIT_SECONDS}
+    return _card(f'Ask "{agent.get("name")}"', detail=f"{message[:500]}\n{await _reply_cost(agent, message)}",
+                 buttons=[await _button("Ask", "chat_with_agent", call)])
 
 
 async def _recording(action: str, args: dict) -> dict:
