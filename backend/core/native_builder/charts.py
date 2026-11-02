@@ -58,9 +58,13 @@ def _writes(plan: O.Plan, ws: Workspace) -> bool:
 
 def issues(plan: O.Plan, ws: Workspace, message: str) -> list[str]:
     """What the plan for a chart lacks, where code can tell; [] when it has its route or no chart was asked for."""
-    if not asked(message) or _writes(plan, ws):
+    if not asked(message):
         return []
+    # What the workspace has comes before what the plan names: where the Vault's write is off (cloud's fleet serves
+    # only its reads; an install without the sandbox), naming it anyway is still a chart that cannot be saved.
     if not any(str(t.get("name") or "").split("__")[-1] == WRITE for t in ws.tools):
         return ["chart: the person asked for a chart, which is a CSV in the Vault, and this workspace has no "
                 f"`{WRITE}` (the Vault's tools are off here): finish with `cannot`, saying a chart needs them"]
+    if _writes(plan, ws):
+        return []
     return [f"chart: the person asked for a chart, and nothing in this plan writes the Vault: {HOW}"]
