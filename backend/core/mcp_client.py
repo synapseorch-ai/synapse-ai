@@ -52,6 +52,15 @@ _log = get_logger(__name__)
 _SESSION_READ_TIMEOUT = timedelta(seconds=MCP_SESSION_READ_TIMEOUT)
 
 
+def _same_server_url(a: object, b: object) -> bool:
+    """One remote server's URL, however it was written: the scheme and host in any case, a trailing slash or none."""
+    def norm(u: object) -> str:
+        got = urlparse(str(u or "").strip())
+        return f"{got.scheme.lower()}://{(got.netloc or '').lower()}{got.path.rstrip('/')}"
+
+    return bool(a) and bool(b) and norm(a) == norm(b)
+
+
 # ── stdio MCP registration policy (security) ────────────────────────────────────
 def remote_url_problem(url: str) -> str | None:
     """Why `url` is not a remote MCP server's address, or None (F1201). One rule for every door that adds one: the
@@ -899,7 +908,11 @@ class MCPClientManager:
 
         for s in self.servers_config:
             if s["name"] == name:
-                raise ValueError(f"Server '{name}' already exists.")
+                if server_type != "remote" or s.get("server_type") != "remote" or not _same_server_url(s.get("url"), url):
+                    raise ValueError(f"Server '{name}' already exists.")
+                if command or args or env:
+                    raise ValueError(f"Server '{name}' already exists: change its settings on the Apps screen.")
+                return await self._added_again(s, url, token)
 
         new_config: Dict[str, Any] = {"name": name, "label": label or name, "server_type": server_type, "status": "disconnected"}
 
@@ -946,6 +959,25 @@ class MCPClientManager:
         outcome = await self.connect_or_authorise(new_config)
         return {"config": {**new_config, "status": "connected" if outcome["connected"] else "disconnected"},
                 **outcome}
+
+    async def _added_again(self, config: Dict[str, Any], url: str, token: str) -> Dict[str, Any]:
+        """An add of a remote server already saved here at the same URL (F1290): that server, pressed again on its
+        card, never a second. The add's URL rule first; only its token changes, and only when one is given; then it
+        connects as an add connects, and answers as one."""
+        if (problem := await remote_url_refusal(url)) is not None:
+            raise ValueError(problem)
+        if token:
+            config["token"] = token
+            await self.save_servers()
+        if config.get("token"):
+            session = await self.connect_remote_server(config)
+            if session:
+                await self._set_status(config["name"], "connected")
+                config["status"] = "connected"
+                await self._auto_register(config["name"])
+            return {"config": config, "connected": bool(session), "status": config.get("status", "disconnected")}
+        outcome = await self.connect_or_authorise(config)
+        return {"config": {**config, "status": "connected" if outcome["connected"] else "disconnected"}, **outcome}
 
     # ── reconnect_server (manual retry) ────────────────────────────────────────
 
