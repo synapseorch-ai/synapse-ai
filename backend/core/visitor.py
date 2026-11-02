@@ -49,7 +49,9 @@ ENGINE_TOOLS: frozenset[str] = frozenset(("update_tasks", "load_skill"))
 #: Never on a visitor's list, whatever the owner ticks: the agent's memory —
 #: every memory tool, including the ones added since (read_session, F272) —
 #: and the boards, the workspace's shared work (C4: a visitor's turn has none).
-NEVER_FOR_VISITORS: frozenset[str] = frozenset(_MEMORY_TOOL_NAMES) | frozenset(_BOARD_TOOL_NAMES)
+NEVER_FOR_VISITORS: frozenset[str] = (frozenset(_MEMORY_TOOL_NAMES) | frozenset(_BOARD_TOOL_NAMES)
+                                      # …and a write into the owner's Vault (F1289), the sandbox's or cloud's.
+                                      | frozenset({"vault_write"}))
 
 #: How many names one list may hold — a bound on a stored document, not a policy.
 MAX_TOOLS = 200
