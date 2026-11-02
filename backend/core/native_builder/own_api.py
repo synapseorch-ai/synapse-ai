@@ -38,8 +38,9 @@ _SIGN_IN = {"oauth2": "OAuth", "openIdConnect": "OpenID Connect"}
 _ELSEWHERE = "import the spec on the Tools screen and set its key there"
 
 
-#: The specs this conversation read (F1298), by the API's name lowered: `{"name", "spec"}`, nothing else.
-SPECS_KEY = "specs_read"
+#: The specs this conversation read (F1298), by the API's name lowered: `{"name", "spec"}`, nothing else. The engine's
+#: own key (`events_public.PRIVATE_STATE_PREFIXES`): the person's spec locations never reach a public read.
+SPECS_KEY = "_specs_read"
 
 
 def _keepable(spec: str) -> bool:

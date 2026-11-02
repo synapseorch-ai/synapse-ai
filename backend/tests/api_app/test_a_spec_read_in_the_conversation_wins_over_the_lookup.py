@@ -26,8 +26,8 @@ from core.orchestration.engine import live
 from core.orchestration.state import SharedState
 from core.storage import get_blob_store
 
-#: The run's key for the specs the conversation read (F1298).
-SPECS = "specs_read"
+#: The run's key for the specs the conversation read (F1298): the engine's own, never in a public read.
+SPECS = "_specs_read"
 
 
 class _Server:
@@ -130,7 +130,10 @@ class TestTheConversationKeepsTheSpecsItRead:
         assert carried({SPECS: {**kept, "junk": "not a read"}}) == kept
         assert carried({}) == {} and carried(None) == {}
         assert "own_api.SPECS_KEY: own_api.carried(previous)" in inspect.getsource(builder)
-        assert bundled_definitions()["orchestration"]["state_schema"][SPECS]["type"] == "dict"
+        from core.events_public import public_state
+
+        assert public_state({SPECS: kept, "order": "A-1"}) == {"order": "A-1"}, "the person's spec locations"
+        assert SPECS not in bundled_definitions()["orchestration"]["state_schema"], "the engine's own, undeclared"
 
 
 class TestAReadSpecWinsOverTheLookup:

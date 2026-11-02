@@ -98,6 +98,8 @@ PRIVATE_STATE_PREFIXES = (
     "_approved_review", "_plan_sendbacks", "_plan_structure_said",
     # That a save refused after the yes went back to the planner once (`build_save.SAVE_REPLAN_KEY`, F1295).
     "_save_replanned",
+    # The person's own API specs a conversation read, by where they are (`own_api.SPECS_KEY`, F1298).
+    "_specs_read",
     # Whether a person watches the run, which decides what a step does at its turn limit (`turn_limit.ATTENDED_KEY`,
     # F1219): the engine's, set by its starter, never a run's input or a client's to read.
     "_attended",

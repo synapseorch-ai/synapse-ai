@@ -134,8 +134,8 @@ from core.native_builder import prompt_lint, seed
 #: (`step_plan_rounds`' words before the yes, `step_connect_give_up` after), cef82d9e…; the new route on a canvas
 #: spot of its own, beside the research ask (1300, 600), 69df0403….
 #: F1295: a save refused after the yes goes back to the planner once (`step_save_route`, after `step_save`), da644451….
-#: F1298: the state declares the specs a conversation read (`specs_read`), d2ef22c4….
-BUNDLE_SHA256 = "d2ef22c43b859d2612418f801da6147756b4d0340b36d4e7b8f0b8dfe7bdb0c9"
+#: F1298 adds nothing here: the specs a conversation read are the engine's own key (`_specs_read`), undeclared.
+BUNDLE_SHA256 = "da6444518dcaf1785efaaa6a3df2dabaef8489b8b0ec09693c62fed3ee092272"
 
 
 def _sha(definitions) -> str:
