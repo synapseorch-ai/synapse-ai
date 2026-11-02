@@ -31,6 +31,7 @@ import { count } from "@/lib/copy";
 import { modelOptions, withUnreachable } from "@/lib/models";
 
 import { useSettingsData } from "./hooks/useSettingsData";
+import { judgedWords } from "@/components/orchestration/WorkflowSettings";
 
 type Criterion = { id?: string; name: string; weight?: number; guidance?: string };
 
@@ -49,7 +50,7 @@ type Rubric = {
 
 type Trend = EvalTrendData & { rubric: Rubric | null };
 
-type Orchestration = { id: string; name: string; rubric_id?: string };
+type Orchestration = { id: string; name: string; rubric_id?: string; judge_every?: number };
 
 type Case = { id?: string; name: string; input: string; notes: string };
 
@@ -436,8 +437,10 @@ function RubricDetail({
         { value: JUDGE_DEFAULT, label: "Workspace judge model, or the default model" },
         ...withUnreachable(modelOptions(models.providers ?? {}), draft.judge_model || undefined),
     ];
+    // A workflow this rubric scores says how often it is judged (D340 F): set in its own settings, beside its rubric.
     const hintOf = (o: Orchestration) =>
-        !o.rubric_id ? "no rubric bound" : rubric && o.rubric_id !== rubric.id ? "scored by another rubric" : undefined;
+        !o.rubric_id ? "no rubric bound" : rubric && o.rubric_id !== rubric.id ? "scored by another rubric"
+            : `judged on ${judgedWords(o.judge_every)}`;
 
     return (
         <div className="grid gap-8">

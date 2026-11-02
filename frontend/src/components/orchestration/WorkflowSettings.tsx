@@ -112,6 +112,21 @@ export function resultKeyOptions(orch: Orchestration): { key: string; label: str
 }
 
 /** Max Total Turns, Timeout, strict state types, Result, Score runs against: exactly as the Guardrails tab had them. */
+/** The judge sample as typed (D340 F): blank is unset (every run, the workflow's default), never 0; else a whole number
+ *  held to 1–100, the engine's own range (`core.evals.service.MAX_JUDGE_EVERY`). */
+export function judgeEveryValue(raw: string): number | undefined {
+    const text = raw.trim();
+    if (!text) return undefined;
+    const n = Math.round(Number(text));
+    if (!Number.isFinite(n)) return undefined;
+    return Math.min(100, Math.max(1, n));
+}
+
+/** How often a workflow's runs are judged, in the editor's and the Evals screen's words. */
+export function judgedWords(every: number | undefined): string {
+    return !every || every <= 1 ? 'every run' : `its first run, then 1 run in ${every}`;
+}
+
 export function GuardrailsFields({ draft, onChange, rubrics, readOnly }: {
     draft: Orchestration;
     onChange: (next: Orchestration) => void;
@@ -183,7 +198,9 @@ export function GuardrailsFields({ draft, onChange, rubrics, readOnly }: {
             <Field
                 label="Score runs against"
                 hint={draft.rubric_id
-                    ? 'Every run is judged when it finishes. The judge is a model call, billed like any other.'
+                    ? (draft.judge_every ?? 1) > 1
+                        ? `Its first finished run is judged, then 1 run in ${draft.judge_every}. Each judged run is a model call, billed like any other.`
+                        : 'Every run is judged when it finishes. The judge is a model call, billed like any other.'
                     : 'Pick a rubric to have an LLM judge score every run and flag regressions. Rubrics are written on the Evals screen.'}
             >
                 <select
@@ -198,6 +215,29 @@ export function GuardrailsFields({ draft, onChange, rubrics, readOnly }: {
                     ))}
                 </select>
             </Field>
+            {draft.rubric_id && (
+                <Field
+                    label="Judge 1 run in"
+                    hint="Its first finished run is always judged. For a workflow a schedule runs often, judge a sample: each judged run is one more model call. Leave blank, or 1, to judge every run."
+                >
+                    <Input
+                        id="orch-judge-every"
+                        type="number"
+                        size="sm"
+                        min={1}
+                        max={100}
+                        placeholder="1"
+                        value={draft.judge_every ?? ''}
+                        onChange={(e) => {
+                            const every = judgeEveryValue(e.target.value);
+                            const next = { ...draft };
+                            if (every === undefined) delete next.judge_every;
+                            else next.judge_every = every;
+                            onChange(next);
+                        }}
+                    />
+                </Field>
+            )}
         </fieldset>
     );
 }
