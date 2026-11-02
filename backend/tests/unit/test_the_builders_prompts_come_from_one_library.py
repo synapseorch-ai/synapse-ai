@@ -130,7 +130,9 @@ from core.native_builder import prompt_lint, seed
 #: F1260 (a hosted workspace's): rule 21 (dead jobs retried or discarded, "who changed it", a support request) and
 #: topics dead_jobs and audit in both lists, c6f1a12c….
 #: Rule 21's support request: its severity asked with ask_person, its run only when it is about one (TRI1), 50276764….
-BUNDLE_SHA256 = "5027676401084264efae2d01eeb70c96c48f411f378dd517029f2d67c577766c"
+#: F1288: # Building's rule 9 (a chart is a CSV in the Vault: follow the pack's `chart`, give the plan its
+#: `vault_write`), 97b141a1… (computed by CI2 on 79e0a58b's tree).
+BUNDLE_SHA256 = "97b141a11174cd53342d084057be33f69d297b3e62d6fbb999ef17e44b3e50de"
 
 
 def _sha(definitions) -> str:
