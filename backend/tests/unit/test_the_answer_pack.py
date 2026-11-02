@@ -14,12 +14,25 @@ conversation unless asked again (SAI2's review, after Naveen's Firecrawl case on
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from core.native_builder.answer_pack import build_pack, describe_workspace
 from core.product_tools.roles import Role
 
 ROUTED = {"kind": "answer", "needs": "none", "route": "step_answer", "providers": []}
+
+#: How a pack says a Connect card is up, or was shown (`answer_pack._connect_card`'s two sentences): the pack's only
+#: words that offer one.
+_CARD_SAID = re.compile(r"\bA Connect card for \S")
+
+
+def _offers_a_card(out: dict, events: list[dict]) -> bool:
+    """Whether the answer offers a Connect card: one put up (`connection_needed`), or the pack's own sentence that one
+    is up. Every pack also carries the capabilities text, which says what a Connect card is for (F1263: a channel's
+    token is typed on one); that offers nothing, so the bare words "Connect card" are no sign of a card."""
+    return any(e.get("type") == "connection_needed" for e in events) or bool(_CARD_SAID.search(out["pack"]))
 
 
 def _pack(needs="none", role=Role.OWNER, **kw):
@@ -191,10 +204,24 @@ class TestTheStep:
     async def test_scraping_a_site_offers_no_service_the_person_did_not_name(self):
         run = await self._run("builder_scrape", "can you scrape example.com for me?", needs="help")
         out, events = await self._call(run, "answer_pack")
-        assert events == [] and "Connect card" not in out["pack"]
+        # No card, by the event or the pack's sentence, and no word of the service they did not name.
+        assert not _offers_a_card(out, events) and "firecrawl" not in out["pack"].lower()
         said, events = await self._call(run, "prepare_connection", {"kind": "app", "catalog_slug": "firecrawl",
                                                                      "title": "Connect Firecrawl to scrape"})
         assert events == [] and "did not name" in said["error"]
+
+    async def test_the_check_still_catches_an_offered_card(self):
+        """The scraping test's check, tightened from the bare words "Connect card" (which the capabilities text now
+        carries) to its meaning, still fails on an offered card: the event, and the pack's sentence alone, as Naveen's
+        Firecrawl case on prod had it (a card for a service nobody named). The capabilities text alone does not."""
+        from core import builder_help
+
+        run = await self._run("builder_offer", "connect Firecrawl", providers=["Firecrawl"])
+        out, events = await self._call(run, "answer_pack")
+        assert _offers_a_card(out, events)
+        assert _offers_a_card(out, [])  # the sentence alone is caught, the event aside
+        assert "Connect card" in builder_help.SELF_HOSTED_CAPABILITIES
+        assert not _offers_a_card({"pack": _pack(capabilities=builder_help.SELF_HOSTED_CAPABILITIES)}, [])
 
     async def test_a_named_service_gets_its_card_once_per_conversation(self):
         first = await self._run("builder_fc1", "connect Firecrawl", providers=["Firecrawl"])
