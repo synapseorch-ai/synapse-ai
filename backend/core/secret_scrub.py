@@ -38,6 +38,13 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}"),
     re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
+    # A chat channel's token (F1286): rule 14 connects a channel on a card, and one pasted into the chat matched no
+    # shape. Telegram's bot token: the bot's id, a colon, 35 characters. Discord's: the bot's id in base64 (it starts
+    # M, N or O), a 6-character timestamp and a 27–38 character HMAC, dot-joined, held to those lengths so three dotted
+    # runs of any other size stay. Meta's access token (WhatsApp, the Graph API): EAA and 80+ letters and digits.
+    re.compile(r"(?<![\w:])\d{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])"),
+    re.compile(r"(?<![\w.-])[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,38}(?![\w.-])"),
+    re.compile(r"\bEAA[A-Za-z0-9]{80,}\b"),
     # `Bearer <token>`: the token only. A reference — `Bearer ${process.env.X}`,
     # `Bearer {{ global.X }}` — starts with a character the class leaves out.
     re.compile(r"(?i)(\bBearer\s+)([A-Za-z0-9._~+/=-]{16,})"),
