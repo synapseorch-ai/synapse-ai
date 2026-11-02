@@ -133,7 +133,8 @@ from core.native_builder import prompt_lint, seed
 #: F1296: the research ask's own route (`step_research_ask_route`), and an exit on every step of the planner's cycle
 #: (`step_plan_rounds`' words before the yes, `step_connect_give_up` after), cef82d9e…; the new route on a canvas
 #: spot of its own, beside the research ask (1300, 600), 69df0403….
-BUNDLE_SHA256 = "69df04033e6fda71d323e553a120e7d2bbfd72dcd11fde4534438bfcfee0e397"
+#: F1295: a save refused after the yes goes back to the planner once (`step_save_route`, after `step_save`), da644451….
+BUNDLE_SHA256 = "da6444518dcaf1785efaaa6a3df2dabaef8489b8b0ec09693c62fed3ee092272"
 
 
 def _sha(definitions) -> str:

@@ -1967,7 +1967,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What this plan changed from the one the person last saw (F1245), on the card and the panel alike.
     plan.since_last = since_last(plan, plan_before_of(state, prior))
     review = render(plan, agent_names=names)
-    if answer.get("outcome") == "replan":
+    if answer.get("outcome") == "replan" and answer.get("refused"):
+        # A save refused after the yes (F1295): why it is asked again, in the save's own words.
+        review = (f"Before I saved it, the build needed one change: {answer['refused']}. Here is the plan with it, "
+                  "for one more yes.\n\n" + review)
+    elif answer.get("outcome") == "replan":
         # The second review after connecting (F949): why it is asked again, before the plan on the real names.
         who = " and ".join(answer.get("connected") or []) or "it"
         review = (f"After connecting {who}, its tools are "

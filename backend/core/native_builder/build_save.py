@@ -399,10 +399,23 @@ def _why_missing(gone: list[str], plan: O.Plan, state: dict) -> str:
             + "Connect the app or service it needs, then ask me to build it again.")
 
 
-def _issues_reason(issues: list[str]) -> str:
-    from core.builder_tools import _issues_said
+def _issues_said(issues: list[str]) -> list[str]:
+    from core.builder_tools import _issues_said as said
 
+    return said(issues)
+
+
+def _issues_reason(issues: list[str]) -> str:
     return "Nothing was built: it would not pass validation: " + "; ".join(_issues_said(issues)) + "."
+
+
+#: A save refused after the yes goes back to the planner once (F1295): the run's mark that it has.
+SAVE_REPLAN_KEY = "_save_replanned"
+#: The review answer the planner's next card reads (`build_plan.ANSWER_KEY`): why it asks for one more yes.
+PLAN_ANSWER_KEY = "plan_answer"
+#: What a second refusal adds, plainly.
+AGAIN = (" I planned it again once already. The tools I made stay; tell me what to change and I'll plan it again, "
+         "or say \"stop\".")
 
 
 #: Where a save keeps what it has made, call by call, in the run's checkpointed progress: a re-run (a resume, a
@@ -593,8 +606,15 @@ async def save_build(args: dict, server_module: Any, events: list[dict]) -> dict
               # the yes until it is (F949).
               if not ("nothing here provides" in i and any(f"'{n}'" in i or f"`{n}`" in i for n in
                                                            [*making, *(later if only == "tools" else [])]))]
+    if issues and not only and not state.get(SAVE_REPLAN_KEY):
+        # Refused after the yes, nothing of it saved yet (F1295, prod-13): back to the planner once with the save's
+        # own words, the tools made and connected kept, and one more yes; never a dead end.
+        state[SAVE_REPLAN_KEY] = True
+        words = "; ".join(_issues_said(issues))
+        state[PLAN_ANSWER_KEY] = {"outcome": "replan", "refused": words}
+        return {"outcome": "replan", "refused": words, "effect": "", "does": ""}
     if issues:
-        return _stopped(events, _issues_reason(issues))
+        return _stopped(events, _issues_reason(issues) + (AGAIN if state.get(SAVE_REPLAN_KEY) else ""))
     if plan.kind == "update" and (moved := await _moved_since_read(state)):
         return _stopped(events, f"Nothing was changed: the workflow \"{moved}\" was changed since I read it for "
                                 "your review, so I left it as it is now. Ask again to change it.")
