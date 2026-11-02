@@ -125,7 +125,9 @@ from core.native_builder import prompt_lint, seed
 #: REACH1: rules 15–19 under # Changing (triage, savings, settings_set, a schedule's missed runs and target, variables
 #: by name), rule 10's recordings as ops, topics run/variables/settings/savings in both lists; on REACH2's 0af7a248,
 #: 5ad51eef…; with REACH2's topics widgets and channels in both lists (TRI1, 11-02), 963b1a71….
-BUNDLE_SHA256 = "963b1a71ddc30b5377cf416893b3f11b04285987d751187b64de425e85537789"
+#: F1274: rule 20 under # Changing (asking an agent for the person is the op talk_to_agent, a card that names it, the
+#: message and roughly what it costs, and shows its answer), 2516fd8f….
+BUNDLE_SHA256 = "2516fd8f46871e38b6d959956a52bba4eefba983eb9b501b1619045705840ee7"
 
 
 def _sha(definitions) -> str:
