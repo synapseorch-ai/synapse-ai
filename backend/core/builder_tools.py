@@ -2568,6 +2568,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if team_refusal:
                 return {"error": team_refusal}
             fields["team"] = team_block
+        from core.native_builder.agent_census import editor_problem
+
+        # What the agent editor's own model would refuse in what this sets, this refuses too (F1259).
+        if (said := editor_problem({**agent, **fields}, only=set(fields))) is not None:
+            return {"error": said}
         agent.update(fields)
         agent["id"] = args["agent_id"]  # the id is not patchable
         await save_agent(agent)

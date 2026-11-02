@@ -131,6 +131,51 @@ def switch_lines(a: Any) -> list[str]:
         if signed:
             out.append("Starts signed in on " + ", ".join(signed))
         out += [missing_session_line(site) for site in browser.sessions_missing]
+        if browser.recordings:
+            out.append("Runs the recordings " + ", ".join(f"“{r}”" for r in browser.recordings))
+        if browser.action_budget is not None:
+            out.append(f"At most {browser.action_budget} browser actions in a task")
+    return out + setting_lines(a)
+
+
+def setting_lines(a: Any) -> list[str]:
+    """The rest of a new agent's settings (F1259, `agent_census`), one line each, each only when the plan sets it."""
+    out: list[str] = []
+    if getattr(a, "type", "") == "team":
+        members = ", ".join(f"“{m}”" for m in getattr(a, "members", None) or []) or "no members yet"
+        team = getattr(a, "team", None)
+        if team is None or team.mode == "team":
+            at_once = getattr(team, "at_once", None) or 3
+            limit = getattr(team, "spend_limit_usd", None)
+            spend = f", within ${limit:,.2f}" if limit else "; no spend limit is set"
+            out.append(f"Team: {members}, up to {at_once} at once{spend}")
+        else:
+            out.append(f"Team: {members}, one at a time")
+    if getattr(a, "skills", None):
+        out.append("Skills: " + ", ".join(f"“{k}”" for k in a.skills))
+    if getattr(a, "helpers", False):
+        out.append("Helpers: on — it may hand parts of a job to helpers that run beside it, on its own model")
+    if getattr(a, "planning", True) is False:
+        out.append("Planning: off — it answers straight away")
+    if getattr(a, "skip_default_tools", False):
+        out.append("Only the tools named here, none of the product's own")
+    if getattr(a, "max_turns", None):
+        out.append(f"At most {a.max_turns} turns a task")
+    if getattr(a, "turn_limit_mode", None):
+        out.append({"ask": "At its turn limit: asks you", "continue": "At its turn limit: carries on",
+                    "stop": "At its turn limit: stops"}[a.turn_limit_mode])
+    if getattr(a, "reasoning_effort", None):
+        out.append(f"Reasoning: {a.reasoning_effort}")
+    if getattr(a, "max_output_tokens", None):
+        out.append(f"Writes at most {a.max_output_tokens:,} tokens an answer")
+    if getattr(a, "boards_own", None) is False:
+        out.append("Boards: shares a board rather than having its own")
+    if getattr(a, "repos", None):
+        out.append("Repositories: " + ", ".join(f"“{r}”" for r in a.repos))
+    if getattr(a, "db_configs", None):
+        out.append("Databases: " + ", ".join(f"“{d}”" for d in a.db_configs))
+    if getattr(a, "workflow", None):
+        out.append(f"Runs the workflow “{a.workflow}”")
     return out
 
 

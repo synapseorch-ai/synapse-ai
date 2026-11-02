@@ -110,7 +110,10 @@ from core.native_builder import prompt_lint, seed
 #: (fix-forward 16), 9558556c….
 #: F1265: a `cannot` names its `screen` (the row's id in not_here), whose link code adds: planner rule 8 and the
 #: `cannot` line, a4b534bd… on its branch; with the named pages and F1257 (fix-forward 16), 4ebcf413….
-BUNDLE_SHA256 = "4ebcf41365e033a4855d841507fd129afea314b6dcdb95fa34f26adb6573618f"
+#: F1258: search_knowledge and rule 12 (editing a knowledge base's note or text file), 77c5f233… on its branch;
+#: on fix-forward 16's cdd314f4, under the one planner's # Changing as rule 12, 7f917720…; with the named
+#: pages, F1257 and F1265 (fix-forward 16), 3c693816….
+BUNDLE_SHA256 = "3c69381688389c82278aba01a237e0c7668aa00fc4e339da76222023fd9c205c"
 
 
 def _sha(definitions) -> str:

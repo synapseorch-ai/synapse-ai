@@ -124,6 +124,8 @@ class AgentParts:
     servers: list[str] = field(default_factory=list)
     browser: bool = False
     mode: str = "read_only"
+    recordings: list[str] = field(default_factory=list)
+    action_budget: int | None = None
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -144,7 +146,9 @@ def agent_parts(agent: Any, *, kb_names: dict[str, str] | None = None) -> AgentP
         sessions_missing=[str(s) for s in _get(browser, "sessions_missing", None) or []],
         servers=[str(s) for s in _get(agent, "servers", None) or []],
         browser=browser is not None or _get(agent, "type") == "browser",
-        mode=str(_get(browser, "mode", "read_only") or "read_only"))
+        mode=str(_get(browser, "mode", "read_only") or "read_only"),
+        recordings=[str(r) for r in _get(browser, "recordings", None) or []],
+        action_budget=_get(browser, "action_budget", None))
 
 
 def _tools_words(a: AgentParts, titles: dict[str, str]) -> str:
@@ -161,7 +165,8 @@ def switches(a: AgentParts) -> list[str]:
     already here alike; a site with no kept session is said once, as what is missing or off (`_off_sessions`)."""
     from core.native_builder.render import missing_session_line, switch_lines
 
-    browser = SimpleNamespace(sites=a.sites, sessions=a.sessions, mode=a.mode, sessions_missing=a.sessions_missing)
+    browser = SimpleNamespace(sites=a.sites, sessions=a.sessions, mode=a.mode, sessions_missing=a.sessions_missing,
+                              recordings=a.recordings, action_budget=a.action_budget)
     shim = SimpleNamespace(memory=a.memory, knowledge=a.knowledge, servers=a.servers,
                            type="browser" if a.browser else a.type, browser=browser if a.browser else None)
     missing = {missing_session_line(site) for site in a.sessions_missing}

@@ -29,9 +29,11 @@ def test_the_model_s_enum_is_the_table():
 
 
 def test_an_undo_s_re_create_is_code_s_only():
-    # F1198 (BLD1): a deleted Python tool's re-create, its own.
+    # F1198 (BLD1): a deleted Python tool's re-create, its own. F1259: an agent's settings set back as they were, and a
+    # deleted memory item written back.
     assert {n for n, op in C.OPS.items() if op.internal} == {"restore_agent", "restore_workflow", "restore_tool",
-                                                              "restore_python_tool"}
+                                                              "restore_python_tool", "set_agent_fields",
+                                                              "restore_agent_memory"}
     assert C.issues("restore_agent", {"kind": "agent", "name": "x"}, {}) == [
         f"`restore_agent` is not an op. The ops are: {', '.join(C.PLANNER_OPS)}."]
 
@@ -153,6 +155,12 @@ def _samples():
         ("set_agent_skills", {"add": ["x"]}), ("set_agent_instructions", {"system_prompt": "s"}),
         ("rename_agent", {"name": "N"}), ("set_tool_policy", {"open_world": "deny"}), ("delete_agent", {}),
         ("update_skill", {"description": "d"}), ("delete_tool", {}),
+        ("knowledge_edit_document", {"text": "Open 8 to 6."}), ("knowledge_settings", {"language": "english"}),
+        ("set_agent_settings", {"max_turns": 12}), ("set_agent_team", {"at_once": 4}),
+        ("set_agent_browser", {"action_budget": 60}), ("set_agent_code", {"repos": ["repo_shop"]}),
+        ("set_agent_fields", {"max_turns": 3}), ("edit_agent_memory", {"content": "Refunds in 60 days."}),
+        ("delete_agent_memory", {}),
+        ("restore_agent_memory", {"item": "a1/refund-policy", "content": "Refunds in 30 days."}),
         ("restore_agent", {"name": "N", "description": "d", "type": "conversational", "tools": [],
                            "system_prompt": "s", "model": "m"}),
         ("restore_workflow", {"name": "N", "steps_json": "[]", "entry_step_id": "s1", "max_run_credits": 2}),
@@ -236,13 +244,21 @@ def _shown(value):
 
 #: A value for every field an op declares (MCP2's re-check, B: a hand-made sample that sets no `description` let
 #: a new schedule's line leave it out though its call sent it). Each is distinctive, so its presence is checked.
-_EVERY = {"name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND THE DIGEST", "model": "model-x",
+_EVERY = {"language": "english", "visitor_access": True, "budget_monthly_usd": 25, "clear_budget": False,
+          "text": "OPEN 8 TO 6", "find": "OPEN 9 TO 5", "replace": "OPEN 8 TO 6", "name": "New name", "description": "PAYS THE VENDOR", "prompt": "SEND THE DIGEST", "model": "model-x",
           "cron_expression": "0 3 * * *", "schedule_type": "cron", "timezone": "Europe/Amsterdam", "interval_value": 6, "interval_unit": "hours",
           "runs": {"kind": "workflow", "id": "w1", "name": "Nightly digest"}, "add": ["send_email"],
           "remove": ["read_file"], "system_prompt": "BE BRIEF", "tools": {"send_email": "deny"},
           "destructive": "confirm", "open_world": "deny", "undeclared": "allow", "max_total_turns": 7,
           "timeout_minutes": 9, "max_run_credits": 3, "max_run_usd": 2.5, "body": "THE SKILL'S TEXT",
-          "needs": "reasoning", "wish": "A MODEL WISH", "missed_run_policy": "run_immediately"}
+          "needs": "reasoning", "wish": "A MODEL WISH",
+          # An agent's sections (F1259): `mode` is a team's or a browser's, one value serves both lines.
+          "memory": True, "knowledge": ["kb_handbook"], "boards_own": True, "planning": False,
+          "skip_default_tools": True, "helpers": True, "max_turns": 12, "turn_limit_mode": "stop",
+          "reasoning_effort": "high", "max_output_tokens": 4096, "mode": "co_drive", "at_once": 4, "task_budget": 9,
+          "spend_limit_usd": 1.5, "clear_spend_limit": False, "sites": ["portal.example.com"],
+          "sessions": ["sess_portal"], "recordings": ["rec_login"], "action_budget": 60, "repos": ["repo_shop"],
+          "db_configs": ["db_orders"], "content": "THE MEMORY'S TEXT", "missed_run_policy": "run_immediately"}
 
 
 def _every_field(op_name):
@@ -277,7 +293,9 @@ def test_every_write_s_review_line_shows_what_its_call_sets(op):
     o = C.OPS[op]
     tool, args = C.call(o, "t1", fields, AGENT, name="N")
     line = _words(o, {"name": "N", "id": "t1"}, fields, "", C.expected(o, fields, AGENT))
-    skip = {"orch_id", "agent_id", "schedule_id", "target_id", "target_type"}
+    # Ids name the target; a document's `was_sha256` is the fingerprint of the text the review was read from, a guard
+    # on the write (F1258), not a value it sets.
+    skip = {"orch_id", "agent_id", "schedule_id", "target_id", "target_type", "doc_id", "was_sha256"}
     # A write's values ride in `fields` (update_agent) or `changes` (set_settings, F1264): each is checked.
     sent = {**{k: v for k, v in args.items() if k not in ("fields", "changes")}, **(args.get("fields") or {}),
             **(args.get("changes") or {})}

@@ -42,6 +42,8 @@ READS: frozenset[str] = frozenset({
     # The planner's research answered (D340 D2): code reads the help and a page the question names through the
     # guarded read, and keeps the researcher's answers, into the run's own state only.
     "answer_research", "settle_research",
+    # The knowledge bases' passages, by document (F1258): a search, nothing changed.
+    "search_knowledge",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,
@@ -70,6 +72,8 @@ WRITES: frozenset[str] = frozenset({
     "read_connect_answer",
     # The settings a reviewed change sets (F1264's settings_set): a write here; the tool itself still asks an admin.
     "set_settings",
+    # BRW1's reviewed changes (F1258, F1276, F1259): a knowledge note's text, a base's settings, an agent's memory item.
+    "edit_knowledge_document", "update_knowledge_base", "edit_agent_memory_item", "delete_agent_memory_item",
 })
 
 KINDS: dict[str, str] = {**{n: "read" for n in READS}, **{n: "card" for n in CARDS}, **{n: "write" for n in WRITES}}

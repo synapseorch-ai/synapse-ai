@@ -226,6 +226,37 @@ async def _list_documents(caller: Any, args: dict[str, Any]) -> dict:
     return {"knowledge_base": kb.name, "documents": [d.model_dump(mode="json") for d in listed]}
 
 
+def text_sha256(text: str) -> str:
+    """The fingerprint of a document's text as it was read (F1258): an edit made from it writes only over that."""
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def _edit_document(caller: Any, args: dict[str, Any]) -> dict:
+    """A note's or a text file's text, written as `text` under its own name and folder, and indexed again (F1258).
+    With `was_sha256`, only over the text it was made from: a document changed since is said, never written over."""
+    from core.knowledge import bases, ingest
+
+    row = await _document(str(args.get("doc_id") or ""))
+    text = args.get("text")
+    if not isinstance(text, str) or not text.strip():
+        raise ToolRefusal("The document's new text is empty: say what it should say.")
+    current, why = await ingest.editable_text(row)
+    if current is None:
+        raise ToolRefusal(f"This document's text can't be changed here: {why}.")
+    if args.get("was_sha256") and args["was_sha256"] != text_sha256(current):
+        raise ToolRefusal("The document changed since I read it, so I left it as it is: ask again to change it.")
+    kb = await bases.require_base(row.kb_id)
+    if kb.status != "active":
+        raise ToolRefusal("Its knowledge base is turned off: turn it on to change its documents.")
+    if text == current:
+        return {"doc_id": row.id, "changed": False}
+    rows = await ingest.write_text(kb, row, text)
+    return {"doc_id": row.id, "changed": True, "knowledge_base": kb.name,
+            "status": rows[0].status if rows else None}
+
+
 async def _changed(kb: Any, args: dict[str, Any]) -> Any:
     """The edit `update_knowledge_base` would save: a new name (none another base has) and what it holds."""
     from pydantic import ValidationError
@@ -233,9 +264,15 @@ async def _changed(kb: Any, args: dict[str, Any]) -> Any:
     from core.knowledge import bases
     from core.knowledge.api_models import KnowledgeBaseUpdate
 
-    fields = {k: str(args[k]).strip() for k in ("name", "description") if args.get(k) is not None}
+    fields: dict[str, Any] = {k: str(args[k]).strip() for k in ("name", "description") if args.get(k) is not None}
+    # Its plain settings, as the Knowledge screen's own model checks them (F1276): its language, whether visitors may
+    # search it, its monthly budget (or none).
+    fields |= {k: args[k] for k in ("language", "visitor_access", "budget_monthly_usd") if args.get(k) is not None}
+    if args.get("clear_budget") is True:
+        fields["clear_budget"] = True
     if not fields:
-        raise ToolRefusal("Say what changes: its name, or what it holds (description).")
+        raise ToolRefusal("Say what changes: its name, what it holds (description), its language, whether visitors "
+                          "may search it, or its monthly budget.")
     if (name := fields.get("name")) and any(b.id != kb.id and b.name.lower() == name.lower()
                                             for b in await bases.list_bases()):
         raise ToolRefusal(f'A knowledge base is already called "{name}": say another name.')
@@ -253,7 +290,9 @@ async def _update_base(caller: Any, args: dict[str, Any]) -> dict:
         _, after, _ = await _host_update(caller, kb.id, await _changed(kb, args))
     except StaleRevision:
         raise ToolRefusal("Someone changed this knowledge base just now; ask again to change it.") from None
-    return {"knowledge_base": after.name, "id": after.id, "description": after.description}
+    return {"knowledge_base": after.name, "id": after.id, "description": after.description,
+            "language": after.language, "visitor_access": after.visitor_access,
+            "budget_monthly_usd": after.budget_monthly_usd}
 
 
 async def _retry_rebuild(caller: Any, args: dict[str, Any]) -> dict:
@@ -371,10 +410,14 @@ def entries() -> list[ProductTool]:
                         "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": ["knowledge_base"]},
                     handler=_list_documents),
         ProductTool(name="update_knowledge_base",
-                    description="Rename a knowledge base, or say what it holds (its description). Its folder and "
-                                "index settings are changed on the Knowledge screen.",
+                    description="Rename a knowledge base, say what it holds (its description), or set its language, "
+                                "whether visitors may search it, or its monthly budget (clear_budget: none). A new "
+                                "language indexes it again. Its folder and how its index is built are changed on the "
+                                "Knowledge screen.",
                     input_schema={"type": "object", "properties": {
-                        **_KB, "name": {"type": "string"}, "description": {"type": "string"}},
+                        **_KB, "name": {"type": "string"}, "description": {"type": "string"},
+                        "language": {"type": "string"}, "visitor_access": {"type": "boolean"},
+                        "budget_monthly_usd": {"type": "number", "minimum": 0}, "clear_budget": {"type": "boolean"}},
                         "required": ["knowledge_base"]},
                     handler=_update_base, audit_action="knowledge.base.updated",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("id") or "")), **act),
@@ -392,6 +435,15 @@ def entries() -> list[ProductTool]:
                     handler=_delete_base, irreversible=True, preview=_preview_delete_base,
                     audit_action="knowledge.base.deleted",
                     target=lambda a, r: ("knowledge_base", str((r or {}).get("deleted") or "")), **act),
+        ProductTool(name="edit_knowledge_document",
+                    description="Change a note's or a text file's text in its knowledge base: its name and folder "
+                                "stay, and it is indexed again. `text` is its whole new text; `was_sha256`, the "
+                                "fingerprint of the text it was made from (it writes only over that).",
+                    input_schema={"type": "object", "properties": {
+                        **_DOC, "text": {"type": "string"}, "was_sha256": {"type": "string"}},
+                        "required": ["doc_id", "text"]},
+                    handler=_edit_document, audit_action="knowledge.document.edited",
+                    target=lambda a, r: ("knowledge_document", str(a.get("doc_id"))), **act),
         ProductTool(name="retry_knowledge_document", description="Index a document again after it failed.",
                     input_schema={"type": "object", "properties": dict(_DOC), "required": ["doc_id"]},
                     handler=_retry, idempotent=True, audit_action="knowledge.document.retried",

@@ -73,12 +73,29 @@ class AgentBrowserPart(_Written):
                                                                             "and send, with the person watching")
     #: The sites of `sessions` with no kept session here (code sets it, F1223): saved without, said on the card.
     sessions_missing: list[str] = Field(default_factory=list)
+    recordings: list[str] = Field(default_factory=list, description="The workspace's recordings it may run, by name "
+                                                                    "(F1259)")
+    action_budget: int | None = Field(None, ge=1, le=200, description="The most browser actions it takes in one task "
+                                                                      "(the editor's default: 40)")
+
+
+class AgentTeamPart(_Written):
+    """A team's way of working, as the agent editor's Team section sets it (F1259)."""
+
+    mode: Literal["one_at_a_time", "team"] = Field("team", description="team: several members at once; "
+                                                                      "one_at_a_time: members work in turn")
+    at_once: int | None = Field(None, ge=1, le=50, description="team: how many members work at once (default 3)")
+    task_budget: int | None = Field(None, ge=1, le=50, description="team: the most tasks it hands out (default 6)")
+    spend_limit_usd: float | None = Field(None, gt=0, description="team: the most its members' work may cost, in "
+                                                                  "dollars; leave it out for no limit")
 
 
 class NewAgent(_Written):
     name: str
-    type: Literal["agent", "team", "browser"] = Field(
-        "agent", description="agent; team: a lead with members; or browser: it works in websites in its own browser")
+    type: Literal["agent", "team", "browser", "code", "orchestrator"] = Field(
+        "agent", description="agent; team: a lead with members; browser: it works in websites in its own browser; "
+                             "code: it works in the workspace's code repositories and databases; orchestrator: it "
+                             "runs one workflow")
     purpose: str = Field(description="One or two sentences: what it is for")
     tools: list[str] = Field(default_factory=list, description="Exact tool names it needs")
     members: list[str] = Field(default_factory=list, description="team: the names or ids of its members")
@@ -103,6 +120,26 @@ class NewAgent(_Written):
                                                                "it starts signed in on")
     servers: list[str] = Field(default_factory=list, description="Connected MCP servers, by name: it is given every "
                                                                  "tool each has now")
+    # Every other setting the agent editor has (F1259; `agent_census`): each checked as the editor's save checks it.
+    skills: list[str] = Field(default_factory=list, description="The workspace's skills it loads, by name")
+    planning: bool = Field(True, description="False for an agent that answers straight away, without planning first")
+    skip_default_tools: bool = Field(False, description="True when it gets only the tools named here, none of the "
+                                                        "product's own")
+    helpers: bool = Field(False, description="True when it may hand parts of a job to helpers that run beside it; "
+                                             "code picks their model")
+    max_turns: int | None = Field(None, ge=1, le=200, description="The most turns one task may take; leave it out "
+                                                                  "for the workspace's")
+    turn_limit_mode: Literal["ask", "continue", "stop"] | None = Field(
+        None, description="At its turn limit: ask the person, continue, or stop; leave it out for the workspace's")
+    reasoning_effort: Literal["off", "low", "medium", "high"] | None = Field(
+        None, description="How hard its model thinks, where the model can; leave it out for the workspace's")
+    max_output_tokens: int | None = Field(None, description="The most its model writes in one answer; leave it out "
+                                                            "for the workspace's")
+    team: AgentTeamPart | None = Field(None, description="team agents only: how its members work")
+    boards_own: bool | None = Field(None, description="False when it shares a board instead of having its own")
+    repos: list[str] = Field(default_factory=list, description="code agents: the workspace's repositories, by name")
+    db_configs: list[str] = Field(default_factory=list, description="code agents: the workspace's databases, by name")
+    workflow: str | None = Field(None, description="orchestrator agents: the workflow it runs, by its name or id")
 
 
 class ModelPick(BaseModel):
@@ -331,6 +368,9 @@ class Plan(PlanDraft):
     model_fills: list[str] = Field(default_factory=list)
     #: Each knowledge base its new agents answer from, by name → id (F1223). Set by `examine`.
     knowledge_ids: dict[str, str] = Field(default_factory=dict)
+    #: Each repository, database, workflow and recording its new agents name, as `kind:name` → id (F1259). Set by
+    #: `examine`.
+    refs: dict[str, str] = Field(default_factory=dict)
     #: What each step does, by its id, in code's words from its parts (F1228, `parts_words`). Set by `fill`.
     step_words: dict[str, str] = Field(default_factory=dict)
     #: The plan's own parts in those words: its boards, knowledge bases, APIs, apps and schedule. Set by `fill`.

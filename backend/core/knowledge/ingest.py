@@ -370,6 +370,74 @@ async def delete_record(kb: KnowledgeBase, record_id: str) -> None:
     await _delete_file(path)
 
 
+# ── a document's text, edited (F1258) ──────────────────────────────────────────
+
+#: The files whose text Synapse AI may edit in place: plain text, written as it is read.
+EDITABLE_ENDINGS = ("md", "markdown", "txt", "csv")
+
+
+def _record_id_of(row: KnowledgeDocumentDB) -> str | None:
+    from core.knowledge.ids import is_record_id
+
+    head, _, name = row.path.rpartition("/")
+    stem = name.removesuffix(".json")
+    return stem if head.endswith(f"/{RECORDS_DIR}") and name.endswith(".json") and is_record_id(stem) else None
+
+
+def kind_of(row: KnowledgeDocumentDB) -> str:
+    """What a document is, as a person names it: a `note` (a record), a `page` (read from a site) or a `file`."""
+    return "note" if _record_id_of(row) is not None else "page" if row.source == "web" else "file"
+
+
+def editable(row: KnowledgeDocumentDB) -> bool:
+    """Whether its text can be edited here, from what it is, without reading it (`editable_text` reads it)."""
+    kind = kind_of(row)
+    return kind == "note" or (kind == "file" and "." in row.path
+                              and row.path.rsplit(".", 1)[-1].lower() in EDITABLE_ENDINGS)
+
+
+async def editable_text(row: KnowledgeDocumentDB) -> tuple[str | None, str]:
+    """(its text, "") when a document's text can be edited here: a note (a record of text), or a text file in its
+    base's folder; else (None, why, with the nearest thing that works)."""
+    if row.source == "web":
+        return None, ("it is a page the base reads from its site, so the next crawl would put it back: change it at "
+                      "the site, or add a note")
+    raw = await asyncio.to_thread(_store().get, f"vault/{row.path}")
+    if raw is None:
+        return None, "its file is not in the Vault any more"
+    if _record_id_of(row) is not None:
+        try:
+            doc = json.loads(raw)
+        except ValueError:
+            return None, "its record can't be read"
+        if not isinstance(doc.get("text"), str):
+            return None, "it is a record of data (JSON), not text: send the record again with its new data"
+        return doc["text"], ""
+    ending = row.path.rsplit(".", 1)[-1].lower() if "." in row.path else ""
+    if ending not in EDITABLE_ENDINGS:
+        return None, (f"it is a {ending.upper() or 'binary'} file, whose text can't be written here: put the new file "
+                      "in the Vault in its place")
+    return raw, ""
+
+
+async def write_text(kb: KnowledgeBase, row: KnowledgeDocumentDB, text: str) -> list[KnowledgeDocumentDB]:
+    """The document's text written as `text`, under its own name and folder, and indexed again (F1258): a note
+    through its record (the same id replaces it), a file at its own path."""
+    from core.knowledge import sync
+    from core.knowledge.api_models import RecordIn, RecordIngestRequest
+    from core.vault_events import VaultChange
+
+    if (record_id := _record_id_of(row)) is not None:
+        doc = json.loads(await asyncio.to_thread(_store().get, f"vault/{row.path}") or "{}")
+        return await put_records(kb, RecordIngestRequest(records=[RecordIn(
+            id=record_id, text=text, title=doc.get("title"), doc_date=doc.get("doc_date"),
+            metadata=doc.get("metadata") or {})]))
+    await asyncio.to_thread(_store().put, f"vault/{row.path}", text)
+    raw = text.encode("utf-8")
+    return await sync.on_vault_change(VaultChange(path=row.path, op="write", sha256=hashlib.sha256(raw).hexdigest(),
+                                                  size=len(raw), source="route"))
+
+
 # ── documents ──────────────────────────────────────────────────────────────────
 
 async def _delete_file(path: str) -> None:
