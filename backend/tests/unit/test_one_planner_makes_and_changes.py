@@ -11,11 +11,13 @@ after the checks — review, approve, save, apply, the maker, the Connect cards,
 from __future__ import annotations
 
 import json
+import re
 import types
 
 import pytest
 
 import core.builder_tools  # noqa: F401 — loads the builder's modules in the product's order (change_tools after it)
+from core.builder_readers import TOPICS
 from core.expressions import evaluate_expression
 from core.native_builder.seed import bundled_definitions
 
@@ -37,6 +39,20 @@ def _targets(step: dict) -> set[str]:
     out |= set((step.get("switch_cases") or {}).values())
     return {t for t in out if t}
 
+
+
+#: The read_workspace topics the planner's topic list leaves out, each with why: a topic is named there, or here.
+NOT_LISTED = {
+    "phone": "a phone number is set up on the Phone screen (rule 14); the planner never reads one",
+    "usage": "what runs cost: the savings topic is what a change reads",
+    "plan": "the plan and its credits: the answer route's, never a change's",
+    "today": "what happened today: the answer route's",
+    "workflow": "one workflow's steps: the open one is in the planner's context already (read_plan_context's pack "
+                "holds it as a plan)",
+    "agent_activity": "what an agent has been doing: the answer route's",
+    "agent_memory": "an agent's settings, its memory among them, are read with get_agent and set with the agent ops "
+                    "(F1259)",
+}
 
 class TestThereIsOnePlanner:
     def test_the_change_planner_and_its_step_are_gone(self, bundle):
@@ -67,7 +83,18 @@ class TestThereIsOnePlanner:
             assert f"\n{n}. " in changing, f"the change rules keep their numbers: {n}"
         assert "never delete it and make a new one" in changing  # rule 6, as it was
         assert "11. Evals (topic `evals`) score a workflow's runs" in changing  # F1255's, folded in under its number
-        assert changing.count("recordings, evals)") == 1 and prompt.count("recordings, evals)") == 2
+        # The topic list: said twice, once in # Changing (rule 1) and once in what the planner is given, the same list
+        # both times, every name a read_workspace topic, and every topic placed: named, or on NOT_LISTED with why. A
+        # new topic fails here until it is placed, so the list can't fall behind the readers (REACH1, 79 11-02: the
+        # literal it pinned broke on each topic added).
+        lists = re.findall(r"answers by topic \(([^)]*)\)", prompt)
+        assert len(lists) == 2 and len(re.findall(r"answers by topic \(", changing)) == 1, lists
+        assert lists[0] == lists[1], "both sentences name the same topics"
+        named = [t.strip() for t in lists[0].split(",")]
+        assert len(named) == len(set(named)), named
+        assert set(named) <= set(TOPICS), set(named) - set(TOPICS)
+        assert not set(named) & set(NOT_LISTED), set(named) & set(NOT_LISTED)
+        assert set(TOPICS) == set(named) | set(NOT_LISTED), set(TOPICS) ^ (set(named) | set(NOT_LISTED))
 
     def test_its_template_has_both_contexts_and_both_second_passes(self, bundle):
         template = bundle["steps"]["step_plan"]["prompt_template"]
