@@ -124,8 +124,8 @@ from core.native_builder import prompt_lint, seed
 #: and changed with the channel_ ops), a9ef3db1… on fix-forward 15; on fix-forward 16's ff605079 with F1262, 25173721….
 #: REACH1: rules 15–19 under # Changing (triage, savings, settings_set, a schedule's missed runs and target, variables
 #: by name), rule 10's recordings as ops, topics run/variables/settings/savings in both lists; on REACH2's 0af7a248,
-#: 5ad51eef….
-BUNDLE_SHA256 = "5ad51eef6906bd7b46067dcd0441e8b11d075c902c40fd1c9d3f9db81c225df9"
+#: 5ad51eef…; with REACH2's topics widgets and channels in both lists (TRI1, 11-02), 963b1a71….
+BUNDLE_SHA256 = "963b1a71ddc30b5377cf416893b3f11b04285987d751187b64de425e85537789"
 
 
 def _sha(definitions) -> str:
