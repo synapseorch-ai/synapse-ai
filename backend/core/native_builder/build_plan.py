@@ -535,7 +535,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     needed = features_needed(filled, ws)
     from core.native_builder import estimate, structure
 
-    shaped = await structure.issues(filled, ws)
+    asked = _obj(state.get("request"))
+    shaped = await structure.issues(filled, ws, asked if isinstance(asked, dict) else None)
     try:
         filled.run_cost = (await estimate.of(filled, ws)).words()
     except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
