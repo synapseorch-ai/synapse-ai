@@ -96,6 +96,8 @@ PRIVATE_STATE_PREFIXES = (
     # Synapse AI's approved review and its send-backs (`review.REVIEW_KEY`, `build_plan._SENDBACK_KEY`), and the
     # structure findings a build has said already (`build_plan._STRUCTURE_SAID_KEY`, D340 D3).
     "_approved_review", "_plan_sendbacks", "_plan_structure_said",
+    # That a save refused after the yes went back to the planner once (`build_save.SAVE_REPLAN_KEY`, F1295).
+    "_save_replanned",
     # Whether a person watches the run, which decides what a step does at its turn limit (`turn_limit.ATTENDED_KEY`,
     # F1219): the engine's, set by its starter, never a run's input or a client's to read.
     "_attended",
