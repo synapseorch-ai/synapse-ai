@@ -117,7 +117,10 @@ from core.native_builder import prompt_lint, seed
 #: "# Structure" (a fetch or one known call is a Tool step, reshaping a transform or extract_json, an agent only for
 #: judgement, a team or a browser agent for its kind of work, `check_draft` before submitting), 7417a4bf…; with F1258 and
 #: F1265 (fix-forward 16), 113fa7e5….
-BUNDLE_SHA256 = "113fa7e5d3aca31e5b32789b230e41beb31a2f0fa809dc09dab03a7b14906e5e"
+#: F1262: the one planner's rule 13 under # Changing, after BRW1's 12 (a website widget is made or changed with the
+#: widget_ ops, its visitor tools only those the person named), be1cb5b9… on fix-forward 15; on fix-forward 16's
+#: ff605079, b67e5ccb….
+BUNDLE_SHA256 = "b67e5ccba6c7eff6eabfb851e062ced555b920b073ae330c9b131ea11c902703"
 
 
 def _sha(definitions) -> str:

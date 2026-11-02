@@ -29,7 +29,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool", "feature", "recording", "settings", "memory")
+                "approval", "card", "openapi", "python_tool", "feature", "recording", "settings", "memory", "widget")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -77,6 +77,13 @@ TEAM_SETTINGS = ("add", "remove", "mode", "at_once", "task_budget", "spend_limit
 #: A browser agent's: where it may go, the sessions it starts with, how it works, its recordings and actions.
 BROWSER_SETTINGS = ("sites", "sessions", "mode", "recordings", "action_budget")
 
+#: What a card sets on a website widget, in the card's words (`builder_actions._WIDGET_ARGS`).
+_WIDGET_FIELDS = ("agent", "sites", "visitor_tools", "greeting", "title", "accent", "theme", "position",
+                  "launcher_label", "font", "header_style", "launcher", "daily_cap")
+#: A widget's look: each a closed list (`chat_widgets.branding`).
+_WIDGET_CHOICES = {"theme": ("auto", "light", "dark"), "position": ("right", "left"),
+                   "font": ("system", "sans", "serif", "rounded", "mono"), "header_style": ("accent", "neutral"),
+                   "launcher": ("bubble", "logo")}
 
 _ACTS = (
     Op("run_workflow", "act", "workflow", fields=("message",), verb="Run"),
@@ -118,6 +125,13 @@ _ACTS = (
        verb="Drop the kept fix in"),
     Op("recording_rename", "act", "recording", fields=("name",), required=("name",), verb="Rename"),
     Op("recording_delete", "act", "recording", verb="Delete"),
+    # A website widget, made or changed through the Widgets screen's own code (F1262).
+    Op("widget_create", "act", "widget", fields=_WIDGET_FIELDS, required=("agent",), verb="Make"),
+    Op("widget_update", "act", "widget", fields=(*_WIDGET_FIELDS, "on"), any_of=True, verb="Change"),
+    Op("widget_delete", "act", "widget", verb="Delete"),
+    Op("widget_rotate_key", "act", "widget", verb="Give a new key to"),
+    Op("widget_logo", "act", "widget", fields=("path",), required=("path",), verb="Set the logo of"),
+    Op("widget_logo_remove", "act", "widget", verb="Take the logo off"),
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
@@ -228,11 +242,11 @@ WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
 
 #: The argument that names an act's target, as `prepare_action` takes it.
 #: Acts whose target is the thing they make, named, never looked up among what exists (F1200).
-MAKES_TARGET = frozenset({"board_create", "knowledge_create"})
+MAKES_TARGET = frozenset({"board_create", "knowledge_create", "widget_create"})
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
-            "feature": "feature", "recording": "recording"}
+            "feature": "feature", "recording": "recording", "widget": "widget"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────
@@ -279,8 +293,15 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     if op.target == "agent" and op.name.startswith("set_agent_") and \
             (said := _agent_field_issue(op, key, value)) is not False:
         return said
-    if key in ("add", "remove", "urls"):
+    if key in ("add", "remove", "urls", "sites", "visitor_tools"):
         return None if _is_list_of_text(value) else f"`{key}` is a list of names"
+    if key in _WIDGET_CHOICES and op.target == "widget":
+        return None if value in _WIDGET_CHOICES[key] else f"`{key}` is one of {', '.join(_WIDGET_CHOICES[key])}"
+    if key == "daily_cap":
+        return None if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else \
+            "`daily_cap` is a whole number of messages a day"
+    if key == "on":
+        return None if isinstance(value, bool) else "`on` is true or false"
     if key in POLICY_CATEGORIES:
         return None if value in DECISIONS else f"`{key}` is one of {', '.join(DECISIONS)}"
     if key == "tools" and op.name == "set_tool_policy":

@@ -130,10 +130,20 @@ export interface ActionButton {
     run_id?: string | null;
 }
 
+/** One field a change sets, as it stands and as it will be (`core/native_builder/rows.py`). */
+export interface ChangeRow {
+    label: string;
+    before?: string | null;
+    after?: string | null;
+    note?: string;
+}
+
 export interface ActionSpec {
     id: string;
     title: string;
     detail?: string;
+    /** What it changes, field by field (F1262). */
+    rows?: ChangeRow[];
     /** Stops or undoes something: said in the danger colour. */
     danger?: boolean;
     buttons: ActionButton[];

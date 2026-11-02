@@ -9,6 +9,7 @@ import {
     Button, ConfirmDialog, EmptyState, ErrorNote, Field, IconButton, Input, Modal, Select,
     Toast, useToast,
 } from '@/components/ui';
+import { widgetSnippet } from '@/lib/widgetSnippet';
 
 interface WidgetRecord {
     id: string;
@@ -64,8 +65,6 @@ const THEMES = [
     { id: 'dark', label: 'Dark', hint: '' },
 ];
 
-const snippet = (base: string, key: string) =>
-    `<script src="${base}/embed/v1.js" data-key="${key}" async></script>`;
 
 /**
  * Widgets: an agent answering on a site that is not this one.
@@ -264,7 +263,7 @@ export const WidgetsTab = () => {
     };
 
     const copy = async (widget: WidgetRecord) => {
-        await navigator.clipboard.writeText(snippet(base, widget.public_key));
+        await navigator.clipboard.writeText(widgetSnippet(base, widget.public_key));
         setCopied(widget.id);
         setTimeout(() => setCopied(''), 2000);
     };
@@ -340,7 +339,7 @@ export const WidgetsTab = () => {
                                                 </Button>
                                             </div>
                                             <pre className="m-0 overflow-x-auto rounded-md border border-border bg-surface-2 p-3 font-code text-xs text-text-muted">
-                                                {snippet(base, selected.public_key)}
+                                                {widgetSnippet(base, selected.public_key)}
                                             </pre>
                                             <p className="m-0 text-xs text-text-faint">
                                                 The key in the snippet is public by design — what decides who may use it is

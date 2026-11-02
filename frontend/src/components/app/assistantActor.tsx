@@ -11,6 +11,7 @@ import { ApprovalCard, RunHostProvider, type RunRecord } from '@/components/run'
 import { ErrorNote, Spinner } from '@/components/ui';
 import type { ActionButton } from '@/lib/builderEvents';
 import { OSS_RUN_HOST, ossRunRecord } from '@/lib/runHost';
+import { widgetSnippet } from '@/lib/widgetSnippet';
 
 const enc = encodeURIComponent;
 
@@ -22,9 +23,9 @@ async function press(button: ActionButton): Promise<ActResult> {
             tool: button.tool, arguments: button.arguments, token: button.token, run_id: button.run_id ?? null,
         }),
     });
-    let body: { detail?: unknown; result?: { run_id?: string | null } } = {};
+    let body: { detail?: unknown; result?: { run_id?: string | null; public_key?: string | null } } = {};
     try { body = await res.json(); } catch { /* not JSON */ }
-    if (res.ok) return { ok: true, runId: body.result?.run_id ?? null };
+    if (res.ok) return { ok: true, runId: body.result?.run_id ?? null, publicKey: body.result?.public_key ?? null };
     const message = typeof body.detail === 'string' && body.detail ? body.detail : `That did not work (${res.status}).`;
     // Done before, expired, or not this person's: the card cannot be pressed again.
     return { ok: false, message, spent: res.status === 403 || res.status === 409 || res.status === 410 };
@@ -65,4 +66,5 @@ export const selfHostedActor: Actor = {
     press,
     question: (runId: string, onDone: (message: string) => void): ReactNode => <RunQuestion runId={runId} onDone={onDone} />,
     runHref: (runId: string) => `/runs/${enc(runId)}`,
+    embedSnippet: (publicKey: string) => widgetSnippet(window.location.origin, publicKey),
 };

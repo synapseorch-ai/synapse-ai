@@ -109,7 +109,9 @@ SUBMIT = {"type": "function", "function": {
         "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
         "{count, steer}; eval_run and eval_cancel {golden_set}; knowledge_edit_document {find: the passage as it "
         "stands, replace: its new text} or {text: a short note's whole new text}; knowledge_settings {language, "
-        "visitor_access (opening it to visitors, on its own), budget_monthly_usd | clear_budget}; edit_steps, create "
+        "visitor_access (opening it to visitors, on its own), budget_monthly_usd | clear_budget}; widget_create {agent, sites, visitor_tools, greeting, title, accent, theme, "
+        "position, launcher_label, font, header_style, launcher, daily_cap}; widget_update {the same, on}; widget_logo "
+        "{path}; edit_steps, create "
         "and use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {

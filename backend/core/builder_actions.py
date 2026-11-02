@@ -64,6 +64,18 @@ ACTIONS: dict[str, str] = {
     "recording_discard_edit": "drop a kept fix, leaving the recording as it is (`recording`, `edit_id`)",
     "recording_rename": "rename a recording (`recording`, `name`)",
     "recording_delete": "delete a recording and its pictures (`recording`)",
+    "widget_create": "make a website widget (`name`; `agent`: the agent that answers; `sites`: the sites it may sit on, "
+                     "as https://example.com; `visitor_tools`: tools a visitor may use, only those the person named; "
+                     "`greeting`, `title`, `accent`, `theme`, `position`, `launcher_label`, `font`, `header_style`, "
+                     "`launcher`, `daily_cap`: messages a day)",
+    "widget_update": "change a website widget (`widget`; any of `agent`, `sites`, `visitor_tools`, `greeting`, `title`, "
+                     "`accent`, `theme`, `position`, `launcher_label`, `font`, `header_style`, `launcher`, `daily_cap`, "
+                     "`on`); what it does not name is kept",
+    "widget_delete": "delete a website widget (`widget`)",
+    "widget_rotate_key": "give a website widget a new key, when its old one is abused: the old snippet stops working "
+                         "(`widget`)",
+    "widget_logo": "set a website widget's logo from an image in the Vault (`widget`, `path`)",
+    "widget_logo_remove": "take a website widget's logo off (`widget`)",
 }
 
 SCHEMA = {
@@ -109,6 +121,22 @@ SCHEMA = {
                 "golden_set": {"type": "string", "description": "The golden set's name; omit for the workflow's one."},
                 "recording": {"type": "string", "description": "The recording's name or id."},
                 "edit_id": {"type": "string", "description": "A kept fix's id, from topic `waiting`."},
+                "widget": {"type": "string", "description": "The website widget's name."},
+                "agent": {"type": "string", "description": "widget_create, widget_update: the agent's name."},
+                "sites": {"type": "array", "items": {"type": "string"},
+                          "description": "widget_*: every site it may sit on, as https://example.com."},
+                "visitor_tools": {"type": "array", "items": {"type": "string"},
+                                  "description": "widget_*: the tools a visitor may use; leave it out unless named."},
+                "greeting": {"type": "string"},
+                "accent": {"type": "string", "description": "A colour, as #4f46e5."},
+                "theme": {"type": "string", "enum": ["auto", "light", "dark"]},
+                "position": {"type": "string", "enum": ["right", "left"]},
+                "launcher_label": {"type": "string"},
+                "font": {"type": "string", "enum": ["system", "sans", "serif", "rounded", "mono"]},
+                "header_style": {"type": "string", "enum": ["accent", "neutral"]},
+                "launcher": {"type": "string", "enum": ["bubble", "logo"]},
+                "daily_cap": {"type": "integer", "description": "widget_*: the most messages a day."},
+                "on": {"type": "boolean", "description": "widget_update: on or off."},
                 "name": {"type": "string"},
                 "title": {"type": "string"},
                 "text": {"type": "string"},
@@ -247,9 +275,11 @@ def _own_title(title: str, text: str) -> str:
 
 
 def _card(title: str, *, detail: str = "", danger: bool = False, buttons: list[dict] | None = None,
-          question: dict | None = None) -> dict:
+          question: dict | None = None, rows: list[dict] | None = None) -> dict:
+    """`rows`: what it changes, field by field, as it stands and as it will be (`native_builder.rows`, F1262)."""
     return {"type": "action_needed", "id": f"act_{uuid.uuid4().hex[:10]}", "title": title, "detail": detail,
-            "danger": danger, "buttons": buttons or [], **({"question": question} if question else {})}
+            "danger": danger, "buttons": buttons or [], **({"question": question} if question else {}),
+            **({"rows": rows} if rows else {})}
 
 
 async def _button(label: str, tool: str, arguments: dict) -> dict:
@@ -353,6 +383,8 @@ async def _offer(action: str, args: dict) -> dict:
         return await _board(action, args)
     if action.startswith("recording_"):
         return await _recording(action, args)
+    if action.startswith("widget_"):
+        return await _widget(action, args)
 
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
 
@@ -630,6 +662,173 @@ async def _board(action: str, args: dict) -> dict:
         return _card(f'{verb}: "{card.title}"', detail=result[:300],
                      buttons=[await _button(verb, "update_board_card", call)])
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+# ── website widgets (F1262) ──────────────────────────────────────────────────────────────────────────────────────────
+
+#: A card's words → the widget's own field.
+_WIDGET_ARGS = {"agent": "agent_id", "sites": "allowed_origins", "visitor_tools": "visitor_tools",
+                "greeting": "greeting", "title": "title", "accent": "accent", "theme": "theme",
+                "position": "position", "launcher_label": "launcher_label", "font": "font",
+                "header_style": "header_style", "launcher": "launcher", "daily_cap": "daily_message_cap",
+                "on": "enabled"}
+
+#: What each setting is called on the card, in the screen's order.
+_WIDGET_LABELS = {"name": "Name", "agent_id": "Answers as", "allowed_origins": "Sites", "enabled": "On",
+                  "visitor_tools": "Visitors may use", "daily_message_cap": "Messages a day", "greeting": "Greeting",
+                  "title": "Title", "launcher_label": "Button label", "accent": "Accent", "theme": "Theme",
+                  "position": "Position", "font": "Font", "header_style": "Header", "launcher": "Launcher"}
+
+#: What a new widget's card always says, set or not.
+_WIDGET_SAID = ("name", "agent_id", "allowed_origins", "enabled", "visitor_tools", "daily_message_cap")
+
+#: A visitor tool that acts, in the card's words (`tool_policy.decide`'s categories; read_only is the one that doesn't).
+_ACTS_AS = {"destructive": "deletes or overwrites", "open_world": "reaches outside this workspace",
+            "changes": "changes things", "undeclared": "does not say what it does", "tool": "has its own rule"}
+
+
+async def _widget_agent(wanted: str) -> dict:
+    """An agent of the person's that a widget may answer as: never the builder's own (the screen's rule)."""
+    from core.store.resources import load_agents
+
+    agents = [a for a in await load_agents() if not a.get("system") and a.get("type") != "builder"]
+    return _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+
+
+def _widget_changes(args: dict) -> dict:
+    """The settings a card's arguments name, as the widget's own fields."""
+    out = {field: args[arg] for arg, field in _WIDGET_ARGS.items() if arg in args and args[arg] is not None}
+    if isinstance(out.get("allowed_origins"), list):
+        from core.chat_widgets import origins
+
+        bad = [s for s in out["allowed_origins"] if not origins.normalise_pattern(str(s))]
+        if bad:
+            raise _NotOffered(f"{', '.join(map(str, bad))} is not a site a widget can sit on: write it as "
+                              "https://example.com (or https://*.example.com for its subdomains).")
+        out["allowed_origins"] = origins.clean_list(out["allowed_origins"])
+    return out
+
+
+def _widget_view(widget: dict, agents: dict[str, str], tools: list[dict] | None = None) -> dict:
+    """A widget's settings as its card says them."""
+    from core.chat_widgets import service
+
+    seen = service.look(widget)
+    tools = tools if tools is not None else [{"name": n} for n in widget.get("visitor_tools") or []]
+    return {**{k: seen.get(k) for k in _WIDGET_LABELS},
+            "agent_id": agents.get(str(widget.get("agent_id") or ""), widget.get("agent_id") or None),
+            "allowed_origins": list(widget.get("allowed_origins") or []) or None,
+            "visitor_tools": [t["name"] for t in tools],
+            "daily_message_cap": f"{seen.get('daily_message_cap')}"}
+
+
+def _visitor_lines(tools: list[dict]) -> list[str]:
+    """Each visitor tool that acts, on a line of its own (TRI1, F1262)."""
+    return [f"A visitor's turn can use {t['name']}, which {_ACTS_AS.get(t['category'], 'acts')}."
+            for t in tools if t.get("category") != "read_only"]
+
+
+async def _widget(action: str, args: dict) -> dict:
+    from core.chat_widgets import service
+    from core.native_builder import rows as R
+    from core.product_tools import widgets as W
+
+    host = W.host()
+    agents = {a["id"]: a.get("name") or a["id"] for a in await _all_agents()}
+
+    async def reached(agent_id: str, names: list[str]) -> list[dict]:
+        try:
+            return await service.reachable_visitor_tools(agent_id, names, await host.choices(agent_id))
+        except service.WidgetRefused as exc:
+            raise _NotOffered(exc.detail) from None
+
+    if action == "widget_create":
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise _NotOffered("Say what the widget is called.")
+        widgets = await host.load()
+        if any(str(w.get("name") or "").casefold() == name.casefold() for w in widgets):
+            raise _NotOffered(f'There is a widget called "{name}" already: change that one, or say another name.')
+        if not str(args.get("agent") or "").strip():
+            raise _NotOffered("Say which agent answers on it.")
+        agent = await _widget_agent(str(args["agent"]))
+        settings = {**_widget_changes(args), "name": name, "agent_id": agent["id"]}
+        # None unless the person named them: never the agent's whole list (TRI1, F1262).
+        tools = await reached(agent["id"], list(settings.get("visitor_tools") or []))
+        settings["visitor_tools"] = [t["name"] for t in tools]
+        try:
+            service.body(settings)
+        except service.WidgetRefused as exc:
+            raise _NotOffered(exc.detail) from None
+        # What every widget has, and the look the person named; the rest is the screen's default.
+        shown = {k: v for k, v in _WIDGET_LABELS.items()
+                 if k in _WIDGET_SAID or k in settings}
+        rows = R.changed(None, _widget_view(settings, agents, tools), shown)
+        if not settings.get("allowed_origins"):
+            rows.append({"label": "Sites", "before": None, "after": "none yet",
+                         "note": "It shows on no site until one is added."})
+        return _card(f'Make a website widget "{name}"', rows=rows,
+                     detail="\n".join(_visitor_lines(tools) + ["Its snippet is here once it is made."]),
+                     buttons=[await _button("Make it", "create_widget", settings)])
+
+    widget = _pick(await host.load(), str(args.get("widget") or ""), "widget", "Topic `widgets` lists them.")
+    name = widget.get("name") or widget["id"]
+    if action == "widget_update":
+        changes = _widget_changes(args)
+        if "agent_id" in changes:
+            changes["agent_id"] = (await _widget_agent(str(changes["agent_id"])))["id"]
+        if not changes:
+            raise _NotOffered("Say what to change on it.")
+        agent_id = str(changes.get("agent_id") or widget.get("agent_id") or "")
+        tools: list[dict] | None = None
+        if "visitor_tools" in changes or "agent_id" in changes:
+            # A new agent keeps the list only if its visitor turn reaches every tool on it.
+            tools = await reached(agent_id, list(changes.get("visitor_tools", widget.get("visitor_tools")) or []))
+            changes["visitor_tools"] = [t["name"] for t in tools]
+        after = {**widget, **changes}
+        try:
+            service.body({k: after.get(k) for k in service.FIELDS if after.get(k) is not None})
+        except service.WidgetRefused as exc:
+            raise _NotOffered(exc.detail) from None
+        labels = {k: v for k, v in _WIDGET_LABELS.items() if k in changes}
+        rows = R.changed(_widget_view(widget, agents), _widget_view(after, agents, tools), labels)
+        if not rows:
+            raise _NotOffered(f'"{name}" is already set that way.')
+        return _card(f'Change the website widget "{name}"', rows=rows,
+                     detail="\n".join(_visitor_lines(tools or [])),
+                     buttons=[await _button("Save", "update_widget", {"widget_id": widget["id"], **changes})])
+    if action == "widget_delete":
+        sites = ", ".join(widget.get("allowed_origins") or []) or "no site yet"
+        return _card(f'Delete the website widget "{name}"', danger=True,
+                     detail=f"Every page carrying its snippet stops showing it ({sites}). This cannot be undone.",
+                     buttons=[await _button("Delete it", "delete_widget", {"widget_id": widget["id"]})])
+    if action == "widget_rotate_key":
+        return _card(f'Give "{name}" a new key', danger=True,
+                     detail="Its old snippet stops working at once, on every page that carries it. The new snippet "
+                            "is here once it is done, to put on the site in its place.",
+                     buttons=[await _button("New key", "rotate_widget_key", {"widget_id": widget["id"]})])
+    if action == "widget_logo":
+        path = str(args.get("path") or "").strip().lstrip("/")
+        if not path:
+            raise _NotOffered("Say which image: its path in the Vault.")
+        return _card(f'Set "{name}"\'s logo', detail=f"{path}. A PNG, JPEG, GIF or WebP under 128 KB, drawn at 28 "
+                                                     "pixels.",
+                     rows=[{"label": "Logo", "before": "set" if widget.get("logo") else None,
+                            "after": path.rsplit("/", 1)[-1]}],
+                     buttons=[await _button("Set it", "set_widget_logo", {"widget_id": widget["id"], "path": path})])
+    if action == "widget_logo_remove":
+        if not widget.get("logo"):
+            raise _NotOffered(f'"{name}" has no logo.')
+        return _card(f'Take "{name}"\'s logo off', rows=[{"label": "Logo", "before": "set", "after": None}],
+                     buttons=[await _button("Take it off", "set_widget_logo",
+                                            {"widget_id": widget["id"], "remove": True})])
+    raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _all_agents() -> list[dict]:
+    from core.store.resources import load_agents
+
+    return await load_agents()
 
 
 async def prepare_action(args: dict, server_module: Any, events: list[dict]) -> dict:

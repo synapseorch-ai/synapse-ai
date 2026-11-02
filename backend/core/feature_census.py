@@ -111,8 +111,10 @@ CENSUS: tuple[Screen, ...] = (
     _s("phone", "Phone", "/channels/phone", "says which phone numbers answer and which agent", ("read_workspace:phone",),
        cant="getting or setting up a phone number", names=("phone number", "phone call", "voice"),
        imitation="a workflow that calls a telephony API to stand in for a phone number"),
-    _s("widgets", "Widgets", "/widgets", "says which website widgets are on and which agent answers",
-       ("read_workspace:widgets",), cant="making or changing a website widget",
+    _s("widgets", "Widgets", "/widgets", "makes, changes, turns off and deletes website widgets (their agent, sites, "
+       "look, the tools a visitor may use, daily cap), gives one a new key or a logo, and says which are on",
+       ("read_workspace:widgets", "create_widget", "update_widget", "delete_widget", "rotate_widget_key",
+        "set_widget_logo"),
        names=("widget", "chat widget", "website widget", "embed"),
        imitation="an agent or workflow built to stand in for a website widget, with no snippet to paste"),
     # Settings
