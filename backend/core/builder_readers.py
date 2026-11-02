@@ -35,7 +35,8 @@ TOPICS: dict[str, str] = {
                  "too, each with its id, what it is (note, file, page) and whether its text can be edited (F1258)",
     "evals": "evals: each workflow a rubric scores, its golden sets and its latest scores and regressions; with "
              "`name`, that workflow's eval in full (its rubric, recent scores, golden sets and their last runs)",
-    "usage": "what each workflow's runs used over the last `days` days (runs, credits, model dollars)",
+    "usage": "what the workspace spent over the last `days` days, as the Usage screen totals it: the whole (runs, "
+             "chats with agents, voice, embeddings), by agent and by model, and what each workflow's runs used",
     "plan": "the plan this workspace is on and the credits and model money left",
     "models": "the default model, the builder's models, and which providers have a key (never the key)",
     "variables": "the workspace's variables by name, each with the `{{ global.x }}` that uses it in a step (never "
@@ -92,7 +93,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "evals": {"keys": ["items?", "note?", "workflow?", "rubric?", "scores?", "regressions?", "agreement?",
                        "golden_sets?"], "item": ["workflow", "rubric", "golden_sets", "last_score", "regressions"]},
     # Where the host charges credits, they come beside the model dollars (F843).
-    "usage": {"keys": ["items", "window", "note"], "item": ["workflow", "runs", "model_dollars", "credits?"]},
+    "usage": {"keys": ["items", "total", "by_agent", "by_model", "window", "note"],
+              "item": ["workflow", "runs", "model_dollars", "credits?"]},
     # Self-hosted has no plan: no items, and a note saying so.
     "plan": {"keys": ["items", "note"],
              "item": ["plan", "monthly_credits", "runs_at_once", "credits_left", "model_wallet_left_usd"]},
@@ -139,8 +141,8 @@ ELSEWHERE: dict[str, str] = {
                  "`workflow` with its name.",
     "evals": "This shows evals: rubrics scoring workflows, golden sets and scores. A workflow's steps are topic "
              "`workflow` with its name; what its runs did, `runs`.",
-    "usage": "This shows what each workflow's runs used. The runs themselves are topic `runs`; the plan and what is "
-             "left of it, `plan`.",
+    "usage": "This shows what the workspace spent, by agent and model, and what each workflow's runs used. The runs "
+             "themselves are topic `runs`; the plan and what is left of it, `plan`.",
     "plan": "This shows the plan and what is left of it. What runs used is topic `usage`.",
     "models": "This shows the models and which providers have a key. Each agent's own model is in topic `agents`.",
     "agents": "This shows the workspace's agents. The workflows are topic `workflows`; one workflow's steps, "
@@ -480,13 +482,24 @@ async def _agent_memory(args: dict) -> dict:
 
 
 async def _usage(args: dict) -> dict:
+    """What the workspace spent (F1297): the whole of it as the Usage screen totals it, from the product's own usage
+    read (`get_usage`: every model call in the window, chats, runs, voice and embeddings, the host's own figures on
+    cloud), by agent and by model; and beside it what each workflow's runs were paid. Never the runs alone as the
+    total: prod-08 said one run's 3 cents was "the total" with an agent's 40 chat calls in the log."""
     from core.orchestration.run_view import list_runs
-
-    days = max(1, min(int(args.get("days") or 7), 90))
-    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
-    workflows = await _workflow_names()
     from core.product_tools import run_cost
 
+    days = max(1, min(int(args.get("days") or 7), 90))
+    by_agent = await _product_read("get_usage", {"by": "agent", "days": days})
+    if "error" in by_agent:
+        return by_agent
+    by_model = await _product_read("get_usage", {"by": "model", "days": days})
+
+    def money(row: dict) -> dict:
+        return {"cost_usd": row["cost_usd"], **({"charged_usd": row["charged_usd"]} if "charged_usd" in row else {})}
+
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)).isoformat()
+    workflows = await _workflow_names()
     rows = [r for r in await list_runs(limit=1000) if (r.get("started_at") or "") >= since]
     paid = await run_cost.costs(rows)
     by_name: dict[str, list[dict]] = {}
@@ -496,10 +509,16 @@ async def _usage(args: dict) -> dict:
     # What each workflow's runs were paid, as the host counts it (F843): credits where it charges them.
     totals = [{"workflow": name, "runs": len(figures), **run_cost.total(figures)} for name, figures in by_name.items()]
     credited = any("credits" in t for t in totals)
+    note = ("`total` is every model call in the window, as the Usage screen totals it: workflow runs, chats with "
+            "agents, voice and embeddings; `by_agent` and `by_model` say where it went, costliest first; `items` are "
+            "the workflows' runs alone, beside it, never the total.")
+    if not credited:
+        note += " Self-hosted has no credits: a call costs what its model provider charges, estimated here."
     return {"items": _named(sorted(totals, key=lambda t: -t["runs"]), args.get("name"), "workflow"),
-            "window": f"the last {days} days (since {since[:10]})",
-            "note": "" if credited else
-            "Self-hosted has no credits: a run costs what its model providers charge, estimated here."}
+            "total": by_agent.get("total") or {},
+            "by_agent": [{"agent": r["key"], "calls": r["calls"], **money(r)} for r in by_agent.get("rows") or []][:10],
+            "by_model": [{"model": r["key"], "calls": r["calls"], **money(r)} for r in by_model.get("rows") or []][:10],
+            "window": f"the last {days} days (since {since[:10]})", "note": note}
 
 
 async def _plan(args: dict) -> dict:
