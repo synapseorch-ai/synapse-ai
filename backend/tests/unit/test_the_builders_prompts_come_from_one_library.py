@@ -127,7 +127,10 @@ from core.native_builder import prompt_lint, seed
 #: 5ad51eef…; with REACH2's topics widgets and channels in both lists (TRI1, 11-02), 963b1a71….
 #: F1274: rule 20 under # Changing (asking an agent for the person is the op talk_to_agent, a card that names it, the
 #: message and roughly what it costs, and shows its answer), 2516fd8f….
-BUNDLE_SHA256 = "2516fd8f46871e38b6d959956a52bba4eefba983eb9b501b1619045705840ee7"
+#: F1260 (a hosted workspace's): rule 21 (dead jobs retried or discarded, "who changed it", a support request) and
+#: topics dead_jobs and audit in both lists, c6f1a12c….
+#: Rule 21's support request: its severity asked with ask_person, its run only when it is about one (TRI1), 50276764….
+BUNDLE_SHA256 = "5027676401084264efae2d01eeb70c96c48f411f378dd517029f2d67c577766c"
 
 
 def _sha(definitions) -> str:

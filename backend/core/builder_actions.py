@@ -37,6 +37,12 @@ ACTIONS: dict[str, str] = {
     "cancel_run": "stop a run that is still going (`run_id`)",
     "resume_run": "run a failed or stopped run on from the step it stopped at, once what failed is fixed (`run_id`)",
     "talk_to_agent": "ask an agent something for the person, the answer shown on the card (`agent`: its name, `message`)",
+    # A hosted workspace's (F1260): a self-hosted install says it has none.
+    "dead_job_retry": "retry a job the fleet gave up on, its run going on from where it stopped (`job_id`: from topic "
+                      "`dead_jobs`)",
+    "dead_job_discard": "take a job the fleet gave up on off the list, its run left as it ended (`job_id`)",
+    "support_request": "file a support request for the person (`name`: its subject; `text`: what happened; `category`; "
+                       "`severity`; `run_id` when it is about a run)",
     "knowledge_create": "make a knowledge base (`name`; `text`: what it holds; `folder`: a Vault folder, or leave it "
                         "out for knowledge/<name>)",
     "knowledge_add_file": "add a file from the Vault to a knowledge base (`knowledge_base`, `path`: its Vault path)",
@@ -133,6 +139,9 @@ SCHEMA = {
                 "golden_set": {"type": "string", "description": "The golden set's name; omit for the workflow's one."},
                 "recording": {"type": "string", "description": "The recording's name or id."},
                 "agent": {"type": "string", "description": "talk_to_agent: the agent's name or id."},
+                "job_id": {"type": "string", "description": "dead_job_retry, dead_job_discard: from topic `dead_jobs`."},
+                "category": {"type": "string", "enum": ["bug", "question", "billing", "account", "feature", "security"]},
+                "severity": {"type": "string", "enum": ["blocking", "degraded", "minor"]},
                 "edit_id": {"type": "string", "description": "A kept fix's id, from topic `waiting`."},
                 "widget": {"type": "string", "description": "The website widget's name."},
                 "agent": {"type": "string", "description": "widget_create, widget_update: the agent's name."},
@@ -354,6 +363,10 @@ async def _offer(action: str, args: dict) -> dict:
 
     if action == "talk_to_agent":
         return await _talk(args)
+    if action in ("dead_job_retry", "dead_job_discard"):
+        return await _dead_job(action, args)
+    if action == "support_request":
+        return await _support(args)
 
     if action == "answer_run":
         view, name = await _run(args)
@@ -631,6 +644,58 @@ async def _talk(args: dict) -> dict:
     call = {"message": message, "agent": agent["id"], "wait_seconds": TALK_WAIT_SECONDS}
     return _card(f'Ask "{agent.get("name")}"', detail=f"{message[:500]}\n{await _reply_cost(agent, message)}",
                  buttons=[await _button("Ask", "chat_with_agent", call)])
+
+
+async def _dead_job(action: str, args: dict) -> dict:
+    """A job the fleet gave up on (F1260), by its id in topic `dead_jobs`: retried or discarded through the host's own
+    route; an install with no dead-job queue says so."""
+    from core import builder_readers
+    from core.product_tools import operations
+
+    if not operations.available():
+        raise _NotOffered(operations.NO_DEAD_JOBS)
+    read = builder_readers._HOST.get("dead_jobs") or builder_readers._SELF_HOSTED["dead_jobs"]
+    listed = await read({})
+    jobs = [{**j, "name": f'{j.get("workflow") or "a run"} ({j.get("run_id")})'} for j in listed.get("items") or []]
+    if not jobs:
+        raise _NotOffered(listed.get("note") or "No job is waiting here: nothing has been given up on.")
+    job = _pick(jobs, str(args.get("job_id") or ""), "dead job", "Topic `dead_jobs` lists them.")
+    workflow, why = job.get("workflow") or "a run", str(job.get("why") or "").strip()
+    call = {"job_id": job["id"]}
+    if action == "dead_job_retry":
+        if job.get("can_retry") is False:
+            raise _NotOffered(str(job.get("why_not") or "That job can't be retried: discard it instead."))
+        return _card(f'Retry the job that failed in "{workflow}"',
+                     detail=(f"It stopped: {why}\n" if why else "") + "It goes on from where it stopped; what it adds "
+                                                                     "is charged as a run's work is.",
+                     buttons=[await _button("Retry it", "retry_dead_job", call)])
+    return _card(f'Discard the job that failed in "{workflow}"', danger=True,
+                 detail=(f"It stopped: {why}\n" if why else "") + "It leaves the list; its run stays as it ended.",
+                 buttons=[await _button("Discard it", "discard_dead_job", call)])
+
+
+async def _support(args: dict) -> dict:
+    """A support request for the person (F1260), shown in full before it is filed through the host's own desk; an
+    install with no desk says where its issues are."""
+    from core.product_tools import operations
+
+    if not operations.available():
+        raise _NotOffered(operations.NO_SUPPORT)
+    subject, body = str(args.get("name") or "").strip(), str(args.get("text") or "").strip()
+    if not subject or not body:
+        raise _NotOffered("Say what the request is about (its subject) and what happened.")
+    category = args.get("category") if args.get("category") in operations.CATEGORIES else "question"
+    severity = args.get("severity")
+    if severity not in operations.SEVERITIES:
+        # The card can't be edited: how bad it is is the person's to say, asked, never guessed (D0).
+        raise _NotOffered("Ask them how bad it is: blocking, degraded or minor.")
+    run_id = str(args.get("run_id") or "").strip()
+    call = {"subject": subject[:200], "body": body, "category": category, "severity": severity,
+            **({"run_id": run_id} if run_id else {})}
+    detail = "\n".join([body, f"Category: {category}. Severity: {severity}."]
+                       + ([f"About the run {run_id}."] if run_id else []))
+    return _card(f'Send support "{call["subject"]}"', detail=detail,
+                 buttons=[await _button("Send it", "file_support_request", call)])
 
 
 async def _recording(action: str, args: dict) -> dict:

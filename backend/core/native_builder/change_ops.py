@@ -30,7 +30,7 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
                 "approval", "card", "openapi", "python_tool", "feature", "recording", "settings", "memory", "widget",
-                "channel")
+                "channel", "dead_job", "support")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -97,6 +97,11 @@ _ACTS = (
     Op("resume_run", "act", "run", verb="Resume"),
     # Asking an agent for the person (F1274): a card, its answer shown once pressed.
     Op("talk_to_agent", "act", "agent", fields=("message",), required=("message",), verb="Ask"),
+    # A hosted workspace's (F1260): a job the fleet gave up on, and a support request (named by its subject).
+    Op("dead_job_retry", "act", "dead_job", verb="Retry"),
+    Op("dead_job_discard", "act", "dead_job", verb="Discard"),
+    Op("support_request", "act", "support", fields=("text", "category", "severity", "run_id"), required=("text",),
+       verb="Send"),
     Op("knowledge_create", "act", "knowledge_base", fields=("text", "folder"), verb="Make"),
     Op("knowledge_add_file", "act", "knowledge_base", fields=("path",), required=("path",), verb="Add a file to"),
     Op("knowledge_add_pages", "act", "knowledge_base", fields=("urls", "kind"), required=("urls",),
@@ -256,12 +261,12 @@ WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
 
 #: The argument that names an act's target, as `prepare_action` takes it.
 #: Acts whose target is the thing they make, named, never looked up among what exists (F1200).
-MAKES_TARGET = frozenset({"board_create", "knowledge_create", "widget_create", "channel_connect"})
+MAKES_TARGET = frozenset({"board_create", "knowledge_create", "widget_create", "channel_connect", "support_request"})
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
             "feature": "feature", "recording": "recording", "widget": "widget", "channel": "channel",
-            "agent": "agent"}
+            "agent": "agent", "dead_job": "job_id"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────

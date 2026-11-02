@@ -45,6 +45,12 @@ TOPICS: dict[str, str] = {
     "savings": "where the workspace could spend less over the last `days` days (default 30): each suggestion with "
                "code's rule, its estimate a month (none when it can't be priced) and the op that makes it. 'Cut my "
                "costs', 'why is it expensive'",
+    # What only a hosted workspace has (F1260): a self-hosted install says it has none.
+    "dead_jobs": "jobs the fleet gave up on (a run that crashed past its retries), each with its id, its workflow and "
+                 "run, why, and whether it can be retried (dead_job_retry) or only discarded (dead_job_discard); a "
+                 "self-hosted install has none",
+    "audit": "who changed what in the workspace, newest first: `name` narrows to what was changed (a workflow, an "
+             "agent, a setting), `days` the window; an admin's, on a plan with the audit log",
     "agents": "the workspace's agents: name, type, model, how many tools",
     "workflows": "the workspace's workflows: name, how many steps, whether a schedule runs it",
     # What happened, not only what is set up (ASSIST1, D291).
@@ -109,6 +115,8 @@ SHAPES: dict[str, dict[str, list[str]]] = {
     "variables": {"keys": ["items", "note"], "item": ["name", "reference"]},
     "settings": {"keys": ["items", "note"], "item": ["name", "label", "value", "where"]},
     "savings": {"keys": ["items", "window", "note"], "item": ["kind", "saves_usd_month", "rule", "op"]},
+    "dead_jobs": {"keys": ["items", "note"], "item": ["id", "workflow", "run_id", "failed_at", "why", "can_retry"]},
+    "audit": {"keys": ["items", "note"], "item": ["at", "who", "action", "target"]},
     "agent_memory": {"keys": ["items", "note"], "item": ["agent", "id", "name", "summary", "archived", "memory_on"]},
 }
 
@@ -157,6 +165,8 @@ ELSEWHERE: dict[str, str] = {
                 "`models`; when agents must ask before a tool, `tool_policy`.",
     "savings": "This shows where the workspace could spend less. What each workflow's runs used is topic `usage`; "
                "the plan and what is left of it, `plan`.",
+    "dead_jobs": "This shows jobs the fleet gave up on. A run that failed is topic `runs`; one run step by step, `run`.",
+    "audit": "This shows who changed what. What the runs did is topic `runs`; what one agent did, `agent_activity`.",
     "agent_memory": "This shows what agents keep in memory. What an agent has been doing is topic `agent_activity` "
                     "with its name; the agents here are topic `agents`.",
 }
@@ -414,6 +424,19 @@ async def _settings(args: dict) -> dict:
             "note": "Each changes through settings_set, with the person's yes and undo. Keys, API keys, billing and "
                     "the plan, members and roles, the MCP server and import or export are not Synapse AI's: say "
                     "where they are done, e.g. API keys at /settings/api_keys, a provider's key at /settings/models."}
+
+
+async def _dead_jobs(args: dict) -> dict:
+    """A self-hosted install has no fleet and no dead-letter queue (F1260): a host that has one reads its own."""
+    from core.product_tools.operations import NO_DEAD_JOBS
+
+    return {"items": [], "note": NO_DEAD_JOBS}
+
+
+async def _audit(args: dict) -> dict:
+    """A self-hosted install keeps no audit log of who changed what (F1260): a host that keeps one reads its own."""
+    return {"items": [], "note": "This install keeps no record of who changed what: its runs and an agent's activity "
+                                 "say what they did."}
 
 
 async def _savings(args: dict) -> dict:
@@ -699,7 +722,7 @@ _SELF_HOSTED: dict[str, Reader] = {
     "agents": _agents, "workflows": _workflows,
     "today": _today, "run": _run, "workflow": _workflow, "waiting": _waiting, "agent_activity": _agent_activity,
     "boards": _boards, "recordings": _recordings, "variables": _variables, "settings": _settings,
-    "savings": _savings, "evals": _evals, "agent_memory": _agent_memory,
+    "savings": _savings, "evals": _evals, "agent_memory": _agent_memory, "dead_jobs": _dead_jobs, "audit": _audit,
 }
 
 
