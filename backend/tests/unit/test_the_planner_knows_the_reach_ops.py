@@ -3,7 +3,8 @@
 The ops and topics REACH1 built (F1260, F1261, F1264, F1267, F1270, F1271) reached nothing until the planner's own
 prompt named them: rule 10 even said a recording was renamed or deleted only in the app. These pin:
 
-- both topic lists name every read_workspace topic the rules use, and each topic they name is one that exists;
+- both topic lists name every read_workspace topic the rules use (REACH2's widgets and channels too), and each topic
+  they name is one that exists;
 - every op the rules name is one of the change table's, so a rule never sends the planner to an op code refuses;
 - rule 10 sends a recording's rename, delete and kept fixes to their ops, and keeps editing its steps the app's;
 - the prompt renders unchanged with the workspace's variables: agent prompts are rendered with them
@@ -39,6 +40,8 @@ def test_both_topic_lists_name_the_reach_topics_and_only_real_ones(prompt):
     assert len(lists) == 2 and lists[0] == lists[1]
     named = [t.strip() for t in lists[0].split(",")]
     assert {"run", "variables", "settings", "savings"} <= set(named)
+    # REACH2's rules 13 and 14 read these (TRI1, 11-02): every topic a rule reads is in the lists.
+    assert {"widgets", "channels"} <= set(named)
     assert set(named) <= set(TOPICS), set(named) - set(TOPICS)
 
 
