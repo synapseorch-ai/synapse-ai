@@ -104,15 +104,20 @@ CENSUS: tuple[Screen, ...] = (
        ("create_http_tool", "create_python_tool", "import_openapi", "test_python_tool", "list_custom_tools",
         "delete_custom_tool"),
        names=("http tool", "python tool", "openapi", "api spec"), plan_part=True),
-    _s("messaging", "Channels", "/channels", "says which chat channels are connected and which agents answer",
-       ("read_workspace:channels",), cant="connecting a chat channel",
+    _s("messaging", "Channels", "/channels", "connects a Telegram, Discord, Slack, Teams or WhatsApp channel on a "
+       "Connect card (its token typed there), turns one on or off, removes it, sends one test message, says which "
+       "agents answer, and sends run notices there",
+       ("read_workspace:channels", "prepare_connection", "set_channel_enabled", "delete_channel", "test_channel",
+        "set_channel_agents", "set_run_notification_channel"),
        names=("channel", "telegram", "slack", "whatsapp", "discord"),
        imitation="a workflow that polls a chat service's API on a schedule in place of a connected channel"),
     _s("phone", "Phone", "/channels/phone", "says which phone numbers answer and which agent", ("read_workspace:phone",),
        cant="getting or setting up a phone number", names=("phone number", "phone call", "voice"),
        imitation="a workflow that calls a telephony API to stand in for a phone number"),
-    _s("widgets", "Widgets", "/widgets", "says which website widgets are on and which agent answers",
-       ("read_workspace:widgets",), cant="making or changing a website widget",
+    _s("widgets", "Widgets", "/widgets", "makes, changes, turns off and deletes website widgets (their agent, sites, "
+       "look, the tools a visitor may use, daily cap), gives one a new key or a logo, and says which are on",
+       ("read_workspace:widgets", "create_widget", "update_widget", "delete_widget", "rotate_widget_key",
+        "set_widget_logo"),
        names=("widget", "chat widget", "website widget", "embed"),
        imitation="an agent or workflow built to stand in for a website widget, with no snippet to paste"),
     # Settings

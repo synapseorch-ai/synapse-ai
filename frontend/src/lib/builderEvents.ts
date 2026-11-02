@@ -71,7 +71,7 @@ export function effortAnswer(offer: EffortOffer, use: boolean): { text: string; 
  */
 export interface ConnectSpec {
     id: string;
-    kind: 'app' | 'mcp_server' | 'provider_key' | 'tool_secret' | 'settings';
+    kind: 'app' | 'mcp_server' | 'provider_key' | 'tool_secret' | 'settings' | 'channel';
     title: string;
     why?: string;
     app?: { slug: string; name?: string; auth?: 'oauth' | 'bearer' | 'none' | string; url?: string; token_hint?: string };
@@ -90,6 +90,16 @@ export interface ConnectSpec {
         unsure?: string[];
     };
     screen?: { id: string; label?: string };
+    /**
+     * A chat channel (F1263): the platform's fields for the person to type, the agent that answers, and, for a
+     * platform that calls this app (Teams, WhatsApp), the address it calls and where that is pasted. `signin`: the
+     * host connects it by the platform's own install instead (cloud's Slack and Discord).
+     */
+    channel?: {
+        platform: string; label: string; name: string; agent?: { id: string; name: string };
+        fields: { key: string; label: string; placeholder?: string; note?: string; secret?: boolean; optional?: boolean }[];
+        mode?: string; signin?: boolean; webhook_base?: string; paste_into?: string;
+    };
     /** A build waits on this settings screen (F1104): the card's press says "Connected <this>.", and the build checks. */
     waits_for?: string;
 }
@@ -130,10 +140,20 @@ export interface ActionButton {
     run_id?: string | null;
 }
 
+/** One field a change sets, as it stands and as it will be (`core/native_builder/rows.py`). */
+export interface ChangeRow {
+    label: string;
+    before?: string | null;
+    after?: string | null;
+    note?: string;
+}
+
 export interface ActionSpec {
     id: string;
     title: string;
     detail?: string;
+    /** What it changes, field by field (F1262). */
+    rows?: ChangeRow[];
     /** Stops or undoes something: said in the danger colour. */
     danger?: boolean;
     buttons: ActionButton[];

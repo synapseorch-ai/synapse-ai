@@ -11,13 +11,9 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from core.messaging import service as _service
 from core.messaging import store as channel_store
-from core.messaging.voice import languages as voice_languages
-from core.messaging.store import (
-    SECRET_CREDENTIALS,
-    SERVER_ONLY_CREDENTIALS as _SERVER_ONLY_CREDENTIALS,
-    redact_secrets,
-)
+from core.messaging.store import redact_secrets
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -25,32 +21,21 @@ logger = logging.getLogger(__name__)
 
 def _get_manager(request: Request):
     """Get the MessagingManager from app state, or raise 503 if not available."""
-    manager = getattr(request.app.state, "messaging_manager", None)
-    if manager is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Messaging is not enabled. Set messaging_enabled=true in setup.py and restart."
-        )
-    return manager
+    try:
+        return _service.manager(request.app.state)
+    except _service.ChannelRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from None
 
 
-def _public_channel(ch: dict) -> dict:
-    """A channel as the browser may see it: no secrets (F207, F135's pattern).
+async def _done(call):
+    """A service call, its refusal the route's answer: the same words and status as before (F1263, one place)."""
+    try:
+        return await call
+    except _service.ChannelRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from None
 
-    Every bot token and app password used to be served in clear by the list,
-    the save and the enable. The screen needs to know which are set, and the
-    plain fields (an app id, a phone number id, a channel restriction) as they
-    are. A copy: the store's document is not touched.
-    """
-    creds = ch.get("credentials") or {}
-    view = dict(ch)
-    view["credentials"] = {
-        k: ("" if k in SECRET_CREDENTIALS else v)
-        for k, v in creds.items() if k not in _SERVER_ONLY_CREDENTIALS
-    }
-    view["credentials_set"] = {k: bool(v) for k, v in creds.items() if k in SECRET_CREDENTIALS}
-    view["last_error"] = redact_secrets(ch.get("last_error"), ch)
-    return view
+
+_public_channel = _service.public
 
 
 #: What Twilio kept when a number was turned off or deleted, said plainly; cloud's words (VOX1b, D251).
@@ -105,41 +90,14 @@ async def list_channels(request: Request, agent_id: str | None = None):
 @router.post("/api/messaging/channels")
 async def create_or_update_channel(request: Request):
     """Create or update a channel config. Does NOT auto-start the adapter."""
-    body = await request.json()
-    # Strip runtime-only fields from client payload
-    body.pop("status", None)
-    body.pop("last_error", None)
-    body.pop("credentials_set", None)
-    if body.get("platform") == "twilio_voice":
-        # A language or provider Twilio can't serve would end every call (VOX1d); say so at the save.
-        problems = voice_languages.check(body.get("voice"))
-        if problems:
-            raise HTTPException(status_code=422, detail=" ".join(problems))
-    # A save is a full replace, and the screen never has the secrets to send
-    # back: one it leaves blank keeps what is stored (F207). Only on the same
-    # platform: a secret is its platform's, so a channel switched to another
-    # carries none across (F499) — a Telegram token must never reach Discord.
-    # Telegram mints its webhook secret again at its start.
-    existing = await channel_store.get_channel(body["id"]) if body.get("id") else None
-    if existing and existing.get("platform") == body.get("platform"):
-        creds = dict(body.get("credentials") or {})
-        for k, v in (existing.get("credentials") or {}).items():
-            if (k in SECRET_CREDENTIALS or k in _SERVER_ONLY_CREDENTIALS) and not creds.get(k):
-                creds[k] = v
-        body["credentials"] = creds
-    saved = await channel_store.save_channel(body)
+    saved = await _done(_service.save(await request.json()))
     return _public_channel(saved)
 
 
 @router.delete("/api/messaging/channels/{channel_id}")
 async def delete_channel(channel_id: str, request: Request):
     """Stop and delete a channel."""
-    manager = _get_manager(request)
-    await manager.stop_channel(channel_id)
-    left = await _disconnect_number(await channel_store.get_channel(channel_id))
-    deleted = await channel_store.delete_channel(channel_id)
-    if not deleted:
-        raise HTTPException(status_code=404, detail="Channel not found")
+    left = await _done(_service.delete(channel_id, request.app.state))
     return {"status": "deleted", "channel_id": channel_id, **({"left": left} if left else {})}
 
 
@@ -179,34 +137,8 @@ async def set_assignments(channel_id: str, request: Request):
     agent happened to be first.
     """
     _get_manager(request)
-    if not await channel_store.get_channel(channel_id):
-        raise HTTPException(status_code=404, detail="Channel not found")
-
     body = await request.json()
-    agent_ids = body.get("agent_ids")
-    if not isinstance(agent_ids, list) or not all(isinstance(a, str) for a in agent_ids):
-        raise HTTPException(status_code=422, detail="agent_ids must be a list of agent ids")
-
-    from core.routes.agents import load_user_agents
-
-    known = {a["id"] for a in await load_user_agents()}
-    unknown = [a for a in agent_ids if a not in known]
-    if unknown:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Unknown agent(s): {', '.join(unknown)}",
-        )
-
-    default_agent_id = body.get("default_agent_id")
-    if default_agent_id and default_agent_id not in agent_ids:
-        raise HTTPException(
-            status_code=422,
-            detail="default_agent_id must be one of agent_ids",
-        )
-
-    return await channel_store.set_assignments(
-        channel_id, agent_ids, default_agent_id=default_agent_id
-    )
+    return await _done(_service.set_agents(channel_id, body.get("agent_ids"), body.get("default_agent_id")))
 
 
 @router.delete("/api/messaging/channels/{channel_id}/assignments/{agent_id}")
@@ -223,34 +155,13 @@ async def unassign_agent(channel_id: str, agent_id: str, request: Request):
 @router.post("/api/messaging/channels/{channel_id}/enable")
 async def enable_channel(channel_id: str, request: Request):
     """Start the adapter for a channel."""
-    manager = _get_manager(request)
-    ch = await channel_store.get_channel(channel_id)
-    if not ch:
-        raise HTTPException(status_code=404, detail="Channel not found")
-
-    # Mark as enabled in store before starting
-    ch["enabled"] = True
-    await channel_store.save_channel(ch)
-    await manager.start_channel(channel_id)
-
-    updated = await channel_store.get_channel(channel_id)
-    return _public_channel(updated)
+    return _public_channel(await _done(_service.enable(channel_id, request.app.state)))
 
 
 @router.post("/api/messaging/channels/{channel_id}/disable")
 async def disable_channel(channel_id: str, request: Request):
     """Stop the adapter for a channel."""
-    manager = _get_manager(request)
-    ch = await channel_store.get_channel(channel_id)
-    if not ch:
-        raise HTTPException(status_code=404, detail="Channel not found")
-
-    await manager.stop_channel(channel_id)
-    left = await _disconnect_number(ch)
-
-    ch = await channel_store.get_channel(channel_id) or ch
-    ch["enabled"] = False
-    await channel_store.save_channel(ch)
+    left = await _done(_service.disable(channel_id, request.app.state))
     return {"status": "stopped", "channel_id": channel_id, **({"left": left} if left else {})}
 
 

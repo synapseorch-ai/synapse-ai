@@ -77,7 +77,7 @@ SHAPES: dict[str, dict[str, list[str]]] = {
                   "item": ["name", "on", "runs", "starts", "if_missed", "last_run_at", "next_run_at", "last_run"]},
     "runs": {"keys": ["items", "note"],
              "item": ["workflow", "status", "started_at", "ended_at", "error", "waiting_for_a_person", "run_id"]},
-    "channels": {"keys": ["items", "note"], "item": ["name", "platform", "on", "status", "agents"]},
+    "channels": {"keys": ["items", "note"], "item": ["name", "id", "platform", "on", "status", "agents"]},
     "phone": {"keys": ["items", "note"], "item": ["name", "number", "on", "answered_by", "language"]},
     "widgets": {"keys": ["items", "note"], "item": ["name", "agent", "allowed_sites", "on", "messages_per_day"]},
     "tool_policy": {"keys": ["default", "agents_with_their_own", "note"]},
@@ -309,8 +309,9 @@ async def _channels(args: dict, phone: bool = False) -> dict:
                         "on": bool(c.get("enabled")), "answered_by": answering[:1] or None,
                         "language": (c.get("voice") or {}).get("language")})
         else:
-            out.append({"name": c.get("name"), "platform": c.get("platform"), "on": bool(c.get("enabled")),
-                        "status": c.get("status"), "agents": answering})
+            # Its id too (F1263): a plan's approval step names the channel it asks on (`human_channel_id`).
+            out.append({"name": c.get("name"), "id": c.get("id"), "platform": c.get("platform"),
+                        "on": bool(c.get("enabled")), "status": c.get("status"), "agents": answering})
     note = "No phone number is connected." if phone and not out else (
         "No chat channel is connected." if not out else "")
     return {"items": _named(out, args.get("name")), "note": note}

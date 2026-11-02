@@ -67,6 +67,7 @@ from pydantic import BaseModel, Field
 from core.chat_widgets import branding as _branding
 from core.chat_widgets import limits as _limits
 from core.chat_widgets import origins as _origins
+from core.chat_widgets import service as _service
 from core.chat_widgets import store as _store
 from core.models import ChatRequest
 from core import chat_turns
@@ -321,7 +322,7 @@ async def widget_chat(
                     detail="This chat has reached its limit for today. Please try again tomorrow.",
                 )
 
-            await _refuse_an_unpublishable_agent(claims.agent_id)
+            await _done(_service.refuse_an_unpublishable_agent(claims.agent_id))
 
             visitor_turn = ChatRequest(
                 message=body.message,
@@ -551,198 +552,58 @@ class WidgetBody(BaseModel):
     #: because bytes are the only thing we can check the magic numbers of.
 
 
-async def _refuse_an_unpublishable_agent(agent_id: str) -> None:
-    """A widget will not bind the AI builder's own agents.
-
-    They create and change the workspace's agents and orchestrations, and are
-    nobody's to publish; the agents list already hides them and v1 refuses them
-    (`api_v1._is_system_agent`). Measured before this: a widget on
-    `agent_native_builder_saver_create` was accepted.
-
-    Checked at bind time, so it fails in front of the owner rather than in front
-    of a visitor mid-sentence, and again before every turn.
-
-    This used to refuse an agent whose tool policy would stop and ask a person.
-    That refusal pushed owners to `allow` — the one policy under which a visitor
-    drove every tool the agent held — and it is no longer needed: a visitor's
-    `confirm` is a `deny` (`core.visitor`).
-    """
-    if not agent_id:
-        return
-    from core.scale.context import resolve_agent
-
+async def _done(call):
+    """A service call, its refusal the route's answer: the same words and status as before (F1262, one place)."""
     try:
-        agent = await resolve_agent(agent_id)
-    except Exception:  # noqa: BLE001 — a missing agent is the next check's problem
-        agent = None
-    if agent is None:
-        raise HTTPException(status_code=404, detail=f"No agent '{agent_id}'.")
-    if agent.get("system") or agent.get("type") == "builder":
-        raise HTTPException(
-            status_code=409,
-            detail="The AI builder's own agents cannot be published on a widget. Choose one of your agents.",
-        )
+        return await call
+    except _service.WidgetRefused as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.detail) from None
 
 
 @router.get("/api/widgets")
 async def list_widgets():
-    return await _store.list_widgets()
+    return await _service.list_widgets()
 
 
 @router.get("/api/widgets/visitor-tools")
 async def visitor_tool_choices(agent_id: str):
-    """What an owner can let a widget's visitors use: every tool a visitor's turn
-    on this agent could reach, each with what it does.
-
-    For an orchestrator agent that is its workflow's — each Agent step's agent's
-    tools and each Tool step's tool, through nested workflows — because a
-    visitor's turn runs the workflow and the list holds in every step (F280).
-    The engine's own tools (the task list, skills) are always a visitor's and
-    memory never is, so neither is offered here.
-    """
-    import core.server as _server
-    from core.scale.context import resolve_agent, resolve_custom_tools, resolve_orchestration
-    from core.tool_policy import DEFAULT_POLICY, decide
-    from core.tools import aggregate_all_tools, resolve_one_tool
-
-    agent = await resolve_agent(agent_id) if agent_id else None
-    if agent is None:
-        raise HTTPException(status_code=404, detail=f"No agent '{agent_id}'.")
-    custom = await resolve_custom_tools()
-    found: dict[str, str] = {}
-
-    def note(tool) -> None:
-        name = getattr(tool, "name", "") or ""
-        if name and name not in found and name not in _visitor.ENGINE_TOOLS \
-                and name not in _visitor.NEVER_FOR_VISITORS:
-            found[name] = decide(tool, DEFAULT_POLICY)[1]
-
-    async def walk(node: dict, depth: int) -> None:
-        if node.get("type") == "orchestrator":
-            # Three levels, as the engine nests.
-            orch = await resolve_orchestration(node.get("orchestration_id") or "") if depth < 3 else None
-            for step in (orch or {}).get("steps") or []:
-                if step.get("type") == "tool" and step.get("forced_tool"):
-                    tool = await resolve_one_tool(_server, step["forced_tool"], {}, custom)
-                    note(tool if tool is not None else _named(step["forced_tool"]))
-                elif step.get("type") == "agent" and step.get("agent_id"):
-                    child = await resolve_agent(step["agent_id"])
-                    if child is not None:
-                        await walk(child, depth + 1)
-            return
-        tools, *_ = await aggregate_all_tools(_server, node, custom)
-        for tool in tools:
-            note(tool)
-        if "spawn_subtask" in (node.get("tools") or []):
-            note(_named("spawn_subtask"))
-        if node.get("type") == "delegate":
-            note(_named("delegate_to_agent"))
-        # Knowledge's tools, over the agent's bases opened to visitors (D153 #12):
-        # with none, a ticked tool would reach nothing.
-        from core.knowledge import tools as knowledge_tools
-
-        visitor_bases = await knowledge_tools.agent_bases(node, visitor=True)
-        if visitor_bases:
-            for tool in knowledge_tools.build_tools(visitor_bases):
-                note(tool)
-
-    await walk(agent, 0)
-    return {"tools": [{"name": n, "category": c} for n, c in sorted(found.items())]}
-
-
-def _named(name: str):
-    """A tool known only by name — it declares nothing, so it reads `undeclared`."""
-    from core.tools import VirtualTool
-
-    return VirtualTool(name, "", {}, None)
+    """What an owner can let a widget's visitors use (`service.visitor_tool_choices`)."""
+    return {"tools": await _done(_service.visitor_tool_choices(agent_id))}
 
 
 @router.post("/api/widgets")
 async def create_widget(body: WidgetBody):
-    await _refuse_an_unpublishable_agent(body.agent_id)
-    return await _store.save_widget(body.model_dump())
+    return await _done(_service.create(body.model_dump()))
 
 
 @router.put("/api/widgets/{widget_id}")
 async def update_widget(widget_id: str, body: WidgetBody):
-    existing = await _store.get_widget(widget_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail="No such widget.")
-    await _refuse_an_unpublishable_agent(body.agent_id)
-    payload = body.model_dump()
-    payload["id"] = widget_id
-    return await _store.save_widget(payload)
+    return await _done(_service.replace(widget_id, body.model_dump()))
 
 
 @router.delete("/api/widgets/{widget_id}")
 async def remove_widget(widget_id: str):
-    if not await _store.delete_widget(widget_id):
-        raise HTTPException(status_code=404, detail="No such widget.")
+    await _done(_service.delete(widget_id))
     return {"deleted": True}
 
 
 @router.post("/api/widgets/{widget_id}/rotate-key")
 async def rotate_key(widget_id: str):
-    """Issue a new public key. Every page carrying the old snippet stops working,
-    which is the point — this is what an abused key is replaced with."""
-    widget = await _store.rotate_public_key(widget_id)
-    if widget is None:
-        raise HTTPException(status_code=404, detail="No such widget.")
-    return widget
+    """Issue a new public key (`service.rotate_key`)."""
+    return await _done(_service.rotate_key(widget_id))
 
 
 @router.post("/api/widgets/{widget_id}/logo")
 async def upload_logo(widget_id: str, file: UploadFile = File(...)):
-    """Replace this widget's logo.
-
-    Stored as a `data:` URI on the widget and inlined by the embed page, rather
-    than served from a route of its own. A visitor is anonymous, so a logo route
-    would be a *second* public surface with its own cache and abuse story — for
-    an image drawn at 28 pixels.
-
-    The type comes from the magic bytes, never the filename or the browser's
-    `Content-Type`: both are attacker-controlled, and this string ends up in a
-    `data:` URI the browser will honour.
-    """
-    import base64
-
-    from core.images import sniff
-
-    widget = await _store.get_widget(widget_id)
-    if widget is None:
-        raise HTTPException(status_code=404, detail="No such widget.")
-
+    """Replace this widget's logo (`service.set_logo`): at most one byte over the cap is read."""
+    await _done(_service.get(widget_id))
     raw = await file.read(_branding.MAX_LOGO_BYTES + 1)
-    if not raw:
-        raise HTTPException(status_code=422, detail="That file is empty.")
-    if len(raw) > _branding.MAX_LOGO_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"A logo has to be under {_branding.MAX_LOGO_BYTES // 1024} KB. "
-                "It is drawn at 28 pixels, so a small one is not a compromise."
-            ),
-        )
-
-    mime = sniff(raw)
-    if mime is None:
-        raise HTTPException(
-            status_code=422,
-            detail="That is not a PNG, JPEG, GIF or WebP. Renaming a file does not change what is inside it.",
-        )
-
-    widget["logo"] = f"data:{mime};base64,{base64.b64encode(raw).decode()}"
-    await _store.save_widget(widget)
-    return {"logo": widget["logo"]}
+    return {"logo": await _done(_service.set_logo(widget_id, raw))}
 
 
 @router.delete("/api/widgets/{widget_id}/logo")
 async def remove_logo(widget_id: str):
-    widget = await _store.get_widget(widget_id)
-    if widget is None:
-        raise HTTPException(status_code=404, detail="No such widget.")
-    widget["logo"] = ""
-    await _store.save_widget(widget)
+    await _done(_service.remove_logo(widget_id))
     return {"logo": ""}
 
 

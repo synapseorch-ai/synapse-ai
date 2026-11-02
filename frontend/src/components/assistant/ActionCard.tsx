@@ -17,13 +17,15 @@ import { ArrowRight, Check, CircleAlert } from 'lucide-react';
 import Link from 'next/link';
 import * as React from 'react';
 
-import { Button } from '@/components/ui';
+import { Button, CopyButton } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { ActionButton, ActionSpec } from '@/lib/builderEvents';
 
+import { ChangeRows } from './ChangeRows';
+
 /** What a host's act route answered. `spent`: the card cannot be pressed again (done before, expired, not theirs). */
 export type ActResult =
-    | { ok: true; runId?: string | null; message?: string }
+    | { ok: true; runId?: string | null; message?: string; publicKey?: string | null }
     | { ok: false; message: string; spent?: boolean };
 
 export interface Actor {
@@ -32,9 +34,12 @@ export interface Actor {
     question?: (runId: string, onDone: (message: string) => void) => React.ReactNode;
     /** The host's path for a run, for "Open the run". */
     runHref: (runId: string) => string;
+    /** The tag a site carries for a website widget's public key, on this host (F1262). */
+    embedSnippet?: (publicKey: string) => string;
 }
 
-type Phase = { at: 'idle' } | { at: 'working'; label: string } | { at: 'done'; message: string; runId?: string | null }
+type Phase = { at: 'idle' } | { at: 'working'; label: string }
+    | { at: 'done'; message: string; runId?: string | null; publicKey?: string | null }
     | { at: 'refused'; message: string; spent: boolean };
 
 /** What a pressed button did, in the card's words. */
@@ -50,6 +55,10 @@ function doneLine(button: ActionButton, result: Extract<ActResult, { ok: true }>
             return button.arguments.enabled ? 'Turned on.' : 'Turned off.';
         case 'answer_tool_approval':
             return button.arguments.approve ? 'Allowed. The agent carries on.' : 'Refused. The agent was told.';
+        case 'create_widget':
+            return 'Made. Put this on each page it should show on:';
+        case 'rotate_widget_key':
+            return 'Done. The old snippet has stopped working; put this one in its place:';
         default:
             return 'Done.';
     }
@@ -64,7 +73,7 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
         setPhase({ at: 'working', label: button.label });
         try {
             const result = await actor.press(button);
-            if (result.ok) setPhase({ at: 'done', message: doneLine(button, result), runId: result.runId });
+            if (result.ok) setPhase({ at: 'done', message: doneLine(button, result), runId: result.runId, publicKey: result.publicKey });
             else setPhase({ at: 'refused', message: result.message, spent: !!result.spent });
         } catch (exc) {
             setPhase({ at: 'refused', message: exc instanceof Error ? exc.message : 'That did not work. Try again.', spent: false });
@@ -72,6 +81,8 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
     }
 
     const runId = phase.at === 'done' ? phase.runId : null;
+    const publicKey = phase.at === 'done' ? phase.publicKey : null;
+    const snippet = publicKey && actor.embedSnippet ? actor.embedSnippet(publicKey) : null;
     const question = spec.question;
     // A run's question is the run page's own card, as Home's Needs you shows it: its fields, its refusals, its door.
     if (question && actor.question && phase.at !== 'done') {
@@ -103,9 +114,10 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
             <div className="min-w-0">
                 <h3 className="text-[15px] font-semibold leading-snug text-text [overflow-wrap:anywhere]">{spec.title}</h3>
                 {spec.detail && (
-                    <p className="mt-1 text-[13px] leading-relaxed text-text-muted [overflow-wrap:anywhere]">{spec.detail}</p>
+                    <p className="mt-1 whitespace-pre-line text-[13px] leading-relaxed text-text-muted [overflow-wrap:anywhere]">{spec.detail}</p>
                 )}
             </div>
+            {spec.rows && spec.rows.length > 0 && <ChangeRows rows={spec.rows} />}
 
             {question && !answered && (
                 <Link href={actor.runHref(question.run_id)} className="inline-flex items-center gap-1 text-[13px] font-medium text-accent hover:underline">
@@ -148,6 +160,14 @@ export function ActionCard({ spec, actor }: { spec: ActionSpec; actor: Actor }) 
                         </Link>
                     )}
                 </p>
+            )}
+            {snippet && (
+                <div className="flex min-w-0 items-start gap-2">
+                    <code className="min-w-0 flex-1 rounded-md bg-surface-2 px-2.5 py-2 font-mono text-xs text-text [overflow-wrap:anywhere]">
+                        {snippet}
+                    </code>
+                    <CopyButton text={snippet} />
+                </div>
             )}
             {phase.at === 'refused' && (
                 <p className="flex items-start gap-1.5 text-[13px] text-danger" role="alert">

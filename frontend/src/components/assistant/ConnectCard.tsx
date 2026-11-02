@@ -15,13 +15,14 @@
 import { AlertTriangle, ArrowRight, Check, Lock } from 'lucide-react';
 import * as React from 'react';
 
-import { Button, buttonStyles, Input } from '@/components/ui';
+import { Button, buttonStyles, CopyButton, Input } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import type { ConnectSpec } from '@/lib/builderEvents';
 
 /** What a host's adapter answers after an attempt. */
 export type ConnectResult =
-    | { status: 'connected'; message?: string }
+    /** `webhookUrl`: where the platform must call, for the person to paste there (F1263). */
+    | { status: 'connected'; message?: string; webhookUrl?: string }
     /** A sign-in to finish in another tab (OAuth); the card waits for "Done". */
     | { status: 'signin'; url: string }
     | { status: 'error'; message: string };
@@ -35,6 +36,8 @@ export interface Connector {
     server?: (server: NonNullable<ConnectSpec['server']>, token?: string) => Promise<ConnectResult>;
     providerKey?: (provider: NonNullable<ConnectSpec['provider']>, key: string) => Promise<ConnectResult>;
     toolSecret?: (tool: NonNullable<ConnectSpec['tool']>, value: string, hostParams?: Record<string, string>) => Promise<ConnectResult>;
+    /** A chat channel, from the fields typed into the card (F1263). */
+    channel?: (channel: NonNullable<ConnectSpec['channel']>, values: Record<string, string>) => Promise<ConnectResult>;
     /** The host's path for a settings screen id (`models`, `apps`, `channels`…), or null if it has none. */
     href: (screen: string) => string | null;
     /** The product's name for "stored encrypted in …". */
@@ -45,7 +48,7 @@ type Phase = 'idle' | 'working' | 'signin' | 'connected' | 'error';
 
 /** The screen a kind falls back to when the host has no adapter for it. */
 const FALLBACK_SCREEN: Record<ConnectSpec['kind'], string> = {
-    app: 'apps', mcp_server: 'apps', provider_key: 'models', tool_secret: 'tools', settings: 'models',
+    app: 'apps', mcp_server: 'apps', provider_key: 'models', tool_secret: 'tools', settings: 'models', channel: 'channels',
 };
 
 function secretLabel(spec: ConnectSpec): string | null {
@@ -79,17 +82,26 @@ export function ConnectCard({
     const [params, setParams] = React.useState<Record<string, string>>({});
     const paramsFilled = hostParams.every((p) => (params[p.name] ?? '').trim());
     const [signinUrl, setSigninUrl] = React.useState<string | null>(null);
+    // A chat channel's fields (F1263): typed here, sent to the host's own route, never kept after.
+    const channelFields = spec.kind === 'channel' && !spec.channel?.signin ? (spec.channel?.fields ?? []) : [];
+    const [values, setValues] = React.useState<Record<string, string>>({});
+    const valuesFilled = channelFields.every((f) => f.optional || (values[f.key] ?? '').trim());
+    const [webhookUrl, setWebhookUrl] = React.useState<string | null>(null);
 
     const name = spec.app?.name ?? spec.server?.label ?? spec.provider?.label ?? spec.tool?.name
-        ?? spec.screen?.label ?? spec.title;
+        ?? spec.channel?.label ?? spec.screen?.label ?? spec.title;
     const screen = spec.kind === 'settings' ? (spec.screen?.id ?? 'models') : FALLBACK_SCREEN[spec.kind];
-    const run = (() => {
+    const run: ((secret: string) => Promise<ConnectResult>) | null = (() => {
         if (spec.kind === 'app' && spec.app && connector.app) return (s: string) => connector.app!(spec.app!, s || undefined);
         if (spec.kind === 'mcp_server' && spec.server && connector.server) return (s: string) => connector.server!(spec.server!, s || undefined);
         if (spec.kind === 'provider_key' && spec.provider && connector.providerKey) return (s: string) => connector.providerKey!(spec.provider!, s);
         if (spec.kind === 'tool_secret' && spec.tool && connector.toolSecret) {
             return (s: string) => connector.toolSecret!(spec.tool!, s,
                 Object.fromEntries(hostParams.map((p) => [p.name, (params[p.name] ?? '').trim()])));
+        }
+        if (spec.kind === 'channel' && spec.channel && connector.channel) {
+            return () => connector.channel!(spec.channel!,
+                Object.fromEntries(channelFields.map((f) => [f.key, (values[f.key] ?? '').trim()])));
         }
         return null;
     })();
@@ -99,13 +111,15 @@ export function ConnectCard({
     const done = phase === 'connected';
 
     async function connect() {
-        if (!run || !paramsFilled) return;
+        if (!run || !paramsFilled || !valuesFilled) return;
         setPhase('working');
         setError(null);
         try {
             const result = await run(secret.trim());
             if (result.status === 'connected') {
                 setSecret('');
+                setValues({});
+                setWebhookUrl(result.webhookUrl ?? null);
                 setPhase('connected');
                 onConnected(result.message ?? `Connected ${name}.`);
             } else if (result.status === 'signin') {
@@ -196,6 +210,37 @@ export function ConnectCard({
                 </label>
             ))}
 
+            {!done && run && channelFields.map((f) => (
+                <label key={f.key} className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-text-muted">{f.label}</span>
+                    <Input
+                        type={f.secret ? 'password' : 'text'}
+                        autoComplete="off"
+                        spellCheck={false}
+                        placeholder={f.placeholder}
+                        value={values[f.key] ?? ''}
+                        onChange={(e) => setValues((was) => ({ ...was, [f.key]: e.target.value }))}
+                        aria-label={f.label}
+                    />
+                    {f.note && <span className="text-xs text-text-faint">{f.note}</span>}
+                </label>
+            ))}
+
+            {done && webhookUrl && (
+                <div className="flex flex-col gap-1.5 text-sm">
+                    <span className="text-text-muted">
+                        Paste this into {spec.channel?.paste_into ?? 'the platform\'s settings'}; the channel answers once
+                        they call it.
+                    </span>
+                    <div className="flex min-w-0 items-start gap-2">
+                        <code className="min-w-0 flex-1 rounded-md bg-surface-2 px-2.5 py-2 font-mono text-xs text-text [overflow-wrap:anywhere]">
+                            {webhookUrl}
+                        </code>
+                        <CopyButton text={webhookUrl} />
+                    </div>
+                </div>
+            )}
+
             {!done && field && phase !== 'signin' && (
                 <label className="flex flex-col gap-1.5">
                     <span className="text-xs font-medium text-text-muted">{field}</span>
@@ -240,9 +285,9 @@ export function ConnectCard({
                             size="sm"
                             loading={phase === 'working'}
                             onClick={() => void connect()}
-                            disabled={phase === 'working' || (needsSecret && !secret.trim()) || !paramsFilled}
+                            disabled={phase === 'working' || (needsSecret && !secret.trim()) || !paramsFilled || !valuesFilled}
                         >
-                            {needsSecret ? 'Save' : 'Connect'}
+                            {needsSecret ? 'Save' : spec.channel?.signin ? 'Sign in' : 'Connect'}
                         </Button>
                     ) : link ? (
                         <span className="inline-flex flex-wrap items-center gap-2">

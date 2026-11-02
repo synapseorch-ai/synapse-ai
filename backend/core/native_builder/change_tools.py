@@ -109,7 +109,9 @@ SUBMIT = {"type": "function", "function": {
         "criteria: [{name, weight, guidance}], floor} or {rubric}; eval_cases {cases: [{name, input, notes}]} or "
         "{count, steer}; eval_run and eval_cancel {golden_set}; knowledge_edit_document {find: the passage as it "
         "stands, replace: its new text} or {text: a short note's whole new text}; knowledge_settings {language, "
-        "visitor_access (opening it to visitors, on its own), budget_monthly_usd | clear_budget}; edit_steps, create "
+        "visitor_access (opening it to visitors, on its own), budget_monthly_usd | clear_budget}; widget_create {agent, sites, visitor_tools, greeting, title, accent, theme, "
+        "position, launcher_label, font, header_style, launcher, daily_cap}; widget_update {the same, on}; widget_logo "
+        "{path}; channel_connect {platform, agent}; channel_agents {agents, agent}; edit_steps, create "
         "and use_recording {what}. Deletes and the other acts take none. For \"undo that\", send undo_of with no ops."
     ),
     "parameters": {"type": "object", "properties": {
@@ -1271,7 +1273,7 @@ async def _runs_found(chosen: dict | None, n: int, item: dict, picks: list[dict]
 async def check_change(args: dict, server_module: Any, events: list[dict]) -> dict:
     """Every fact about the planner's change, decided here; see the module's docstring. `draft` is the planner's
     finish (E2's object); the person and their role are the run's, read now, never an argument."""
-    from core.builder_actions import _FeatureOff, _NotOffered, _offer, feature_switch
+    from core.builder_actions import _FeatureOff, _NotOffered, _offer, _pressed, feature_switch
     from core.product_tools import areas, registry
     from core.product_tools.approved import digest
 
@@ -1437,7 +1439,7 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
                 item.update(status="noop", say=str(why))
                 continue
             events.append(card)
-            pressed = " or ".join(f'"{b["label"]}"' for b in card["buttons"]) or "answer on it"
+            pressed = _pressed(card)
             item.update(status="card", say=f"A card is up: {card['title']}. Press {pressed} to do it.")
             continue
         tool = registry.get(op.tool)
