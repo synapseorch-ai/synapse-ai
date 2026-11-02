@@ -47,9 +47,11 @@ NOT_LISTED = {
     "usage": "what runs cost: the savings topic is what a change reads",
     "plan": "the plan and its credits: the answer route's, never a change's",
     "today": "what happened today: the answer route's",
-    "workflow": "one workflow's steps: the open workflow is in the planner's context already",
+    "workflow": "one workflow's steps: the open one is in the planner's context already (read_plan_context's pack "
+                "holds it as a plan)",
     "agent_activity": "what an agent has been doing: the answer route's",
-    "agent_memory": "an agent's memory items, read through the agent editor's own op (F1259)",
+    "agent_memory": "an agent's settings, its memory among them, are read with get_agent and set with the agent ops "
+                    "(F1259)",
 }
 
 class TestThereIsOnePlanner:
