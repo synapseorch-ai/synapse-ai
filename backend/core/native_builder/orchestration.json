@@ -48,6 +48,7 @@
         "agent_prompts": {"type": "dict", "default": {}, "description": "The new agents' instructions, written after the yes (the prompt writer's finish)"},
         "plan_approval": {"type": "str", "default": "", "description": "The person's yes to the build, recorded in code (approve_plan)"},
         "build_saved": {"type": "str", "default": "", "description": "What the save made, or why it stopped (save_build)"},
+        "save_route": {"type": "str", "default": "", "description": "Where a save goes next: back to the planner once when it was refused after the yes, else to what was saved (F1295)"},
         "tools_made": {"type": "str", "default": "", "description": "The tools the build made from a read API after the yes, and what the wait says (save_build, only the tools; F944)"},
         "make_route": {"type": "str", "default": "", "description": "Router result: wait for the tools' connection, or save"},
         "connect_answer": {"type": "dict", "default": {}, "description": "What the person said at the wait for a connection, e.g. {\"feedback\": \"Saved the Authorization for Mailchimp.\"} (F946)"},
@@ -2128,7 +2129,47 @@
             ],
             "output_key": "build_saved",
             "tool_arguments": {},
-            "next_step_id": "step_build_done"
+            "next_step_id": "step_save_route",
+            "on_exhausted_step_id": "step_build_done"
+        },
+        {
+            "id": "step_save_route",
+            "name": "Saved?",
+            "type": "switch",
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 600,
+            "allowed_tools": null,
+            "max_iterations": 5,
+            "position_x": 3000,
+            "position_y": 150,
+            "input_keys": [
+                "build_saved"
+            ],
+            "output_key": "save_route",
+            "tool_arguments": null,
+            "next_step_id": null,
+            "switch_expression": "state.build_saved.outcome",
+            "switch_cases": {
+                "replan": "step_plan_context"
+            },
+            "switch_default_step_id": "step_build_done",
+            "on_exhausted_step_id": "step_build_done"
         },
         {
             "id": "step_build_done",

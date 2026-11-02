@@ -507,6 +507,8 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
     eval_notes = _without_unreachable_eval(plan)
     errors += await _eval_part(plan, base, state)
     # The person's own API (F1225): each operation the plan uses is a tool the build makes, as a read API's is (F944).
+    # A spec this conversation read, for a provider the lookup found, wins over the lookup's endpoints (F1298).
+    errors += await own_api.from_read_specs(plan, state)
     api_errors, own_tools = await own_api.api_parts(plan)
     errors += api_errors
     if plan.schedule:
@@ -965,10 +967,13 @@ def _a_second_of_a_name(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
 
 def _api_names(plan: O.Plan, state: dict) -> list[str]:
     """A tool that names a provider whose API was read, but none of its calls: the plan calls a read API's endpoint by
-    its tool's name, so code makes exactly that call (A7, F944)."""
+    its tool's name, so code makes exactly that call (A7, F944). A tool of an API the plan names in `apis` is that
+    spec's, by the spec's own names (F1225, F1298): never held to the web lookup's."""
     from core.builder_research import _words
+    from core.native_builder.own_api import prefix_of
 
     findings = _obj(state.get(FINDINGS_KEY))
+    own = tuple(prefix_of(p.name) + "_" for p in plan.apis)
     errors = []
     for option in (findings or {}).get("options") or [] if isinstance(findings, dict) else []:
         spec = option.get("api") if isinstance(option.get("api"), dict) else None
@@ -977,6 +982,8 @@ def _api_names(plan: O.Plan, state: dict) -> list[str]:
             continue
         provider = set(_words(str(option.get("provider") or "")))
         for name in O.tool_names(plan):
+            if own and name.startswith(own):
+                continue
             if name not in tools and provider and provider <= set(_words(name.replace("_", " "))):
                 errors.append(f"`{name}`: {option.get('provider')}'s API was read; call it by its tools' names: "
                               + ", ".join(f"`{t}`" for t in tools))
@@ -1967,7 +1974,11 @@ async def check_build(args: dict, server_module: Any, events: list[dict]) -> dic
     # What this plan changed from the one the person last saw (F1245), on the card and the panel alike.
     plan.since_last = since_last(plan, plan_before_of(state, prior))
     review = render(plan, agent_names=names)
-    if answer.get("outcome") == "replan":
+    if answer.get("outcome") == "replan" and answer.get("refused"):
+        # A save refused after the yes (F1295): why it is asked again, in the save's own words.
+        review = (f"Before I saved it, the build needed one change: {answer['refused']}. Here is the plan with it, "
+                  "for one more yes.\n\n" + review)
+    elif answer.get("outcome") == "replan":
         # The second review after connecting (F949): why it is asked again, before the plan on the real names.
         who = " and ".join(answer.get("connected") or []) or "it"
         review = (f"After connecting {who}, its tools are "

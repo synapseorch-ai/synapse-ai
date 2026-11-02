@@ -11,6 +11,10 @@ them as parts.
   URL is (`safe_fetch`: the egress guard at each hop, a deadline, a cap) and held to the host's rule as well; a Vault
   path is read as F1227's read_vault reads one. A spec that cannot be read, is not OpenAPI, or takes its key in a way
   the card cannot keep goes back to the planner, said.
+* A spec read once is the conversation's (F1298, prod-13): `read_api_spec` keeps the API's name and where its spec is
+  (`SPECS_KEY`, never a key: a URL with a query or a user part is not kept), the chat route carries it to the next
+  run, and in `examine` a provider the web lookup found whose spec was read is that spec's API part
+  (`from_read_specs`): each lookup endpoint is the spec's operation of the same method and path, on its own server.
 * `mcp_servers`: a remote server's URL, held to F1201's one rule. Its tools are known only once it is connected, so
   its Connect card comes before the plan (Naveen, 10-29: the one exception to F949's plan-then-connect), and the
   card's "Connected …" plans again on its real tools.
@@ -32,6 +36,29 @@ _SIGN_IN = {"oauth2": "OAuth", "openIdConnect": "OpenID Connect"}
 
 #: Where a spec's key goes when the card cannot keep it there, and where the person sets it instead.
 _ELSEWHERE = "import the spec on the Tools screen and set its key there"
+
+
+#: The specs this conversation read (F1298), by the API's name lowered: `{"name", "spec"}`, nothing else. The engine's
+#: own key (`events_public.PRIVATE_STATE_PREFIXES`): the person's spec locations never reach a public read.
+SPECS_KEY = "_specs_read"
+
+
+def _keepable(spec: str) -> bool:
+    """Whether a spec's location may be kept in the conversation's state: never one carrying a credential (79), a
+    URL's query, fragment or user part."""
+    if not _is_url(spec):
+        return True
+    got = urlsplit(spec)
+    return not (got.query or got.fragment or got.username or got.password)
+
+
+def carried(previous: Any) -> dict[str, dict[str, str]]:
+    """The specs the conversation's previous run read, to seed the next one (the chat route), as `named_sites`'."""
+    read = previous.get(SPECS_KEY) if isinstance(previous, dict) else None
+    if not isinstance(read, dict):
+        return {}
+    return {k: {"name": str(v["name"]), "spec": str(v["spec"])} for k, v in read.items()
+            if isinstance(v, dict) and v.get("name") and v.get("spec") and _keepable(str(v["spec"]))}
 
 
 def _is_url(spec: str) -> bool:
@@ -178,6 +205,81 @@ async def api_parts(plan: O.Plan) -> tuple[list[str], dict[str, O.ToolStatus]]:
     return errors, found
 
 
+def _segments(path: str) -> list[str]:
+    return ["{}" if re.fullmatch(r"\{[^}]*\}", p) else p.lower() for p in path.split("/") if p]
+
+
+def _same_call(method: str, path: str, base: str, tool: dict, spec_base: str) -> bool:
+    """Whether a lookup's endpoint is a spec's operation: one method, and one path, a placeholder by any name; or,
+    where one base holds what the other's path spells, the same from their hosts on, one ending as the other does."""
+    if str(tool.get("method") or "").upper() != method.upper():
+        return False
+    theirs = _path(tool["url"], spec_base)
+    if _segments(path) == _segments(theirs):
+        return True
+    mine = _segments(urlsplit(base).path) + _segments(path)
+    full = _segments(urlsplit(spec_base).path) + _segments(theirs)
+    short, long = sorted((mine, full), key=len)
+    return bool(short) and long[len(long) - len(short):] == short
+
+
+async def from_read_specs(plan: O.Plan, state: dict) -> list[str]:
+    """A provider the web lookup found whose spec this conversation read is that spec's API part (F1298): its
+    endpoints renamed to the spec's operations of the same method and path, so they are made on its own server; the
+    planner's errors for one the spec has not. A plan that names that API already is left as it is."""
+    from core.builder_research import _words
+    from core.native_builder.build_plan import _found
+
+    read = carried(state)
+    if not read:
+        return []
+    named = {p.name.strip().lower() for p in plan.apis}
+    by: dict[str, list[O.ToolStatus]] = {}
+    for status in _found(plan, state).values():
+        api = status.api or {}
+        if status.status != "found" or status.via != "http_tool" or not api or api.get("tool"):
+            continue
+        words = set(_words(str(status.provider or "")))
+        key = next((k for k, v in read.items() if words and set(_words(v["name"])) == words), None)
+        if key and key not in named:
+            by.setdefault(key, []).append(status)
+    errors: list[str] = []
+    for key, statuses in by.items():
+        spec = read[key]
+        got = await read_spec(spec)
+        if got["problem"]:
+            continue  # no longer readable: the lookup's, as before
+        renames: dict[str, str] = {}
+        for status in statuses:
+            endpoint = (status.api or {}).get("endpoint") or {}
+            method, path = str(endpoint.get("method") or "GET"), str(endpoint.get("path") or "")
+            same = [t for t in got["tools"] if _same_call(method, path, status.api.get("base_url") or "", t,
+                                                          got["base"])]
+            if len(same) == 1:
+                renames[status.name] = same[0]["name"]
+            else:
+                tools = ", ".join(f"{t['name']} ({t['method']} {_path(t['url'], got['base'])})"
+                                  for t in got["tools"][:12])
+                errors.append(f"`{status.name}`: {spec['name']}'s own spec ({spec['spec']}, read in this "
+                              f"conversation) has no {method.upper()} {path}: use its tools: {tools}")
+        if renames:
+            _rename(plan, renames)
+            plan.apis.append(O.ApiPart(name=spec["name"], spec=spec["spec"]))
+    return errors
+
+
+async def read_spec(spec: dict[str, str]) -> dict:
+    return await read(spec["name"], spec["spec"])
+
+
+def _rename(plan: O.Plan, renames: dict[str, str]) -> None:
+    for s in [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]:
+        if s.tool in renames:
+            s.tool = renames[s.tool]
+    for a in plan.agents:
+        a.tools = [renames.get(t, t) for t in a.tools]
+
+
 def _same_url(a: Any, b: Any) -> bool:
     def norm(u: Any) -> str:
         got = urlsplit(str(u or "").strip())
@@ -244,10 +346,17 @@ async def read_api_spec(args: dict, server_module: Any, events: list[dict]) -> d
     name = str(args.get("name") or "").strip()
     if not name:
         return {"error": "Name the API, e.g. Orders API: its tools are named with it."}
-    got = await read(name, str(args.get("spec") or ""))
+    spec = str(args.get("spec") or "").strip()
+    got = await read(name, spec)
     if got["problem"]:
         why = got["problem"].rstrip(". ")
         return {"error": f"{why[0].upper()}{why[1:]}."}
+    if _keepable(spec):
+        # The conversation's from here on (F1298): its name and where it is, never a key.
+        from core.native_builder.build_plan import _state
+
+        state = _state()
+        state[SPECS_KEY] = {**carried(state), name.lower(): {"name": name, "spec": spec}}
     tools = [{"tool": t["name"], "call": f"{t['method']} {_path(t['url'], got['base'])}",
               "does": t["description"][:160]} for t in got["tools"]]
     auth = got["auth"]

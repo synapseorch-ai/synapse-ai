@@ -510,7 +510,12 @@ async def validate(compiled: Compiled, plan: Plan, server_module: Any,
     workflows = [compiled.orchestration, *(i.orchestration for i in compiled.inner)]
     agents = dict(existing_agents or {}) | {a["id"]: a for a in compiled.agents}
     found, warned = await builder_guard.missing_in(workflows, agents, server_module)
-    found += await builder_guard.argument_issues(workflows, server_module)
+    # And a step's set arguments for such a tool, to what it will take (F1295): its save's own refusal, before the yes.
+    from core.native_builder.build_save import made_schema
+
+    made_schemas = {t.name: made_schema(t) for t in plan.tools
+                    if t.status == "found" and t.via == "http_tool" and t.api}
+    found += await builder_guard.argument_issues(workflows, server_module, made_schemas)
     made = {a["id"] for a in compiled.agents}
     exempt = set(plan.approvals.acts_without_asking)
     # `own_steps` scopes an update's own workflow only: a build's inner workflows are new, so wholly its own (SAI2's

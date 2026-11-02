@@ -657,6 +657,17 @@ class TestAFullPlanAndAStoppedBuild:
         what its pass made and says why (`test_a_build_is_saved_in_code`)."""
         steps = self._steps()
         save = steps["step_save"]
-        assert (save["type"], save["forced_tool"], save["next_step_id"]) == ("tool", "save_build", "step_build_done")
-        assert steps["step_build_done"]["next_step_id"] == "step_end"
+        assert (save["type"], save["forced_tool"], save["next_step_id"]) == ("tool", "save_build", "step_save_route")
+        # Its route (F1295): back to the planner only for a save refused after the yes, once; every other ending of
+        # the save, and the route's own exhaustion, is the save's words, as before.
+        route = steps["step_save_route"]
+        assert (route["type"], route["switch_expression"]) == ("switch", "state.build_saved.outcome")
+        assert route["switch_cases"] == {"replan": "step_plan_context"}
+        assert route["switch_default_step_id"] == route["on_exhausted_step_id"] == "step_build_done"
+        assert save["on_exhausted_step_id"] == "step_build_done"
+        done = steps["step_build_done"]
+        assert (done["type"], done["input_keys"]) == ("print", ["build_saved"])
+        assert done["print_content"] == ("{{ state.run_changes }}{{ state.build_saved.effect }}"
+                                         "{{ state.build_saved.does }}")
+        assert done["next_step_id"] == "step_end"
         assert "finish_build" not in {s.get("forced_tool") for s in steps.values()}
