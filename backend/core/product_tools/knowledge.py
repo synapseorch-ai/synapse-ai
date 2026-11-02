@@ -32,6 +32,9 @@ class KnowledgeHost:
     update_base: Callable[[Any, str, Any], Awaitable[tuple]] | None = None
     #: `(caller, kb_id) -> None`: the base forgotten, its Vault folder kept (F1218).
     delete_base: Callable[[Any, str], Awaitable[None]] | None = None
+    #: `(caller, KnowledgeBase, document row, text) -> [document rows]`: a document's text written as an edit, already
+    #: checked (`edit_target`), and queued (F1258).
+    write_text: Callable[[Any, Any, Any, str], Awaitable[list]] | None = None
 
 
 async def _oss_create_base(caller: Any, body: Any) -> Any:
@@ -54,8 +57,13 @@ async def _oss_delete_base(caller: Any, kb_id: str) -> None:
     await bases.forget(kb_id)
 
 
+async def _oss_write_text(caller: Any, kb: Any, row: Any, text: str) -> list:
+    from core.knowledge import ingest
+    return await ingest.write_text(kb, row, text)
+
+
 _HOST = KnowledgeHost(create_base=_oss_create_base, add_vault_file=_oss_add_vault_file,
-                      update_base=_oss_update_base, delete_base=_oss_delete_base)
+                      update_base=_oss_update_base, delete_base=_oss_delete_base, write_text=_oss_write_text)
 _host = _HOST
 
 
@@ -233,9 +241,9 @@ def text_sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-async def _edit_document(caller: Any, args: dict[str, Any]) -> dict:
-    """A note's or a text file's text, written as `text` under its own name and folder, and indexed again (F1258).
-    With `was_sha256`, only over the text it was made from: a document changed since is said, never written over."""
+async def edit_target(args: dict[str, Any]) -> tuple[Any, Any, str, str]:
+    """`(base, document row, new text, current text)` for an edit, once every check before the write has passed: the
+    engine's door and a host's (a pressed card in cloud) check the same way. Refused in the tool's own words."""
     from core.knowledge import bases, ingest
 
     row = await _document(str(args.get("doc_id") or ""))
@@ -250,11 +258,25 @@ async def _edit_document(caller: Any, args: dict[str, Any]) -> dict:
     kb = await bases.require_base(row.kb_id)
     if kb.status != "active":
         raise ToolRefusal("Its knowledge base is turned off: turn it on to change its documents.")
-    if text == current:
+    return kb, row, text, current
+
+
+def edit_said(kb: Any, row: Any, rows: list | None) -> dict:
+    """What an edit answers: unchanged (`rows` None), or written and queued."""
+    if rows is None:
         return {"doc_id": row.id, "changed": False}
-    rows = await ingest.write_text(kb, row, text)
     return {"doc_id": row.id, "changed": True, "knowledge_base": kb.name,
             "status": rows[0].status if rows else None}
+
+
+async def _edit_document(caller: Any, args: dict[str, Any]) -> dict:
+    """A note's or a text file's text, written as `text` under its own name and folder, and indexed again (F1258).
+    With `was_sha256`, only over the text it was made from: a document changed since is said, never written over. A
+    host writes it its own way (`KnowledgeHost.write_text`), after the same checks."""
+    kb, row, text, current = await edit_target(args)
+    if text == current:
+        return edit_said(kb, row, None)
+    return edit_said(kb, row, await (_host.write_text or _oss_write_text)(caller, kb, row, text))
 
 
 async def _changed(kb: Any, args: dict[str, Any]) -> Any:

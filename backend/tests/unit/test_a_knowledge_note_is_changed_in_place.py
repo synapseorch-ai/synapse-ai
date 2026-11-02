@@ -258,3 +258,43 @@ class TestFindingIt:
 
         planner = next(a for a in bundled_definitions()["agents"] if a["id"] == "agent_native_builder_planner")
         assert "search_knowledge" in planner["tools"] and "knowledge_edit_document" in planner["system_prompt"]
+
+
+class TestAHostWritesItsOwnWay:
+    """F1258's seam (79, 11-02): a host whose Knowledge routes do more (cloud's vault reserve, audit and its own Vault
+    marking) writes the edited text its own way through `set_knowledge_host`, on every door; with no `write_text` of
+    its own, the engine's `ingest.write_text`, as before. The checks before it (the text read, written only over it,
+    the base on) stay the engine's."""
+
+    @pytest.fixture
+    def host(self):
+        from core.product_tools import knowledge as tools
+
+        calls: list = []
+
+        async def write_text(caller, kb, row, text):
+            calls.append((kb.id, row.id, text))
+            return await ingest.write_text(kb, row, text)
+
+        tools.set_knowledge_host(tools.KnowledgeHost(create_base=tools._oss_create_base,
+                                                     add_vault_file=tools._oss_add_vault_file, write_text=write_text))
+        yield calls
+        tools.set_knowledge_host(None)
+
+    async def test_an_edit_and_its_undo_are_written_through_the_hosts_write(self, world, host):
+        first, _, applied = await _change(_edit(world["hours"].id, find="Open 9 to 5", replace="Open 8 to 6"))
+        assert applied["applied"] == ["knowledge_edit_document"], applied
+        assert host == [(world["kb"].id, world["hours"].id, "# Hours\n\nOpen 8 to 6, Monday to Friday.\n")]
+        await _change({"undo_of": first.run_id})
+        assert host[-1][2] == "# Hours\n\nOpen 9 to 5, Monday to Friday.\n" and len(host) == 2, "undo by the same door"
+
+    async def test_what_is_refused_never_reaches_the_host(self, world, host):
+        await _change(_edit(world["pdf"].id, text="anything"))
+        assert host == []
+
+    def test_a_host_with_no_write_of_its_own_keeps_the_engines(self):
+        from core.product_tools import knowledge as tools
+
+        assert tools.KnowledgeHost(create_base=tools._oss_create_base,
+                                   add_vault_file=tools._oss_add_vault_file).write_text is None
+        assert tools._HOST.write_text is not None
