@@ -1478,8 +1478,8 @@
                 "plan": "step_check_plan"
             },
             "switch_default_step_id": "step_check_plan",
-            "position_x": 1000,
-            "position_y": 400,
+            "position_x": 1300,
+            "position_y": 600,
             "on_exhausted_step_id": "step_plan_rounds"
         },
         {

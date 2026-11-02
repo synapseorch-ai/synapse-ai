@@ -131,8 +131,9 @@ from core.native_builder import prompt_lint, seed
 #: topics dead_jobs and audit in both lists, c6f1a12c….
 #: Rule 21's support request: its severity asked with ask_person, its run only when it is about one (TRI1), 50276764….
 #: F1296: the research ask's own route (`step_research_ask_route`), and an exit on every step of the planner's cycle
-#: (`step_plan_rounds`' words before the yes, `step_connect_give_up` after), cef82d9e….
-BUNDLE_SHA256 = "cef82d9eb16d84df077e7a839dde68234fa67e5177429d16164a9da42ece3909"
+#: (`step_plan_rounds`' words before the yes, `step_connect_give_up` after), cef82d9e…; the new route on a canvas
+#: spot of its own, beside the research ask (1300, 600), 69df0403….
+BUNDLE_SHA256 = "69df04033e6fda71d323e553a120e7d2bbfd72dcd11fde4534438bfcfee0e397"
 
 
 def _sha(definitions) -> str:
