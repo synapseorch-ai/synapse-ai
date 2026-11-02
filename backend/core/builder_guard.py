@@ -192,10 +192,12 @@ async def missing_in(workflows: list[dict], agents: dict[str, dict], server_modu
     return issues, warnings
 
 
-async def argument_issues(workflows: list[dict], server_module: Any) -> list[str]:
+async def argument_issues(workflows: list[dict], server_module: Any,
+                          made: dict[str, dict] | None = None) -> list[str]:
     """Issues for Tool steps whose set arguments (E1) do not fit their tool's own schema: a name it does not take,
     or a required one left out. With no model to repair them, either fails every run. A tool nothing provides is
-    `missing_in`'s to say; a tool whose schema names no properties takes anything."""
+    `missing_in`'s to say; a tool whose schema names no properties takes anything. `made` is what each tool a build
+    makes after the yes will take, by name (F1295): held to that while it is not here yet."""
     from core.routes.tools import load_custom_tools
     from core.tools import resolve_one_tool
 
@@ -209,8 +211,10 @@ async def argument_issues(workflows: list[dict], server_module: Any) -> list[str
             try:
                 tool = await resolve_one_tool(server_module, name, {"tools": [name]}, custom)
             except Exception:  # noqa: BLE001 — a lookup that cannot run is not evidence either way
-                continue
-            schema = getattr(tool, "inputSchema", None) if tool is not None else None
+                tool = None
+                if name not in (made or {}):
+                    continue
+            schema = getattr(tool, "inputSchema", None) if tool is not None else (made or {}).get(name)
             props = (schema or {}).get("properties") if isinstance(schema, dict) else None
             if not isinstance(props, dict) or not props:
                 continue

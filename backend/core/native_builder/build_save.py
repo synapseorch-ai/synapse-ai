@@ -217,27 +217,40 @@ def _tool_call(status: O.ToolStatus) -> dict:
         # The person's own API (F1225): the operation as the spec's import makes it, every argument it has (a GET
         # sends the rest as its query, a call that sends as its JSON), on the spec's own server, its base locked.
         args = {"name": status.name, "method": method, "url": own["url"], "base_lock": base,
-                "group": status.provider or "", "input_schema_json": json.dumps(own["inputSchema"]),
+                "group": status.provider or "", "input_schema_json": json.dumps(made_schema(status)),
                 "description": f"{own['description']} ({status.provider}: {method} {path})"}
         if method == "GET":
             args["read_only"] = True
         elif method == "DELETE":
             args["destructive"] = True
         return {"tool": "create_http_tool", "args": args, "makes": None, "kind": "tool", "name": status.name}
-    params = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path)
-    properties: dict[str, Any] = {p: {"type": "string"} for p in params}
     args: dict[str, Any] = {"name": status.name, "method": method, "url": base + path, "base_lock": base,
                             "group": status.provider or "",
                             "description": f"{endpoint.get('does') or status.name} ({status.provider}: {method} {path})"}
     if method in ("POST", "PUT", "PATCH"):
-        properties["body"] = {"type": "object", "description": f"The JSON it sends, as {api.get('docs_url')} says"}
         args["body_template"] = "{{body}}"
     if method == "GET":
         args["read_only"] = True
     elif method == "DELETE":
         args["destructive"] = True
-    args["input_schema_json"] = json.dumps({"type": "object", "properties": properties, "required": params})
+    args["input_schema_json"] = json.dumps(made_schema(status))
     return {"tool": "create_http_tool", "args": args, "makes": None, "kind": "tool", "name": status.name}
+
+
+def made_schema(status: O.ToolStatus) -> dict:
+    """What a tool the build makes after the yes takes (F944, F1225), the one place that says it: the save makes it so
+    (`_tool_call`), and the plan check holds a step's set arguments to it before the yes (F1295,
+    `builder_guard.argument_issues`). A read API's call takes its path's placeholders and, for a call that sends, a
+    `body`; the person's own API's operation takes every argument its spec has."""
+    api, endpoint = status.api or {}, (status.api or {}).get("endpoint") or {}
+    if own := api.get("tool"):
+        return own["inputSchema"]
+    method, path = str(endpoint.get("method") or "GET").upper(), str(endpoint.get("path") or "")
+    params = re.findall(r"\{([A-Za-z_][A-Za-z0-9_]*)\}", path)
+    properties: dict[str, Any] = {p: {"type": "string"} for p in params}
+    if method in ("POST", "PUT", "PATCH"):
+        properties["body"] = {"type": "object", "description": f"The JSON it sends, as {api.get('docs_url')} says"}
+    return {"type": "object", "properties": properties, "required": params}
 
 
 def _keep_places(doc: dict, existing: Any) -> None:
