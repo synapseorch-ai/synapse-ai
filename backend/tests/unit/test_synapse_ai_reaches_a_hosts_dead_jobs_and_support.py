@@ -9,7 +9,7 @@ says plainly where there is none; a host that has them reads and does each its o
   tools are never listed, and refuse if called;
 - with a host: a dead job's retry and discard cards name its workflow and why it stopped, their buttons the host's
   tools by the job's id; one that can't be retried says why; the support card shows the whole request first, with
-  its category and severity (a question, minor, unless said) and the run it is about;
+  its category (a question unless said), its severity (the person's, asked, never guessed) and the run it is about;
 - the ops are the change table's; support_request is named by its subject; the one planner's rule 21 names them, and
   both topic lists name dead_jobs and audit.
 """
@@ -138,6 +138,11 @@ class TestWithAHost:
         got, cards = await _prepare({"action": "support_request", "name": "Help"})
         assert cards == [] and "what happened" in got["error"]
 
+    async def test_how_bad_it_is_is_the_persons_never_guessed(self, client, a_host):
+        """The card can't be edited, so its severity is asked, never defaulted (TRI1, D0: what only they know)."""
+        got, cards = await _prepare({"action": "support_request", "name": "Runs stop", "text": "Every run stops."})
+        assert cards == [] and "blocking, degraded or minor" in got["error"]
+
 
 def test_the_ops_and_the_planner_name_them():
     from core.builder_actions import ACTIONS
@@ -153,5 +158,7 @@ def test_the_ops_and_the_planner_name_them():
     prompt = json.loads(PLANNER.read_text("utf-8"))["system_prompt"]
     rule = re.search(r"\n21\. (.*?)(?=\n\d+\. |\n\n)", prompt, re.S)
     assert rule and all(op in rule.group(1) for op in ("dead_job_retry", "dead_job_discard", "support_request"))
+    # A run only when the request is about one; how bad it is asked of the person, never guessed (TRI1).
+    assert "the `run_id` when it is about one" in rule.group(1) and "`ask_person`" in rule.group(1)
     for listed in re.findall(r"answers by topic \(([^)]*)\)", prompt):
         assert {"dead_jobs", "audit"} <= {t.strip() for t in listed.split(",")}
