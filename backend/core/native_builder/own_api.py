@@ -206,7 +206,9 @@ async def server_parts(plan: O.Plan, server_module: Any) -> list[str]:
         record = next((r for r in records if _same_url(r.get("url"), part.url)), None)
         part.connected = record is not None and str(record.get("name") or "").lower() in here
         renamed[part.name.lower()] = str(record["name"]) if part.connected else None
-        if part.connected:
+        if record is not None:
+            # The server saved at that URL is this one, connected or not (F1290): its card names it and is pressed
+            # again, never adding a second under the name this plan gave it.
             part.name = str(record["name"])
     if renamed:
         for a in plan.agents:
