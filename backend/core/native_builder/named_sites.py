@@ -196,6 +196,27 @@ async def read(url: str) -> NamedPage:
     return _facts(page, got.body.decode("utf-8", errors="replace"))
 
 
+#: Where a conversation's reads are kept (D340 D2): gather and research add each read to the run's state under this
+#: key, and the chat route seeds the next run with the previous run's (`carried`), so a site is read once a
+#: conversation.
+PAGES_KEY = "named_pages"
+
+
+def carried(previous: Any) -> dict[str, dict[str, Any]]:
+    """The reads the conversation's previous run kept, to seed the next one (the chat route)."""
+    pages = previous.get(PAGES_KEY) if isinstance(previous, dict) else None
+    return {u: dict(p) for u, p in pages.items() if isinstance(p, dict)} if isinstance(pages, dict) else {}
+
+
+def settled(pages: Any) -> dict[str, dict[str, Any]]:
+    """The reads a conversation keeps as read: only a site that was reached. One that could not be read is tried again
+    the next time it is named (Naveen 10-31: a read can be wrong, and the person's word comes first; their correction
+    is the planner's to take, a new address they give is read)."""
+    if not isinstance(pages, dict):
+        return {}
+    return {u: p for u, p in pages.items() if isinstance(p, dict) and p.get("reached")}
+
+
 async def read_named(text: str, *, already: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     """The pages `text` names, by URL, as dicts: those in `already` (the conversation's earlier reads) kept as they
     were, and only the rest read (TRI1's D0 calls this)."""
