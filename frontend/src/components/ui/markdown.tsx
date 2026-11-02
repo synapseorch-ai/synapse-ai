@@ -27,10 +27,23 @@
  */
 
 import { ExternalLink } from "lucide-react";
+import NextLink from "next/link";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { cn } from "@/lib/cn";
+
+/**
+ * One of this app's own paths: a single "/" then anything but a slash. A "can't" ends with its screen's link,
+ * `[Evals](/evals)` (F1265), which opens in place; `//host` (protocol-relative) and `/\host` are other sites and
+ * stay outside links, as does every scheme. The test is on the href, since a model's words come through here too.
+ */
+const IN_APP = /^\/(?![\/\\])/;
+
+/** Whether `href` is one of this app's own paths (see `IN_APP`); cloud's vitest tries it. */
+export function inAppHref(href: string | undefined): href is string {
+  return !!href && IN_APP.test(href);
+}
 
 const COMPONENTS: Components = {
   // Body copy carries the rhythm; `space-y` on the wrapper cannot, because
@@ -72,6 +85,10 @@ const COMPONENTS: Components = {
     >
       {children}
     </a>
+  ) : inAppHref(href) ? (
+    <NextLink href={href} className="text-accent-ink underline underline-offset-2 hover:text-accent-hover">
+      {children}
+    </NextLink>
   ) : (
     <a
       href={href}

@@ -106,8 +106,11 @@ from core.native_builder import prompt_lint, seed
 #: F1257: the plan researcher and the researcher read search_help, and research_rules says what this product does is
 #: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20…; merged with v2.0 ce37b8be (the classify
 #: at a waiting plan above), b0a8a77c….
-#: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c…; with the named pages above (fix-forward 16), 9558556c….
-BUNDLE_SHA256 = "9558556c69f02ee5c878bfae00da42362824ea791b36fd4d5901a4e96170e14c"
+#: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c…; with the named pages above
+#: (fix-forward 16), 9558556c….
+#: F1265: a `cannot` names its `screen` (the row's id in not_here), whose link code adds: planner rule 8 and the
+#: `cannot` line, a4b534bd… on its branch; with the named pages and F1257 (fix-forward 16), 4ebcf413….
+BUNDLE_SHA256 = "4ebcf41365e033a4855d841507fd129afea314b6dcdb95fa34f26adb6573618f"
 
 
 def _sha(definitions) -> str:

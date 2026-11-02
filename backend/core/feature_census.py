@@ -184,20 +184,22 @@ def current() -> tuple[Screen, ...]:
     return _census or CENSUS
 
 
-def _where(s: Screen) -> str:
-    return f"{s.label} ({s.href})"
+def link(s: Screen) -> str:
+    """The screen as a link the person can follow, `[Evals](/evals)`: the host's row, so cloud's own path (F1265)."""
+    return f"[{s.label}]({s.href})"
 
 
 def not_here(census: tuple[Screen, ...] | None = None) -> list[dict[str, str]]:
-    """What is not done from Synapse AI yet, each with its screen (the host's census unless given): the planner's
-    pack reads it."""
-    return [{"what": s.cant, "open": _where(s)} for s in (census or current()) if s.cant]
+    """What is not done from Synapse AI yet, each with its screen (the host's census unless given) and the row's id,
+    which a `cannot` names as its `screen`: the planner's pack reads it."""
+    return [{"what": s.cant, "open": link(s), "screen": s.id} for s in (census or current()) if s.cant]
 
 
 def capabilities_text(census: tuple[Screen, ...] = CENSUS, limits: str = SELF_HOSTED_LIMITS) -> str:
     """What this product does and does not do, from the census and the host's general limits."""
     does = "\n".join(f"- {s.label}: {s.does}." for s in census if s.tools)
-    cant = "\n".join(f"- {s.cant[0].upper()}{s.cant[1:]}: open {_where(s)}." for s in census if s.cant)
+    cant = "\n".join(f"- {s.cant[0].upper()}{s.cant[1:]}: open {link(s)} (screen `{s.id}`)." for s in census if s.cant)
     return (f"What this product does, and what you (Synapse AI) can do on each screen:\n{does}\n\n"
-            "Not done from here yet: say so, name the screen, and never build a workflow that imitates it:\n"
+            "Not done from here yet: say so, name the screen (`cannot`'s `screen` is its id), and never build a "
+            "workflow that imitates it:\n"
             f"{cant}\n\n{limits}")

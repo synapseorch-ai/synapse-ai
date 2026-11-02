@@ -67,13 +67,13 @@ def test_the_capabilities_text_is_the_census(screen):
     from core import builder_help
 
     text = builder_help.SELF_HOSTED_CAPABILITIES
-    assert f"- {screen}: " in text or f"open {screen} (" in text, "reached, or said with its screen"
+    assert f"- {screen}: " in text or f"open [{screen}](" in text, "reached, or said with its screen"
     assert builder_help.SELF_HOSTED_CAPABILITIES == _census().capabilities_text()
 
 
 def test_evals_is_said_with_its_screen_until_synapse_ai_reaches_it():
     evals = next(s for s in _census().CENSUS if s.id == "evals")
-    assert evals.tools or {"what": evals.cant, "open": "Evals (/evals)"} in _census().not_here()
+    assert evals.tools or {"what": evals.cant, "open": "[Evals](/evals)", "screen": "evals"} in _census().not_here()
 
 
 def test_the_planner_is_told_never_to_imitate_what_is_not_here():
@@ -95,7 +95,7 @@ async def test_part_3_s_eval_request_finds_evals_in_the_pack(client):
         "user_message": "create an eval for me curiosity post generator"})
     await SharedState(run).checkpoint()
     pack, _ = await _call("read_plan_context", {}, run)
-    assert any(n["open"] == "Evals (/evals)" for n in pack["not_here"])
+    assert any(n["open"] == "[Evals](/evals)" for n in pack["not_here"])
 
 
 def test_a_host_s_own_census_is_what_the_planner_reads():
@@ -103,7 +103,8 @@ def test_a_host_s_own_census_is_what_the_planner_reads():
     mine = (F.Screen("billing", "Billing", "/settings/billing", cant="changing the plan"),)
     F.set_census(mine)
     try:
-        assert F.not_here() == [{"what": "changing the plan", "open": "Billing (/settings/billing)"}]
+        assert F.not_here() == [{"what": "changing the plan", "open": "[Billing](/settings/billing)",
+                                 "screen": "billing"}]
     finally:
         F.set_census(None)
 

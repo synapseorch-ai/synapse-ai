@@ -15087,6 +15087,50 @@ async def check_helpbrowser(browser) -> str:
             "after the step's card and the Board")
 
 
+#: A "can't" as code writes it (F1265), beside a docs link and a protocol-relative one a model might write.
+CANT_REPLY = ("Writing a rubric is done on Evals, not from here yet. Open Evals to add one. Open [Evals](/evals). "
+              "More in [the guide](https://docs.synapseorch.com/guides/start/evals) and [here](//evil.example/evals).")
+
+
+@check
+async def check_cantlink(browser) -> str:
+    """A "can't" ends with its screen's link, and that link opens the screen in the app (F1265, GUIDE1; D340 R6).
+
+    The kit's Markdown drew every link as an outside one (a new tab, ↗), so the screen a "can't" names opened in a
+    second copy of the app. Now a path of the app's own opens in place, with no ↗; the guide's link and a
+    protocol-relative `//evil.example` stay outside links in a new tab. The reply is pushed through the stubbed stream,
+    so no model is called."""
+    ctx, page = await _open_builder(browser)
+    bad: list[str] = []
+    try:
+        # The panel's reply is a finished run's summary (builderEvents' orchestration_complete).
+        await page.evaluate("([id, c]) => { window.__stub.push({type: 'orchestration_start', run_id: id});"
+                            " window.__stub.push({type: 'orchestration_complete', run_id: id,"
+                            " final_state: {summary: c}}); }", [RUN_ID, CANT_REPLY])
+        panel = page.locator('[data-testid="assistant-panel"]')
+        screen = panel.get_by_role("link", name="Evals", exact=True)
+        await screen.wait_for(timeout=10_000)
+        if await screen.get_attribute("href") != "/evals" or await screen.get_attribute("target"):
+            bad.append(f"the screen's link is {await screen.get_attribute('href')!r} "
+                       f"target={await screen.get_attribute('target')!r}, not /evals in place")
+        if await screen.locator("svg").count():
+            bad.append("the screen's link carries the outside-link mark")
+        for name in ("the guide", "here"):
+            out = panel.get_by_role("link", name=name, exact=True)
+            if await out.get_attribute("target") != "_blank" or "noopener" not in (await out.get_attribute("rel") or ""):
+                bad.append(f"{name!r} ({await out.get_attribute('href')}) is not an outside link in a new tab")
+        pages = len(ctx.pages)
+        await screen.click()
+        await page.wait_for_url(re.compile(r"/evals(?:[?#].*)?$"), timeout=10_000)
+        if len(ctx.pages) != pages:
+            bad.append("the screen opened in another tab")
+    finally:
+        await ctx.close()
+    if bad:
+        raise AssertionError("; ".join(bad))
+    return "a can't's screen link opens Evals in place; the guide and //evil.example stay outside links"
+
+
 @check
 async def check_skillsfirst(browser) -> str:
     """Skills never opens on an empty pane (M2h-2): the first skill is open beside the list, on Preview, with the
