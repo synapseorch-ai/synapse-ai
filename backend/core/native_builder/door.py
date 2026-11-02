@@ -164,9 +164,16 @@ def has_password(text: str) -> bool:
 
 # ── the door ─────────────────────────────────────────────────────────────────
 
+#: Characters that look like a dash or like nothing, folded before the door reads a message (F1280: a key pasted with
+#: U+2011 hyphens went past every pattern, and the planner wrote it back out in ASCII to its logs). Dashes become "-",
+#: zero-width characters go.
+_LOOKALIKES = {**{ord(c): "-" for c in "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"},
+               **{ord(c): None for c in "\u200b\u200c\u200d\u2060\ufeff"}}
+
+
 def check(text: str) -> Checked:
     """A new message to the builder: refused (card, password), or the text to run with keys masked."""
-    text = text or ""
+    text = (text or "").translate(_LOOKALIKES)
     if has_card(text):
         return Checked(text="", refused="card")
     if has_password(text):
@@ -210,16 +217,23 @@ class Refused(ValueError):
         super().__init__(REFUSALS[reason])
 
 
-def check_answer(response: Any, question: str | None = None) -> tuple[Any, int]:
+#: The builder's waits at a Connect card (F946): the key belongs on the card, so a lone key-like answer there is one.
+CONNECT_WAITS = frozenset({"step_wait_connect"})
+
+
+def check_answer(response: Any, question: str | None = None, *, step: str | None = None) -> tuple[Any, int]:
     """An answer to a builder run's question with every string checked: `(answer with keys masked, how many)`.
 
     Raises `Refused` for a card number or a password anywhere in it, before anything is resumed or kept.
     `question` is what the run asked: in reply to one that asks for a password, a lone secret-looking word is
-    refused as one; in reply to one that asks for a key or token, it is masked as one.
+    refused as one; in reply to one that asks for a key or token, it is masked as one. `step`: the step the run waits
+    at; at a Connect card's (`CONNECT_WAITS`), whose key belongs on the card, a lone secret-looking word is masked as a
+    key whatever the card's words say (F1280: a key of no known shape, pasted alone at the wait, reached the run, its
+    events and logs). The run's own state, never a guess from words.
     """
     removed = 0
     asks_password = bool(question and _ASKS_PASSWORD.search(question))
-    asks_key = bool(question and _ASKS_KEY.search(question))
+    asks_key = step in CONNECT_WAITS or bool(question and _ASKS_KEY.search(question))
 
     def walk(value: Any) -> Any:
         nonlocal removed
@@ -269,5 +283,5 @@ def mask_history(history: list[dict] | None) -> list[dict]:
     return out
 
 
-__all__ = ["CREDENTIAL_MARK", "Checked", "MASKED_NOTICE", "NOT_KEPT", "REFUSALS", "Refused", "check",
+__all__ = ["CONNECT_WAITS", "CREDENTIAL_MARK", "Checked", "MASKED_NOTICE", "NOT_KEPT", "REFUSALS", "Refused", "check",
            "check_answer", "has_card", "has_password", "kept_answer", "mask_history", "notice"]

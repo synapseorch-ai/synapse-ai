@@ -885,8 +885,9 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     _refuse_if_active(request.run_id)
     # The door (BWA1), with the question the answer is for: a refused answer
     # leaves the question open, so the panel shows why and the person answers again.
+    question, step = await _pending_question(request.run_id)
     try:
-        response, removed = door.check_answer(request.response, question=await _pending_question(request.run_id))
+        response, removed = door.check_answer(request.response, question=question, step=step)
     except door.Refused as exc:
         return _one(door.notice(exc.reason, door.NOT_KEPT, final=False))
     # A build that fails after its answer (making its tools, saving) ends as any turn does: said plainly, then
@@ -902,8 +903,9 @@ async def builder_resume(request: BuilderResumeRequest, http_request: Request):
     return _stream(_after(masked, _queue_events(queue)))
 
 
-async def _pending_question(run_id: str) -> str | None:
-    """What a paused builder run asked, for reading its answer (the door's `question`)."""
+async def _pending_question(run_id: str) -> tuple[str | None, str | None]:
+    """What a paused builder run asked, and the step it waits at, for reading its answer (the door's `question` and
+    `step`: a key answered at a Connect card's wait is masked, F1280)."""
     from sqlalchemy import select
 
     from core.store import session
@@ -911,10 +913,11 @@ async def _pending_question(run_id: str) -> str | None:
     from core.tenancy import get_tenant
 
     async with session() as s:
-        return (await s.execute(
-            select(OrchestrationRunDB.human_prompt).where(
+        row = (await s.execute(
+            select(OrchestrationRunDB.human_prompt, OrchestrationRunDB.current_step_id).where(
                 OrchestrationRunDB.tenant_id == get_tenant(), OrchestrationRunDB.run_id == run_id)
-        )).scalar_one_or_none()
+        )).first()
+    return (row[0], row[1]) if row else (None, None)
 
 
 async def try_stronger_after(agen, run_id: str, *, retried: bool):

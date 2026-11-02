@@ -226,7 +226,9 @@ export function ConnectCard({
                 <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-2.5">
                     <span className="inline-flex items-center gap-1.5 text-xs text-text-faint">
                         <Lock className="size-3" aria-hidden />
-                        {run
+                        {run && needsSecret
+                            ? `Paste it here, never in the chat: it goes straight to ${connector.product ?? 'your workspace'}, stored encrypted.`
+                            : run
                             ? `Goes straight to ${connector.product ?? 'your workspace'}, stored encrypted. Never into this chat.`
                             : 'You set it up on that screen. Nothing goes into this chat.'}
                     </span>
