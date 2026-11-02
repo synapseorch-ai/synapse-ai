@@ -106,3 +106,74 @@ def test_a_host_s_own_census_is_what_the_planner_reads():
         assert F.not_here() == [{"what": "changing the plan", "open": "Billing (/settings/billing)"}]
     finally:
         F.set_census(None)
+
+
+# ── what a person calls a screen, and what imitating it looks like (GUIDE1's F1257, 8a 10-30) ─────────────────────
+def _names(census) -> list[tuple[str, str]]:
+    return [(n, s.id) for s in census for n in s.names]
+
+
+def test_every_name_is_one_row_s_alone():
+    """GUIDE1's pack finds a screen by what a person calls it: a name two rows share would find either."""
+    names = [n.casefold() for n, _ in _names(_census().CENSUS)]
+    assert sorted({n for n in names if names.count(n) > 1}) == []
+
+
+def test_no_name_is_another_row_s_id_or_label():
+    census = _census().CENSUS
+    clash = [f"{row}: {name}" for name, row in _names(census) for s in census
+             if s.id != row and name.casefold() in (s.id.casefold(), s.label.casefold())]
+    assert clash == []
+
+
+#: Words nearly every request has (8a, GUIDE1's F1257): a name that is one of them alone would find its screen in
+#: requests that never meant it, so these come as phrases ("vault file", "phone call", "eval score").
+PLAN_WORDS = {w for base in ("run", "workflow", "agent", "tool", "file", "note", "card", "call", "chat", "model",
+                             "score", "cost", "app", "token", "upload") for w in (base, base + "s")}
+
+
+def test_no_name_is_a_bare_plan_word():
+    assert [f"{row}: {name}" for name, row in _names(_census().CENSUS) if name in PLAN_WORDS] == []
+
+
+def test_the_plan_parts_are_the_rows_every_plan_is_made_of():
+    """The pack's `features` leave these out (GUIDE1's F1257): a workflow, its agents and tools, its runs and logs."""
+    assert {s.id for s in _census().CENSUS if s.plan_part} == {"orchestrations", "agents", "custom_tools", "runs",
+                                                                "logs"}
+
+
+def test_a_name_is_written_as_a_person_types_it():
+    assert [n for n, _ in _names(_census().CENSUS) if not n.strip() or n != n.strip().lower()] == []
+
+
+def test_evals_is_found_by_its_names_and_says_what_imitating_it_looks_like():
+    """Part 3's request ("create an eval") and its kin: test cases, a golden set, a rubric."""
+    evals = next(s for s in _census().CENSUS if s.id == "evals")
+    assert {"eval", "test cases", "golden set", "rubric"} <= set(evals.names)
+    assert "workflow" in evals.imitation and "score" in evals.imitation
+
+
+def test_an_imitation_says_what_the_workflow_built_in_its_place_would_be():
+    assert [s.id for s in _census().CENSUS if s.imitation and "workflow" not in s.imitation] == []
+
+
+def test_a_row_that_comes_to_be_reached_keeps_its_imitation():
+    """A lane that gives Synapse AI a screen's tools (Evals, Widgets, Channels) changes its reach and its `cant`, never
+    its imitation: reached, the imitation reads "use the real tools, don't rebuild it" (8a 10-30)."""
+    from dataclasses import replace
+
+    evals = next(s for s in _census().CENSUS if s.id == "evals")
+    reached = replace(evals, does="writes rubrics and test cases and runs eval suites", tools=("save_rubric",), cant="")
+    assert reached.imitation == evals.imitation and reached.names == evals.names
+    assert reached.tools and not reached.cant, "still a whole row: reach, and nothing said as not from here"
+
+
+def test_a_host_s_row_keeps_its_names_and_imitation():
+    """Cloud's census is the engine's rows under its own ids (`dataclasses.replace`): both fields come along."""
+    from dataclasses import replace
+
+    evals = next(s for s in _census().CENSUS if s.id == "evals")
+    moved = replace(evals, id="evals_cloud", href="/evals")
+    assert (moved.names, moved.imitation) == (evals.names, evals.imitation)
+    row = _census().Screen("x", "X", "/x", "", (), "nope")
+    assert (row.names, row.imitation, row.plan_part) == ((), "", False), "the positional form still builds a row"

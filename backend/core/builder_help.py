@@ -9,6 +9,11 @@ Google ranking. A model asked how a product works answers from what products usu
   answer it, with the screen each lives on;
 - `product_capabilities()` says what this product does and does not do, with the nearest thing that works for
   what it cannot do, so "I can't, but here is what I can" comes from the product, not a guess.
+
+`search_help` also searches the docs site's pages (F1257, D340 A): `native_builder/docs_topics.json`, a snapshot made
+by `scripts/docs_index.py` at each docs publish. The "?" panel's topics come first, the screen's own words; the docs
+pages after them, for the depth the panel leaves out. A host reads only the pages for its edition (`set_docs_edition`:
+the self-hosted product never cites a cloud-only page), or its own index (`set_docs_index`).
 """
 from __future__ import annotations
 
@@ -21,8 +26,16 @@ from core import feature_census
 from core.builder_tools import register_builder_tool
 
 _HELP_FILE = Path(__file__).parent / "native_builder" / "help_topics.json"
+_DOCS_FILE = Path(__file__).parent / "native_builder" / "docs_topics.json"
 _index: dict[str, dict] | None = None
 _capabilities: str | None = None
+#: The docs pages, read once on the first search (half a megabyte: never on import).
+_docs: list[dict] | None = None
+#: Which edition's pages a search may cite: this product's, and those for both.
+_edition = "self_hosted"
+DOCS_SITE = "https://docs.synapseorch.com"
+#: How many docs pages a search returns, after the panel's topics.
+DOCS_TOP = 3
 
 _STOP = frozenset("""
     a an and are as at be by can do does for from how i in into is it its me my of on or our so the their them then
@@ -40,6 +53,25 @@ def set_capabilities(text: str | None) -> None:
     """A host's own statement of what it does and does not do."""
     global _capabilities
     _capabilities = text
+
+
+def set_docs_index(pages: list[dict] | None) -> None:
+    """A host's own docs pages, in `docs_topics.json`'s shape; None goes back to the shipped snapshot."""
+    global _docs
+    _docs = pages
+
+
+def set_docs_edition(edition: str) -> None:
+    """The edition a host is (`self_hosted` or `cloud`): its searches cite its own pages and those for both."""
+    global _edition
+    _edition = edition
+
+
+def _docs_pages() -> list[dict]:
+    global _docs
+    if _docs is None:
+        _docs = json.loads(_DOCS_FILE.read_text(encoding="utf-8")).get("pages") or []
+    return _docs
 
 
 def _topics() -> dict[str, dict]:
@@ -100,6 +132,41 @@ def search(question: str, top: int = 5) -> list[dict]:
             for _, key, t in scored[:top]]
 
 
+def search_docs(question: str, top: int = DOCS_TOP) -> list[dict]:
+    """The docs pages for this edition that best answer `question`, best first, each at its best section. A guide
+    outranks a generated API reference page on the same words; empty when none shares a word with it. A feature the
+    question names in its own words ("evaluate … with a rubric" is Evals, by the census row's names) brings the
+    feature's own name along, so its page is found though the question never says it."""
+    from core.native_builder.features import named_in, words_of
+    asked = set(_words(question))
+    asked |= {_ALSO[w] for w in asked if w in _ALSO}
+    asked |= {w for screen in named_in(question) for name in words_of(screen) for w in _words(name)}
+    if not asked:
+        return []
+    scored = []
+    for page in _docs_pages():
+        if page.get("edition") not in ("both", _edition):
+            continue
+        title = set(_words(page.get("title", "")))
+        about = set(_words(page.get("description", "")))
+        best, at = 0, {"heading": "", "anchor": "", "excerpt": ""}
+        for section in page.get("sections") or []:
+            here = 3 * len(asked & set(_words(section.get("heading", "")))) + len(
+                asked & set(_words(section.get("excerpt", ""))))
+            if here > best:
+                best, at = here, section
+        score = 5 * len(asked & title) + 2 * len(asked & about) + best
+        if page.get("kind") == "reference":
+            score //= 2
+        if score:
+            scored.append((score, page.get("slug", ""), page, at))
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    return [{"title": p.get("title"), "section": at.get("heading") or None,
+             "url": f"{DOCS_SITE}{slug}" + (f"#{at['anchor']}" if at.get("anchor") else ""),
+             "excerpt": at.get("excerpt") or p.get("description") or ""}
+            for _, slug, p, at in scored[:top]]
+
+
 HELP_SCHEMA = {
     "type": "function",
     "function": {
@@ -108,8 +175,9 @@ HELP_SCHEMA = {
             "Search this product's own help (what the '?' panel on each screen says) for how to do something here: "
             "connect a channel, set a schedule, invite someone, add a key, put an agent on a website, set a cap. "
             "Answer a how-to question from what it returns, naming the screen it lives on and its steps in its own "
-            "words. If nothing it returns answers the question, say you are not sure rather than describing a "
-            "screen it did not name."
+            "words. `docs` adds the docs site's pages on it, with their links, for more than the panel says. If "
+            "nothing it returns answers the question, say you are not sure rather than describing a screen it did "
+            "not name."
         ),
         "parameters": {
             "type": "object",
@@ -121,10 +189,14 @@ HELP_SCHEMA = {
 
 
 async def search_help(args: dict, server_module: Any, events: list[dict]) -> dict:
-    found = search(args.get("question") or "")
+    question = args.get("question") or ""
+    found, docs = search(question), search_docs(question)
+    out: dict[str, Any] = {"topics": found, **({"docs": docs} if docs else {})}
     if not found:
-        return {"topics": [], "note": "The help says nothing about this. Say you are not sure; do not invent a screen."}
-    return {"topics": found}
+        out["note"] = ("The '?' panel says nothing about this; answer only from the docs pages below, with their "
+                       "links, and do not invent a screen." if docs else
+                       "The help says nothing about this. Say you are not sure; do not invent a screen.")
+    return out
 
 
 #: What the self-hosted product does and does not do. A host replaces it (`set_capabilities`). Made from the feature

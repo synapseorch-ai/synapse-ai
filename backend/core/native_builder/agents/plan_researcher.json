@@ -11,6 +11,7 @@
         "search_the_web",
         "read_web_page",
         "read_workspace",
+        "search_help",
         "report_findings"
     ],
     "repos": [],

@@ -103,7 +103,11 @@ from core.native_builder import prompt_lint, seed
 #: kept in code), the person in one form through `step_plan_finish`; the answers in its next pass's prompt, c7c55863…;
 #: with the sites a message names in the pack, kept a conversation in `named_pages`, and the planner told the person's
 #: word comes before what was read or found (Naveen 10-31), e4e744c8….
-BUNDLE_SHA256 = "e4e744c8113960956bc37946e03b6a8fedfbbab6a6d9677ce5c53b6996e7464b"
+#: F1257: the plan researcher and the researcher read search_help, and research_rules says what this product does is
+#: read there, never on the web; on fix-forward 15's 108bd3f3, 99033f20…; merged with v2.0 ce37b8be (the classify
+#: at a waiting plan above), b0a8a77c….
+#: F1257 on fix-forward 16's cdd314f4 (D0's one planner, D2's research): eac4c85c…; with the named pages above (fix-forward 16), 9558556c….
+BUNDLE_SHA256 = "9558556c69f02ee5c878bfae00da42362824ea791b36fd4d5901a4e96170e14c"
 
 
 def _sha(definitions) -> str:
