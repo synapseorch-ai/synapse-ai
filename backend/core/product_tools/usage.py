@@ -2,7 +2,8 @@
 
 Naveen's call (2026-10-17): usage reaches a key through the registry, not a route of its own, so MCP clients and
 the CLI both read it. The Usage screen's figures: each model call's estimated dollars and tokens, summed over a
-window by day, agent or model. A compaction event costs nothing and is left out, as the screen leaves it.
+window by day, agent or model. A compaction event costs nothing and is left out, as the screen leaves it; an
+embedding is spend, and is in, as the screen has it (F1297).
 
 A reader's act for any member (viewer, `read` scope). Where the rows come from is a host's: this process's usage log
 by default; cloud's are its own (`set_usage_source`).
@@ -47,8 +48,10 @@ async def _from_the_log(since: datetime, by: str) -> list[dict]:
                func.coalesce(func.sum(UsageLogDB.input_tokens), 0),
                func.coalesce(func.sum(UsageLogDB.output_tokens), 0),
                func.count())
+        # What the Usage screen counts (`usage_tracker.get_usage_summary`): every call but a compaction event, which
+        # costs nothing; an embedding is spend too (F1297: left out here, the CLI's total was not the screen's).
         .where(UsageLogDB.tenant_id == get_tenant(), UsageLogDB.timestamp >= since,
-               UsageLogDB.event_type.is_(None))
+               (UsageLogDB.event_type.is_(None)) | (UsageLogDB.event_type != "compaction"))
         .group_by(key)
     )
     async with session() as s:

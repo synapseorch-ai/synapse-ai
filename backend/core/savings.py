@@ -1,13 +1,15 @@
 """Where the workspace could spend less, each with its estimate and the change that makes it (F1261, REACH1; D340 R2).
 
-Naveen, 10-30: "usage to give suggestions", each a ready change card. A model's guess at savings is not one: every
+Naveen, 10-30: "usage to give suggestions", each a ready change card. Usage is read as the person, through the
+product's own read (`get_usage`), so it is what the Usage screen counts. A model's guess at savings is not one: every
 suggestion here is decided by a rule in code, priced from the workspace's own usage, and carries the op that makes it
 (Synapse AI's change card, with the person's yes and undo). A suggestion with no priced usage behind it gives no
 number, and says so.
 
 * **A model swap** (`model`): an agent whose model costs more than F1251's best fit for what it needs (`pick`: its
   tools, whether its model reasons, own key first), when that fit is cheaper. The estimate is the agent's own tokens
-  over the window, priced at both models' listed rates: `set_agent_model`.
+  over the window, priced at both models' listed rates: `set_agent_model`. With no cheaper fit that has a listed
+  price, a costly agent is still named, with what it costs a month and no number saved (F1297).
 * **A schedule that repeats itself** (`schedule`): of its last runs (at least `RUNS_SEEN`), `SAME_SHARE` or more
   answered exactly as the run before, or failed. The estimate is those runs' own cost: `set_schedule`, its new time
   the person's to say.
@@ -38,13 +40,21 @@ def _priced(entry: Any, tokens_in: int, tokens_out: int) -> float | None:
     return (tokens_in * entry.price_in + tokens_out * entry.price_out) / 1_000_000
 
 
+async def _agent_spend(days: int) -> dict[str, dict]:
+    """Each agent's spend over the window, by its id, from the product's own usage read as the person (`get_usage`,
+    F1297): what the Usage screen counts, chats included, and a host's own figures, which it answers only for a
+    bound caller (cloud's source read nothing when called around the registry)."""
+    from core.builder_readers import _product_read
+
+    got = await _product_read("get_usage", {"by": "agent", "days": days})
+    return {str(r.get("agent_id") or r.get("key")): r for r in got.get("rows") or []}
+
+
 async def model_swaps(days: int) -> list[dict]:
     from core.native_builder import models_menu as MM
-    from core.product_tools import usage
     from core.routes.agents import load_user_agents
 
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = {r["key"]: r for r in await (usage._source or usage._from_the_log)(since, "agent")}
+    rows = await _agent_spend(days)
     menu = await MM.menu()
     if not menu:
         return []
@@ -58,15 +68,24 @@ async def model_swaps(days: int) -> list[dict]:
         current = by_id.get(now)
         needs = "reasoning" if current is not None and current.reasoning else "simple"
         fit = MM.pick(needs, has_tools=bool(agent.get("tools")), menu=menu, default=MM.workspace_model())
-        if not isinstance(fit, MM.Picked) or fit.id == now:
+        if isinstance(fit, MM.Picked) and fit.id == now:
             continue
         tokens = int(row["input_tokens"]), int(row["output_tokens"])
-        would = _priced(by_id.get(fit.id), *tokens)
+        would = _priced(by_id.get(fit.id), *tokens) if isinstance(fit, MM.Picked) else None
+        if would is None:
+            # No cheaper fit with a listed price (F1297): the costly agent is named, never left out, with no number.
+            name, spent = agent.get("name") or agent["id"], _per_month(float(row["cost_usd"]), days)
+            if spent >= MIN_MONTHLY_USD:
+                out.append({"kind": "model", "agent": name, "now": now, "saves_usd_month": None, "op": None,
+                            "rule": f"{name} costs about ${spent:.2f} a month on {now} at its last {days} days' "
+                                    "rate; no cheaper model with a listed price fits what it needs here",
+                            "no_estimate": "a model with no listed price here can't be priced against it"})
+            continue
         # Like for like: both at the listed rates, the same tokens; the log's own figure only where the current
         # model has no listed price.
         was = _priced(current, *tokens)
         was = float(row["cost_usd"]) if was is None else was
-        if would is None or would >= was:
+        if would >= was:
             continue
         monthly = _per_month(was - would, days)
         if monthly < MIN_MONTHLY_USD:
