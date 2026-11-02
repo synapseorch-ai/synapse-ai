@@ -44,6 +44,8 @@ READS: frozenset[str] = frozenset({
     "answer_research", "settle_research",
     # The knowledge bases' passages, by document (F1258): a search, nothing changed.
     "search_knowledge",
+    # The planner's own check of a draft (D340 D3): examine's rules, written nowhere.
+    "check_draft",
 })
 
 #: They show the person a card (Connect, the findings, an action to press): nothing changes until the person acts,

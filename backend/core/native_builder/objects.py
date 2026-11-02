@@ -366,6 +366,8 @@ class Plan(PlanDraft):
     calls_no_model: bool = False
     #: The tool steps whose inputs a model fills in, by id: none set in `config.tool_arguments` (F967). Set by `fill`.
     model_fills: list[str] = Field(default_factory=list)
+    #: What one run would cost in model calls, in the card's words (D340 D3, `estimate.of`): a note, never a block.
+    run_cost: str = ""
     #: Each knowledge base its new agents answer from, by name → id (F1223). Set by `examine`.
     knowledge_ids: dict[str, str] = Field(default_factory=dict)
     #: Each repository, database, workflow and recording its new agents name, as `kind:name` → id (F1259). Set by

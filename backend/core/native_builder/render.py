@@ -344,6 +344,10 @@ def render(plan: Plan, *, agent_names: dict[str, str] | None = None) -> str:
         text += "\nIt is made paused: turn it on under Schedules once you have checked what each run starts with."
         parts.append(f"## Schedule\n{text}")
 
+    if getattr(plan, "run_cost", ""):
+        # What a run costs in model calls (D340 D3): a rough figure, said as one.
+        parts.append(f"## Each run\n{plan.run_cost}")
+
     caps = [f"{plan.caps.credits:g} credits" if plan.caps and plan.caps.credits is not None else "",
             f"${plan.caps.dollars:g} of models" if plan.caps and plan.caps.dollars is not None else ""]
     if any(caps):

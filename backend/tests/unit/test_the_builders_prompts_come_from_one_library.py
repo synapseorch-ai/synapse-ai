@@ -113,7 +113,11 @@ from core.native_builder import prompt_lint, seed
 #: F1258: search_knowledge and rule 12 (editing a knowledge base's note or text file), 77c5f233… on its branch;
 #: on fix-forward 16's cdd314f4, under the one planner's # Changing as rule 12, 7f917720…; with the named
 #: pages, F1257 and F1265 (fix-forward 16), 3c693816….
-BUNDLE_SHA256 = "3c69381688389c82278aba01a237e0c7668aa00fc4e339da76222023fd9c205c"
+#: D340 D3: the planner's own check of a draft, `check_draft`, among its tools, 0733c955…; with the planner's
+#: "# Structure" (a fetch or one known call is a Tool step, reshaping a transform or extract_json, an agent only for
+#: judgement, a team or a browser agent for its kind of work, `check_draft` before submitting), 7417a4bf…; with F1258 and
+#: F1265 (fix-forward 16), 113fa7e5….
+BUNDLE_SHA256 = "113fa7e5d3aca31e5b32789b230e41beb31a2f0fa809dc09dab03a7b14906e5e"
 
 
 def _sha(definitions) -> str:

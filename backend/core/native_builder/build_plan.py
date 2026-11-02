@@ -395,6 +395,9 @@ class Examined:
     misnamed: list[str] = field(default_factory=list)
     #: Features the plan needs that are off (`features_needed`, F1203): blocks, with a switch on the card.
     features: list[str] = field(default_factory=list)
+    #: What its structure should be instead, where code can tell (D340 D3, `structure.issues`): sent back once, then
+    #: said on the card; never a block.
+    structure: list[str] = field(default_factory=list)
 
 
 def _dropped(steps: list[O.Step], gone: set[str]) -> list[O.Step]:
@@ -530,10 +533,17 @@ async def examine(raw: Any, server_module: Any, *, ws: Workspace | None = None, 
         return Examined(filled, list(misnamed.values()), missing=list(filled.missing), misnamed=list(misnamed))
     issues = [i for i in await dry_issues(filled, server_module, ws, state) if not _not_the_planners(i)]
     needed = features_needed(filled, ws)
+    from core.native_builder import estimate, structure
+
+    shaped = await structure.issues(filled, ws)
+    try:
+        filled.run_cost = (await estimate.of(filled, ws)).words()
+    except Exception as exc:  # noqa: BLE001 — a cost not worked out is said nowhere, never a plan refused
+        _log.warning("run cost not estimated: %s", exc)
     return Examined(filled, [_hinted(i) for i in issues], missing=list(filled.missing), issues=issues,
                     blocks={**blocked(filled, state), **{f: _feature_block(f) for f in needed}},
-                    notes=[*room_notes, *eval_notes],
-                    features=needed)
+                    notes=[*room_notes, *eval_notes, *structure.as_notes(shaped)],
+                    features=needed, structure=shaped)
 
 
 async def _knowledge_parts(plan: O.Plan, ws: Workspace) -> list[str]:
@@ -1613,8 +1623,20 @@ SUBMIT = {"type": "function", "function": {
 }}
 
 
+#: The structure findings already sent back to the planner in this build (D340 D3): each once per plan, never again
+#: after a question round's re-plan (TRI1); after that only the card says it.
+_STRUCTURE_SAID_KEY = "_plan_structure_said"
+
+
 async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dict:
     found = await examine(args, server_module)
+    _, here = _run()
+    said = list(here.shared_state.get(_STRUCTURE_SAID_KEY) or []) if here is not None else []
+    new = [f for f in found.structure if f not in said]
+    if not found.errors and new and here is not None:
+        here.shared_state[_STRUCTURE_SAID_KEY] = [*said, *new]
+        return {"error": "Before this goes to the person, a better shape (said once; send it again as it is to keep "
+                         "yours):\n" + "\n".join(f"- {e}" for e in new)}
     if found.errors:
         _, run = _run()
         sent = int((run.shared_state.get(_SENDBACK_KEY) or 0) if run is not None else 0)
@@ -1633,6 +1655,38 @@ async def submit_plan(args: dict, server_module: Any, events: list[dict]) -> dic
 
 
 register_builder_tool(SUBMIT, submit_plan)
+
+
+# ── the planner's own check of a draft ────────────────────────────────────────────────────────────────────────────
+
+CHECK_DRAFT = {"type": "function", "function": {
+    "name": "check_draft",
+    "description": ("Check a draft plan before you submit it: what would come back (errors, names nothing here has, "
+                    "what a policy blocks), a better structure where code can tell, a screen the plan rebuilds by "
+                    "hand, and what a run would cost. Nothing is saved, asked or shown to the person."),
+    "parameters": {"type": "object", "properties": {"draft": O.plan_schema()}, "required": ["draft"]},
+}}
+
+
+async def check_draft(args: dict, server_module: Any, events: list[dict]) -> dict:
+    """examine's pure rules on a draft, with the census's imitation findings (GUIDE1's `imitation.findings`) and the
+    structure rules (D340 D3): what `submit_plan` and `check_build` would say, in the planner's own turn. It writes
+    nothing to the run (no sendback, no checked plan), shows no card, asks nothing and looks nothing up."""
+    from core.native_builder import imitation
+
+    draft = _obj(args.get("draft"))
+    ws = await workspace(server_module)
+    found = await examine(draft if isinstance(draft, dict) else {}, server_module, ws=ws)
+    if found.plan is None:
+        return {"ok": False, "errors": found.errors}
+    copied = imitation.findings(found.plan, ws) if found.plan.kind == "create" else []
+    return {"ok": not (found.errors or found.blocks or copied), "errors": found.errors,
+            "missing": found.missing, "misnamed": found.misnamed, "blocks": found.blocks,
+            "features_off": found.features, "structure": found.structure,
+            "imitations": [f["say"] for f in copied], "estimate": found.plan.run_cost}
+
+
+register_builder_tool(CHECK_DRAFT, check_draft)
 register_builder_tool({"type": "function", "function": {
     "name": "read_plan_context",
     "description": "Synapse AI's build pack (code): what this workspace has, by id, for the planner.",
