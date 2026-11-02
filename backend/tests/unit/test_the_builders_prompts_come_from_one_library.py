@@ -130,7 +130,10 @@ from core.native_builder import prompt_lint, seed
 #: F1260 (a hosted workspace's): rule 21 (dead jobs retried or discarded, "who changed it", a support request) and
 #: topics dead_jobs and audit in both lists, c6f1a12c….
 #: Rule 21's support request: its severity asked with ask_person, its run only when it is about one (TRI1), 50276764….
-BUNDLE_SHA256 = "5027676401084264efae2d01eeb70c96c48f411f378dd517029f2d67c577766c"
+#: F1296: the research ask's own route (`step_research_ask_route`), and an exit on every step of the planner's cycle
+#: (`step_plan_rounds`' words before the yes, `step_connect_give_up` after), cef82d9e…; the new route on a canvas
+#: spot of its own, beside the research ask (1300, 600), 69df0403….
+BUNDLE_SHA256 = "69df04033e6fda71d323e553a120e7d2bbfd72dcd11fde4534438bfcfee0e397"
 
 
 def _sha(definitions) -> str:

@@ -220,8 +220,9 @@ class TestTheWorkflow:
     def test_the_person_is_asked_the_way_the_planners_own_question_is(self, steps, intent, check):
         ask = steps["step_research_ask"]
         assert ask["forced_tool"] == "ask_research" and ask["output_key"] == "plan_draft"
-        assert ask["next_step_id"] == "step_plan_finish"
-        route = steps["step_plan_finish"]
+        # F1296: its own route, the split step_plan_finish makes for an ask, so that router counts only the planner.
+        assert ask["next_step_id"] == "step_research_ask_route"
+        route = steps["step_research_ask_route"]
         value = evaluate_expression(route["switch_expression"], {"plan_draft": {"finish": "ask_person"},
                                                                  "intent": intent}, None).value
         assert route["switch_cases"].get(value, route["switch_default_step_id"]) == check

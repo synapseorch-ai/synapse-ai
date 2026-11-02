@@ -647,7 +647,8 @@
             "if_false_step_id": "step_not_yours",
             "max_iterations": 3,
             "position_x": 0,
-            "position_y": -300
+            "position_y": -300,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_change_route",
@@ -685,7 +686,8 @@
             "switch_default_step_id": "step_effort",
             "max_iterations": 3,
             "position_x": 0,
-            "position_y": -600
+            "position_y": -600,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_effort",
@@ -718,7 +720,8 @@
             "next_step_id": "step_effort_route",
             "max_iterations": 3,
             "position_x": 0,
-            "position_y": -900
+            "position_y": -900,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_effort_route",
@@ -756,7 +759,8 @@
             "switch_default_step_id": "step_plan_room",
             "max_iterations": 3,
             "position_x": 300,
-            "position_y": -900
+            "position_y": -900,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_effort_offered",
@@ -855,7 +859,8 @@
             "next_step_id": null,
             "max_iterations": 3,
             "position_x": 150,
-            "position_y": 0
+            "position_y": 0,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_full",
@@ -958,7 +963,8 @@
             "tool_arguments": {
                 "by_route": true,
                 "needs": "{{state.plan_checked.needs}}"
-            }
+            },
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_lookup_route",
@@ -997,7 +1003,8 @@
                 "found": "step_plan_found",
                 "research": "step_plan_research"
             },
-            "switch_default_step_id": "step_plan_research"
+            "switch_default_step_id": "step_plan_research",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_found",
@@ -1033,7 +1040,8 @@
             "tool_arguments": {
                 "goal": "{{state.plan_lookup.findings.goal}}",
                 "options": []
-            }
+            },
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_research",
@@ -1102,7 +1110,8 @@
             "position_y": 200,
             "tool_arguments": {
                 "orch_id": "{{ state.current_orchestration_id }}"
-            }
+            },
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_context",
@@ -1223,7 +1232,8 @@
                 "fallback": "step_check_change",
                 "on_change": "step_check_change"
             },
-            "switch_default_step_id": "step_check_plan"
+            "switch_default_step_id": "step_check_plan",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_say",
@@ -1289,7 +1299,8 @@
             "output_key": "plan_answers",
             "next_step_id": "step_research_route",
             "position_x": 800,
-            "position_y": 400
+            "position_y": 400,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "agent_id": null,
@@ -1326,7 +1337,8 @@
             },
             "switch_default_step_id": "step_plan",
             "position_x": 1000,
-            "position_y": 400
+            "position_y": 400,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "agent_id": "agent_native_builder_plan_researcher",
@@ -1396,7 +1408,8 @@
             "output_key": "plan_answers",
             "next_step_id": "step_research_route",
             "position_x": 1400,
-            "position_y": 400
+            "position_y": 400,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "agent_id": null,
@@ -1427,9 +1440,47 @@
                 "plan_answers"
             ],
             "output_key": "plan_draft",
-            "next_step_id": "step_plan_finish",
+            "next_step_id": "step_research_ask_route",
             "position_x": 1200,
-            "position_y": 600
+            "position_y": 600,
+            "on_exhausted_step_id": "step_plan_rounds"
+        },
+        {
+            "agent_id": null,
+            "prompt_template": "",
+            "route_map": {},
+            "route_descriptions": {},
+            "evaluator_prompt": null,
+            "model": null,
+            "parallel_branches": [],
+            "merge_strategy": "list",
+            "loop_count": 3,
+            "loop_step_ids": [],
+            "transform_code": null,
+            "human_prompt": null,
+            "human_fields": [],
+            "human_channel_id": null,
+            "human_timeout_seconds": 3600,
+            "forced_tool": null,
+            "max_turns": 1,
+            "timeout_seconds": 60,
+            "allowed_tools": null,
+            "max_iterations": 8,
+            "id": "step_research_ask_route",
+            "name": "Ask Where the Request Is",
+            "type": "switch",
+            "input_keys": [
+                "intent"
+            ],
+            "switch_expression": "state.intent == \"manage\" and \"change\" or \"plan\"",
+            "switch_cases": {
+                "change": "step_check_change",
+                "plan": "step_check_plan"
+            },
+            "switch_default_step_id": "step_check_plan",
+            "position_x": 1300,
+            "position_y": 600,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_route",
@@ -1470,7 +1521,8 @@
                 "prompts": "step_agent_prompts",
                 "same": "step_plan_same"
             },
-            "switch_default_step_id": "step_build_failed"
+            "switch_default_step_id": "step_build_failed",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_said",
@@ -1709,7 +1761,8 @@
             ],
             "output_key": "plan_approval",
             "tool_arguments": {},
-            "next_step_id": "step_approve_route"
+            "next_step_id": "step_approve_route",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_approve_route",
@@ -1746,7 +1799,8 @@
                 "not_offered": "step_human_review",
                 "error": "step_build_refused"
             },
-            "switch_default_step_id": "step_build_refused"
+            "switch_default_step_id": "step_build_refused",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_build_refused",
@@ -1814,7 +1868,8 @@
             "tool_arguments": {
                 "only": "tools"
             },
-            "next_step_id": "step_make_route"
+            "next_step_id": "step_make_route",
+            "on_exhausted_step_id": "step_connect_give_up"
         },
         {
             "id": "step_make_route",
@@ -1854,7 +1909,8 @@
                 "tools_made": "step_save",
                 "stopped": "step_build_done"
             },
-            "switch_default_step_id": "step_build_done"
+            "switch_default_step_id": "step_build_done",
+            "on_exhausted_step_id": "step_connect_give_up"
         },
         {
             "id": "step_wait_connect",
@@ -1927,7 +1983,8 @@
             ],
             "output_key": "plan_answer",
             "tool_arguments": {},
-            "next_step_id": "step_connect_route"
+            "next_step_id": "step_connect_route",
+            "on_exhausted_step_id": "step_connect_give_up"
         },
         {
             "id": "step_connect_route",
@@ -1969,7 +2026,8 @@
                 "again": "step_wait_connect",
                 "replan": "step_plan_context"
             },
-            "switch_default_step_id": "step_wait_connect"
+            "switch_default_step_id": "step_wait_connect",
+            "on_exhausted_step_id": "step_connect_give_up"
         },
         {
             "id": "step_connect_give_up",
@@ -2141,7 +2199,8 @@
             "next_step_id": "step_plan",
             "max_iterations": 5,
             "position_x": 900,
-            "position_y": 250
+            "position_y": 250,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_plan_same",
@@ -2254,7 +2313,8 @@
             "next_step_id": null,
             "max_iterations": 5,
             "position_x": 1550,
-            "position_y": 150
+            "position_y": 150,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_approval_route",
@@ -2289,7 +2349,8 @@
             "next_step_id": null,
             "max_iterations": 5,
             "position_x": 1800,
-            "position_y": 0
+            "position_y": 0,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_change_context",
@@ -2356,7 +2417,8 @@
             "tool_arguments": {
                 "draft": "{{ state.plan_draft }}"
             },
-            "next_step_id": "step_check_route"
+            "next_step_id": "step_check_route",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_check_route",
@@ -2397,7 +2459,8 @@
                 "create": "step_manage_review",
                 "error": "step_change_failed"
             },
-            "switch_default_step_id": "step_change_said"
+            "switch_default_step_id": "step_change_said",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_change_clarify",
@@ -2435,7 +2498,8 @@
                 "change_checked"
             ],
             "output_key": "change_clarify",
-            "next_step_id": "step_plan"
+            "next_step_id": "step_plan",
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_change_said",
@@ -2506,7 +2570,8 @@
             "next_step_id": "step_manage_route",
             "max_iterations": 5,
             "position_x": 1500,
-            "position_y": 400
+            "position_y": 400,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_manage_route",
@@ -2541,7 +2606,8 @@
             "next_step_id": null,
             "max_iterations": 5,
             "position_x": 1800,
-            "position_y": 400
+            "position_y": 400,
+            "on_exhausted_step_id": "step_plan_rounds"
         },
         {
             "id": "step_change_approve",
