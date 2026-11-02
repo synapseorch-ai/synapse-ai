@@ -226,6 +226,20 @@ class TestThePlansServer:
         assert found.plan.agents[0].servers == ["tracker"] and "list_tickets" in found.plan.agents[0].tools
         assert "MCP server “tracker” at https://tracker.example/mcp: connected" in render(found.plan)
 
+    async def test_saved_but_not_connected_it_keeps_the_name_it_was_saved_under(self, client, run):
+        """F1290 (CAP3's cap-03, A1): each plan drawn again named the person's URL anew ("custom_ticket_system", then
+        "Custom Ticket Tracker"), so its card added a second server, and every press after was "already exists". A
+        server saved at the plan's URL is that server, connected or not: its card names it, and it is pressed again,
+        never added beside it. Its agents are given it once it is connected, as before (F1225)."""
+        from core.store.resources import save_mcp_server
+
+        await save_mcp_server({"name": "custom-ticket-system", "label": "Custom Ticket System",
+                               "url": "https://tracker.example/mcp"})
+        found = await _examine(run, SERVER_PLAN)
+        [part] = found.plan.mcp_servers
+        assert part.name == "custom-ticket-system" and part.connected is False, part
+        assert found.plan.agents[0].servers == [], "an agent is given it once it is connected (F1225)"
+
     async def test_a_server_on_this_machine_goes_back(self, client, run):
         found = await _examine(run, {**SERVER_PLAN, "mcp_servers": [{"name": "Tracker",
                                                                      "url": "http://127.0.0.1:9000/mcp"}]})
