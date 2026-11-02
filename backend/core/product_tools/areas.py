@@ -24,6 +24,7 @@ AREAS: tuple[str, ...] = (
     "core.product_tools.settings",
     "core.product_tools.agent_memory",
     "core.product_tools.widgets",
+    "core.product_tools.channels",
 )
 
 _loaded_into: int | None = None

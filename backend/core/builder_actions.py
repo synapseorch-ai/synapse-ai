@@ -76,6 +76,17 @@ ACTIONS: dict[str, str] = {
                          "(`widget`)",
     "widget_logo": "set a website widget's logo from an image in the Vault (`widget`, `path`)",
     "widget_logo_remove": "take a website widget's logo off (`widget`)",
+    "channel_connect": "connect a chat channel: a Connect card where the person types its token, never the chat "
+                       "(`name`; `platform`: telegram, discord, slack, teams or whatsapp; `agent`: the one that "
+                       "answers)",
+    "channel_on": "turn a chat channel on, so its bot answers (`channel`)",
+    "channel_off": "turn a chat channel off (`channel`)",
+    "channel_delete": "remove a chat channel (`channel`)",
+    "channel_test": "send one test message on a chat channel, to the conversation it last answered (`channel`)",
+    "channel_agents": "say which agents answer on a chat channel (`channel`, `agents`: their names; `agent`: the one "
+                      "that answers first)",
+    "channel_run_notifications": "send every run's notice to a chat channel too (`channel`)",
+    "channel_run_notifications_off": "stop sending run notices to a chat channel (`channel`)",
 }
 
 SCHEMA = {
@@ -137,6 +148,10 @@ SCHEMA = {
                 "launcher": {"type": "string", "enum": ["bubble", "logo"]},
                 "daily_cap": {"type": "integer", "description": "widget_*: the most messages a day."},
                 "on": {"type": "boolean", "description": "widget_update: on or off."},
+                "channel": {"type": "string", "description": "channel_*: the chat channel's name."},
+                "platform": {"type": "string", "enum": ["telegram", "discord", "slack", "teams", "whatsapp"]},
+                "agents": {"type": "array", "items": {"type": "string"},
+                           "description": "channel_agents: every agent that answers on it, by name."},
                 "name": {"type": "string"},
                 "title": {"type": "string"},
                 "text": {"type": "string"},
@@ -385,6 +400,8 @@ async def _offer(action: str, args: dict) -> dict:
         return await _recording(action, args)
     if action.startswith("widget_"):
         return await _widget(action, args)
+    if action.startswith("channel_"):
+        return await _channel(action, args)
 
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
 
@@ -825,6 +842,113 @@ async def _widget(action: str, args: dict) -> dict:
     raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
 
 
+# ── chat channels (F1263) ────────────────────────────────────────────────────────────────────────────────────────────
+
+#: A platform's name on a card.
+_PLATFORM_NAMES = {"telegram": "Telegram", "discord": "Discord", "slack": "Slack", "teams": "Microsoft Teams",
+                   "whatsapp": "WhatsApp"}
+
+
+async def _channel(action: str, args: dict) -> dict:
+    """A chat channel's card: what the Channels screen does, through its own code (`product_tools.channels`). Connecting
+    one is the Connect card's (`prepare_connection`, kind `channel`): its token is typed there, never here."""
+    from core.messaging import senders
+    from core.native_builder import rows as R
+    from core.product_tools import channels as Ch
+
+    if action == "channel_connect":
+        return await _connect_channel(args)
+    host = Ch.host()
+    channels = await host.load()
+    channel = _pick(channels, str(args.get("channel") or ""), "channel", "Topic `channels` lists them.")
+    name = channel.get("name") or channel["id"]
+    platform = _PLATFORM_NAMES.get(str(channel.get("platform") or ""), str(channel.get("platform") or "").title())
+    agents = {a["id"]: a.get("name") or a["id"] for a in await _all_agents()}
+
+    if action in ("channel_on", "channel_off"):
+        on = action == "channel_on"
+        if bool(channel.get("enabled")) == on:
+            raise _NotOffered(f'"{name}" is already {"on" if on else "off"}.')
+        return _card(f'Turn {"on" if on else "off"} the {platform} channel "{name}"',
+                     detail="" if on else "Its bot stops answering until it is turned on again.",
+                     rows=[{"label": "On", "before": "off" if on else "on", "after": "on" if on else "off"}],
+                     buttons=[await _button("Turn on" if on else "Turn off", "set_channel_enabled",
+                                            {"channel_id": channel["id"], "enabled": on})])
+    if action == "channel_delete":
+        return _card(f'Remove the {platform} channel "{name}"', danger=True,
+                     detail="Its bot stops answering here, and its token is forgotten: connecting it again means "
+                            "typing it again. This cannot be undone.",
+                     buttons=[await _button("Remove it", "delete_channel", {"channel_id": channel["id"]})])
+    if action == "channel_test":
+        if not senders.supports_rest_send(str(channel.get("platform") or "")):
+            raise _NotOffered(f"A {platform} channel is tested on the Channels screen.")
+        if not channel.get("has_conversation"):
+            raise _NotOffered("Message the bot once first, so it learns where to answer.")
+        to = channel.get("conversation") or "the conversation it last answered"
+        # A real message to someone (TRI1, F1263): said before the press, and where it went after.
+        return _card(f'Test the {platform} channel "{name}"',
+                     detail=f"Sends one test message to {to} on {platform}.",
+                     buttons=[await _button("Send it", "test_channel", {"channel_id": channel["id"]})])
+    if action == "channel_agents":
+        wanted = [str(a) for a in (args.get("agents") or []) if str(a).strip()]
+        if not wanted:
+            raise _NotOffered("Say which agents answer on it.")
+        mine = [a for a in await _all_agents() if not a.get("system") and a.get("type") != "builder"]
+        picked = [_pick(mine, w, "agent", "Topic `agents` lists them.") for w in wanted]
+        ids = list(dict.fromkeys(a["id"] for a in picked))
+        first = _pick(mine, str(args["agent"]), "agent", "Topic `agents` lists them.")["id"] \
+            if str(args.get("agent") or "").strip() else ids[0]
+        if first not in ids:
+            raise _NotOffered("The agent that answers first is one of the agents that answer.")
+        before = {"agents": [agents.get(a, a) for a in channel.get("agent_ids") or []],
+                  "first": agents.get(channel.get("default_agent_id") or "", None)}
+        after = {"agents": [agents.get(a, a) for a in ids], "first": agents.get(first, first)}
+        rows = R.changed(before, after, {"agents": "Answered by", "first": "Answers first"})
+        if not rows:
+            raise _NotOffered(f'"{name}" is already answered that way.')
+        return _card(f'Change who answers on the {platform} channel "{name}"', rows=rows,
+                     buttons=[await _button("Save", "set_channel_agents",
+                                            {"channel_id": channel["id"], "agent_ids": ids, "default_agent_id": first})])
+    if action in ("channel_run_notifications", "channel_run_notifications_off"):
+        now = await host.run_notifications()
+        if now is None:
+            raise _NotOffered("Run notices are set in Notifications on this workspace, not on a channel.")
+        off = action == "channel_run_notifications_off"
+        if off and now != channel["id"]:
+            raise _NotOffered(f'Run notices do not go to "{name}".')
+        if not off and now == channel["id"]:
+            raise _NotOffered(f'Run notices already go to "{name}".')
+        named = {c["id"]: c.get("name") or c["id"] for c in channels}
+        was = named.get(now, now) if now else None
+        return _card(f'Stop sending run notices to "{name}"' if off else f'Send run notices to "{name}" too',
+                     detail="" if off else f"Every run's notice is also sent on {platform}, to the conversation the "
+                                           "bot last answered.",
+                     rows=[{"label": "Run notices also go to", "before": was, "after": None if off else name}],
+                     buttons=[await _button("Stop" if off else "Send them", "set_run_notification_channel",
+                                            {"channel_id": "" if off else channel["id"]})])
+    raise _NotOffered(f"action must be one of {', '.join(ACTIONS)}.")
+
+
+async def _connect_channel(args: dict) -> dict:
+    """The Connect card itself (`builder_connect`'s kind `channel`): the person types the token there."""
+    from core.builder_connect import _channel as connect_card, _read_options
+
+    found = await connect_card({"platform": args.get("platform"), "name": args.get("name"), "agent": args.get("agent")},
+                               await _read_options())
+    if "error" in found:
+        raise _NotOffered(found["error"])
+    return {"type": "connection_needed", "id": f"conn_{uuid.uuid4().hex[:10]}", "kind": "channel",
+            "title": f'Connect {found["label"]} "{found["name"]}"', "buttons": [],
+            "why": f'Answered by {found["agent"]["name"]}.' if found.get("agent") else "", "channel": found}
+
+
+def _pressed(card: dict) -> str:
+    """What the person presses on a card, as the turn says it."""
+    if card.get("type") == "connection_needed":
+        return '"Sign in"' if (card.get("channel") or {}).get("signin") else '"Connect"'
+    return " or ".join(f'"{b["label"]}"' for b in card["buttons"]) or "answer on it"
+
+
 async def _all_agents() -> list[dict]:
     from core.store.resources import load_agents
 
@@ -852,7 +976,7 @@ async def prepare_action(args: dict, server_module: Any, events: list[dict]) -> 
                 "arguments": {k: v for k, v in args.items() if k not in ("action", why.field)}}])
         return {"error": str(why)}
     events.append(card)
-    pressed = " or ".join(f'"{b["label"]}"' for b in card["buttons"]) or "answer on it"
+    pressed = _pressed(card)
     return {"card": card["title"],
             "say": f"A card is up: {card['title']}. Nothing has been done yet; press {pressed} to do it."}
 

@@ -29,7 +29,8 @@ Kind = Literal["act", "write", "delete", "create", "handoff"]
 
 #: Every kind of thing an op can be about.
 TARGET_KINDS = ("workflow", "agent", "schedule", "tool", "skill", "board", "knowledge_base", "document", "run",
-                "approval", "card", "openapi", "python_tool", "feature", "recording", "settings", "memory", "widget")
+                "approval", "card", "openapi", "python_tool", "feature", "recording", "settings", "memory", "widget",
+                "channel")
 
 #: Tool-policy decisions an op may set; `inherit` removes the agent's own rule, so the workspace's applies.
 DECISIONS = ("allow", "confirm", "deny", "inherit")
@@ -132,6 +133,17 @@ _ACTS = (
     Op("widget_rotate_key", "act", "widget", verb="Give a new key to"),
     Op("widget_logo", "act", "widget", fields=("path",), required=("path",), verb="Set the logo of"),
     Op("widget_logo_remove", "act", "widget", verb="Take the logo off"),
+    # A chat channel that is connected, through the Channels screen's own code (F1263); connecting one is the Connect
+    # card's, where its token is typed.
+    Op("channel_connect", "act", "channel", fields=("platform", "agent"), required=("platform",), verb="Connect"),
+    Op("channel_on", "act", "channel", verb="Turn on"),
+    Op("channel_off", "act", "channel", verb="Turn off"),
+    Op("channel_delete", "act", "channel", verb="Remove"),
+    Op("channel_test", "act", "channel", verb="Send a test message on"),
+    Op("channel_agents", "act", "channel", fields=("agents", "agent"), required=("agents",),
+       verb="Change who answers on"),
+    Op("channel_run_notifications", "act", "channel", verb="Send run notices to"),
+    Op("channel_run_notifications_off", "act", "channel", verb="Stop sending run notices to"),
 )
 
 _SCHEDULE_TIME = ("schedule_type", "cron_expression", "interval_value", "interval_unit", "timezone")
@@ -242,11 +254,11 @@ WRITE_TOOLS = tuple(dict.fromkeys(op.tool for op in OPS.values() if op.tool))
 
 #: The argument that names an act's target, as `prepare_action` takes it.
 #: Acts whose target is the thing they make, named, never looked up among what exists (F1200).
-MAKES_TARGET = frozenset({"board_create", "knowledge_create", "widget_create"})
+MAKES_TARGET = frozenset({"board_create", "knowledge_create", "widget_create", "channel_connect"})
 
 _ACT_ARG = {"workflow": "workflow", "schedule": "schedule", "run": "run_id", "approval": "approval_id",
             "knowledge_base": "knowledge_base", "document": "doc_id", "board": "board", "card": "card_id",
-            "feature": "feature", "recording": "recording", "widget": "widget"}
+            "feature": "feature", "recording": "recording", "widget": "widget", "channel": "channel"}
 
 
 # ── checking what a model wrote ───────────────────────────────────────────────────────────────────────────────────
@@ -293,7 +305,7 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
     if op.target == "agent" and op.name.startswith("set_agent_") and \
             (said := _agent_field_issue(op, key, value)) is not False:
         return said
-    if key in ("add", "remove", "urls", "sites", "visitor_tools"):
+    if key in ("add", "remove", "urls", "sites", "visitor_tools", "agents"):
         return None if _is_list_of_text(value) else f"`{key}` is a list of names"
     if key in _WIDGET_CHOICES and op.target == "widget":
         return None if value in _WIDGET_CHOICES[key] else f"`{key}` is one of {', '.join(_WIDGET_CHOICES[key])}"

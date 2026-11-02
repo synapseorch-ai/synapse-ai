@@ -45,20 +45,21 @@ _options: Callable[[], Awaitable[Options]] | None = None
 
 def set_connect_options(reader: Callable[[], Awaitable[Options]] | None) -> None:
     """A host's own catalog and lists: `{"catalog": [{"slug", "name", "auth", "url"}], "providers": {id: label},
-    "screens": {id: label}}`. Self-hosted has no Apps catalog, so its card offers servers by URL, keys and links."""
+    "screens": {id: label}, "channels": {platform: {"label", "fields", "signin"}}}`. Self-hosted has no Apps catalog,
+    so its card offers servers by URL, keys and links; its channels are `core.messaging.fields`'."""
     global _options
     _options = reader
 
 
 async def _read_options() -> Options:
     if _options is None:
-        return {"catalog": [], "providers": PROVIDERS, "screens": SCREENS}
+        return {"catalog": [], "providers": PROVIDERS, "screens": SCREENS, "channels": None}
     got = await _options()
     return {"catalog": got.get("catalog") or [], "providers": got.get("providers") or PROVIDERS,
-            "screens": got.get("screens") or SCREENS}
+            "screens": got.get("screens") or SCREENS, "channels": got.get("channels")}
 
 
-_KINDS = ("app", "mcp_server", "provider_key", "tool_secret", "settings")
+_KINDS = ("app", "mcp_server", "provider_key", "tool_secret", "settings", "channel")
 
 SCHEMA = {
     "type": "function",
@@ -70,7 +71,8 @@ SCHEMA = {
             "`app` (an app from this workspace's Apps catalog, by `catalog_slug`), `mcp_server` (a remote MCP "
             "server at its http or https `url`), `provider_key` (a model provider's API key, by `provider`), `tool_secret` "
             "(the secret header of an existing custom tool, by `tool_name` and `header`), `settings` (a link to a "
-            "settings screen, by `screen`). Nothing connects until the person presses Connect on the card; you then "
+            "settings screen, by `screen`), `channel` (a chat channel: `platform`, its `name`, the `agent` that answers; the person "
+            "types its token into the card). Nothing connects until the person presses Connect on the card; you then "
             "hear \"Connected …\" from them. Never ask the person to type a secret in the chat."
         ),
         "parameters": {
@@ -86,6 +88,10 @@ SCHEMA = {
                 "tool_name": {"type": "string", "description": "kind=tool_secret: the custom tool's name."},
                 "header": {"type": "string", "description": "kind=tool_secret: the header that carries the key."},
                 "screen": {"type": "string", "description": f"kind=settings: one of {', '.join(SCREENS)}."},
+                "platform": {"type": "string", "description": "kind=channel: telegram, slack, discord, teams or "
+                                                              "whatsapp."},
+                "name": {"type": "string", "description": "kind=channel: what the channel is called here."},
+                "agent": {"type": "string", "description": "kind=channel: the agent that answers on it, by name."},
             },
             "required": ["kind", "title"],
         },
@@ -187,6 +193,12 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
         card["tool"] = {"id": tools[tool_name].get("id") or tool_name, "name": tool_name, "header": header,
                         "sends_to": [h for h in [_key_host(tools[tool_name].get("url"))] if h], "unsure": []}
 
+    elif kind == "channel":
+        found = await _channel(args, options)
+        if "error" in found:
+            return found
+        card["channel"] = found
+
     elif kind == "settings":
         screen = (args.get("screen") or "").strip().lower()
         if screen not in options["screens"]:
@@ -201,6 +213,52 @@ async def prepare_connection(args: dict, server_module: Any, events: list[dict])
     return {"status": "card_shown", "id": card["id"],
             "say": "Tell the person the card above is where the connection happens, and to press Connect there. "
                    "Do not ask for the key, token or password in the chat."}
+
+
+async def _channel(args: dict, options: Options) -> dict:
+    """A chat channel's card (F1263): the platform's fields for the person to type (never the model's), the agent that
+    answers, and for a webhook platform this install's address it will be called at. A phone number is the Phone
+    screen's."""
+    from core.messaging import fields
+
+    platform = (args.get("platform") or "").strip().lower()
+    hosted = options.get("channels")
+    offered = hosted if hosted is not None else fields.PLATFORMS
+    if platform in ("twilio_voice", "phone", "voice"):
+        return {"error": "A phone number is set up on the Phone screen, not from here: say so, and offer a settings "
+                         "card for screen `phone`."}
+    if platform not in offered:
+        return {"error": f"Unknown platform '{platform}'. This workspace connects: {', '.join(offered)}."}
+    entry = offered[platform]
+    out: dict[str, Any] = {"platform": platform, "label": entry.get("label") or platform.title(),
+                           "name": (args.get("name") or "").strip()[:100] or entry.get("label") or platform}
+    if wanted := (args.get("agent") or "").strip():
+        from core.builder_actions import _NotOffered, _pick
+        from core.store.resources import load_agents
+
+        agents = [a for a in await load_agents() if not a.get("system") and a.get("type") != "builder"]
+        try:
+            agent = _pick(agents, wanted, "agent", "Topic `agents` lists them.")
+        except _NotOffered as why:
+            return {"error": str(why)}
+        out["agent"] = {"id": agent["id"], "name": agent.get("name") or agent["id"]}
+    if hosted is not None:  # the host's own way: its fields, or its sign-in
+        return {**out, "fields": list(entry.get("fields") or []), "signin": bool(entry.get("signin"))}
+    from core.config import load_settings
+    from core.messaging import service
+
+    try:
+        service.manager()
+    except service.ChannelRefused as why:
+        return {"error": why.detail}
+    out.update(fields=fields.card_fields(platform), mode=entry["mode"], signin=False)
+    if entry["mode"] == "webhook":
+        base = str((load_settings() or {}).get("messaging_webhook_base_url") or "").strip()
+        if not base:
+            return {"error": f"{entry['label']} calls this app at a public address, and none is set. It is set on the "
+                             "Channels screen (Public webhook address): offer a settings card for screen `channels`."}
+        out.update(webhook_base=base.rstrip("/"), paste_into=entry["paste_into"])
+    return out
 
 
 def _key_host(url: Any) -> str:

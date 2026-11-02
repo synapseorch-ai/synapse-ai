@@ -104,8 +104,11 @@ CENSUS: tuple[Screen, ...] = (
        ("create_http_tool", "create_python_tool", "import_openapi", "test_python_tool", "list_custom_tools",
         "delete_custom_tool"),
        names=("http tool", "python tool", "openapi", "api spec"), plan_part=True),
-    _s("messaging", "Channels", "/channels", "says which chat channels are connected and which agents answer",
-       ("read_workspace:channels",), cant="connecting a chat channel",
+    _s("messaging", "Channels", "/channels", "connects a Telegram, Discord, Slack, Teams or WhatsApp channel on a "
+       "Connect card (its token typed there), turns one on or off, removes it, sends one test message, says which "
+       "agents answer, and sends run notices there",
+       ("read_workspace:channels", "prepare_connection", "set_channel_enabled", "delete_channel", "test_channel",
+        "set_channel_agents", "set_run_notification_channel"),
        names=("channel", "telegram", "slack", "whatsapp", "discord"),
        imitation="a workflow that polls a chat service's API on a schedule in place of a connected channel"),
     _s("phone", "Phone", "/channels/phone", "says which phone numbers answer and which agent", ("read_workspace:phone",),

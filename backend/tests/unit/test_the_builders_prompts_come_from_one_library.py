@@ -120,7 +120,9 @@ from core.native_builder import prompt_lint, seed
 #: F1262: the one planner's rule 13 under # Changing, after BRW1's 12 (a website widget is made or changed with the
 #: widget_ ops, its visitor tools only those the person named), be1cb5b9… on fix-forward 15; on fix-forward 16's
 #: ff605079, b67e5ccb….
-BUNDLE_SHA256 = "b67e5ccba6c7eff6eabfb851e062ced555b920b073ae330c9b131ea11c902703"
+#: F1263: rule 14 under # Changing (a chat channel is connected with channel_connect, its token typed on its card,
+#: and changed with the channel_ ops), a9ef3db1… on fix-forward 15; on fix-forward 16's ff605079 with F1262, 25173721….
+BUNDLE_SHA256 = "25173721ef4ea9e6abacf33186a67a14cb1df6681cedc896d6691ad2a7a44741"
 
 
 def _sha(definitions) -> str:

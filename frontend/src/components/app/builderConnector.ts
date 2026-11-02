@@ -38,6 +38,10 @@ function post(path: string, body: unknown): Promise<Response> {
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 }
 
+/** A webhook platform's address on this install (`core/messaging/fields.py`'s `webhook_url`). */
+const webhookUrl = (base: string, platform: string, id: string) =>
+    `${base.replace(/\/+$/, '')}/api/messaging/${platform}/webhook/${encodeURIComponent(id)}`;
+
 export const selfHostedConnector: Connector = {
     product: 'this install',
     href: (screen) => SCREENS[screen] ?? null,
@@ -60,6 +64,36 @@ export const selfHostedConnector: Connector = {
         const res = await post('/api/settings', { [setting]: key });
         if (!res.ok) return { status: 'error', message: await problem(res) };
         return { status: 'connected', message: `Saved the ${provider.label ?? provider.id} key.` };
+    },
+
+    /** The Channels screen's own three calls (F1263): save it, give it its agent, start it. */
+    async channel(channel, values): Promise<ConnectResult> {
+        const credentials: Record<string, string> = Object.fromEntries(Object.entries(values).filter(([, v]) => v));
+        if (channel.platform === 'whatsapp') credentials.whatsapp_mode = 'meta_api';
+        const res = await post('/api/messaging/channels', {
+            name: channel.name, platform: channel.platform, mode: channel.mode ?? 'polling', enabled: true, credentials,
+        });
+        if (!res.ok) return { status: 'error', message: await problem(res) };
+        const saved = (await res.json()) as { id: string };
+        if (channel.agent) {
+            const assigned = await fetch(`/api/messaging/channels/${encodeURIComponent(saved.id)}/assignments`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_ids: [channel.agent.id], default_agent_id: channel.agent.id }),
+            });
+            if (!assigned.ok) return { status: 'error', message: `Saved, but ${await problem(assigned)}` };
+        }
+        const started = await post(`/api/messaging/channels/${encodeURIComponent(saved.id)}/enable`, {});
+        const now = started.ok ? ((await started.json()) as { status?: string; last_error?: string }) : null;
+        if (!started.ok || now?.status === 'error') {
+            const why = now?.last_error || (started.ok ? 'it did not start' : await problem(started));
+            return { status: 'error', message: `Saved, but it did not start: ${why}. Check it on the Channels screen.` };
+        }
+        const who = channel.agent ? `, answered by ${channel.agent.name}` : '';
+        if (channel.webhook_base) {
+            return { status: 'connected', message: `Saved ${channel.label} "${channel.name}"${who}. It answers once ${channel.label} calls this app.`,
+                webhookUrl: webhookUrl(channel.webhook_base, channel.platform, saved.id) };
+        }
+        return { status: 'connected', message: `Connected ${channel.label} "${channel.name}"${who}.` };
     },
 
     async toolSecret(tool, value, hostParams): Promise<ConnectResult> {
