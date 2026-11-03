@@ -159,3 +159,51 @@ async def test_a_co_drive_browser_agent_holds_the_browsers_presses_unlisted(clie
 async def test_a_read_only_browser_agent_sends_nothing(client):
     found = await _examine(_browser_draft([], mode="read_only"))
     assert not [e for e in found.errors if "without asking" in e], found.errors
+
+
+# ── one voice with TRI1's F1300 (79, 11-03): the site the person keeps a session for ────────────────────────────
+# Where the host is also one the person keeps a session for, the one finding names that session too, by its site
+# (the registrable domain: `core.sites.same_site`, as the sessions match), and F1300 leaves the step to it
+# (`structure.covered_by_browser_agent`, which it calls).
+@pytest.fixture
+def kept(monkeypatch):
+    from core import site_sessions
+
+    rows = [{"site": "localhost", "usable": True}, {"site": "example.com", "usable": True},
+            {"site": "localhost.test", "usable": False}]
+
+    async def listed(caller=None):
+        return rows
+
+    monkeypatch.setattr(site_sessions, "listed", listed)
+    return rows
+
+
+async def test_a_kept_session_for_its_site_is_named_in_the_one_finding(client, kept):
+    said = _found(await structure.issues(_plan([CHECK], [_agent("Portal Order Checker", WORKS)]),
+                                         build_plan.Workspace()))
+    assert len(said) == 1 and 'browser.sites ["portal.localhost"]' in said[0], said
+    assert 'browser.sessions ["localhost"]' in said[0], "the person's kept session for the site, by its site"
+    assert "example.com" not in said[0]
+
+
+async def test_with_no_kept_session_none_is_named(client, monkeypatch):
+    from core import site_sessions
+
+    async def none(caller=None):
+        return []
+
+    monkeypatch.setattr(site_sessions, "listed", none)
+    said = _found(await structure.issues(_plan([CHECK], [_agent("Portal Order Checker", WORKS)]),
+                                         build_plan.Workspace()))
+    assert said and "browser.sessions" not in said[0], said
+
+
+def test_f1300_asks_the_same_rule_what_it_covers():
+    covered = getattr(structure, "covered_by_browser_agent", None)
+    assert covered is not None, "F1300 calls it, never a copy"
+    plan = _plan([CHECK], [_agent("Portal Order Checker", WORKS)])
+    assert covered(plan.agents[0], plan.steps) == {"portal.localhost"}
+    browser = _plan([CHECK], [_agent("Portal Order Checker", [], type="browser",
+                                     browser={"sites": ["portal.localhost"]})])
+    assert covered(browser.agents[0], browser.steps) == set()
