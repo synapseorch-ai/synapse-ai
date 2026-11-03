@@ -859,6 +859,15 @@ async def fill(plan: Plan, server_module: Any, *, found: dict[str, ToolStatus] |
     acting = [t.name for t in statuses if t.status == "present"
               and await builder_guard.acting_tool(t.name, server_module, custom) is not None]
     acting += [t.name for t in statuses if t.status == "found"]  # an outside service: it acts until shown otherwise
+    # A Browser agent holds the browser's tools however it was made (F1305, `gate.held_by`): co_drive, each press it
+    # holds asks first too, listed or not; read_only sends nothing at the component's network gate.
+    from core.browser.gate import held_by
+
+    for a in out.agents:
+        if a.type == "browser" and a.browser is not None and a.browser.mode == "co_drive":
+            for t in held_by(a.tools, "browser"):
+                if t not in acting and await builder_guard.acting_tool(t, server_module, custom) is not None:
+                    acting.append(t)
     kept = set(plan.approvals.acts_without_asking)
     out.gates = await _gates(out, server_module, custom, agents, asks={n for n in acting if n not in kept})
     # The person's "act without asking" lifts this build's own confirm only: what an agent's or the workspace's
