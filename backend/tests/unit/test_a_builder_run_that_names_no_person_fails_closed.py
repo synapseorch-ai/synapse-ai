@@ -4,10 +4,11 @@ Synapse AI acts for the person whose run it is (`builder_access`, ASSIST1/F681):
 role now. A run of the builder's orchestration that named no person was let through with no check at all, and its
 reads and acts fell back to the workspace's owner. These pin the class, closed at its two ends:
 
-- inside a builder run that names no person, every builder tool is refused, a read as much as a write, and nothing is
-  done; there is no owner to fall back to inside a run;
+- on a host that tells people apart (cloud), inside a builder run that names no person, every builder tool is refused,
+  a read as much as a write, and nothing is done; there is no owner to fall back to inside a run;
 - self-hosted's own chat, which names its one person as `{"user_id": None}`, still reads and acts as the owner, and so
-  does a live run whose person is in its state before its first checkpoint;
+  does a live run whose person is in its state before its first checkpoint; so does a builder run paused before its
+  person was recorded (an older release's), since self-hosted has one person and the run is theirs;
 - the builder's orchestration is never started, deployed or nested as an ordinary workflow: the run route, deploy and
   a Workflow step each refuse a system orchestration, and so does a save that nests one.
 """
@@ -51,6 +52,21 @@ async def _call(tool: str, args: dict, run_id: str | None) -> dict:
     return json.loads(raw)
 
 
+@pytest.fixture
+def people():
+    """A host that tells people apart: each person's role now (cloud's)."""
+    from core.product_tools import hooks
+    from core.product_tools.roles import Role
+
+    async def source(user_id):
+        return {"u1": Role.OWNER}.get(user_id)
+
+    hooks.set_role_source(source)
+    yield
+    hooks.set_role_source(None)
+
+
+@pytest.mark.usefixtures("people")
 class TestARunThatNamesNoOne:
     @pytest.mark.parametrize("tool, args", [
         ("read_workspace", {"topic": "agents"}),
@@ -85,6 +101,11 @@ class TestItsOwnPersonStillActs:
                                shared_state={builder_access.CALLER_KEY: {"user_id": None}})
         with live(run):
             got = await _call("read_workspace", {"topic": "agents"}, run.run_id)
+        assert "error" not in got, got
+
+    async def test_an_older_run_with_no_person_recorded_is_the_installs_one_person(self, client):
+        run_id = await _builder_run("builder_older_release", {})
+        got = await _call("read_workspace", {"topic": "agents"}, run_id)
         assert "error" not in got, got
 
     async def test_a_direct_call_outside_any_run_is_the_installs_owner(self, client):
