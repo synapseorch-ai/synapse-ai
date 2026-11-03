@@ -156,8 +156,10 @@ async def _update_card(caller: Any, args: dict) -> dict:
     card = await store.get_card(str(args.get("card_id") or ""))
     if card is None:
         raise ToolRefusal("There is no such card.")
+    # The version a card read it at, when it gives one (F1268): a card changed since is said, never written over.
+    version = args.get("version") if isinstance(args.get("version"), int) else card.version
     try:
-        return await service.update_card(card.id, version=card.version, by=await _person(caller),
+        return await service.update_card(card.id, version=version, by=await _person(caller),
                                          title=args.get("title"), body=args.get("body"), status=args.get("status"),
                                          result=args.get("result"))
     except store.BoardError as exc:
@@ -206,13 +208,36 @@ async def _give_access(caller: Any, args: dict) -> dict:
     was = next((a.access for a in listed if (a.principal_kind, a.principal_id) == (kind, principal)), None)
     kept = [{"kind": a.principal_kind, "id": a.principal_id, "access": a.access}
             for a in listed if (a.principal_kind, a.principal_id) != (kind, principal)]
+    access = str(args.get("access") or "")
+    # `none` takes the entry off (F1268); the people of the workspace keep the board as before: its list names only
+    # agents, workflows and schedules.
+    if access == "none" and was is None:
+        raise ToolRefusal("That one is not on this board's access list.")
     try:
-        saved = await service.set_access(board["id"], [*kept, {"kind": kind, "id": principal,
-                                                                "access": str(args.get("access") or "")}],
+        saved = await service.set_access(board["id"], kept if access == "none" else
+                                         [*kept, {"kind": kind, "id": principal, "access": access}],
                                          directory=await _host.directory(), by=await _person(caller))
     except store.BoardError as exc:
         raise _refusing(exc) from None
     return {"board": board.get("name"), "id": board["id"], "access": saved, "was": was}
+
+
+async def _update(caller: Any, args: dict) -> dict:
+    """A shared board's name or what it is for, as the Boards screen's edit saves it (F1268): a workflow's or a
+    schedule's own board is named for it."""
+    from core.boards import service
+    from core.store import boards as store
+
+    await _on()
+    board = await _board_named(str(args.get("board") or ""))
+    if board.get("scope") != "shared":
+        raise ToolRefusal("A workflow's or a schedule's own board is named for it: only a shared board is renamed "
+                          "or described here.")
+    try:
+        return await service.update_shared(board["id"], name=args.get("name"), description=args.get("description"),
+                                           directory=await _host.directory())
+    except store.BoardError as exc:
+        raise _refusing(exc) from None
 
 
 async def _delete(caller: Any, args: dict) -> dict:
@@ -261,7 +286,8 @@ def entries() -> list[ProductTool]:
                     description="Close a card (done or failed, with its result), reopen it, or change its title or text.",
                     input_schema={"type": "object", "properties": {
                         **_CARD, "status": {"type": "string", "enum": ["open", "done", "failed"]},
-                        "result": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"}},
+                        "result": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"},
+                        "version": {"type": "integer", "description": "The version the card was read at."}},
                         "required": ["card_id"]},
                     handler=_update_card, audit_action="board.card.updated",
                     target=lambda a, r: ("board_card", str(a.get("card_id"))), **act),
@@ -277,13 +303,20 @@ def entries() -> list[ProductTool]:
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
         ProductTool(name="give_board_access",
                     description="Let an agent, a workflow or a schedule add cards to a shared board ('add') or work "
-                                "its cards ('work'), as the board's access list on the Boards screen does.",
+                                "its cards ('work'), or take it off the list ('none'), as the board's access list on "
+                                "the Boards screen does.",
                     input_schema={"type": "object", "properties": {
                         **_BOARD, "kind": {"type": "string", "enum": ["agent", "workflow", "schedule"]},
-                        "id": {"type": "string"}, "access": {"type": "string", "enum": ["add", "work"]}},
+                        "id": {"type": "string"}, "access": {"type": "string", "enum": ["add", "work", "none"]}},
                         "required": ["board", "kind", "id", "access"]},
                     handler=_give_access, audit_action="board.access_set",
                     target=lambda a, r: ("board", str((r or {}).get("id") or "")), **act),
+        ProductTool(name="update_board", description="Rename a shared board, or say what it is for.",
+                    input_schema={"type": "object", "properties": {
+                        **_BOARD, "name": {"type": "string"}, "description": {"type": "string"}},
+                        "required": ["board"]},
+                    handler=_update, audit_action="board.updated",
+                    target=lambda a, r: ("board", str((r or {}).get("id") or "")), app_only=True, **act),
         ProductTool(name="delete_board", description="Delete a shared board with its cards and history.",
                     input_schema={"type": "object", "properties": dict(_BOARD), "required": ["board"]},
                     handler=_delete, irreversible=True, preview=_preview_delete, audit_action="board.deleted",

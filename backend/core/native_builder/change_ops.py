@@ -118,6 +118,12 @@ _ACTS = (
     Op("board_comment", "act", "card", fields=("text",), required=("text",), verb="Comment on"),
     Op("board_create", "act", "board", fields=("text",), verb="Make"),
     Op("board_delete", "act", "board", verb="Delete"),
+    # A shared board's name, what it is for, and who may use it; a card's words (F1268): the Boards screen's service.
+    Op("board_rename", "act", "board", fields=("name",), required=("name",), verb="Rename"),
+    Op("board_describe", "act", "board", fields=("text",), required=("text",), verb="Describe"),
+    Op("board_access", "act", "board", fields=("who", "access"), required=("who", "access"),
+       verb="Change who may use"),
+    Op("board_card_text", "act", "card", fields=("title", "text"), any_of=True, verb="Change the words of"),
     Op("feature_on", "act", "feature", verb="Turn on"),
     # Evals (F1255): a workflow's rubric, its golden set's cases, a run of the set, and stopping it, each a card.
     Op("eval_rubric", "act", "workflow", fields=("name", "criteria", "floor", "rubric"), any_of=True,
@@ -354,6 +360,8 @@ def _field_issue(op: Op, key: str, value: Any) -> str | None:
         return None if value in NEEDS else f"`needs` is one of {', '.join(NEEDS)}"
     if key == "status":
         return None if value in ("open", "done", "failed") else "`status` is open, done or failed"
+    if key == "access" and op.name == "board_access":
+        return None if value in ("add", "work", "none") else "`access` is add, work or none"
     if key == "criteria":
         ok = isinstance(value, list) and value and all(
             isinstance(c, dict) and isinstance(c.get("name"), str) and c["name"].strip() for c in value)
