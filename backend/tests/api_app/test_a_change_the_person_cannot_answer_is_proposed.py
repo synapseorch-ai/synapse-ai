@@ -123,14 +123,21 @@ def test_the_planner_is_told_so_too():
     assert "22. When the person says they don't know" in prompt
 
 
+#: A workflow with a step to change (CI2's run 41604529300: one of an End step alone has "no steps to build").
+_PRICES = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "summarize",
+           "steps": [{"id": "summarize", "name": "Summarize prices", "type": "llm",
+                      "prompt_template": "Summarize today's prices.", "output_key": "summarize",
+                      "next_step_id": "done"},
+                     {"id": "done", "name": "End", "type": "end"}]}
+
+
 # ── the card says what it does not fix (79's B2) ─────────────────────────────────────────────────────────────────
 # A step's change (edit_steps hands it to the build route's update, whose plan card the person approves) does not fix
 # the tool the step calls: where the person said they don't know, the card says so plainly, with the Tools screen.
 async def test_the_steps_card_says_it_does_not_fix_the_tool(client):
     from unit.test_the_build_route_decides_in_code import _check, _run as _build_run
 
-    existing = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "done",
-                "steps": [{"id": "done", "name": "End", "type": "end"}]}
+    existing = _PRICES
     run = await _build_run(intent="update", existing_orch=existing, current_orchestration_id="orch_prices",
                            **{CT.ASKED_KEY: [_asked("price_feed tool endpoint", "I’m not sure what the URL should be.")]})
     draft = {"finish": "submit_plan", "kind": "update", "title": "Daily price check", "summary": "s",
@@ -143,8 +150,7 @@ async def test_the_steps_card_says_it_does_not_fix_the_tool(client):
 async def test_with_nothing_unknown_the_card_says_nothing_of_it(client):
     from unit.test_the_build_route_decides_in_code import _check, _run as _build_run
 
-    existing = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "done",
-                "steps": [{"id": "done", "name": "End", "type": "end"}]}
+    existing = _PRICES
     run = await _build_run(intent="update", existing_orch=existing, current_orchestration_id="orch_prices")
     draft = {"finish": "submit_plan", "kind": "update", "title": "Daily price check", "summary": "s",
              "edits": [{"op": "set_meta", "fields": {"summary": "Runs daily."}}]}
