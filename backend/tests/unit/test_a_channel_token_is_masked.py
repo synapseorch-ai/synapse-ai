@@ -21,6 +21,8 @@ TELEGRAM = "7123456789" + ":" + "AAH" + "k9Lm2Nq4Rs6Tv8Wx0Yz1Ab3Cd5Ef7Gh9"
 # prod-10's: 30 after the colon (F1314); and the longest the bound allows.
 TELEGRAM_30 = "8123456789" + ":" + "AAF" + "q2Wd4Rf6Tg8Yh0Uj2Ik4Ol6Pz8X"
 TELEGRAM_46 = "8123456789" + ":" + "AAF" + "q2Wd4Rf6Tg8Yh0Uj2Ik4Ol6Pz8Xc1Vb3Nm5Qa7Ws9Ed"
+# A Slack app-level token (Socket Mode): xapp-, its version, the app's id, a number, then a 64-character secret.
+SLACK_APP = "xapp" + "-1-" + "A0123456789" + "-" + "1234567890123" + "-" + "9f8e7d6c5b4a3928" * 4
 # A Discord bot token: the bot's id in base64, a 6-character timestamp, a 27+ character HMAC, dot-separated.
 DISCORD = "MTE5ODc2NTQzMjEwOTg3NjU0Mw" + "." + "GaBcDe" + "." + "q1W2e3R4t5Y6u7I8o9P0a1S2d3F4g5H6"
 # Meta's access token (WhatsApp Cloud API, Graph API): EAA, then a long run of letters and digits.
@@ -84,6 +86,27 @@ class TestATelegramTokenOfAnotherLength:
         "20261103" + ":" + "build-the-weekly-report-for-sales",            # a run id and a slug
         "1234567" + ":" + "AAF" + "q2Wd4Rf6Tg8Yh0Uj2Ik4Ol6Pz8X",           # a 7-digit id
     ], ids=["29", "47", "slug", "short-id"])
+    def test_what_is_not_one_stays(self, text):
+        assert scrub_credentials(text) == (text, 0)
+
+
+class TestASlackAppLevelToken:
+    """F1316 (TRI1; 79's call 11-03, F1314's review): a Slack app-level token (Socket Mode) — `xapp-`, its version, the
+    app's id, a number and a long secret, dash-joined — matched no shape; `xox…` covers Slack's bot and user tokens
+    only. Its parts are held to that order, so the word, the prefix and a part of one stay."""
+
+    def test_alone_in_a_sentence_and_in_quotes(self):
+        assert scrub_credentials(SLACK_APP) == (CREDENTIAL_MARK, 1)
+        checked = check(f"the socket mode token is {SLACK_APP} for our workspace")
+        assert SLACK_APP not in checked.text and checked.removed == 1
+        assert scrub_credentials(f'token: "{SLACK_APP}"') == (f'token: "{CREDENTIAL_MARK}"', 1)
+
+    @pytest.mark.parametrize("text", [
+        "an xapp- token starts with xapp-1",
+        "xapp-1-A0123456789",                                   # the app's id, no secret
+        "xapp-1-A0123456789-1234567890123",                     # no secret after the number
+        "the xapp-config-file is in the repo",
+    ], ids=["prose", "app-id-only", "no-secret", "a-word"])
     def test_what_is_not_one_stays(self, text):
         assert scrub_credentials(text) == (text, 0)
 
