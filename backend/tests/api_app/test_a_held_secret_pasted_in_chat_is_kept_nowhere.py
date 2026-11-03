@@ -133,8 +133,10 @@ class TestOnlyWhatIsHeldAndLikeASecret:
 
 
 async def test_a_board_card_never_keeps_one(client, held):
+    """Masked, not refused (F1307's follow-up, 79's ruling (c)): the builder's own work card must still write."""
     from core.store import boards
 
-    board = await boards.create_shared_board("Triage", by=None)
-    with pytest.raises(boards.SecretInCard):
-        await boards.add_card(board.id, title="Ticket triage", body=f"Use {CANARY} for the tracker", by=None)
+    person = boards.Actor(person="u1")
+    board = await boards.create_shared_board("Triage", by=person)
+    card, _ = await boards.add_card(board.id, title="Ticket triage", body=f"Use {CANARY} for the tracker", by=person)
+    assert CANARY not in card.body and CREDENTIAL_MARK in card.body

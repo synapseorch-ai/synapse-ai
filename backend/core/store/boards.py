@@ -18,8 +18,9 @@ here, in code, so a person's write gets them as an agent's does:
   append; nothing here deletes a card, and a person can undo a change (`undo`).
 * **Provenance and taint.** Every write is stamped with who made it (agent, run, conversation, person) and when,
   and a write by a turn that had read content nobody typed marks the card `tainted` (F279).
-* **No secrets.** Text holding a credential (`core.secret_scrub`) is refused (`SecretInCard`), and so is text
-  holding a secret the workspace holds, by its value (`secret_scrub.held_in`, F1307).
+* **No secrets.** Text holding a credential (`core.secret_scrub`) is refused (`SecretInCard`). A secret the workspace
+  holds is masked by its value instead (F1307), so the builder's own work card still writes, and the card's events
+  are built from the masked text.
 * **Caps.** Open cards per board and shared boards per org, from the caller (settings in OSS, the plan in cloud);
   a `run` board has none.
 
@@ -315,15 +316,30 @@ def _text(value: Any, what: str, limit: int, *, required: bool = False) -> str:
     return text
 
 
-async def _no_held_secret(*parts: Any) -> None:
-    """A secret the workspace holds is never kept on a card (F1307): the builder's door masks it from what the person
-    types, and this holds for a card written any other way."""
-    from core.secret_scrub import held_in
+async def _held_masked(*parts: Any) -> tuple[Any, ...]:
+    """`parts` (a card's title, body, key, result, data, a comment) with every secret the workspace holds masked by its
+    value (F1307): this step's matcher and the door's finder alike, so a card written in a run or outside one never
+    keeps one. Masked, not refused: the builder's own work card must still write (a deliberate change from F1307's
+    first refusal)."""
+    from core.secret_scrub import CREDENTIAL_MARK, held_in, scrub_held
 
     joined = "\n".join(p if isinstance(p, str) else json.dumps(p, ensure_ascii=False, default=str)
                        for p in parts if p)
-    if joined and await held_in(joined):
-        raise SecretInCard()
+    found = await held_in(joined) if joined else []
+
+    def mask(value: Any) -> Any:
+        value = scrub_held(value)
+        if isinstance(value, str):
+            for word, _ in found:
+                value = value.replace(word, CREDENTIAL_MARK)
+            return value
+        if isinstance(value, dict):
+            return {k: mask(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [mask(v) for v in value]
+        return value
+
+    return tuple(mask(p) for p in parts)
 
 
 def _stage(value: Any) -> str | None:
@@ -816,11 +832,11 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
 
     if kind not in KINDS:
         raise BadValue("A card is a 'task' (work to do) or a 'note' (information for others).")
+    title, body, key, data = await _held_masked(title, body, key, data)
     title = _text(title, "title", TITLE_MAX, required=True)
     body = _text(body, "body", BODY_MAX)
     key = _key(key)
     stage, data = _stage(stage), _data(data)
-    await _no_held_secret(title, body, key, data)
     board = await get_board(board_id)
     if board is None:
         raise NoSuchBoard(f"There is no board {board_id}.")
@@ -870,7 +886,7 @@ async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder |
     Refused when the card changed since (`StaleCard`) or someone else holds it (`CardHeld`). Closing releases
     the holder's claim. `holder` None is a person, whom no claim holds off.
     """
-    await _no_held_secret(title, body, result, data)
+    title, body, result, data = await _held_masked(title, body, result, data)
     card = await get_card(card_id)
     if card is None:
         raise NoSuchCard(f"There is no card {card_id}.")
@@ -1060,8 +1076,8 @@ async def add_comment(card_id: str, text: str, *, by: Actor, tainted: bool = Fal
     """Append a comment. Comments are never edited or removed by an agent; a person can take one back (undo)."""
     from core.store.models import BoardCardDB
 
+    (text,) = await _held_masked(text)
     words = _text(text, "comment", COMMENT_MAX, required=True)
-    await _no_held_secret(words)
     now = _now()
     values: dict[str, Any] = {"updated_at": now}
     if tainted:

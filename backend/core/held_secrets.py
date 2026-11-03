@@ -95,3 +95,21 @@ async def find(text: str) -> list[tuple[str, str]]:
         if secret_like(value) and value in text and value not in found:
             found[value] = kind
     return sorted(found.items(), key=lambda vk: -len(vk[0]))
+
+
+class _Values:
+    """This step's held values, longest first: `find` names those in a text (`secret_scrub.refresh_held`)."""
+
+    def __init__(self, values: Iterable[str]):
+        self._values = sorted({v for v in values}, key=len, reverse=True)
+
+    def find(self, text: str) -> list[str]:
+        return [v for v in self._values if v in text]
+
+
+async def matcher() -> _Values | None:
+    """The output side's matcher for this step: every held value, or None when there are none."""
+    from core.secret_scrub import secret_like
+
+    values = [v for v, _ in await _held() if secret_like(v)]
+    return _Values(values) if values else None

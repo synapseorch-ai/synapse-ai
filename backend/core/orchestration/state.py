@@ -141,11 +141,19 @@ class SharedState:
         earlier snapshot land last.
         """
         backend = get_state_backend()
+        # The stored copy marks the workspace's held secrets (F1307's output side): the run keeps what it holds in
+        # memory, the row never does. The same run when this step's matcher has none.
+        from core.secret_scrub import holding, scrub_held
+
+        stored = self.run
+        if holding():
+            stored = self.run.model_copy(update={"shared_state": scrub_held(self.run.shared_state),
+                                                 "step_history": scrub_held(self.run.step_history)})
         async with _lock_for(self.run.run_id):
             if columns and _accepts_columns(backend):
-                await backend.save(self.run, columns=tuple(columns))
+                await backend.save(stored, columns=tuple(columns))
             else:
-                await backend.save(self.run)
+                await backend.save(stored)
         if self.run.status in _TERMINAL:
             _checkpoint_locks.pop(self.run.run_id, None)
 

@@ -67,6 +67,15 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
         r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
         r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{10,}[A-Za-z0-9=])"
     ),
+    # A value after "bearer token" or "authorization token", which can only mean a credential, with or without is/: and
+    # a quote or paren before it (F1307: prod-02's "using the bearer token …" and "with a bearer token (…)", pasted
+    # before anything held them). Never after a bare "the token": "the token 'gpt-4.1-mini'" names a model, and "the
+    # token limit is 4096" a number. 12+ characters mixing letters and digits, never a URL.
+    re.compile(
+        r"(?i)(\b(?:bearer|authori[sz]ation)\s+token\s*(?:\bis\b|[:=])?\s*[(\"'`]?)"
+        r"(?![^\s]*://)(?=[A-Za-z0-9._~+/=-]*\d)(?=[A-Za-z0-9._~+/=-]*[A-Za-z])"
+        r"([A-Za-z0-9][A-Za-z0-9._~+/=-]{10,}[A-Za-z0-9=])"
+    ),
     # A quoted literal assigned to a name that says what it is. A value with a
     # space in it is prose or a placeholder, not a key; so is one already marked.
     re.compile(
@@ -182,21 +191,90 @@ async def held_in(text: str) -> list[tuple[str, str]]:
     return sorted(dict(out).items(), key=lambda vk: -len(vk[0]))
 
 
-def scrub_secrets(text: str) -> str:
-    """`text` with each held secret's value replaced by its name."""
-    held = _HELD.get()
-    if not held or not isinstance(text, str):
+# ── The workspace's held secrets, in what a run stores or shows (F1307's output side) ────────────────────────────
+#
+# The door masks a held value in what a person types; a value pasted before anything held it, or one the model writes
+# back (prod-02's plan text: "Authenticates with bearer token …"), is caught on the way out instead. At each step's start
+# the engine refreshes a matcher (`refresh_held`): the host's loader (`set_held_loader`; cloud's matches fingerprints)
+# or this install's own values. Every scrub below applies it, as it applies the held variables, so events, logs,
+# checkpoints and run errors show the mark. A loader that fails leaves the shape rules only, logging its error's type.
+
+_MATCHER: ContextVar[Any] = ContextVar("held_matcher", default=None)
+_LOADER: Any = None
+
+
+def set_held_loader(loader: Any) -> None:
+    """A host's loader: async () -> an object whose sync `find(text)` names the held values in `text`."""
+    global _LOADER
+    _LOADER = loader
+
+
+async def refresh_held() -> None:
+    """Load this step's held-secret matcher (the engine calls it at each step's start)."""
+    loader = _LOADER
+    if loader is None:
+        from core.held_secrets import matcher as loader
+    try:
+        found = await loader()
+    except Exception as exc:  # noqa: BLE001 — never a failed step; the shapes still run
+        import logging
+
+        logging.getLogger(__name__).warning("held secrets could not be loaded (%s): the shape rules only",
+                                            type(exc).__name__)
+        found = None
+    _MATCHER.set(found)
+
+
+def _without_held(text: str) -> str:
+    matcher = _MATCHER.get()
+    if matcher is None or not isinstance(text, str) or len(text) < HELD_MIN:
         return text
+    try:
+        words = matcher.find(text)
+    except Exception:  # noqa: BLE001 — a matcher that fails masks nothing, and says nothing of the text
+        return text
+    for word in sorted(set(words or ()), key=len, reverse=True):
+        if secret_like(word):
+            text = text.replace(word, CREDENTIAL_MARK)
+    return text
+
+
+def holding() -> bool:
+    """Whether this step has held secrets to mark."""
+    return _MATCHER.get() is not None
+
+
+def scrub_held(value: Any) -> Any:
+    """`value` with the workspace's held secrets in its strings marked (the step's matcher only); the same object
+    when there is none. A checkpoint's copy goes through it (`SharedState.checkpoint`)."""
+    if _MATCHER.get() is None:
+        return value
+    if isinstance(value, str):
+        return _without_held(value)
+    if isinstance(value, dict):
+        return {k: scrub_held(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [scrub_held(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(scrub_held(v) for v in value)
+    return value
+
+
+def scrub_secrets(text: str) -> str:
+    """`text` with each held secret's value replaced by its name, and each of the workspace's held secrets marked."""
+    if not isinstance(text, str):
+        return text
+    held = _HELD.get()
     for name, value in held:
         if value in text:
             text = text.replace(value, secret_mark(name))
-    return text
+    return _without_held(text)
 
 
 def scrub_secrets_in(value: Any) -> Any:
     """`value` — an event, a snapshot — with every string in it scrubbed. The same object when nothing is held."""
     held = _HELD.get()
-    if not held:
+    if not held and _MATCHER.get() is None:
         return value
     if isinstance(value, str):
         return scrub_secrets(value)
@@ -228,12 +306,14 @@ def for_storage(value: Any, held: dict[str, str] | None = None) -> Any:
     pairs = (tuple(sorted(((k, v) for k, v in held.items() if isinstance(v, str) and len(v) >= SECRET_MIN),
                           key=lambda kv: -len(kv[1])))
              if held is not None else _HELD.get())
+    # And the workspace's held secrets, by this step's matcher (F1307).
 
     def kept(item: Any, key: Any = None) -> Any:
         if isinstance(item, str):
             for name, secret in pairs:
                 if secret in item:
                     item = item.replace(secret, secret_mark(name))
+            item = _without_held(item)
             return without_cards(item) if _words_under(key) else item
         if isinstance(item, dict):
             return {k: kept(v, k) for k, v in item.items()}

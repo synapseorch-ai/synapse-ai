@@ -461,6 +461,10 @@ class OrchestrationEngine:
             # (receive_loop, stdio reader/writer) get event-loop time
             # before the next step starts sending new requests.
             await anyio.sleep(0)
+            # The workspace's held secrets, refreshed for this step (F1307's output side): a value saved since the
+            # last step — a token a build just put on a tool — is marked in whatever this step stores or shows.
+            from core.secret_scrub import refresh_held
+            await refresh_held()
 
             # Check if this run was cancelled via the cancel endpoint.
             # cancel_hook (set by distributed workers) checks Redis; the default
