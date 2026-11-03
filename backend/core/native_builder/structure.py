@@ -12,12 +12,19 @@ never from its words:
   reading another's through `{{ state.x }}`, in a build the quick classify itself gave the reason `team` (its closed
   list, `request.why`, as the effort offer reads it): one agent of type team, its lead, with them as its members. A
   pipeline of agents not asked for as a team is a plan like any other.
+* **An agent that works a named site is a browser agent** (F1301, cap-05): a new agent of type agent holding the in-app
+  browser's tools, on steps whose words name an http(s) site, has no sites, so its first keystroke there is the
+  person's turn; a browser agent with that site in `browser.sites` types there without one (read_only to look,
+  co_drive to type, press or send).
 
 A finding is sent back once, then said on the card: never a reason a plan cannot be built.
 """
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from core.native_builder import objects as O
 from core.templating import STATE_REF, one_form
@@ -63,6 +70,33 @@ async def issues(plan: O.Plan, ws: Workspace, asked: dict | None = None) -> list
                    f"{{{{ state.{using[0].id} }}}}")
     if "team" in ((asked or {}).get("why") or []) and (team := _a_team(plan, ws, steps)):
         out.append(team)
+    out += _browser_agents(plan, steps)
+    return out
+
+
+#: An address a step's words name (F1301): its host is the site a browser agent works.
+_SITE = re.compile(r"\bhttps?://[^\s<>\"'`)\]}]+", re.I)
+
+
+def _browser_agents(plan: O.Plan, steps: list[O.Step]) -> list[str]:
+    """New plain agents holding the browser's tools on steps that name a site: each is said as a browser agent with
+    that site (F1301)."""
+    from core.browser.gate import ALLOWED
+
+    out = []
+    for a in plan.agents:
+        tools = [t for t in a.tools if str(t).split("__")[-1] in ALLOWED]
+        if a.type != "agent" or not tools:
+            continue
+        words = " ".join(f"{s.prompt or ''} {s.does or ''}" for s in steps if s.type == "agent" and s.agent == a.name)
+        sites = list(dict.fromkeys(h for u in _SITE.findall(words) if (h := (urlsplit(u).hostname or "").lower())))
+        if not sites:
+            continue
+        acts = any(not ALLOWED[str(t).split("__")[-1]].get("read_only") for t in tools)
+        how = ("co_drive, so it types there without stopping for the person; read_only when it only looks" if acts
+               else "read_only, as it only looks")
+        out.append(f"structure: agent \"{a.name}\" works {', '.join(sites)} with the browser's tools: make it a "
+                   f"browser agent (type browser) with browser.sites {json.dumps(sites)} and browser.mode {how}")
     return out
 
 
