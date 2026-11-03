@@ -333,6 +333,16 @@ def _refuse_unsafe_expression(steps: list) -> dict | None:
     }
 
 
+def _refuse_engine_key_defaults(fields: dict) -> dict | None:
+    """Refuse a declared state that gives an engine key (a leading underscore) a default (F1315): one rule with every
+    door that saves a workflow (`save_rules.engine_key_defaults`)."""
+    from core.orchestration.save_rules import engine_key_defaults
+
+    if said := engine_key_defaults(fields.get("state_schema")):
+        return {"error": "Refusing to save: " + " ".join(said)}
+    return None
+
+
 def _refuse_misshapen_steps(steps: list) -> dict | None:
     """Refuse steps the engine's own step model would not read (F1047).
 
@@ -2773,6 +2783,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
         _normalize_state_schema_arg(args)
+        if (refused := _refuse_engine_key_defaults(args)) is not None:
+            return refused
         _normalize_steps_arg(args)
         steps = args.get("steps", [])
         if not isinstance(steps, list) or not steps:
@@ -2848,6 +2860,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         except ValueError as e:
             return {"error": str(e)}
         _normalize_state_schema_arg(fields)
+        if (refused := _refuse_engine_key_defaults(fields)) is not None:
+            return refused
         _normalize_steps_arg(fields)
         if "steps" in fields and isinstance(fields["steps"], list):
             fields["steps"] = _fill_step_defaults(fields["steps"])
@@ -2887,6 +2901,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             orch_id = _mint_id("orch")
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         _normalize_state_schema_arg(args)
+        if (refused := _refuse_engine_key_defaults(args)) is not None:
+            return refused
         try:
             caps = _run_cap_args(args)
         except ValueError as e:
@@ -3099,6 +3115,8 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
             if key in args and args[key] is not None:
                 raw_fields[key] = args[key]
         _normalize_state_schema_arg(raw_fields)
+        if (refused := _refuse_engine_key_defaults(raw_fields)) is not None:
+            return refused
         allowed = {"name", "description", "entry_step_id", "state_schema",
                    "max_total_turns", "timeout_minutes", "strict_state_types", "result_key"}
         fields = {k: v for k, v in raw_fields.items() if k in allowed}

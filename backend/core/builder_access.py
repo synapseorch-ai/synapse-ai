@@ -174,10 +174,13 @@ def forget_runs() -> None:
 
 
 def acting_caller() -> Caller:
-    """Whom a builder tool acts for: the person of Synapse AI's own run, else the owner, as for every tool usable
-    anywhere. Synapse AI's own run that names no one never gets here (`refusal`, F1315), and nor does one of its own
-    steps called from any other run."""
-    return _current.get() or Caller(role=Role.OWNER, via="assistant")
+    """Whom a builder tool acts for: the person of Synapse AI's own run; else the client the product's registry
+    checked and bound (an MCP call through `product_tools.build`); else the owner, as for every tool usable anywhere.
+    Synapse AI's own run that names no one never gets here (`refusal`, F1315), and nor does one of its own steps called
+    from any other run."""
+    from core.product_tools import caller as bound
+
+    return _current.get() or bound.current() or Caller(role=Role.OWNER, via="assistant")
 
 
 def current_caller() -> Caller | None:

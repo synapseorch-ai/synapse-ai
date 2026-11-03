@@ -109,6 +109,16 @@ def engine_key_sentence(step: Any) -> str:
             "those are the engine's own, and no step may write one. Give it another output key.")
 
 
+def engine_key_defaults(schema: Any) -> list[str]:
+    """A sentence for each key of a workflow's declared state that starts with an underscore and has a default: the
+    engine's own keys are never set by a workflow (F1315)."""
+    if not isinstance(schema, dict):
+        return []
+    return [f"The workflow's state gives '{key}' a default, and a key that starts with an underscore is the engine's "
+            "own, which no workflow may set. Give it another name." for key, field in schema.items()
+            if str(key).startswith("_") and isinstance(field, dict) and "default" in field]
+
+
 def reserved_problems(steps: list) -> list[str]:
     """A sentence for the Tool steps that name Synapse AI's own steps, which only its own run takes, and one for each
     step that writes an engine key (F1315)."""
@@ -134,6 +144,7 @@ def refusal(orch: dict, agents: dict) -> str | None:
         )
     if not orch.get("system"):  # Synapse AI's own workflow is its own run's (F1315)
         parts += reserved_problems(orch.get("steps") or [])
+        parts += engine_key_defaults(orch.get("state_schema"))
     parts += self_calls(orch, agents)
     parts += browser_step_problems(orch, agents)
     if not parts:
