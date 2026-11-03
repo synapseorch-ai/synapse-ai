@@ -33,7 +33,8 @@ class TestTheReview:
         review = checked["review"]
         assert f"\n  Described as: {SAYS}\n" in review, review
         assert review.index("Described as:") < review.index("before:"), "the words come before the diff"
-        assert "[5]" in review and "[4]" in review, "the diff is still shown"
+        assert "before: # Hours Open 9 to [5,] Monday to Friday." in review, "the diff is still shown, by whole words"
+        assert "after: # Hours Open 9 to [4,] Monday to Friday." in review
 
     async def test_an_op_without_says_reads_as_it_did(self, world):
         _, checked, _ = await _change(_edit(world["note"].id, find="within 30 days", replace="within 60 days"))
