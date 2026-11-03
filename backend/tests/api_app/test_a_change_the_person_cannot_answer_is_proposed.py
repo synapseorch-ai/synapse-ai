@@ -120,3 +120,33 @@ def test_the_change_routes_question_step_run_out_goes_back_to_the_planner():
 def test_the_planner_is_told_so_too():
     prompt = json.dumps(bundled_definitions()["agents"])
     assert "22. When the person says they don't know" in prompt
+
+
+# ── the card says what it does not fix (79's B2) ─────────────────────────────────────────────────────────────────
+# A step's change (edit_steps hands it to the build route's update, whose plan card the person approves) does not fix
+# the tool the step calls: where the person said they don't know, the card says so plainly, with the Tools screen.
+async def test_the_steps_card_says_it_does_not_fix_the_tool(client):
+    from unit.test_the_build_route_decides_in_code import _check, _run as _build_run
+
+    existing = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "fetch",
+                "steps": [{"id": "fetch", "name": "Fetch prices", "type": "tool", "forced_tool": "price_feed",
+                           "output_key": "fetch", "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    run = await _build_run(intent="update", existing_orch=existing, current_orchestration_id="orch_prices",
+                           **{CT.ASKED_KEY: [_asked("price_feed tool endpoint", "I’m not sure what the URL should be.")]})
+    draft = {"finish": "submit_plan", "kind": "update", "title": "Daily price check", "summary": "s",
+             "edits": [{"op": "set_meta", "fields": {"description": "Stops and says why when price_feed fails."}}]}
+    checked, _ = await _check(run, draft)
+    review = checked.get("review") or ""
+    assert "does not fix the tool" in review and "Tools" in review, review[:600]
+
+
+async def test_with_nothing_unknown_the_card_says_nothing_of_it(client):
+    from unit.test_the_build_route_decides_in_code import _check, _run as _build_run
+
+    existing = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "done",
+                "steps": [{"id": "done", "name": "End", "type": "end"}]}
+    run = await _build_run(intent="update", existing_orch=existing, current_orchestration_id="orch_prices")
+    draft = {"finish": "submit_plan", "kind": "update", "title": "Daily price check", "summary": "s",
+             "edits": [{"op": "set_meta", "fields": {"description": "Runs daily."}}]}
+    checked, _ = await _check(run, draft)
+    assert "does not fix the tool" not in (checked.get("review") or "")
