@@ -226,6 +226,12 @@ async def _connect_card(routed: dict, message: str, run_id: str, session_id: str
                                                               _words(str(e.get("name") or "")))), None)
         key = next((p for p in options["providers"] if want in (_words(p), _words(options["providers"][p]))), None)
         if app is None and key is None:
+            # A chat platform this host connects (F1313): its Connect card, put up before a word is written, so its
+            # token goes in the card's box and is never asked for in the reply (prod-10: "I'll need: 1. Your
+            # Telegram bot token").
+            said = await _channel_card(provider, want, options, shown, asked, server_module, events)
+            if said:
+                return said
             continue
         what = str(app.get("slug") if app else key).lower()
         if what in shown and not asked:
@@ -238,6 +244,39 @@ async def _connect_card(routed: dict, message: str, run_id: str, session_id: str
             return (f"A Connect card for {provider} is up above: say so, and that nothing connects until they press "
                     "Connect there. Put up no other card this turn.")
     return ""
+
+
+def _channel_platform(want: str, options: dict) -> str | None:
+    """The chat platform a provider's name is, as this host connects them (cloud's `channels`, else
+    `core.messaging.fields`), by its id or its name; None for anything else."""
+    from core.messaging import fields
+    from core.native_builder.target import _words
+
+    offered = options.get("channels") if options.get("channels") is not None else fields.PLATFORMS
+    return next((p for p, entry in offered.items()
+                 if want in (_words(p), _words(str(entry.get("label") or "")))), None)
+
+
+async def _channel_card(provider: str, want: str, options: dict, shown: set, asked: bool, server_module: Any,
+                        events: list[dict]) -> str:
+    """A chat platform's Connect card for the answer, or what is said in its place; "" when `provider` is none."""
+    from core.builder_connect import prepare_connection
+
+    platform = _channel_platform(want, options)
+    if platform is None:
+        return ""
+    if platform in shown and not asked:
+        return (f"A Connect card for {provider} was shown earlier in this conversation: say it is above, and that its "
+                "token is typed there, never in this chat; do not put up another.")
+    label = provider[:1].upper() + provider[1:]
+    done = await prepare_connection({"kind": "channel", "platform": platform, "name": label,
+                                     "title": f"Connect {label}"}, server_module, events)
+    if done.get("status") == "card_shown":
+        return (f"A Connect card for {provider} is up above, where its token is typed: say so, and that nothing "
+                "connects until they press Connect there. Say where to get the token if they ask (its own app or "
+                "developer site), never ask for it here. Put up no other card this turn.")
+    # Who may not connect one, or a platform this host does not: what to say instead, in code's words.
+    return str(done.get("error") or "")
 
 
 async def _workflows_said(turn: dict, named: list[dict], server_module: Any) -> list[str]:
