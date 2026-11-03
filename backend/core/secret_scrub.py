@@ -212,13 +212,17 @@ def set_held_loader(loader: Any) -> None:
     _LOADER = loader
 
 
-async def refresh_held() -> None:
-    """Load this step's held-secret matcher (the engine calls it at each step's start)."""
+async def refresh_held(variables: dict | None = None) -> None:
+    """Load this step's held-secret matcher (the engine calls it at each step's start). `variables`: the run's own,
+    already loaded, so this install's matcher reads no variables store per step; a host's loader has its own source."""
     loader = _LOADER
-    if loader is None:
-        from core.held_secrets import matcher as loader
     try:
-        found = await loader()
+        if loader is None:
+            from core.held_secrets import matcher
+
+            found = await matcher(variables)
+        else:
+            found = await loader()
     except Exception as exc:  # noqa: BLE001 — never a failed step; the shapes still run
         import logging
 

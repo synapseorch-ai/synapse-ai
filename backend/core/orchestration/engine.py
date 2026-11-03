@@ -462,9 +462,10 @@ class OrchestrationEngine:
             # before the next step starts sending new requests.
             await anyio.sleep(0)
             # The workspace's held secrets, refreshed for this step (F1307's output side): a value saved since the
-            # last step — a token a build just put on a tool — is marked in whatever this step stores or shows.
+            # last step — a token a build just put on a tool — is marked in whatever this step stores or shows. The
+            # run's variables, loaded once for it, are handed in rather than read again each step.
             from core.secret_scrub import refresh_held
-            await refresh_held()
+            await refresh_held(self.global_variables)
 
             # Check if this run was cancelled via the cancel endpoint.
             # cancel_hook (set by distributed workers) checks Redis; the default

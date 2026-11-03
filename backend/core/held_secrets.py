@@ -45,9 +45,10 @@ def _values_under(value: Any, *, all_strings: bool = False, key: str = "") -> It
             yield from _values_under(v, all_strings=all_strings, key=key)
 
 
-async def _held() -> list[tuple[str, str]]:
+async def _held(known_variables: dict | None = None) -> list[tuple[str, str]]:
     """(value, kind) for every secret this install holds. A source that can't be read is skipped on its own, logged by
-    its error's type only (its words could carry a value), so the others still count."""
+    its error's type only (its words could carry a value), so the others still count. `known_variables`: the run's own
+    variables, already loaded (the engine loads them once per run), read instead of the store."""
     import logging
 
     from core import variables
@@ -74,7 +75,8 @@ async def _held() -> list[tuple[str, str]]:
         return [(v, WORKSPACE) for v in _values_under(await load_settings_for_tenant())]
 
     async def workspace_variables():
-        return [(v, WORKSPACE) for v in _values_under(await variables.load())]
+        loaded = known_variables if known_variables is not None else await variables.load()
+        return [(v, WORKSPACE) for v in _values_under(loaded)]
 
     held: list[tuple[str, str]] = []
     for source in (servers, oauth, channel_tokens, tool_headers, settings, workspace_variables):
@@ -107,9 +109,9 @@ class _Values:
         return [v for v in self._values if v in text]
 
 
-async def matcher() -> _Values | None:
+async def matcher(known_variables: dict | None = None) -> _Values | None:
     """The output side's matcher for this step: every held value, or None when there are none."""
     from core.secret_scrub import secret_like
 
-    values = [v for v, _ in await _held() if secret_like(v)]
+    values = [v for v, _ in await _held(known_variables) if secret_like(v)]
     return _Values(values) if values else None
