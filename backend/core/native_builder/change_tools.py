@@ -1138,8 +1138,22 @@ def _review(ops: list[dict]) -> str:
             uses = ("used by " + ", ".join(used)) if used else "nothing uses it"
             lines.append(f"- ⚠️ DELETES: {item['line']} — {uses}. {DELETE_NOTE}")
         else:
-            lines.append(f"- {item['line']}")
+            lines.append(f"- {_with_says(item['line'], item.get('says'))}")
     return "\n".join(lines)
+
+
+def _with_says(line: str, says: Any) -> str:
+    """An op's review line with the planner's own words for it under it, above the exact change (F1308): prod-04's
+    "Change Friday closing time from 7pm to 6pm" over a before/after that closed every weekday at 6pm, approved because
+    only the diff was shown. The line stays code's alone (MCP2's note 3): the gloss is on its own line, said as whose
+    it is, and scrubbed like the rest of the card (the shapes, and the workspace's held secrets)."""
+    from core.secret_scrub import scrub_credentials, scrub_secrets
+
+    said = scrub_secrets(scrub_credentials(_text(says))[0])
+    head, _, rest = str(line).partition("\n")
+    if not said or said.casefold() in head.casefold():
+        return str(line)
+    return f"{head}\n  Described as: {said}" + (f"\n{rest}" if rest else "")
 
 
 def _said(ops: list[dict]) -> str:
@@ -1715,7 +1729,7 @@ async def _a_new_thing(base: dict, raw: dict) -> dict:
         return {**base, "outcome": "said", "ops": [item],
                 "say": f"{article} {said} is already called {_quoted(name)}: say another name."}
     item.update(status="ready", line=f"Make the {said} {_quoted(name)}" + (f" — {what}" if what else ""))
-    out = {**base, "outcome": "create", "ops": [item], "review": f"- {item['line']}"}
+    out = {**base, "outcome": "create", "ops": [item], "review": f"- {_with_says(item['line'], item['says'])}"}
     await _card(out, stage=WAITING)
     return out
 
