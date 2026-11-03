@@ -101,14 +101,12 @@ ANYWHERE: frozenset[str] = frozenset({
 
 #: Synapse AI's own run only (F1315): its cards, which put something in front of its person; the steps that act on a
 #: yes kept in its run's state, which an ordinary workflow could write itself; the reads of its own run's plan and
-#: research; and the reviewed changes it applies. Every builder tool is in this list or `ANYWHERE`
+#: research. Every builder tool is in this list or `ANYWHERE`
 #: (`test_synapse_ai_own_steps_stay_in_its_own_run.py`), and one in neither is refused as this list's.
 OWN_RUN_ONLY: frozenset[str] = CARDS | frozenset({
     "read_change_context", "read_plan_context", "read_plan_answer", "check_plan", "check_answer", "check_draft",
     "answer_research", "settle_research",
     "approve_change", "apply_change", "approve_plan", "save_build", "finish_build", "read_connect_answer",
-    "set_settings", "edit_knowledge_document", "update_knowledge_base", "edit_agent_memory_item",
-    "delete_agent_memory_item",
 })
 
 

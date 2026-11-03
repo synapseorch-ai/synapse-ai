@@ -1286,6 +1286,15 @@ class ToolStepExecutor:
             output, saved = await execute_builder_tool_with_events(
                 tool_name, tool_args, server_module, run_id=run_id, door="step"
             )
+            # Refused because no one may have this run call it (F1315): the step fails and the run stops in words,
+            # so no later step reads, or shows a person, what this one never wrote.
+            from core.builder_access import NO_ONE, run_only
+            try:
+                said = json.loads(output).get("error")
+            except (ValueError, AttributeError):
+                said = None
+            if said in (run_only(tool_name), NO_ONE):
+                raise ToolCallFailed(said, retryable=False)
             if resource_events is not None:
                 resource_events.extend(saved)
             return output
