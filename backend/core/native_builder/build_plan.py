@@ -2056,6 +2056,42 @@ async def _given(state: dict, ws: Workspace, asked: list[dict]) -> list[Any]:
             ws.tools, servers]
 
 
+#: What the person said themselves: their words and their answers. Never the pack, which lists every base by name.
+PERSON_KEYS = ("user_message", "chat_history", "human_response", "review_feedback", "plan_answer", "change_clarify",
+               "change_heard")
+
+
+def _knowledge_label(name: str) -> str:
+    return f'The plan answers from your knowledge base "{name}", which you didn\'t name. Is it the one you mean?'
+
+
+def unnamed_knowledge(draft: dict, ws: Workspace, said: list[Any]) -> list[str]:
+    """Each knowledge base already here that the plan answers from or fills and the person never named (F1302): asked
+    "our help docs" questions, a run answered from "Clinic FAQ" and missed the docs the person meant. A base is named
+    when its exact name is in their words (case aside); anything else is a guess, kept or changed on the form. No
+    reading of what they meant: whether the name was said, and nothing else."""
+    if not ws.kbs:
+        return []
+    by_id = {str(i): str(getattr(kb, "name", "") or "") for i, kb in ws.kbs.items()}
+    names = {n for n in by_id.values() if n}
+    used: set[str] = set()
+    for agent in draft.get("agents") or []:
+        if isinstance(agent, dict):
+            used |= {str(n) for n in agent.get("knowledge") or []}
+    for part in draft.get("knowledge") or []:
+        if isinstance(part, dict) and part.get("name"):
+            used.add(str(part["name"]))
+    for step in draft.get("steps") or []:
+        config = step.get("config") if isinstance(step, dict) and isinstance(step.get("config"), dict) else {}
+        retrieve = config.get("retrieve") if isinstance(config.get("retrieve"), dict) else {}
+        ingest = config.get("ingest") if isinstance(config.get("ingest"), dict) else {}
+        used |= {by_id.get(str(r), str(r)) for r in retrieve.get("kb_ids") or []}
+        if ingest.get("kb_id"):
+            used.add(by_id.get(str(ingest["kb_id"]), str(ingest["kb_id"])))
+    words = json.dumps(said, default=str, ensure_ascii=False).lower()
+    return sorted(n for n in used & names if n.lower() not in words)
+
+
 async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspace,
                         state: dict) -> tuple[dict | None, list[str]]:
     """What only the person can say, asked before any plan, research or Connect card (F1253), in one form, one round
@@ -2073,19 +2109,28 @@ async def _asked_first(base: dict, draft: dict, carried: list[str], ws: Workspac
     # How a service is reached is looked up, never asked, as `ask_person` refuses it.
     questions = [q for q in carried if isinstance(q, str) and q.strip() and not _ASKS_WAY_IN.search(q)
                  and asked_before(state, "what", "", q) is None]
-    if not (unsaid or questions):
+    # An existing knowledge base the person never named (F1302): the planner's pick, kept or changed on the same form.
+    said = [state.get(k) for k in PERSON_KEYS] + [a.get("answer") for a in base.get("asked") or []
+                                                  if isinstance(a, dict)]
+    kbs = [n for n in unnamed_knowledge(draft, ws, said)
+           if asked_before(state, "which", f"knowledge base {n}", _knowledge_label(n)) is None]
+    if not (unsaid or questions or kbs):
         return None, []
     if questions_asked(state, run) >= QUESTIONS:
-        return None, [a.said() for a in unsaid]
+        return None, [a.said() for a in unsaid] + [
+            f'The plan answers from "{n}", which you didn\'t name: check it before you build.' for n in kbs]
     form = []
     for a in unsaid[:FORM_MAX]:
         form.append({"name": f"q{len(form) + 1}", "type": addresses.FIELD_TYPE[a.kind], "label": a.label(),
                      "value": a.value})
         note_question(state, "what", a.subject, a.label(), field=form[-1]["name"])
+    for n in kbs[:max(0, FORM_MAX - len(form))]:
+        form.append({"name": f"q{len(form) + 1}", "type": "string", "label": _knowledge_label(n), "value": n})
+        note_question(state, "which", f"knowledge base {n}", _knowledge_label(n), field=form[-1]["name"])
     for q in questions[:max(0, FORM_MAX - len(form))]:
         form.append({"name": f"q{len(form) + 1}", "type": "string", "label": q.strip()})
         note_question(state, "what", "", q.strip(), field=form[-1]["name"])
-    lead = UNSAID_LEAD if unsaid else FORM_LEAD
+    lead = UNSAID_LEAD if unsaid or kbs else FORM_LEAD
     return {**base, "outcome": "ask", "question": form_text(lead, form), "form": form}, []
 
 
