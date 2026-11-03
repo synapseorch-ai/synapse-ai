@@ -118,13 +118,17 @@ def _draft(**policy) -> dict:
             "agents": [_agent("Portal Order Checker", WORKS)], **policy}
 
 
-async def test_a_press_before_the_approval_without_asking_goes_back(client):
+def _asks(found) -> set[str]:
+    return set(found.plan.approvals.asks_first) if found.plan is not None else set()
+
+
+# The guard is the builder's own ask-first (`O.fill`: every acting tool a new agent holds asks first, which the
+# compile makes its confirm policy; only the person's press lifts one), so a step before the approval never presses
+# unasked, and decision 4 has nothing to send back. (First written as "goes back": CI2's run 41595023505 showed the
+# builder asks first itself, as cap-05's run asked before each press; the pin now holds that.)
+async def test_a_press_before_the_approval_asks_first(client):
     found = await _examine(_draft())
-    assert any("can run `browser_click`" in e and "without asking" in e for e in found.errors), found.errors
-
-
-async def test_with_the_confirm_policy_it_does_not(client):
-    found = await _examine(_draft(approvals={"asks_first": ["browser_click", "browser_type"]}))
+    assert {"browser_click", "browser_type"} <= _asks(found), found.plan.approvals if found.plan else found.errors
     assert not [e for e in found.errors if "without asking" in e], found.errors
 
 
@@ -136,28 +140,29 @@ async def test_with_the_confirm_policy_it_does_not(client):
 ACTING = sorted(n for n, t in ALLOWED.items() if not t.get("read_only"))
 
 
-def _browser_draft(tools: list[str], mode: str = "co_drive", **policy) -> dict:
+def _browser_draft(tools: list[str], mode: str = "co_drive") -> dict:
     agent = _agent("Portal Order Checker", tools, type="browser",
                    browser={"sites": ["portal.localhost"], "mode": mode})
-    return {**_draft(**policy), "agents": [agent]}
+    return {**_draft(), "agents": [agent]}
 
 
-async def test_a_co_drive_browser_agents_listed_press_before_the_approval_goes_back(client):
+async def test_a_co_drive_browser_agents_listed_presses_ask_first(client):
     found = await _examine(_browser_draft(WORKS))
-    assert any("can run `browser_click`" in e and "without asking" in e for e in found.errors), found.errors
-    found = await _examine(_browser_draft(WORKS, approvals={"asks_first": ["browser_click", "browser_type"]}))
+    assert set(ACTING) <= _asks(found), "the ones it lists and the ones it holds unlisted"
     assert not [e for e in found.errors if "without asking" in e], found.errors
 
 
-async def test_a_co_drive_browser_agent_holds_the_browsers_presses_unlisted(client):
+async def test_a_co_drive_browser_agents_unlisted_presses_ask_first(client):
+    # F1305: it holds the browser's presses however it was made; only code's ask-first, read from what it holds,
+    # keeps one before the approval from pressing unasked (decision 4 sent back the first it met, before this).
     found = await _examine(_browser_draft([]))
-    assert any("can run `browser_click`" in e and "without asking" in e for e in found.errors), found.errors
-    found = await _examine(_browser_draft([], approvals={"asks_first": ACTING}))
+    assert set(ACTING) <= _asks(found), _asks(found)
     assert not [e for e in found.errors if "without asking" in e], found.errors
 
 
 async def test_a_read_only_browser_agent_sends_nothing(client):
     found = await _examine(_browser_draft([], mode="read_only"))
+    assert not (set(ACTING) & _asks(found)), "read_only sends nothing at the component's network gate"
     assert not [e for e in found.errors if "without asking" in e], found.errors
 
 
@@ -169,8 +174,10 @@ async def test_a_read_only_browser_agent_sends_nothing(client):
 def kept(monkeypatch):
     from core import site_sessions
 
-    rows = [{"site": "localhost", "usable": True}, {"site": "example.com", "usable": True},
-            {"site": "localhost.test", "usable": False}]
+    # A session kept for portal.localhost is that site's: registrable_domain("portal.localhost") is itself (first
+    # written as "localhost", which same_site rightly never matches to it; TRI1 and CI2's run 41595023505).
+    rows = [{"site": "portal.localhost", "usable": True}, {"site": "example.com", "usable": True},
+            {"site": "localhost", "usable": True}, {"site": "portal.localhost.test", "usable": False}]
 
     async def listed(caller=None):
         return rows
@@ -183,8 +190,8 @@ async def test_a_kept_session_for_its_site_is_named_in_the_one_finding(client, k
     said = _found(await structure.issues(_plan([CHECK], [_agent("Portal Order Checker", WORKS)]),
                                          build_plan.Workspace()))
     assert len(said) == 1 and 'browser.sites ["portal.localhost"]' in said[0], said
-    assert 'browser.sessions ["localhost"]' in said[0], "the person's kept session for the site, by its site"
-    assert "example.com" not in said[0]
+    assert 'browser.sessions ["portal.localhost"]' in said[0], "the person's kept session for the site, by its site"
+    assert "example.com" not in said[0] and '"localhost"' not in said[0], "another site's session is not its"
 
 
 async def test_with_no_kept_session_none_is_named(client, monkeypatch):
