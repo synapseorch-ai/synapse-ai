@@ -312,6 +312,49 @@ ASKED_KEY = "request_questions"
 ROUNDS_KEY = "request_rounds"
 ASKED_ALREADY = ("You asked the person this already: \"{question}\" Their answer: {answer}. Don't ask it again: go on "
                  "with that answer.")
+#: An answer to our own question that says the person doesn't know (F1310, prod-07). A short closed list, read only
+#: to stop asking: it never acts, never fills a value, and reads nothing but answers to questions we put.
+_DONT_KNOW = re.compile(r"\b(?:not sure|unsure|not certain|don't know|do not know|no idea|don't have|do not have|"
+                        r"can you (?:check|find|look))\b", re.I)
+#: What the planner proposes instead, once the person has said they don't know (F1310: the change route's exit).
+PROPOSE = ("Propose a change they can approve with submit_change: for a step that fails, edit_steps on its workflow "
+           "(what the step does when its tool fails: stop and say why, or carry on without it); its card says plainly "
+           "what it does not fix (a tool's address is changed on the Tools screen).")
+DONT_KNOW_SUBJECT = ("The person said they don't know this: \"{answer}\" Don't ask what they can't answer: go on without "
+                     "it, or propose a change they can approve.")
+DONT_KNOW_ALL = "The person said they don't know, {n} times: don't ask what they can't answer. " + PROPOSE
+#: That a change request's words went back once for a card (F1310); the run's own, never a public read's.
+WORDS_SENT_KEY = "_change_words_sent"
+WORDS_INSTEAD = ("The person said they don't know, or has been asked all this request asks: don't end a change in "
+                 "words. " + PROPOSE + " Send your words again as they are to keep them.")
+
+
+def dont_knows(state: dict) -> list[dict]:
+    """The request's questions whose answer says the person doesn't know (F1310); [] for none."""
+    return [a for a in _with_answers(state)
+            if _DONT_KNOW.search(str(a.get("answer") or "").replace("\u2019", "'").replace("\u2018", "'"))]
+
+
+def _unknown_refusal(state: dict, about: str, subject: str, question: str) -> str | None:
+    """Why a question is not put, after the person said they don't know: one such answer stops questions on its
+    subject; two (by their words, a form's one reply counting once) stop them all."""
+    unknown = dont_knows(state)
+    answers = list(dict.fromkeys(str(a.get("answer")) for a in unknown))
+    if len(answers) >= 2:
+        return DONT_KNOW_ALL.format(n=len(answers))
+    same = next((a for a in unknown if _same_question(a, about, subject, question)), None)
+    return DONT_KNOW_SUBJECT.format(answer=same.get("answer")) if same else None
+
+
+def words_sent_back(state: dict, run: Any = None) -> str | None:
+    """A change request that ends in words after the person said they don't know, or at the request's cap, goes back
+    once to propose the card (F1310); None when its words stand."""
+    if state.get("intent") != "manage" or state.get(WORDS_SENT_KEY):
+        return None
+    if not dont_knows(state) and questions_asked(state, run) < QUESTIONS:
+        return None
+    state[WORDS_SENT_KEY] = True
+    return WORDS_INSTEAD
 
 
 def _question_words(text: Any) -> set[str]:
@@ -538,6 +581,8 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     if (same := asked_before(state, about, subject, question)) is not None:
         return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
                                               answer=same.get("answer") or "none yet")}
+    if (unknown := _unknown_refusal(state, about, subject, question)) is not None:
+        return {"error": unknown}
     # The request's count, not the run's: its questions in earlier runs, then this run's own (F1226).
     if (asked := questions_asked(state, run)) >= QUESTIONS:
         return {"error": ASKED_ENOUGH.format(n=asked)}
@@ -571,6 +616,8 @@ def _ask_form(lead: str, items: list[dict]) -> dict:
         if (same := asked_before(state, about, subject, question)) is not None:
             return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
                                                   answer=same.get("answer") or "none yet")}
+        if (unknown := _unknown_refusal(state, about, subject, question)) is not None:
+            return {"error": unknown}
     if (n := questions_asked(state, run)) >= QUESTIONS:
         return {"error": ASKED_ENOUGH.format(n=n)}
     if run is not None:
@@ -586,6 +633,9 @@ async def cannot(args: dict, server_module: Any, events: list[dict]) -> dict:
     if asks_for_a_secret(f"{why}\n{nearest}"):
         # Said to the person as it is: a key is never a reason to stop, nor something to ask for (F1093).
         return {"error": CANNOT_FOR_A_KEY}
+    _, run = _run()
+    if run is not None and (back := words_sent_back(run.shared_state, run)):
+        return {"error": back}
     screen = _text(args.get("screen"))
     if not screen:
         return {"finish": "cannot", "why": why, "nearest": nearest}
@@ -612,6 +662,9 @@ async def say(args: dict, server_module: Any, events: list[dict]) -> dict:
         return {"error": "say needs the reply itself as text."}
     if asks_for_a_secret(text):
         return {"error": CANNOT_FOR_A_KEY}  # a reply never asks for a key either (F1093)
+    _, run = _run()
+    if run is not None and (back := words_sent_back(run.shared_state, run)):
+        return {"error": back}  # a change the person can't answer for ends in a card, once asked (F1310)
     return {"finish": "say", "text": text}
 
 
