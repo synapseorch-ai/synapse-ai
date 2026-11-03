@@ -21,6 +21,7 @@ AREAS: tuple[str, ...] = (
     "core.product_tools.browser",
     "core.product_tools.features",
     "core.product_tools.evals",
+    "core.product_tools.skills",
     "core.product_tools.settings",
     "core.product_tools.operations",
     "core.product_tools.agent_memory",

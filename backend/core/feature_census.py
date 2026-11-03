@@ -77,8 +77,9 @@ CENSUS: tuple[Screen, ...] = (
     _s("agents", "Agents", "/agents", "makes, changes and deletes agents, talks to one, and says what one has done",
        ("create_agent", "update_agent", "delete_agent", "chat_with_agent", "read_workspace:agent_activity"),
        names=("chatbot",), plan_part=True),
-    _s("skills", "Skills", "/skills", "writes skills and gives them to agents",
-       ("create_skill", "update_skill", "attach_skills", "list_skills"), names=("skill",)),
+    _s("skills", "Skills", "/skills", "writes skills, gives them to agents and deletes them",
+       ("create_skill", "update_skill", "attach_skills", "list_skills", "delete_skill"),
+       cant="installing a skill from the Skills registry, which a person does on that screen", names=("skill",)),
     _s("browser", "Browser", "/browser", "lists the kept sign-ins and recorded tasks, uses or drops a fix a run kept "
        "on a recording, renames and deletes a recording",
        ("list_browser_sessions", "list_recordings", "get_recording", "delete_recording", "approve_recording_edit",

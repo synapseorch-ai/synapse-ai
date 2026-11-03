@@ -719,7 +719,8 @@ async def read(kind: str, target_id: str) -> dict | None:
     if kind == "skill":
         from core import skills
 
-        return await skills.get_skill(target_id)
+        # The library's own (F1266): a disk skill of the same name is not what a change or a delete is about.
+        return await skills.get_library_skill(target_id)
     if kind == "tool":
         from core.store.resources import load_tools
 
@@ -1193,6 +1194,13 @@ async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
 
         holders = [a.get("name") or a["id"] for a in await load_agents()
                    if not a.get("system") and target_id in (a.get("tools") or [])]
+        return [f"agent {_quoted(n)}" for n in holders], None
+    if op.target == "skill":
+        # Agents that select it keep its name and load nothing until it is back (F1266): said, never refused.
+        from core.store.resources import load_agents
+
+        holders = [a.get("name") or a["id"] for a in await load_agents()
+                   if not a.get("system") and target_id in (a.get("skills") or [])]
         return [f"agent {_quoted(n)}" for n in holders], None
     return [], None
 

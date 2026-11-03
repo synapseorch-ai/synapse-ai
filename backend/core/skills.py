@@ -375,6 +375,38 @@ async def get_skill(name: str) -> dict | None:
     return None
 
 
+class NotInLibrary(LookupError):
+    """A skill name the library does not hold: none by that name, or one read from disk, which is changed there."""
+
+
+#: The Skills screen's words for it (`routes/skills.py`), said by every door.
+NOT_IN_LIBRARY = "Skill not found in the library (disk skills are read-only)"
+
+
+async def get_library_skill(name: str) -> dict | None:
+    """One library skill with its body; never a disk skill of the same name (what a change or a delete is about)."""
+    name = normalize_name(name)
+    for item in await load_library():
+        if (item.get("name") or item.get("id")) == name:
+            return {"name": name, "description": item.get("description", ""), "body": item.get("body", ""),
+                    "source": "library"}
+    return None
+
+
+async def delete_from_library(name: str) -> dict:
+    """Take a skill out of the library, once, for every door (the Skills screen, Synapse AI's change; F1266): the
+    skill as it was, for an undo. A disk skill is the folder's, and `NotInLibrary` says so. Agents that select it keep
+    the name and load nothing until it is back."""
+    name = normalize_name(name)
+    library = await load_library()
+    gone = await get_library_skill(name)
+    remaining = [item for item in library if (item.get("name") or item.get("id")) != name]
+    if gone is None or len(remaining) == len(library):
+        raise NotInLibrary(NOT_IN_LIBRARY)
+    await save_library(remaining)
+    return gone
+
+
 async def resolve_selected(names: list[str]) -> list[dict]:
     """The metas (no bodies) for an agent's selected skill names, in order.
 
