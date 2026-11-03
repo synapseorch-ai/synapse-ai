@@ -566,11 +566,9 @@ async def _workflows(args: dict) -> dict:
 # ── what happened (ASSIST1): the product tools' reads, as the run's person ──────────────────────────────────
 
 def _caller():
-    from core.builder_access import current_caller
-    from core.product_tools.caller import Caller
-    from core.product_tools.roles import Role
+    from core.builder_access import acting_caller
 
-    return current_caller() or Caller(role=Role.OWNER, via="assistant")
+    return acting_caller()  # the run's person; never the owner inside a run that names no one (F1315)
 
 
 async def _product_read(name: str, args: dict) -> dict:

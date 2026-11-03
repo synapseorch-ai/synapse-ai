@@ -109,6 +109,10 @@ async def _workflows_called(orch: dict, agents: dict) -> tuple[list[dict], list[
                 )
                 continue
             if child.get("system"):
+                # Synapse AI's own workflow acts for the person who asks it: no workflow may run it (F1315).
+                kind = "Workflow" if direct else "Agent"
+                issues.append(f"{where}{kind} step '{s.get('id')}' runs Synapse AI's own workflow, which no "
+                              "workflow may run: point it at one of this workspace's workflows.")
                 continue
             called.append(child)
             await visit(child, (*chain, child_id))

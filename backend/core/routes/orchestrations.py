@@ -546,7 +546,8 @@ async def run_orchestration(orch_id: str, request: Request):
     """
     from core.scale.context import resolve_orchestration
     orch_data = await resolve_orchestration(orch_id)
-    if not orch_data:
+    if not orch_data or orch_data.get("system"):
+        # Synapse AI's own orchestration runs only from its own routes, for their person (F1315).
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     body = await request.json()

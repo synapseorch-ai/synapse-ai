@@ -2155,15 +2155,13 @@ async def read_plan_answer(args: dict, server_module: Any, events: list[dict]) -
     if on and f"turn_on:{on.group('what').lower()}" in (checked_in(state).get("offers") or []):
         # Turned on as its switch in Settings does, for this person (an admin's), then planned again on it, as after a
         # connection (F1203).
-        from core.builder_access import current_caller
+        from core.builder_access import acting_caller
         from core.product_tools import areas, registry
-        from core.product_tools.caller import Caller
         from core.product_tools.errors import ToolRefusal
-        from core.product_tools.roles import Role
 
         areas.ensure_loaded()
         try:
-            await registry.invoke("turn_on_feature", current_caller() or Caller(role=Role.OWNER, via="assistant"),
+            await registry.invoke("turn_on_feature", acting_caller(),
                                   {"feature": on.group("what").lower()})
         except ToolRefusal:
             return _revising(state)

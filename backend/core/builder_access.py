@@ -106,9 +106,27 @@ _PEOPLE: dict[str, str | None] = {}
 _NOBODY = object()
 _MAX_RUNS = 2000
 
+#: What a builder run that names no person is told (F1315): it acts for no one, so it does nothing.
+NO_ONE = ("Not done: this run of Synapse AI names no person to act for, so it does nothing. Ask Synapse AI in "
+          "the app.")
+
 
 def forget_runs() -> None:
     _PEOPLE.clear()
+
+
+def acting_caller() -> Caller:
+    """Whom a builder tool acts for: the run's person; inside a run that names no one, nobody (F1315: refused, never
+    the owner); only a direct call outside any run, as the tests and the install's own code make, is the owner's."""
+    from core.builder_tools import _current_run
+    from core.product_tools.errors import ToolRefusal
+
+    caller = _current.get()
+    if caller is not None:
+        return caller
+    if _current_run.get():
+        raise ToolRefusal(NO_ONE)
+    return Caller(role=Role.OWNER, via="assistant")
 
 
 def current_caller() -> Caller | None:
@@ -121,12 +139,18 @@ async def _person(run_id: str | None):
         return _NOBODY
     if run_id in _PEOPLE:
         return _PEOPLE[run_id]
+    from core.orchestration.engine import live_run
     from core.orchestration.state import SharedState
 
-    try:
-        state = (await SharedState.restore(run_id)).run.shared_state or {}
-    except FileNotFoundError:
-        return _NOBODY  # not checkpointed yet: no host-written person to go by
+    # The live run first: a run this process works under holds its person before its first checkpoint (F1315).
+    live = live_run(run_id)
+    if live is not None:
+        state = live.shared_state or {}
+    else:
+        try:
+            state = (await SharedState.restore(run_id)).run.shared_state or {}
+        except FileNotFoundError:
+            return _NOBODY  # neither live here nor checkpointed: no host-written person to go by
     entry = state.get(CALLER_KEY)
     if not isinstance(entry, dict):
         return _NOBODY
@@ -153,10 +177,31 @@ async def caller_for(run_id: str | None) -> Caller | None:
     return await _caller(role, person) if role is not None else None
 
 
+async def _a_builder_run(run_id: str | None) -> bool:
+    """Whether `run_id` is a run of the builder's orchestration (`identity`: the fixed id here, a host's own ids)."""
+    if not run_id:
+        return False
+    from core.native_builder.identity import is_builder_run
+    from core.orchestration.engine import live_run
+    from core.orchestration.state import SharedState
+
+    run = live_run(run_id)
+    if run is None:
+        try:
+            run = (await SharedState.restore(run_id)).run
+        except FileNotFoundError:
+            return False
+    return await is_builder_run(run)
+
+
 async def refusal(tool_name: str, run_id: str | None) -> tuple[str | None, Caller | None]:
     """(why `tool_name` may not run in this run, or None; the run's person, if it names one)."""
     person = await _person(run_id)
     if person is _NOBODY:
+        # A builder run acts for the person who started it, or for no one: never for whoever the fallback would be
+        # (F1315, fails closed). A call outside any builder run is not this check's.
+        if await _a_builder_run(run_id):
+            return NO_ONE, None
         return None, None
     role = await _role(person)
     if role is None:

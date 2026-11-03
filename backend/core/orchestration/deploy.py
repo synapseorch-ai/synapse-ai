@@ -18,7 +18,8 @@ async def deploy_as_agent(orch_id: str) -> dict:
     from core.store.resources import get_orchestration, save_agent
 
     orch_data = await get_orchestration(orch_id)
-    if not orch_data:
+    if not orch_data or orch_data.get("system"):
+        # Synapse AI's own orchestration is never an agent of the workspace's (F1315): not found, as everywhere else.
         return {"status": "not_found"}
 
     existing = next((a for a in await load_user_agents() if a.get("orchestration_id") == orch_id), None)

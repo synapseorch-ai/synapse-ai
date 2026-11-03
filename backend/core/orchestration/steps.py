@@ -675,6 +675,9 @@ async def run_nested_workflow(
     # By id, through the resource provider — the same path resume takes.
     # This used to load every orchestration in the tenant and scan.
     sub_orch_data = await resolve_orchestration(sub_orch_id)
+    if sub_orch_data and sub_orch_data.get("system"):
+        # Synapse AI's own orchestration acts for the person who asks it, so no workflow runs it (F1315).
+        raise RuntimeError(f"The {source} names Synapse AI's own workflow, which no workflow may run.")
     if sub_orch_data and sub_orch_data.get("is_active", True) is False:
         # Deleted and kept as a record: never run (F408).
         raise RuntimeError(gone)
