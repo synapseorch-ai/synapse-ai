@@ -342,6 +342,22 @@ SCHEMA = {
 }
 
 
+def keep_read(state: dict, name: str, spec: str) -> None:
+    """A clean read of the person's spec, kept for the conversation (F1298): its name and where it is, never a key."""
+    if _keepable(spec):
+        state[SPECS_KEY] = {**carried(state), name.lower(): {"name": name, "spec": spec}}
+
+
+def answer_of(name: str, got: dict) -> dict:
+    """A read spec as the planner is given it: its tools by name and call, and where its key goes."""
+    tools = [{"tool": t["name"], "call": f"{t['method']} {_path(t['url'], got['base'])}",
+              "does": t["description"][:160]} for t in got["tools"]]
+    auth = got["auth"]
+    return {"api": name, "tools": tools[:LISTED], "more": max(0, len(tools) - LISTED),
+            "key": (f"asked for on a card after the yes, sent in its {auth['name']} header" if auth else
+                    "none: it takes no key")}
+
+
 async def read_api_spec(args: dict, server_module: Any, events: list[dict]) -> dict:
     name = str(args.get("name") or "").strip()
     if not name:
@@ -351,18 +367,10 @@ async def read_api_spec(args: dict, server_module: Any, events: list[dict]) -> d
     if got["problem"]:
         why = got["problem"].rstrip(". ")
         return {"error": f"{why[0].upper()}{why[1:]}."}
-    if _keepable(spec):
-        # The conversation's from here on (F1298): its name and where it is, never a key.
-        from core.native_builder.build_plan import _state
+    from core.native_builder.build_plan import _state
 
-        state = _state()
-        state[SPECS_KEY] = {**carried(state), name.lower(): {"name": name, "spec": spec}}
-    tools = [{"tool": t["name"], "call": f"{t['method']} {_path(t['url'], got['base'])}",
-              "does": t["description"][:160]} for t in got["tools"]]
-    auth = got["auth"]
-    return {"api": name, "tools": tools[:LISTED], "more": max(0, len(tools) - LISTED),
-            "key": (f"asked for on a card after the yes, sent in its {auth['name']} header" if auth else
-                    "none: it takes no key")}
+    keep_read(_state(), name, spec)  # the conversation's from here on (F1298)
+    return answer_of(name, got)
 
 
 register_builder_tool(SCHEMA, read_api_spec)

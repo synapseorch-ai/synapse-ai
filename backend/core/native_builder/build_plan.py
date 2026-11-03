@@ -255,7 +255,7 @@ def go_ahead_request(state: dict) -> str | None:
 
 
 #: What the planner sees of a read site (D340 B): the facts, not the fetch's bookkeeping.
-_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "why_not")
+_SITE_FIELDS = ("url", "final_url", "title", "what", "kind", "api_spec", "api", "why_not")
 
 
 async def _named_sites(state: dict) -> list[dict]:
@@ -272,9 +272,31 @@ async def _named_sites(state: dict) -> list[dict]:
     except Exception as exc:  # noqa: BLE001 — sites unread are a plan without them, as before D340
         _log.warning("the sites the message names were not read: %s", exc)
         return []
+    for page in pages.values():
+        if isinstance(page, dict) and page.get("api_spec") and not page.get("api"):
+            await _spec_of(page, state)
     if pages:
         state[named_sites.PAGES_KEY] = {**already, **pages}
     return [{k: page[k] for k in _SITE_FIELDS if page.get(k)} for page in pages.values() if isinstance(page, dict)]
+
+
+async def _spec_of(page: dict, state: dict) -> None:
+    """A spec a named site has (linked, or at its usual address, F1317), read once as the person's own (F1298's
+    carry): the page keeps its tools for the planner, so a later turn reads it again from the conversation, never the
+    web. A spec that cannot be used is said on the page."""
+    from core.native_builder import own_api
+
+    name = str(page.get("api_title") or urlsplit(str(page.get("final_url") or page.get("url") or "")).hostname or "API")
+    try:
+        got = await own_api.read(name, str(page["api_spec"]))
+    except Exception as exc:  # noqa: BLE001 — a spec unread is a page without its tools, never a pack that fails
+        _log.warning("a named site's spec was not read: %s", exc)
+        return
+    if got["problem"]:
+        page["why_not"] = "; ".join(x for x in (page.get("why_not"), f"its spec: {got['problem']}") if x)
+        return
+    own_api.keep_read(state, name, str(page["api_spec"]))
+    page["api"] = own_api.answer_of(name, got)
 
 
 async def read_plan_context(args: dict, server_module: Any, events: list[dict]) -> dict:

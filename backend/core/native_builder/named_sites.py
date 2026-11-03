@@ -11,6 +11,10 @@ reads each site the message names, once, and hands the planner what code found, 
   `NamedPage` of short typed facts: the title, a line of what it is (the page's own words, quoted), one page or a
   site, an API spec it links to, or why it could not be read. A page that is only JavaScript (no title, no heading,
   no text) is `needs_browser`: the plan's fetch of that site is the scraper or a Browser step, not an HTTP tool.
+* An API named by its base (F1317, prod-13): a site whose root is not a web page (it answers 404, or JSON) is tried
+  at the usual spec addresses on its origin (`SPEC_PATHS`), at most those, a GET each through the same guarded fetch
+  and on the plan's web budget, stopping at the first that is a spec. A host the guard or the host's rule refuses is
+  sent nothing more. None found, the read says to ask the person for its spec or docs.
 * `read_named(text, already=…)`: the pages of a message, reading only those the conversation has not read already,
   so a re-plan, a question round or the next turn never fetches one again, and a page that changes mid-conversation
   never changes the plan under the person (TRI1).
@@ -22,6 +26,7 @@ write after it asks (F279).
 from __future__ import annotations
 
 import html
+import json
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -34,6 +39,12 @@ READ_SECONDS = 8.0
 READ_BYTES = 2 * 1024 * 1024
 #: Same-site links from which a page is the front of a site rather than one page.
 SITE_LINKS = 15
+#: Where an API's spec usually is, on its origin, tried in order and no others (F1317).
+SPEC_PATHS = ("/openapi.json", "/swagger.json", "/v3/api-docs")
+#: What a read says of an API whose spec is at none of them.
+NO_SPEC = ("no API spec at its usual addresses ({paths}): ask the person for its spec or docs URL; never scrape an "
+           "API's base")
+
 #: Each typed fact's length: what the planner reads of a page, and no more.
 TITLE_CHARS, WHAT_CHARS = 120, 200
 
@@ -60,8 +71,11 @@ class NamedPage:
     #: `page`, `site` (its front, with many same-site links), `needs_browser` (only JavaScript), or "" unread.
     kind: str = ""
     same_site_links: int = 0
-    #: An API spec the page links to (OpenAPI, Swagger, "API reference"), never a guessed address.
+    #: An API spec the page links to (OpenAPI, Swagger, "API reference"), or one found at its origin's usual spec
+    #: address (F1317), never a guessed one.
     api_spec: str | None = None
+    #: The spec's own title, where one was found at its usual address: the API's name.
+    api_title: str = ""
     why_not: str = ""
     redirects: list[str] = field(default_factory=list)
 
@@ -184,7 +198,7 @@ async def read(url: str) -> NamedPage:
     page.final_url, page.status, page.redirects = got.url, got.status, list(got.redirects)
     if not 200 <= got.status < 300:
         page.why_not = f"it answered {got.status}"
-        return page
+        return await _look_for_spec(page)
     page.reached = True
     kind = (got.headers.get("content-type") or "").lower()
     if "html" not in kind:
@@ -192,8 +206,58 @@ async def read(url: str) -> NamedPage:
         page.why_not = f"it is not a web page ({kind.split(';')[0] or 'no type'})"
         if any(t in kind for t in ("json", "yaml")) and _SPEC_HREF.search(urlsplit(got.url).path or ""):
             page.api_spec = got.url
-        return page
+            return page
+        return await _look_for_spec(page)
     return _facts(page, got.body.decode("utf-8", errors="replace"))
+
+
+def _a_spec(body: bytes) -> dict | None:
+    """The spec `body` is, OpenAPI's or Swagger's (a top-level `openapi` or `swagger`), as JSON or YAML; else None."""
+    text = body.decode("utf-8", errors="replace").strip()
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        try:
+            import yaml
+
+            doc = yaml.safe_load(text)
+        except Exception:  # noqa: BLE001 — not YAML either: not a spec
+            return None
+    return doc if isinstance(doc, dict) and ("openapi" in doc or "swagger" in doc) else None
+
+
+async def _look_for_spec(page: NamedPage) -> NamedPage:
+    """A named site whose root is not a web page, tried at its origin's usual spec addresses (F1317): at most
+    `SPEC_PATHS`, each a GET through the guarded fetch on the plan's web budget, the first spec ending it. A host the
+    host's rule refuses is sent nothing; a refusal, an over-budget plan or one too large ends the looking."""
+    import httpx
+
+    from core import safe_fetch
+    from core.builder_research import web_call
+    from core.mcp_client import host_url_refusal
+
+    got_url = urlsplit(page.final_url or page.url)
+    if got_url.scheme not in ("http", "https") or not got_url.netloc:
+        return page
+    origin = f"{got_url.scheme}://{got_url.netloc}"
+    if await host_url_refusal(origin) is not None:
+        return page
+    for path in SPEC_PATHS:
+        if await web_call() is not None:
+            return page
+        try:
+            async with httpx.AsyncClient(timeout=READ_SECONDS) as client:
+                got = await safe_fetch.fetch(origin + path, client=client, max_bytes=READ_BYTES,
+                                             timeout_s=READ_SECONDS,
+                                             headers={"Accept": "application/json, application/yaml;q=0.9"})
+        except (safe_fetch.FetchBlocked, safe_fetch.FetchTooLarge, safe_fetch.FetchRefused):
+            return page
+        if 200 <= got.status < 300 and (doc := _a_spec(got.body)) is not None:
+            page.api_spec = got.url
+            page.api_title = _trim(str((doc.get("info") or {}).get("title") or ""), TITLE_CHARS)
+            return page
+    page.why_not = "; ".join(x for x in (page.why_not, NO_SPEC.format(paths=", ".join(SPEC_PATHS))) if x)
+    return page
 
 
 #: Where a conversation's reads are kept (D340 D2): gather and research add each read to the run's state under this
