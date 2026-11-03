@@ -151,7 +151,12 @@ async def missing(names: list[Any], server_module: Any, *, cutoff: float = 0.75)
 
 async def unknown(names: list[Any], server_module: Any) -> dict | None:
     """The refusal for a tool list naming tools nothing provides, or None when every name is real. Worded for the
-    builder model, with looser suggestions than a person reads (`missing()`'s own cutoff)."""
+    builder model, with looser suggestions than a person reads (`missing()`'s own cutoff). Synapse AI's own steps are
+    refused first: only its own run takes them (F1315)."""
+    from core.builder_access import run_only_named
+
+    if (own := run_only_named(names)) is not None:
+        return {"error": own}
     gone = await missing(names, server_module, cutoff=0.5)
     if not gone:
         return None

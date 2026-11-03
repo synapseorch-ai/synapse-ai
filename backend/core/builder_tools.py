@@ -347,6 +347,10 @@ def _refuse_misshapen_steps(steps: list) -> dict | None:
     from core.models_orchestration import StepConfig
     from core.orchestration.read_shapes import shape_problem as _shape_problem
 
+    from core.orchestration.save_rules import reserved_problems
+
+    if reserved := reserved_problems(steps):  # Synapse AI's own steps, an engine key (F1315): never a step's
+        return {"error": "Refusing to save: " + " ".join(reserved)}
     problems = []
     for s in steps:
         try:
@@ -2183,7 +2187,7 @@ async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -
 
 
 async def execute_builder_tool_with_events(
-    tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None
+    tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None, door: str | None = None
 ) -> tuple[str, list[dict]]:
     """Dispatch a builder tool, returning its JSON result *and* what it changed.
 
@@ -2192,13 +2196,16 @@ async def execute_builder_tool_with_events(
     is the point: the panel used to recover "an orchestration was saved" by
     running a regex over a 500-character truncation of the result, which failed
     on any orchestration big enough to be worth building.
+
+    `door`: how an agent or a workflow named the tool, `"agent"` or `"step"`, so that only Synapse AI's own run takes
+    its own steps (F1315); None for the install's own direct call.
     """
     events: list[dict] = []
     token = _current_run.set(run_id)
     try:
         # Only what the run's person may do (ASSIST1, F681): a write is refused below builder, by their role now.
         from core.builder_access import acting_for, refusal
-        refused, caller = await refusal(tool_name, run_id)
+        refused, caller = await refusal(tool_name, run_id, door=door)
         if refused:
             return json.dumps({"error": refused}), []
         from core.native_builder import turn_facts

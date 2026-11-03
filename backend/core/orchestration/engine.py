@@ -500,6 +500,12 @@ class OrchestrationEngine:
                 yield fail_run(f"No executor for step type '{step.type}'")
                 break
 
+            # An engine key (a leading underscore) is the engine's own: no step writes one, whatever saved it (F1315).
+            if step.output_key and step.output_key.startswith("_"):
+                from .save_rules import engine_key_sentence
+                yield fail_run(engine_key_sentence(step))
+                break
+
             # Global turn guard
             total_turns += 1
             if total_turns > self.orch.max_total_turns:

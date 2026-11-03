@@ -1284,7 +1284,7 @@ class ToolStepExecutor:
             # The run's id lets a builder tool tell its own run's work from
             # another's — `finish_build` removes only what this run left (F156).
             output, saved = await execute_builder_tool_with_events(
-                tool_name, tool_args, server_module, run_id=run_id
+                tool_name, tool_args, server_module, run_id=run_id, door="step"
             )
             if resource_events is not None:
                 resource_events.extend(saved)

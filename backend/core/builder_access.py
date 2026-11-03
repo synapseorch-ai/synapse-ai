@@ -10,15 +10,20 @@ tool call passes (`builder_tools.execute_builder_tool_with_events`), and nowhere
   none of them;
 * a write is refused when the run's person is below builder by their role **now**, read on every call through the
   host's role source (`product_tools.hooks`), so a demotion while a run waits for its review takes effect;
-* a run that names no person (anything but the assistant's) is not touched.
+* a builder tool is **usable anywhere** (the primitives a person may build with, which MCP serves too, and plain
+  reads) or **Synapse AI's own run only** (its cards and the steps that act on a yes kept in its run's state), and a
+  tool nobody classified is its own run's: an ordinary agent or workflow that names one is refused (F1315);
+* a run that is not Synapse AI's own names no person, and is otherwise not touched.
 
-The person comes from the run's `_caller` state key, which only the host writes when it starts the run: a run's
-inputs may not set a key that starts with an underscore (D126).
+The person comes from the `_caller` state key of Synapse AI's own run, which only the host writes when it starts the
+run: a run's inputs may not set a key that starts with an underscore (D126), and no step may write one (F1315). In
+any other run the key names no one, whatever wrote it.
 """
 from __future__ import annotations
 
 import contextlib
 import contextvars
+import logging
 from typing import Any, Awaitable, Callable, Iterator
 
 from core.product_tools import hooks
@@ -78,6 +83,57 @@ WRITES: frozenset[str] = frozenset({
     "edit_knowledge_document", "update_knowledge_base", "edit_agent_memory_item", "delete_agent_memory_item",
 })
 
+#: Usable anywhere (F1315): an ordinary agent or workflow may name these. The primitives a person may build with, which
+#: MCP serves too (`product_tools.build`), and reads of the workspace, the help and the web.
+ANYWHERE: frozenset[str] = frozenset({
+    "list_agents", "get_agent", "list_orchestrations", "get_orchestration", "validate_orchestration",
+    "list_tool_servers", "list_server_tools", "list_all_tools", "get_tools_detail", "list_custom_tools", "list_skills",
+    "get_skill", "list_schedules", "list_repos", "list_db_configs", "list_knowledge_bases",
+    "create_agent", "create_agents", "update_agent", "create_orchestration", "create_orchestration_skeleton",
+    "add_steps", "add_single_step", "add_multiple_steps", "update_step", "remove_step", "update_orchestration",
+    "set_orchestration_meta", "deploy_orchestration", "create_http_tool", "create_python_tool", "test_python_tool",
+    "import_openapi", "create_skill", "update_skill", "attach_skills", "create_schedule", "update_schedule",
+    "set_schedule_enabled", "delete_agent", "delete_orchestration", "delete_schedule", "delete_custom_tool",
+    "list_variables", "list_recent_runs", "get_run_summary", "read_workspace", "search_help", "product_capabilities",
+    "find_in_catalog", "search_mcp_registry", "search_the_web", "read_web_page", "look_up_providers", "read_api_spec",
+    "search_knowledge",
+})
+
+#: Synapse AI's own run only (F1315): its cards, which put something in front of its person; the steps that act on a
+#: yes kept in its run's state, which an ordinary workflow could write itself; the reads of its own run's plan and
+#: research; and the reviewed changes it applies. Every builder tool is in this list or `ANYWHERE`
+#: (`test_synapse_ai_own_steps_stay_in_its_own_run.py`), and one in neither is refused as this list's.
+OWN_RUN_ONLY: frozenset[str] = CARDS | frozenset({
+    "read_change_context", "read_plan_context", "read_plan_answer", "check_plan", "check_answer", "check_draft",
+    "answer_research", "settle_research",
+    "approve_change", "apply_change", "approve_plan", "save_build", "finish_build", "read_connect_answer",
+    "set_settings", "edit_knowledge_document", "update_knowledge_base", "edit_agent_memory_item",
+    "delete_agent_memory_item",
+})
+
+
+def run_only(tool: str) -> str:
+    """What an ordinary agent or workflow is told when it calls one of Synapse AI's own steps (F1315)."""
+    return (f"Not done: {tool} is one of Synapse AI's own steps, which only its own run takes. An agent or a "
+            "workflow's Tool step can't use it.")
+
+
+def run_only_named(names: Any) -> str | None:
+    """Why an agent's tools or a workflow's Tool steps that name Synapse AI's own steps may not be saved; None when
+    they name none. A name that is no builder tool is not this check's."""
+    from core.builder_tools import BUILDER_TOOL_NAMES
+
+    own = sorted({n for n in names or () if isinstance(n, str) and n in BUILDER_TOOL_NAMES and n not in ANYWHERE})
+    if not own:
+        return None
+    listed = ", ".join(f"'{n}'" for n in own)
+    if len(own) == 1:
+        return (f"{listed} is one of Synapse AI's own steps, which only its own run takes: an agent or a workflow's "
+                "Tool step can't name it. Remove it.")
+    return (f"{listed} are Synapse AI's own steps, which only its own run takes: an agent or a workflow's Tool step "
+            "can't name them. Remove them.")
+
+
 KINDS: dict[str, str] = {**{n: "read" for n in READS}, **{n: "card" for n in CARDS}, **{n: "write" for n in WRITES}}
 
 #: Who builds and changes: a builder, an admin, an owner.
@@ -106,6 +162,8 @@ _PEOPLE: dict[str, str | None] = {}
 _NOBODY = object()
 _MAX_RUNS = 2000
 
+_log = logging.getLogger(__name__)
+
 #: What a builder run that names no person is told (F1315): it acts for no one, so it does nothing.
 NO_ONE = ("Not done: this run of Synapse AI names no person to act for, so it does nothing. Ask Synapse AI in "
           "the app.")
@@ -116,17 +174,10 @@ def forget_runs() -> None:
 
 
 def acting_caller() -> Caller:
-    """Whom a builder tool acts for: the run's person; inside a run that names no one, nobody (F1315: refused, never
-    the owner); only a direct call outside any run, as the tests and the install's own code make, is the owner's."""
-    from core.builder_tools import _current_run
-    from core.product_tools.errors import ToolRefusal
-
-    caller = _current.get()
-    if caller is not None:
-        return caller
-    if _current_run.get():
-        raise ToolRefusal(NO_ONE)
-    return Caller(role=Role.OWNER, via="assistant")
+    """Whom a builder tool acts for: the person of Synapse AI's own run, else the owner, as for every tool usable
+    anywhere. Synapse AI's own run that names no one never gets here (`refusal`, F1315), and nor does one of its own
+    steps called from any other run."""
+    return _current.get() or Caller(role=Role.OWNER, via="assistant")
 
 
 def current_caller() -> Caller | None:
@@ -134,24 +185,40 @@ def current_caller() -> Caller | None:
     return _current.get()
 
 
-async def _person(run_id: str | None):
+async def _run_of(run_id: str | None) -> Any:
+    """The run, live in this process or as last checkpointed; None when it is neither."""
     if not run_id:
-        return _NOBODY
-    if run_id in _PEOPLE:
-        return _PEOPLE[run_id]
+        return None
     from core.orchestration.engine import live_run
     from core.orchestration.state import SharedState
 
     # The live run first: a run this process works under holds its person before its first checkpoint (F1315).
-    live = live_run(run_id)
-    if live is not None:
-        state = live.shared_state or {}
-    else:
-        try:
-            state = (await SharedState.restore(run_id)).run.shared_state or {}
-        except FileNotFoundError:
-            return _NOBODY  # neither live here nor checkpointed: no host-written person to go by
-    entry = state.get(CALLER_KEY)
+    run = live_run(run_id)
+    if run is not None:
+        return run
+    try:
+        return (await SharedState.restore(run_id)).run
+    except FileNotFoundError:
+        return None
+
+
+async def _own_run(run: Any) -> bool:
+    from core.native_builder.identity import is_builder_run
+
+    return run is not None and await is_builder_run(run)
+
+
+async def _person(run_id: str | None, run: Any = None):
+    """The person Synapse AI's own run works for, from the key only its host writes. Any other run names no one: its
+    steps could have written that key themselves (F1315)."""
+    if not run_id:
+        return _NOBODY
+    if run_id in _PEOPLE:
+        return _PEOPLE[run_id]
+    run = run if run is not None else await _run_of(run_id)
+    if not await _own_run(run):
+        return _NOBODY
+    entry = (run.shared_state or {}).get(CALLER_KEY)
     if not isinstance(entry, dict):
         return _NOBODY
     if len(_PEOPLE) >= _MAX_RUNS:
@@ -177,32 +244,28 @@ async def caller_for(run_id: str | None) -> Caller | None:
     return await _caller(role, person) if role is not None else None
 
 
-async def _a_builder_run(run_id: str | None) -> bool:
-    """Whether `run_id` is a run of the builder's orchestration (`identity`: the fixed id here, a host's own ids)."""
-    if not run_id:
-        return False
-    from core.native_builder.identity import is_builder_run
-    from core.orchestration.engine import live_run
-    from core.orchestration.state import SharedState
+async def refusal(tool_name: str, run_id: str | None, *, door: str | None = None
+                  ) -> tuple[str | None, Caller | None]:
+    """(why `tool_name` may not run in this run, or None; the run's person, if it names one).
 
-    run = live_run(run_id)
-    if run is None:
-        try:
-            run = (await SharedState.restore(run_id)).run
-        except FileNotFoundError:
-            return False
-    return await is_builder_run(run)
-
-
-async def refusal(tool_name: str, run_id: str | None) -> tuple[str | None, Caller | None]:
-    """(why `tool_name` may not run in this run, or None; the run's person, if it names one)."""
-    person = await _person(run_id)
-    if person is _NOBODY:
-        # A builder run acts for the person who started it, or for no one: never for whoever the fallback would be
-        # (F1315, fails closed). A call outside any builder run is not this check's.
-        if await _a_builder_run(run_id):
-            return NO_ONE, None
+    `door`: how an ordinary agent or workflow reached the tool, `"agent"` (its tools) or `"step"` (a Tool step); None
+    for the install's own direct call."""
+    run = await _run_of(run_id)
+    if not await _own_run(run):
+        # Not Synapse AI's own run: it names no one, and only a tool usable anywhere is its to call (F1315).
+        if door is not None and tool_name not in ANYWHERE:
+            _log.warning("refused %s, one of Synapse AI's own steps, at an ordinary run's %s (run %s)",
+                         tool_name, door, run_id)
+            return run_only(tool_name), None
         return None, None
+    person = await _person(run_id, run)
+    if person is _NOBODY:
+        # Synapse AI's own run acts for the person who started it: never for whoever a fallback would be (F1315,
+        # fails closed), where people are told apart. Self-hosted has one person, whose run it is: one paused before
+        # its person was recorded (an older release's) is theirs.
+        if hooks.tells_people_apart():
+            return NO_ONE, None
+        person = None
     role = await _role(person)
     if role is None:
         return ("Not done: you are no longer a member of this workspace, so I can't act for you here."), None
