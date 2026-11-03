@@ -1187,8 +1187,10 @@ class OrchestrationEngine:
             answered = outcome.get("status") == "done"
         elif (turn := (run.step_progress.get(asker_id) or {}).get("pending_browser_turn")):
             # The person's turn in the browser (F1099): the agent step carries on where it
-            # stopped, its transcript and the person's word on what they did.
-            self._resume_browser_turn(run, human_response, turn, asker_id)
+            # stopped, its transcript and the person's word on what they did. Answered from the
+            # run rather than the pane, the browser is told first, as the pane's buttons tell it (F1303).
+            declined = await self._answer_browser_turn(run, human_response, turn)
+            self._resume_browser_turn(run, human_response, turn, asker_id, declined=declined)
         elif (pending := (run.step_progress.get(asker_id) or {}).get("pending_approval")):
             # A tool call inside an agent step, not a human step: the answer is an
             # approval for that call, and the step has to be re-entered rather than
@@ -1296,7 +1298,42 @@ class OrchestrationEngine:
         yes = cleaned in ("y", "yes", "true", "1", "ok", "okay", "approve", "approved", "allow", "go")
         return yes, "" if yes else (text.strip() or "the user declined")
 
-    def _resume_browser_turn(self, run, human_response, turn: dict, step_id: str) -> None:
+    @classmethod
+    async def _answer_browser_turn(cls, run, human_response, turn: dict) -> bool:
+        """An answer to a browser turn that came through the run (its human-input: an API caller,
+        a chat channel), not the browser pane, does in the browser what the pane's button does (F1303,
+        cap-05): on an explicit yes, allow typing on the host the browser itself asked about
+        (`allow_typing`), or hand the browser back; anything else hands the wheel back with nothing
+        allowed. Only a turn of this run's own browser, still parked: the same session the pane's
+        route acts on, and nothing the answer names. A held send is the person's in the browser only.
+        The pane's own answer acted already. True when the person declined."""
+        if isinstance(human_response, dict) and human_response.get("browser_turn") == "answered":
+            return False
+        yes, _ = cls._approved(human_response)
+        from core.browser import client as browser_client
+
+        tools, sid = browser_client.tools, turn.get("session_id")
+        key = browser_client.owner_for(None, run.run_id)
+        try:
+            if not sid or await tools.owner_of(sid) != key:
+                return True
+            parked = await tools.take_parked(key)
+            kind = (parked or {}).get("kind") or turn.get("banner_kind")
+            if not parked or kind == "send":
+                return True
+            if yes and kind == "allow_typing":
+                if not parked.get("host"):
+                    return True
+                status, _ = await tools.viewer(sid, "/allow-site", {"host": parked["host"]})
+                return status >= 400
+            note = str(human_response.get("note") or "") if isinstance(human_response, dict) and yes else ""
+            status, _ = await tools.viewer(sid, "/wheel/hand-back", {"note": note})
+            return not yes or status >= 400
+        except Exception:  # noqa: BLE001 — a browser that cannot be told grants nothing
+            _log.warning("browser turn not answered in the browser", exc_info=True)
+            return True
+
+    def _resume_browser_turn(self, run, human_response, turn: dict, step_id: str, *, declined: bool = False) -> None:
         """Re-open an agent step parked on the person's turn in the browser. Nothing runs here: the
         caller's `_execute_loop` re-enters the step, which resumes from its transcript."""
         progress = dict(run.step_progress.get(step_id) or {})
@@ -1304,9 +1341,15 @@ class OrchestrationEngine:
         progress.pop("attempt", None)  # an answer, not a crash retry
         said = human_response.get("note") if isinstance(human_response, dict) else human_response
         said = str(said or "").strip()
-        progress["context_text"] = (progress.get("context_text") or "") + (
-            f"\n[The person, in the browser] They took their turn ({turn.get('banner_kind') or 'asked'})"
-            f" and handed the browser back{': ' + said if said else ''}. Read the page again before you act.\n")
+        if declined:
+            progress["context_text"] = (progress.get("context_text") or "") + (
+                f"\n[The person, in the browser] They declined ({turn.get('banner_kind') or 'asked'}): "
+                f"{turn.get('reason') or 'what it asked for'}. Do not do it; say so, and carry on without it.\n")
+            said = ""
+        else:
+            progress["context_text"] = (progress.get("context_text") or "") + (
+                f"\n[The person, in the browser] They took their turn ({turn.get('banner_kind') or 'asked'})"
+                f" and handed the browser back{': ' + said if said else ''}. Read the page again before you act.\n")
         if said:  # their own words: a press they ask for here may run on a quote of them
             progress["persons_words"] = [*(progress.get("persons_words") or []), said]
         run.step_progress[step_id] = progress
