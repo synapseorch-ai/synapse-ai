@@ -135,7 +135,9 @@ from core.native_builder import prompt_lint, seed
 #: spot of its own, beside the research ask (1300, 600), 69df0403….
 #: F1295: a save refused after the yes goes back to the planner once (`step_save_route`, after `step_save`), da644451….
 #: F1298 adds nothing here: the specs a conversation read are the engine's own key (`_specs_read`), undeclared.
-BUNDLE_SHA256 = "da6444518dcaf1785efaaa6a3df2dabaef8489b8b0ec09693c62fed3ee092272"
+#: F1310: # Changing rule 22 (a "don't know" is answered with a change to approve) and step_change_clarify, run out,
+#: back to step_plan, 558f132c….
+BUNDLE_SHA256 = "558f132c78fd2ba95eac1a1bd25571cb6e88e7c6b96514c18259b79dff62f745"
 
 
 def _sha(definitions) -> str:
