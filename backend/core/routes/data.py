@@ -207,7 +207,8 @@ async def get_models(refresh: bool = False):
     # --- Fallback model lists (used when API calls fail) ---
     # Current stable ids (F187): the old list named only retired 1.5 / 2.0 /
     # preview models, so a failed fetch offered models no call could reach.
-    # gemini-2.5-flash-lite left (F1213): Google answers it "no longer available to new users".
+    # gemini-2.5-flash-lite left (F1213): Google answers it "no longer available to new users". A retired model is
+    # never one (`model_availability.RETIRED`, F1299): it is left out of every provider's list below, these included.
     GEMINI_FALLBACK = ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-pro-latest", "gemini-flash-latest"]
     ANTHROPIC_FALLBACK = ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
     OPENAI_FALLBACK = ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]
@@ -679,15 +680,18 @@ async def get_models(refresh: bool = False):
             providers[spec.id]["error"] = hosted_errors[spec.id]
         hosted_chat += chat
 
-    # A model its provider said is gone (F1213) is listed nowhere, and its card says why.
+    # A model its provider said is gone (F1213), or the product knows it retired (F1299), is listed nowhere, and its
+    # card says why.
     from core import model_availability
 
     gone = await model_availability.unavailable()
-    if gone:
-        for info in providers.values():
-            info["models"], left = model_availability.gone_from(info.get("models") or [], gone)
-            if left:
-                info["unavailable"] = left
+    left_out: set[str] = set()
+    for name, info in providers.items():
+        info["models"], left = model_availability.gone_from(info.get("models") or [],
+                                                             {**model_availability.retired_for(name), **gone})
+        if left:
+            info["unavailable"] = left
+            left_out |= {x["model"] for x in left}
 
     # --- Flat list of all available models ---
     all_available = []
@@ -697,6 +701,7 @@ async def get_models(refresh: bool = False):
 
     # --- Backward compat ---
     cloud_models = gemini_chat + anthropic_chat + openai_chat + grok_chat + deepseek_chat + BEDROCK_FALLBACK + oaic_chat + locv1_chat + c_claude_chat + c_gemini_chat + c_codex_chat + c_copilot_chat + hf_chat + mg_chat + hosted_chat
+    cloud_models = [m for m in cloud_models if m not in left_out]  # what each provider's list left out, above
 
     # --- Which of them can be asked to think ---
     # The capability table lives in `core.reasoning` and is served from here

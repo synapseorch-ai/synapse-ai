@@ -9,6 +9,12 @@ Now a call the provider refuses because the model is gone (`model_gone`) marks t
 workspace, with the provider's own sentence. `model_choices.choices()` (the builder's menu and the agent editor's
 picker read it) and `/api/models` (the Models screen, which says why) leave it out.
 
+Some retirements the product knows before any call (F1299, CAP3's cap-01 A2): a provider's own list still names a
+model it refuses to new callers, so a new workspace's first build picked it. `RETIRED` is that one list, each with its
+provider and the provider's own words: `retired_for(provider)` is read wherever a provider's models are offered
+(`model_choices.choices()`, `/api/models` and its fallback lists, cloud's catalogue), for that provider only, and it
+never lapses or clears. Its rate stays priced (`model_pricing`): an agent already set to it still calls it.
+
 A mark always has a way back (8a's review): any successful call to that model clears it; the Models screen's "Try
 again" clears it (`clear`); it lapses after `KEEP_DAYS`. A local provider's model is never marked: Ollama's or a
 local server's "model not found" means "not pulled yet", and a wrong base URL answers the same. Never a reason to fail
@@ -29,6 +35,22 @@ COLLECTION = "model_availability"
 KEEP_DAYS = 14
 #: How long this process trusts its list of marked models before reading the store again (a success's check).
 _CACHE_S = 60
+
+#: Models their provider retired for new callers, known before any call fails (F1299): `{model: {provider, reason,
+#: since}}`, the reason the provider's own sentence. Offered nowhere for that provider; still priced.
+RETIRED: dict[str, dict[str, str]] = {
+    "gemini-2.5-flash-lite": {
+        "provider": "gemini", "since": "2026-10-29",
+        "reason": "This model models/gemini-2.5-flash-lite is no longer available to new users.",
+    },
+}
+
+
+def retired_for(provider: str) -> dict[str, dict]:
+    """The shipped retirements of `provider`'s models, as `gone_from` reads a mark: `{model: {model, reason}}`."""
+    return {m: {"model": m, "reason": r["reason"], "at": None, "shipped": True}
+            for m, r in RETIRED.items() if r["provider"] == provider}
+
 
 #: Providers whose models live on the person's own machine or network: never marked.
 LOCAL_PROVIDERS = frozenset({"ollama", "local_compatible"})
