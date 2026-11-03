@@ -126,3 +126,36 @@ async def test_a_press_before_the_approval_without_asking_goes_back(client):
 async def test_with_the_confirm_policy_it_does_not(client):
     found = await _examine(_draft(approvals={"asks_first": ["browser_click", "browser_type"]}))
     assert not [e for e in found.errors if "without asking" in e], found.errors
+
+
+# ── F1301's own steer does not route around decision 4 (79, 11-03) ──────────────────────────────────────────────
+# A browser agent with its site types there without stopping for the person, so before an approval the only guard
+# left is decision 4's ask-first. A Browser agent holds the browser's tools however it was made (`_type_tools`): its
+# presses are held whether the plan lists them or not; read_only sends nothing at all (the component's network gate),
+# so its presses are not.
+ACTING = sorted(n for n, t in ALLOWED.items() if not t.get("read_only"))
+
+
+def _browser_draft(tools: list[str], mode: str = "co_drive", **policy) -> dict:
+    agent = _agent("Portal Order Checker", tools, type="browser",
+                   browser={"sites": ["portal.localhost"], "mode": mode})
+    return {**_draft(**policy), "agents": [agent]}
+
+
+async def test_a_co_drive_browser_agents_listed_press_before_the_approval_goes_back(client):
+    found = await _examine(_browser_draft(WORKS))
+    assert any("can run `browser_click`" in e and "without asking" in e for e in found.errors), found.errors
+    found = await _examine(_browser_draft(WORKS, approvals={"asks_first": ["browser_click", "browser_type"]}))
+    assert not [e for e in found.errors if "without asking" in e], found.errors
+
+
+async def test_a_co_drive_browser_agent_holds_the_browsers_presses_unlisted(client):
+    found = await _examine(_browser_draft([]))
+    assert any("can run `browser_click`" in e and "without asking" in e for e in found.errors), found.errors
+    found = await _examine(_browser_draft([], approvals={"asks_first": ACTING}))
+    assert not [e for e in found.errors if "without asking" in e], found.errors
+
+
+async def test_a_read_only_browser_agent_sends_nothing(client):
+    found = await _examine(_browser_draft([], mode="read_only"))
+    assert not [e for e in found.errors if "without asking" in e], found.errors
