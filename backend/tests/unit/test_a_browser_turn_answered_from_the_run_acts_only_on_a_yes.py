@@ -90,9 +90,19 @@ async def _parked(monkeypatch, run_id: str, kind: str = "allow_typing", owner: s
     return browser
 
 
-async def _answer(run_id: str, answer) -> None:
-    from core.orchestration.engine import OrchestrationEngine
-    [e async for e in OrchestrationEngine.resume(run_id, answer, _server())]
+async def _settle(run_id: str) -> None:
+    """The resume the answer spawned, to its end."""
+    from core.orchestration.runner import _active_tasks
+
+    task = _active_tasks.get(run_id)
+    if task is not None:
+        await task
+
+
+async def _answer(client, run_id: str, answer) -> None:
+    """Answered as the app's own Answer control answers (the in-app human-input route): the person, signed in."""
+    await client.post(f"/api/orchestrations/runs/{run_id}/human-input", json={"response": answer})
+    await _settle(run_id)
 
 
 def _viewer(browser: _Browser) -> list[tuple]:
@@ -100,9 +110,9 @@ def _viewer(browser: _Browser) -> list[tuple]:
 
 
 @pytest.mark.parametrize("yes", [{"approve": True}, "yes", {"response": "ok"}])
-async def test_a_yes_allows_typing_on_the_host_the_browser_asked_about(monkeypatch, yes):
+async def test_a_yes_allows_typing_on_the_host_the_browser_asked_about(client, monkeypatch, yes):
     browser = await _parked(monkeypatch, "run_f1303_yes")
-    await _answer("run_f1303_yes", yes)
+    await _answer(client, "run_f1303_yes", yes)
     assert _viewer(browser) == [("viewer", "bs1", "/allow-site", {"host": HOST})], browser.calls
     replay = [c for c in browser.calls if c[0] == "replay"]
     assert replay[-1][2] is True, "the next browser call runs, after the allow"
@@ -110,32 +120,32 @@ async def test_a_yes_allows_typing_on_the_host_the_browser_asked_about(monkeypat
 
 
 @pytest.mark.parametrize("no", [{"approve": False}, "no", "maybe later"])
-async def test_anything_but_a_yes_allows_nothing_and_gives_the_wheel_back(monkeypatch, no):
+async def test_anything_but_a_yes_allows_nothing_and_gives_the_wheel_back(client, monkeypatch, no):
     browser = await _parked(monkeypatch, "run_f1303_no")
-    await _answer("run_f1303_no", no)
+    await _answer(client, "run_f1303_no", no)
     assert [c[2] for c in _viewer(browser)] == ["/wheel/hand-back"], browser.calls
     assert not [c for c in browser.calls if c[0] == "viewer" and c[2] == "/allow-site"], "typing stays off"
 
 
-async def test_another_turn_is_handed_back_on_a_yes(monkeypatch):
+async def test_another_turn_is_handed_back_on_a_yes(client, monkeypatch):
     browser = await _parked(monkeypatch, "run_f1303_turn", kind="asked")
-    await _answer("run_f1303_turn", {"approve": True, "note": "signed in"})
+    await _answer(client, "run_f1303_turn", {"approve": True, "note": "signed in"})
     assert [c[2] for c in _viewer(browser)] == ["/wheel/hand-back"], browser.calls
 
 
-async def test_a_held_send_is_the_persons_in_the_browser_only(monkeypatch):
+async def test_a_held_send_is_the_persons_in_the_browser_only(client, monkeypatch):
     browser = await _parked(monkeypatch, "run_f1303_send", kind="send")
-    await _answer("run_f1303_send", {"approve": True})
+    await _answer(client, "run_f1303_send", {"approve": True})
     assert _viewer(browser) == [], "a run's yes never sends what the network holds"
 
 
-async def test_another_runs_browser_is_not_touched(monkeypatch):
+async def test_another_runs_browser_is_not_touched(client, monkeypatch):
     browser = await _parked(monkeypatch, "run_f1303_other", owner="run:someone_else")
-    await _answer("run_f1303_other", {"approve": True})
+    await _answer(client, "run_f1303_other", {"approve": True})
     assert _viewer(browser) == [] and ("taken", "run:run_f1303_other") not in browser.calls
 
 
-async def test_the_panes_own_answer_is_left_as_it_did_it(monkeypatch):
+async def test_the_panes_own_answer_is_left_as_it_did_it(client, monkeypatch):
     browser = await _parked(monkeypatch, "run_f1303_pane")
-    await _answer("run_f1303_pane", {"browser_turn": "answered", "note": "done"})
+    await _answer(client, "run_f1303_pane", {"browser_turn": "answered", "note": "done"})
     assert _viewer(browser) == [], "the pane allowed it and resumed the run itself"
