@@ -70,7 +70,7 @@ async def issues(plan: O.Plan, ws: Workspace, asked: dict | None = None) -> list
                    f"{{{{ state.{using[0].id} }}}}")
     if "team" in ((asked or {}).get("why") or []) and (team := _a_team(plan, ws, steps)):
         out.append(team)
-    out += _browser_agents(plan, steps)
+    out += await _browser_agents(plan, steps)
     return out
 
 
@@ -78,25 +78,54 @@ async def issues(plan: O.Plan, ws: Workspace, asked: dict | None = None) -> list
 _SITE = re.compile(r"\bhttps?://[^\s<>\"'`)\]}]+", re.I)
 
 
-def _browser_agents(plan: O.Plan, steps: list[O.Step]) -> list[str]:
-    """New plain agents holding the browser's tools on steps that name a site: each is said as a browser agent with
-    that site (F1301)."""
+def covered_by_browser_agent(agent: O.NewAgent, steps: list[O.Step]) -> set[str]:
+    """The hosts a new plain agent works with the browser's tools, on steps whose words name them: the agent F1301's
+    finding says is a browser agent with those sites; set() for any other. TRI1's F1300 leaves such a step to it."""
     from core.browser.gate import ALLOWED
 
-    out = []
+    if agent.type != "agent" or not any(str(t).split("__")[-1] in ALLOWED for t in agent.tools):
+        return set()
+    words = " ".join(f"{s.prompt or ''} {s.does or ''}" for s in steps if s.type == "agent" and s.agent == agent.name)
+    return {h for u in _SITE.findall(words) if (h := (urlsplit(u).hostname or "").lower())}
+
+
+async def _kept_sites() -> list[str]:
+    """The sites the person keeps a usable session for (the pack's `signed_in_sites`); [] when they cannot be read."""
+    try:
+        from core import site_sessions
+        from core.builder_tools import _acting_caller
+
+        return sorted({r["site"] for r in await site_sessions.listed(_acting_caller()) if r.get("usable")})
+    except Exception:  # noqa: BLE001 — no kept sessions read: the finding names none
+        return []
+
+
+async def _browser_agents(plan: O.Plan, steps: list[O.Step]) -> list[str]:
+    """New plain agents holding the browser's tools on steps that name a site: each is said as a browser agent with
+    that site (F1301), and the person's kept session for it where there is one, in one finding (with F1300)."""
+    from core.browser.gate import ALLOWED
+    from core.sites import same_site
+
+    out: list[str] = []
+    kept: list[str] | None = None
     for a in plan.agents:
-        tools = [t for t in a.tools if str(t).split("__")[-1] in ALLOWED]
-        if a.type != "agent" or not tools:
+        hosts = covered_by_browser_agent(a, steps)
+        if not hosts:
             continue
+        # In the order the steps name them.
         words = " ".join(f"{s.prompt or ''} {s.does or ''}" for s in steps if s.type == "agent" and s.agent == a.name)
-        sites = list(dict.fromkeys(h for u in _SITE.findall(words) if (h := (urlsplit(u).hostname or "").lower())))
-        if not sites:
-            continue
-        acts = any(not ALLOWED[str(t).split("__")[-1]].get("read_only") for t in tools)
+        sites = [h for h in dict.fromkeys((urlsplit(u).hostname or "").lower() for u in _SITE.findall(words))
+                 if h in hosts]
+        kept = await _kept_sites() if kept is None else kept
+        sessions = [k for k in kept if any(same_site(h, k) for h in sites)]
+        acts = any(not ALLOWED[str(t).split("__")[-1]].get("read_only") for t in a.tools
+                   if str(t).split("__")[-1] in ALLOWED)
         how = ("co_drive, so it types there without stopping for the person; read_only when it only looks" if acts
                else "read_only, as it only looks")
+        signed = f" and browser.sessions {json.dumps(sessions)}, the person's kept sign-in" if sessions else ""
         out.append(f"structure: agent \"{a.name}\" works {', '.join(sites)} with the browser's tools: make it a "
-                   f"browser agent (type browser) with browser.sites {json.dumps(sites)} and browser.mode {how}")
+                   f"browser agent (type browser) with browser.sites {json.dumps(sites)}{signed} and browser.mode "
+                   f"{how}")
     return out
 
 
@@ -127,4 +156,4 @@ def as_notes(found: list[str]) -> list[str]:
     return [f.removeprefix("structure: ") for f in found]
 
 
-__all__: list[Any] = ["issues", "as_notes", "PAGE_READS"]
+__all__: list[Any] = ["issues", "as_notes", "PAGE_READS", "covered_by_browser_agent"]
