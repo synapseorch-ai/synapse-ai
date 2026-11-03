@@ -739,11 +739,9 @@ def _type_tools(agent_data: dict) -> list:
     """The agent's tools with what its type brings: a Browser agent holds the browser's tools however it was made
     (DESIGN #3). Only the editor added them, so one made through the API had none, and none had
     `browser_hand_over` (BRW2's live check, 10-28)."""
-    tools = list(agent_data.get("tools", ["all"]))
-    if agent_data.get("type") == "browser" and "all" not in tools:
-        from core.browser.gate import ALLOWED
-        tools += [name for name in ALLOWED if name not in tools]
-    return tools
+    from core.browser.gate import held_by
+
+    return held_by(agent_data.get("tools", ["all"]), agent_data.get("type"))
 
 
 def _inject_browser_guide(agent_data, system_template):

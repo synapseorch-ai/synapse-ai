@@ -570,7 +570,13 @@ async def unapproved(workflows: list[dict], agents: dict[str, dict], server_modu
                         own_steps is None or step.get("id") in own_steps)
             elif step.get("type") == "agent" and agent:
                 own = agent.get("id") in made_agents
-                tools = [t for t in agent.get("tools") or [] if isinstance(t, str)]
+                # What it holds at run time (F1301): a Browser agent the browser's tools too, listed or not; read_only,
+                # it sends nothing at all (the component's network gate), so its presses are not held here.
+                from core.browser.gate import ALLOWED, held_by
+
+                tools = [t for t in held_by(agent.get("tools") or [], agent.get("type")) if isinstance(t, str)]
+                if agent.get("type") == "browser" and (agent.get("browser") or {}).get("mode") != "co_drive":
+                    tools = [t for t in tools if not (t in ALLOWED and not ALLOWED[t].get("read_only"))]
                 if any(t == "all" or t.startswith("group:") for t in tools):
                     say(f"The agent '{agent.get('name')}' (step '{label}') has every tool or a group, so what it may "
                         "do without asking cannot be checked: give it the tools it needs by name.", own)

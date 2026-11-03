@@ -409,7 +409,10 @@ def compile_plan(plan: Plan, *, existing_agents: dict[str, dict] | None = None,
 
             part = new.team.model_dump(exclude_none=True) if new.team is not None else {"mode": "team"}
             agent["team"] = AgentTeam(**part).model_dump()
-        if confirm := {f"tool:{t}": "confirm" for t in new.tools if t in asks}:
+        from core.browser.gate import held_by
+
+        # Every tool it holds at run time that the plan asks first for (F1301): a Browser agent's presses, unlisted.
+        if confirm := {f"tool:{t}": "confirm" for t in held_by(new.tools, new.type) if t in asks}:
             agent["tool_policy"] = confirm
         agents.append(agent)
     known_agents = existing | {a["id"]: a for a in agents}
