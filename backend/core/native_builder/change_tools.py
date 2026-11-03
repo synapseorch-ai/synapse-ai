@@ -1327,6 +1327,14 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
             return {**base, "outcome": "said", "say": refusal}
 
     handoffs = [o for o in ops if C.OPS.get(o.get("op", ""), C.OPS["create"]).kind == "handoff"]
+    goes_on_its_own = (len(ops) == 1 and ops[0].get("op") == "create") or (handoffs and len(handoffs) == len(ops)) or any(
+        o.get("op") == "create" and (o.get("target") or {}).get("kind") in C.BUILDS for o in ops)
+    if goes_on_its_own:
+        # A new thing, a build or a hand-over leaves before the check below, which refuses a key op by op: one that
+        # carries a key is refused here, with nothing of it kept (F1309: prod-02's made tool took a pasted token).
+        for o in ops:
+            if await _carries_a_key(dict(o.get("fields") or {}), o.get("says") or ""):
+                return {**base, "outcome": "said", "say": KEY_REFUSAL}
     if len(handoffs) > 1 and len(handoffs) == len(ops):
         # Each goes on as its own route for the rest of the run, so only one can be taken: say them, rather than
         # take the first and drop the rest (the branch review's finding 14).
