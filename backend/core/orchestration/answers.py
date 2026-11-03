@@ -195,14 +195,25 @@ _answering: set[str] = set()
 
 
 async def _held_for(run_id: str, response: Any) -> list:
-    """The workspace's secrets in an answer to a builder run (F1307); [] for any other run, never read."""
-    from core.native_builder.seed import BUILDER_RUN_PREFIX
-
-    if not str(run_id).startswith(BUILDER_RUN_PREFIX):
-        return []
+    """The workspace's secrets in an answer to any run (F1307): a builder run's and a workflow's Human step's alike
+    (Naveen, 11-03: a held value pasted into a workflow's answer is a mistake, and the workflow has it as a variable or
+    a connection already)."""
     from core.secret_scrub import held_in
 
     return await held_in(json.dumps(response, default=str, ensure_ascii=False))
+
+
+def _held_out(value: Any, held: Any) -> Any:
+    """`value` with every held secret in its strings taken out by its exact value (F1307)."""
+    from core.native_builder.door import _without_held
+
+    if isinstance(value, str):
+        return _without_held(value, held)[0]
+    if isinstance(value, dict):
+        return {k: _held_out(v, held) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_held_out(v, held) for v in value]
+    return value
 
 
 def _through_door(run_id: str, response: Any, question: Optional[str], step: Optional[str] = None,
@@ -211,12 +222,13 @@ def _through_door(run_id: str, response: Any, question: Optional[str], step: Opt
     run page, v1, the MCP server, a channel): a card number or a password is refused as a bad answer, before
     anything is queued or kept, and a key is masked. Read with the question it answers, so a lone secret-looking
     word in reply to "what's the password?" counts as one, and one at a Connect card's wait (`step`) as a key
-    (F1280); a secret the workspace holds is masked by its value (`held`, F1307). Any other run's answer is
-    untouched."""
+    (F1280); a secret the workspace holds is masked by its value (`held`, F1307). Any other run's answer — a
+    workflow's own Human step — loses only the held secrets (Naveen, 11-03): its other words are the workflow's
+    business, as F1100 keeps a workflow's own card digits."""
     from core.native_builder.seed import BUILDER_RUN_PREFIX
 
     if not str(run_id).startswith(BUILDER_RUN_PREFIX):
-        return response
+        return _held_out(response, held) if held else response
     from core.native_builder import door
 
     try:
