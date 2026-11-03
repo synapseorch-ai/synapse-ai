@@ -49,7 +49,9 @@ def kept(monkeypatch):
     from core import site_sessions
 
     async def listed(caller=None):
-        return [{"site": "localhost", "usable": True}, {"site": "example.com", "usable": True},
+        # A kept session's site is the registrable domain of where it was kept (core.sites): portal.localhost is its
+        # own site, so the portal's session is kept as "portal.localhost"; one for "localhost" does not cover it.
+        return [{"site": "portal.localhost", "usable": True}, {"site": "example.com", "usable": True},
                 {"site": "intranet.test", "usable": False}]
 
     monkeypatch.setattr(site_sessions, "listed", listed)
@@ -60,9 +62,9 @@ class TestASignedInSiteReadAsNoOne:
         said = _said(await structure.issues(_plan([_read()]), build_plan.Workspace()))
         assert said == [
             "structure: step read_portal reads portal.localhost with `scrape_url`, which reaches it as no one, but the "
-            "person keeps a signed-in session for localhost: read it with a browser agent (type browser) with "
-            'browser.sites ["portal.localhost"], browser.sessions ["localhost"] and browser.mode read_only, told to '
-            "read only"], said
+            "person keeps a signed-in session for portal.localhost: read it with a browser agent (type browser) with "
+            'browser.sites ["portal.localhost"], browser.sessions ["portal.localhost"] and browser.mode read_only, '
+            "told to read only"], said
 
     @pytest.mark.parametrize("tool", ["read_web_page", "scrape_structured", "extract_links"])
     async def test_any_anonymous_read_of_it(self, client, kept, tool):
@@ -72,7 +74,7 @@ class TestASignedInSiteReadAsNoOne:
         plan = _plan([_ask("Order Reader")], [{"name": "Order Reader", "purpose": "Reads orders",
                                                "tools": ["scrape_url"]}])
         said = _said(await structure.issues(plan, build_plan.Workspace()))
-        assert len(said) == 1 and "step read_orders" in said[0] and 'browser.sessions ["localhost"]' in said[0]
+        assert len(said) == 1 and "step read_orders" in said[0] and 'browser.sessions ["portal.localhost"]' in said[0]
 
     async def test_an_agent_here_reading_it_with_a_page_read(self, client, kept):
         ws = build_plan.Workspace(agents={"agent_r": {"name": "Reader", "type": "conversational",
@@ -84,6 +86,17 @@ class TestOtherwiseNothingIsSaid:
     async def test_a_public_page(self, client, kept):
         assert _said(await structure.issues(_plan([_read(url="https://news.example.org/today")]),
                                             build_plan.Workspace())) == []
+
+    async def test_a_session_for_another_site_does_not_cover_it(self, client, monkeypatch):
+        """Sessions are matched by site, the rule the browser signs in by: one kept for "localhost" does not sign in
+        on portal.localhost, so saying it would name a fix that reads the portal as no one all the same."""
+        from core import site_sessions
+
+        async def localhost_only(caller=None):
+            return [{"site": "localhost", "usable": True}]
+
+        monkeypatch.setattr(site_sessions, "listed", localhost_only)
+        assert _said(await structure.issues(_plan([_read()]), build_plan.Workspace())) == []
 
     async def test_no_kept_session(self, client, monkeypatch):
         from core import site_sessions
@@ -107,7 +120,8 @@ class TestOtherwiseNothingIsSaid:
 
     async def test_a_browser_agent_already(self, client, kept):
         plan = _plan([_ask("Portal")], [{"name": "Portal", "purpose": "Reads orders", "type": "browser",
-                                         "browser": {"sites": ["portal.localhost"], "sessions": ["localhost"]}}])
+                                         "browser": {"sites": ["portal.localhost"],
+                                                     "sessions": ["portal.localhost"]}}])
         assert _said(await structure.issues(plan, build_plan.Workspace())) == []
 
 
@@ -118,7 +132,7 @@ async def test_where_f1301_covers_the_agent_the_person_gets_one_finding(client, 
                  [{"name": "Portal Order Checker", "purpose": "Reads orders", "tools": [*LOOKS, "scrape_url"]}])
     found = [f for f in await structure.issues(plan, build_plan.Workspace()) if "browser" in f]
     assert len(found) == 1, found
-    assert 'browser.sites ["portal.localhost"]' in found[0] and 'browser.sessions ["localhost"]' in found[0]
+    assert 'browser.sites ["portal.localhost"]' in found[0] and 'browser.sessions ["portal.localhost"]' in found[0]
     assert "signed-in session for" not in found[0], "F1301's finding, not F1300's"
 
 
