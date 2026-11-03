@@ -231,3 +231,62 @@ class TestASaveNamingOne:
 
         own = bundled_definitions()["orchestration"]
         assert own.get("system") and refusal(own, {}) is None
+
+
+class TestAnMcpClient:
+    """The product's MCP door (`product_tools.build`) calls the same builder primitives, as the client the registry
+    checked: its role and scope are checked before the primitive runs, and the primitive acts for that client."""
+
+    async def test_a_viewer_is_refused_before_the_builder_runs(self, client):
+        from core.product_tools import areas, registry
+        from core.product_tools.caller import Caller
+        from core.product_tools.errors import ToolRefusal
+        from core.store.resources import load_agents
+
+        areas.ensure_loaded()
+        with pytest.raises(ToolRefusal):
+            await registry.invoke("create_agent", Caller(role=Role.VIEWER, via="mcp"),
+                                  {"name": "By a viewer", "system_prompt": "x"})
+        assert not [a for a in await load_agents() if a.get("name") == "By a viewer"]
+
+    async def test_the_builder_acts_for_the_client_the_registry_checked(self, client):
+        from core import builder_tools
+        from core.product_tools import areas, registry
+        from core.product_tools.caller import Caller
+
+        areas.ensure_loaded()
+        seen = {}
+
+        async def peek(args, server_module, events):
+            seen["caller"] = builder_access.acting_caller()
+            return {"ok": True}
+
+        mcp = Caller(role=Role.BUILDER, via="mcp", user_id="u_client")
+        builder_tools._REGISTERED["list_agents"] = peek
+        try:
+            await registry.invoke("list_agents", mcp, {})
+        finally:
+            builder_tools._REGISTERED.pop("list_agents")
+        assert seen["caller"] is mcp
+
+
+class TestTheDeclaredState:
+    def test_a_default_for_an_engine_key_is_refused_at_save(self):
+        from core.orchestration.save_rules import engine_key_defaults, refusal
+
+        orch = S.make_orchestration(id="orch_schema_key", state_schema={
+            "_caller": {"type": "dict", "default": {"user_id": "u_owner"}}, "_noted": {"type": "str"},
+            "topic": {"type": "str", "default": ""}})
+        said, expected = refusal(orch, {}), engine_key_defaults(orch["state_schema"])
+        assert len(expected) == 1 and "'_caller'" in expected[0], "a declared key with no default sets nothing"
+        assert said is not None and expected[0] in said
+
+    async def test_the_builder_refuses_one_too(self, client):
+        from core.orchestration.save_rules import engine_key_defaults
+
+        schema = {"_caller": {"type": "dict", "default": {"user_id": "u_owner"}}}
+        steps = [{"id": "p", "name": "P", "type": "print", "print_content": "x", "output_key": "said"}]
+        got = await _call("create_orchestration", {"name": "Seeds a key", "steps_json": json.dumps(steps),
+                                                   "entry_step_id": "p", "state_schema_json": json.dumps(schema)},
+                          None, None)
+        assert engine_key_defaults(schema)[0] in got.get("error", ""), got
