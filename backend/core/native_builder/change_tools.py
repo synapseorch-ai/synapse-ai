@@ -45,8 +45,9 @@ WAITING, CHANGED, SET_ASIDE = "waiting", "changed", "set_aside"
 FALLBACK_CANNOT = "I couldn't turn that into something I can make or change here. Say it another way, or do it on its own page."
 
 #: A change whose new value holds a key (or the door's mark where one was taken out of the person's message).
-KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. Add it on its own settings screen, "
-               "where it is stored encrypted, and if it was real, rotate it at the provider.")
+KEY_REFUSAL = ("Keys never go in a change: a key there would be kept with it. A tool's key goes on its Connect card "
+               "once the tool is made; any other on its own settings screen, where it is stored encrypted. If it was "
+               "real, rotate it at the provider.")
 
 
 def _holds_a_key(fields: dict) -> bool:
@@ -55,6 +56,16 @@ def _holds_a_key(fields: dict) -> bool:
 
     text = json.dumps(fields, default=str, ensure_ascii=False)
     return holds_credential(text) or CREDENTIAL_MARK in text
+
+
+async def _carries_a_key(fields: dict, says: str = "") -> bool:
+    """An op that carries a key in its fields or its `says`, by shape or as a value the workspace holds (F1309: prod-02's
+    "Make the HTTP tool … Authenticates with bearer token …" put a token pasted in chat into a made tool's header)."""
+    from core.secret_scrub import held_in
+
+    if _holds_a_key({**fields, "says": says}):
+        return True
+    return bool(await held_in(json.dumps({**fields, "says": says}, default=str, ensure_ascii=False)))
 
 
 #: The review's lead-in is the definition's (`step_manage_review`, F754's words); these are what code adds.
@@ -1352,8 +1363,9 @@ async def check_change(args: dict, server_module: Any, events: list[dict]) -> di
         fields = dict(raw.get("fields") or {})
         item = {"op": op.name, "kind": op.kind, "target": target, "fields": fields, "says": raw.get("says") or ""}
         checked.append(item)
-        if _holds_a_key(fields):
-            # Nothing keeps it: not the review, its event, the card or this answer (the branch review's finding 7).
+        if await _carries_a_key(fields, item["says"]):
+            # Nothing keeps it: not the review, its event, the card or this answer (the branch review's finding 7);
+            # its says too, and a value the workspace holds (F1309).
             item.update(fields={}, says="", status="refused", say=KEY_REFUSAL)
             continue
         if op.kind == "handoff":

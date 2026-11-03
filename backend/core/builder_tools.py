@@ -2211,6 +2211,20 @@ async def execute_builder_tool_with_events(
         _current_run.reset(token)
 
 
+async def _header_holds_a_key(headers: dict) -> bool:
+    """A literal credential in a header's value, by shape or as a value the workspace holds (F1309); a reference such
+    as `{{ global.X }}` is a name, never a key."""
+    from core.secret_scrub import held_in, holds_credential
+
+    for value in headers.values():
+        text = str(value or "")
+        if not text or "{{" in text:
+            continue
+        if holds_credential(text) or await held_in(text):
+            return True
+    return False
+
+
 def _emit(
     events: list[dict],
     kind: str,
@@ -3328,6 +3342,11 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         headers = _parse_json_field(args.get("headers_json"), {})
         if not isinstance(headers, dict):
             return {"error": "headers_json must decode to a JSON object"}
+        if await _header_holds_a_key(headers):
+            # F1309: a key written into a made tool's header came out of the chat (prod-02); it goes on the tool's
+            # Connect card once the tool is made, where it is kept encrypted, never in the tool's definition.
+            return {"error": "A key never goes in a tool's headers here: make the tool without it (leave the header "
+                             "out); its Connect card asks the person for the key once the tool is made."}
         input_schema = _parse_json_field(args.get("input_schema_json"), {"type": "object", "properties": {}})
         if not isinstance(input_schema, dict):
             return {"error": "input_schema_json must decode to a JSON Schema object"}
