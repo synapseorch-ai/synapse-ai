@@ -246,6 +246,26 @@ _WORKING = ("running", "pending", "queued")
 
 #: A key an answer might carry to claim a door (F1303): never believed, taken out at the door.
 _CLAIMED = ("_answered_in_app",)
+#: Where a fleet resume's door is kept, by the job's own id, beside the job rather than as its argument: a worker
+#: older than the door never sees it and grants nothing, so the API and the workers deploy in any order (79).
+DOOR_KEY = "synapse:resume-door:{job_id}"
+DOOR_TTL_SECONDS = 86400
+
+
+async def keep_door(redis: Any, job_id: str, door: str | None) -> None:
+    if door and redis is not None:
+        await redis.set(DOOR_KEY.format(job_id=job_id), door, ex=DOOR_TTL_SECONDS)
+
+
+async def door_of(redis: Any, job_id: str | None) -> str | None:
+    """The door kept for `job_id`, read once (a redelivered job grants nothing); None for none."""
+    if not job_id or redis is None:
+        return None
+    try:
+        got = await redis.getdel(DOOR_KEY.format(job_id=job_id))
+    except Exception:  # noqa: BLE001 — a door that cannot be read grants nothing
+        return None
+    return got.decode() if isinstance(got, bytes) else got
 
 
 async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
@@ -288,6 +308,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         from core.scale.config import QUEUE_NAME
 
         resp = _named(response if isinstance(response, dict) else {"response": response}, question_id)
+        job_id = f"resume_{run_id}_{int(time.time() * 1000)}"
+        await keep_door(app_state.arq_redis, job_id, door)
         job = await app_state.arq_redis.enqueue_job(
             "resume_orchestration_job",
             run_id=run_id,
@@ -295,9 +317,8 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             # The question this answer is for: a job that finds the run asking
             # another does not answer it (F111).
             pause_ordinal=pause_ordinal(row.step_history),
-            door=door,
             _queue_name=QUEUE_NAME,
-            _job_id=f"resume_{run_id}_{int(time.time() * 1000)}",
+            _job_id=job_id,
         )
         if job is None:
             # ARQ keeps one job per id and answers None for a second: an answer
