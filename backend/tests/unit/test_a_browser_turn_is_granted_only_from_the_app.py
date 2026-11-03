@@ -91,3 +91,45 @@ async def test_only_the_app_door_is_one_that_grants(door):
 
     grants = getattr(OrchestrationEngine, "GRANTING_DOORS", None)
     assert grants is not None and door not in grants and "app" in grants
+
+
+# ── the door rides beside the job, never as its argument (79: an order-free deploy) ─────────────────────────────
+# A worker older than the door never sees it and grants nothing; a resume job keeps the arguments it always took.
+class _Redis:
+    def __init__(self):
+        self.kept: dict[str, str] = {}
+
+    async def set(self, key, value, ex=None, nx=False):
+        self.kept[key] = value
+        return True
+
+    async def getdel(self, key):
+        return self.kept.pop(key, None)
+
+
+async def test_the_door_is_kept_beside_the_job_and_read_once():
+    from core.orchestration import answers
+
+    door_of, keep = getattr(answers, "door_of", None), getattr(answers, "keep_door", None)
+    assert door_of is not None and keep is not None, "kept by the job's own id, read by the worker"
+    redis = _Redis()
+    await keep(redis, "resume_run_x_1", "app")
+    assert await door_of(redis, "resume_run_x_1") == "app"
+    assert await door_of(redis, "resume_run_x_1") is None, "read once: a redelivered job grants nothing"
+
+
+async def test_a_resume_job_takes_the_arguments_it_always_took():
+    import inspect
+
+    from core.scale.worker import resume_orchestration_job
+
+    assert "door" not in inspect.signature(resume_orchestration_job).parameters, "an old worker refuses no new kwarg"
+
+
+async def test_a_resume_with_no_door_grants_nothing(client, monkeypatch):
+    from core.orchestration.engine import OrchestrationEngine
+
+    browser = await _parked(monkeypatch, "run_door_none")
+    [e async for e in OrchestrationEngine.resume("run_door_none", {"approve": True}, types.SimpleNamespace(
+        agent_sessions={}, memory_store=None, tool_router={}))]
+    assert ALLOWED not in browser.calls and [c[2] for c in _viewer(browser)] == ["/wheel/hand-back"], browser.calls
