@@ -35,7 +35,7 @@ from tests.unit.test_a_failed_child_fails_its_parent import (  # noqa: F401 — 
 
 #: Synapse AI's own steps that act on a yes or put up a card: never outside its own run.
 OWN_STEPS = ("approve_change", "apply_change", "approve_plan", "save_build", "finish_build", "read_connect_answer",
-             "set_settings", "prepare_action", "check_build", "submit_change")
+             "prepare_action", "check_build", "submit_change")
 
 
 class _Server:
@@ -168,10 +168,22 @@ class TestTheEngine:
             {"id": "go", "name": "Go", "type": "tool", "forced_tool": "approve_change", "tool_arguments": {},
              "output_key": "said", "next_step_id": None}])
         await S.seed_orchestrations([orch])
-        await driver.start(orch, "run_names_own")
+        assert await driver.start(orch, "run_names_own") == "failed", "the step fails, and the run stops in words"
         run = await _run("run_names_own")
-        assert builder_access.run_only("approve_change") in json.dumps(run.shared_state.get("said"))
-        assert "_approved_review" not in run.shared_state
+        [entry] = [h for h in run.step_history if h.get("step_id") == "go"]
+        assert builder_access.run_only("approve_change") in entry["error"]
+        assert "said" not in run.shared_state and "_approved_review" not in run.shared_state
+
+    async def test_no_later_step_shows_what_the_refused_one_never_wrote(self, driver):
+        orch = S.make_orchestration(id="orch_then_says", entry_step_id="check", steps=[
+            {"id": "check", "name": "Check", "type": "tool", "forced_tool": "check_answer", "tool_arguments": {},
+             "output_key": "answer_checked", "next_step_id": "say"},
+            _print("say", "{{ state.answer_checked.text }}", key="shown")])
+        await S.seed_orchestrations([orch])
+        assert await driver.start(orch, "run_then_says") == "failed"
+        run = await _run("run_then_says")
+        assert "shown" not in run.shared_state
+        assert not [h for h in run.step_history if h.get("step_id") == "say"], "the next step never ran"
 
     async def test_a_step_never_writes_an_engine_key(self, driver):
         from core.orchestration.save_rules import engine_key_sentence
