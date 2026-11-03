@@ -68,7 +68,8 @@ class TestADontKnowStopsAsking:
                                         "I don't have the right URL – can you check the supplier’s docs?"])
     async def test_it_stops_questions_on_that_subject(self, answer):
         run = await _run(_asked("price_feed tool endpoint", answer))
-        out = await _call(run, "ask_person", _ask("price_feed tool endpoint", "Which URL should price_feed call now?"))
+        # A new question on the same thing (CI2's run 41603883109: the same question is the asked-twice rule's).
+        out = await _call(run, "ask_person", _ask("price_feed supplier", "Which supplier serves price_feed?"))
         assert DONT_KNOW in out.get("error", ""), out
 
     async def test_and_nothing_else(self):
@@ -128,16 +129,15 @@ def test_the_planner_is_told_so_too():
 async def test_the_steps_card_says_it_does_not_fix_the_tool(client):
     from unit.test_the_build_route_decides_in_code import _check, _run as _build_run
 
-    existing = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "fetch",
-                "steps": [{"id": "fetch", "name": "Fetch prices", "type": "tool", "forced_tool": "price_feed",
-                           "output_key": "fetch", "next_step_id": "done"}, {"id": "done", "name": "End", "type": "end"}]}
+    existing = {"id": "orch_prices", "name": "Daily price check", "description": "", "entry_step_id": "done",
+                "steps": [{"id": "done", "name": "End", "type": "end"}]}
     run = await _build_run(intent="update", existing_orch=existing, current_orchestration_id="orch_prices",
                            **{CT.ASKED_KEY: [_asked("price_feed tool endpoint", "I’m not sure what the URL should be.")]})
     draft = {"finish": "submit_plan", "kind": "update", "title": "Daily price check", "summary": "s",
-             "edits": [{"op": "set_meta", "fields": {"description": "Stops and says why when price_feed fails."}}]}
+             "edits": [{"op": "set_meta", "fields": {"summary": "Stops and says why when price_feed fails."}}]}
     checked, _ = await _check(run, draft)
     review = checked.get("review") or ""
-    assert "does not fix the tool" in review and "Tools" in review, review[:600]
+    assert "does not fix the tool" in review and "Tools" in review, {k: checked.get(k) for k in ("outcome", "say")}
 
 
 async def test_with_nothing_unknown_the_card_says_nothing_of_it(client):
@@ -147,6 +147,7 @@ async def test_with_nothing_unknown_the_card_says_nothing_of_it(client):
                 "steps": [{"id": "done", "name": "End", "type": "end"}]}
     run = await _build_run(intent="update", existing_orch=existing, current_orchestration_id="orch_prices")
     draft = {"finish": "submit_plan", "kind": "update", "title": "Daily price check", "summary": "s",
-             "edits": [{"op": "set_meta", "fields": {"description": "Runs daily."}}]}
+             "edits": [{"op": "set_meta", "fields": {"summary": "Runs daily."}}]}
     checked, _ = await _check(run, draft)
-    assert "does not fix the tool" not in (checked.get("review") or "")
+    assert checked.get("review"), {k: checked.get(k) for k in ("outcome", "say")}
+    assert "does not fix the tool" not in checked["review"]

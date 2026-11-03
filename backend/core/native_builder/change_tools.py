@@ -335,14 +335,28 @@ def dont_knows(state: dict) -> list[dict]:
             if _DONT_KNOW.search(str(a.get("answer") or "").replace("\u2019", "'").replace("\u2018", "'"))]
 
 
+#: Words a subject shares with any other, never what it is about (F1310's match of one subject to another).
+_GENERIC = frozenset({"tool", "tools", "step", "steps", "workflow", "agent", "the", "what", "which", "this", "that",
+                      "should", "does", "use", "uses", "call", "calls", "run", "runs"})
+
+
+def _named(entry_or_text: Any) -> set[str]:
+    """What a question is about, by its subject's own words (its question's where it names none), generic ones aside."""
+    if isinstance(entry_or_text, dict):
+        entry_or_text = entry_or_text.get("subject") or entry_or_text.get("question")
+    return {w for w in _question_words(str(entry_or_text or "").replace("_", " ")) if w not in _GENERIC}
+
+
 def _unknown_refusal(state: dict, about: str, subject: str, question: str) -> str | None:
-    """Why a question is not put, after the person said they don't know: one such answer stops questions on its
-    subject; two (by their words, a form's one reply counting once) stop them all."""
+    """Why a question is not put, after the person said they don't know: one such answer stops questions about the
+    thing it named (a word of their subjects in common: the price_feed endpoint, its supplier, its URL), and nothing
+    else; two (by their words, a form's one reply counting once) stop them all."""
     unknown = dont_knows(state)
     answers = list(dict.fromkeys(str(a.get("answer")) for a in unknown))
     if len(answers) >= 2:
         return DONT_KNOW_ALL.format(n=len(answers))
-    same = next((a for a in unknown if _same_question(a, about, subject, question)), None)
+    asked = _named(subject or question)
+    same = next((a for a in unknown if asked & _named(a)), None)
     return DONT_KNOW_SUBJECT.format(answer=same.get("answer")) if same else None
 
 
@@ -578,11 +592,12 @@ async def ask_person(args: dict, server_module: Any, events: list[dict]) -> dict
     about = args.get("about") if args.get("about") in ABOUT else "what"
     subject = _text(args.get("subject"))
     state = run.shared_state if run is not None else {}
+    # After a don't-know, its words before the asked-twice guard's: what to do instead (F1310).
+    if (unknown := _unknown_refusal(state, about, subject, question)) is not None:
+        return {"error": unknown}
     if (same := asked_before(state, about, subject, question)) is not None:
         return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
                                               answer=same.get("answer") or "none yet")}
-    if (unknown := _unknown_refusal(state, about, subject, question)) is not None:
-        return {"error": unknown}
     # The request's count, not the run's: its questions in earlier runs, then this run's own (F1226).
     if (asked := questions_asked(state, run)) >= QUESTIONS:
         return {"error": ASKED_ENOUGH.format(n=asked)}
@@ -613,11 +628,11 @@ def _ask_form(lead: str, items: list[dict]) -> dict:
     _, run = _run()
     state = run.shared_state if run is not None else {}
     for about, subject, question, _, _ in asked:
+        if (unknown := _unknown_refusal(state, about, subject, question)) is not None:
+            return {"error": unknown}
         if (same := asked_before(state, about, subject, question)) is not None:
             return {"error": ASKED_ALREADY.format(question=same.get("question") or question,
                                                   answer=same.get("answer") or "none yet")}
-        if (unknown := _unknown_refusal(state, about, subject, question)) is not None:
-            return {"error": unknown}
     if (n := questions_asked(state, run)) >= QUESTIONS:
         return {"error": ASKED_ENOUGH.format(n=n)}
     if run is not None:
