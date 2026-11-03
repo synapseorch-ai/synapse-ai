@@ -82,6 +82,17 @@ class TestTheOutputSide:
         assert not secret_scrub.holding() and secret_scrub.scrub_secrets(CANARY) == CANARY
         assert CANARY not in caplog.text and "RuntimeError" in caplog.text
 
+    async def test_a_workflows_own_variable_is_left_to_its_run_and_the_door_still_masks_it(self, client):
+        """A workflow renders `{{ global.X }}` into its steps on purpose and its run shows the value
+        (test_step_prompt_values); one stored as a secret leaves as its name already (F854). So the output side reads no
+        variables — and a step's start no variables store — while the door still masks one pasted (CI2's FF16 suite)."""
+        from core import held_secrets, variables
+
+        await variables.save({"CHIRP_API_KEY": SAID})
+        found = await held_secrets.matcher()
+        assert found is None or found.find(f"Key {SAID}") == []
+        assert (SAID, held_secrets.WORKSPACE) in await held_secrets.find(f"here it is {SAID}")
+
     async def test_a_checkpoint_stores_the_mark_and_the_run_keeps_its_value(self, client, holding):
         from core.models_orchestration import OrchestrationRun
         from core.orchestration.state import SharedState

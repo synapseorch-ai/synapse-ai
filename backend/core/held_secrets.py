@@ -45,10 +45,10 @@ def _values_under(value: Any, *, all_strings: bool = False, key: str = "") -> It
             yield from _values_under(v, all_strings=all_strings, key=key)
 
 
-async def _held(known_variables: dict | None = None) -> list[tuple[str, str]]:
+async def _held(*, with_variables: bool = True) -> list[tuple[str, str]]:
     """(value, kind) for every secret this install holds. A source that can't be read is skipped on its own, logged by
-    its error's type only (its words could carry a value), so the others still count. `known_variables`: the run's own
-    variables, already loaded (the engine loads them once per run), read instead of the store."""
+    its error's type only (its words could carry a value), so the others still count. `with_variables` False leaves
+    the workspace's variables out (the output side's matcher: see `matcher`)."""
     import logging
 
     from core import variables
@@ -75,11 +75,11 @@ async def _held(known_variables: dict | None = None) -> list[tuple[str, str]]:
         return [(v, WORKSPACE) for v in _values_under(await load_settings_for_tenant())]
 
     async def workspace_variables():
-        loaded = known_variables if known_variables is not None else await variables.load()
-        return [(v, WORKSPACE) for v in _values_under(loaded)]
+        return [(v, WORKSPACE) for v in _values_under(await variables.load())]
 
     held: list[tuple[str, str]] = []
-    for source in (servers, oauth, channel_tokens, tool_headers, settings, workspace_variables):
+    sources = (servers, oauth, channel_tokens, tool_headers, settings) + ((workspace_variables,) if with_variables else ())
+    for source in sources:
         try:
             held += await source()
         except Exception as exc:  # noqa: BLE001 — one store unread leaves the others' values held
@@ -109,9 +109,12 @@ class _Values:
         return [v for v in self._values if v in text]
 
 
-async def matcher(known_variables: dict | None = None) -> _Values | None:
-    """The output side's matcher for this step: every held value, or None when there are none."""
+async def matcher() -> _Values | None:
+    """The output side's matcher for this step: every held value, or None when there are none. Not the variables: a
+    workflow renders `{{ global.X }}` into its steps on purpose, and its run shows the value as it always has; one
+    stored as a secret is held already (`variables.load`, F854) and leaves as its name. So a step's start reads no
+    variables store either (the run loads them once)."""
     from core.secret_scrub import secret_like
 
-    values = [v for v, _ in await _held(known_variables) if secret_like(v)]
+    values = [v for v, _ in await _held(with_variables=False) if secret_like(v)]
     return _Values(values) if values else None
