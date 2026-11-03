@@ -138,8 +138,8 @@ def _engine_step(step: Step, *, agent_ids: dict[str, str], workflow_ids: dict[st
 
 def _wire(steps: list[dict[str, Any]], explicit: dict[str, set[str]]) -> None:
     """Output keys (a result step keeps its id's unless the Plan named one) and input keys (a step a model reads
-    gets the run's input and what the steps leading to it wrote), each only where the Plan's `config` did not
-    already say."""
+    gets the run's input and what the steps leading to it wrote; an extract step only what they wrote), each only
+    where the Plan's `config` did not already say."""
     from core.builder_tools import step_successors
 
     by_id = {s["id"]: s for s in steps}
@@ -156,6 +156,10 @@ def _wire(steps: list[dict[str, Any]], explicit: dict[str, set[str]]) -> None:
             continue
         if s["type"] in _READING_TYPES:
             s["input_keys"] = list(dict.fromkeys(["user_input", *before[s["id"]]]))
+        elif s["type"] == "extract_json":
+            # The answer it reads the JSON out of (F1304, cap-06): what led to it, never the person's message, whose
+            # own JSON-looking text is not the answer.
+            s["input_keys"] = list(dict.fromkeys(before[s["id"]]))
         elif s["type"] == "merge":
             # What its branches wrote: each Parallel joining here hands on its branches' outputs.
             branch_keys = [by_id[b]["output_key"] for p in steps if p["type"] == "parallel" and
