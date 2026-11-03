@@ -433,7 +433,8 @@ class InProcessRuns:
         )
 
         try:
-            answered = await answer_paused_run(_server.app.state, run_id, response, question_id=question_id)
+            answered = await answer_paused_run(_server.app.state, run_id, response, question_id=question_id,
+                                               door="mcp")
         except QuestionNotAsked:
             raise ToolRefusal(f"The run is not asking question '{question_id}' now; get_run lists what it asks.")
         except BadAnswer as exc:

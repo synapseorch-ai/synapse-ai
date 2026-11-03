@@ -244,8 +244,12 @@ async def _answer_live(app_state: Any, run_id: str, response: Any, question_id: 
 _WORKING = ("running", "pending", "queued")
 
 
+#: A key an answer might carry to claim a door (F1303): never believed, taken out at the door.
+_CLAIMED = ("_answered_in_app",)
+
+
 async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
-                            question_id: str | None = None) -> Answered:
+                            question_id: str | None = None, door: str | None = None) -> Answered:
     """Resume `run_id` with `response`, on the fleet or in this process.
 
     `question_id` names one of a team step's questions (TEAM1e): it must be one the run asks now. Given while the
@@ -257,7 +261,13 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
     says nothing (F842), and `human_fields.BadAnswer` for an answer to an email,
     date, phone or dropdown field that is not one (F455), before anything is
     queued or resumed.
+
+    `door` is where the answer came through, the server's to say (F1303): "app" (the app's own Answer
+    control), "browser" (the pane), "api", "mcp", "channel". It rides beside the answer to the resume and is
+    never written into it; a browser turn is granted only from a door the engine names (`GRANTING_DOORS`).
     """
+    if isinstance(response, dict) and any(k in response for k in _CLAIMED):
+        response = {k: v for k, v in response.items() if k not in _CLAIMED}
     refuse_empty(response)
     try:
         row = await worker_run_row(app_state, run_id)
@@ -285,6 +295,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
             # The question this answer is for: a job that finds the run asking
             # another does not answer it (F111).
             pause_ordinal=pause_ordinal(row.step_history),
+            door=door,
             _queue_name=QUEUE_NAME,
             _job_id=f"resume_{run_id}_{int(time.time() * 1000)}",
         )
@@ -325,7 +336,7 @@ async def answer_paused_run(app_state: Any, run_id: str, response: Any, *,
         # Registers the pump in `_active_tasks` before it returns, so the claim
         # can be let go as soon as it has.
         _task, queue = spawn_engine_run(
-            OrchestrationEngine.resume(run_id, response, app_state.server_module), run_id
+            OrchestrationEngine.resume(run_id, response, app_state.server_module, door=door), run_id
         )
     finally:
         _answering.discard(run_id)

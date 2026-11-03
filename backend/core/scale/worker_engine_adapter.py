@@ -237,6 +237,7 @@ class WorkerEngineAdapter:
         self,
         human_response: dict | str,
         images: list[str] | None = None,
+        door: str | None = None,
     ) -> str:
         """Resume a paused run after human input.
 
@@ -274,7 +275,7 @@ class WorkerEngineAdapter:
         engine.images = list(images or [])
 
         final_status = "completed"
-        async for event in engine.resume_paused(run, human_response):
+        async for event in engine.resume_paused(run, human_response, door=door):
             _log.debug(f"[adapter.resume] 📨 type={event.get('type', '?')} step={event.get('orch_step_id', '')} status={event.get('status', '')}")
             await self._relay(event)
 

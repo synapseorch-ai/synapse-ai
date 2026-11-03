@@ -1067,7 +1067,7 @@ class OrchestrationEngine:
     async def resume(
         cls, run_id: str, human_response: dict, server_module, images: list[str] | None = None,
         *, depth: int = 0, caller: dict | None = None, run_cap: RunCap | None = None,
-        caller_saves_turn: bool = False, caller_tools: list | None = None,
+        caller_saves_turn: bool = False, caller_tools: list | None = None, door: str | None = None,
     ) -> AsyncGenerator[dict, None]:
         """Resume a paused orchestration after human input.
 
@@ -1114,10 +1114,15 @@ class OrchestrationEngine:
         engine.caller_tools = list(caller_tools or [])
         if depth:
             engine.run_cap = run_cap
-        async for event in engine.resume_paused(run, human_response):
+        async for event in engine.resume_paused(run, human_response, door=door):
             yield event
 
-    async def resume_paused(self, run: OrchestrationRun, human_response) -> AsyncGenerator[dict, None]:
+    #: The doors whose answerer is the browser pane's own (F1303): the app's own Answer control, the signed-in
+    #: person. An answer through any other (the public API, MCP, a channel reply) never grants a browser turn.
+    GRANTING_DOORS = frozenset({"app"})
+
+    async def resume_paused(self, run: OrchestrationRun, human_response, *,
+                            door: str | None = None) -> AsyncGenerator[dict, None]:
         """Answer a paused run and carry it on. The one resume.
 
         Both entry points come here: `resume()` above, and
@@ -1189,7 +1194,7 @@ class OrchestrationEngine:
             # The person's turn in the browser (F1099): the agent step carries on where it
             # stopped, its transcript and the person's word on what they did. Answered from the
             # run rather than the pane, the browser is told first, as the pane's buttons tell it (F1303).
-            declined = await self._answer_browser_turn(run, human_response, turn)
+            declined = await self._answer_browser_turn(run, human_response, turn, door=door)
             self._resume_browser_turn(run, human_response, turn, asker_id, declined=declined)
         elif (pending := (run.step_progress.get(asker_id) or {}).get("pending_approval")):
             # A tool call inside an agent step, not a human step: the answer is an
@@ -1299,17 +1304,21 @@ class OrchestrationEngine:
         return yes, "" if yes else (text.strip() or "the user declined")
 
     @classmethod
-    async def _answer_browser_turn(cls, run, human_response, turn: dict) -> bool:
+    async def _answer_browser_turn(cls, run, human_response, turn: dict, *, door: str | None = None) -> bool | str:
         """An answer to a browser turn that came through the run (its human-input: an API caller,
         a chat channel), not the browser pane, does in the browser what the pane's button does (F1303,
         cap-05): on an explicit yes, allow typing on the host the browser itself asked about
         (`allow_typing`), or hand the browser back; anything else hands the wheel back with nothing
         allowed. Only a turn of this run's own browser, still parked: the same session the pane's
         route acts on, and nothing the answer names. A held send is the person's in the browser only.
-        The pane's own answer acted already. True when the person declined."""
+        The pane's own answer acted already. And only from a door whose answerer is the pane's own person
+        (`GRANTING_DOORS`), which the server knows and passes beside the answer: any other's yes hands the
+        wheel back with nothing allowed ("outside"). True when the person declined."""
         if isinstance(human_response, dict) and human_response.get("browser_turn") == "answered":
             return False
         yes, _ = cls._approved(human_response)
+        outside = yes and door not in cls.GRANTING_DOORS
+        yes = yes and not outside
         from core.browser import client as browser_client
 
         tools, sid = browser_client.tools, turn.get("session_id")
@@ -1328,12 +1337,13 @@ class OrchestrationEngine:
                 return status >= 400
             note = str(human_response.get("note") or "") if isinstance(human_response, dict) and yes else ""
             status, _ = await tools.viewer(sid, "/wheel/hand-back", {"note": note})
-            return not yes or status >= 400
+            return "outside" if outside else (not yes or status >= 400)
         except Exception:  # noqa: BLE001 — a browser that cannot be told grants nothing
             _log.warning("browser turn not answered in the browser", exc_info=True)
             return True
 
-    def _resume_browser_turn(self, run, human_response, turn: dict, step_id: str, *, declined: bool = False) -> None:
+    def _resume_browser_turn(self, run, human_response, turn: dict, step_id: str, *,
+                             declined: bool | str = False) -> None:
         """Re-open an agent step parked on the person's turn in the browser. Nothing runs here: the
         caller's `_execute_loop` re-enters the step, which resumes from its transcript."""
         progress = dict(run.step_progress.get(step_id) or {})
@@ -1341,7 +1351,13 @@ class OrchestrationEngine:
         progress.pop("attempt", None)  # an answer, not a crash retry
         said = human_response.get("note") if isinstance(human_response, dict) else human_response
         said = str(said or "").strip()
-        if declined:
+        if declined == "outside":
+            progress["context_text"] = (progress.get("context_text") or "") + (
+                f"\n[The person, in the browser] It was answered outside the browser, where "
+                f"{turn.get('reason') or 'what it asked for'} is not given: nothing was allowed. Ask the person to "
+                "answer it in the browser.\n")
+            said = ""
+        elif declined:
             progress["context_text"] = (progress.get("context_text") or "") + (
                 f"\n[The person, in the browser] They declined ({turn.get('banner_kind') or 'asked'}): "
                 f"{turn.get('reason') or 'what it asked for'}. Do not do it; say so, and carry on without it.\n")

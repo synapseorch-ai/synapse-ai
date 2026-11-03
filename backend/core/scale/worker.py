@@ -313,6 +313,7 @@ async def resume_orchestration_job(
     webhook_secret: str | None = None,
     images: list | None = None,
     pause_ordinal: int | None = None,
+    door: str | None = None,
 ) -> dict:
     """Resume a paused orchestration run after human input is submitted.
 
@@ -446,7 +447,7 @@ async def resume_orchestration_job(
             final_status = await adapter.resume_failed(interrupted=True, images=images)
         else:
             _log.debug(f"[resume] 🔄 calling adapter.resume() ...")
-            final_status = await adapter.resume(human_response=human_response, images=images)
+            final_status = await adapter.resume(human_response=human_response, images=images, door=door)
         _log.debug(f"[resume] 🏁 adapter.resume() returned final_status={final_status}")
 
         if webhook_url and final_status != "paused":
