@@ -18,7 +18,8 @@ here, in code, so a person's write gets them as an agent's does:
   append; nothing here deletes a card, and a person can undo a change (`undo`).
 * **Provenance and taint.** Every write is stamped with who made it (agent, run, conversation, person) and when,
   and a write by a turn that had read content nobody typed marks the card `tainted` (F279).
-* **No secrets.** Text holding a credential (`core.secret_scrub`) is refused (`SecretInCard`).
+* **No secrets.** Text holding a credential (`core.secret_scrub`) is refused (`SecretInCard`), and so is text
+  holding a secret the workspace holds, by its value (`secret_scrub.held_in`, F1307).
 * **Caps.** Open cards per board and shared boards per org, from the caller (settings in OSS, the plan in cloud);
   a `run` board has none.
 
@@ -312,6 +313,17 @@ def _text(value: Any, what: str, limit: int, *, required: bool = False) -> str:
     if holds_credential(text):
         raise SecretInCard()
     return text
+
+
+async def _no_held_secret(*parts: Any) -> None:
+    """A secret the workspace holds is never kept on a card (F1307): the builder's door masks it from what the person
+    types, and this holds for a card written any other way."""
+    from core.secret_scrub import held_in
+
+    joined = "\n".join(p if isinstance(p, str) else json.dumps(p, ensure_ascii=False, default=str)
+                       for p in parts if p)
+    if joined and await held_in(joined):
+        raise SecretInCard()
 
 
 def _stage(value: Any) -> str | None:
@@ -808,6 +820,7 @@ async def add_card(board_id: str, *, title: str, body: str = "", kind: str = "ta
     body = _text(body, "body", BODY_MAX)
     key = _key(key)
     stage, data = _stage(stage), _data(data)
+    await _no_held_secret(title, body, key, data)
     board = await get_board(board_id)
     if board is None:
         raise NoSuchBoard(f"There is no board {board_id}.")
@@ -857,6 +870,7 @@ async def update_card(card_id: str, *, version: int, by: Actor, holder: Holder |
     Refused when the card changed since (`StaleCard`) or someone else holds it (`CardHeld`). Closing releases
     the holder's claim. `holder` None is a person, whom no claim holds off.
     """
+    await _no_held_secret(title, body, result, data)
     card = await get_card(card_id)
     if card is None:
         raise NoSuchCard(f"There is no card {card_id}.")
@@ -1047,6 +1061,7 @@ async def add_comment(card_id: str, text: str, *, by: Actor, tainted: bool = Fal
     from core.store.models import BoardCardDB
 
     words = _text(text, "comment", COMMENT_MAX, required=True)
+    await _no_held_secret(words)
     now = _now()
     values: dict[str, Any] = {"updated_at": now}
     if tainted:

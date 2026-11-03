@@ -136,6 +136,52 @@ def held_secrets() -> dict[str, str]:
     return dict(_HELD.get())
 
 
+# ── Secrets the workspace holds, found in what a person types (F1307) ────────
+#
+# A token pasted bare has no shape the patterns know, but a workspace that saved it on a Connect card holds the very
+# value. The builder's door asks `held_in` for the held values in a message and masks each, before anything stores,
+# logs or shows the text. A host puts its own finder (`set_held_finder`): cloud's matches fingerprints, never holding
+# plaintext; this install's reads its own store (`core.held_secrets`).
+
+#: A held value shorter than this, or one of letters alone, is never matched: it would mask ordinary words.
+HELD_MIN = 8
+
+_FINDER: Any = None
+
+
+def secret_like(value: Any) -> bool:
+    """Whether a held value is matched at all: 8+ characters with a digit or a symbol."""
+    return (isinstance(value, str) and len(value) >= HELD_MIN
+            and any(c.isdigit() or not c.isalnum() for c in value))
+
+
+def set_held_finder(finder: Any) -> None:
+    """A host's finder: async (text) -> [(value, kind)], each a held value that occurs in `text`."""
+    global _FINDER
+    _FINDER = finder
+
+
+async def held_in(text: str) -> list[tuple[str, str]]:
+    """The held secrets in `text`, as (value, kind), the longest first; [] when there are none or they could not be
+    read. A finder that fails lets the message through with the patterns alone, and its error is logged by type only:
+    an exception's words can carry a value."""
+    if not isinstance(text, str) or len(text) < HELD_MIN:
+        return []
+    finder = _FINDER
+    if finder is None:
+        from core.held_secrets import find as finder
+    try:
+        found = await finder(text)
+    except Exception as exc:  # noqa: BLE001 — the door never fails on this; the shapes still run
+        import logging
+
+        logging.getLogger(__name__).warning("held secrets could not be read (%s): the shape rules only",
+                                            type(exc).__name__)
+        return []
+    out = [(v, str(k)) for v, k in found or [] if secret_like(v) and v in text]
+    return sorted(dict(out).items(), key=lambda vk: -len(vk[0]))
+
+
 def scrub_secrets(text: str) -> str:
     """`text` with each held secret's value replaced by its name."""
     held = _HELD.get()
