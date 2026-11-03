@@ -150,10 +150,50 @@ async def caching() -> list[dict]:
                     "fields": {"prompt_cache_enabled": True}}}]
 
 
+#: How many of the costliest agents and workflows a savings answer names.
+TOP = 5
+
+
+async def top_spenders(days: int) -> dict:
+    """Who spent most in the window (F1311): the agents, each with its model, what it spent and what that is a month
+    (Synapse AI's own left out), and the workflows whose runs cost most. Said whether or not a saving clears the
+    floor: prod-08's "cut my costs" was answered with nothing to save and no one named, for $0.36 under the floor."""
+    from core.native_builder import models_menu as MM
+    from core.orchestration.run_view import list_runs
+    from core.product_tools import run_cost
+    from core.routes.agents import load_user_agents
+
+    spend = await _agent_spend(days)
+    agents = {a["id"]: a for a in await load_user_agents() if a.get("id") and not a.get("system")
+              and a.get("type") != "builder"}
+    named = sorted(((agents[i], r) for i, r in spend.items() if i in agents and float(r.get("cost_usd") or 0) > 0),
+                   key=lambda pair: -float(pair[1]["cost_usd"]))[:TOP]
+    out_agents = [{"agent": a.get("name") or a["id"], "model": a.get("model") or MM.workspace_model(),
+                   "spent_usd": round(float(r["cost_usd"]), 6), "usd_month": _per_month(float(r["cost_usd"]), days),
+                   "calls": int(r.get("calls") or 0),
+                   **({"charged_usd": r["charged_usd"]} if "charged_usd" in r else {})} for a, r in named]
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    from core.routes.orchestrations import load_orchestrations
+
+    names = {o.get("id"): o.get("name") for o in await load_orchestrations()}
+    rows = [r for r in await list_runs(limit=1000) if (r.get("started_at") or "") >= since]
+    paid = await run_cost.costs(rows)
+    by_flow: dict[str, list[dict]] = {}
+    for r in rows:
+        by_flow.setdefault(names.get(r.get("orchestration_id")) or r.get("orchestration_id"), []).append(
+            paid.get(r.get("run_id")) or run_cost._own(r))
+    flows = [{"workflow": name, "runs": len(figures), **run_cost.total(figures)} for name, figures in by_flow.items()]
+    flows = [f for f in flows if (f.get("model_dollars") or 0) > 0 or (f.get("credits") or 0) > 0]
+    flows.sort(key=lambda f: -((f.get("credits") or 0) or (f.get("model_dollars") or 0)))
+    return {"agents": out_agents, "workflows": flows[:TOP]}
+
+
 async def find(days: int = MONTH_DAYS) -> dict:
     days = max(1, min(int(days), 90))
     items = [*await model_swaps(days), *await repeating_schedules(days), *await caching()]
     items.sort(key=lambda i: -(i.get("saves_usd_month") or 0))
-    return {"items": items, "window": f"the last {days} days",
-            "note": "Each is code's rule, priced from this workspace's own usage; the op makes it, with the "
-                    "person's yes. A schedule's new time is theirs to say. No number means none could be priced."}
+    return {"items": items, "top_spenders": await top_spenders(days), "window": f"the last {days} days",
+            "note": "Each item is code's rule, priced from this workspace's own usage; the op makes it, with the "
+                    "person's yes. A schedule's new time is theirs to say. No number means none could be priced. "
+                    "`top_spenders` are who spent most in the window, whether or not a saving clears the floor: "
+                    "start from them."}
