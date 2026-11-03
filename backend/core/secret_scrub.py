@@ -37,6 +37,8 @@ _CREDENTIALS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}"),
     re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),
+    # Slack's app-level token (Socket Mode, F1316): xapp-, its version, the app's id, a number, then the secret.
+    re.compile(r"\bxapp-\d{1,2}-[A-Z0-9]{8,12}-\d{10,16}-[A-Za-z0-9]{32,80}\b"),
     re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
     # A chat channel's token (F1286): rule 14 connects a channel on a card, and one pasted into the chat matched no
     # shape. Telegram's bot token: the bot's id, a colon, then 30–46 base64url characters with both cases in them —
