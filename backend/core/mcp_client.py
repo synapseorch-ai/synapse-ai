@@ -422,7 +422,20 @@ def connect_failure(exc: BaseException, config: Optional[Dict] = None) -> str:
     reconnect all read it, through `MCPClientManager.last_error`."""
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
-    return said_safely(str(exc).strip() or type(exc).__name__, config)
+    return said_safely(_own_text(exc), config)
+
+
+def _own_text(exc: BaseException) -> str:
+    """An error's own words. An OSError's (an SSL error's among them) are its `strerror` once one is set, else an SSL
+    error's `verify_message`; `str()` of one built with a single argument is that argument's tuple on some Pythons
+    (3.14 with OpenSSL 3.5: "('…',)"), so a single text argument is read as itself (F1306, CI2)."""
+    if isinstance(exc, OSError):
+        for said in (exc.strerror, getattr(exc, "verify_message", None)):
+            if isinstance(said, str) and said.strip():
+                return said.strip()
+    if len(exc.args) == 1 and isinstance(exc.args[0], str) and exc.args[0].strip():
+        return exc.args[0].strip()
+    return str(exc).strip() or type(exc).__name__
 
 
 def said_safely(text: str, config: Optional[Dict] = None) -> str:
