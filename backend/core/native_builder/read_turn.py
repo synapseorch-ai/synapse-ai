@@ -67,7 +67,7 @@ _OFFERED = re.compile(r"^\s*(?:\*\*)?(?:option\s+)?([A-Za-z]|\d{1,2})[.):](?:\*\
 _LETTERED = re.compile(r"^(?:[a-z]|\d{1,2})$|\b(?:option|plan|choice|number)\s+([a-z]|\d{1,2})\b")
 
 
-def offered(previous: dict) -> list[dict] | None:
+def options_offered(previous: dict) -> list[dict] | None:
     """The options the last turn's reply offered, as a pick list: only a reply the planner ended on (`say`, a plan
     outcome `said`) that asks among two or more options listed on lines of their own (F1347). Read from the state that
     turn kept; None otherwise."""
@@ -210,7 +210,7 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
     # 4b. A pick from the options the last reply offered (F1347, CAP3's prod-13): the planner listed them in its reply
     # and the run ended there. The pick goes back on the original ask with the choice, through classify, so the build or
     # change still comes to its review and its yes; a reply that picks none is read as before.
-    if options := offered(previous):
+    if options := options_offered(previous):
         if (chosen := _offer_picked(message, options)) is not None:
             ask = str(previous.get("user_message") or "").strip()
             return Turn(route="offer_pick", then="classify",
