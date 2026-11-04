@@ -157,7 +157,9 @@ from core.native_builder import prompt_lint, seed
 #: F1325: # Changing rule 25 (a Python tool is fixed with update_python_tool: its code read first, quoted edits,
 #: test_args, tested with no network before the person sees it), 0c27a549… (on fix-forward 17).
 #: F1325's readers: topic `tool` named in both topic lists and in rule 25 (the reader guards), 5526f648… (on fix-forward 17).
-BUNDLE_SHA256 = "5526f648e2309c1a60b1a6f3be0e0e37f8f53db005c5c70420c8c870316dad5b"
+#: F1359: plan_steps.md says what a code step reads (the run's own message is state.user_input; a human step answers an
+#: object; a tool step's JSON is parsed when its fields are read, F1358's words), fe45f2c3… (on fix-forward 18).
+BUNDLE_SHA256 = "fe45f2c3bb86914520a25302e975314b1b59d86e0e18f5ec1fa7716b575aca6c"
 
 
 def _sha(definitions) -> str:
