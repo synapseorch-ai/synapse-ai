@@ -32,6 +32,12 @@ import { useBrowserFrames, useKeptLog, type FrameMemory } from './useBrowserFram
  * theirs (amber, Naveen's pick of the prototype's A), their input reaches the
  * page, the address bar takes an address, and Hand back carries a note.
  */
+/** The height a pane's own bars take around its picture: the address and driver strips above, the fold below
+ *  (F1376: the picture fits the screen under them). */
+const HERO_CHROME = '9rem';
+/** The enlarged dialog's title and footer around its picture (F1376). */
+const ENLARGED_CHROME = '12rem';
+
 export function BrowserPane({
   host, sessionId, agentName, actions, memory, closedBefore = false, onClosed, onHide, onHandedBack, signIn, record, owner, signedIn, picks,
   hero = false, enlarge = false, className, style, children,
@@ -326,9 +332,13 @@ export function BrowserPane({
 
       <div
         className={cn('relative flex items-center justify-center overflow-hidden bg-surface-2',
-                      hero ? 'w-full shrink-0' : 'min-h-0 flex-1 p-3')}
-        // The page's own shape (F1356): the frame's, else the browser's 16:10.
-        style={hero ? { aspectRatio: `${frame?.w || 16} / ${frame?.h || 10}` } : undefined}
+                      hero ? 'mx-auto w-full shrink-0' : 'min-h-0 flex-1 p-3')}
+        // The page's own shape (F1356): the frame's, else the browser's 16:10. Never taller than the screen leaves
+        // under the pane's own bars (F1376): the whole page is seen without scrolling, where the agent may be
+        // clicking at its foot; so it fills the column up to 1440 and is height-bound on a wider desktop.
+        style={hero ? { aspectRatio: `${frame?.w || 16} / ${frame?.h || 10}`,
+                        maxWidth: `calc((100dvh - ${HERO_CHROME}) * ${frame?.w || 16} / ${frame?.h || 10})` }
+                    : undefined}
       >
         {frame ? (
           <PageScreen
@@ -432,7 +442,7 @@ export function BrowserPane({
             // As large as the screen allows at the page's shape, the dialog's bars kept in view (F1376).
             <div className="mx-auto flex w-full items-center justify-center"
                  style={{ aspectRatio: `${frame.w || 16} / ${frame.h || 10}`,
-                          maxWidth: `calc((100dvh - 12rem) * ${frame.w || 16} / ${frame.h || 10})` }}>
+                          maxWidth: `calc((100dvh - ${ENLARGED_CHROME}) * ${frame.w || 16} / ${frame.h || 10})` }}>
               <PageScreen
                 fill
                 frame={frame}
