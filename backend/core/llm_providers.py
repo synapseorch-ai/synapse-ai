@@ -1197,11 +1197,24 @@ def _cli_failure(base: str, cli_model: str, text: str, *, auth: bool = False) ->
     return LLMError(f"CLI provider '{cli_model}' failed: {tail[-400:]}")
 
 
-def _refuse_own_tools(cli_model: str, tools: list[str]) -> LLMError:
+def _refuse_own_tools(cli_model: str, tools: list[str], said: str = "") -> LLMError:
     """An answer reached through a tool of the CLI's own is not the model's
-    answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1)."""
+    answer to Synapse's prompt: the CLI was to run no tool at all (CLIM1).
+    `said`: what the CLI said of it, its own words after ours (F1320)."""
+    told = f" ({said})" if said else ""
     return LLMError(f"CLI provider '{cli_model}' ran its own tool ({', '.join(sorted(set(tools)))}) instead of "
-                    "answering; Synapse runs these CLIs for their model only, so its answer was refused.")
+                    f"answering{told}; Synapse runs these CLIs for their model only, so its answer was refused.")
+
+
+def _cli_said(base: str, text: object) -> str:
+    """A CLI's own words for an error, as a refusal carries them (F1320): its held secrets named, key shapes taken
+    out, one line, capped; empty when it said nothing."""
+    from core.secret_scrub import for_storage, scrub_credentials
+
+    words = " ".join(str(text or "").split())
+    if not words:
+        return ""
+    return f"{_CLI_LABELS.get(base, base)} said: {scrub_credentials(for_storage(words))[0][:200]}"
 
 
 def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: str, stderr: str,
@@ -1223,7 +1236,8 @@ def _read_cli_answer(base: str, cli_model: str, returncode: int | None, stdout: 
             err_text = " ".join(str(obj.get(k, "")) for k in ("result", "error", "subtype"))
             if obj.get("subtype") == "error_max_turns":
                 # It runs with --max-turns 1 (F1320): the model reached for a turn of its own and the CLI stopped it.
-                raise _refuse_own_tools(cli_model, [f"{obj.get('num_turns') or 2} turns"])
+                raise _refuse_own_tools(cli_model, [f"{obj.get('num_turns') or 2} turns"],
+                                        _cli_said(base, obj.get("result") or obj.get("error")))
             if obj.get("is_error"):
                 # An error is not an answer: returned as one, the run would carry
                 # on with the error text as the model's reply.
