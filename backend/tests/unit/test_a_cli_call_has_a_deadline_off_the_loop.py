@@ -180,7 +180,7 @@ class TestATurnOfItsOwnEndsAtOnce:
     def test_its_own_words_come_after_ours(self):
         # test_cli_auth_detection's pin ("max turns") holds beside this one: the CLI's result text, scrubbed, capped.
         said = json.dumps({"type": "result", "subtype": "error_max_turns", "is_error": True, "num_turns": 2,
-                           "result": "Reached max turns sk-live-abcdefghijklmnopqrstuvwx1234"})
+                           "result": "Reached max turns sk-live-" + "abcdefghijklmnopqrstuvwx" + "1234"})
         with pytest.raises(LLMError) as caught:
             P._read_cli_answer("cli.claude", "cli.claude.claude-haiku-4-5", 1, said, "", None)
         told = str(caught.value)
