@@ -178,6 +178,28 @@ What it does not do, and the nearest thing that does:
 """
 
 
+#: Who Synapse AI is (F1382): ahead of every host's capabilities text (`builder_help.capabilities()`), so it is read on
+#: every route. Descriptive only: the rules for what the chat says are its steps' own, and the planner, which reads
+#: this too, still researches.
+WHO_YOU_ARE = """\
+Who you are: Synapse AI, the assistant inside this product. You explain the product, read and change what this
+workspace has, and build the workflows and agents that do its work: plain steps (a tool, a model call) where that
+does the job, an agent where the work needs judgement, run once now or on a schedule.
+"""
+
+#: What the product delivers, one plain example each (F1382): the answering steps' alone (`capabilities(examples=True)`).
+#: The planner never reads it, so no example becomes a step its plan did not ask for (CAP3: most of them send).
+WHAT_IT_DELIVERS = """\
+What the product delivers, with an example of each:
+- Work that runs on its own on a schedule: a summary of yesterday's new sign-ups, sent each morning by email.
+- Agents that answer for the business on its website or a chat channel: questions answered from its own documents.
+- Workflows started by an event: a new form entry checked, saved to a sheet, and the team told on Slack.
+- Reports from the apps and data it connects to: a weekly summary of new deals read from a connected CRM.
+- What changes outside, fetched and sent: an exchange rate or a flight's status, each morning to Telegram.
+- A person in the loop: any step can wait for someone's approval before it acts.
+"""
+
+
 _census: tuple[Screen, ...] | None = None
 
 

@@ -117,9 +117,14 @@ async def test_what_it_cannot_do_is_said_with_the_nearest_thing():
 
 
 async def test_a_host_says_its_own():
+    """A host's own words, after the one self-picture every host opens with (F1382), as written and last."""
+    from core.feature_census import WHO_YOU_ARE
+
     builder_help.set_capabilities("Cloud: what it does.")
     try:
-        assert (await _call("product_capabilities"))["capabilities"] == "Cloud: what it does."
+        said = (await _call("product_capabilities"))["capabilities"]
+        assert said == f"{WHO_YOU_ARE.strip()}\n\nCloud: what it does."
+        assert said.split("\n\n")[-1] == "Cloud: what it does."
     finally:
         builder_help.set_capabilities(None)
     builder_help.set_help_index({"x": {"title": "Only topic", "summary": "Connect a thing", "steps": ["a"]}})

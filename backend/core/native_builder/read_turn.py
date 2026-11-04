@@ -15,6 +15,7 @@ import logging
 import re
 from typing import Any
 
+from core.native_builder.classify import OFFER_TAKEN_KEY, OFFERED_KEY
 from core.native_builder.objects import Turn
 from core.native_builder.review import is_yes
 from core.native_builder.target import _ordinal, _words
@@ -28,6 +29,8 @@ _ACK = frozenset({"done", "ok done", "pressed", "pressed it", "i pressed it", "i
 #: A yes to a queued second request, beyond the review's own yes words.
 _GO_ON = frozenset({"sure", "yes please", "please do", "do that", "yes do that", "go on", "next", "ok do that",
                     "yes go ahead", "go ahead please", "please"})
+#: A yes with more after it ("yes, at 7am by email"), said to the offer for a live fact (F1382). "ok thanks" is not one.
+_YES_FIRST = re.compile(r"^(?:yes|yeah|yep|sure)\b(?! thanks?\b| no\b)")
 #: Go on as it is, said to the effort offer (F1153).
 _JUST = frozenset({"just do it", "just build it", "do it", "build it", "no thanks", "no", "nope", "keep going",
                    "carry on", "proceed", "no just do it", "use the default"})
@@ -155,6 +158,15 @@ def decide(message: str, *, previous: dict, facts: dict, change: dict | None = N
         ask = str(offered["ask"])
         going_on = yes or said in _GO_ON or said in _ACK or said.startswith("continue") or said in _JUST
         return Turn(route="effort_continue", then="classify", message=ask if going_on else f"{ask}\n\n{message}")
+
+    # 0b. A yes to the offer to set up the workflow for a live fact (F1382): its ask, with what they added. Only a
+    # builder's turn keeps an offer, so a viewer's yes is read as below.
+    offer = previous.get(OFFERED_KEY) if isinstance(previous.get(OFFERED_KEY), dict) else {}
+    if ask := str(offer.get("ask") or ""):
+        if yes or said in _GO_ON:
+            return Turn(route="offer_taken", then="classify", message=ask)
+        if _YES_FIRST.match(said):
+            return Turn(route="offer_taken", then="classify", message=f"{ask}\n\n{message}")
 
     # 1. A yes to the second request the last turn queued.
     also = str(facts.get("also") or "").strip()
@@ -313,10 +325,13 @@ async def read_turn(args: dict, server_module: Any, events: list[dict]) -> dict:
         put_up = await prepare_action({"action": turn.picked["action"], **turn.picked["arguments"]}, server_module,
                                       events)
         turn.say = put_up.get("say") or put_up.get("error") or ""
-    if turn.route in ("next_request", "offer_pick") and run is not None:
-        # The queued request, or the ask with the offered option chosen (F1347), is this turn's message from here on:
-        # classify and every route read it.
+    if turn.route in ("next_request", "offer_pick", "offer_taken") and run is not None:
+        # The queued request, the ask with the offered option chosen (F1347), or the offer's ask (F1382), is this
+        # turn's message from here on: classify and every route read it.
         run.shared_state["user_message"] = turn.message
+    if turn.route == "offer_taken" and run is not None:
+        # Classify sends it to the build route, through the role door (F1382).
+        run.shared_state[OFFER_TAKEN_KEY] = True
     if turn.then == "change" and run is not None:
         # A change's pick goes back through the role door to the change route (`step_may_change` reads it).
         run.shared_state["intent"] = "manage"
