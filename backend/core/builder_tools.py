@@ -4758,8 +4758,11 @@ def _validate_orchestration(orch: dict, agents: dict | None = None, kbs: dict | 
 
     # Parallel branches that write the same key: the engine fails the Parallel
     # before any branch runs (F256).
-    from core.orchestration.branch_keys import same_key_branches, unset_reads
+    from core.orchestration.branch_keys import missing_key_reads, same_key_branches, unset_reads
     issues.extend(same_key_branches(orch))
+    # A Transform or a Loop's list a run can reach without the key it breaks without (F1346, cap-05): refused, naming
+    # the branch that misses it. A prompt's unset read stays a warning, below.
+    issues.extend(missing_key_reads(orch))
 
     # A prompt that reads a key before any step writes it reads it empty there
     # (U74): said, never refused — a feedback loop's first pass is a real pattern.
