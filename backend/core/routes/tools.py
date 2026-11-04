@@ -419,7 +419,14 @@ async def import_openapi(req: OpenAPIImportRequest):
 
 @router.delete("/api/tools/custom/{tool_name}")
 async def delete_custom_tool(tool_name: str):
-    from core.store.resources import delete_tool
+    from core.orchestration.dependents import tool_refusal, what_uses_tool
+    from core.store.resources import delete_tool, get_tool
+
+    # Never from under a workflow's step that uses it (F1348), as an agent or a workflow in use is never deleted.
+    found = await get_tool(tool_name)
+    name = (found or {}).get("name") or tool_name
+    if refused := tool_refusal(name, await what_uses_tool(name)):
+        raise HTTPException(status_code=409, detail=refused)
     await delete_tool(tool_name)
     return {"status": "success"}
 

@@ -1478,11 +1478,12 @@ async def _used_by(op: C.Op, target_id: str) -> tuple[list[str], str | None]:
         return [f"{u.kind} {_quoted(u.name)}" for u in runners], (
             dependents.refusal(orch.get("name") or target_id, runners) if runners else None)
     if op.target == "tool":
-        from core.store.resources import load_agents
-
-        holders = [a.get("name") or a["id"] for a in await load_agents()
-                   if not a.get("system") and target_id in (a.get("tools") or [])]
-        return [f"agent {_quoted(n)}" for n in holders], None
+        # Every step that calls it or holds its agent to it, and every agent that holds it (F1348): a step's use
+        # refuses the delete; agents alone are named, never refused.
+        users = await dependents.what_uses_tool(target_id)
+        named = [f"workflow {_quoted(u.name)} (step {_quoted(u.via)})" if u.kind == "step"
+                 else f"agent {_quoted(u.name)}" for u in users]
+        return named, dependents.tool_refusal(target_id, users)
     if op.target == "skill":
         # Agents that select it keep its name and load nothing until it is back (F1266): said, never refused.
         from core.store.resources import load_agents

@@ -3809,8 +3809,12 @@ async def _dispatch(tool_name: str, args: dict, server_module: Any, events: list
         refused = _require_confirm(args, f"delete the tool '{args.get('name')}'")
         if refused:
             return refused
+        from core.orchestration.dependents import tool_refusal, what_uses_tool
         from core.store.resources import delete_tool_named
         name = str(args.get("name") or "")
+        # Never from under a workflow's step that uses it (F1348): the Tools screen and the change route say the same.
+        if refused := tool_refusal(name, await what_uses_tool(name)):
+            return {"error": refused}
         if not await delete_tool_named(name):
             return {"error": f"Custom tool '{name}' not found"}
         _emit(events, "tool", "deleted", name, name)
