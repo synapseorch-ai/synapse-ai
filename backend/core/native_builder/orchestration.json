@@ -467,7 +467,7 @@
             "name": "Answer From the Help",
             "type": "agent",
             "agent_id": "agent_native_builder_reporter",
-            "prompt_template": "The person asked how this product works: a screen, a setting, its API, MCP or a feature. Answer from the help and the list of what the product can do below, naming only the screens the help names. Call `search_help` again in other words only when they do not cover it. Something that needs a key or a sign-in goes on a Connect card (`prepare_connection`), never in the chat.\n\nWhat they asked:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\n{{ state.answer_pack.pack }}",
+            "prompt_template": "The person asked how this product works: a screen, a setting, its API, MCP or a feature. Answer from the help and the list of what the product can do below, naming only the screens the help names. Call `search_help` again in other words only when they do not cover it. When the answer turns on this workspace's own things or what has happened in it (its agents, workflows, runs, what it spent), read them with `read_workspace` and answer from that too: the help says how the product works, not what this workspace holds. Something that needs a key or a sign-in goes on a Connect card (`prepare_connection`), never in the chat.\n\nWhat they asked:\n{{ state.user_message }}\n\nThe conversation so far:\n{{ state.chat_history }}\n\n{{ state.answer_pack.pack }}",
             "route_map": {},
             "route_descriptions": {},
             "evaluator_prompt": null,
@@ -491,7 +491,8 @@
             "allowed_tools": [
                 "search_help",
                 "product_capabilities",
-                "prepare_connection"
+                "prepare_connection",
+                "read_workspace"
             ],
             "next_step_id": "step_answer_checked",
             "max_iterations": 3,
