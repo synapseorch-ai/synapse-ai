@@ -206,3 +206,24 @@ class TestTheMcpDoorIsAuditedOnce:
         await registry.invoke("create_agent", Caller(role=Role.BUILDER, via="mcp", user_id="u_mcp"),
                               {"name": "From a client", "system_prompt": "x"})
         assert [(e.user_id, e.via) for e, _ in host["audited"]] == [("u_mcp", "mcp")]
+
+
+class TestOneActOneRow:
+    async def test_a_delete_the_store_records_is_recorded_once_as_them(self, client, host, monkeypatch):
+        """A host that records a delete itself (cloud's store observer) leaves it to the act's caller when one is
+        bound, as it does for the MCP door: the run's delete is one row, as its person, never a second as no one."""
+        from core.store import resources
+
+        rows: list = []
+
+        async def observer(kind, id_, document):
+            if current.current() is None:
+                rows.append(("store", None))
+
+        monkeypatch.setattr(resources, "_deleted_observer", observer)
+        await S.seed_agents([S.make_agent(id="agent_to_go", name="To go")])
+        host["roles"]["u_dana"], host["people"]["run_deletes"] = Role.BUILDER, "u_dana"
+        got = await _call("delete_agent", {"agent_id": "agent_to_go", "confirm": True}, _plain("run_deletes"))
+        assert "error" not in got, got
+        rows += [("audit", e.user_id) for e, _ in host["audited"]]
+        assert rows == [("audit", "u_dana")], rows
