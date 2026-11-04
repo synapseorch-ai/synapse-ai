@@ -43,7 +43,7 @@ from core.product_tools import build as _build
 READ_TOOLS: tuple[str, ...] = _build.READS
 
 #: Tools that add or edit.
-BUILD_TOOLS: tuple[str, ...] = tuple(n for n in _build.ACTS if n not in _build.APP_ONLY)  # the app's own stay (F1325)
+BUILD_TOOLS: tuple[str, ...] = tuple(_build.ACTS)
 
 #: Build tools that replace or remove what is already there: every step of an
 #: orchestration, one step, or a tool or skill of the same name.
