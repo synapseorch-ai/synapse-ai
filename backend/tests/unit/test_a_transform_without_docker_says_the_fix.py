@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.execution import DockerRunner, ExecResult, ExecUnsupported
+from core.execution import DockerRunner, ExecResult
 
 WORDS = ("Code steps run in Docker, and Docker isn't running here. Start Docker, or set "
          "SYNAPSE_TRANSFORM_RUNTIME=host to run them on this computer.")
@@ -26,12 +26,10 @@ WINDOWS = ("error during connect: Post \"http://%2F%2F.%2Fpipe%2Fdocker_engine/v
 class _Docker(DockerRunner):
     """The Docker sandbox, as a machine without its daemon answers it."""
 
-    def __init__(self, *, stderr: str = "", exit_code: int = 125, missing: bool = False):
-        self.stderr, self.exit_code, self.missing = stderr, exit_code, missing
+    def __init__(self, *, stderr: str = "", exit_code: int = 125):
+        self.stderr, self.exit_code = stderr, exit_code
 
     async def run(self, request):
-        if self.missing:
-            raise ExecUnsupported("Docker is not available. Cannot execute Python code.")
         return ExecResult(exit_code=self.exit_code, stdout="", stderr=self.stderr)
 
 
@@ -63,8 +61,10 @@ async def test_a_daemon_that_is_not_running_says_the_fix(client, docker, stderr)
     assert "unix://" not in said and "docker.sock" not in said and "pipe" not in said, said
 
 
-async def test_no_docker_at_all_says_the_same(client, docker):
-    docker(_Docker(missing=True))
+async def test_no_docker_at_all_says_the_same(client, docker, monkeypatch):
+    """The sandbox's own runner, on a machine with no `docker` to call."""
+    monkeypatch.setattr("core.execution.docker_runner.shutil.which", lambda name: None)
+    docker(DockerRunner())
     assert WORDS in await _failure()
 
 
