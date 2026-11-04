@@ -53,6 +53,11 @@ def held_by(tools: list, agent_type: str | None) -> list:
 
 
 #: Actions after which the page may look different: each gets a screenshot.
+#: Playwright MCP's arguments that write a file the agent cannot read back (F1340): browser_snapshot's and
+#: browser_find's `filename` ("save it to a file instead of returning it"). No tool offered here takes one; a call that
+#: names one has it left out, and the page comes back in the answer.
+WRITES_A_FILE = frozenset({"filename"})
+
 CHANGES_PAGE = frozenset(ALLOWED) - {"browser_snapshot", "browser_find", "browser_wait_for", "browser_hand_over",
                                      "browser_run_recording"}
 

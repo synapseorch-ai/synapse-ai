@@ -158,8 +158,13 @@ _RUN_RECORDING_SCHEMA = {"name": "browser_run_recording", "description": (
 
 
 def _with_confirm_schema(name: str, input_schema: dict | None) -> dict:
-    """A press tool's schema with `confirm` beside Playwright MCP's own arguments (which never receive it)."""
+    """A tool's schema as an agent is offered it: a press tool's with `confirm` beside Playwright MCP's own arguments
+    (which never receive it), and none with an argument that writes a file the agent can't read back (F1340)."""
     schema = dict(input_schema or {})
+    if gate.WRITES_A_FILE & set(schema.get("properties") or {}):
+        schema["properties"] = {k: v for k, v in schema["properties"].items() if k not in gate.WRITES_A_FILE}
+        if schema.get("required"):
+            schema["required"] = [k for k in schema["required"] if k not in gate.WRITES_A_FILE]
     if name in gate.PRESSES:
         schema["properties"] = {**(schema.get("properties") or {}), "confirm": _CONFIRM}
     return schema

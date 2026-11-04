@@ -1724,3 +1724,45 @@ async def test_one_recording_has_one_browser_and_a_re_record_replays_before_it_r
     with pytest.raises(browser_client.ReplayStopped) as stopped:
         await tools.open_record_session("rec_2", sessions=[], replay_first=before)
     assert stopped.value.replayed["at"] == 1 and await tools.owner_of(stopped.value.session_id) == "record:rec_2"
+
+
+# ── no file it can't read back (F1340) ───────────────────────────────────────
+
+class TestNoFileItCannotReadBack:
+    """Playwright MCP's browser_snapshot and browser_find take `filename` ("save it to a file instead of returning
+    it"), and an agent that used it saved the page where it could never read it back, and ended with nothing done
+    (CAP3's cap-01). The browser offered to an agent writes no such file: the page comes back in the answer."""
+
+    def test_no_offered_tool_takes_a_parameter_that_writes_a_file(self):
+        offered = browser_client._committed_tool_schemas() or []
+        assert offered, "the committed list is what an agent is offered"
+        for tool in offered:
+            props = (tool["inputSchema"] or {}).get("properties") or {}
+            required = (tool["inputSchema"] or {}).get("required") or []
+            assert not gate.WRITES_A_FILE & (set(props) | set(required)), tool["name"]
+        raw = {t["name"]: t for t in json.loads(browser_client._SCHEMAS.read_text(encoding="utf-8"))}
+        for name in ("browser_snapshot", "browser_find"):
+            assert "filename" in raw[name]["inputSchema"]["properties"], "Playwright's own list still has it"
+            live = host._with_confirm_schema(name, raw[name]["inputSchema"])
+            assert "filename" not in live.get("properties", {}), name
+
+    @pytest.mark.parametrize("name", ["browser_snapshot", "browser_find"])
+    async def test_a_call_naming_one_returns_the_page_and_says_so(self, name):
+        fake = _FakeHost()
+        tools = browser_client.BrowserTools(fake)
+        answer = await _call(tools, "chat:file", name, {"filename": "page.md"})
+        [(_, _, sent)] = [c for c in fake.calls if c[1] == "/tool"]
+        assert "filename" not in sent["args"], sent
+        said = answer.content[0].text
+        assert said.startswith(browser_client.NO_FILE) and "page for" in said, said
+
+    def test_a_connected_apps_snapshot_file_stays_under_the_vault(self):
+        """The engine's own rule for a tool named browser_snapshot (a Playwright MCP app a person connects, whose
+        file the browser here never writes) is kept: such a file lands under data/vault/ (eb's ruling)."""
+        import inspect
+
+        from core import react_engine
+
+        source = inspect.getsource(react_engine)
+        assert 'tool_name == "browser_snapshot" and "filename" in tool_args' in source
+        assert '_vault_prefix = "data/vault/"' in source
