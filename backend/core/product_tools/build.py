@@ -169,6 +169,29 @@ def _target(action: str):
     return target
 
 
+async def audit_from_a_run(name: str, args: dict[str, Any], result: Any, caller: Any) -> None:
+    """A build write an ordinary run made for its person, audited once, as them (F1319): the action this area's own
+    MCP door names it with, the run as its surface, and the caller bound, so a host's audit reads their record. Only
+    a write that took: a refusal or an error is no act. The MCP door never comes here; the registry audits it."""
+    from core.product_tools import caller as current, hooks
+    from core.product_tools.registry import _summary
+
+    action = ACTS.get(name) or (DELETES[name][2] if name in DELETES else None)
+    if action is None or (isinstance(result, dict) and result.get("error")):
+        return
+    target = _target(action)(args or {}, result)
+    token = current._CURRENT.set(caller)
+    try:
+        await hooks.emit(hooks.AuditEvent(
+            action=action, tool=name, area="build", via=caller.via, user_id=caller.user_id,
+            credential_id=caller.credential_id, role=caller.role.label,
+            target_type=target[0] if target else None, target_id=target[1] if target else None,
+            args=_summary(args or {}),
+        ))
+    finally:
+        current._CURRENT.reset(token)
+
+
 def _handler(name: str):
     async def handle(caller: Any, args: dict[str, Any]) -> str:
         from core.builder_tools import execute_builder_tool_with_events

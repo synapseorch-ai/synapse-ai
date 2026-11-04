@@ -4,11 +4,12 @@ Builder tools for the Synapse AI Builder agent.
 Provides CRUD operations on agents and orchestrations that the builder
 meta-agent can call to design and create multi-agent workflows.
 """
+import contextlib
 import json
 import random
 import string
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from core.state_types import (
     CANONICAL_STATE_TYPES,
@@ -2394,6 +2395,22 @@ async def execute_builder_tool(tool_name: str, args: dict, server_module: Any) -
     return output
 
 
+@contextlib.contextmanager
+def _the_act_of(caller: Any) -> Iterator[None]:
+    """An ordinary run's act bound to its person for its whole length, as the registry binds an MCP call's (F1319): a
+    host that records what the store does (cloud's delete observer) then leaves the row to the act, one act one row."""
+    if caller is None:
+        yield
+        return
+    from core.product_tools import caller as current
+
+    token = current._CURRENT.set(caller)
+    try:
+        yield
+    finally:
+        current._CURRENT.reset(token)
+
+
 async def execute_builder_tool_with_events(
     tool_name: str, args: dict, server_module: Any, *, run_id: str | None = None, door: str | None = None
 ) -> tuple[str, list[dict]]:
@@ -2412,15 +2429,22 @@ async def execute_builder_tool_with_events(
     token = _current_run.set(run_id)
     try:
         # Only what the run's person may do (ASSIST1, F681): a write is refused below builder, by their role now.
-        from core.builder_access import acting_for, refusal
+        from core.builder_access import acting_for, refusal, stops_a_step
         refused, caller = await refusal(tool_name, run_id, door=door)
         if refused:
-            return json.dumps({"error": refused}), []
+            # A refusal no argument changes stops a Tool step's run in its words (F1315, F1319); an agent reads it.
+            stop = door == "step" and await stops_a_step(run_id, refused)
+            return json.dumps({"error": refused, **({"stops_the_step": True} if stop else {})}), []
         from core.native_builder import turn_facts
         if why := await turn_facts.answer_card_refusal(run_id, tool_name, args or {}):
             return json.dumps({"error": why}), []
-        with acting_for(caller):
+        for_a_person = caller is not None and caller.via == "workflow"
+        with acting_for(caller), _the_act_of(caller if for_a_person else None):
             result = await _dispatch(tool_name, args, server_module, events)
+        if for_a_person:
+            # An ordinary run's build write, audited once as its person (F1319).
+            from core.product_tools.build import audit_from_a_run
+            await audit_from_a_run(tool_name, args, result, caller)
         # What the call put up is kept on its turn's card, for the next turn to read in code (F977).
         await turn_facts.keep(run_id, getattr(caller, "user_id", None), **turn_facts.facts_of(events))
         return json.dumps(result, default=str), events

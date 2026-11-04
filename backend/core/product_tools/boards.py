@@ -94,6 +94,14 @@ async def _board_named(wanted: str) -> dict:
                       + ". Ask which one they mean.")
 
 
+async def person_name(caller: Any) -> str | None:
+    """The person's name as the host knows it (the name a card's history shows); None when it cannot say."""
+    try:
+        return str(await _host.person_name(caller)) or None
+    except Exception:  # noqa: BLE001 — a name for words, never a reason to fail
+        return None
+
+
 async def _person(caller: Any):
     from core.boards import service
     return service.person(await _host.person_name(caller))

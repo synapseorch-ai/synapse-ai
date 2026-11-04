@@ -13,11 +13,12 @@ tool call passes (`builder_tools.execute_builder_tool_with_events`), and nowhere
 * a builder tool is **usable anywhere** (the primitives a person may build with, which MCP serves too, and plain
   reads) or **Synapse AI's own run only** (its cards and the steps that act on a yes kept in its run's state), and a
   tool nobody classified is its own run's: an ordinary agent or workflow that names one is refused (F1315);
-* a run that is not Synapse AI's own names no person, and is otherwise not touched.
+* a run that is not Synapse AI's own acts for the person its host says it is for (`set_run_person_source`, F1319),
+  by the same role rule, audited as them; with no such person, as it always has, for the workspace.
 
 The person comes from the `_caller` state key of Synapse AI's own run, which only the host writes when it starts the
 run: a run's inputs may not set a key that starts with an underscore (D126), and no step may write one (F1315). In
-any other run the key names no one, whatever wrote it.
+any other run the key names no one, whatever wrote it; the host names that run's person.
 """
 from __future__ import annotations
 
@@ -153,9 +154,22 @@ def set_principal_source(fn: PrincipalSource | None) -> None:
     _principal_source = fn
 
 
-async def _caller(role: Role, person: str | None) -> Caller:
+async def _caller(role: Role, person: str | None, via: str = "assistant") -> Caller:
     principal = await _principal_source(person) if _principal_source is not None else None
-    return Caller(role=role, via="assistant", user_id=person, principal=principal)
+    return Caller(role=role, via=via, user_id=person, principal=principal)
+
+
+#: Whose an ordinary run is (F1319): `fn(run_id) -> user_id | None` for a workflow's or an agent's own run, or a chat
+#: (`run_id` None), as the host recorded it: who pressed Run, a key's creator, a schedule's last saver, a chat's
+#: starter. The run's builder tools act for that person. None from it, or no source at all (self-hosted), and the run
+#: acts as it always has, for the workspace.
+RunPersonSource = Callable[[str | None], Awaitable[str | None]]
+_run_person_source: RunPersonSource | None = None
+
+
+def set_run_person_source(fn: RunPersonSource | None) -> None:
+    global _run_person_source
+    _run_person_source = fn
 
 #: run id → the person's id (None: the install's one person), for runs that name one. `_caller` never changes during
 #: a run, so it is read from the checkpoint once; the role is read again on every call.
@@ -256,12 +270,16 @@ async def refusal(tool_name: str, run_id: str | None, *, door: str | None = None
     for the install's own direct call."""
     run = await _run_of(run_id)
     if not await _own_run(run):
-        # Not Synapse AI's own run: it names no one, and only a tool usable anywhere is its to call (F1315).
+        # Not Synapse AI's own run: only a tool usable anywhere is its to call (F1315), and it acts for the person the
+        # host says it is for, if any (F1319); its own state never names one.
         if door is not None and tool_name not in ANYWHERE:
             _log.warning("refused %s, one of Synapse AI's own steps, at an ordinary run's %s (run %s)",
                          tool_name, door, run_id)
             return run_only(tool_name), None
-        return None, None
+        person = await _run_person_source(run_id) if door is not None and _run_person_source is not None else None
+        if not person:
+            return None, None
+        return await _for_the_runs_person(tool_name, str(person))
     person = await _person(run_id, run)
     if person is _NOBODY:
         # Synapse AI's own run acts for the person who started it: never for whoever a fallback would be (F1315,
@@ -280,6 +298,31 @@ async def refusal(tool_name: str, run_id: str | None, *, door: str | None = None
                 f"{role.label} in this workspace. Tell the person what you would have changed, and that someone "
                 f"with the {MAY_CHANGE.label} role can make the change."), caller
     return None, caller
+
+
+async def _for_the_runs_person(tool_name: str, person: str) -> tuple[str | None, Caller | None]:
+    """An ordinary run's builder tool, for its person (F1319): their role now, as in Synapse AI's own run, and a
+    refusal that names them, their role and the tool, for whoever reads the run's error."""
+    from core.product_tools.boards import person_name
+
+    role = await _role(person)
+    if role is None:
+        who = await person_name(Caller(role=Role.VIEWER, via="workflow", user_id=person)) or "the person it is for"
+        return (f"Not done: this run acts for {who}, who is no longer a member of this workspace, so {tool_name} "
+                "does nothing here."), None
+    caller = await _caller(role, person, via="workflow")
+    if KINDS.get(tool_name, "write") == "write" and not role.can_act_as(MAY_CHANGE):
+        who = await person_name(caller) or "the person it is for"
+        return (f"Not done: {tool_name} changes things, which needs the {MAY_CHANGE.label} role, and this run acts "
+                f"for {who}, a {role.label} in this workspace."), caller
+    return None, caller
+
+
+async def stops_a_step(run_id: str | None, refused: str) -> bool:
+    """Whether a Tool step whose builder tool was refused with `refused` fails its run in those words: in any run but
+    Synapse AI's own, and Synapse AI's own run that names no one (F1315, F1319). Synapse AI's own steps answer their
+    own refusals."""
+    return refused == NO_ONE or not await _own_run(await _run_of(run_id))
 
 
 @contextlib.contextmanager
