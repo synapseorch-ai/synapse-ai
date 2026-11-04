@@ -37,6 +37,7 @@ class _Tools:
     def __init__(self):
         self.events: dict[str, list[dict]] = {}
         self.finished = self.cancelled = False
+        self.slow_end = 0.0  # how long a cancelled replay takes to end
 
     def take_events(self, key):
         return self.events.pop(key, []) if key else []
@@ -64,6 +65,7 @@ class _Tools:
             return {"outputs": {"orders": 3}}
         except asyncio.CancelledError:
             self.cancelled = True
+            await asyncio.sleep(self.slow_end)
             raise
 
     async def latest_replay(self, key):
@@ -155,6 +157,30 @@ class TestABrowserStep:
         assert tools.cancelled and not tools.finished, "the replay went with its step"
         assert len(seen) == at_cancel, "nothing said after the step's end"
         assert not [t for t in asyncio.all_tasks() if t.get_name().startswith("browser-replay")]
+
+    async def test_a_cancel_of_its_own_while_it_waits_for_the_replay_to_end_still_goes_on(self, tools, replay,
+                                                                                         client):
+        """The step is closed mid-replay, so it cancels the replay and waits for it to end; a cancel aimed at the step
+        itself while it waits is the step's, never swallowed with the replay's end (eb 11-04)."""
+        step, run = replay
+        tools.slow_end = 0.6
+        gen = _replaying(step, run)
+
+        async def close_after_its_browser_opens():
+            async for event in gen:
+                if event.get("type") == "browser_session":
+                    break
+            await gen.aclose()  # cancels the replay and waits for its slow end
+
+        task = asyncio.create_task(close_after_its_browser_opens())
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            if tools.cancelled:
+                break
+        assert tools.cancelled, "the replay was cancelled and is ending"
+        task.cancel()  # the step's own cancel, during that wait
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
 
 class _Page:
