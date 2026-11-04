@@ -943,6 +943,25 @@ def _without_secret_asks(plan: O.Plan, base: O.Plan | None) -> tuple[O.Plan, lis
     return cleaned, issues
 
 
+def _objects_read_as_text(s: O.Step, plan: O.Plan) -> list[str]:
+    """A code step reading an object as text (F1359: cap-05's Transform ran `re.search` on a Human step's answer). A
+    Human step answers an object (`{approved, feedback}`, or its `human_fields` by name) and an Extract JSON step the
+    JSON it pulled out, so text read out of either is a field of it. A Tool step's answer is F1358's (parsed for a code
+    step that reads its fields), so it is not held here."""
+    from core.native_builder.compile import text_reads
+
+    steps = [*plan.steps, *(x for w in plan.inner_workflows for x in w.steps)]
+    objects = {x.id: x.type for x in steps if x.type in ("human", "extract_json")}
+    out = []
+    for key in sorted(text_reads((s.config or {}).get("transform_code") or "", set(objects))):
+        what = ("a person's answer, an object: `{approved, feedback}`, or its `human_fields` by name"
+                if objects[key] == "human" else "the JSON it pulled out, an object or a list")
+        out.append(f"step {s.id}: its code reads `state.{key}` as text, but step {key} is {what}: read a field of it "
+                   f"(`state.{key}.feedback`, `state.{key}['name']`). The run's own message is `state.user_input`: "
+                   "read it there, never ask a person for it again")
+    return out
+
+
 async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
     """The planner's rules a structure check cannot see (P1's findings, F866b)."""
     from core.boards import TOOL_NAMES
@@ -979,6 +998,8 @@ async def _rules(plan: O.Plan, ws: Workspace, state: dict) -> list[str]:
                           f"step {s.id}: its code uses `{reach[1]}`, but a step reaches a service through a tool, "
                           "and its key through the Vault, never from code. Plan a tool step for the service (a tool "
                           "nothing here provides is looked up, or built without); code works on the run's own data")
+        if s.type == "transform":
+            errors += _objects_read_as_text(s, plan)
     # A feature that is off, where the plan needs it, is the person's to turn on, never the planner's to take out
     # (F1203): `features_needed`, a block on the card with its switch. Board tools are still never looked up as a
     # missing tool (F866b's invented "Board" provider; SAI2's review, 7).
